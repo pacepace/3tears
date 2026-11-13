@@ -13,8 +13,11 @@ everything *without* the marker).
 This walker pins the contract: any ``test_*.py`` that references a
 docker-rooted fixture (the testcontainer fixtures rooted at
 :mod:`threetears.core.testing.fixtures` — ``db_container``, ``db_image``,
-``pg_url``, ``pg_schema``, ``nats_container``) MUST carry a module-level
-``pytestmark`` that references ``pytest.mark.integration``. In-process
+``pg_url``, ``pg_schema``, ``nats_container``, ``s3_container``) or calls a
+helper that starts a server of its own (``nats_server(...)`` from those
+fixtures, ``running_nats(...)`` from the nats package's ``nats_support``)
+MUST carry a module-level ``pytestmark`` that references
+``pytest.mark.integration``. In-process
 "integration" tests that need no docker are deliberately NOT required to
 carry the marker — they run correctly in the no-docker job.
 
@@ -58,9 +61,13 @@ _DOCKER_ROOTED_FIXTURES: frozenset[str] = frozenset(
         "pg_url",
         "pg_schema",
         "nats_container",
+        "s3_container",
         "searxng_container",
     }
 )
+
+# helpers that start a service of their own (a configured NATS server per test) when called.
+_SERVICE_STARTERS: frozenset[str] = frozenset({"nats_server", "running_nats"})
 
 
 def _test_files() -> list[Path]:
@@ -92,6 +99,27 @@ def _requests_docker_fixture(tree: ast.Module) -> bool:
             params = [*args.posonlyargs, *args.args, *args.kwonlyargs]
             if any(p.arg in _DOCKER_ROOTED_FIXTURES for p in params):
                 return True
+    return False
+
+
+def _starts_a_service(tree: ast.Module) -> bool:
+    """true when the module calls a helper that starts a service of its own.
+
+    matches ``nats_server(...)`` and ``mod.nats_server(...)`` alike, by the
+    called name.
+
+    :param tree: parsed module
+    :ptype tree: ast.Module
+    :return: whether the module calls one of ``_SERVICE_STARTERS``
+    :rtype: bool
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+        if name in _SERVICE_STARTERS:
+            return True
     return False
 
 
@@ -127,13 +155,23 @@ def test_docker_backed_tests_declare_the_integration_marker() -> None:
     offenders: list[str] = []
     for path in _test_files():
         tree = parse_python_path(path)
-        if _requests_docker_fixture(tree) and not _declares_integration_marker(tree):
+        needs_services = _requests_docker_fixture(tree) or _starts_a_service(tree)
+        if needs_services and not _declares_integration_marker(tree):
             offenders.append(str(path.relative_to(_REPO_ROOT)))
     if offenders:
         listing = "\n".join(f"  - {o}" for o in offenders)
         pytest.fail(
-            "test file(s) request a docker-backed fixture but omit a module-level "
+            "test file(s) request a docker-backed fixture or start a service but omit a module-level "
             "`pytestmark = pytest.mark.integration`. Without it the no-docker CI job "
             '(`-m "not integration"`) runs them and ERRORs:\n'
             f"{listing}"
         )
+
+
+def test_the_walker_sees_a_service_started_by_a_call() -> None:
+    """the control: a configured NATS server started by a call needs the marker, as a fixture does."""
+    planted = "from x import nats_support\n\ndef test_a():\n    with nats_support.running_nats(config):\n        pass\n"
+    assert _starts_a_service(ast.parse(planted))
+    assert _starts_a_service(ast.parse("def test_b():\n    nats_server(config='x')\n"))
+    assert not _starts_a_service(ast.parse("def test_c(nats_server_uri):\n    assert nats_server_uri\n"))
+    assert _requests_docker_fixture(ast.parse("def test_d(s3_container):\n    pass\n"))

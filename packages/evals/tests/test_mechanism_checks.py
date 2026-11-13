@@ -471,7 +471,7 @@ class TestAKindOverlayLeverDeclaresItsMechanismToo:
     def test_it_moves_no_variant_key(self) -> None:
         class _UndeclaredOverlays(ExtractorOverlays):
             page_limit: Annotated[int, Interval(unit="pages")] = Field(
-                10, ge=1, le=50, description="how many pages of a document the extractor reads"
+                10, ge=1, le=50, title="page limit", description="how many pages of a document the extractor reads"
             )
 
         undeclared = _profile(kinds=(replace(TOY_EXTRACTOR_CONTRACT, overlays=_UndeclaredOverlays),))
@@ -484,14 +484,16 @@ class TestAKindOverlayLeverDeclaresItsMechanismToo:
 
     def test_an_unknown_name_is_refused_at_the_profile(self) -> None:
         class _Misnamed(BaseModel):
-            pages: Annotated[int, ActsOn("no_such_measure")] = Field(10, description="pages read")
+            pages: Annotated[int, ActsOn("no_such_measure")] = Field(10, title="pages", description="pages read")
 
         with pytest.raises(ProfileRegistrationError, match="no_such_measure"):
             _profile(kinds=(KindContract(TOY_EXTRACTOR_KIND, overlays=_Misnamed),))
 
     def test_a_map_field_is_refused_where_it_is_declared(self) -> None:
         class _Mapped(BaseModel):
-            aliases: Annotated[dict[str, str], ActsOn(_CONTEXT)] = Field(default_factory=dict, description="aliases")
+            aliases: Annotated[dict[str, str], ActsOn(_CONTEXT)] = Field(
+                default_factory=dict, title="aliases", description="aliases"
+            )
 
         with pytest.raises(KindContractError, match="ActsOn"):
             KindContract("mapped", overlays=_Mapped)
@@ -501,7 +503,7 @@ class _CappedOverlays(ExtractorOverlays):
     """The toy extractor's knobs plus an open map of caps, one of whose entries names its mechanism (#585)."""
 
     caps: Annotated[dict[str, int], MemberActsOn({"max_pages": _CONTEXT})] = Field(
-        default_factory=dict, description="per-tool call caps the extractor honours, by tool"
+        default_factory=dict, title="caps", description="per-tool call caps the extractor honours, by tool"
     )
 
 
@@ -564,7 +566,9 @@ class TestAMemberOfAnOpenMapDeclaresItsMechanism:
 
     def test_it_moves_no_variant_key(self) -> None:
         class _Undeclared(ExtractorOverlays):
-            caps: dict[str, int] = Field(default_factory=dict, description="per-tool call caps the extractor honours")
+            caps: dict[str, int] = Field(
+                default_factory=dict, title="caps", description="per-tool call caps the extractor honours"
+            )
 
         undeclared = _profile(kinds=(replace(TOY_EXTRACTOR_CONTRACT, overlays=_Undeclared),))
         batch = _capped_batch(max_pages=20)
@@ -577,7 +581,7 @@ class TestAMemberOfAnOpenMapDeclaresItsMechanism:
     def test_a_member_mechanism_meets_the_plain_field_s_refusals(self, measure: str) -> None:
         class _Bad(BaseModel):
             caps: Annotated[dict[str, int], MemberActsOn({"max_pages": measure})] = Field(
-                default_factory=dict, description="caps"
+                default_factory=dict, title="caps", description="caps"
             )
 
         with pytest.raises(ProfileRegistrationError, match=measure):
@@ -585,7 +589,7 @@ class TestAMemberOfAnOpenMapDeclaresItsMechanism:
 
     def test_it_is_refused_on_a_field_that_is_not_a_map(self) -> None:
         class _Scalar(BaseModel):
-            pages: Annotated[int, MemberActsOn({"x": _CONTEXT})] = Field(10, description="pages read")
+            pages: Annotated[int, MemberActsOn({"x": _CONTEXT})] = Field(10, title="pages", description="pages read")
 
         with pytest.raises(KindContractError, match="MemberActsOn but is not a map"):
             KindContract("scalar", overlays=_Scalar)
@@ -593,7 +597,7 @@ class TestAMemberOfAnOpenMapDeclaresItsMechanism:
     def test_a_blank_entry_is_refused(self) -> None:
         class _Blank(BaseModel):
             caps: Annotated[dict[str, int], MemberActsOn({"max_pages": " "})] = Field(
-                default_factory=dict, description="caps"
+                default_factory=dict, title="caps", description="caps"
             )
 
         with pytest.raises(KindContractError, match="blank entry"):
@@ -606,6 +610,7 @@ class TestAMemberOfAnOpenMapDeclaresItsMechanism:
                     Sweepable(
                         name="knobs.*",
                         role="lever",
+                        member_reader_name=str,
                         read=lambda _r, _s: {},
                         reader_prose="any knob",
                         open_family="a launch may overlay any knob",
@@ -622,6 +627,7 @@ class TestAMemberOfAnOpenMapDeclaresItsMechanism:
                     Sweepable(
                         name="knob",
                         role="lever",
+                        reader_name="knob",
                         read=lambda _r, _s: 1,
                         reader_prose="a knob",
                         member_acts_on={"knob.x": _CONTEXT},
@@ -657,7 +663,16 @@ class TestAnUnresolvableMechanismIsRefusedWhereItIsDeclared:
     def test_a_blank_name_is_refused_at_registration(self) -> None:
         with pytest.raises(RegistrationError, match="blank acts_on"):
             SHARED_CORE.extend(
-                [Sweepable(name="knob", role="lever", read=lambda _r, _s: 1, reader_prose="a knob", acts_on=" ")]
+                [
+                    Sweepable(
+                        name="knob",
+                        role="lever",
+                        reader_name="knob",
+                        read=lambda _r, _s: 1,
+                        reader_prose="a knob",
+                        acts_on=" ",
+                    )
+                ]
             )
 
     def test_an_apparatus_input_is_refused_at_registration(self) -> None:
@@ -682,6 +697,7 @@ class TestAnUnresolvableMechanismIsRefusedWhereItIsDeclared:
                     Sweepable(
                         name="knobs",
                         role="lever",
+                        member_reader_name=str,
                         read=lambda _r, _s: {},
                         reader_prose="any knob",
                         open_family="a launch may overlay any knob",

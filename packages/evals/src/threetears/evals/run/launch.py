@@ -38,15 +38,16 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple, Protocol,
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 from threetears.evals.kernel import JobTimeoutFactory
+from threetears.evals.kernel.build_stamp import package_rev, package_version
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.host.kinds import freeze
-from threetears.evals.schema.models import ArmSchedule, EvalTemplate, WorldPlacement
+from threetears.evals.schema.models import ArmSchedule, EvalTemplate, RunDisclosure, WorldPlacement
 
 from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.sweepables import CORE_SWEEPABLES
 from threetears.evals.kernel.metrics import RUN_MARGIN_MEASURES, declaration_of, run_margin_refusal
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.numbers import format_number, round_half_even, spell_declared
 from threetears.evals.kernel.identity import derive_context_identity, variant_levers_of_run
 from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
@@ -102,7 +103,7 @@ from threetears.evals.run.runner import (
     execute_run,
     template_as_graded,
 )
-from threetears.evals.run.simulator import SIMULATOR_REQUEST_SETTINGS
+from threetears.evals.run.simulator import SIMULATOR_REQUEST_SETTINGS, simulator_prompt_digest
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUN, FIND_TEMPLATE
 
@@ -280,12 +281,18 @@ class CallCeiling:
         first and its parse retry) on 'google/gemini-3.8-flash'").
     :ivar lowered_by: What lowers the ceiling, in words a remedy quotes — the levers besides a larger cap.
     :ivar lower_bound: Whether ``usd`` is a floor under the call's reservation rather than its exact figure.
+    :ivar estimate: Whether ``usd`` is built on rates the host's pricer does not guarantee (an OpenRouter route whose
+        upstream may bill otherwise): the client's own ``ceiling_is_estimate``
+        (:func:`~threetears.evals.kernel.ceiling_is_estimate`). The arm is admitted on it all the same; its
+        estimate says so, and its run records that its cap was checked against estimates
+        (``EvalRun.cap_checked_on_estimates``).
     """
 
     usd: float
     call: str
     lowered_by: str
     lower_bound: bool = False
+    estimate: bool = False
 
     def __post_init__(self) -> None:
         """Refuse an amount no reservation could hold, and blank words.
@@ -539,6 +546,12 @@ class LaunchHost:
         (:class:`~threetears.evals.run.jobs.RunEndHook`) — a
         :class:`~threetears.evals.ops.RegressionWatch` to check a completed run against its contestant's
         history — or ``None`` for nobody.
+    :ivar run_disclosure: What the host discloses about each launch (:class:`~threetears.evals.schema.RunDisclosure`):
+        the machine it runs on, that machine's load as the launch begins, how it measures latency. Called once per run
+        as the launch tail assembles it, for every kind the host launches (the engine's judge kind among them), and
+        stamped on the run as ``EvalRun.run_disclosure``, which the analysis bundle and ``campaign_overview`` carry to
+        the analyst. A disclosure, never a coordinate: it splits no cell and names no confound. ``None`` for a host
+        that discloses nothing, whose runs then carry none.
     :ivar job_lease_s: How long a job's lease lasts unless renewed, in seconds
         (:data:`~threetears.evals.schema.DEFAULT_JOB_LEASE_S` by default); renewed every
         :data:`~threetears.evals.schema.JOB_LEASE_RENEWAL_FRACTION` of it (a third). A job whose process stops
@@ -562,6 +575,7 @@ class LaunchHost:
     cell_executor: CellExecutor | None = None
     on_job_progress: Callable[[str, dict[str, Any]], None] | None = None
     on_run_end: RunEndHook | None = None
+    run_disclosure: Callable[[], RunDisclosure] | None = None
     job_lease_s: float = DEFAULT_JOB_LEASE_S
     job_leases: JobLeases = field(init=False, repr=False, compare=False)
     job_manager: EvalJobManager = field(init=False, repr=False, compare=False)
@@ -1416,6 +1430,38 @@ class KindWiring:
                 f"a kind declares the most cells it can drive at once as an int of at least 1, or None for no limit "
                 f"of its own; got max_concurrent_cells={width!r}"
             )
+
+
+def _host_disclosure(host: LaunchHost) -> RunDisclosure | None:
+    """What the host discloses about this launch (``LaunchHost.run_disclosure``), or None for a host that discloses
+    nothing; refused, naming the host's disclosure, where its callable fails or returns something else.
+
+    :param host: The launching host.
+    :ptype host: LaunchHost
+    :return: The disclosure, or None.
+    :rtype: RunDisclosure | None
+    :raises ValidationFailedError: The host's disclosure raised, or returned no ``RunDisclosure``; nothing is built.
+    """
+    if host.run_disclosure is None:
+        return None
+    remedy = (
+        "fix the host's LaunchHost.run_disclosure, a callable taking nothing and returning a RunDisclosure, or build "
+        "the host with run_disclosure=None to disclose nothing"
+    )
+    try:
+        disclosed = host.run_disclosure()
+    except Exception as failed:
+        raise ValidationFailedError(
+            f"the host's run disclosure (LaunchHost.run_disclosure) failed, so the run was not launched: {failed!r}",
+            remedy=remedy,
+        ) from failed
+    if not isinstance(disclosed, RunDisclosure):
+        raise ValidationFailedError(
+            f"the host's run disclosure (LaunchHost.run_disclosure) returned a {type(disclosed).__name__}, not a "
+            "RunDisclosure, so the run was not launched",
+            remedy=remedy,
+        )
+    return disclosed
 
 
 def no_launcher_for(template_id: str, candidate_kind: str, launchable: Mapping[str, Any]) -> ValidationFailedError:
@@ -2274,15 +2320,15 @@ def _refuse_cell_timeout(settings: LaunchSettings, cell_timeout_s: float | None,
     if ceiling is not None and cell_timeout_s > ceiling:
         declared = settings.max_cell_timeout_s is not None
         raise ValidationFailedError(
-            f"cell_timeout_s={cell_timeout_s:g} is above the {'host' if declared else 'kind'}'s ceiling of "
-            f"{ceiling:g}s"
+            f"cell_timeout_s={spell_declared(cell_timeout_s)} is above the {'host' if declared else 'kind'}'s ceiling of "
+            f"{spell_declared(ceiling)}s"
             + (
                 f" ({settings.name_of('max_cell_timeout_s')})"
                 if declared
                 else f"; the host declares no {settings.name_of('max_cell_timeout_s')}, so a launch may only lower "
                 "the kind's own deadline"
             ),
-            remedy=f"pass a cell_timeout_s at or below {ceiling:g}",
+            remedy=f"pass a cell_timeout_s at or below {spell_declared(ceiling)}",
         )
 
 
@@ -2959,41 +3005,41 @@ def _largest_call_over_cap(
         # A floor: the real call carries its transcript on top, so the cap it needs is MORE than this, by an amount
         # nobody can know before the run — the remedy says so rather than name a cap that would admit the arm.
         refusal = (
-            f"{what} cannot make {ceiling.call} under its ${cap:.2f} cap: even the smallest such call this arm could "
+            f"{what} cannot make {ceiling.call} under its ${round_half_even(cap, 2)} cap: even the smallest such call this arm could "
             f"make — its fixed parts alone, before any transcript or evidence is added — is reserved at "
-            f"${ceiling.usd:.4f} before it is sent, more than the whole cap, so one such call alone would put the run "
+            f"${round_half_even(ceiling.usd, 4)} before it is sent, more than the whole cap, so one such call alone would put the run "
             "past it. A cap is read between cells and refuses no call inside one, so the run would make the call "
             f"and stop budget_stopped before its next cell, after spending more than the cap on it. {refused}"
         )
         if needed <= host_ceiling:
             raise_it = (
-                f"name max_cost_usd above ${needed:.2f} — a floor, not the cap the arm needs: the real call adds its "
+                f"name max_cost_usd above ${round_half_even(needed, 2)} — a floor, not the cap the arm needs: the real call adds its "
                 "transcript and evidence to that smallest one, so leave room for them and for the rest of the run"
             )
         else:
             raise_it = (
-                f"even the smallest such call needs a cap above ${needed:.2f}, beyond the host's ${host_ceiling:.2f} "
+                f"even the smallest such call needs a cap above ${round_half_even(needed, 2)}, beyond the host's ${round_half_even(host_ceiling, 2)} "
                 f"ceiling, which a launch cannot raise — only the host's operator can, through "
                 f"{request.settings.name_of('max_cost_usd')}"
             )
         return refusal, f"{raise_it}; or lower the call's floor: {ceiling.lowered_by}"
     refusal = (
-        f"{what} cannot make its largest call under its ${cap:.2f} cap: {ceiling.call} is reserved at up to "
-        f"${ceiling.usd:.4f} before it is sent, more than the whole cap, so one such call alone would put the run "
+        f"{what} cannot make its largest call under its ${round_half_even(cap, 2)} cap: {ceiling.call} is reserved at up to "
+        f"${round_half_even(ceiling.usd, 4)} before it is sent, more than the whole cap, so one such call alone would put the run "
         "past it. A cap is read between cells and refuses no call inside one, so the run would make the call and "
         f"stop budget_stopped before its next cell, after spending more than the cap on it. {refused}"
     )
     room = (
-        f" (${_cents_up(ceiling.usd + price.predicted_usd):.2f} also leaves room for the arm's "
+        f" (${round_half_even(_cents_up(ceiling.usd + price.predicted_usd), 2)} also leaves room for the arm's "
         f"{format_number(price.predicted_usd, prefix='$')} cap figure around it)"
         if price.predicted_usd is not None
         else ""
     )
     if needed <= host_ceiling:
-        raise_it = f"name max_cost_usd of at least ${needed:.2f}, the cap one such call needs to be admitted{room}"
+        raise_it = f"name max_cost_usd of at least ${round_half_even(needed, 2)}, the cap one such call needs to be admitted{room}"
     else:
         raise_it = (
-            f"one such call needs a cap of at least ${needed:.2f}, above the host's ${host_ceiling:.2f} ceiling, "
+            f"one such call needs a cap of at least ${round_half_even(needed, 2)}, above the host's ${round_half_even(host_ceiling, 2)} ceiling, "
             f"which a launch cannot raise — only the host's operator can, through "
             f"{request.settings.name_of('max_cost_usd')}"
         )
@@ -3060,17 +3106,17 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
         )
         return verdict(
             "refused",
-            f"{what} cannot be priced: {price.basis}. Its cost is unknown, not $0, and its ${cap:.2f} cap is "
+            f"{what} cannot be priced: {price.basis}. Its cost is unknown, not $0, and its ${round_half_even(cap, 2)} cap is "
             f"inherited from {request.settings.name_of('max_cost_usd')}, which nobody chose for it.{unplanned} "
             f"{refused}",
-            f"launch it naming max_cost_usd (at most ${request.settings.max_cost_usd:.2f}; a launch may only lower "
+            f"launch it naming max_cost_usd (at most ${round_half_even(request.settings.max_cost_usd, 2)}; a launch may only lower "
             "the host's ceiling) — the most you will risk on a run nobody can price; what it costs then prices the "
             "next launch",
         )
     if price.predicted_usd > cap:
         ceiling = request.settings.max_cost_usd
         raise_it = (
-            f"a larger max_cost_usd, up to the host's ${ceiling:.2f} ceiling, raises the cap"
+            f"a larger max_cost_usd, up to the host's ${round_half_even(ceiling, 2)} ceiling, raises the cap"
             if cap < ceiling
             else f"the cap is the host's ceiling, which a launch cannot raise — only the host's operator can, through "
             f"{request.settings.name_of('max_cost_usd')}"
@@ -3839,6 +3885,22 @@ def _refuse_wiring_the_request_contradicts(request: LaunchRequest, wiring: KindW
     return candidate_model
 
 
+def _cap_checked_on_estimates(request: LaunchRequest, cap_usd: float | None) -> Literal[True] | None:
+    """``True`` when the run's cap is in force and its arm's largest call was bounded on an estimate; else ``None``.
+
+    :param request: The arm, as planned (its :attr:`ArmPlan.call_ceiling`).
+    :ptype request: LaunchRequest
+    :param cap_usd: The run's effective cap, as it records it.
+    :ptype cap_usd: float | None
+    :return: ``True``, or ``None`` (not recorded).
+    :rtype: Literal[True] | None
+    """
+    plan = request.arm_plan
+    if cap_usd is None or plan is None or plan.call_ceiling is None or not plan.call_ceiling.estimate:
+        return None
+    return True
+
+
 async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWiring) -> EvalRun:
     """Assemble, stamp, bound and hand over a run — the launch tail every candidate kind shares.
 
@@ -3947,6 +4009,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             if wiring.cell_timeout_s is not None
             else "default"
         )
+        disclosure = _host_disclosure(host)
         try:
             run = EvalRun(
                 scope_id=request.scope_id,
@@ -4024,6 +4087,18 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 # stamp and the requests cannot disagree. Part of the measurement context (#633).
                 judge_temperature=DEFAULT_JUDGE_TEMPERATURE if judge is not None else None,
                 simulator_asked_settings=SIMULATOR_REQUEST_SETTINGS if wiring.simulator_model is not None else None,
+                # What the simulated user is told, content-addressed beside how it is asked, for a run that pins one
+                # over a conversation the template states.
+                simulator_prompt_digest=(
+                    simulator_prompt_digest(template.conversation)
+                    if wiring.simulator_model is not None and template.conversation is not None
+                    else None
+                ),
+                # Which build launched the run, read off the installed distribution; None where it records none.
+                package_version=package_version(),
+                package_rev=package_rev(),
+                # What the host discloses about this launch, for every kind alike; none from a host that discloses none.
+                run_disclosure=disclosure,
                 max_cost_usd=EvalRunCostCap.resolve_effective_ceiling(
                     max_cost_usd,
                     configured_max_cost_usd=configured_max_cost_usd,
@@ -4036,6 +4111,16 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 # never disagree about whether a cap was in force at all.
                 max_cost_usd_origin=EvalRunCostCap.resolve_ceiling_origin(
                     max_cost_usd, enforcement_enabled=eval_enforcement_enabled
+                ),
+                # The cap is checked against the bound the arm's largest call was priced on; when that bound is an
+                # estimate (rates the host's pricer does not guarantee), the run says so. Left unset otherwise.
+                cap_checked_on_estimates=_cap_checked_on_estimates(
+                    request,
+                    EvalRunCostCap.resolve_effective_ceiling(
+                        max_cost_usd,
+                        configured_max_cost_usd=configured_max_cost_usd,
+                        enforcement_enabled=eval_enforcement_enabled,
+                    ),
                 ),
                 # The other currency, resolved through its own helper for the same
                 # reason: the number the run records must be the number that bounds it.

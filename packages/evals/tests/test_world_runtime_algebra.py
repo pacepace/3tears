@@ -201,8 +201,6 @@ def _profile_with(*, sweepables: SweepableRegistry | None = None) -> HostProfile
         host_sweepables=sweepables if sweepables is not None else base.host_sweepables,
         measures=base.measures,
         bars=base.bars,
-        style=base.style,
-        caveat_kinds=base.caveat_kinds,
         world=world,
         variant_levers=base.variant_levers,
         kinds=base.kinds,
@@ -222,6 +220,7 @@ def _sweepables_naming(dimension: str) -> SweepableRegistry:
             Sweepable(
                 name=dimension,
                 role="lever",
+                reader_name=dimension,
                 read=lambda run, results: None,
                 reader_prose="how many documents were queued behind this batch when it ran",
             )

@@ -17,7 +17,7 @@ import dataclasses
 import functools
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 import pydantic
@@ -36,6 +36,15 @@ from threetears.evals.run import get_result_trace, list_results, list_runs, list
 from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.fixtures.courierhost import ON_TIME_RATE, courier_host
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 SCOPE = "eval-run-tests"
 CASES = [{"n": 1}, {"n": 2}, {"n": 3}]
@@ -141,9 +150,7 @@ async def test_a_run_whose_every_call_the_provider_declined_measured_nothing_and
     assert result.exit_code() == 1
     assert "the run measured nothing" in result.render()
     page = report_markdown(result.report)
-    assert (
-        "No verdict: nothing was measured, because the test setup failed or the provider declined every call." in page
-    )
+    assert "The test setup failed or the provider declined every call, so every trial was lost." in page
     assert "needs no fix" not in page, "a provider that declined every call is not a moment to wait out"
 
 
@@ -173,11 +180,11 @@ async def test_a_page_says_nothing_was_measured_only_of_a_run_that_failed_for_it
     (run_id,) = bundle.incomplete_runs
     assert bundle.incomplete_runs[run_id] == "failed"
     failed = verdict_line(bundle, lambda _key: "calls").text
-    assert failed.startswith("No verdict: nothing was measured,")
+    assert failed.startswith("The test setup failed or the provider declined every call, so every trial was lost.")
     restated = bundle.model_copy(update={"incomplete_runs": {} if status == "completed" else {run_id: status}})
     said = verdict_line(restated, lambda _key: "calls").text
-    assert said.startswith("No verdict: the test setup failed, not the models.")
-    assert "nothing was measured" not in said and "needs no fix, only a rerun" in said
+    assert said.startswith("The test setup failed: it measured the setup instead of the models.")
+    assert "every trial was lost" not in said and "needs no fix, only a rerun" in said
 
 
 async def test_a_run_the_account_stopped_names_the_account_in_its_remedy() -> None:
@@ -369,7 +376,9 @@ async def test_a_grader_the_callers_host_declares_no_measure_for_is_refused() ->
 class _ATemperature(pydantic.BaseModel):
     """A knob a launch could turn, which an eval's run neither turns nor states."""
 
-    temperature: float = pydantic.Field(default=0.0, description="How freely the candidate samples its answer.")
+    temperature: float = pydantic.Field(
+        default=0.0, title="temperature", description="How freely the candidate samples its answer."
+    )
 
 
 def _host_whose_callable_contract_is(contract: KindContract | None) -> EvalHost:
@@ -711,7 +720,11 @@ async def test_a_field_with_a_margin_grades_a_case_expecting_null_and_its_miss_s
     result = await Eval(cases, extract, ["label", grader("total", margin=0.05)], k=1).run(store=MEMORY, scope=SCOPE)
 
     (miss,) = result.misses()
-    assert (miss.case, miss.answer, miss.missed_because) == ("none", {"label": "a", "total": 12.5}, ["total gave 0"])
+    assert (miss.case, miss.answer, miss.missed_because) == (
+        "none",
+        {"label": "a", "total": 12.5},
+        ["Total score is 0"],
+    )
 
 
 @pytest.mark.parametrize(

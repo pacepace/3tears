@@ -109,7 +109,13 @@ async def test_a_comparison_caps_the_whole_comparison_each_arm_at_an_equal_share
         return Answer(int(case["n"]), model="cheap-model", input_tokens=10, output_tokens=2, cost_usd=0.01)
 
     comparison = await Eval(
-        CASES, {"cheap": cheap, "costly": costly}, [even], k=1, max_cost_usd=1.0, measure_latency=True
+        CASES,
+        {"cheap": cheap, "costly": costly},
+        [even],
+        k=1,
+        max_cost_usd=1.0,
+        measure_latency=True,
+        name="cheap vs costly",
     ).run(store=":memory:", scope=SCOPE)
     cheap_arm, costly_arm = comparison.arms["cheap"], comparison.arms["costly"]
     assert cheap_arm.max_cost_usd == costly_arm.max_cost_usd == 0.5
@@ -121,7 +127,9 @@ async def test_a_comparison_caps_the_whole_comparison_each_arm_at_an_equal_share
 
 
 async def test_a_comparison_with_no_cap_runs_every_arm_uncapped() -> None:
-    comparison = await Eval(CASES, {"a": silent, "b": costly}, [even], k=1).run(store=":memory:", scope=SCOPE)
+    comparison = await Eval(CASES, {"a": silent, "b": costly}, [even], k=1, name="a vs b").run(
+        store=":memory:", scope=SCOPE
+    )
     assert all(summary.max_cost_usd_origin == "uncapped" for summary in comparison.arms.values())
 
 

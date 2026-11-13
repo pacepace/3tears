@@ -1,0 +1,89 @@
+{
+  "ending": "stored",
+  "reason": "",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, decision block and first claims tell a reader what to do: ship Brisk-S with high reasoning and one retry ($0.633 per 1k calls, $2,532 a month). They say why: at 98.0% it is the cheapest setting whose whole interval clears the 97% gate, and that is gate-and-cost plus clear-of-line. They also name the main risk: it was picked as the best of eighteen, and the gate's owner has not said how the gate is read. One tension remains. The headline says 'Ship', but the decision block's Next says to confirm on a fresh case set first and ship only if the pick holds."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "The claims build in order. gate-and-cost: five settings reach the gate, and the Brisk-S ones are cheap. clear-of-line: only high reasoning clears it with room (lower end 97.2%; low reasoning sits at 97.1%, interval 96.2–98.1%). atlas-buys-nothing: Atlas-M is not separated from Brisk-S at the same settings, and its best setting costs $11,376 more a month. multihop and latency add detail. The cost-ranking computed fact names low reasoning with a retry as the one dominant option, and the page addresses it openly as 'the declared rule's pick', with a 0.1-point margin, a 38.6% fresh-run risk and the $1,324 a month saving. I checked the monthly figures and the gate-threshold walk against the data, and they hold."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 1,
+          "reason": "The pick's weak points are on the page: multi-hop at 97.3%, an 870 ms slow tail, and the selection caveat. Three things are framed stronger than the data supports. First, 'clears the gate by more than noise' rests on an uncorrected 95% interval whose lower end is only 0.2 points above the gate, among eighteen configurations; the Method itself says there is no correction for many comparisons. Second, the step from low to high reasoning on Brisk-S (+0.8, interval -0.4 to +2.1) is not separated from zero. That is said only in a chart caption and the levers table, never next to the recommendation. Third, multihop says multi-hop is 'where low reasoning falls short', but low reasoning also trails on ambiguous entity (96.4% against 97.6%), below the gate."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "None of the omitted items changes the call. Retry effects: every surviving Brisk-S setting already has a retry. The Nano-XS settings never reach the gate; the best is 94.8%. Atlas-M with high reasoning and no retry ($3.40) is dominated. The snapshot holds no figures for extra calls or outcome. Calls per task is a fair omission for ranking. Its only bearing is on how monthly cost is computed, which comes up under item 5."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "The page handles each confound. Differences are read unpaired because the snapshot does not say whether every configuration ran the same tasks. The lack of a production control is a caveat and appears in the Method. Task figures have no case counts; they are labelled descriptive, and recording counts is a next step. Selection among eighteen is in Confidence and Watch, and a re-run is a next step. One loose end: monthly cost multiplies cost per 1k calls by a volume of 4,000,000 with no unit given. If that volume counts tasks rather than calls, every monthly figure is about 1.5 times higher (calls per task run from 1.45 to 1.54). The ranking would not change."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an experiment or a declaration and what it would settle. The fresh 1200-task re-run tests whether the pick's clearance survives selection, with a named fallback (Atlas-M with low reasoning and a retry). The gate owner's declaration decides whether low reasoning is eligible. Retraining multi-hop splitting tests whether the cheaper setting can clear with room. Per-task case counts would show whether the multi-hop shortfall is real. The weak spot is the multi-hop step: it rests on one kept failure and on task figures with no counts."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 2,
+          "reason": "The scatter supports gate-and-cost. In clear-of-line, the interval dots and the fresh-run table (38.6% against 0.9%; 54,451 against 812 cases) are the right evidence, and they would change if the values flipped. The diverging bars show that the model and reasoning effects are not separated, which is what atlas-buys-nothing claims. The latency range bars fit their claim. The multihop bars fit, apart from the wording noted under item 3."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "clear-of-line",
+          "severity": "should_fix",
+          "finding": "The headline and this claim say high reasoning 'clears the gate by more than noise'. The basis is an uncorrected 95% interval whose lower end, 97.2%, is 0.2 points above the 97% gate, read among eighteen configurations. Say so where the claim is made: give the 0.2-point cushion and say the interval has no correction for the many comparisons. Or soften the wording to 'clears with its whole uncorrected interval'."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The decision block never says that high reasoning is not measurably better than low reasoning on Brisk-S: +0.8 points, interval -0.4 to +2.1, and about 2,659 cases per arm needed to settle. Add one sentence to the Why-not entry for low reasoning saying that the extra $1,324 a month buys distance from the gate, not a measured gain. That sentence now appears only in the levers table."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The headline says 'Ship Brisk-S with high reasoning…', but Next says 'Confirm the pick on a fresh case set… if it holds above the gate, ship.' Make the two agree. Either the headline recommends the pick subject to confirmation, or Next makes clear that shipping now and confirming in parallel is acceptable."
+        },
+        {
+          "claim": "multihop",
+          "severity": "should_fix",
+          "finding": "'Multi-hop questions are where low reasoning falls short' overstates the data. Low reasoning with a retry is also below the gate on ambiguous entity (96.4% against 97.6% with high reasoning), and it sits exactly at 97.0% on date and unit math. Reword it to say that multi-hop is the largest of several gaps. Also say that the one kept failure shown is one of four kept examples, so it shows a failure type but not its share of failures."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The next step 'Teach the low-reasoning planner to split multi-hop questions' rests on one kept failure and on task figures with no case counts. Make it depend on the per-task case-count step, or present it as a hypothesis to test, so a reader does not budget engineering work on an unmeasured gap."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The Method says monthly cost uses 'the declared volume of 4000000 a month' but does not say 4 million of what. Say whether the volume counts planner calls or tasks. If it counts tasks, monthly cost should also be multiplied by calls per task (about 1.48 for the pick), which would raise every monthly figure by about 1.5 times. The ranking would not change."
+        }
+      ],
+      "total": 13,
+      "passes": true,
+      "must_fix": false
+    }
+  ]
+}

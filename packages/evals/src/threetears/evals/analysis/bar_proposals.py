@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bar_seed
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.bars import BarProposal, no_better_end
@@ -143,6 +143,7 @@ def propose_bars(
             continue
         higher_is_better = bool(descriptor.higher_is_better)
         seed = bar_seed(summary.mean, (summary.ci_low, summary.ci_high), higher_is_better=higher_is_better)
+        forms = PageForms.off_page()
         proposals.append(
             host.profile.bars.propose(
                 behavior=campaign.behavior,
@@ -151,10 +152,11 @@ def propose_bars(
                 measures=measures,
                 rationale=(
                     f"the incumbent's measured baseline in campaign {campaign.id}: a mean of "
-                    f"{format_number(summary.mean)} over {summary.n} observations of {summary.n_independent} "
+                    f"{forms.lone(summary.mean).text} over {summary.n} observations of {summary.n_independent} "
                     f"cases, moved √2 − 1 of the way to the {'low' if higher_is_better else 'high'} end of its "
-                    f"{INTERVAL_LEVEL:.0%} interval ({format_number(summary.ci_low if higher_is_better else summary.ci_high)}) "
-                    f"to {format_number(seed)}, so its own measurement error misses an unchanged incumbent only at "
+                    f"{forms.share(INTERVAL_LEVEL).text} interval "
+                    f"({forms.lone(summary.ci_low if higher_is_better else summary.ci_high).text}) "
+                    f"to {forms.lone(seed).text}, so its own measurement error misses an unchanged incumbent only at "
                     "the interval's nominal rate"
                 ),
             )

@@ -45,6 +45,11 @@ __all__ = [
 
 _CREATED = 1790000000
 
+#: How often a served wire's ``serve_forever`` looks for a shutdown request. The stdlib's default is half a
+#: second, and ``server.shutdown()`` blocks until the loop next looks, so every served block ended up to half a
+#: second after its last request.
+_SHUTDOWN_POLL_S = 0.01
+
 
 def text_deltas(*parts: str) -> list[dict[str, Any]]:
     """the chat-completions deltas that stream ``parts`` as assistant text, one delta per part.
@@ -363,7 +368,7 @@ class AnthropicMessagesWire:
                 del format, args
 
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": _SHUTDOWN_POLL_S}, daemon=True)
         thread.start()
         try:
             yield f"http://127.0.0.1:{server.server_address[1]}"
@@ -426,7 +431,7 @@ def serve_http_handler(handler: Callable[[httpx.Request], httpx.Response]) -> It
             del format, args
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": _SHUTDOWN_POLL_S}, daemon=True)
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_address[1]}"

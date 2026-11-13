@@ -8,7 +8,7 @@ Proves, against the migrations a consumer runs:
   caller that names no agent (``NULLS NOT DISTINCT``);
 - a reader that names an agent reads only that agent's rows.
 
-requires docker; gated by ``pytest.mark.integration``.
+needs Postgres/NATS (the pool's child processes, or testcontainers off the pool); gated by ``pytest.mark.integration``.
 """
 
 from __future__ import annotations

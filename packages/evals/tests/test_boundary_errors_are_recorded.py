@@ -208,8 +208,12 @@ class _CassetteRefusingStorage(EvalStorage):
         raise StorageError(f"the store refused recording {cassette.id}")
 
 
-_TEMPLATE = make_template(id="tpl-roll", candidate_kind=DEFAULT_KIND, goal_state_checks=[])
-_CASES = [make_test_case(id="case-1", template_id=_TEMPLATE.id)]
+#: Stamped here, not by the clock: building a constant at import must read no clock.
+_STAMP = "2026-08-01T00:00:00+00:00"
+_TEMPLATE = make_template(
+    id="tpl-roll", candidate_kind=DEFAULT_KIND, goal_state_checks=[], created_at=_STAMP, updated_at=_STAMP
+)
+_CASES = [make_test_case(id="case-1", template_id=_TEMPLATE.id, created_at=_STAMP)]
 
 
 async def _execute(host: EvalHost, run: EvalRun, options: RunnerOptions) -> EvalRun:

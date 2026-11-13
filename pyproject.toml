@@ -48,7 +48,7 @@ dev-dependencies = [
     "pytest-timeout>=2.3",
     # the unit suite runs on four workers, one package per worker (see the root conftest)
     "pytest-xdist>=3.6",
-    # CI shards the evals session three ways (scripts/ci-unit-tests.sh --shard evals-N)
+    # CI shards the evals session eight ways (scripts/ci-unit-tests.sh --shard evals-N)
     "pytest-split>=0.10",
     "mypy>=1.8",
     # jsonschema ships no inline types, and threetears.models validates every
@@ -113,6 +113,10 @@ dev-dependencies = [
     # against the in-memory FakeDataStore). 4.15.0 is the first release with
     # testcontainers.community, where the containers now live.
     "testcontainers[postgres]>=4.15.0",
+    # moto's S3 server, which threetears.core.testing.services starts as a child process where the
+    # integration suite runs without Docker (THREETEARS_TEST_SERVICES=process, the testament pool).
+    # Locked here rather than installed in the image, so the Python dependencies stay in one lock.
+    "moto[server]>=5.0",
     # prometheus-client installed in dev so packages/models tracking +
     # callbacks tests exercise the real prometheus integration rather
     # than getting skipped. declared in models as an optional extra
@@ -218,6 +222,10 @@ dev-dependencies = [
 [tool.ruff]
 line-length = 120
 target-version = "py314"
+# scripts/integration_marks.py runs under whatever python3 is on PATH (3.11 or later), not the
+# workspace's 3.14: the formatter must not write 3.14-only syntax there (unparenthesised
+# multi-exception `except`). tests/test_integration_marks_script.py parses it as 3.11.
+per-file-target-version = { "scripts/integration_marks.py" = "py311" }
 
 [tool.ruff.lint]
 # F as well as SLF, enabled 2026-07-27 after an undefined name reached a RUNNING container.
@@ -411,7 +419,17 @@ filterwarnings = [
 ]
 markers = [
     "integration: marks tests that require docker-backed services; run with -m integration",
+    # The evals render checks: headless Chromium through playwright, no Docker. They run in the unit suite, so on the
+    # testament pool, whose image holds the browser; tests/enforcement/test_browser_marker.py holds every user of the
+    # Chromium helpers to the marker.
+    "browser: needs headless Chromium (playwright); runs on the testament pool, not in test-integration.sh",
     "live: tests that connect to a real external service -- a warehouse, a search provider (env-gated); not run by default",
+    # Off the testament pool: its image runs no Docker daemon, and it ships no credentials. .testament.toml's
+    # suites deselect them; tests/enforcement/test_docker_marker.py and test_secrets_marker.py hold every
+    # test that starts a container or reads a credential to its marker.
+    "docker: drives a Docker daemon itself (testcontainers, docker exec); runs locally, never on the testament pool",
+    "secrets: reads a credential from the environment (a warehouse password, an API key or token); runs locally only",
+    "process_only: checks the test services started as child processes (THREETEARS_TEST_SERVICES=process, the testament pool); deselected anywhere else",
     # Opts a test out of the scrape suite's autouse offline-robots fixture, for the few whose
     # subject IS the real default fetcher. Without the opt-out that builder was patched
     # suite-wide and never executed, so the code binding a robots read to the configured exit
@@ -423,7 +441,6 @@ markers = [
     # on it. scripts/ci-unit-tests.sh runs these apart, one process, after every parallel session.
     "loop_timing: asserts the event loop's responsiveness by wall clock; CI runs it apart and serially",
     "memory_probe: measures a run's peak heap with tracemalloc; deselect with -m 'not memory_probe' if slow",
-    "paid: spends money at a model provider; skipped unless opted in (THREETEARS_EVALS_PAID=1) with a provider key",
 ]
 # Note on the `allowed_objects` warning:
 # `langgraph.checkpoint.serde.jsonplus` instantiates a module-level

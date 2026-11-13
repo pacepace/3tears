@@ -20,6 +20,11 @@ from threetears.nats import NatsClient, Subjects, set_default_namespace
 
 pytestmark = pytest.mark.integration
 
+#: how long the handler runs: three of the durable's one-second ``ack_wait``
+_HANDLER_SECONDS = 3.0
+#: a failure-only bound on the handler's ack arriving
+_ACKED_WITHIN_SECONDS = 20.0
+
 
 async def test_a_handler_running_past_ack_wait_is_the_only_one_to_see_its_message(nats_container: str) -> None:
     namespace = f"slowpull{uuid.uuid4().hex[:6]}"
@@ -31,12 +36,14 @@ async def test_a_handler_running_past_ack_wait_is_the_only_one_to_see_its_messag
             name=f"SLOWPULL{namespace}", subjects=[Subjects.audit_wildcard().path]
         )
         handled: list[tuple[str, int]] = []
+        acked = asyncio.Event()
 
         def handler(name: str) -> Any:
             async def handle(msg: Any) -> None:
                 handled.append((name, int(msg.metadata.num_delivered)))
-                await asyncio.sleep(3.0)
+                await asyncio.sleep(_HANDLER_SECONDS)
                 await msg.ack()
+                acked.set()
 
             return handle
 
@@ -54,7 +61,12 @@ async def test_a_handler_running_past_ack_wait_is_the_only_one_to_see_its_messag
         ]
         loops = [asyncio.create_task(consumer.run()) for consumer in consumers]
         await first.jetstream_publish(subject=Subjects.audit_event("survey.response.submit"), payload=b"slow")
-        await asyncio.sleep(4.5)
+        # every delivery is handled the moment it arrives, so a redelivery while the first handler ran past
+        # ack_wait is in ``handled`` by the time that handler acks; the round trips after it put the ack on
+        # the server before the durable is read, and from there nothing is redelivered.
+        await asyncio.wait_for(acked.wait(), timeout=_ACKED_WITHIN_SECONDS)
+        await first.flush()
+        await second.flush()
         for consumer in consumers:
             await consumer.stop()
         for loop in loops:

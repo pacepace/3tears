@@ -146,7 +146,13 @@ from threetears.nats.errors import (
     StreamSubjectsOverlapError,
     SubscribeError,
 )
-from threetears.nats.kv import DEFAULT_KV_TIMINGS, NatsKvBucket, build_kv_stream_config, reconcile_kv_stream
+from threetears.nats.kv import (
+    DEFAULT_KV_TIMINGS,
+    NatsChangeLog,
+    NatsKvBucket,
+    build_kv_stream_config,
+    reconcile_kv_stream,
+)
 from threetears.nats.object_store import NatsObjectStore, object_store_stream_name
 from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 from threetears.nats.result_delivery import SYNC_REPLY_BUDGET_SECONDS
@@ -5885,6 +5891,16 @@ class NatsClient:
             )
             self._buckets[full_name] = bucket
         return bucket
+
+    def change_log(self, name: str) -> NatsChangeLog:
+        """bind the change log named ``name``: a KV-shaped stream whose every key keeps its history.
+
+        :param name: the bucket name suffix (prefixed with the namespace, as :meth:`kv_bucket` prefixes)
+        :ptype name: str
+        :return: the log; no I/O until it is used
+        :rtype: NatsChangeLog
+        """
+        return NatsChangeLog(self, name, f"{self._namespace}-{name}")
 
     async def ensure_kv_bucket(
         self,

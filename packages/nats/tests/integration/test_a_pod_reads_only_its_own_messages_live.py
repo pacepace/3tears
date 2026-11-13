@@ -17,7 +17,8 @@ cover is never answered, so every refusal below is a real broker's refusal:
   in place the way the hub declares it; the agent pod then reads and watches its OWN key, and is
   refused another agent's key and any write, its own key included.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -32,7 +33,6 @@ from uuid import UUID
 import pytest
 from nats.js.api import AckPolicy, StorageType
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats import NatsClient
 from threetears.nats.kv import NatsKvBucket
 from threetears.nats.result_delivery import result_stream_name
@@ -174,9 +174,6 @@ def _create_body(stream: str, name: str | None, filter_subject: str, **extra: ob
 
 async def test_a_pod_collects_its_own_deliveries_and_no_other_agents() -> None:
     """the agent pod collects its reply; every route to another principal's messages is refused."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     previous_ns = get_default_namespace()
     set_default_namespace(_NS)
     try:
@@ -326,9 +323,6 @@ async def test_a_pod_collects_its_own_deliveries_and_no_other_agents() -> None:
 
 async def test_an_agent_pod_reads_and_watches_its_own_config_and_writes_none() -> None:
     """the hub reconciles the cache to direct reads; the pod reads its own key and nothing more."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     previous_ns = get_default_namespace()
     set_default_namespace(_NS)
     try:

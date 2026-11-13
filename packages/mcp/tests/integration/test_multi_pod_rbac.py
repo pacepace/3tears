@@ -27,7 +27,7 @@ shape mirrors :mod:`threetears.epoch.tests.integration.test_multi_pod`:
   is a NATS KV counter -- ``mcp.rbac.epoch`` is not in the durable
   tile family.
 
-requires docker; gated by ``pytest.mark.integration``.
+needs Postgres/NATS (the pool's child processes, or testcontainers off the pool); gated by ``pytest.mark.integration``.
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ async def pg_schema(db_container: str) -> AsyncIterator[tuple[str, str]]:
     with ``server_settings={"search_path": schema}`` so every connection
     inherits the schema bind.
     """
-    schema = f"mcp_it_{id(object())}".lower().replace("-", "_")
+    schema = f"mcp_it_{uuid4().hex}"
     conn = await asyncpg.connect(db_container)
     try:
         await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')

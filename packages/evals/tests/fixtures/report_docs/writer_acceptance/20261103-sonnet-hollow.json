@@ -1,0 +1,926 @@
+{
+  "dry": false,
+  "question": "Does the gate read the hollow skill (principles.md and statistics.md left blank) as writing worse reports than the shipped skill?",
+  "campaign": "01a1a3d8-51b9-73de-9468-87627f5e7c3b",
+  "scope": "writer acceptance",
+  "skills": {
+    "shipped": "4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8",
+    "hollow": "0e33f6c3db87e083936aae5481677ac68317bfe194469a92c59ab828c1fd4b9f"
+  },
+  "pass_job": "action:01a1a3d8-5346-70f0-af51-752f22a252cd",
+  "pairwise": {
+    "campaign_id": "01a1a3d8-51b9-73de-9468-87627f5e7c3b",
+    "candidate": "hollow",
+    "candidate_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+    "control": "shipped",
+    "control_key": "8e430ac2f51ddc359ac1f285ecfcc23efe11a911d065969cfc2a347fb5d7b916",
+    "judge_model": "google/gemini-3.8-flash",
+    "criterion": "52acab742caad5f12274e0789bd1c342f8bcd8da753cca51b5ffd9cfcac8d849",
+    "judge_family": [
+      "writer anthropic, judge google"
+    ],
+    "pairs": [
+      {
+        "case_id": "01a1a3ce-323c-7116-8d8f-5bff5b705f89",
+        "repeat": 1,
+        "candidate_result_id": "07a76519-15fd-546a-a8a9-d842a4411d11",
+        "control_result_id": "ef93bb5b-3551-508e-9977-4e1c9f464124",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 5
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 1
+          }
+        ]
+      },
+      {
+        "case_id": "01a1a3ce-3259-76cf-841a-4536a70898b3",
+        "repeat": 1,
+        "candidate_result_id": "821b9cea-29f4-5433-bcab-5fb402640b1f",
+        "control_result_id": "04a570e6-17aa-5a9c-bf8c-010a9e979b5e",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 5
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 1
+          }
+        ]
+      },
+      {
+        "case_id": "01a1a3ce-3295-7006-87e4-448466532488",
+        "repeat": 1,
+        "candidate_result_id": "a3ba0c33-ee2a-534d-bf93-7c4e7eaa8803",
+        "control_result_id": "e970e45b-ed23-57bc-94e5-0bbea0f5a290",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 5
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 1
+          }
+        ]
+      },
+      {
+        "case_id": "01a1a3ce-331c-70e3-9489-ef30335de14b",
+        "repeat": 1,
+        "candidate_result_id": "ad03f5c2-1718-5acb-accf-eab27f36df8e",
+        "control_result_id": "d956b4c6-d071-5497-9cba-a860aa93f97d",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 1
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 4
+          }
+        ]
+      },
+      {
+        "case_id": "01a1a3ce-34d7-771f-ac08-51e17986bbaa",
+        "repeat": 1,
+        "candidate_result_id": "b1624082-ab3e-59e6-a44f-a4cf7315b996",
+        "control_result_id": "73e03b81-4cfb-5e1c-a738-d74bd1ed6d48",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 4
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 1
+          }
+        ]
+      },
+      {
+        "case_id": "01a1a3ce-356d-76c7-803c-3d5f7eada86d",
+        "repeat": 1,
+        "candidate_result_id": "3190a609-29e6-5b81-8bbf-72762d397b6a",
+        "control_result_id": "05697d80-bedd-5bda-8d85-cc1e96895abf",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 1
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 1
+          }
+        ]
+      },
+      {
+        "case_id": "01a1a3ce-35a2-77b4-a11b-706951bd0b2f",
+        "repeat": 1,
+        "candidate_result_id": "ce1cb498-488a-5b59-84bf-9ab526cf57ba",
+        "control_result_id": "455e92d5-307b-5c5a-827a-061aaf5c9523",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 5
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 1
+          }
+        ]
+      },
+      {
+        "case_id": "01a1a3ce-35e2-755b-bf4a-6aab411c4635",
+        "repeat": 1,
+        "candidate_result_id": "9c81da55-81de-57cf-b70d-a775dae0ef91",
+        "control_result_id": "6e94f418-1301-50ed-9061-e7b8ec8ae50c",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 1
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 1
+          }
+        ]
+      },
+      {
+        "case_id": "01a1a3ce-3647-728c-8759-f2ae8a322685",
+        "repeat": 1,
+        "candidate_result_id": "ec2c2461-7161-5c98-a95e-332ebf9dc4b7",
+        "control_result_id": "ee0f8081-2b30-58a8-9c25-ea648204ddf8",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 5
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 1
+          }
+        ]
+      },
+      {
+        "case_id": "01a1a3ce-368a-7324-b185-e7f59cdb0a56",
+        "repeat": 1,
+        "candidate_result_id": "c06cefa3-33e9-57bf-a5f4-81e958c178a0",
+        "control_result_id": "d79d27be-b306-5677-8f41-3bd08cf2ffff",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 1
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 5
+          }
+        ]
+      },
+      {
+        "case_id": "01a1a3ce-36ca-75a8-af6e-55219972727e",
+        "repeat": 1,
+        "candidate_result_id": "a32176fa-fa62-5193-a2a8-cce3ddb2f9ea",
+        "control_result_id": "3330e034-d1b4-5309-a7ae-dccca882a9f9",
+        "missing": null,
+        "both_finished": false,
+        "answers": [
+          {
+            "candidate": "B",
+            "answer": "scored",
+            "score": 5
+          },
+          {
+            "candidate": "A",
+            "answer": "scored",
+            "score": 1
+          }
+        ]
+      }
+    ],
+    "unpaired": [],
+    "cases": [
+      {
+        "case_id": "01a1a3ce-323c-7116-8d8f-5bff5b705f89",
+        "pairs": 1,
+        "share": 1.0,
+        "share_as_a": 1.0,
+        "share_as_b": 1.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.0
+      },
+      {
+        "case_id": "01a1a3ce-3259-76cf-841a-4536a70898b3",
+        "pairs": 1,
+        "share": 1.0,
+        "share_as_a": 1.0,
+        "share_as_b": 1.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.0
+      },
+      {
+        "case_id": "01a1a3ce-3295-7006-87e4-448466532488",
+        "pairs": 1,
+        "share": 1.0,
+        "share_as_a": 1.0,
+        "share_as_b": 1.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.0
+      },
+      {
+        "case_id": "01a1a3ce-331c-70e3-9489-ef30335de14b",
+        "pairs": 1,
+        "share": 0.125,
+        "share_as_a": 0.25,
+        "share_as_b": 0.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.125
+      },
+      {
+        "case_id": "01a1a3ce-34d7-771f-ac08-51e17986bbaa",
+        "pairs": 1,
+        "share": 0.875,
+        "share_as_a": 1.0,
+        "share_as_b": 0.75,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.125
+      },
+      {
+        "case_id": "01a1a3ce-356d-76c7-803c-3d5f7eada86d",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": 1.0,
+        "share_as_b": 0.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": false,
+        "first_slot_bias": 0.5
+      },
+      {
+        "case_id": "01a1a3ce-35a2-77b4-a11b-706951bd0b2f",
+        "pairs": 1,
+        "share": 1.0,
+        "share_as_a": 1.0,
+        "share_as_b": 1.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.0
+      },
+      {
+        "case_id": "01a1a3ce-35e2-755b-bf4a-6aab411c4635",
+        "pairs": 1,
+        "share": 0.5,
+        "share_as_a": 1.0,
+        "share_as_b": 0.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": false,
+        "first_slot_bias": 0.5
+      },
+      {
+        "case_id": "01a1a3ce-3647-728c-8759-f2ae8a322685",
+        "pairs": 1,
+        "share": 1.0,
+        "share_as_a": 1.0,
+        "share_as_b": 1.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.0
+      },
+      {
+        "case_id": "01a1a3ce-368a-7324-b185-e7f59cdb0a56",
+        "pairs": 1,
+        "share": 0.0,
+        "share_as_a": 0.0,
+        "share_as_b": 0.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.0
+      },
+      {
+        "case_id": "01a1a3ce-36ca-75a8-af6e-55219972727e",
+        "pairs": 1,
+        "share": 1.0,
+        "share_as_a": 1.0,
+        "share_as_b": 1.0,
+        "scored": 2,
+        "cannot_tell": 0,
+        "order_consistent": true,
+        "first_slot_bias": 0.0
+      }
+    ],
+    "whole": {
+      "pairs": 11,
+      "cases": 11,
+      "candidate_share": 0.7272727272727273,
+      "p": 0.3045777721624461,
+      "verdict": {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.preferred",
+        "heading": "Preferred by the judge, side by side",
+        "arm": "hollow",
+        "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": null,
+        "delta": 0.45454545454545453,
+        "interval": [
+          -0.3270444320514798,
+          0.939337498974055
+        ],
+        "interval_level": 0.95,
+        "p_adjusted": 0.3045777721624461,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": null,
+        "guardrail": false,
+        "words": "hollow and shipped not separated"
+      }
+    },
+    "finished_only": {
+      "pairs": 0,
+      "cases": 0,
+      "candidate_share": null,
+      "p": null,
+      "verdict": {
+        "kind": "contrast",
+        "outcome": "untested",
+        "reason": "untestable",
+        "reason_detail": "0 cases with a share, and the test needs two",
+        "reading": "judged",
+        "name": "report_writer.preferred",
+        "heading": "Preferred by the judge, side by side",
+        "arm": "hollow",
+        "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": null,
+        "delta": null,
+        "interval": null,
+        "interval_level": null,
+        "p_adjusted": null,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": null,
+        "guardrail": false,
+        "words": "untested"
+      }
+    },
+    "reliability": {
+      "both_orders": 11,
+      "order_consistent": 9,
+      "order_consistency": 0.8181818181818182,
+      "one_order": 0,
+      "first_slot_bias": 0.11363636363636363,
+      "cannot_tell": 0,
+      "failed": 0
+    },
+    "stopped": null,
+    "calls_made": 22,
+    "cost_usd": 0.19278675,
+    "cap_usd": 6.4
+  },
+  "promotion": {
+    "campaign_id": "01a1a3d8-51b9-73de-9468-87627f5e7c3b",
+    "decision": "undecided",
+    "why": "Undecided: the primary reading does not separate hollow from shipped, and only an improved primary reading promotes.",
+    "readout": "| Reading | Role | Reads | Difference | Interval | Level |\n|---|---|---|---|---|---|\n| Preferred by the judge, side by side | primary | not separated | 0.4545 | -0.327 to 0.9393 | 0.95 |\n| Preferred by the judge, side by side, both pages finished | reported | untested |  |  |  |\n| report_writer.actionable_next_steps (judged) | gated | not separated | 0 | -1.87 to 1.87 | 0.9958 |\n| report_writer.coherent_story (judged) | gated | not separated | 0.4545 | -1.559 to 2.468 | 0.9958 |\n| report_writer.confounds_handled (judged) | gated | not separated | 0.09091 | -0.9597 to 1.141 | 0.9958 |\n| report_writer.evidence_fits_claims (judged) | gated | not separated | 0.5455 | -0.4943 to 1.585 | 0.9958 |\n| report_writer.first_screen (judged) | gated | not separated | 0.1818 | -0.2684 to 0.6321 | 0.9958 |\n| report_writer.honest_emphasis (judged) | gated | not separated | 0.1818 | -0.9108 to 1.274 | 0.9958 |\n| report_writer.sound_elision (judged) | gated | not separated | -0.09091 | -1.538 to 1.356 | 0.9958 |\n| Production cost | gated | not separated | 0.03395 | -0.008664 to 0.07656 | 0.9958 |\n| Bounces | gated | not separated | 0.2727 | -0.6024 to 1.148 | 0.9958 |\n| Report finished | gated | not separated | 0.2727 | -0.3454 to 0.7957 | 0.9958 |\n| Must-fix findings open | gated | not separated | -0.5455 | -2.223 to 1.132 | 0.9958 |\n| the pass rate | gated | not separated | 0.2727 | -0.3454 to 0.7957 | 0.9958 |\n\n| Order check | Figure |\n|---|---|\n| Cases scored in both orders | 11 |\n| Of those, both orders picked the same side | 9 |\n| Order consistency, the primary void below 0.7 | 0.8182 |\n| Cases scored in one order only, counted apart | 0 |\n| Answers the judge could not tell | 0 |\n| Calls that failed | 0 |\n| Held-out cases like these that would settle the primary | 16 |",
+    "candidate": "hollow",
+    "candidate_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+    "control": "shipped",
+    "levers": {
+      "candidate_kind": "report_writer",
+      "model": "claude-sonnet-5-5",
+      "report_writer.editor_model": "(none)",
+      "report_writer.reasoning_effort": "medium",
+      "report_writer.revisions": "2",
+      "report_writer.skill": "0e33f6c3db87e083936aae5481677ac68317bfe194469a92c59ab828c1f\u2026"
+    },
+    "changed": [
+      "report_writer.skill"
+    ],
+    "pairwise_job": "action:01a1a3d8-5346-70f0-af51-752f22a252cd",
+    "primary": {
+      "kind": "contrast",
+      "outcome": "not_separated",
+      "reason": "no_margin",
+      "reason_detail": null,
+      "reading": "judged",
+      "name": "report_writer.preferred",
+      "heading": "Preferred by the judge, side by side",
+      "arm": "hollow",
+      "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+      "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+      "control": "shipped",
+      "aspect": null,
+      "delta": 0.45454545454545453,
+      "interval": [
+        -0.3270444320514798,
+        0.939337498974055
+      ],
+      "interval_level": 0.95,
+      "p_adjusted": 0.3045777721624461,
+      "value": null,
+      "threshold": null,
+      "margin": null,
+      "margin_source": null,
+      "materiality": null,
+      "guardrail": false,
+      "words": "hollow and shipped not separated"
+    },
+    "void": null,
+    "finished_only": {
+      "kind": "contrast",
+      "outcome": "untested",
+      "reason": "untestable",
+      "reason_detail": "0 cases with a share, and the test needs two",
+      "reading": "judged",
+      "name": "report_writer.preferred",
+      "heading": "Preferred by the judge, side by side",
+      "arm": "hollow",
+      "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+      "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+      "control": "shipped",
+      "aspect": null,
+      "delta": null,
+      "interval": null,
+      "interval_level": null,
+      "p_adjusted": null,
+      "value": null,
+      "threshold": null,
+      "margin": null,
+      "margin_source": null,
+      "materiality": null,
+      "guardrail": false,
+      "words": "untested"
+    },
+    "reliability": {
+      "both_orders": 11,
+      "order_consistent": 9,
+      "order_consistency": 0.8181818181818182,
+      "one_order": 0,
+      "first_slot_bias": 0.11363636363636363,
+      "cannot_tell": 0,
+      "failed": 0
+    },
+    "cases_to_settle": 16,
+    "verdicts": [
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.actionable_next_steps",
+        "heading": "report_writer.actionable_next_steps (judged)",
+        "arm": "hollow",
+        "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.0,
+        "interval": [
+          -1.8699768669903278,
+          1.8699768669903278
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "hollow and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.coherent_story",
+        "heading": "report_writer.coherent_story (judged)",
+        "arm": "hollow",
+        "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.45454545454545414,
+        "interval": [
+          -1.5589882111668691,
+          2.4680791202577783
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "hollow and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.confounds_handled",
+        "heading": "report_writer.confounds_handled (judged)",
+        "arm": "hollow",
+        "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.09090909090909083,
+        "interval": [
+          -0.9596504777782305,
+          1.1414686595964123
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "hollow and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.evidence_fits_claims",
+        "heading": "report_writer.evidence_fits_claims (judged)",
+        "arm": "hollow",
+        "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.5454545454545454,
+        "interval": [
+          -0.49432976845636123,
+          1.585238859365452
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 0.8970873857176632,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "hollow and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.first_screen",
+        "heading": "report_writer.first_screen (judged)",
+        "arm": "hollow",
+        "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.18181818181818166,
+        "interval": [
+          -0.2684216333335274,
+          0.6320579969698911
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "hollow and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.honest_emphasis",
+        "heading": "report_writer.honest_emphasis (judged)",
+        "arm": "hollow",
+        "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.18181818181818254,
+        "interval": [
+          -0.9107802617930816,
+          1.2744166254294453
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "hollow and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "judged",
+        "name": "report_writer.sound_elision",
+        "heading": "report_writer.sound_elision (judged)",
+        "arm": "hollow",
+        "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": -0.09090909090909083,
+        "interval": [
+          -1.5382276029147934,
+          1.3564094210966118
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "hollow and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "measure",
+        "name": "production_replicating_cost",
+        "heading": "Production cost",
+        "arm": "hollow",
+        "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.0339495636363637,
+        "interval": [
+          -0.008664185853708005,
+          0.0765633131264353
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 0.17714385047641923,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "hollow and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "measure",
+        "name": "report_writer.bounces",
+        "heading": "Bounces",
+        "arm": "hollow",
+        "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.2727272727272727,
+        "interval": [
+          -0.6023816283706128,
+          1.1478361738251581
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "hollow and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "measure",
+        "name": "report_writer.finished",
+        "heading": "Report finished",
+        "arm": "hollow",
+        "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.2727272727272727,
+        "interval": [
+          -0.3454106212593615,
+          0.7957293749786913
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 0.8970873857176632,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "hollow and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "measure",
+        "name": "report_writer.must_fix_open",
+        "heading": "Must-fix findings open",
+        "arm": "hollow",
+        "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": -0.5454545454545456,
+        "interval": [
+          -2.2233992668814815,
+          1.1324901759723907
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 1.0,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "hollow and shipped not separated"
+      },
+      {
+        "kind": "contrast",
+        "outcome": "not_separated",
+        "reason": "no_margin",
+        "reason_detail": null,
+        "reading": "trial",
+        "name": "passed",
+        "heading": "the pass rate",
+        "arm": "hollow",
+        "variant_key": "bfd0b9fe832566bf2495e7f08965ba6ae61699ee56a6e74e205dc90715a60d78",
+        "apparatus_class_id": "b14c473e5aa98c687798f2a930e037622d7b52f4b94225221a7f9c2981241442",
+        "control": "shipped",
+        "aspect": "report-writing",
+        "delta": 0.2727272727272727,
+        "interval": [
+          -0.3454106212593615,
+          0.7957293749786913
+        ],
+        "interval_level": 0.9958333333333333,
+        "p_adjusted": 0.8970873857176632,
+        "value": null,
+        "threshold": null,
+        "margin": null,
+        "margin_source": null,
+        "materiality": "material",
+        "guardrail": false,
+        "words": "hollow and shipped not separated"
+      }
+    ],
+    "cases": 11,
+    "case_sets": [
+      {
+        "name": "writer-held-out",
+        "version": 11
+      }
+    ],
+    "cost_usd": 3.72844095,
+    "control_cost_usd": 3.321734,
+    "unpriced_trials": 0,
+    "writer_model": "claude-sonnet-5-5",
+    "shipped": {
+      "skill": "4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8",
+      "analyst": "063768a69822c5655b17d434470f3a655506810d0cc5334d6f4c3216c3ba368b",
+      "editor": "07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611",
+      "date": "2026-10-31",
+      "basis": "unmeasured",
+      "reason": "baseline: shipped before the gate existed"
+    }
+  },
+  "criterion": {
+    "passed": false,
+    "requirements": [
+      {
+        "asks": "both arms ran every case",
+        "reads": "shipped completed, 11 of 11; hollow completed, 11 of 11",
+        "holds": true
+      },
+      {
+        "asks": "the read answers keep",
+        "reads": "undecided",
+        "holds": false
+      },
+      {
+        "asks": "the primary reading reads regressed",
+        "reads": "not separated",
+        "holds": false
+      },
+      {
+        "asks": "it separated, its interval below 0",
+        "reads": "not separated, -0.327 to 0.939 at 0.95",
+        "holds": false
+      },
+      {
+        "asks": "the judge's order consistency stands at 0.7 or more",
+        "reads": "0.82 (9 of 11 cases)",
+        "holds": true
+      },
+      {
+        "asks": "bounces do not separate",
+        "reads": "not separated",
+        "holds": true
+      }
+    ],
+    "cases_to_settle": 16
+  },
+  "readout": "P2 acceptance\n\nDoes the gate read the hollow skill (principles.md and statistics.md left blank) as writing worse reports than the shipped skill?\n\n| Arm | Role | Skill | Files differing from shipped | Editor digest | Cases | Run |\n|---|---|---|---|---|---|---|\n| shipped | control | 4e14e276b568 | none | 07e15b95eed5 | 11 | completed |\n| hollow | candidate | 0e33f6c3db87 | principles.md, statistics.md | 07e15b95eed5 | 11 | completed |\n\nBoth arms write on claude-sonnet-5-5; the scoring judge is google/gemini-3.8-flash.\n\n| Part | Cap | Spent |\n|---|---|---|\n| shipped | $12.80 | $3.32 |\n| hollow | $12.80 | $3.73 |\n| pairwise pass (22 calls) | $6.40 | $0.19 |\n\n| Reading | Role | Reads | Difference | Interval | Level |\n|---|---|---|---|---|---|\n| Preferred by the judge, side by side | primary | not separated | 0.4545 | -0.327 to 0.9393 | 0.95 |\n| Preferred by the judge, side by side, both pages finished | reported | untested |  |  |  |\n| report_writer.actionable_next_steps (judged) | gated | not separated | 0 | -1.87 to 1.87 | 0.9958 |\n| report_writer.coherent_story (judged) | gated | not separated | 0.4545 | -1.559 to 2.468 | 0.9958 |\n| report_writer.confounds_handled (judged) | gated | not separated | 0.09091 | -0.9597 to 1.141 | 0.9958 |\n| report_writer.evidence_fits_claims (judged) | gated | not separated | 0.5455 | -0.4943 to 1.585 | 0.9958 |\n| report_writer.first_screen (judged) | gated | not separated | 0.1818 | -0.2684 to 0.6321 | 0.9958 |\n| report_writer.honest_emphasis (judged) | gated | not separated | 0.1818 | -0.9108 to 1.274 | 0.9958 |\n| report_writer.sound_elision (judged) | gated | not separated | -0.09091 | -1.538 to 1.356 | 0.9958 |\n| Production cost | gated | not separated | 0.03395 | -0.008664 to 0.07656 | 0.9958 |\n| Bounces | gated | not separated | 0.2727 | -0.6024 to 1.148 | 0.9958 |\n| Report finished | gated | not separated | 0.2727 | -0.3454 to 0.7957 | 0.9958 |\n| Must-fix findings open | gated | not separated | -0.5455 | -2.223 to 1.132 | 0.9958 |\n| the pass rate | gated | not separated | 0.2727 | -0.3454 to 0.7957 | 0.9958 |\n\n| Order check | Figure |\n|---|---|\n| Cases scored in both orders | 11 |\n| Of those, both orders picked the same side | 9 |\n| Order consistency, the primary void below 0.7 | 0.8182 |\n| Cases scored in one order only, counted apart | 0 |\n| Answers the judge could not tell | 0 |\n| Calls that failed | 0 |\n| Held-out cases like these that would settle the primary | 16 |\n\nUndecided: the primary reading does not separate hollow from shipped, and only an improved primary reading promotes.\n\n| Pass criterion | Reads | Holds |\n|---|---|---|\n| both arms ran every case | shipped completed, 11 of 11; hollow completed, 11 of 11 | yes |\n| the read answers keep | undecided | no |\n| the primary reading reads regressed | not separated | no |\n| it separated, its interval below 0 | not separated, -0.327 to 0.939 at 0.95 | no |\n| the judge's order consistency stands at 0.7 or more | 0.82 (9 of 11 cases) | yes |\n| bounces do not separate | not separated | yes |\n\nFAIL: not held: the read answers keep; the primary reading reads regressed; it separated, its interval below 0. About 16 held-out cases like these would settle the primary; this run stops here.\nshipped: writer turns of 11 case(s) recorded to /opt/3tears/.claude/wt/rung5-record/.prawduct/acceptance-run/recordings/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2, 0 replayed\nhollow: writer turns of 11 case(s) recorded to /opt/3tears/.claude/wt/rung5-record/.prawduct/acceptance-run/recordings/hollow-0e33f6c3db87-claude-sonnet-5-5-medium-r2, 0 replayed\n4 case(s) name example results stored only where they were frozen"
+}

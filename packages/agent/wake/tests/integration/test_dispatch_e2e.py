@@ -14,8 +14,8 @@ Exercises the DB-touching paths against a real Postgres testcontainer:
 
 Mirrors the existing wake integration patterns
 (``test_wake_tick_loop.py``): canonical ``db_container`` fixture,
-per-test ``pg_schema``, ``AsyncpgStore`` wrapper around the migration
-runner.
+the conftest's ``applied_schema`` (the migrations run once per session,
+into a template each test's database is copied from).
 """
 
 from __future__ import annotations
@@ -28,20 +28,14 @@ import asyncpg
 import pytest
 from uuid_utils import uuid7
 
-from threetears.agent.skills.migrations import register as register_skills
 from threetears.agent.wake.dispatch import dispatch_wake
-from threetears.agent.wake.migrations import register as register_wake
 from threetears.agent.wake.types import (
     HandlerCallback,
     HandlerCallbackResult,
     PreparedWakeContext,
     WakeTrigger,
 )
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.asyncpg_init import init_connection
-from threetears.core.data.migrations import MigrationRunner
-
-from .conftest import AsyncpgStore
 
 
 pytestmark = pytest.mark.integration
@@ -51,18 +45,7 @@ def _new_uuid() -> UUID:
     return UUID(str(uuid7()))
 
 
-async def _apply_schema(url: str, schema: str) -> asyncpg.Pool:
-    setup_conn = await asyncpg.connect(url)
-    try:
-        await setup_conn.execute(f'SET search_path TO "{schema}", public')
-        runner = MigrationRunner()
-        register_conversations(runner)
-        register_skills(runner)
-        register_wake(runner)
-        store = AsyncpgStore(setup_conn)
-        await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
-    finally:
-        await setup_conn.close()
+async def _schema_pool(url: str, schema: str) -> asyncpg.Pool:
     pool = await asyncpg.create_pool(
         url,
         min_size=2,
@@ -217,9 +200,9 @@ class _CapturingHandler(HandlerCallback):
 class TestContextFromResolutionIntegration:
     """``context_from`` reads the upstream schedule's most recent successful fire."""
 
-    async def test_upstream_success_produces_labeled_block(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_upstream_success_produces_labeled_block(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             conv = _new_uuid()
             agent = _new_uuid()
@@ -273,9 +256,9 @@ class TestContextFromResolutionIntegration:
         finally:
             await pool.close()
 
-    async def test_no_upstream_fire_yields_empty_blocks(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_no_upstream_fire_yields_empty_blocks(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             conv = _new_uuid()
             agent = _new_uuid()
@@ -313,10 +296,10 @@ class TestContextFromResolutionIntegration:
         finally:
             await pool.close()
 
-    async def test_upstream_failed_status_not_used(self, pg_schema: tuple[str, str]) -> None:
+    async def test_upstream_failed_status_not_used(self, applied_schema: tuple[str, str]) -> None:
         """A ``status='failed'`` upstream fire MUST NOT feed the chain."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             conv = _new_uuid()
             agent = _new_uuid()
@@ -366,9 +349,9 @@ class TestContextFromResolutionIntegration:
 class TestAttachedSkillResolutionIntegration:
     """Skill resolution returns the row when enabled; ``None`` when missing / disabled."""
 
-    async def test_enabled_skill_returned(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_enabled_skill_returned(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             conv = _new_uuid()
             agent = _new_uuid()
@@ -410,9 +393,9 @@ class TestAttachedSkillResolutionIntegration:
         finally:
             await pool.close()
 
-    async def test_disabled_skill_resolves_to_none(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_disabled_skill_resolves_to_none(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             conv = _new_uuid()
             agent = _new_uuid()
@@ -449,10 +432,10 @@ class TestAttachedSkillResolutionIntegration:
         finally:
             await pool.close()
 
-    async def test_missing_skill_id_resolves_to_none(self, pg_schema: tuple[str, str]) -> None:
+    async def test_missing_skill_id_resolves_to_none(self, applied_schema: tuple[str, str]) -> None:
         """``skill_id`` referencing a non-existent row resolves to ``None`` + warns."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             conv = _new_uuid()
             agent = _new_uuid()
@@ -498,11 +481,11 @@ class TestContextFromTruncationIntegration:
 
     async def test_oversize_upstream_output_truncated_with_suffix(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """A >16KB upstream output is truncated + suffix-marked."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             conv = _new_uuid()
             agent = _new_uuid()
@@ -566,7 +549,7 @@ class TestContextFromTruncationIntegration:
 
     async def test_truncation_at_multibyte_boundary_is_utf8_safe(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """Multi-byte chars at the 16KB boundary do not produce invalid UTF-8.
 
@@ -577,8 +560,8 @@ class TestContextFromTruncationIntegration:
         (encode-decode round-trips cleanly) + still carries the
         truncation suffix.
         """
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             conv = _new_uuid()
             agent = _new_uuid()
@@ -661,10 +644,10 @@ class TestCrossAgentSkillMismatchIntegration:
 
     async def test_skill_owned_by_other_agent_resolves_to_none(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             conv = _new_uuid()
             agent_a = _new_uuid()
@@ -734,15 +717,15 @@ class TestCreateDispatchingPlaceholderIntegration:
 
     async def test_create_dispatching_writes_dispatching_status(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """Direct collection call -- placeholder row carries 'dispatching'."""
         from threetears.agent.wake.collections import WakeFireCollection  # noqa: PLC0415
         from threetears.core.collections.registry import CollectionRegistry  # noqa: PLC0415
         from threetears.core.config import DefaultCoreConfig  # noqa: PLC0415
 
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             conv = _new_uuid()
             agent = _new_uuid()
@@ -782,7 +765,7 @@ class TestCreateDispatchingPlaceholderIntegration:
 
     async def test_check_constraint_accepts_dispatching(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """A raw INSERT with status='dispatching' passes the CHECK constraint.
 
@@ -790,8 +773,8 @@ class TestCreateDispatchingPlaceholderIntegration:
         future migration-runner regression that skips v004 would fail
         loudly here rather than silently downgrading semantics.
         """
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             conv = _new_uuid()
             agent = _new_uuid()
@@ -831,10 +814,10 @@ class TestRateLimitWiringIntegration:
 
     async def test_per_conv_cap_rejects_against_real_pg(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             conv = _new_uuid()
             agent = _new_uuid()
@@ -928,9 +911,9 @@ class TestRateLimitWiringIntegration:
 class TestEndToEndHappyPath:
     """A full schedule + skill + handler round-trip lands the right context."""
 
-    async def test_handler_receives_skill_and_context(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_handler_receives_skill_and_context(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             conv = _new_uuid()
             agent = _new_uuid()

@@ -633,9 +633,14 @@ class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
         if not isinstance(data, Mapping):
             return cls.model_validate(data)
         space = cls.version_space
+        # A class without a ``doc_type`` field reads a part of a stored document (a few of its fields, read as the
+        # document's own read reads them): the document's ``doc_type`` names it in the upgrade and the refusals, and
+        # is not validated as a field of the part.
+        declared = cls.model_fields.get("doc_type")
+        document = dict(data) if declared is None else {"doc_type": declared.default, **data}
         try:
             upgraded = upgrade_document(
-                {"doc_type": cls.model_fields["doc_type"].default, **data},
+                document,
                 steps=space.upgraders,
                 current=space.version,
                 baseline=space.baseline,
@@ -649,6 +654,8 @@ class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
             raise cls._refused("schema_minor", data.get("schema_minor"), refused) from refused
         newer = data.get("schema_version") == space.version and stored_minor > space.minor
         upgraded["schema_minor"] = stored_minor if newer else space.minor
+        if declared is None:
+            upgraded.pop("doc_type", None)
         if newer:
             return cls.model_validate(upgraded, context={_NEWER_MINOR_READ: stored_minor})
         return cls.model_validate(upgraded)

@@ -246,7 +246,6 @@ def documents_section() -> Iterator[str]:
         Report,
         ReportSource,
         TableBlock,
-        TextBlock,
     )
 
     yield anchor("documents")
@@ -260,7 +259,7 @@ def documents_section() -> Iterator[str]:
     yield from field_table(Report, full=False)
     yield "Its `source`, and each kind of block in `blocks`:"
     yield ""
-    for part in (ReportSource, TextBlock, TableBlock, ChartBlock, DisclosureBlock):
+    for part in (ReportSource, TableBlock, ChartBlock, DisclosureBlock):
         yield f"#### `{part.__name__}`"
         yield ""
         summary = one_line(own_doc(part))

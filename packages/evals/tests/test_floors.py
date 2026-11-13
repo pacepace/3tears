@@ -18,11 +18,11 @@ from typing import Any, get_args
 
 import pytest
 
+from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals import Answer, Eval
 from threetears.evals.analysis import (
     AnalysisContextBundle,
     FloorState,
-    analysis_bundle,
     FloorStatus,
     Report,
     assemble_context_bundle,
@@ -35,22 +35,22 @@ from threetears.evals.analysis.bundle.schema import (
     NO_AXIS_EXPLORATORY,
     NO_QUESTION_EXPLORATORY,
     asks_a_question,
-    evidence_digest,
     exploratory_disclosure,
     question_axes,
 )
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
-from threetears.evals.analysis.reporter_kind import ReporterCase, rebuild_bundle
+from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.decision import (
     FloorOutcome,
     aspect_pass_rate,
     evaluate_floor,
     floor_readings,
+    floor_subject,
     project_rate,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_interval, difference_interval
 from threetears.evals.analysis.style import lint_prose
-from packages.evals.tests.style_support import lint_page
+from packages.evals.tests.style_support import unlinked, lint_page
 from threetears.evals.kernel import RefusedInput
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
 
@@ -131,6 +131,11 @@ def _statuses(bundle: AnalysisContextBundle, control: str, candidate: str) -> li
     ]
 
 
+def _said(status: FloorStatus, bundle: AnalysisContextBundle) -> str:
+    """A status's reason as a page words it, the rate named off the bundle it was read from."""
+    return status.reason(floor_subject(status.decision, bundle), control="production")
+
+
 def _page(bundle: AnalysisContextBundle) -> Report:
     return build_code_only_report(bundle, assembled_at="2026-10-18T00:00:00+00:00", campaign_name="floors")
 
@@ -166,13 +171,13 @@ async def test_fourteen_cases_failed_breaks_the_rate_floor_on_its_whole_interval
     assert rate.status == "broken"
     assert rate.interval is not None and rate.interval[1] < -10.0, "the whole interval past the margin, in points"
     assert rate.reading is None, "the trials' own pass rate broke it, which no clause names"
-    assert rate.reason.startswith(
+    assert _said(rate, bundle).startswith(
         "candidate passed 18 of 60 to production's 48, a drop that exceeds the margin of 10 points on its whole interval"
     )
     # The candidate costs less per reply, but a cost alike on every case has no interval to show it: unclear, never
     # held, and it says why.
     assert (cost.floor, cost.status, cost.reading) == (f"{aspect}/cost_lower/*", "unclear", None)
-    assert cost.reason == "every case cost alike on both arms, so no interval on the cost difference exists"
+    assert _said(cost, bundle) == "every case cost alike on both arms, so no interval on the cost difference exists"
 
 
 async def test_a_candidate_failing_no_case_holds_the_rate_floor() -> None:
@@ -180,7 +185,7 @@ async def test_a_candidate_failing_no_case_holds_the_rate_floor() -> None:
     rate, _ = _statuses(bundle, control, candidate)
     assert rate.status == "held"
     assert rate.interval is not None and rate.interval[0] >= -10.0
-    assert rate.reason.startswith("candidate's drop is shown to stay within 10 points")
+    assert _said(rate, bundle).startswith("candidate's drop is shown to stay within 10 points")
 
 
 async def test_a_drop_past_the_margin_on_its_point_estimate_alone_is_unclear_on_the_broken_side() -> None:
@@ -188,9 +193,9 @@ async def test_a_drop_past_the_margin_on_its_point_estimate_alone_is_unclear_on_
     rate, _ = _statuses(bundle, control, candidate)
     assert rate.status == "unclear"
     assert rate.interval is not None and rate.interval[0] < -10.0 < rate.interval[1]
-    assert rate.reason.startswith(
+    assert _said(rate, bundle).startswith(
         "candidate's drop is past 10 points on the point estimate alone, not on its interval (from "
-    ), rate.reason
+    ), _said(rate, bundle)
 
 
 async def test_a_drop_within_the_margin_whose_interval_reaches_past_it_is_unclear_on_the_held_side() -> None:
@@ -198,14 +203,16 @@ async def test_a_drop_within_the_margin_whose_interval_reaches_past_it_is_unclea
     rate, _ = _statuses(bundle, control, candidate)
     assert rate.status == "unclear"
     assert rate.interval is not None and rate.interval[0] < -10.0
-    assert rate.reason.startswith("candidate's drop is not shown to stay within 10 points (it could be as much as ")
+    assert _said(rate, bundle).startswith(
+        "candidate's drop is not shown to stay within 10 points (it could be as much as "
+    )
 
 
 async def test_a_candidate_costing_more_on_its_whole_interval_breaks_the_cost_floor() -> None:
     """Read as a rate is: on the t interval on the per-case cost difference, at the nominal level, uncorrected."""
     bundle, control, candidate = await _shape(0, candidate_cost=0.0041, spread=0.0001)
     _, cost = _statuses(bundle, control, candidate)
-    assert (cost.status, cost.reason) == (
+    assert (cost.status, _said(cost, bundle)) == (
         "broken",
         "candidate costs more per reply than production on the whole interval",
     )
@@ -262,7 +269,9 @@ async def test_a_broken_floor_s_warning_is_one_line_under_the_verdict_never_abov
     bundle, _, _ = await _shape(14)
     report = _page(bundle)
     (warning,) = _warnings(report)
-    assert warning == f"Adopting candidate overrides the 10-point floor it breaks on {bundle.aspect}."
+    # The aspect as the page names it: the quick path's label by the campaign's name.
+    named = aspect_name(bundle, campaign=report.source.campaign_name)
+    assert warning == f"Adopting candidate overrides the 10-point floor it breaks on {named}."
     assert lint_prose(warning) == []
     header = [block for block in report.blocks if block.section == "header"]
     sources = [block.source for block in header if isinstance(block, DisclosureBlock)]
@@ -272,9 +281,12 @@ async def test_a_broken_floor_s_warning_is_one_line_under_the_verdict_never_abov
     assert lines[0] == f"# {report.title}"
     verdict = next(block.text for block in header if isinstance(block, DisclosureBlock) and block.source == "verdict")
     assert lines.index(f"**{warning}**") == lines.index(f"**{verdict}**") + 2
-    page = report_html(report)
+    # The line's words as printed: a term it first uses is linked inside it.
+    page = unlinked(report_html(report))
     header_html = page[page.index("<header>") : page.index("</header>")]
-    assert header_html.index("<h1>") < header_html.index(f'<p class="warning"><strong>{warning}</strong></p>')
+    assert header_html.index("<h1>") < header_html.index(
+        f'<p class="flag warning"><b aria-hidden="true">!</b><strong>{warning}</strong></p>'
+    )
     assert 'role="alert"' not in page
     assert lint_page(markdown, question=QUESTION) == []
 
@@ -325,12 +337,19 @@ def test_a_floor_key_names_its_aspect_kind_and_reading() -> None:
 # =============================================================================
 
 
-async def test_an_aspect_with_no_margin_compares_no_pass_rate_yet_its_floors_and_reading_have_its_values() -> None:
+async def test_an_asked_aspect_with_no_margin_compares_its_pass_rate_and_its_floors_and_reading_have_its_values() -> (
+    None
+):
+    """Owner, 2026-11-06: a question with no margin is a superiority question, and its pass rate is a hypothesis it
+    asks, so the family holds it beside the label check's rate, Holm-corrected as a pair."""
     bundle, control, candidate = await _shape(5, floors=(RateDrop(max_points=10, reading="match"), CostLower()))
     assert bundle.declared is not None and bundle.declared.margin is None
     (family,) = bundle.multiple_comparisons.families
     assert family.aspect == bundle.aspect
-    assert not [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    (compared,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    assert family.family_size == 2 and compared.verdict == "not_separated"
+    assert compared.delta == pytest.approx(-0.05) and compared.p_raw is not None
+    assert compared.p_adjusted == pytest.approx(2 * compared.p_raw)
     (trial,) = [contrast for contrast in bundle.floor_contrasts if contrast.reading == "trial"]
     assert (trial.control.variant_key, trial.contrast.variant_key, trial.test) == (control, candidate, "paired")
     rate = aspect_pass_rate(bundle, control, candidate)
@@ -380,12 +399,8 @@ def test_an_analysis_over_a_bundle_from_before_aspects_is_refused_with_its_remed
     assert stored["schema_version"] == 54 and "declared_design" in stored
     analysis = make_analysis(aspects=[analysed_aspect().model_copy(update={"bundle": stored})])
     with pytest.raises(RefusedInput, match="shape 54, from before a bundle read one aspect") as refused:
-        analysis_bundle(analysis)
+        analysis_campaign_bundle(analysis)
     assert "analysis_generate" in refused.value.remedy
-    case = ReporterCase.model_construct(bundle=stored, bundle_fingerprint=evidence_digest(stored))
-    with pytest.raises(RefusedInput, match="shape 54") as frozen:
-        rebuild_bundle(case)
-    assert "freeze the case again" in frozen.value.remedy
 
 
 # =============================================================================

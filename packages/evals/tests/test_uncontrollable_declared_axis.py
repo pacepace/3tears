@@ -69,7 +69,9 @@ def test_the_code_only_report_states_the_cause() -> None:
 
     texts = _report_texts(bundle)
 
-    (sentence,) = [text for text in texts if text.startswith(f"Declared axis {_APPARATUS} reads unswept")]
+    # Named as every page names an input, never by its id: the toy host declares no reader name for this apparatus
+    # input, so its id is read as words.
+    (sentence,) = [text for text in texts if text.startswith("Declared axis ocr engine version reads unswept")]
     assert _bundle_reason(bundle) in sentence
 
 

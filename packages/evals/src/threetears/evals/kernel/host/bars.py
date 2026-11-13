@@ -56,7 +56,7 @@ the one its author wrote.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, assert_never
 
@@ -83,13 +83,17 @@ _SCALE_TOP = 5
 PassCriterion = Literal["goal_checks", "rubric"]
 
 
-def pass_threshold_label(k: int | None, threshold: int, *, criteria: Collection[PassCriterion]) -> str:
-    """How every surface names pass^k: its depth and what an attempt had to pass, e.g. ``pass^k (k=3, criterion >= 4 of
-    5)``.
+def pass_threshold_label(
+    k: int | None, threshold: int, *, criteria: Collection[PassCriterion], checks: Sequence[str] = ()
+) -> str:
+    """How every surface names pass^k: its depth and what an attempt had to pass, e.g. ``pass^k (k=3, every goal
+    check, Never topped up is false and criterion >= 4 of 5)``.
 
     One spelling, so no surface can print a pass^k without what it was computed against — and only that: a
     pass^k over attempts no judge scored is not stated under a rubric threshold they never met, which would read
-    as a judged figure.
+    as a judged figure. Goal checks are summed up in two words, since a page names each of them in its glossary;
+    every other check that fails a trial is named in ``checks``, so a rule held to one no reader sees on the page
+    is never stated as if goal checks and a judge were all it asked.
 
     :param k: The depth the figure is read at, or None where no depth was reached.
     :ptype k: int | None
@@ -97,16 +101,21 @@ def pass_threshold_label(k: int | None, threshold: int, *, criteria: Collection[
     :ptype threshold: int
     :param criteria: What the attempts behind the figure were held to (:data:`PassCriterion`); empty when nothing was.
     :ptype criteria: Collection[PassCriterion]
-    :return: The label: ``every goal check``, ``criterion >= <threshold> of 5``, both joined by ``and``, or
-        ``no criterion``.
+    :param checks: Each other check an attempt was held to, as its rule names it: the measure and the value it must
+        hold to pass, ``Never topped up is false``. Empty where none was.
+    :ptype checks: Sequence[str]
+    :return: The label: ``every goal check``, each of ``checks`` and ``criterion >= <threshold> of 5``, as many as
+        hold, joined by commas and a last ``and``; or ``no criterion``.
     :rtype: str
     """
     depth = "k=?" if k is None else f"k={k}"
     held = [
         *(["every goal check"] if "goal_checks" in criteria else []),
+        *checks,
         *([f"criterion >= {threshold} of {_SCALE_TOP}"] if "rubric" in criteria else []),
     ]
-    return f"pass^k ({depth}, {' and '.join(held) or 'no criterion'})"
+    joined = f"{', '.join(held[:-1])} and {held[-1]}" if len(held) > 1 else "".join(held)
+    return f"pass^k ({depth}, {joined or 'no criterion'})"
 
 
 @dataclass(frozen=True)

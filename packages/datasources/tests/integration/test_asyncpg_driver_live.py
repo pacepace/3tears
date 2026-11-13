@@ -11,7 +11,7 @@ verifies the contract end-to-end against a real postgres:
 - AGENT_INTERNAL borrowed-pool: driver does NOT close the borrowed pool
 - microbenchmark guard rail (DS-10-13; gated, manual run only)
 
-requires docker; gated by ``pytest.mark.integration``.
+needs Postgres/NATS (the pool's child processes, or testcontainers off the pool); gated by ``pytest.mark.integration``.
 """
 
 from __future__ import annotations

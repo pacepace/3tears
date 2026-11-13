@@ -1,30 +1,34 @@
 """What warns on a campaign's page, under its question and answer: one plain line per arm for the bars it misses, one
 per arm for the floors it breaks, one per arm and decision for the guardrails it is not shown safe on, each saying
-what it means for the arm, each followed by the writer's why where the memo recommends the arm over it."""
+what it means for the arm."""
 
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
+from threetears.evals.analysis.report.campaign.names import aspect_name
+from threetears.evals import Eval, grader
 from threetears.evals.analysis import (
     CampaignReadings,
+    get_campaign,
+    CampaignReport,
+    campaign_report_markdown,
     serialize_report,
 )
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.report.campaign.names import AspectNames
+
+from threetears.evals.analysis.report.campaign.scorecard import READING_WORDS
 from threetears.evals.analysis.report.campaign.warnings import guardrail_warnings
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailReadings
-from threetears.evals.analysis.report.campaign_page import NO_CALL, campaign_warnings
+from threetears.evals.analysis.report.campaign_page import build_campaign_report, campaign_warnings
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     TableBlock,
-    TextBlock,
-)
-from threetears.evals.kernel.authored import (
-    BarMissed,
-    FloorOverride,
 )
 
 from packages.evals.tests.campaign_support import (
@@ -32,14 +36,13 @@ from packages.evals.tests.campaign_support import (
 )
 
 from packages.evals.tests.campaign_page_support import (
-    choice_memo,
     first_screen_markdown,
     header_html,
     kind_page_of,
     page_of,
-    two_aspect_memo,
 )
-from packages.evals.tests.report_shapes_support import SHAPES
+from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.report_shapes_support import SHAPES, ArmTrials, AspectTrials, shape_of
 
 
 def _warned(blocks: list[object], source: str) -> list[str]:
@@ -70,7 +73,7 @@ def test_each_arm_breaking_a_floor_has_its_own_line_and_floors_of_two_margins_ar
     moved = v2.model_copy(update={"aspect": "tone", "floor": "tone/rate_drop/x", "margin": 15.0})
     both = readings.model_copy(update={"floors": [*readings.floors, moved]})
     names = AspectNames.of(fold.report.bundle for fold in page.aspects)
-    assert campaign_warnings(both, names)[0] == (
+    assert campaign_warnings(both, names, forms=PageForms.off_page())[0] == (
         "Adopting v2 overrides the floors it breaks on 2 of 3 aspects (billing and tone)."
     )
 
@@ -80,7 +83,8 @@ def test_an_arm_missing_several_bars_has_one_line_counting_them(name: str, line:
     page = SHAPES[name]().page()
     assert _warned(page.blocks, "bar") == [line]
     # The listing line says what the page says, word for word.
-    assert campaign_warnings(page.readings, AspectNames.of(fold.report.bundle for fold in page.aspects)) == [line]
+    names = AspectNames.of(fold.report.bundle for fold in page.aspects)
+    assert campaign_warnings(page.readings, names, forms=PageForms.off_page()) == [line]
 
 
 def test_a_measurement_s_missed_bar_says_it_falls_short_never_that_adopting_it_overrides_it() -> None:
@@ -89,19 +93,20 @@ def test_a_measurement_s_missed_bar_says_it_falls_short_never_that_adopting_it_o
 
 
 async def test_a_measurement_s_missed_bar_warns_under_its_title_and_no_arm_is_recommended() -> None:
-    page = await kind_page_of("solo", memo=choice_memo("alpha"))
+    page = await kind_page_of("solo")
     assert page.readings.kind == "measurement"
     first = first_screen_markdown(page)
     assert first.startswith("# ") and "**alpha falls short of the bar on solo.**" in first
     header = header_html(page)
-    assert header.index("<h1>") < header.index('<p class="warning">') and 'role="alert"' not in header
-    assert "Recommended" not in first and page.recommendation is None
-    assert json.loads(serialize_report(page, "json"))["recommendation"] is None
+    assert header.index("<h1>") < header.index('<p class="flag warning">') and 'role="alert"' not in header
+    assert "Recommended" not in first
+    assert "recommendation" not in json.loads(serialize_report(page, "json"))
     measures = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "measures")
-    assert measures.rows[0]["measure"].text == "pass rate"
+    assert measures.rows[0]["measure"].text == "Pass rate"
     bars = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "bars")
     assert [(row["arm"].text, row["status"].text) for row in bars.rows] == [("alpha", "missed")]
-    assert NO_CALL not in first
+    # No call is recorded, so the page prints no call line.
+    assert not [block for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "call"]
 
 
 async def test_a_missed_bar_warns_on_a_choice_too() -> None:
@@ -109,63 +114,19 @@ async def test_a_missed_bar_warns_on_a_choice_too() -> None:
     assert "**Adopting alpha overrides the bar it misses on tone.**" in first
 
 
-async def test_the_writer_s_why_for_an_overridden_floor_sits_beside_its_warning() -> None:
-    memo = two_aspect_memo()
-    over = FloorOverride(floor="billing/rate_drop/*", why="Billing refunds are rare this quarter.")
-    recommended = memo.recommended()
-    assert recommended is not None
-    recommendation = recommended.model_copy(update={"arm": CANDIDATE_LABEL, "floors_overridden": [over]})
-    page = await page_of("billing", "tone", memo=memo.model_copy(update={"recommendation": [recommendation]}))
-    first = first_screen_markdown(page)
-    warning = first.index("**Adopting v2 overrides the 10-point floor it breaks on billing.**")
-    why = first.index("**The memo recommends v2 over it:** Billing refunds are rare this quarter.")
-    assert first.index("# support queue") < warning < why
-    header = header_html(page)
-    assert header.index("<h1>") < header.index('<p class="warning">') < header.index('data-role="override"')
-
-
-async def test_a_why_for_a_missed_bar_sits_beside_its_warning() -> None:
-    memo = choice_memo("alpha")
-    recommended = memo.recommended()
-    assert recommended is not None
-    missed = BarMissed(aspect="tone", measure="cost_usd", why="A cent a reply is affordable at this volume.")
-    recommendation = recommended.model_copy(update={"bars_missed": [missed]})
-    page = await kind_page_of("tone", memo=memo.model_copy(update={"recommendation": [recommendation]}))
-    first = first_screen_markdown(page)
-    warning = first.index("**Adopting alpha overrides the bar it misses on tone.**")
-    why = first.index("**The memo recommends alpha over it:** A cent a reply is affordable at this volume.")
-    assert first.index("# support queue") < warning < why
-
-
-async def test_a_why_for_an_overridden_floor_answers_only_the_arm_the_memo_recommends() -> None:
+async def test_two_arms_breaking_one_floor_each_have_their_own_line() -> None:
     def both(readings: CampaignReadings) -> CampaignReadings:
         (status,) = readings.floors
         other = status.model_copy(update={"arm": "c" * 64, "arm_label": "v3"})
         return readings.model_copy(update={"floors": [status, other]})
 
-    memo = two_aspect_memo()
-    over = FloorOverride(floor="billing/rate_drop/*", why="Billing refunds are rare this quarter.")
-    recommended = memo.recommended()
-    assert recommended is not None
-    recommendation = recommended.model_copy(update={"arm": CANDIDATE_LABEL, "floors_overridden": [over]})
-    page = await page_of(
-        "billing", "tone", memo=memo.model_copy(update={"recommendation": [recommendation]}), readings=both
-    )
+    page = await page_of("billing", "tone", readings=both)
     warned = [block for block in page.blocks if block.section == "warnings"]
-    kinds = [
-        "why" if isinstance(block, TextBlock) else block.text
-        for block in warned
-        if isinstance(block, TextBlock)
-        and block.role == "override"
-        or isinstance(block, DisclosureBlock)
-        and block.source == "floor"
-    ]
-    # v2's warning, its why, then v3's warning with none: the why answers v2 breaking the floor, not v3.
-    assert kinds == [
+    assert [block.text for block in warned if isinstance(block, DisclosureBlock) and block.source == "floor"] == [
         f"Adopting {CANDIDATE_LABEL} overrides the 10-point floor it breaks on billing.",
-        "why",
         "Adopting v3 overrides the 10-point floor it breaks on billing.",
     ]
+    assert {block.kind for block in warned} == {"disclosure"}, "code's lines alone, no writer's words beside them"
 
 
 def _guardrail(bundle: AnalysisContextBundle, name: str, arm: str) -> GuardrailCheck:
@@ -211,8 +172,270 @@ def test_each_guardrail_is_named_with_its_own_aspects_never_another_s() -> None:
         for label, report in shape.reports.items()
     }
     names = AspectNames.of(report.bundle for report in reports.values())
-    (line,) = guardrail_warnings(shape.campaign, shape.readings, reports, names=names)
+    forms = PageForms.of_campaign(shape.readings, reports)
+    (line,) = guardrail_warnings(shape.campaign, shape.readings, reports, names=names, forms=forms)
     assert isinstance(line, DisclosureBlock) and line.section == "warnings"
     assert line.text == (
-        "v2 is not yet shown safe on the reply polite guardrail on billing and the reply on brand guardrail on tone."
+        "v2 may do worse than production on the reply polite (judged) guardrail on billing and the reply on brand "
+        "(judged) guardrail on tone."
     )
+
+
+#: Thirty cases, as a first comparison holds: at thirty, a pass/fail guardrail's bounded interval is wider than five
+#: points even where both arms pass it on every case, so one guarded at five is undecided for the sample's size.
+_THIRTY = [{"n": index} for index in range(30)]
+
+
+def _right(case: dict[str, int], answer: str) -> bool:
+    """Whether the answer is right."""
+    return answer.startswith("right")
+
+
+def _no_leak(case: dict[str, int], answer: str) -> bool:
+    """Whether the answer keeps the customer's secret."""
+    return "SECRET" not in answer
+
+
+def _answering(*, misses: int, leaks: int) -> Any:
+    async def answer(case: dict[str, int]) -> str:
+        return ("wrong" if case["n"] < misses else "right") + (" SECRET" if case["n"] < leaks else "")
+
+    return answer
+
+
+async def _guarded(**arms: Any) -> CampaignReport:
+    """The campaign page of ``arms`` (the first the control) over thirty cases, graded by ``_right`` and the
+    ``_no_leak`` guardrail at five points."""
+    result = await Eval(_THIRTY, arms, [_right, grader(_no_leak, guard=0.05)], k=1, name=" vs ".join(arms)).run(
+        store=":memory:"
+    )
+    return result.page
+
+
+def _bold(page: CampaignReport) -> list[str]:
+    return [line for line in first_screen_markdown(page).splitlines() if line.startswith("**")]
+
+
+async def test_an_undecided_guardrail_no_arm_failed_says_the_cases_are_too_few_to_decide_it() -> None:
+    """Both arms pass the guardrail on every case, and thirty cases cannot show the candidate within five points: the
+    line says so, so the sample's size never reads as a defect of the arm."""
+    page = await _guarded(current=_answering(misses=10, leaks=0), same=_answering(misses=10, leaks=0))
+    (line,) = _warned(page.blocks, "guardrails")
+    # The aspect as the page names it: the quick path's `score` by the campaign's name.
+    aspect = aspect_name(page.aspects[0].report.bundle, campaign=page.campaign_name)
+    assert line == (
+        f"same may do worse than current on the No leak score guardrail on {aspect}, by more than its 5-point margin. "
+        "Of the 30 cases that could fail it, neither arm failed any, too few to settle it."
+    )
+
+
+async def test_an_undecided_guardrail_counts_the_cases_each_arm_failed_it_on() -> None:
+    """The counts are read off the trials: the candidate leaked on two cases, once each, and the control on none."""
+    page = await _guarded(current=_answering(misses=10, leaks=0), slip=_answering(misses=10, leaks=2))
+    (line,) = _warned(page.blocks, "guardrails")
+    assert line.endswith(
+        ". Of the 30 cases that could fail it, slip failed 2 and current failed 0, too few to settle it."
+    )
+
+
+async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_and_the_guardrail_warns_beside_it() -> (
+    None
+):
+    """The one rule with no question asked and a function grader first: the eval files its graders' order on the
+    aspect's design, so the first bold line reads that grader, in the aspect page's words, naming both arms, under the
+    line saying once that the page is an exploratory comparison; the guardrail's warning is the next, never in its
+    place."""
+    result = await Eval(
+        _THIRTY,
+        {"current": _answering(misses=10, leaks=0), "same": _answering(misses=4, leaks=0)},
+        [_right, grader(_no_leak, guard=0.05)],
+        k=1,
+        name="current vs same",
+    ).run(store=":memory:")
+    page = result.page
+    (right,) = [
+        verdict
+        for verdict in page.aspects[0].report.verdicts
+        if verdict.kind == "contrast" and verdict.name == "_right"
+    ]
+    lead, warning = _bold(page)
+    # The decision, then the figures it rests on, the interval's two ends at one precision, as a set reads: the near
+    # end of 0.0129 points takes the decimals that keep it off zero, and the far end reads at them too.
+    assert lead == (
+        f"**{right.heading}: {right.words}. Of 30 trials each, Right score was met on 20 for current and 26 for same. "
+        "Over 30 paired cases, the interval puts same between 0.01 and 43 points better.**"
+    )
+    assert "Exploratory comparison." in campaign_report_markdown(page).splitlines()
+    assert "same" in right.words and "current" in right.words
+    assert warning.startswith("**same may do worse than current on the No leak score guardrail")
+    html = header_html(page)
+    assert html.index('<p class="verdict" data-tone="open">') < html.index('<p class="flag warning">')
+
+
+async def test_a_campaign_stating_no_grader_order_and_asking_no_question_leads_on_the_pass_rate() -> None:
+    """A campaign stored with no graders' order, as every campaign filed before the order was, asking no question and
+    reading no classifier, leads as it did: on the pass rate, every grader's reading together, which the page's one
+    exploratory line marks a lead. The same campaign stating its order leads on its first grader."""
+    result = await Eval(
+        _THIRTY,
+        {"current": _answering(misses=10, leaks=0), "same": _answering(misses=4, leaks=0)},
+        [_right, grader(_no_leak, guard=0.05)],
+        k=1,
+        name="current vs same",
+    ).run(store=":memory:")
+    stated = off_loop(get_campaign, result.host.storage, result.campaign_id, result.scope_id)
+    unstated = stated.model_copy(
+        update={
+            "aspects": [
+                aspect.model_copy(update={"design": aspect.design.model_copy(update={"measure_order": []})})
+                if aspect.design is not None
+                else aspect
+                for aspect in stated.aspects
+            ]
+        }
+    )
+    reports = {fold.aspect: fold.report for fold in result.page.aspects}
+    (row,) = result.page.readings.readings
+    lead, _ = _bold(build_campaign_report(unstated, result.page.readings, reports))
+    assert lead == (
+        f"**Pass rate: same against current {READING_WORDS[row.reading]}. Of 30 cases each, current passed 20 and same "
+        "26. The interval puts same between 0.01 and 43 points better.**"
+    )
+    led, _ = _bold(build_campaign_report(stated, result.page.readings, reports))
+    assert led.startswith("**Right score: ") and led.endswith(".**") and ", a lead" not in led
+
+
+async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_aspect_page_s_words() -> None:
+    """A field grader listed first is the classifier: the lead reads its accuracy, as the aspect's contrasts table
+    words it, both arms named, never the pass rate of every grader together."""
+
+    def labelled(miss: int) -> Any:
+        async def answer(case: dict[str, int]) -> dict[str, str]:
+            return {"label": "a" if case["n"] >= miss else "b", "note": "SECRET" if case["n"] < 0 else ""}
+
+        return answer
+
+    def no_secret(case: dict[str, Any], answer: dict[str, str]) -> bool:
+        """Whether the answer keeps the customer's secret."""
+        return "SECRET" not in answer["note"]
+
+    cases = [{"n": index, "label": "a"} for index in range(30)]
+    result = await Eval(
+        cases,
+        {"current": labelled(10), "same": labelled(4)},
+        ["label", grader(no_secret, guard=0.05)],
+        k=1,
+        name="current vs same",
+    ).run(store=":memory:")
+    (accuracy,) = [
+        verdict
+        for verdict in result.page.aspects[0].report.verdicts
+        if verdict.kind == "contrast" and verdict.name == "accuracy"
+    ]
+    lead, warning = _bold(result.page)
+    assert accuracy.heading == "Accuracy"
+    assert lead == (
+        f"**{accuracy.heading}: {accuracy.words}. Of 30 trials each, Accuracy was right on 20 for current and 26 for "
+        "same. Over 30 paired cases, the interval puts same between 0.01 and 43 points better.**"
+    )
+    assert "same" in accuracy.words and "current" in accuracy.words
+    assert warning.startswith("**same may do worse than current on the No secret score guardrail")
+
+
+def test_with_a_declared_question_the_lead_is_its_measure_decided_ahead_of_the_guardrail() -> None:
+    """A campaign asking its aspect a question leads on the question's measure, the pass rate, unmarked as a lead and
+    set in the decided tone, with the guardrail the candidate is undecided on warned beside it."""
+    shape = shape_of(
+        "asked",
+        [AspectTrials("billing", [ArmTrials("production", passing=6), ArmTrials("v2", passing=19)])],
+        control=True,
+    )
+    v2 = shape.key("v2")
+    reports = {
+        label: report.model_copy(
+            update={
+                "bundle": report.bundle.model_copy(
+                    update={
+                        "guardrails": GuardrailReadings(
+                            dimensions=["reply.polite"], checks=[_guardrail(report.bundle, "reply.polite", v2)]
+                        )
+                    }
+                )
+            }
+        )
+        for label, report in shape.reports.items()
+    }
+    assert all(report.bundle.question_declared for report in reports.values())
+    page = build_campaign_report(shape.campaign, shape.readings, reports)
+    (row,) = shape.readings.readings
+    assert row.confirmatory
+    lead, warning = _bold(page)
+    assert lead == (
+        f"**Pass rate: v2 against production {READING_WORDS[row.reading]}. Of 20 cases each, production passed 6 and "
+        "v2 19. The interval puts v2 between 28 and 88 points better.**"
+    )
+    assert warning == "**v2 may do worse than production on the reply polite (judged) guardrail on billing.**"
+    html = header_html(page)
+    assert html.index('<p class="verdict" data-tone="decided">') < html.index('<p class="flag warning">')
+
+
+@pytest.mark.parametrize(
+    ("passing", "words", "interval"),
+    [
+        (19, "v2 against production shown better", "The interval puts v2 between 28 and 88 points better."),
+        (0, "v2 against production shown worse", "The interval puts v2 between 1 and 63 points worse."),
+        (
+            6,
+            "the evidence cannot tell v2 and production apart",
+            "The interval allows v2 to be as much as 19 points worse or 19 better.",
+        ),
+    ],
+    ids=["shown-better", "shown-worse", "undecided"],
+)
+def test_a_question_with_no_margin_leads_on_the_superiority_verdict(passing: int, words: str, interval: str) -> None:
+    """A superiority question (asked, no margin, owner 2026-11-06): the lead reads the pass rate against zero, shown
+    better, shown worse or that the evidence cannot tell the two apart, decided rather than a lead, and never "no
+    worse than the margin"."""
+    shape = shape_of(
+        "superiority",
+        [AspectTrials("billing", [ArmTrials("production", passing=6), ArmTrials("v2", passing=passing)], margin=None)],
+        control=True,
+    )
+    (row,) = shape.readings.readings
+    assert row.confirmatory and row.margin is None
+    # A guardrail v2 is undecided on, so the first screen leads before warning of it, as above.
+    v2 = shape.key("v2")
+    reports = {
+        label: report.model_copy(
+            update={
+                "bundle": report.bundle.model_copy(
+                    update={
+                        "guardrails": GuardrailReadings(
+                            dimensions=["reply.polite"], checks=[_guardrail(report.bundle, "reply.polite", v2)]
+                        )
+                    }
+                )
+            }
+        )
+        for label, report in shape.reports.items()
+    }
+    page = build_campaign_report(shape.campaign, shape.readings, reports)
+    lead, _ = _bold(page)
+    assert lead == f"**Pass rate: {words}. Of 20 cases each, production passed 6 and v2 {passing}. {interval}**"
+    markdown = campaign_report_markdown(page)
+    assert "no worse than the margin" not in markdown and "No margin was declared" not in markdown
+
+
+async def test_a_page_no_guardrail_warns_on_still_leads_on_its_first_grader() -> None:
+    """Every page leads (W2, P1): with nothing that warns, the lead is the first screen's one bold line, the same
+    sentence a guardrail's warning would sit beside."""
+    result = await Eval(
+        _THIRTY,
+        {"current": _answering(misses=10, leaks=0), "same": _answering(misses=4, leaks=0)},
+        [_right],
+        k=1,
+        name="current vs same",
+    ).run(store=":memory:")
+    (lead,) = _warned(result.page.blocks, "verdict")
+    assert lead.startswith("Right score: ") and "same" in lead and "current" in lead
+    assert _bold(result.page) == [f"**{lead}**"]

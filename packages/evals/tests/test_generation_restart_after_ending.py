@@ -18,22 +18,22 @@ import pytest
 
 import threetears.evals.ops.analysis as analysis_ops
 from threetears.evals.kernel import ConflictError
-from threetears.evals.ops import analysis_generate, job_poll
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, settled
+from threetears.evals.ops import job_poll
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, generate, ops_fixture, settled
 from packages.evals.tests.off_loop import off_loop
 
 
 def _unwinding_slowly(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
     """Make every generation hold its task open after it has written its ending, until the returned event is set."""
     unwound = asyncio.Event()
-    generate = analysis_ops.run_analysis_generation
+    record = analysis_ops.record_written_generation
 
     async def ended_then_held(*args: Any, **kwargs: Any) -> Any:
-        ended = await generate(*args, **kwargs)
+        ended = await record(*args, **kwargs)
         await unwound.wait()
         return ended
 
-    monkeypatch.setattr(analysis_ops, "run_analysis_generation", ended_then_held)
+    monkeypatch.setattr(analysis_ops, "record_written_generation", ended_then_held)
     return unwound
 
 
@@ -48,10 +48,10 @@ async def _done_but_held(fixture: Any, job_id: str) -> None:
 async def test_a_start_inside_the_unwinding_window_waits_and_starts(monkeypatch: pytest.MonkeyPatch) -> None:
     unwound = _unwinding_slowly(monkeypatch)
     fixture = off_loop(ops_fixture)
-    (first,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (first,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     await _done_but_held(fixture, first.job_id)
 
-    second_start = asyncio.ensure_future(analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE))
+    second_start = asyncio.ensure_future(generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE))
     await asyncio.sleep(0.05)
     assert not second_start.done(), "the start waits for the unwinding task rather than refusing"
     unwound.set()
@@ -65,9 +65,9 @@ async def test_a_task_that_never_finishes_unwinding_is_refused_as_running(monkey
     unwound = _unwinding_slowly(monkeypatch)
     monkeypatch.setattr(analysis_ops, "ENDED_TASK_UNWIND_S", 0.05)
     fixture = off_loop(ops_fixture)
-    (first,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (first,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     await _done_but_held(fixture, first.job_id)
 
     with pytest.raises(ConflictError, match="already running"):
-        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+        await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
     unwound.set()

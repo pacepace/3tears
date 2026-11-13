@@ -20,6 +20,7 @@ import pytest
 
 from threetears.evals.analysis import StratumSummary
 from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
+from threetears.evals.analysis.report.words import stratum_names
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals import Eval
 from threetears.evals.analysis import report_markdown
@@ -118,6 +119,40 @@ class TestAnEvalReadsEachKind:
         assert all(result.stratum is None for result in summary.results())
 
 
+class TestThePrintNamesEachStratumAsThePageDoes:
+    async def test_a_stratum_line_and_a_result_s_line_print_the_name_and_the_summary_keeps_the_id(self) -> None:
+        """A stratum's id with an underscore (``plain_ticket``): the print's stratum lines and a result's line name it
+        as every page prints it (``plain ticket``), never the id; :attr:`strata` and each result keep the id."""
+        renamed = [{**case, "stratum": f"{case['stratum']}_ticket"} for case in CASES]
+        summary = await _summary(renamed, misses_lookalikes, [QUEUE])
+
+        assert list(_by_name(summary.strata)) == ["lookalike_ticket", "plain_ticket"]
+        heads = [line for line in summary.stratum_lines if not line.startswith(" ")]
+        assert [line.split(":")[0] for line in heads] == ["lookalike ticket", "plain ticket"]
+        assert not [line for line in summary.stratum_lines if "_ticket" in line]
+        (miss, *_) = summary.misses()
+        assert miss.stratum == "lookalike_ticket" and "(lookalike ticket, repeat" in miss.render()
+
+    async def test_two_ids_that_would_print_alike_each_print_as_their_id(self) -> None:
+        """``edge_case`` and ``edge.case`` would both print ``edge case``; each prints as its id, in the stratum lines
+        and in each result's line, so the print never reads one stratum where the cases declare two."""
+        cases = [{**case, "stratum": "edge_case" if case["stratum"] == "plain" else "edge.case"} for case in CASES]
+        summary = await _summary(cases, misses_lookalikes, [QUEUE])
+
+        heads = [line.split(":")[0] for line in summary.stratum_lines if not line.startswith(" ")]
+        assert sorted(heads) == ["edge.case", "edge_case"]
+        # A result's line names its stratum as the stratum lines do, never the name both ids would print as.
+        results = summary.results()
+        assert {result.stratum for result in results} == {"edge_case", "edge.case"}
+        for result in results:
+            assert result.render().startswith(f"case {result.case} ({result.stratum}, repeat "), result.render()
+        assert stratum_names(["edge_case", "edge.case", "plain_ticket"]) == {
+            "edge_case": "edge_case",
+            "edge.case": "edge.case",
+            "plain_ticket": "plain ticket",
+        }
+
+
 class TestRelabellingKeepsHistory:
     async def test_a_new_stratum_is_stored_on_the_same_case(self) -> None:
         store = InMemoryDocumentStore()
@@ -144,7 +179,9 @@ class TestRefusals:
 
 
 async def _compared(cases: Any, graders: list[Any]) -> Any:
-    return await Eval(cases, {"baseline": always_b, "candidate": misses_lookalikes}, graders, k=1).run(store=":memory:")
+    return await Eval(
+        cases, {"baseline": always_b, "candidate": misses_lookalikes}, graders, k=1, name="baseline vs candidate"
+    ).run(store=":memory:")
 
 
 class TestAComparisonReadsEachArmPerKind:
@@ -162,6 +199,35 @@ class TestAComparisonReadsEachArmPerKind:
         assert TOO_FEW_CASES in candidate[0]["strata"]["lookalike"]
         assert TOO_FEW_CASES not in candidate[0]["strata"]["plain"]
         assert all(summary.strata for summary in comparison.arms.values())
+
+    async def test_the_page_prints_a_stratum_s_name_and_the_comparison_keys_it_by_its_id(self) -> None:
+        """A stratum's id with an underscore (``plain_ticket``): the page prints the name every surface prints for it
+        (``plain ticket``), in its By stratum header and its cases' Stratum cells, never the id; a program reads it by
+        the id it declared."""
+        renamed = [{**case, "stratum": f"{case['stratum']}_ticket"} for case in CASES]
+        comparison = await _compared(renamed, [QUEUE])
+
+        rendered = report_markdown(comparison.report)
+        assert "plain ticket" in rendered and "lookalike ticket" in rendered
+        assert "plain_ticket" not in rendered and "lookalike_ticket" not in rendered
+        rows = comparison.strata(reading="Accuracy")
+        assert rows and all(set(row["strata"]) == {"lookalike_ticket", "plain_ticket"} for row in rows)
+        (cases,) = [block for block in comparison.report.blocks if getattr(block, "name", None) == "cases"]
+        assert {row["stratum"].text for row in cases.rows} == {"lookalike ticket", "plain ticket"}
+
+    async def test_two_ids_that_would_print_alike_each_print_and_key_as_their_id(self) -> None:
+        """``edge_case`` and ``edge__case`` would both print ``edge case``: the page heads each stratum, and names each
+        case's, by its id, and :meth:`Result.strata` keys the two apart."""
+        renamed = [{**case, "stratum": "edge_case" if case["stratum"] == "plain" else "edge__case"} for case in CASES]
+        comparison = await _compared(renamed, [QUEUE])
+
+        (strata,) = [block for block in comparison.report.blocks if getattr(block, "name", None) == "strata"]
+        headers = [column.header for column in strata.columns]
+        assert "edge_case" in headers and "edge__case" in headers and "edge case" not in headers
+        (cases,) = [block for block in comparison.report.blocks if getattr(block, "name", None) == "cases"]
+        assert {row["stratum"].text for row in cases.rows} == {"edge_case", "edge__case"}
+        rows = comparison.strata(reading="Accuracy")
+        assert rows and all(set(row["strata"]) == {"edge_case", "edge__case"} for row in rows)
 
     async def test_unstratified_cases_have_no_strata_rows(self) -> None:
         unkinded = [{key: value for key, value in case.items() if key != "stratum"} for case in CASES]

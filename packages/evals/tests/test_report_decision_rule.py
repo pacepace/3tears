@@ -15,10 +15,11 @@ from __future__ import annotations
 import html
 import re
 from collections import Counter
-from collections.abc import Callable, Coroutine, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Literal
 
+from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals import Answer, Eval, Result
 from threetears.evals.analysis import (
     AnalysisContextBundle,
@@ -39,7 +40,9 @@ from threetears.evals.analysis.report.decision import (
     floor_statement,
     read_floor,
 )
-from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_interval
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.said import Said
+from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_interval, difference_interval
 from threetears.evals.kernel.declaration import (
     CostLower,
     DecisionClause,
@@ -59,6 +62,14 @@ from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.g2_support import G2_FLOORS, G2_QUESTION, g2_ruled_report
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
 
 
 #: The arms by the names a page gives them, which every reason says.
@@ -77,6 +88,11 @@ def _read(
         read_floor(Floor(aspect="queue", clause=clause), readings, control=control, candidate=candidate)
         for clause in clauses
     ]
+
+
+def _words(said: Said) -> str:
+    """A floor's sentence as a surface that states no page's measure prints it: each change to a decimal, as read."""
+    return PageForms.off_page().said(said)
 
 
 @pytest.fixture
@@ -104,11 +120,11 @@ def test_the_g2_floors_are_both_unclear_under_the_case_floor() -> None:
     )
     rate, cost = _read(G2_FLOORS, readings)
     assert (rate.outcome, cost.outcome) == ("unclear", "unclear")
-    assert cost.reason == (
+    assert _words(cost.reason) == (
         "4 cases are too few for the interval that would show the cost either way, which is estimated only from 5 "
         "independent cases"
     )
-    assert rate.reason == (
+    assert _words(rate.reason) == (
         "cheaper candidate's drop is past 10 points on the point estimate alone (4 cases are too few for the interval "
         "that would show it, which is estimated only from 5 independent cases)"
     )
@@ -127,7 +143,7 @@ def test_a_rate_floor_the_remaining_trials_could_still_decide_is_unclear() -> No
     )
     rate, cost = _read(G2_FLOORS, close)
     assert (rate.outcome, cost.outcome) == ("unclear", "held")
-    assert rate.reason == (
+    assert _words(rate.reason) == (
         "cheaper candidate's drop is not shown to stay within 10 points (the lost trials could still take it past)"
     )
     # Equal rates hold only on an interval over enough cases. The bare counts (no case count, no interval) once
@@ -159,11 +175,11 @@ def test_equal_rates_on_too_few_cases_are_unclear_not_held() -> None:
     rate, cost = _read(G2_FLOORS, equal)
     assert (rate.outcome, cost.outcome) == ("unclear", "unclear")
     # What is withheld and why, in the reader's terms: never a bare "needs 5".
-    assert rate.reason == (
+    assert _words(rate.reason) == (
         "cheaper candidate's drop is not shown to stay within 10 points (4 cases are too few for the interval that "
         "would show it, which is estimated only from 5 independent cases)"
     )
-    assert cost.reason == (
+    assert _words(cost.reason) == (
         "4 cases are too few for the interval that would show the cost either way, which is estimated only from 5 "
         "independent cases"
     )
@@ -181,14 +197,15 @@ def test_a_floor_met_run_with_a_tight_interval_holds() -> None:
     )
     rate, cost = _read(G2_FLOORS, tight)
     assert (rate.outcome, cost.outcome) == ("held", "held")
-    assert rate.reason == "cheaper candidate's drop is shown to stay within 10 points (it is at most 8)"
+    assert _words(rate.reason) == "cheaper candidate's drop is shown to stay within 10 points (it is at most 8)"
     assert rate.interval() == pytest.approx((-8.0, 5.0)), "in points, the candidate minus the control"
     # The same run with an interval reaching past the margin is unclear, and says how far it reaches.
     wide = replace(tight, rates=(RateReading("the pass rate", 50, 60, 49, 60, interval=(-0.23, 0.2)),))
     (unclear, _) = _read(G2_FLOORS, wide)
     assert unclear.outcome == "unclear"
     assert (
-        unclear.reason == "cheaper candidate's drop is not shown to stay within 10 points (it could be as much as 23)"
+        _words(unclear.reason)
+        == "cheaper candidate's drop is not shown to stay within 10 points (it could be as much as 23)"
     )
 
 
@@ -204,7 +221,7 @@ def test_a_cost_lower_by_a_point_estimate_only_is_unclear() -> None:
     )
     rate, cost = _read(G2_FLOORS, readings)
     assert (rate.outcome, cost.outcome) == ("held", "unclear")
-    assert cost.reason == "the cost difference did not separate"
+    assert _words(cost.reason) == "the cost difference did not separate"
     assert cost.interval() == (-0.0006, 0.0002), "a cost floor's interval is in dollars per reply"
     # Until the cost floor read its own interval, a cost observed higher broke it on any number of cases. Now it is
     # broken only on an interval wholly above zero, over enough cases, as a rate floor is.
@@ -225,13 +242,15 @@ def test_a_cost_floor_says_why_it_reads_no_interval() -> None:
         control_cases=20,
         candidate_cases=20,
     )
-    assert _read(G2_FLOORS, base)[1].reason == "cost per reply was not compared: no case carries it on both arms"
+    assert (
+        _words(_read(G2_FLOORS, base)[1].reason) == "cost per reply was not compared: no case carries it on both arms"
+    )
     alike = replace(base, cost_compared=True)
-    assert _read(G2_FLOORS, alike)[1].reason == (
+    assert _words(_read(G2_FLOORS, alike)[1].reason) == (
         "every case cost alike on both arms, so no interval on the cost difference exists"
     )
     unmeasured = replace(base, candidate_cost=None)
-    assert _read(G2_FLOORS, unmeasured)[1].reason == "cost per reply was not measured on both arms"
+    assert _words(_read(G2_FLOORS, unmeasured)[1].reason) == "cost per reply was not measured on both arms"
     assert all(_read(G2_FLOORS, readings)[1].outcome == "unclear" for readings in (base, alike, unmeasured))
 
 
@@ -280,7 +299,7 @@ async def test_on_four_cases_no_floor_is_broken_and_the_verdict_decides_nothing(
     floor = "4 cases are too few for the interval that would show it, which is estimated only from 5 independent cases"
     assert _floor_rows(report) == [
         (
-            "the pass rate",
+            "Pass rate",
             f"unclear: cheaper candidate's drop is past 10 points on the point estimate alone ({floor})",
         ),
         (
@@ -295,7 +314,8 @@ async def test_on_four_cases_no_floor_is_broken_and_the_verdict_decides_nothing(
         ),
     ]
     # Under a cent per reply on every arm, the cost row reads per 1,000 replies, as the scoreboard does.
-    assert {"reading": "cost per 1,000 replies", "control": "$3.092", "candidate": "$3.301"}.items() <= next(
+    # The code-only report spells money in its ruler's one form (#993): cents, two figures on the least.
+    assert {"reading": "cost per 1,000 replies", "control": "$3.09", "candidate": "$3.30"}.items() <= next(
         row for row in table.values() if row["reading"] == "cost per 1,000 replies"
     ).items()
 
@@ -316,7 +336,9 @@ async def test_a_floor_beside_a_contrast_not_separated_says_why_once_under_the_f
     markdown = report_markdown(report)
     assert markdown.count(FLOORS_WARN_ONLY) == 1
     decision = markdown.split("\n## Floors\n", 1)[1].split("\n## ", 1)[0]
-    assert decision.index(f"**Floors on {report.bundle.aspect}**") < decision.index(FLOORS_WARN_ONLY)
+    # The aspect as the page names it: one the engine labelled by the campaign's name.
+    named = aspect_name(report.bundle, campaign=report.source.campaign_name)
+    assert decision.index(f"**Floors on {named}**") < decision.index(FLOORS_WARN_ONLY)
     assert "unclear: 4 cases are too few for the interval that would show the cost either way" in decision
     # The prod numbers: v2 passed 14 of 60 trials to v1's 29. Shown past the margin on the whole interval, it is
     # broken, and says the drop exceeds the margin; past it on the point estimate alone, it is unclear.
@@ -327,12 +349,12 @@ async def test_a_floor_beside_a_contrast_not_separated_says_why_once_under_the_f
         control_cases=20,
         candidate_cases=20,
     )
-    assert _read(rule, dropped, **on)[0].reason == (
+    assert _words(_read(rule, dropped, **on)[0].reason) == (
         "v2 passed 14 of 60 to v1's 29, a drop that exceeds the margin of 10 points on its whole interval (at least "
         "12.3)"
     )
     unshown_drop = replace(dropped, rates=(replace(dropped.rates[0], interval=(-0.536, 0.036)),))
-    assert _read(rule, unshown_drop, **on)[0].reason == (
+    assert _words(_read(rule, unshown_drop, **on)[0].reason) == (
         "v2's drop is past 10 points on the point estimate alone, not on its interval (from a gain of 3.6 to a drop "
         "of 53.6)"
     )
@@ -342,7 +364,7 @@ async def test_a_floor_beside_a_contrast_not_separated_says_why_once_under_the_f
         candidate_cases=20,
     )
     (unshown,) = _read(rule, wide, **on)
-    assert (unshown.outcome, unshown.reason) == (
+    assert (unshown.outcome, _words(unshown.reason)) == (
         "unclear",
         "v2's drop is not shown to stay within 10 points (it could be as much as 53.6)",
     )
@@ -395,7 +417,7 @@ async def _ruled(
     """Two arms over ``len(control_passes)`` cases × 3 repeats, each passing its cases' counts, with G2's floors.
 
     The floors are on the campaign before its bundle is assembled, so its family is one a floor can read: the label
-    check's pass rate (compared as ``accuracy``) and, with a margin declared, the overall pass rate.
+    check's pass rate (compared as ``accuracy``) and the overall pass rate, which every asked question's family holds.
     """
     cases = [{"text": f"queue request {index}", "label": "queued"} for index in range(len(control_passes))]
     # Each arm at one cost per reply: a gap with no spread on a measure with no declared range, which no test reads, so
@@ -414,7 +436,7 @@ def _rate_floor(bundle: AnalysisContextBundle, control: str, candidate: str) -> 
     """G2's rate floor on the bundle: its status and its reason."""
     (verdict, _) = _read(G2_FLOORS, floor_readings(bundle, control, candidate))
     assert isinstance(verdict.floor.clause, RateDrop)
-    return verdict.outcome, verdict.reason
+    return verdict.outcome, _words(verdict.reason)
 
 
 async def test_the_overall_pass_rate_joins_the_family_when_the_aspect_declares_a_margin() -> None:
@@ -435,11 +457,14 @@ async def test_the_overall_pass_rate_joins_the_family_when_the_aspect_declares_a
     assert passed.bounded_interval is not None and passed.case_values is not None
 
 
-async def test_an_aspect_with_no_margin_does_not_compare_the_overall_pass_rate() -> None:
+async def test_an_asked_aspect_with_no_margin_compares_the_overall_pass_rate() -> None:
+    """Owner, 2026-11-06: a superiority question asks its pass rate, so its family holds it, margin or none."""
     bundle, _, _ = await _ruled([0] * 7, [3] * 7, floors=(RateDrop(max_points=10, reading="match"),))
     assert bundle.declared is not None and bundle.declared.margin is None
     (family,) = bundle.multiple_comparisons.families
-    assert not [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    (compared,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    assert family.family_size == 2 and (compared.verdict, compared.delta) == ("improved", 1.0)
+    assert compared.p_raw is not None and compared.p_adjusted == pytest.approx(2 * compared.p_raw)
 
 
 async def test_seven_cases_with_the_bounded_interval_inside_the_margin_hold_the_rate_floor() -> None:
@@ -502,7 +527,8 @@ async def test_a_check_floor_never_holds_on_a_t_interval_the_bounded_one_does_no
     """The .29 defect: a check's rate read switch off the family's t interval, which overstates its confidence.
 
     Simulated at the margin, that t interval let switch through up to 12% of the time against the 2.5% it states
-    (``docs/measuring-soundly.md``). Here it clears the margin while the bounded interval reaches far past it.
+    (``docs/measuring-soundly.md``). Here it clears the margin while the bounded interval reaches far past it. The
+    family draws the check's rate on its bounded interval too, so no reading of the bundle offers the t interval.
     """
     bundle, control, candidate = await _ruled([3, 3, 3, 3, 3, 3, 2], [3] * 7)
     (check,) = [
@@ -511,15 +537,22 @@ async def test_a_check_floor_never_holds_on_a_t_interval_the_bounded_one_does_no
         for comparison in family.comparisons
         if comparison.name == "accuracy"
     ]
-    assert check.basis == "t" and check.interval is not None
-    assert check.interval[0] > -0.10, "the t interval clears the 10-point margin"
+    assert check.basis == "t" and check.case_values is not None
+    (family,) = bundle.multiple_comparisons.families
+    assert family.interval_level is not None
+    t_interval = difference_interval(
+        *check.case_values, paired=check.test == "paired", confidence=family.interval_level, value_range=(0.0, 1.0)
+    )
+    assert t_interval is not None and t_interval[0] > -0.10, "the t interval clears the 10-point margin"
+    assert check.interval == check.bounded_interval, "the family draws the rate on its bounded interval"
+    assert check.interval is not None and check.interval[0] < -0.10
     readings = floor_readings(bundle, control, candidate)
     (label,) = [rate for rate in readings.rates if rate.name == "Label matched"]
     assert label.interval is not None and label.interval[0] < -0.10, "the bounded interval does not"
     alone = replace(readings, rates=(label,))
     assert _read(G2_FLOORS, alone)[0].outcome == "unclear"
     # Read on the t interval, as .29 read it, the same floor held.
-    on_t = replace(readings, rates=(replace(label, interval=check.interval),))
+    on_t = replace(readings, rates=(replace(label, interval=t_interval),))
     assert _read(G2_FLOORS, on_t)[0].outcome == "held"
 
 
@@ -601,7 +634,7 @@ def test_a_drop_shown_past_the_margin_breaks_only_if_the_lost_trials_could_not_b
         candidate_cases=20,
     )
     (floor,) = _read(_RATE_ONLY, lost, **on)
-    assert (floor.outcome, floor.reason) == (
+    assert (floor.outcome, _words(floor.reason)) == (
         "unclear",
         "v2's drop is past 10 points on the point estimate alone (the lost trials could still bring it within)",
     )
@@ -609,7 +642,7 @@ def test_a_drop_shown_past_the_margin_breaks_only_if_the_lost_trials_could_not_b
     # the broken floor states the smaller.
     fewer = replace(lost, rates=(RateReading("the pass rate", 60, 60, 30, 50, 0, 10, interval=(-0.6, -0.4)),))
     (broken,) = _read(_RATE_ONLY, fewer, **on)
-    assert (broken.outcome, broken.reason) == (
+    assert (broken.outcome, _words(broken.reason)) == (
         "broken",
         "v2 passed 30 of 50 to v1's 60 of 60, a drop that exceeds the margin of 10 points on its whole interval (at "
         "least 33.3)",
@@ -626,7 +659,7 @@ def test_an_arrival_shaped_drop_past_the_margin_on_its_point_estimate_alone_read
     )
     (floor,) = _read(_RATE_ONLY, readings, control="September build", candidate="1017 build")
     assert floor.outcome == "unclear"
-    assert floor.reason == (
+    assert _words(floor.reason) == (
         "1017 build's drop is past 10 points on the point estimate alone, not on its interval (from a gain of 35.5 to "
         "a drop of 92.7)"
     )
@@ -637,7 +670,7 @@ async def test_an_arrival_shaped_page_warns_of_nothing_and_says_why_on_the_floor
     report = await _rate_only_page([3, 3, 2, 2, 1, 1, 0], [1, 1, 1, 1, 1, 1, 0])
     assert _warnings(report) == [], "unclear is not broken: the page opens on no warning"
     reading, status = _floor_rows(report)[0]
-    assert reading == "the pass rate"
+    assert reading == "Pass rate"
     assert status.startswith(
         "unclear: candidate's drop is past 10 points on the point estimate alone, not on its interval (from a gain of "
     ), status
@@ -651,13 +684,13 @@ async def test_a_drop_whose_whole_interval_is_past_the_margin_breaks_and_one_rea
     cases outright. Ten failed, the drop's whole interval is past the margin: broken, a line under the verdict. Eight
     failed, the drop is still 40 points but its interval reaches back within the margin: unclear, and no warning."""
     shown = await _rate_only_page([3] * 20, [3] * 10 + [0] * 10)
-    aspect = shown.bundle.aspect
+    aspect = aspect_name(shown.bundle, campaign=shown.source.campaign_name)
     (warning,) = _warnings(shown)
     assert warning == f"Adopting candidate overrides the 10-point floor it breaks on {aspect}."
     markdown = report_markdown(shown)
     assert markdown.startswith("# ") and f"\n**{warning}**\n" in markdown, "under the title, never above it"
     reading, status = _floor_rows(shown)[0]
-    assert reading == "the pass rate" and status.startswith(
+    assert reading == "Pass rate" and status.startswith(
         "broken: candidate passed 30 of 60 to production's 60, a drop that exceeds the margin of 10 points on its "
         "whole interval (at least "
     ), status
@@ -686,8 +719,8 @@ async def test_a_readiness_shaped_reading_both_arms_never_pass_says_it_cannot_se
     bundle = await _assembled(comparison, _RATE_ONLY)
     report = build_code_only_report(bundle, assembled_at="2026-10-17T12:00:00+00:00", campaign_name="readiness")
     rows = dict(_floor_rows(report))
-    assert list(rows) == ["the pass rate", "Label matched", "On time score"]
-    assert rows["the pass rate"] == "unclear: the pass rate cannot separate the arms (both 0 of 18)"
+    assert list(rows) == ["Pass rate", "Label matched", "On time score"]
+    assert rows["Pass rate"] == "unclear: the pass rate cannot separate the arms (both 0 of 18)"
     assert rows["On time score"] == "unclear: On time score cannot separate the arms (both 0 of 18)"
     # 12 of 18 to 14 is an 11.1-point drop: past the margin on its point estimate, on its own row.
     assert rows["Label matched"].startswith(
@@ -703,7 +736,7 @@ async def test_a_readiness_shaped_reading_both_arms_never_pass_says_it_cannot_se
     (candidate,) = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
     readings = floor_readings(bundle, control, candidate)
     (floor,) = _read((RateDrop(max_points=10, reading="on_time"),), readings)
-    assert (floor.outcome, floor.reason) == ("unclear", "On time score cannot separate the arms (both 0 of 18)")
+    assert (floor.outcome, _words(floor.reason)) == ("unclear", "On time score cannot separate the arms (both 0 of 18)")
     assert [read.rate.measure for read in floor.rates] == ["on_time"]
 
 
@@ -720,12 +753,12 @@ def test_every_reason_names_the_arms_by_their_names() -> None:
     dearer = replace(cheaper, candidate_cost=0.0041, cost_interval=(0.0006, 0.0014))
     level = replace(cheaper, candidate_cost=0.0031, cost_interval=(-0.0004, 0.0004))
     on = {"control": "v1", "candidate": "v2"}
-    assert _read(G2_FLOORS, cheaper, **on)[1].reason == "v2 costs less per reply than v1"
-    assert _read(G2_FLOORS, dearer, **on)[1].reason == "v2 costs more per reply than v1 on the whole interval"
-    assert _read(G2_FLOORS, level, **on)[1].reason == "the cost difference did not separate"
-    statements = [floor.statement for floor in _read(G2_FLOORS, cheaper, **on)]
+    assert _words(_read(G2_FLOORS, cheaper, **on)[1].reason) == "v2 costs less per reply than v1"
+    assert _words(_read(G2_FLOORS, dearer, **on)[1].reason) == "v2 costs more per reply than v1 on the whole interval"
+    assert _words(_read(G2_FLOORS, level, **on)[1].reason) == "the cost difference did not separate"
+    statements = [_words(floor.statement) for floor in _read(G2_FLOORS, cheaper, **on)]
     assert statements == ["no pass rate drops by more than 10 points", "v2 costs less per reply"]
-    assert floor_statement(RateDrop(max_points=2.5, reading="no_invented_total"), candidate="v2") == (
+    assert _words(floor_statement(RateDrop(max_points=2.5, reading="no_invented_total"), candidate="v2")) == (
         "no no invented total rate drops by more than 2.5 points"
     )
 
@@ -740,21 +773,20 @@ async def test_a_floor_naming_one_reading_reads_that_rate_alone() -> None:
     assert floor.outcome == "broken"
     assert floor.rate is not None and floor.rate.measure == "match"
     assert [read.rate.measure for read in floor.rates] == ["match"]
-    assert floor.statement == "no Label matched rate drops by more than 10 points"
+    assert _words(floor.statement) == "no Label matched rate drops by more than 10 points"
     # A name the arms do not carry is said, and left unclear, never read as every rate.
     (absent,) = _read((RateDrop(max_points=10, reading="tone"),), readings)
-    assert (absent.outcome, absent.reason) == ("unclear", "tone was not measured on both arms")
+    assert (absent.outcome, _words(absent.reason)) == ("unclear", "tone was not measured on both arms")
 
 
-async def test_a_question_that_declares_no_floor_says_so_in_one_line() -> None:
+async def test_a_question_that_declares_no_floor_has_no_floor_block() -> None:
+    """The page says what it holds, never what it lacks: a question with no floor
+    declared prints no Floors section and no line saying none was declared."""
     bundle, _, _ = await _ruled([3] * 7, [2] * 7, floors=())
     report = build_code_only_report(bundle, assembled_at="2026-10-14T00:00:00+00:00", campaign_name="no floors")
-    decision = [block for block in report.blocks if block.section == "decision"]
-    assert [(type(block).__name__, getattr(block, "text", None)) for block in decision] == [
-        ("DisclosureBlock", f"No floor was declared on {bundle.aspect}.")
-    ]
+    assert not [block for block in report.blocks if block.section == "decision"]
     assert _warnings(report) == []
-    assert f"## Floors\n\nNo floor was declared on {bundle.aspect}.\n" in report_markdown(report)
+    assert "## Floors" not in report_markdown(report) and "No floor was declared" not in report_markdown(report)
 
 
 async def test_an_exploratory_comparison_has_no_floor_block_at_all() -> None:
@@ -873,10 +905,10 @@ async def test_a_pass_fail_judged_dimension_is_read_as_its_count() -> None:
     assert (tone.control_passed, tone.control_n, tone.candidate_passed, tone.candidate_n) == (20, 21, 12, 21)
     assert not [rate for rate in readings.rates if rate.measure == "safe"], "a guardrail is never a floor's reading"
     (floor,) = _read((RateDrop(max_points=10, reading="tone"),), readings)
-    assert floor.statement == "no tone rate drops by more than 10 points"
+    assert _words(floor.statement) == "no tone rate drops by more than 10 points"
     # A 38-point drop with no contrast on the dimension is past the margin on its point estimate alone (#845: it read
     # keep until then), and the floor reads that rate and no other.
-    assert (floor.outcome, floor.reason) == (
+    assert (floor.outcome, _words(floor.reason)) == (
         "unclear",
         "cheaper candidate's drop is past 10 points on the point estimate alone (no interval was computed on tone)",
     )
@@ -970,7 +1002,7 @@ async def test_a_lower_is_better_check_reads_its_fall_as_a_gain_and_holds() -> N
     (fewer,) = [rate for rate in readings.rates if rate.measure == "hallucinated"]
     assert (fewer.control_passed, fewer.control_n, fewer.candidate_passed, fewer.candidate_n) == (40, 60, 58, 60)
     (floor,) = _read((RateDrop(max_points=10),), readings)
-    assert floor.outcome == "held", floor.reason
+    assert floor.outcome == "held", _words(floor.reason)
 
 
 def exact_match(case: Mapping[str, Any], answer: Any) -> bool:
@@ -1011,7 +1043,7 @@ async def test_a_pass_fail_scorer_is_a_reading_a_floor_declares_and_reads() -> N
         (readings.rates[0], "unclear"),
         (scored, "unclear"),
     ]
-    assert all("on the point estimate alone, not on its interval" in read.reason for read in every.rates)
+    assert all("on the point estimate alone, not on its interval" in _words(read.reason) for read in every.rates)
     # The declaration offers exactly the checks the page reads, wherever the run measured them.
     offered = [name for name in decision_readings(None, profile) if name in bundle.measure_catalog]
     assert offered == [rate.measure for rate in readings.rates if rate.measure is not None] == ["exact_match"]

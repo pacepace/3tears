@@ -35,7 +35,6 @@ from threetears.agent.memory.collections import (
     MemoryChunkCollection,
 )
 from threetears.agent.memory.extraction import MemoryExtractor
-from threetears.agent.memory.migrations import register as register_memory
 from threetears.agent.memory.retrieval import MemoryRetriever
 from threetears.agent.memory.tools import (
     load_memory_add_tool,
@@ -43,10 +42,8 @@ from threetears.agent.memory.tools import (
     load_memory_recall_tool,
 )
 from threetears.agent.memory.types import MemoryConfig
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
 
 
 def _build_memory_collections(
@@ -91,7 +88,6 @@ def _build_memory_collections(
     return memories, media_content, chunks
 
 
-from .conftest import AsyncpgStore
 from .memory_support import PurposeChatModelFactory
 
 
@@ -146,32 +142,8 @@ class _StubEmbedding:
 
 
 # ---------------------------------------------------------------------------
-# shared schema fixture applying the whole runner chain
+# the schema comes from the conftest's applied_schema (migrated once, copied per test); a pool over it
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-async def applied_schema(pg_schema: tuple[str, str]) -> tuple[str, str]:
-    """
-    apply conversations + agent-memory migrations into the per-test schema.
-
-    :param pg_schema: (url, schema) tuple
-    :ptype pg_schema: tuple[str, str]
-    :return: same (url, schema) tuple after migrations land
-    :rtype: tuple[str, str]
-    """
-    url, schema = pg_schema
-    runner = MigrationRunner()
-    register_conversations(runner)
-    register_memory(runner)
-    conn = await asyncpg.connect(url)
-    try:
-        await conn.execute(f'SET search_path TO "{schema}", public')
-        store = AsyncpgStore(conn)
-        await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
-    finally:
-        await conn.close()
-    return url, schema
 
 
 async def _make_pool(url: str, schema: str) -> asyncpg.Pool:

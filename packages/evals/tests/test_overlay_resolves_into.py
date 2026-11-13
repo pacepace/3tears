@@ -13,8 +13,8 @@ own lever, whose level is exactly the members a launch set.
 
 The surface is in the variant key, so every run of one arm resolves one surface: only a level of the knob held by
 two or more ARMS can refute the fold. Where no level is, the fold still applies (the knob names the arm) but is
-marked on every comparison that folds it as an ``unverified_fold`` confound, which reaches the generator's context
-and the code-only report — an untested fold is never presented as a checked non-confound.
+marked on every comparison that folds it as an ``unverified_fold`` confound, which reaches the code-only report — an
+untested fold is never presented as a checked non-confound.
 
 Every campaign here is the toy host's, with its extractor kind re-contracted to carry the knob, and is read through
 :func:`~threetears.evals.analysis.assemble_context_bundle` — the entry point every lens is reached through.
@@ -40,8 +40,6 @@ from threetears.evals.analysis import (
     build_code_only_report,
 )
 from threetears.evals.analysis.bundle.schema import UNVERIFIED_FOLD_PREFIX
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.kernel import (
     ControlDeclaration,
     SweptAxis,
@@ -116,12 +114,14 @@ _SURFACES = (
     Sweepable(
         name=_PARAMS,
         role="lever",
+        reader_name="model parameters",
         read=_recorded(_PARAMS),
         reader_prose="the model parameters the extractor resolved, after any overlaid knob",
     ),
     Sweepable(
         name=_TOOLS,
         role="lever",
+        reader_name="tool configuration",
         read=_recorded(_TOOLS),
         reader_prose="the tool configuration the extractor resolved, after any overlaid entry",
     ),
@@ -141,10 +141,10 @@ class _Overlays(BaseModel):
     """The extractor's knobs, each written into a surface the host records resolved."""
 
     reasoning_effort: Annotated[Literal["low", "high"], Ordinal(), ResolvesInto(_PARAMS)] = Field(
-        "low", description="how hard the extractor is told to reason"
+        "low", title="reasoning effort", description="how hard the extractor is told to reason"
     )
     tool_configs: Annotated[dict[str, str], ResolvesInto(_TOOLS)] = Field(
-        default_factory=dict, description="the per-tool settings the launch overlaid"
+        default_factory=dict, title="tool configs", description="the per-tool settings the launch overlaid"
     )
 
 
@@ -329,12 +329,6 @@ class TestATwoArmSweepFoldsButIsMarkedUnverified:
         assert _PARAMS not in {row.name for row in bundle.coverage}
         assert _confound(_row(bundle, _EFFORT), _UNVERIFIED_PARAMS) is not None
 
-    def test_the_mark_reaches_the_generator_s_context(self) -> None:
-        message = _writer_message(self._sweep())
-        assert '"kind":"unverified_fold"' in message
-        assert f'"dimension":"{_UNVERIFIED_PARAMS}"' in message
-        assert "folded, unverified:" in message
-
     def test_the_mark_reaches_the_code_only_report(self) -> None:
         bundle = self._sweep()
         report = build_code_only_report(bundle, assembled_at="2026-03-15T00:00:00+00:00")
@@ -427,9 +421,9 @@ class _ReadOverlays(BaseModel):
 
     reasoning_effort: Annotated[
         Literal["low", "high"], Ordinal(), ResolvesInto(_PARAMS, read_residual=_params_without_effort)
-    ] = Field("low", description="how hard the extractor is told to reason")
+    ] = Field("low", title="reasoning effort", description="how hard the extractor is told to reason")
     tool_configs: Annotated[dict[str, str], ResolvesInto(_TOOLS)] = Field(
-        default_factory=dict, description="the per-tool settings the launch overlaid"
+        default_factory=dict, title="tool configs", description="the per-tool settings the launch overlaid"
     )
 
 
@@ -437,10 +431,10 @@ class _UnreadableOverlays(BaseModel):
     """The same knob, with a residual reader that cannot say."""
 
     reasoning_effort: Annotated[Literal["low", "high"], Ordinal(), ResolvesInto(_PARAMS, read_residual=_cannot_say)] = (
-        Field("low", description="how hard the extractor is told to reason")
+        Field("low", title="reasoning effort", description="how hard the extractor is told to reason")
     )
     tool_configs: Annotated[dict[str, str], ResolvesInto(_TOOLS)] = Field(
-        default_factory=dict, description="the per-tool settings the launch overlaid"
+        default_factory=dict, title="tool configs", description="the per-tool settings the launch overlaid"
     )
 
 
@@ -617,7 +611,9 @@ def _knob(marker: object) -> type[BaseModel]:
     """An overlay model whose one knob carries ``marker``."""
 
     class _One(BaseModel):
-        reasoning_effort: Annotated[Literal["low", "high"], marker] = Field("low", description="how hard to reason")
+        reasoning_effort: Annotated[Literal["low", "high"], marker] = Field(
+            "low", title="reasoning effort", description="how hard to reason"
+        )
 
     return _One
 
@@ -633,7 +629,7 @@ class TestAResolvesIntoNoLensCouldFoldIsRefusedWhereItIsDeclared:
         class _Marked(BaseModel):
             reasoning_effort: Annotated[
                 Literal["low", "high"], Ordinal(), ActsOn("reasoning_ratio"), ResolvesInto(_PARAMS)
-            ] = Field("low", description="how hard to reason")
+            ] = Field("low", title="reasoning effort", description="how hard to reason")
 
         declared = _profile(_Marked).sweepables.get(_EFFORT)
         assert declared is not None
@@ -660,6 +656,7 @@ class TestAResolvesIntoNoLensCouldFoldIsRefusedWhereItIsDeclared:
         family = Sweepable(
             name="tool_overrides",
             role="lever",
+            member_reader_name=str,
             read=lambda _run, _results: {},
             reader_prose="any tool setting the launch overlaid",
             open_family="a launch may overlay any tool's settings",
@@ -670,9 +667,11 @@ class TestAResolvesIntoNoLensCouldFoldIsRefusedWhereItIsDeclared:
     def test_two_knobs_written_into_one_surface_are_refused(self) -> None:
         class _Two(BaseModel):
             reasoning_effort: Annotated[Literal["low", "high"], ResolvesInto(_PARAMS)] = Field(
-                "low", description="how hard to reason"
+                "low", title="reasoning effort", description="how hard to reason"
             )
-            max_tokens: Annotated[int, ResolvesInto(_PARAMS)] = Field(4096, description="the output token cap")
+            max_tokens: Annotated[int, ResolvesInto(_PARAMS)] = Field(
+                4096, title="max tokens", description="the output token cap"
+            )
 
         with pytest.raises(RegistrationError, match=f"'{_PARAMS}' is named as the resolved surface of both"):
             _profile(_Two)
@@ -680,7 +679,7 @@ class TestAResolvesIntoNoLensCouldFoldIsRefusedWhereItIsDeclared:
     def test_the_marker_twice_on_one_field_is_refused(self) -> None:
         class _Twice(BaseModel):
             reasoning_effort: Annotated[Literal["low", "high"], ResolvesInto(_PARAMS), ResolvesInto(_TOOLS)] = Field(
-                "low", description="how hard to reason"
+                "low", title="reasoning effort", description="how hard to reason"
             )
 
         with pytest.raises(KindContractError, match="ResolvesInto more than once"):
@@ -692,7 +691,9 @@ class TestAFixedLeverDeclaringASurfaceIsCheckedAtRegistration:
 
     @staticmethod
     def _lever(name: str, **declared: Any) -> Sweepable:
-        return Sweepable(name=name, role="lever", read=lambda _run, _results: None, reader_prose=name, **declared)
+        return Sweepable(
+            name=name, role="lever", reader_name=name, read=lambda _run, _results: None, reader_prose=name, **declared
+        )
 
     def test_a_fixed_lever_naming_a_fixed_lever_is_admitted(self) -> None:
         registry = SHARED_CORE.extend([self._lever("surface"), self._lever("knob", resolves_into="surface")])
@@ -734,6 +735,7 @@ class TestAFixedLeverDeclaringASurfaceIsCheckedAtRegistration:
         family = Sweepable(
             name="knobs",
             role="lever",
+            member_reader_name=str,
             read=lambda _run, _results: {},
             reader_prose="any knob",
             open_family="a launch may overlay any knob",
@@ -741,8 +743,3 @@ class TestAFixedLeverDeclaringASurfaceIsCheckedAtRegistration:
         )
         with pytest.raises(RegistrationError, match="one of resolves_into / read_residual without the other"):
             SHARED_CORE.extend([self._lever("surface"), family])
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))

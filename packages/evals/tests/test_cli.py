@@ -21,7 +21,6 @@ import pytest
 
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.analysis import NO_ANALYSIS, AnalysisContextBundle
-from threetears.evals.analysis.report.campaign_page import NO_RECOMMENDATION
 from threetears.evals.kernel import CandidateOutput
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.schema import EvalRun, EvalTestCase, JudgedArtifact
@@ -60,6 +59,7 @@ from packages.evals.tests.fixtures.courierhost import (
 )
 from packages.evals.tests.test_package_matrix import REPO_ROOT
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.page_contract_support import what_runs
 
 COURIER_FACTORY = "packages.evals.tests.fixtures.courierhost:courier_launch_host"
 
@@ -119,14 +119,17 @@ def test_bundle_prints_the_campaigns_bundle_as_json(capsys: pytest.CaptureFixtur
 
 def test_report_of_a_campaign_with_no_analysis_is_the_code_only_report(capsys: pytest.CaptureFixture[str]) -> None:
     """No analysis, no keyless analyst: the report is the campaign's page over the evidence as code computed it, saying
-    that no recommendation was written, with the aspect's page in its fold."""
+    what it is and leading on code's reading, with the aspect's page in its fold."""
     host = courier_host()
     campaign = asyncio.run(run_courier_campaign(host))
     assert run_cli(["report", campaign.id, "--scope", COURIER_SCOPE], host_factory=lambda: host) == 0
     out = capsys.readouterr().out
     title = out.splitlines()[0]
-    assert title.startswith(f"# {campaign.name}")
-    assert NO_RECOMMENDATION in out
+    # The page is headed by the campaign's name, what it compares the line under what the page is.
+    assert title == f"# {campaign.name}"
+    lines = out.splitlines()
+    assert lines[1:3] == ["Exploratory comparison.", ""] and "planner-lite" in lines[3] and " vs " in lines[3]
+    assert lines[4:6] == ["", "**The evidence cannot tell planner-lite and planner-pro apart.**"]
     assert f"| Analysis | {NO_ANALYSIS} |" in out and out.count(NO_ANALYSIS) == 1
     assert "**Scoreboard**" in out and "## Cases" in out and "## Methods" in out
 
@@ -172,8 +175,9 @@ def test_report_writes_the_page_its_markdown_and_its_bundle_to_out(
     assert run_cli(args, host_factory=lambda: host) == 0
 
     page = (out / "report.html").read_text(encoding="utf-8")
-    assert page.startswith("<!doctype html>") and 'data-basis="code_only"' in page and "<script" not in page.lower()
-    assert (out / "report.md").read_text(encoding="utf-8").startswith(f"# {campaign.name}")
+    assert page.startswith("<!doctype html>") and 'data-basis="code_only"' in page and what_runs(page) == []
+    first_line = (out / "report.md").read_text(encoding="utf-8").splitlines()[0]
+    assert first_line == f"# {campaign.name}"
     (bundle,) = out.glob("bundle-*.json")
     assert AnalysisContextBundle.from_json(bundle.read_text(encoding="utf-8")).campaign_id == campaign.id
     assert json.loads((out / "campaign.json").read_text(encoding="utf-8"))["campaign_id"] == campaign.id

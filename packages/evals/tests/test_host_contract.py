@@ -12,10 +12,8 @@ The four companion gates, and where each lives:
 2. **No host names in the shared registry** — ``test_no_host_names_in_shared_contract.py`` runs the
    whole-tree version; the registry-shaped half is here.
 3. **A well-formed empty answer** — the sweepables suite.
-4. **The prompt-purity test** — **only its narrow half is here.** What this file asserts is that
-   the single function turning style into prompt text reads an engine-owned table. Asserting it
-   over an *assembled* generator prompt is a separate check and is not made here. Naming the narrow claim
-   narrowly matters, because a test called "the prompt-purity gate" makes the gap read as covered.
+4. **No style fields** — a host's tone register and caveat kinds were read only by the retired writers' prompts, and
+   ``HostProfile`` takes neither: a host still passing ``style=`` or ``caveat_kinds=`` is refused at construction.
 
 Profiles and observations are really constructed; nothing here is mocked.
 """
@@ -23,20 +21,15 @@ Profiles and observations are really constructed; nothing here is mocked.
 from __future__ import annotations
 
 import ast
+import warnings
 from dataclasses import fields, replace
 from pathlib import Path
-from typing import get_args
 
 import pytest
 
-from threetears.evals.kernel.host import style as style_module
 from threetears.evals.kernel.host.bars import Bar, BarRegistrationError, BarRegistry
 from threetears.evals.kernel.host.measures import MeasureRegistrationError, MeasureRegistry
 from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
-from threetears.evals.kernel.host.style import (
-    StyleProfile,
-    ToneRegister,
-)
 from threetears.evals.kernel.host.sweepables import (
     CANDIDATE_KIND_LEVER,
     CANDIDATE_MODEL_LEVER,
@@ -48,9 +41,9 @@ from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import LeverCoordinateError, derive_variant_identity
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from packages.evals.tests.fixtures.toyhost.corpus import (
-    CLEAN_SWEEP,
-    CONFOUNDED_SWEEP,
-    UNRECORDED_APPARATUS,
+    clean_sweep,
+    confounded_sweep,
+    unrecorded_apparatus,
     toyhost_observation,
 )
 from packages.evals.tests.fixtures.toyhost.profile import (
@@ -89,7 +82,7 @@ def test_the_engine_reads_a_second_hosts_vocabulary_off_the_same_carrier():
     other host, and the engine never learns what a ``chunk_tokens`` is.
     """
     profile = toyhost_profile()
-    values = profile.sweepables.read_all(CLEAN_SWEEP[0])
+    values = profile.sweepables.read_all(clean_sweep()[0])
 
     assert values["chunk_tokens"] == 256
     assert values["reviewer_pool"] == "pool-a"
@@ -105,7 +98,7 @@ def test_a_clean_sweep_over_a_second_hosts_vocabulary_reports_no_confound():
     """
     profile = toyhost_profile()
     sweepables = profile.sweepables
-    observed = [sweepables.read_all(run) for run in CLEAN_SWEEP]
+    observed = [sweepables.read_all(run) for run in clean_sweep()]
     apparatus = [d.name for d in sweepables.declarations if d.role == "apparatus"]
     verdicts = {name: sweepables.comparability(name, [row[name] for row in observed]) for name in apparatus}
 
@@ -123,7 +116,7 @@ def test_a_moved_apparatus_surfaces_with_the_hosts_own_reason_attached():
     """
     profile = toyhost_profile()
     sweepables = profile.sweepables
-    observed = [sweepables.read_all(run) for run in CONFOUNDED_SWEEP]
+    observed = [sweepables.read_all(run) for run in confounded_sweep()]
     verdict = sweepables.comparability("reviewer_pool", [row["reviewer_pool"] for row in observed])
     reason = sweepables.confound_reason("reviewer_pool")
 
@@ -143,7 +136,7 @@ def test_an_unrecorded_apparatus_dimension_is_neither_agreement_nor_difference()
     """
     profile = toyhost_profile()
     sweepables = profile.sweepables
-    observed = [sweepables.read_all(run) for run in UNRECORDED_APPARATUS]
+    observed = [sweepables.read_all(run) for run in unrecorded_apparatus()]
     verdict = sweepables.comparability("ocr_engine_version", [row["ocr_engine_version"] for row in observed])
 
     assert verdict == "unknown"
@@ -357,43 +350,20 @@ def test_a_host_with_no_world_reports_inapplicable_rather_than_uncovered():
     assert answer.state != "uncovered"
 
 
-def test_the_only_style_text_reaching_a_prompt_is_an_engine_owned_fragment():
-    """Style never reaches the model as the host wrote it — the narrow claim, named narrowly.
+def test_the_default_profile_is_built_without_a_warning_and_holds_no_style_field():
+    """The toy host's profile is built without a warning, and a profile has no field a retired writer read."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        toy = toyhost_profile()
 
-    **This is the seam, not the gate**, and its name says which. It asserts that
-    :func:`~threetears.evals.kernel.host.style.prompt_fragment` is the only function turning style into
-    prompt text and that it reads one enum. A gate over the whole ASSEMBLED prompt — where the
-    generator actually builds a prompt for a host — is a different check and is not this one: this
-    one fails when the seam grows a second door, that one would fail when something comes through it.
-
-    This repo has proven prose becomes instruction. The toy host's style differs from the default
-    register, so if it could leak, this profile is what would show it.
-
-    ``tone_register`` is the one field that reaches a prompt, and it reaches it as an
-    **engine-owned fragment** the host selected by key rather than wrote. That is the difference
-    between picking from a list and writing an instruction.
-    """
-    toy = toyhost_profile()
-
-    fragment = style_module.prompt_fragment(toy.style)
-
-    # The engine-owned fragments, read through the one public door: a default profile per register.
-    owned = {style_module.prompt_fragment(StyleProfile(tone_register=register)) for register in get_args(ToneRegister)}
-    assert fragment in owned
+    assert not {"style", "caveat_kinds"} & {f.name for f in fields(toy)}
 
 
-def test_style_has_no_free_text_field_a_prompt_could_read():
-    """Structural enforcement, not a promise: there is no string field to fill with instructions.
-
-    A host that could write a tone sentence could steer the analysis rather than style it. Every
-    field is an engine-owned enum, and this asserts the shape rather than trusting the reviewer of the next
-    field somebody adds.
-    """
-    toy = toyhost_profile()
-
-    assert toy.style.tone_register in get_args(ToneRegister)
-    # The enum is the whole contract: no bare string a host could fill, and no slot nothing reads.
-    assert {field.name for field in fields(StyleProfile)} == {"tone_register"}
+@pytest.mark.parametrize("retired", ["style", "caveat_kinds"])
+def test_passing_a_retired_style_field_is_refused_naming_it(retired: str) -> None:
+    """A host still passing ``style=`` or ``caveat_kinds=`` is refused, the field named, rather than ignored."""
+    with pytest.raises(TypeError, match=retired):
+        replace(toyhost_profile(), **{retired: frozenset({"adjudication_scope"})})
 
 
 def test_a_campaign_bar_looser_than_the_registered_one_is_refused_quoting_the_incumbent():
@@ -699,16 +669,6 @@ def test_a_proposal_with_no_rationale_is_refused_like_a_registered_bar_with_none
         )
 
 
-def test_style_declares_no_locale_because_nothing_formats_by_one():
-    """A field that claims to change formatting and changes nothing is worse than no field.
-
-    No renderer and no number formatter reads a locale, so a host that declared ``de-DE`` got reports
-    formatted as ``en-US`` with nothing telling it so. The slot comes back with the code that honours it.
-    """
-    with pytest.raises(TypeError, match="locale"):
-        StyleProfile(locale="de-DE")  # type: ignore[call-arg]
-
-
 #: Kinds shipped INSIDE the package whose payloads are a schema they define themselves, each key
 #: a constant they own and written by a function they own: ``{module: ((key constant, writer), ...)}``.
 #: A separate lane from the adapter tree's exemption because it is a different claim. An adapter
@@ -718,12 +678,12 @@ def test_style_declares_no_locale_because_nothing_formats_by_one():
 #: different objects); each is registered with its own writer. Admission is checked structurally by
 #: :func:`test_a_self_keyed_payload_reader_reads_only_the_key_it_writes`.
 _SELF_KEYED_PAYLOAD_READERS: dict[str, tuple[tuple[str, str], ...]] = {
-    # The analysis reporter's case is a frozen bundle + recorded memo + labels (ReporterCase),
-    # defined, written and read in this one module.
-    "analysis/reporter_kind.py": (("REPORTER_CASE_KEY", "reporter_case_payload"),),
     # The judge kind's case is a frozen output, criterion and labels (JudgeCase, #628), defined, written and read
     # in this one module; the kind and the freeze in run/judge_kind.py go through its writer and reader.
     "kernel/judge_cases.py": (("JUDGE_CASE_KEY", "judge_case_payload"),),
+    # The report writer's case is a frozen report snapshot and the notes it withholds (WriterCase), defined, written and
+    # read in this one module; the bank mints through its writer and the kind reads through its reader.
+    "ops/report_writer/writer_kind.py": (("WRITER_CASE_KEY", "writer_case_payload"),),
     # An eval's kind hands the runner the caller's case, which the eval stored under its own key
     # in this module, beside a classifier's expected label under another of its own; the payload is this
     # module's schema, not a host's. Separately, a comparison's plainly named arm states its name on
@@ -1056,7 +1016,11 @@ def test_registering_a_lever_is_what_admits_it_to_the_variant_key():
         host_sweepables=toyhost_profile().host_sweepables.extend(
             [
                 Sweepable(
-                    name="a_new_axis", role="lever", read=lambda _run, _results: None, reader_prose="a newly swept knob"
+                    name="a_new_axis",
+                    role="lever",
+                    reader_name="a new axis",
+                    read=lambda _run, _results: None,
+                    reader_prose="a newly swept knob",
                 )
             ]
         ),
@@ -1080,6 +1044,7 @@ def _with_an_open_family() -> HostProfile:
                 Sweepable(
                     name="overlay_bag",
                     role="lever",
+                    member_reader_name=str,
                     read=lambda _run, _results: {},
                     reader_prose="one lever per key the launch overlaid",
                     open_family="an operator may reach any key, so the member names are whatever a campaign asked for",

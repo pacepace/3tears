@@ -156,9 +156,14 @@ class _Replica:
     async def shape_of(self, person: UUID) -> AccessShape:
         return AccessShape.of(await self.members.load_for_user(person))
 
+    async def catch_up(self) -> None:
+        """walk the tables' epochs since this replica's marks, as its generation watch does on each push."""
+        await generation_catchup_tick(self.registry, EpochGenerationReader(self.bus))
+
     async def settle(self) -> None:
         for _ in range(5):
             await asyncio.sleep(0)
+        await self.catch_up()
         await self.answers.settled()
 
 
@@ -231,6 +236,9 @@ async def estate(pool: asyncpg.Pool) -> AsyncIterator[tuple[_Writer, _Replica, _
     await two.start()
     seeded = _Estate()
     await seeded.seed(writer)
+    # every row was heard; the watch on each table walks its epochs and moves the marks the answers are stamped with
+    await one.catch_up()
+    await two.catch_up()
     yield writer, one, two, seeded
 
 

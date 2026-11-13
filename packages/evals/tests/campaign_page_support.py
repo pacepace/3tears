@@ -25,22 +25,15 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     TableBlock,
-    TextBlock,
 )
-from threetears.evals.kernel.authored import (
-    AspectSummary,
-    AuthoredCampaignAnalysis,
-    Finding,
-    NextStep,
-    Recommendation,
-)
+from threetears.evals.analysis.report.words import campaign_arm_tags
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignCall, RateDrop
 
+from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.report_shapes_support import COST_BAR
 from packages.evals.tests.campaign_support import (
     ASSEMBLED_AT,
-    CONTROL_LABEL,
     MeasuredAspect,
     MeasuredKind,
     arms_of,
@@ -96,7 +89,6 @@ async def campaign_fixture(
 
 async def page_of(
     *labels: str,
-    memo: AuthoredCampaignAnalysis | None = None,
     call: CampaignCall | None = None,
     margins: dict[str, float | None] | None = None,
     bundle: Callable[[AnalysisContextBundle], AnalysisContextBundle] = lambda bundle: bundle,
@@ -108,87 +100,54 @@ async def page_of(
     campaign, measured = await campaign_fixture(*labels, margins=margins, **changes)
     bundles = {changed.aspect: changed for changed in (bundle(one.bundle) for one in measured)}
     read = readings(campaign_readings(campaign, bundles, arms=arms_of(measured[0])))
+    tags = campaign_arm_tags(bundles.values(), read.control)
     reports = {
         label: build_code_only_report(
-            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
+            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels(), arm_tags=tags
         )
         for label, evidence in bundles.items()
     }
-    return build_campaign_report(
-        campaign, read, reports, memo, call=call, recommended_variant_key=recorded_key(read, memo)
+    return build_campaign_report(campaign, read, reports, call=call)
+
+
+def kairo_page() -> CampaignReport:
+    """Kairo round 2's campaign page over its committed bundle, as the campaign declared itself then: three arms on one
+    aspect, read code-only."""
+    bundle = kairo_bundle()
+    declared = bundle.declaration
+    campaign = EvalCampaign.model_validate(
+        {
+            "id": bundle.campaign_id,
+            "scope_id": bundle.scope_id,
+            "name": bundle.name,
+            "subject_id": bundle.subject_id,
+            "subject_kind": bundle.subject_kind,
+            "behavior": bundle.behavior,
+            "created_by": declared.declared_by or "unknown",
+            "question": declared.question,
+            "declared_at": declared.declared_at,
+            "declared_by": declared.declared_by or "",
+            "arms": list(declared.arms),
+            "aspects": list(declared.aspects),
+            "floors": list(declared.floors),
+        }
     )
-
-
-def recorded_key(read: CampaignReadings, memo: AuthoredCampaignAnalysis | None) -> str | None:
-    """The key an analysis records for the arm its memo recommends: the arm the readings label so."""
-    recommended = memo.recommended() if memo is not None else None
-    if recommended is None:
-        return None
-    return {label: key for key, label in read.arm_labels().items()}.get(recommended.arm)
-
-
-def two_aspect_memo() -> AuthoredCampaignAnalysis:
-    finding = Finding(
-        title="v2 resolves tone and breaks billing.",
-        body="It passes far more tone requests and far fewer billing ones.",
-        confidence="high",
-        axes=[],
-        evidence=[],
-        trials=[],
-        caveats=[],
-        invalidates=[],
-        durable="",
-    )
-    return AuthoredCampaignAnalysis(
-        findings=[finding],
-        recommendation=[
-            Recommendation(
-                arm=CONTROL_LABEL,
-                reasons=["The billing floor is broken, and billing is where refunds are lost."],
-                confidence="high",
-                rests_on=[0],
-                floors_overridden=[],
-                behind_on=[],
-                bars_missed=[],
-            )
-        ],
-        aspect_summaries=[
-            AspectSummary(
-                aspect="billing",
-                what_changed="v2 fails most billing requests production passes.",
-                how_sure="Shown worse past the margin.",
-                means="Adopting v2 would lose refunds.",
-            ),
-            AspectSummary(
-                aspect="tone",
-                what_changed="v2 answers in the house tone far more often.",
-                how_sure="Shown better.",
-                means="Worth keeping for a later candidate.",
-            ),
-        ],
-        summary=SUMMARY,
-        next=[
-            NextStep(
-                title="Fix the billing prompt and run again.", why="It is the only loss.", leverage="high", lever=""
-            )
-        ],
-    )
-
-
-#: The test memo's read across its aspects.
-SUMMARY = "v2 wins on tone and loses billing, where refunds are lost, so production stays."
+    labels = bundle.readings.arm_labels()
+    reports = {
+        aspect.aspect: build_code_only_report(aspect, assembled_at="2026-10-31T00:00:00+00:00", arm_labels=labels)
+        for aspect in bundle.aspects
+    }
+    return build_campaign_report(campaign, bundle.readings, reports)
 
 
 def opening(page: CampaignReport) -> list[tuple[str, str]]:
-    """What the page says up to its first table, less its warnings and its question: each text block by its role, and
-    each other line by its source and text."""
+    """What the page says up to its first table, less its warnings, its question and the arms line under it: each line
+    by its source and text."""
     said: list[tuple[str, str]] = []
     for block in page.blocks:
         if isinstance(block, TableBlock):
             break
-        if isinstance(block, TextBlock) and block.role != "override":
-            said.append(("text", block.role))
-        elif isinstance(block, DisclosureBlock) and block.source not in {"bar", "floor", "guardrails", "basis"}:
+        if isinstance(block, DisclosureBlock) and block.source not in {"bar", "floor", "guardrails", "basis", "arms"}:
             said.append((block.source, block.text))
     return said
 
@@ -223,47 +182,29 @@ async def kind_fixture(label: str) -> MeasuredKind:
 
 async def kind_page_of(
     *labels: str,
-    memo: AuthoredCampaignAnalysis | None = None,
     bundle: Callable[[AnalysisContextBundle], AnalysisContextBundle] = lambda bundle: bundle,
 ) -> CampaignReport:
     measured = [await kind_fixture(label) for label in labels]
     campaign = joined(measured)
     bundles = {one.bundle.aspect: bundle(one.bundle) for one in measured}
     read = campaign_readings(campaign, bundles, arms=measured[0].arms())
+    tags = campaign_arm_tags(bundles.values(), read.control)
     reports = {
         label: build_code_only_report(
-            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
+            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels(), arm_tags=tags
         )
         for label, evidence in bundles.items()
     }
-    return build_campaign_report(campaign, read, reports, memo, recommended_variant_key=recorded_key(read, memo))
-
-
-def choice_memo(arm: str = "beta") -> AuthoredCampaignAnalysis:
-    memo = two_aspect_memo()
-    recommended = memo.recommended()
-    assert recommended is not None
-    recommendation = recommended.model_copy(update={"arm": arm, "reasons": ["beta costs a quarter as much."]})
-    return memo.model_copy(update={"recommendation": [recommendation], "aspect_summaries": []})
-
-
-def recommending_nothing(summary: str) -> AuthoredCampaignAnalysis:
-    """The test memo recommending no arm, with ``summary`` read across its aspects."""
-    return two_aspect_memo().model_copy(update={"recommendation": [], "aspect_summaries": [], "summary": summary})
+    return build_campaign_report(campaign, read, reports)
 
 
 __all__ = [
-    "SUMMARY",
     "aspect_fixture",
     "campaign_fixture",
-    "choice_memo",
     "first_screen_markdown",
     "header_html",
     "kind_fixture",
     "kind_page_of",
     "opening",
     "page_of",
-    "recommending_nothing",
-    "recorded_key",
-    "two_aspect_memo",
 ]

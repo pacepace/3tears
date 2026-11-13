@@ -28,6 +28,11 @@ from threetears.observe.setup import (
 )
 
 
+#: How often a test collector's ``serve_forever`` looks for a shutdown request. The stdlib's default is half a
+#: second, and ``shutdown()`` blocks until the loop next looks, so every fixture's teardown waited up to that long.
+_SHUTDOWN_POLL_S = 0.01
+
+
 class TestTelemetryConfig:
     """TelemetryConfig dataclass defaults and construction."""
 
@@ -130,7 +135,7 @@ def log_export_handler() -> Iterator[logging.Handler]:
     :rtype: Iterator[logging.Handler]
     """
     collector = ThreadingHTTPServer(("127.0.0.1", 0), _AcceptingCollector)
-    thread = threading.Thread(target=collector.serve_forever, daemon=True)
+    thread = threading.Thread(target=collector.serve_forever, kwargs={"poll_interval": _SHUTDOWN_POLL_S}, daemon=True)
     thread.start()
     before = list(logging.root.handlers)
     config = TelemetryConfig(
@@ -270,15 +275,27 @@ def _unbound_local_port() -> int:
     return port
 
 
+#: how long the log exporter retries a refused export before giving the batch up, through OpenTelemetry's own
+#: setting for it. The exporter waits about 1s then 2s between attempts (each +/-20%) and gives up when the next wait
+#: would pass this budget: at 4s it always makes its second retry and gives up after it, between 2.4s and 3.6s in. That
+#: outlasts the one-second flush the test bounds, so the bound, never the exporter, ends the flush; at 3s the second
+#: wait sometimes does not fit, and the exporter gave up inside the flush. Left at the exporter's default of ten
+#: seconds, teardown waited out the rest of those retries.
+_UNREACHABLE_EXPORT_TIMEOUT_SECONDS = 4
+
+
 @pytest.fixture
-def unreachable_log_export(root_at_info: None) -> Iterator[None]:
+def unreachable_log_export(root_at_info: None, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """log export configured against a collector that refuses every connection.
 
     :param root_at_info: the root logger at INFO for the test's duration
     :ptype root_at_info: None
+    :param monkeypatch: sets the exporter's retry budget for the fixture's duration
+    :ptype monkeypatch: pytest.MonkeyPatch
     :return: nothing
     :rtype: Iterator[None]
     """
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_LOGS_TIMEOUT", str(_UNREACHABLE_EXPORT_TIMEOUT_SECONDS))
     config = TelemetryConfig(
         enabled=True,
         endpoint="http://127.0.0.1:9",
@@ -587,21 +604,59 @@ os._exit(0)
 """
 
 
-#: how long the slow collector holds each export before accepting it: longer than shutdown's flush bound
+#: the longest the slow collector holds an export: longer than shutdown's flush bound, should nothing release it
 _SLOW_COLLECTOR_SECONDS = 4.0
+
+#: what shutdown logs once it has stopped waiting on a flush
+_GAVE_UP = "telemetry flush did not finish within its timeout"
+
+
+class _SlowCollectorServer(ThreadingHTTPServer):
+    """the slow collector's server, carrying the event that lets its held exports go."""
+
+    def __init__(self) -> None:
+        """listen on an ephemeral loopback port, holding every export until :attr:`release` is set."""
+        super().__init__(("127.0.0.1", 0), _SlowCollector)
+        self.daemon_threads = True
+        self.release = threading.Event()
+
+
+class _ReleaseOnGivingUp(logging.Handler):
+    """sets an event once shutdown logs that it stopped waiting on a flush."""
+
+    def __init__(self, release: threading.Event) -> None:
+        """watch for the record that sets ``release``.
+
+        :param release: the event to set
+        :ptype release: threading.Event
+        """
+        super().__init__()
+        self.release = release
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """set the event on shutdown's giving-up record.
+
+        :param record: any record the root logger handles
+        :ptype record: logging.LogRecord
+        :return: nothing
+        :rtype: None
+        """
+        if record.getMessage() == _GAVE_UP:
+            self.release.set()
 
 
 class _SlowCollector(BaseHTTPRequestHandler):
-    """an OTLP/HTTP log collector that accepts every export, but only after holding it a while."""
+    """an OTLP/HTTP log collector that accepts every export, but only once shutdown has stopped waiting on it."""
 
     def do_POST(self) -> None:  # noqa: N802 -- the stdlib's handler naming
-        """accept one export, late.
+        """accept one export, late: once shutdown has given up waiting on it.
 
         :return: nothing
         :rtype: None
         """
         self.rfile.read(int(self.headers.get("Content-Length", "0")))
-        time.sleep(_SLOW_COLLECTOR_SECONDS)
+        assert isinstance(self.server, _SlowCollectorServer)
+        self.server.release.wait(_SLOW_COLLECTOR_SECONDS)
         self.send_response(200)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -622,12 +677,16 @@ class _SlowCollector(BaseHTTPRequestHandler):
 def slow_log_export() -> Iterator[None]:
     """log export configured against a collector that takes longer to accept than shutdown waits.
 
+    The collector holds each export until shutdown logs that it stopped waiting on the flush, so it is slower than
+    shutdown's bound by construction, and is not waited out once that is shown.
+
     :return: nothing
     :rtype: Iterator[None]
     """
-    collector = ThreadingHTTPServer(("127.0.0.1", 0), _SlowCollector)
-    collector.daemon_threads = True
-    thread = threading.Thread(target=collector.serve_forever, daemon=True)
+    collector = _SlowCollectorServer()
+    releasing = _ReleaseOnGivingUp(collector.release)
+    logging.root.addHandler(releasing)
+    thread = threading.Thread(target=collector.serve_forever, kwargs={"poll_interval": _SHUTDOWN_POLL_S}, daemon=True)
     thread.start()
     config = TelemetryConfig(
         enabled=True,
@@ -639,6 +698,8 @@ def slow_log_export() -> Iterator[None]:
         yield
     finally:
         reset_telemetry()
+        logging.root.removeHandler(releasing)
+        collector.release.set()
         collector.shutdown()
         collector.server_close()
 
@@ -658,7 +719,7 @@ class TestShutdownFlushIsBounded:
         gave_up = [
             (record.created - started, getattr(record, "extra_data", {}).get("signal"))
             for record in caplog.records
-            if record.getMessage() == "telemetry flush did not finish within its timeout"
+            if record.getMessage() == _GAVE_UP
         ]
         assert len(gave_up) == 1, gave_up
         waited, signal = gave_up[0]

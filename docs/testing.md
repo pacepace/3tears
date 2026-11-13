@@ -1,8 +1,50 @@
 # Testing 3tears
 
-The four suites, why three of them sit outside `./scripts/test.sh`, how to make the integration
+The suites, why several of them sit outside `./scripts/test.sh`, how to make the integration
 suite run everything it can, and how test fakes declare what they stand in for. The rules are in
 `CLAUDE.md`; this is the detail behind them.
+
+## Run only what you're working on
+
+```bash
+./scripts/test.sh scrape          # one package: packages/scrape/tests/
+./scripts/test.sh agent/memory    # one agent-family package: packages/agent/memory/tests/
+./scripts/test.sh agent           # the whole agent family: packages/agent/
+./scripts/test.sh core -k lease   # one package, narrowed; pytest's options pass through
+./scripts/test.sh evals packages/evals/tests/test_fastmcp_transport.py   # one file, not all of evals
+./scripts/test.sh evals packages/evals/tests/test_fastmcp_transport.py::test_name   # one test
+./scripts/test.sh --not-area evals   # everything but evals, on the pool
+./scripts/test.sh                 # everything
+```
+
+`./scripts/test.sh <package>` runs that package's `tests/` and nothing else, so evals stays out
+unless you name it (`./scripts/test.sh evals`). Name test files or `file.py::name` node ids after
+the package and only those run, on the pool as locally, so a one-file run takes seconds rather
+than the whole package's minutes. A bare `./scripts/test.sh` runs every package and
+the repo-level `tests/`, and evals is most of that test time (roughly four fifths of a full run;
+see "Where the unit suite's time goes" below).
+
+To run everything but evals, select by testament area: `./scripts/test.sh --not-area evals` (or
+`testament run --not-area evals`). Areas are named slices of the one unit suite, declared in
+`.testament.toml`'s `[suites.default.areas]`: `evals`, `enforcement` (`packages/enforcement/` and
+`tests/enforcement/`), `core`, `agent` and `platform` (every other package and the repo-level
+`tests/test_*.py`). `--area NAME` runs one; both repeat. `test.sh` passes them to testament ahead of
+the pytest selection, and they combine with a package or test paths. Only the pool knows the
+areas, so a run that would go local (`TESTAMENT=off`, an environment gate, a flag that keeps it
+local, CI, no testament) refuses them and exits 2; a `-m` goes to the pool with them. On the pool an area costs what its folder does: `--area core` collected
+the same 5,223 tests as `packages/core/tests/` in about the same time (31 s against 30 s), so a
+package run stays a path, which also works locally.
+
+Run everything at the gates: before you open a PR (`./scripts/check-all.sh`, which runs
+`./scripts/test.sh` and the suites below that it does not), and on the integration branch before it
+merges into `develop`. CI runs everything on every PR as well.
+
+`check-all.sh` also runs the two suites CI's `check` job runs beside the unit suite:
+`./scripts/test-mcp-v1.sh` (the MCP packages on mcp 1.x, overlaid on the locked 2.x) and
+`./scripts/test-otel-floor.sh` (observe's OpenTelemetry tests at its declared floors, in an isolated
+environment). Both set their own dependency versions, so they run locally, never on the pool, and
+`test.sh` alone does not cover them: PR #1087 went red in CI on `test-mcp-v1.sh` after every local
+gate was green, because none of them ran it.
 
 ## The sidecar suite
 
@@ -16,21 +58,249 @@ error into `hitl.py` that passed lint, mypy, and the entire workspace suite.
 `./scripts/test.sh` with no package, and CI, run the unit suite under pytest-xdist as
 `-n 4 --dist loadgroup`. The root `conftest.py` puts every test in its package's xdist group, so
 each package runs in one worker in its usual order, and packages run side by side. A
-single-package run (`./scripts/test.sh core`) stays serial. Pass `-n 0` to run the whole suite
-serially, for a debugger or to rule out the parallel run.
+single-package run (`./scripts/test.sh core`) stays serial. On the local route (`TESTAMENT=off`, or
+no testament) pass `-n 0` to run the whole suite serially, for a debugger or to rule out the
+parallel run; on the pool route `test.sh` refuses `-n` on anything wider than named test files.
 
-CI runs the same thing as five sessions, through `./scripts/ci-unit-tests.sh`: evals, core with
-datasources, the agent family, every other package, then `tests/`. A worker's memory only grows
-over its session, and one session over the whole suite grew four workers past the runner's 16 GB,
-so the job was killed with no summary. Each session starts fresh workers, and together they
-collect exactly the tests one session would.
+On GitHub's runners CI runs the same thing as parallel shards, through
+`./scripts/ci-unit-tests.sh --shard <name>`: `evals-1` to `evals-8`, `core` (with datasources),
+`tests`, and `rest` (the agent family and every other package). A worker's memory only grows over
+its session, and one session over the whole suite grew four workers past the runner's 16 GB, so
+the job was killed with no summary. Each session starts fresh workers, and together they collect
+exactly the tests one session would.
 
-Where `testament` is installed (outside CI, unless `TESTAMENT=off`), `test.sh` hands the run to its
-runners instead, and none of the above applies: testament distributes the tests itself, `-n`,
-`-x`, `--maxfail` or `--lf` make it run locally, and a package run there skips its integration
-tests (`.testament.toml` selects `-m "not integration"`). Two kinds of run never go to the pool:
-one gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`, `THREETEARS_EVALS_PAID*`),
-whose tests would skip on runners without it, and one that passes its own `-m`.
+An evals shard runs on one worker (evals is one xdist group), so its wall clock is the sum of its
+tests. pytest-split cuts evals into eight runs of about equal recorded duration, from
+`.test_durations` at the repo root. Refresh that file from the testament pool's history with
+`./scripts/update-test-durations.sh` when the `unit (evals-N)` jobs drift apart; stale entries
+only cost balance, never a test.
+
+Where `testament` is installed (outside CI), `test.sh` hands the run to its
+runners instead (testament 0.45.1 or later: an older client refuses the manifest's
+`fallback` key and runs nothing; upgrade with
+`uv tool install --force --python 3.14 git+ssh://git@github.com/brookstalley/testament@v<version>`,
+where `testament status --json` names the pool's `coordinator_version`), and none of the above applies. Testament distributes the tests itself, and a run
+there leaves out the integration and `loop_timing` tests, and the `docker` and `secrets` ones
+(`.testament.toml` selects `-m "not integration and not loop_timing and not docker and not
+secrets"`; CI runs `loop_timing` serially on its own runner). `docker` marks a test that drives a
+Docker daemon itself, which the pool's image has none of, and `secrets` one that reads a
+credential, which never ships to a runner; both run on this machine
+(`tests/enforcement/test_docker_marker.py` and `test_secrets_marker.py` hold them to it). A
+`-m` given to `test.sh` narrows that selection: testament sends `-m "(<manifest's>) and
+(<yours>)"`. The manifest is `fallback = "pool-only"` (testament 0.45.1 or later): when the pool
+can't take a run, it exits 2 naming the key instead of running the suite on your machine.
+
+`-x`, `--maxfail`, `--lf`, `--ff`, `--sw` and `-n` need one local pytest process, and `-s`,
+`--capture=no`, `--pdb` and `--trace` need this terminal (testament runs those here whatever the
+manifest says), so the pool can't take them either. With only named test files (`.py` files or
+node ids) the run goes local with them; any wider run (a package, a directory) is refused, exit 2,
+with how to run it. A run gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`,
+`TAVILY_API_KEY`) stays local, since its tests would skip on runners without it; that is how the
+live Tavily test runs: `TAVILY_API_KEY=... ./scripts/test.sh search packages/search/tests/test_embedded_smoke.py`. Any other run goes local only with
+`TESTAMENT=off` and a stated reason, `TESTAMENT_OFF_REASON="..."`, which `test.sh` prints; without
+the reason it refuses and exits 2.
+
+### When the pool is down
+
+The rule while the pool can't take runs: **CI's GitHub shards gate the unit suite, CI's
+`integration` job gates the part of the integration suite it covers, and a PR's author runs
+everything else locally.** Nobody runs the whole unit suite on a laptop.
+
+**How it shows.** `./scripts/test.sh` exits 2 and ends with "testament gave no verdict". From
+testament 0.46, testament itself exits 75 when the pool could not serve the run, and 2 for every
+other stop. `test.sh` turns its 75 into 2 and first prints "testament exit 75", so a 75 is always the
+pool. Testament names the cause:
+- `coordinator_unreachable`, `no_runner`, `connection_lost`, `batches_lost` or `env_build_failed`:
+  the pool;
+- `machine_not_set_up`: this machine has no key; `unauthorized` or `revoked`: its key was revoked;
+- `bad_manifest` with "a key it doesn't know may need a newer one": this machine's testament is
+  older than 0.45.1.
+
+`testament run --probe` and `testament status` say whether the pool answers.
+
+**Iterating.** Name the files and run them here:
+`TESTAMENT=off TESTAMENT_OFF_REASON="pool down" ./scripts/test.sh core packages/core/tests/test_x.py`.
+On a machine with room for it (not the laptop), a package works the same way.
+
+**Before a PR.** Run `./scripts/check-all.sh`. With the pool down it still runs lint, typecheck,
+the mcp 1.x, OpenTelemetry-floor and sidecar suites, then fails at the end with "Unit suite NOT
+run" and "Integration suite NOT run". Those lines are expected only when the testament error above
+them is one of the pool or machine causes listed here; any other exit 2 (a `TESTAMENT=off` with no
+reason, `path_not_found`, a crash in the code under test) is yours to fix. Every other check above
+them must be green.
+
+For the integration suite, run the packages your change touches through testcontainers, one at a
+time: `TESTAMENT=off TESTAMENT_OFF_REASON="pool down" ./scripts/test-integration.sh <package> -rs`
+(it needs Docker; the `process_only` modules, which check the pool's own services, are left out). A
+whole run that way is about an hour of containers on a laptop: do it on a machine with room, if at
+all. What needs a laptop either way, pool or not, is `--here` (below). Push: CI's `route` job finds the pool down and runs
+the unit suite on the GitHub shards, and their verdict is the unit gate. To run the whole unit
+suite yourself anyway, use a machine with more memory than a 16 GB CI runner, run it the way CI
+does (`TESTAMENT_OFF_REASON="pool down" ./scripts/ci-unit-tests.sh`, in sessions), and expect
+hours. Never `TESTAMENT=off ./scripts/check-all.sh`: its one session over every package is the run
+that OOM-killed four workers on 16 GB.
+
+**CI.** CI takes the shards on its own when its probe fails, when the client can't be installed,
+or when the run is lost. One case stays red instead: the pool answers the probe and then fails
+every run for its own reasons, for example `env_build_failed` on every branch, or a manifest
+refused after the probe. Then set the repo variable `TESTAMENT_CI` to `off` (*Settings → Secrets
+and variables → Actions → Variables*) and re-run the checks. Delete it when the pool is back.
+
+**Releasing.** Unchanged: `release.yml` runs the GitHub shards and never uses the pool.
+
+**On another machine.**
+- With no testament installed, `test.sh` runs locally, as it always has, and so does
+  `check-all.sh`'s unit step: one session over every package, the run that OOM-killed four workers
+  on 16 GB. On such a machine run the unit suite as CI does instead,
+  `TESTAMENT_OFF_REASON="no pool here" ./scripts/ci-unit-tests.sh`, and the rest of `check-all.sh`'s
+  steps by hand (`lint.sh`, `typecheck.sh`, `test-mcp-v1.sh -q`, `test-otel-floor.sh -q`,
+  `test-sidecar.sh`).
+- With testament installed but not enrolled, holding a revoked key, or older than 0.45.1, every
+  run exits 2. Run named files with `TESTAMENT=off TESTAMENT_OFF_REASON="..."`, or upgrade (above)
+  and enrol (`testament login --console <the pool's console address>`).
+
+**Agents** stop and tell the person. They never rerun a unit-suite package or the whole unit suite
+with `TESTAMENT=off`, never run `ci-unit-tests.sh` or raw `pytest`, and never edit `.testament.toml`.
+Named test files under `TESTAMENT=off` are fine. The integration suite's local route above (one
+package at a time, on a machine with Docker) is for the person to choose: an agent asks first.
+
+### CI on the testament pool
+
+CI's unit + enforcement suite takes one of two routes, and `check` is green only when the route
+that ran to a verdict passed:
+
+- **The testament pool**, one job, `unit (testament pool)`, running
+  `./scripts/ci-unit-pool.sh run`. GitHub's runner only waits.
+- **The GitHub shards** (above), otherwise.
+
+The `route` job chooses, with `./scripts/ci-unit-pool.sh route`. It takes the shards, without
+asking the pool, when the repo variable `TESTAMENT_CI` is `off`; when no `TESTAMENT_KEY` secret
+reached the run (a fork's pull request gets none); when the event is neither a push nor a pull
+request from a branch of this repo (ci.yml withholds the key then too, whatever GitHub's fork
+policy does); or when no `TESTAMENT_COORDINATOR` variable names the pool. Otherwise it installs
+the client and runs `testament run --probe`, which asks the coordinator whether a run is possible:
+the project allowed, a runner connected that can take it, disk to record it. A probe that says no,
+one with no answer within 60 seconds (`TESTAMENT_PROBE_TIMEOUT`), or a client it cannot get, routes
+to the shards too.
+
+**When the pool is down or lost, CI falls back to the shards**, never to testament's own local
+fallback (`--no-fallback`), which would run the whole suite in one session on one runner: that
+OOMs its xdist workers (`ci-unit-tests.sh`'s header) and takes about two hours.
+
+| The probe | The pool's run | What runs | `check` |
+|---|---|---|---|
+| not asked: `TESTAMENT_CI=off`, no key, a fork's PR, no coordinator | | the shards | the shards' verdict |
+| fails, gives no answer within 60 s, or the client can't be had | | the shards | the shards' verdict |
+| passes | passed | the pool | green |
+| passes | failed: a test failed or errored, nothing collected, or any other refusal (`forbidden`, `upgrade_required`, ...) | the pool only | red |
+| passes | unreachable: `coordinator_unreachable`, `connection_lost`, `batches_lost` or `no_runner`, and no test failed; or the client could not be had, so nothing ran | the pool, then the shards | the shards' verdict |
+| passes | the job broke, timed out (75 min) or was cancelled | the pool only | red |
+| `route` itself broke | | nothing | red |
+
+A retryable ending (`coordinator_unreachable`, `connection_lost`, `batches_lost`) runs once more
+before it counts. A fallback found during the run starts the shards only once `unit-pool` ends, so
+that run takes the pool's time plus the shards'. A fallback is never silent: `route` or
+`unit (testament pool)` says why in an annotation and its job summary, and `check` names the route
+that ran and why in both. `tests/test_ci_unit_pool_script.py` pins the script's choices and
+`tests/enforcement/test_ci_unit_shards.py` runs `check`'s verdict against each row.
+
+**To take the shards on purpose**, set the repo's Actions variable `TESTAMENT_CI` to `off`
+(*Settings → Secrets and variables → Actions → Variables*); delete it to go back. The secret stays.
+
+**What the pool runs.** `testament run --suite default --fresh --no-cache --no-fallback -- -m "not
+loop_timing"`. `.testament.toml`'s unit suite, `default` (the manifest is version 3, one table per
+suite; `test.sh` names it too), selects `packages/` and `tests/` with `-m "not integration and not loop_timing
+and not docker and not secrets"`: the tests `ci-unit-tests.sh` partitions, less the `loop_timing`
+ones (below), which this `-m`
+names again. `--fresh` runs every batch in a container started cold from the project's image (one
+per runner, removed when the run ends), so nothing an earlier run left in a warm container reaches
+the required check; it costs a cold start and a full `[setup]` (`uv sync`) on each runner it
+reaches. `--fresh` does not turn off the cache, so `--no-cache` makes every test run rather than
+serving an earlier passing result on the same tree. Every difference from the shard route:
+
+- **Batches, not xdist workers.** The pool runs each batch with `-n 0`, its runners being the
+  parallelism; the shards run `-n 4 --dist loadgroup` inside each session. An `xdist_group` still
+  keeps its tests together on the pool.
+- **`loop_timing`** stays off the pool in CI. Its tests bound the event loop's lateness by wall
+  clock, and in a pool batch beside other work they fail on the runner's load, not the code
+  (#1140). The pool run passes `-m "not loop_timing"`, which testament narrows the manifest's
+  expression with rather than replacing it, and the same `unit (testament pool)` job then runs them
+  serially on its own runner (`./scripts/ci-unit-tests.sh --loop-timing`), as the `rest` shard
+  does. When the pool is lost mid-run it skips that step, since the shards run them. The manifest
+  leaves them out of every pool run too, so a local `test.sh` pool run never meets them;
+  `./scripts/ci-unit-tests.sh --loop-timing` runs them serially here.
+- **`docker` and `secrets`** are left out on the pool; the shards collect them. Every `docker` test
+  is also an integration test, so the shards leave it out too. The `secrets` tests outside the
+  integration set (the live Claude CLI batch, the live Tavily call) skip on the shards, which have
+  neither credential, so neither route runs them.
+- **The environment.** The pool's image (`docker/testament.Dockerfile`: `python:3.14` slim, a
+  pinned uv) with `uv sync --frozen --extra vision`; the shards use `ubuntu-latest`, the latest uv
+  and `uv sync --extra vision` (not frozen). The image also holds Postgres 16 with pgvector (from
+  PGDG, pinned by major) and nats-server 2.14.2 and 2.12.6, for the integration tests to start as
+  child processes once they run on the pool; `scripts/check-test-services.sh` fails the image's build unless they
+  are there and prints their versions (`tests/enforcement/test_testament_image_services.py` holds
+  the pins to the versions the tests name).
+- **The split.** The pool batches by its own planner; the shards split evals by
+  `.test_durations` and the rest by package.
+- **Limits.** A pool batch stops at `batch_timeout_s` (30 min); the pool job at 75 min. A shard has
+  no per-batch limit.
+- **Nothing collected** is a failure on the pool (testament's exit 5); a shard session tolerates it
+  (a session of only integration tests).
+- **History.** The pool records every result under `TESTAMENT_BRANCH`, so `testament` can report
+  on CI runs; the shards record nothing outside the job log.
+- **The browser tests** (the evals render checks, marker `browser`) run on both routes. The pool's
+  image installs headless Chromium with the locked playwright, plus DejaVu, so the package's pages
+  (a local font stack) draw in the dev box's faces rather than a CJK fallback. The evals shards run
+  `playwright install --with-deps --only-shell chromium`, cached by playwright's version. Both run
+  `./scripts/check-fallback-fonts.sh`, which fails unless the generic families resolve to DejaVu, and
+  both set `THREETEARS_REQUIRE_CHROMIUM=1`, so a missing browser fails them instead of skipping them.
+
+**The client.** testament is private and not on PyPI. The console serves its current release's
+wheel at `/api/v1/cli/wheel` to any client key, so no GitHub token for the private repo is needed,
+and the client is always the pool's own version. The response names the wheel's sha256 in a
+header, and the script refuses a file that does not match it or is not a testament wheel: an
+integrity check of the download, not provenance, since one HTTPS response carries both. The trust
+is HTTPS to the console, so the script refuses a `TESTAMENT_CONSOLE` that is not `https://` before
+sending the key, and sends the key to curl on stdin, never in its arguments. The console defaults
+to `https://testament.rodeo.illuminati.org/`; an Actions variable `TESTAMENT_CONSOLE` overrides it.
+
+**The key** is a client key the owner mints in the testament console: People, their own page,
+**+ New client key**, named `ci-3tears`. Store it as the repo's Actions secret `TESTAMENT_KEY`
+(*Settings → Secrets and variables → Actions*), and revoke it there in the console when CI no
+longer needs it. The pool's address is the Actions variable `TESTAMENT_COORDINATOR`. Integration,
+lint, typecheck, the mcp 1.x and OpenTelemetry-floor suites and the attribution check stay on
+GitHub either way.
+
+### Where the unit suite's time goes
+
+testament records every test it runs, so it can say which area is slow, large or sparse. The
+unit suite is one testament suite (`default`), divided into the areas above:
+
+```bash
+testament time --by area --project 3tears --since 7d                 # share of recorded test time per area
+testament trend --by area --project 3tears                           # each area day by day: size, cost of one full run
+testament time --by folder --area evals --depth 4 --project 3tears   # inside one area, file by file
+testament tests slowest --project 3tears --since 7d                  # the slowest tests, mean, median and p90
+testament run --json -- packages/scrape/tests/                       # report.items[]: each test's outcome and duration
+testament areas check --strict                                       # tests in no area, in two, and globs matching none
+```
+
+Without `--project` they cover every project on the pool. A run's summary breaks its time down by
+area, and history is re-sliced by the map in your checkout, so a changed `[suites.default.areas]` needs no rerun.
+`time` shares are of recorded time, so an area that runs more often weighs more. `trend`'s "cost s"
+counts each test once (its inventory times its typical duration), so it is the figure for one full
+run, and the one behind "evals is about four fifths": 13,904 s of 16,887 s (82%) on 2026-11-10.
+
+`platform` names its packages one by one rather than ending in a catch-all `packages/**`: a
+catch-all overlaps every area above it, and `areas check --strict` reports each overlap. A new
+package therefore needs its glob in `[suites.default.areas]`; `tests/enforcement/test_testament_areas_cover_the_tree.py`
+fails until it has one. `areas check` reads the tests recorded in the last 14 days, branches
+included, so a package removed recently can show as unassigned until it ages out (`--since 3d`).
+
+**Totals recorded before 2026-11-09 can be wrong under freezegun.** A test that froze time
+recorded the frozen clock as its duration (one test showed 1.78e9 s, and `packages/core` read as
+88.9% of the suite). testament now times with a monotonic clock (brookstalley/testament#553); if a
+folder reads as billions of seconds, narrow the window with `--since` or read the median.
 
 Two things break under a parallel run that a serial one hides. A fixed `asyncio.sleep` that
 waits for background work loses the race on a loaded machine: wait for the event itself. And a
@@ -39,20 +309,38 @@ the root's per-test reset of process-wide state.
 
 ## The integration suite
 
-`./scripts/test-integration.sh` runs the integration tests. `test.sh` excludes them with
-`-m "not integration"`, and `check-all.sh` does not run them either: they spin real NATS and
-Postgres containers and need Docker, so folding them into the default gate would break it
-wherever Docker is absent. **CI cannot run them at all -- GitHub Actions has no Docker -- so
-nothing but a developer, locally, ever executes them.**
+`./scripts/test-integration.sh` runs the integration tests, and `check-all.sh` runs it where the pool is
+reachable (elsewhere it fails, saying the suite did not run). `test.sh`
+excludes them with `-m "not integration"`. They run on the testament pool: the paths in
+`.testament.toml`'s `[suites.integration]`, against Postgres, NATS and S3 started as child processes
+in the pool's container (`threetears.core.testing.services`, under `THREETEARS_TEST_SERVICES=process`;
+`THREETEARS_REQUIRE_SERVICES=1` makes a missing service fail rather than skip). Nothing runs on the
+laptop; `--dry-run` prints the command.
 
-**Run them before any PR.** Cross-pod behaviour lives entirely there, and a green
-`check-all.sh` says nothing about it. `project-state.yaml` lists this as the third declared test
-command, so recorded evidence that omits it covers two suites out of three.
+`./scripts/test-integration.sh --here` runs the rest on this machine: the tests marked `docker` (the
+scrape sidecar pipe, SearXNG scoring, the nats lame-duck handover in Docker) and `secrets` (Redshift,
+the live Claude CLI batch, Tavily). Run it when a change touches scrape, search, the nats lame-duck
+handover or a credentialed package; without the credential a `secrets` test skips, naming it.
+`tests/enforcement/test_integration_suite_selection.py` holds the two lists to every integration test.
+
+**CI runs only part of the suite:** its `integration` job covers core, nats, epoch, scheduled-jobs
+and agent/acl against Postgres and NATS service containers.
+
+The evals render tests are not here. They need headless Chromium, not Docker, so they carry the
+`browser` marker and run in the unit suite: on the testament pool and on the GitHub evals shards of
+`ci.yml` and `release.yml` (above).
+A local run without Chromium skips them; `-m "not browser"` leaves them out.
+
+**Run them before any PR** (`check-all.sh` does, where the pool is reachable). Cross-pod behaviour lives entirely there.
+`project-state.yaml` lists this as the third declared test command, so recorded evidence that omits
+it covers two suites out of three.
 
 ### A skip is not a pass
 
-The suite exits 0 with tests skipped, so a skipped test reads exactly like a passing one in the
-summary line. Run it as `./scripts/test-integration.sh -rs` and account for every skip.
+A run that exits 0 with tests skipped reads exactly like one that ran them all. On the pool the
+suite fails a skip at runtime (`THREETEARS_REQUIRE_SERVICES=1`, `tests/require_services.py`); its one
+accepted skip is the datasources microbenchmark, an unconditional `@pytest.mark.skip`. For
+`--here`, and any run taken off the pool, run with `-rs` and account for every skip.
 
 This is not hypothetical: `test_a_real_display_is_driven_through_the_pipe` was unpassable on
 every machine for three weeks after the 2026-08-18 change that defaulted the sidecar's
@@ -63,7 +351,7 @@ noticed. It surfaced only when a release stopped to ask why 35 tests were skippi
 
 ### Build the sidecar image first
 
-Or its integration tests skip:
+Before `--here`, or the sidecar pipe test skips:
 
 ```bash
 docker buildx bake --file docker-bake.hcl nodriver-sidecar \
@@ -82,9 +370,12 @@ integration tests fail rather than skip. A native build passes.
 
 ### Legitimate skips on a dev box
 
-They need credentials or tools this repo does not ship: the Redshift live tests
-(`OTS_REDSHIFT_PASSWORD`), the backup suites (`pg_dump`/`pg_restore`/`psql` on PATH), the live
-Claude CLI batch (below), and one deliberate manual microbenchmark. Anything else is a test turned off by accident. When reporting
+In `--here`, the `secrets` tests without their credential: the Redshift live tests
+(`OTS_REDSHIFT_PASSWORD`), the live Claude CLI batch (below) and Tavily (`TAVILY_API_KEY`); the
+sidecar pipe without its image; and on the pool, the one deliberate manual microbenchmark. A run of
+the suite taken off the pool (`TESTAMENT=off`) also skips the backup suites without
+`pg_dump`/`pg_restore`/`psql` on PATH; any major from 16 up works there, since the test server
+follows the client's major. On the pool the image carries 16, and a missing tool fails. Anything else is a test turned off by accident. When reporting
 results, state the pass count AND the remaining skips with their reasons -- "integration green"
 on its own is not a report.
 
@@ -103,25 +394,30 @@ already saw; this is the one that shows what a real model does. The release runs
 tagging anything that touches `packages/models`, and pastes the line the script records into
 the release PR (`docs/releasing.md`, "Cutting a release").
 
-## The evals paid lane: one analysis by a real model
+## The hot-path oracle's goldens
 
-`packages/evals/tests/test_paid_analysis_generation.py` (marker `paid`) assembles the toy host's
-bundle and has a real model write its analysis with the seed writer prompt and the authored
-response schema. It asserts the analysis round-trips the stored contract, every finding's evidence
-resolved to a reading code filled in, and no repair loop exhausted; a second test sends the contract
-with a required field removed and asserts the lane fails. Every other generator test answers with a
-fixtured completion, so a prompt, schema or fixture defect shows up only here.
+`packages/evals/tests/test_hot_path_oracle.py` reads five campaigns the way a host reads them and
+compares every bundle, fingerprint and report body with its golden in
+`packages/evals/tests/fixtures/hot_path_oracle/<campaign>.json`. Its module docstring says what each
+golden holds.
 
-It spends money, so it is opt-in: `THREETEARS_EVALS_PAID=1 ./scripts/test.sh evals -m paid -rs`,
-with `ANTHROPIC_API_KEY` set. Without the flag, or without a key, both tests skip; they never fail
-for want of one. `THREETEARS_EVALS_PAID_MODEL` picks the writer (default `claude-opus-5-5`). Each call
-is priced at its worst case before it is sent and refused unsent past the lane's ceiling
-(`SPEND_CEILING_USD`, $5; a typical run is two calls at well under a dollar each on the default
-writer). CI runs it (`.github/workflows/evals-paid.yml`) on a PR touching `analysis/generator.py`,
-`analysis/gen_prompt.py`, `kernel/authored.py` or the toy-host fixture, behind the `evals-paid`
-environment's approval gate; there a missing key fails the job rather than skipping. The job is
-skipped unless the repository variable `EVALS_PAID_ENABLED` is `true`, which it is not until the
-environment has its reviewers and key.
+**Goldens move only when a change to a page is intended** (owner ruling, 2026-11-06):
+
+1. Regenerate with `HOT_PATH_ORACLE_REGEN=1`, locally and on one process:
+   `TESTAMENT=off TESTAMENT_OFF_REASON="regenerating the hot-path goldens" HOT_PATH_ORACLE_REGEN=1
+   ./scripts/test.sh evals -k hot_path_oracle`. Each
+   regenerating test fails, naming the entries it moved with their sizes before and after.
+2. Review the golden diff line by line (`git diff packages/evals/tests/fixtures/hot_path_oracle`).
+3. State the reason in the commit and in the chunk report.
+4. Never regenerate to make a red go away. A red means a change moved what a host reads.
+
+A campaign with a platform override (its pool slots and the dev container's differ) has its pool slots
+written from the pool run's own red: copy each slot's `OBSERVED` record into the golden, and only when
+its byte count matches the local regeneration of the same entry.
+
+A release bump moves no golden. The version of 3tears-evals that read a page is the build, not
+the page's content. The oracle puts one fixed version in its place, in the bundle's
+`package_version` and in the code-only page's methods table, before it compares.
 
 ## Test fakes
 

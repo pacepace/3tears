@@ -25,7 +25,6 @@ from typing import Any
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TelemetryRollup
 from threetears.evals.analysis.lenses.comparison_sets import ComparisonSetsResult
 from threetears.evals.analysis.lenses.frontier import FrontierResult
-from threetears.evals.kernel.authored import AuthoredCampaignAnalysis, Recommendation
 from threetears.evals.schema.campaign_upgrade import upgrade_campaign_v15
 from threetears.evals.kernel.campaign import (
     AspectAnalysis,
@@ -659,27 +658,28 @@ def empty_bundle(**overrides: Any) -> AnalysisContextBundle:
     return AnalysisContextBundle(**fields)
 
 
-def empty_document(**overrides: Any) -> AuthoredCampaignAnalysis:
-    """A memo with nothing in it but a recommendation to keep the control, resting on no finding."""
+def empty_document(**overrides: Any) -> dict[str, Any]:
+    """A memo as the retired memo writer stored one, as JSON: nothing in it but a recommendation to keep the control,
+    resting on no finding."""
     fields: dict[str, Any] = dict(
         findings=[],
         recommendation=[
-            Recommendation(
-                arm="control",
-                reasons=[],
-                confidence="low",
-                rests_on=[],
-                floors_overridden=[],
-                behind_on=[],
-                bars_missed=[],
-            )
+            {
+                "arm": "control",
+                "reasons": [],
+                "confidence": "low",
+                "rests_on": [],
+                "floors_overridden": [],
+                "behind_on": [],
+                "bars_missed": [],
+            }
         ],
         aspect_summaries=[],
         summary="Nothing here moves the control.",
         next=[],
     )
     fields.update(overrides)
-    return AuthoredCampaignAnalysis(**fields)
+    return fields
 
 
 def analysed_aspect(bundle: AnalysisContextBundle | None = None, **overrides: Any) -> AspectAnalysis:
@@ -696,7 +696,7 @@ def analysed_aspect(bundle: AnalysisContextBundle | None = None, **overrides: An
 
 
 def make_analysis(**overrides: Any) -> EvalAnalysis:
-    """Create an ``EvalAnalysis`` in the default scope with an empty memo over one aspect's empty bundle."""
+    """Create an ``EvalAnalysis`` in the default scope with an empty stored memo over one aspect's empty bundle."""
     campaign_id = overrides.get("campaign_id", "campaign-1")
     aspect = analysed_aspect(empty_bundle(campaign_id=campaign_id))
     fields: dict[str, Any] = dict(
@@ -733,9 +733,10 @@ def make_analysis(**overrides: Any) -> EvalAnalysis:
     )
     fields.update(overrides)
     if "recommended_variant_key" not in overrides:
-        # The variant the memo's arm resolves to, as code stores it: set exactly when the memo recommends an arm.
-        recommended = fields["document"].recommended()
-        fields["recommended_variant_key"] = None if recommended is None else f"variant-of-{recommended.arm}"
+        # The variant the memo's arm resolves to, as the memo writer stored it: set exactly when it recommended an arm.
+        document = fields["document"]
+        recommended = (document or {}).get("recommendation") or []
+        fields["recommended_variant_key"] = f"variant-of-{recommended[0]['arm']}" if recommended else None
     return EvalAnalysis(**fields)
 
 

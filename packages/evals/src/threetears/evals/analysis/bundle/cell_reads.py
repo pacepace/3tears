@@ -36,7 +36,8 @@ from threetears.evals.kernel.declaration import (
 )
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import describe_rubric_dim
-from threetears.evals.schema.models import SCALES, EvalResult
+from threetears.evals.schema.models import SCALES, rubric_dim_scale
+from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.kernel.result_condition import (
     DIFFERENTIAL_EXCLUSION_SHARE,
     JUDGE_CANNOT_TELL_OUTCOME,
@@ -79,7 +80,7 @@ def _cell_collections(cell: CellFacts) -> Iterator[MeasureCollection]:
         yield stratum.measures
 
 
-def _results_by_cell(cells: list[Cell], results: list[EvalResult]) -> dict[_CellKey, list[EvalResult]]:
+def _results_by_cell(cells: list[Cell], results: list[ResultView]) -> dict[_CellKey, list[ResultView]]:
     """Each cell's results, keyed by its two coordinates — the arms every per-arm surface here reads.
 
     Read off the cell algebra rather than re-grouped, so a per-arm number can only ever describe a
@@ -88,10 +89,10 @@ def _results_by_cell(cells: list[Cell], results: list[EvalResult]) -> dict[_Cell
     :param cells: The pooled cells.
     :ptype cells: list[Cell]
     :param results: Every resolved member result.
-    :ptype results: list[EvalResult]
+    :ptype results: list[ResultView]
     :return: ``{(variant_key, apparatus_class_id): [result, ...]}`` in coordinate order, each list in
         result-id order.
-    :rtype: dict[_CellKey, list[EvalResult]]
+    :rtype: dict[_CellKey, list[ResultView]]
     """
     by_id = {result.id: result for result in results}
     return {
@@ -103,7 +104,7 @@ def _results_by_cell(cells: list[Cell], results: list[EvalResult]) -> dict[_Cell
     }
 
 
-def _member_run_ids(members: list[EvalResult]) -> list[str]:
+def _member_run_ids(members: list[ResultView]) -> list[str]:
     """The runs a cell's results came from, sorted — what a per-arm surface names as citable.
 
     Read off the cell's own results rather than joined back through a run's configuration,
@@ -113,7 +114,7 @@ def _member_run_ids(members: list[EvalResult]) -> list[str]:
     verdict on one cell cannot name different runs.
 
     :param members: One cell's results, from :func:`_results_by_cell`.
-    :ptype members: list[EvalResult]
+    :ptype members: list[ResultView]
     :return: The distinct ``eval_run_id`` values, sorted.
     :rtype: list[str]
     """
@@ -154,7 +155,7 @@ def _judged_rows(records: list[ScoreRecord]) -> Iterator[tuple[str, ScoreRecord]
 
 def _judged_measures(
     records: list[ScoreRecord],
-    results_by_cell: dict[_CellKey, list[EvalResult]],
+    results_by_cell: dict[_CellKey, list[ResultView]],
     design: AspectDesign | None,
     *,
     tiers: list[JudgeEvidenceTier],
@@ -170,7 +171,7 @@ def _judged_measures(
     :param records: The assembly's score projection rows.
     :ptype records: list[ScoreRecord]
     :param results_by_cell: Each cell's results, from :func:`_results_by_cell`.
-    :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
+    :ptype results_by_cell: dict[_CellKey, list[ResultView]]
     :param design: The campaign's declaration, for the bar naming a dimension.
     :ptype design: AspectDesign | None
     :param tiers: The judges' evidence tiers; each arm carries the weakest among the judges that served its
@@ -200,8 +201,10 @@ def _judged_measures(
         }
         if len(scales) > 1:
             raise ValueError(f"rubric dimension {dimension!r} was judged on more than one scale: {sorted(scales)}")
-        # The dual-score axes carry no `rubric_scale` (they are not template dims) and are 1-5.
-        descriptor = describe_rubric_dim(dimension, scale=next(iter(scales), "ordinal"))
+        # The dual-score axes carry no `rubric_scale` (they are not template dims) and are 1-5 by construction; every
+        # template dim's row carries the scale it was answered on, and one carrying none is refused, never read as 1-5.
+        recorded = {dimension: scale for scale in scales}
+        descriptor = describe_rubric_dim(dimension, scale=rubric_dim_scale(dimension, recorded))
         arms = []
         for key in sorted(scored[dimension]):
             rows = scored[dimension][key]
@@ -259,7 +262,7 @@ def _judged_measures(
 def _prediction_powered(
     dimension: str,
     valued: list[ScoreRecord],
-    result_by_id: Mapping[str, EvalResult],
+    result_by_id: Mapping[str, ResultView],
     person_scores: Mapping[tuple[str, str], Sequence[int]],
     *,
     value_range: tuple[float, float] | None,
@@ -276,7 +279,7 @@ def _prediction_powered(
     :param valued: The arm's counted, valued score rows on it.
     :ptype valued: list[ScoreRecord]
     :param result_by_id: Every result read, by id.
-    :ptype result_by_id: Mapping[str, EvalResult]
+    :ptype result_by_id: Mapping[str, ResultView]
     :param person_scores: People's scores per ``(result_id, dimension)``.
     :ptype person_scores: Mapping[tuple[str, str], Sequence[int]]
     :param value_range: The dimension's scale, which the interval is clipped to.
@@ -332,7 +335,7 @@ def _prediction_powered(
     )
 
 
-def _boundary_dimensions(results: Iterable[EvalResult]) -> set[str]:
+def _boundary_dimensions(results: Iterable[ResultView]) -> set[str]:
     """The judged dimensions any of ``results`` was scored on as a boundary dimension — the judged guardrails.
 
     Any one boundary score makes the dimension a guardrail: a dimension stamped both ways was declared a
@@ -341,7 +344,7 @@ def _boundary_dimensions(results: Iterable[EvalResult]) -> set[str]:
     return {score.dim for result in results for score in result.rubric_scores if score.axis == "boundary"}
 
 
-def _non_faulted(members: list[EvalResult]) -> list[EvalResult]:
+def _non_faulted(members: list[ResultView]) -> list[ResultView]:
     """A cell's results the harness did not fault — the one population every bar is adjudicated over.
 
     See :class:`BarVerdict` for why. Held as one function so the three kinds of bar name cannot
@@ -350,7 +353,7 @@ def _non_faulted(members: list[EvalResult]) -> list[EvalResult]:
     return [result for result in members if not harness_faulted(result)]
 
 
-def _candidate_failed(members: list[EvalResult]) -> int:
+def _candidate_failed(members: list[ResultView]) -> int:
     """How many of a cell's results the candidate failed, for any cause — each counted against the arm.
 
     By :func:`~threetears.evals.kernel.result_condition.classify_result`, the rule every rate and bar
@@ -359,7 +362,7 @@ def _candidate_failed(members: list[EvalResult]) -> int:
     return sum(1 for result in members if classify_result(result) is ResultOutcome.CANDIDATE_FAIL)
 
 
-def _took_no_turn(members: list[EvalResult]) -> bool:
+def _took_no_turn(members: list[ResultView]) -> bool:
     """Whether a cell's results include a failure and no turn — the reading :attr:`CellFacts.all_failed` makes.
 
     Read off the results, for the lenses that hold them rather than the cell's facts, by the same predicate
@@ -368,7 +371,7 @@ def _took_no_turn(members: list[EvalResult]) -> bool:
     return _no_turn(members) > 0 and not any(delivered_a_turn(result) for result in members)
 
 
-def _no_turn(members: list[EvalResult]) -> int:
+def _no_turn(members: list[ResultView]) -> int:
     """How many of a cell's failures took no turn — the ones its cost and latency readings left out.
 
     Exactly the candidate failures outside
@@ -382,7 +385,7 @@ def _no_turn(members: list[EvalResult]) -> int:
     )
 
 
-def _arm_exclusions(results_by_cell: Mapping[_CellKey, list[EvalResult]]) -> list[ArmExclusions]:
+def _arm_exclusions(results_by_cell: Mapping[_CellKey, list[ResultView]]) -> list[ArmExclusions]:
     """Each arm's excluded trials by cause, and the caps the truncated ones' judge calls were sent.
 
     One entry per cell, in coordinate order, over every result the cell holds, each classified once by
@@ -392,7 +395,7 @@ def _arm_exclusions(results_by_cell: Mapping[_CellKey, list[EvalResult]]) -> lis
     it was sent; one that reported nothing makes the arm's cap unreported rather than guessed.
 
     :param results_by_cell: Each cell's results (:func:`_results_by_cell`).
-    :ptype results_by_cell: Mapping[_CellKey, list[EvalResult]]
+    :ptype results_by_cell: Mapping[_CellKey, list[ResultView]]
     :return: The arms' exclusions.
     :rtype: list[ArmExclusions]
     """
@@ -463,7 +466,7 @@ def _differential_exclusions(arms: Sequence[ArmExclusions]) -> list[Differential
     return flags
 
 
-def _cannot_tell_on(bar: BarName, counted: list[EvalResult], judged_rows: dict[str, list[ScoreRecord]]) -> int:
+def _cannot_tell_on(bar: BarName, counted: list[ResultView], judged_rows: dict[str, list[ScoreRecord]]) -> int:
     """How many of a cell's counted results the judge could not score on a judged bar's dimension."""
     if bar.kind != "judged":
         return 0
@@ -509,7 +512,7 @@ _StratumKey = str | None
 
 
 def _cell_strata(
-    results_by_cell: dict[_CellKey, list[EvalResult]],
+    results_by_cell: dict[_CellKey, list[ResultView]],
     stratum_of_case: dict[str, str | None],
     records: list[ScoreRecord],
     design: AspectDesign | None,
@@ -529,7 +532,7 @@ def _cell_strata(
     case of it.
 
     :param results_by_cell: Each cell's results, from :func:`_results_by_cell`.
-    :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
+    :ptype results_by_cell: dict[_CellKey, list[ResultView]]
     :param stratum_of_case: The stratum each case declares, by case id; a case that did not resolve is absent
         and reads as declaring none.
     :ptype stratum_of_case: dict[str, str | None]
@@ -548,7 +551,7 @@ def _cell_strata(
         cell's coordinates.
     :rtype: dict[_CellKey, list[StratumFacts]]
     """
-    by_stratum: dict[_StratumKey, dict[_CellKey, list[EvalResult]]] = {}
+    by_stratum: dict[_StratumKey, dict[_CellKey, list[ResultView]]] = {}
     for key, members in results_by_cell.items():
         if not any(stratum_of_case.get(result.test_case_id) is not None for result in members):
             continue
@@ -585,7 +588,7 @@ def _cell_strata(
 
 def _cell_measures(
     cells: list[Cell],
-    results_by_cell: dict[_CellKey, list[EvalResult]],
+    results_by_cell: dict[_CellKey, list[ResultView]],
     judged_measures: list[JudgedMeasure],
     *,
     strata: dict[_CellKey, list[StratumFacts]],
@@ -612,7 +615,7 @@ def _cell_measures(
     :param cells: The pooled cells, for their replication.
     :ptype cells: list[Cell]
     :param results_by_cell: Each cell's results, from :func:`_results_by_cell`.
-    :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
+    :ptype results_by_cell: dict[_CellKey, list[ResultView]]
     :param judged_measures: The bundle's judged measures, from :func:`_judged_measures`.
     :ptype judged_measures: list[JudgedMeasure]
     :param strata: Each broken-down cell's strata, from :func:`_cell_strata`; a cell absent from it carries none.

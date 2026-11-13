@@ -6,17 +6,136 @@ so the budget a program reads is the money it spent rather than the money behind
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Protocol
 
-from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES
+from pydantic import create_model
+
+from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel
+from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalResult
 from threetears.evals.analysis.reporting import _subject_id_of, pooled_cost_compositions
+from threetears.evals.kernel.result_reading import RescoreReading, RescoreView
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import (
-        EvalResult,
-        EvalRun,
-    )
+    from threetears.evals.schema.models import EvalRun
+
+
+class SpendView(Protocol):
+    """A result as the spend views read it: its run, its blended spend, its re-judges' spend and what its spend sums.
+
+    A stored :class:`~threetears.evals.schema.models.EvalResult` and its compact reading satisfy it, and so does
+    :class:`ResultSpend`, the figures alone, which the spend views read off a grouped read of the store.
+    """
+
+    @property
+    def eval_run_id(self) -> str: ...
+    @property
+    def cost_usd(self) -> float | None: ...
+    @property
+    def judge_rescores(self) -> Sequence[RescoreView]: ...
+    @property
+    def cost_roles(self) -> Sequence[str] | None: ...
+
+
+#: The spend fields of a stored result, read off its row by the spend lenses.
+_SPEND_FIELDS = ("eval_run_id", "cost_usd", "judge_rescores", "cost_roles")
+
+#: The stored read of a result narrowed to its spend fields: a part of a result's document, with no ``doc_type`` field
+#: of its own (so it is no second stored model of the result's type; the row's ``doc_type`` names it in a refusal),
+#: its fields the result's own definitions (types, bounds and validators), so its :meth:`~CoreDocumentModel.from_dict`
+#: refuses what the result's does, a version or minor this build does not read included, with the same
+#: ``ValidationError``. Named as the result is, so a refusal reads as the result's.
+_STORED_SPEND_FIELDS: dict[str, Any] = {
+    name: (EvalResult.model_fields[name].annotation, EvalResult.model_fields[name])
+    for name in ("schema_version", "schema_minor", *_SPEND_FIELDS)
+}
+_StoredSpend: type[CoreDocumentModel] = create_model(
+    "EvalResult", __base__=CoreDocumentModel, __module__=__name__, **_STORED_SPEND_FIELDS
+)
+
+#: A version field the caller did not read off the row.
+_UNREAD: Any = object()
+
+
+@dataclass(frozen=True, slots=True)
+class ResultSpend:
+    """One stored result's spend figures (:class:`SpendView`), read off its stored row without hydrating it.
+
+    :ivar eval_run_id: The run it belongs to.
+    :ivar cost_usd: Its blended spend, or ``None`` where it went unpriced.
+    :ivar judge_rescores: Each re-judge's spend.
+    :ivar cost_roles: The roles its blended spend sums, or ``None`` where the row names none.
+    """
+
+    eval_run_id: str
+    cost_usd: float | None
+    judge_rescores: tuple[RescoreReading, ...]
+    cost_roles: tuple[str, ...] | None
+
+    @classmethod
+    def of_stored(
+        cls,
+        eval_run_id: Any,
+        cost_usd: Any,
+        judge_rescores: Any,
+        cost_roles: Any,
+        *,
+        schema_version: Any = _UNREAD,
+        schema_minor: Any = _UNREAD,
+    ) -> ResultSpend:
+        """The figures as a stored row holds them, read as strictly as the row's hydration reads them.
+
+        Validated by the stored read of a result narrowed to these fields, with the result's own field definitions: a
+        value a hydrated result refuses (a negative spend, a role this build does not know, a malformed re-judge, a
+        version this build does not read) is refused here with the same ``ValidationError``, and a value it coerces (a
+        JSON integer spend read as a float) is coerced alike.
+
+        **A grouped read cannot tell a null from an absent field**, so neither can this: an explicit null
+        ``judge_rescores`` or ``schema_minor`` is read as absent and accepted (no re-judges; this build's minor), and an
+        absent ``cost_usd`` is read as null, unpriced, where :meth:`EvalResult.from_dict` refuses each of the three. No
+        writer produces such a row: every result is written by its model's dump, which writes each of them.
+
+        :param eval_run_id: The row's ``eval_run_id``.
+        :ptype eval_run_id: Any
+        :param cost_usd: The row's ``cost_usd``.
+        :ptype cost_usd: Any
+        :param judge_rescores: The row's ``judge_rescores``, each re-judge as stored; only its ``cost_usd`` is kept. An
+            absent list is an empty one, as the field's default reads it.
+        :ptype judge_rescores: Any
+        :param cost_roles: The row's ``cost_roles``.
+        :ptype cost_roles: Any
+        :param schema_version: The row's ``schema_version``; left unread, the version this build writes.
+        :ptype schema_version: Any
+        :param schema_minor: The row's ``schema_minor``; left unread (or absent from the row), the minor this build
+            writes.
+        :ptype schema_minor: Any
+        :return: The figures.
+        :rtype: ResultSpend
+        :raises ValidationError: The figures, or the row's version, are ones a stored result's read refuses.
+        """
+        space = _StoredSpend.version_space
+        # A grouped read reads an absent field as null: each field but the spend (whose null is "unpriced") is left out
+        # when null, so it is read as the stored row's absence is read.
+        row: dict[str, Any] = {
+            "doc_type": "eval_result",
+            "schema_version": space.version if schema_version is _UNREAD else schema_version,
+            "cost_usd": cost_usd,
+        }
+        present = {
+            "eval_run_id": eval_run_id,
+            "cost_roles": cost_roles,
+            "judge_rescores": judge_rescores,
+            "schema_minor": None if schema_minor is _UNREAD else schema_minor,
+        }
+        row.update({name: value for name, value in present.items() if value is not None})
+        read: Any = _StoredSpend.from_dict(row)
+        return cls(
+            eval_run_id=read.eval_run_id,
+            cost_usd=read.cost_usd,
+            judge_rescores=tuple(RescoreReading(cost_usd=rescore.cost_usd) for rescore in read.judge_rescores),
+            cost_roles=tuple(read.cost_roles),
+        )
 
 
 # A run whose status a quality view drops BY DEFAULT. The read-tier quality
@@ -143,7 +262,7 @@ class ProgramBudget(EvalBaseModel):
     n_unpriced: int = 0
 
 
-def compute_program_budget(runs: list[EvalRun], results: list[EvalResult]) -> ProgramBudget:
+def compute_program_budget(runs: list[EvalRun], results: Sequence[SpendView]) -> ProgramBudget:
     """Sum program-lens spend per run over a scope, excluding nothing.
 
     Deliberately does **not** route through :func:`project_score_records`: that
@@ -158,7 +277,7 @@ def compute_program_budget(runs: list[EvalRun], results: list[EvalResult]) -> Pr
     :ptype runs: list[EvalRun]
     :param results: Every result in the scope. A result's ``cost_usd`` and its
         re-judge spend are attributed to its ``eval_run_id``.
-    :ptype results: list[EvalResult]
+    :ptype results: Sequence[SpendView]
     :return: A :class:`ProgramBudget` — one :class:`BudgetRun` per listed run (zero
         cost for a run with no results), the cumulative series, and the
         incomplete-spend / unattributed-spend accounting that keeps the total
@@ -173,7 +292,7 @@ def compute_program_budget(runs: list[EvalRun], results: list[EvalResult]) -> Pr
     # Grouped alongside the dollars rather than looked up per row later, so a row's
     # disclosure is derived from the same results its total was summed from and the two
     # cannot come to describe different sets.
-    results_by_run: dict[str, list[EvalResult]] = {}
+    results_by_run: dict[str, list[SpendView]] = {}
     # A re-judge's spend rides with the result it re-scored: real program spend on that run,
     # which the result's own ``cost_usd`` deliberately leaves out.
     rejudge_cost = 0.0
@@ -247,4 +366,6 @@ __all__ = [
     "BudgetRun",
     "compute_program_budget",
     "ProgramBudget",
+    "ResultSpend",
+    "SpendView",
 ]

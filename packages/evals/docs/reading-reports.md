@@ -9,12 +9,17 @@ tiers). Terms such as campaign, arm and analysis are defined in [Concepts](conce
 
 Every campaign is read through one **page**, and every door into it returns the same one: the quick path's
 `result.page`, the command line's `report`, the `report_read` operation behind the MCP action, and
-`campaign_report(host, campaign_id, scope_id)`. It opens on the campaign's first screen, the whole decision at a
-glance, and then holds one fold per aspect, each that aspect's own page. Each door builds it with the one builder over
-the campaign's evidence, so none adds, drops or reorders anything. Most of what a reader needs is countable — who
-ran, what got lost and why, which case failed, what the judge said — so code writes all of it; a model's analysis,
-when one was written, adds only a summary across the aspects, findings and a recommendation, each finding and the
-recommendation pinned to the evidence it rests on.
+`campaign_report(host, campaign_id, scope_id)`. Each door builds it with the one builder over the campaign's
+evidence, so none adds, drops or reorders anything. Which page that is depends on what was written over the campaign:
+
+- **The analyst's page**, once a report was written (`analysis_generate`): the report document an analyst model wrote
+  over a frozen snapshot, with every number code's and every part no analyst writes drawn by code
+  ([the analyst's report](#the-analysts-report-written-over-frozen-evidence)).
+- **The code-only page**, before one is: everything countable — who ran, what got lost and why, which case failed,
+  what the judge said — written by code. It opens on the campaign's first screen, the whole decision at a glance, and
+  then holds one fold per aspect, each that aspect's own page. The rest of this section describes it. A campaign
+  whose analysis a retired writer wrote reads as this page, its first screen saying so
+  ([reports a retired writer wrote](#reports-a-retired-writer-wrote)).
 
 ```python
 page = result.page                                           # the quick path
@@ -22,127 +27,144 @@ page = campaign_report(host, campaign_id, scope_id)          # a host
 files = page.write("eval-report")  # report.html, report.md, campaign.json, bundle-<aspect>.json
 ```
 
-`report.html` needs nothing beside it: no script, no stylesheet, no image, no URL but `#` links to places on the
-page; its marks are inline SVG, and drill-down is `<details>`. `report.md` is the same page as Markdown, each mark
-printed as the text it draws. `campaign.json` is the page's machine form: code's readings, the recommendation's arm
-(by label and variant key) and confidence, the call, and each aspect's bundle by its fingerprint
-([its shape](serving.md#the-campaign-json)). Each aspect's evidence bundle is written whole beside it as `bundle-<aspect>.json`, with its `schema_version`;
-`AnalysisContextBundle.from_json(...).fingerprint(like=named)` over the file returns the fingerprint the page names
-(`like` computes it in the named one's version: see below). A host that
+`report.html` needs nothing beside it: no stylesheet, no image, no URL but `#` links to places on the page; its faces
+are a local stack, so nothing is fetched. It carries exactly one script, the package's own `kit.js`, which draws each chart from the JSON beside
+it; without it, every chart reads as its values table. Drill-down is `<details>`. `report.md` is the same page as Markdown, each mark
+printed as the text it draws. `campaign.json` is the page's machine form: code's readings, the call, and each
+aspect's bundle by its fingerprint ([its shape](serving.md#the-campaign-json)); the arms a report document recommends
+are its `report_doc.doc.recommends`. Each aspect's evidence bundle is written whole beside it as `bundle-<aspect>.json`, with its `schema_version`;
+`AnalysisContextBundle.from_json(...).fingerprint()` over the file returns the fingerprint the page names. A host that
 wants its own pictures reads the bundles. `report_read(format="json")` and the command line's `--format json` return
-`campaign.json`. [`examples/3-invoices/extract.py`](../examples/3-invoices/extract.py) writes one, offline.
+`campaign.json`. [`examples/3-invoices/ci.py`](../examples/3-invoices/ci.py) writes one, offline.
 
 ### The campaign's first screen
 
 What a campaign can decide depends on its arms ([the three kinds](concepts.md#campaign-kind)), and so does its
-first screen, which is the decision. Top to bottom, nothing above the title:
+first screen, which is the decision. It says what the page is, never what it lacks. Top to bottom, nothing above the
+title:
 
 | | A change (control and candidates) | A choice (arms, no control) | A measurement (one arm) |
 |---|---|---|---|
 | 1 | title and question | title and question | title and question |
-| 2 | the writer's summary | the writer's summary | the writer's summary |
-| 3 | the writer's recommendation and its whys | the writer's recommendation and its whys, or no clear winner | |
-| 4 | what warns: each arm missing a bar, each candidate breaking a floor, each arm a guardrail leaves unsafe | each arm missing a bar or left unsafe by a guardrail | the arm missing a bar |
-| 5 | each report-wide caveat, once | each report-wide caveat, once | each report-wide caveat, once |
-| 6 | the call | the call | the call, once one is recorded |
+| 1a | the lead: one sentence per candidate on the first grader's measure (the question's measure, where one is declared), naming both arms | the lead: each pair's pass-rate reading | the lead: the arm's pass rate as its count |
+| 2 | where the report is, where it has one | where the report is, where it has one | where the report is, where it has one |
+| 3 | what warns: each arm missing a bar, each candidate breaking a floor, each arm a guardrail leaves unsafe | each arm missing a bar or left unsafe by a guardrail | the arm missing a bar |
+| 4 | each report-wide caveat, once | each report-wide caveat, once | each report-wide caveat, once |
+| 5 | the call, once one is recorded | the call, once one is recorded | the call, once one is recorded |
 
-Then, each under its heading: code's readings, under **Scorecard** ([below](#the-campaigns-scorecard)); the
-memo's **Findings** and **Next steps**; **Design & provenance**; then one fold per aspect.
+Then, each under its heading: code's readings, under **Scorecard** ([below](#the-campaigns-scorecard));
+**Design & provenance**; then one fold per aspect.
 
-A campaign that asks no question says so in the question's place, once: `No question was declared, so every reading
-is a lead.` The summary is the memo's one sentence across every aspect, written for every kind, so a measurement and
-a choice with no clear winner open on what they found too. A page with no memo has no summary, and says where the
-recommendation goes that none was written (a measurement, which recommends nothing, says nothing there).
+A comparison that asks no question says what it is in the question's place, once: `Exploratory comparison.`, the
+word linked to the glossary; its lead then reads without ", a lead". A measurement that asks none goes straight to
+its lead, its pass rate as a count: `reply passed 40 of 40 trials on 20 cases.` An eval that declares its question
+(`Eval(question=...)`) has it quoted there instead, and its readings read as answers; a reading it does not ask
+about is marked ", a lead". Where the report is takes one line, where the campaign has one: the report document it
+is stored as, or an analysis this version no longer reads or a retired writer wrote. A rate on the first screen
+carries the count it is computed over, here and in the scorecard's matrix (`100 (40 of 40 trials, 20 cases)`).
 
 What warns is one bold line per arm and kind, under the answer and never above the title (in HTML each a
-`<p class="warning">`, never announced with `role="alert"`), saying what it means for the arm (`Adopting v2
+`<p class="flag warning">`, never announced with `role="alert"`), saying what it means for the arm (`Adopting v2
 overrides the 10-point floor it breaks on billing.`) and naming the aspects, never a rate, an expression or an
-interval: the tables print those. Where the memo recommends an arm over a bar it misses or a floor it breaks, the
-writer's why follows that line at once. A warning only warns: nothing on the page picks an arm, and the bars and
+interval: the tables print those. A warning only warns: nothing on the page picks an arm, and the bars and
 floors decide nothing.
 
 A disclosure that holds across the report (criteria set after their readings were visible, results with no ordered
-time, latency read under concurrency, request settings not confirmed) is one plain line after the warnings, naming
-where it holds, and its detail is a row of **Design & provenance**, stated there once: which criterion was set and
-when, and each aspect's own sentence for the test setup, verbatim. No aspect's fold repeats it, and it never lowers a
-reading or a recommendation. An aspect's own page says the same line under its verdict, its detail in its methods.
+time, latency read under concurrency, request settings not confirmed, a judge not yet calibrated against people's
+labels) is one plain line after the warnings, naming where it holds (`Judged scores on score are directional until
+people's labels calibrate the judge.`), and its detail is a row of **Design & provenance**, stated there once: which
+criterion was set and when, each aspect's own sentence for the test setup, verbatim, and which judge to calibrate
+and how many of its outputs to rate. No aspect's fold repeats it, and it never lowers a reading; code's decision
+does set aside an improvement under a judge not yet calibrated ([evidence tiers](#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)).
+An eval whose judge has examples (answers it must grade a known way, `Judge(examples=...)`) adds one sentence after
+that table: how many of them the judge graded as they must be on every repeat and what grading them cost, then each
+miss, as the answer, what it was graded and what it must get (`The judge graded 3 of 4 of its examples as they must
+be on every one of 2 repeats ($0.0010 over 8 call(s)). Missed: "Done: your year is refunded in full." graded pass on
+grounded, must fail (no refund after 30 days).`). It is
+read beside the calibration row and never changes it: a few written answers are not the run's, and reach no tier.
+A page read again from the store, rather than the one the eval's result writes, has no such sentence.
+An aspect's own page says the same line under its verdict, its detail in its methods (a judge's under Not tested).
 
-Where a page prints any cost figure, a campaign's or an aspect's own, one more line follows them: `Each cost figure reflects the provider
-routing of the runs it was measured on, not the model alone.` Quality is fixed for a model, its version and its
-quantization; cost is not, since one model routed across providers can cost several times more. No cost figure, chart
-or fold says it again, and the writer's view hands the same sentence once (`disclosures.cost_routing`).
+Where a page prints any cost figure, **Design & provenance** holds one more row, `cost as routed`: `Each cost figure
+reflects the provider routing of the runs it was measured on, not the model alone.` (an aspect's own page, in its
+methods). Quality is fixed for a model, its version and its quantization; cost is not, since one model routed across
+providers can cost several times more. The first screen does not say it: there, the cost is what it costs.
 
-**The call** closes the first screen: who decided, which arm, when and why (where runs joined after it, the line
-counts them: `…, over 4 runs; 2 added since.`), then each broken floor and missed bar it overrides, and each it
-leaves unnamed. An override the readings no longer support is kept and marked `(no longer broken)`. In a choice,
-each pair where another arm is shown ahead of the decided one is a warning beside the call, never a refusal. With no
-call: `No call is recorded yet: a person decides, over code's readings.`
+**The call** closes the first screen, once a person has made one: who decided, which arm, when and why (where runs
+joined after it, the line counts them: `…, over 4 runs; 2 added since.`), then each broken floor and missed bar it
+overrides, and each it leaves unnamed. An override the readings no longer support is kept and marked `(no longer
+broken)`. In a choice, each pair where another arm is shown ahead of the decided one is a warning beside the call,
+never a refusal. Until a call is recorded the page has no call line
 ([recording one](adopting-a-host.md#recording-the-call)).
 
-`analyses_list` lists each stored analysis by the same warnings, word for word and without the writer's why, then
+`analyses_list` lists each stored analysis by the same warnings, word for word, then
 the line on when its criteria were set where one holds, then its verdict: the aspect page's verdict line for one
 aspect, what code read on each aspect for several (`billing: candidate shown worse; tone: candidate shown better`).
 With no missed bar and no broken floor, the line is the verdict alone.
 
-A change of two aspects, one regressing past its floor and one improving, with a memo recommending production,
-opens:
+A change of two aspects, one regressing past its floor and one improving, with no report written yet, opens:
 
 ```markdown
 # support queue
 "Does the candidate pass more support requests than production, without losing any aspect?"
 
-v2 wins on tone and loses billing, where refunds are lost, so production stays.
+production vs v2 · billing, tone
 
-**Recommended:** production (high confidence)
-
-- The billing floor is broken, and billing is where refunds are lost.
+**Pass rate on billing: v2 against production shown worse. Of 20 cases each, production passed 18 and v2 6. The interval puts v2 between 19 and 86 points worse. Pass rate on tone: v2 against production shown better. Of 20 cases each, production passed 10 and v2 18. The interval puts v2 between 4 and 66 points better.**
 
 **Adopting v2 overrides the 10-point floor it breaks on billing.**
-
-No call is recorded yet: a person decides, over code's readings.
 ```
 
 ### The campaign's scorecard
 
-**One matrix, by the campaign's kind.** Its rows are the aspects. A change's columns are its candidates, each cell the
-candidate's change against the control in points, its interval drawn against the aspect's margin in HTML, and what
-it shows; the control's column holds its pass rate. A choice's columns are its arms, each cell the arm's pass rate
-and the arms it is shown ahead of. A measurement's columns are its one arm's measures. The same readings, one row
-per aspect × candidate (or per pair, or per measure) with their counts, are folded under it. Then, in the same
-section: the lines that change how a cell reads, **To settle** (a change's), the frontier's reading (a choice's),
-how deep each arm ran (**Depth**, **Pass^k depth**, **Precision**), and the **Bars** table, for every kind. A change
-of three candidates on three aspects, one aspect where the control passes nothing:
+**One matrix, by the campaign's kind.** Its rows are the aspects. A change's columns are its candidates, each head
+naming the measure and the control (`v2 · pass rate vs production`), each cell the candidate's own pass rate, then
+its change from the control's, signed and in points at its measure's precision, its interval drawn against the aspect's margin
+in HTML, and what it shows. The control's column holds the level every change on the aspect is read from: its trials
+passed where that is its mean over the cases the changes read, else that mean, said as `mean of N cases`, so a
+candidate's level less the control's is its change. The line under the HTML matrix says the glyph's tick is the
+control and that right is better. A choice's columns are its arms, each cell the arm's pass rate and the arms it is
+shown ahead of. A measurement of one arm is turned, a row per measure on each aspect with its value, interval and
+cases, and no glyph. The same readings, one row per aspect × candidate (or per pair, or per measure) with their
+counts, are folded under it. Then, in the same section: the lines that change how a cell reads, **To settle** (a
+change's), the frontier's reading (a choice's), how deep each arm ran (**Depth**, **Pass^k depth**), and the
+**Bars** table, for every kind. What limits each interval (**Precision**) is folded under the Methods. A change of
+three candidates on three aspects, one aspect where the control passes nothing:
 
 ```markdown
 ## Scorecard
 
 **By aspect**
 
-| Aspect | Cases | ▸ production (%) | v2 (pts) | v3 (pts) | v4 (pts) |
+| Aspect | Cases | ▸ production · pass rate | v2 · pass rate vs production | v3 · pass rate vs production | v4 · pass rate vs production |
 |---|---|---|---|---|---|
-| billing | 20 | 90 | -60 (shown worse) | -5 (unclear) | 5 (unclear) |
-| tone | 20 | 50 | 40 (shown better; floor unclear) | 0 (unclear) | -10 (unclear; floor broken) |
-| refunds | 20 | 0 (cannot show a drop) | 25 (no worse than the margin) | 0 (unclear) | 10 (unclear) |
+| billing | 20 | 90% (18 of 20 cases) | 30% · -60 pts (shown worse) | 85% · -5 pts (unclear) | 95% · +5 pts (unclear) |
+| tone | 20 | 50% (10 of 20 cases) | 90% · +40 pts (shown better; floor unclear) | 50% · 0 pts (unclear) | 40% · -10 pts (unclear; floor broken) |
+| refunds | 20 | 0% (0 of 20 cases; cannot show a drop) | 25% · +25 pts (no worse than the margin) | 0% · 0 pts (unclear) | 10% · +10 pts (unclear) |
+| All aspects (equal weight) | — | 47% (mean of the aspects above, each weighted equally) | 48% · +2 pts | 45% · -2 pts | 48% · +2 pts |
 ```
 
 The **Depth** tables say how much each reading stands on, before the bars read it. **Depth** gives each arm's usable
 cases and trials per aspect, and its fewest, median and most repeats of a case. **Pass^k depth** gives each frontier
 point's planned depth, the cases short of it, the common depth every point reached and its pass^k there.
-**Precision** gives each comparison's half-width, each arm's own, the arm limiting it and the share of spread between
-cases. **Model-based pass^k** appears only when the host asks for it (`HostProfile.model_pass_hat_k`), labelled a
-model. Each table has one sentence under it where it applies; [concepts.md](concepts.md#depth) defines the terms.
+**Precision**, under the Methods, gives each comparison's half-width, each arm's own, the arm limiting it and the share
+of spread between cases. **Model-based pass^k** appears only when the host asks for it
+(`HostProfile.model_pass_hat_k`), labelled a model. Each table has one sentence under it where it applies;
+[concepts.md](concepts.md#depth) defines the terms.
 
 **Marks beside a value.** A cell names its floor's status where the floor reads otherwise than the cell: a floor reads
 every rate its clause names at 95%, the cell the pass rate alone, so v4 above breaks tone's floor on a check while
 its pass rate is unclear. A control that cannot move says so: at or below the margin no drop past it can show, and
 at 100% no gain can. Where an arm ran a case more than once, its passes are counted as trials (`20 of 40 trials`),
-never beside the cases as if they were cases. Where `equal_weight_cells` gives a figure across every aspect, it is
-the matrix's last row, `All aspects (equal weight)`.
+never beside the cases as if they were cases. Where the page gives a figure across every aspect, it is the
+matrix's last row, `All aspects (equal weight)`.
 
 **The readings.** A change reads each candidate on each aspect as **shown better** (its gain's interval lies wholly
 above zero), **shown worse** (its drop's interval lies wholly past the aspect's margin), **no worse than the margin**
 (neither, and its drop's interval at 95%, the floor's own, lies wholly within the margin: `within_margin` in the
-JSON) or **unclear**, and an aspect declaring no margin is never shown worse or no worse than it. "Shown worse" is a
+JSON) or **unclear**. An aspect declaring no margin is never no worse than one: asked a question it is a superiority
+question, shown worse where its drop's interval lies wholly below zero and **cannot tell apart** where neither
+side clears; asked none, it is never shown worse. "Shown worse" is a
 drop past the margin, which is worse than the control; "no worse than the margin" says the margin, since within it
 the candidate may still be a little worse. A reading on an aspect the question does not ask about is
 marked `a lead`: worth chasing, not yet shown. A choice reads each pair: one arm **ahead** where the whole interval
@@ -161,7 +183,9 @@ row read one interval and say one thing. Where a floor and a row still part, on 
 a check's rate the floor also reads, the cell is marked with the floor's status. Where a contrast in an aspect's fold
 reads the very per-case values a row reads and reaches another verdict (a row shown better, its contrast not
 separated), one line under the matrix names both and the interval each was read on: the row's is bounded and
-corrected across its arm's aspects, the contrast's a t interval corrected within the aspect's family.
+corrected across its arm's aspects, the contrast's corrected within the aspect's family. A rate's contrast (the pass
+rate, a check's rate, accuracy, or a pass/fail judged dimension) is drawn on the bounded interval too, so the two are one method at two levels and the
+looser one sits inside the stricter.
 
 **To settle.** One table, **To settle**, says for each unclear reading of a change how many cases would settle it, if
 no difference and if as observed, with the cost: a row left unclear against its margin, read on the pass rate, and
@@ -172,10 +196,8 @@ reads them against other points than the margin; where they would not, the two a
 (`no worse than the 10-point margin, and the 10-point floor holds`). **Decided by** names the rate deciding the floor's as-observed
 count; its no-difference count may be another rate's.
 
-**Findings, Next steps, Design & provenance.** The memo's findings and next steps follow the Scorecard, each its
-own section ([below](#the-rest-of-the-page)). **Design & provenance** states once what holds for the whole report:
-**Checks** (each declared check name beside the expression it stands for, with the aspects declaring it where they
-differ), **Criteria set late** (each criterion set after its readings were visible, when, and the aspects whose results
+**Design & provenance** follows the Scorecard and states once what holds for the whole report:
+**Criteria set late** (each criterion set after its readings were visible, when, and the aspects whose results
 existed by then) and **Test setup** (each aspect's own sentence, verbatim, for results with no ordered time, latency
 read under concurrency, or request settings not confirmed). Each section appears only where it has something to say.
 
@@ -189,20 +211,23 @@ links to its fold.
 
 In a fold, the campaign's first screen holds the title, the question and the warnings, so the fold opens on its
 reading (`v2 unclear, a lead.`), then the arms line and the scoreboard. Laid out alone (`result.report`), an aspect's
-page opens on its own first screen; the invoices example (rung 3) renders this, verbatim:
+page opens on its own first screen; the invoices guardrail example (rung 3c, `guardrail.py`) renders this (the date is
+the render's):
 
 ```markdown
-# invoices: does v2 do better than v1?
-v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
+# invoices
+"Does v2 read the currency an invoice charges in right more often than v1?"
 
-**Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**
+v1 (control) vs v2 · 7 Nov 2026 · 30 cases × 3 repeats
+
+**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better. v2 may do worse than v1 on the No invented total score guardrail.**
 
 **Scoreboard**
 
 | Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per 1,000 replies |
 |---|---|---|---|---|---|---|---|
-| ▸ v1 | 90 | 90 | 73 | 17 | 0 | 0 | $0.0459 |
-| v2 | 90 | 90 | 88 | 1 | 0 | 1 | $0.07036 |
+| ▸ v1 | 90 | 90 | 73 | 17 | 0 | 0 | $0.046 |
+| v2 | 90 | 90 | 88 | 1 | 0 | 1 | $0.070 |
 ```
 
 A campaign that asks a question opens on its name, then the question quoted on its own line,
@@ -215,7 +240,7 @@ the title. A declared triage campaign whose v2 broke its 5-point floor renders:
 
 v1 (control) vs v2 · 18 Oct 2026 · 20 cases × 2 repeats
 
-**Declared question: v2 worse than v1 on Accuracy; v2 worse than v1 on the pass rate.**
+**Accuracy: v2 worse than v1. Of 40 trials each, Accuracy was right on … for v1 and … for v2. Over 20 paired cases, the interval puts v2 between … and … points worse.**
 
 **Adopting v2 overrides the 5-point floor it breaks on routing.**
 ```
@@ -230,26 +255,32 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   responses named where that is one model other than the one asked for (`deepseek-v4-flash-20261001`), then the
   date, then the design (`30 cases × 3 repeats`). After that an arm is its given label (`production`), the control
   marked `▸` in a table. Only the arms line and the verdict name a model.
-- **Verdict**, written by code and never by a memo, result first: one sentence for the result, a second only for
-  a guardrail. The first rule that fires: the test setup lost too much (`No verdict: the test setup failed, not the
-  models.`, the arm, the cause, the fix; `No verdict: nothing was measured, because the test setup failed or the
-  provider declined every call.` when every arm's run failed having measured nothing); one arm (`emails: 18/30 cases passed; 12 misses: double-charge,
-  gdpr-delete, …`, each case by the name its author gave it, else `case N`); which arm passed more, when an arm is
-  under the case floor; a declared question's contrasts (`Declared question: v2 worse than v1 on Accuracy; …`);
-  `Exploratory:` (linked to the glossary) and what separated, or `nothing separated v2 from v1 on any reading`,
-  never "no difference". A guardrail an arm is not shown safe on is the second sentence: `Not yet shown safe: v2 on
-  no invented total.` No floor writes this line.
+- **Verdict**, written by code and never by a model, result first: one sentence for the result, a second only for
+  a guardrail. It is the campaign page's lead sentence, the quick print's first line and the exit line's opening, word
+  for word. The first rule that fires: the test setup lost too much (`The test setup failed: it measured the setup
+  instead of the models.`, the arm, the cause, the fix; `The test setup failed or the provider declined every
+  call, so every trial was lost.` when every arm's run failed having measured nothing); one arm (`triage passed 70 of
+  90 trials on 30 cases. Cases that failed a trial: double-charge, …`, each case by the name its author gave it, else
+  `case N`); which arm passed more, when an arm is under the case floor; a comparison's contrasts on the measure its
+  first grader reads (`Accuracy: the evidence cannot tell v2 and v1 apart.`), what the measure was on each arm, in its own verb
+  (`Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.`; only the pass rate's trials "passed") and what the interval allows the candidate to be (`Over 30 paired cases, the
+  interval allows v2 to be as much as 20 points worse or 18 better.`, its level the table's header), then what
+  else the evidence tells apart; with no question, `Exploratory:` (linked to the glossary) and the same, or `the
+  evidence cannot tell v2 and v1 apart on any reading`, never "no difference" and never "the same". A guardrail an
+  arm is not shown safe on is the last sentence, what it means for the decision: `v2 may do worse than v1 on the No
+  invented total score guardrail.` No floor writes this line.
 - **A broken floor**, where one is: one bold line per candidate under the verdict, never above the title (in HTML a
-  `<p class="warning">`, never `role="alert"`): `Adopting v2 overrides the 5-point floor it breaks on routing.` The
+  `<p class="flag warning">`, never `role="alert"`): `Adopting v2 overrides the 5-point floor it breaks on routing.` The
   rate that broke it and its interval are the Floors section's. A floor warns and never decides: the verdict above
   it still says what the contrasts came to.
 - **A report-wide caveat**, where one holds, once: criteria set after their readings were visible, results with no
   ordered time, latency read under concurrency, request settings not confirmed. Its detail is in the Methods, once:
   when each criterion was set (**Criteria set late**), and the test setup's own sentence.
-- **Scoreboard**: a bare table of counts and the cost per reply (per 1,000 replies when a reply costs under a cent).
-  A trial passed when every check passed (a goal check, and on the quick path a `bool` grader or a field grader) and
-  every judged dimension cleared its bar, and a case passed when every trial of it did, on the console as on the
-  page. A failure cause beside checks and the judge heads its own column (`Model failed`) where it is the only one;
+- **Scoreboard**: a bare table of counts and the cost per 1,000 replies (per 1,000,000 when that is under a cent), the ruler every table of the campaign states the cost on.
+  A trial passed when every check passed (a goal check, the label and a check the host declares; on the quick path a
+  field grader is the label and a `bool` grader a check) and every judged dimension cleared its bar, and a case
+  passed when every trial of it did, on the console as on the page. A failure cause beside checks and the judge
+  heads its own column (`Model failed`) where it is the only one;
   the outcome bar under the table names each where there are several (in Markdown, its table only where it splits a
   cause the scoreboard lumps together). Under it, in normal weight, never bold, never first, the facts that change
   how the verdict is read and nothing else, in this order: the case floor; an arm whose every trial failed. A "too few" line says what is withheld and why, in the
@@ -271,8 +302,24 @@ reading.
 The sections follow in this order, each reached from a sticky nav; Cases, Trials, Not tested, Methods and the
 Glossary start folded, and a nav link lands on the folded section's heading, which the reader opens. No link on the
 page lands inside a closed fold the reader has not opened, since not every browser opens one for a link: a term lands
-on the Glossary's heading (its definition is also the link's hover text), and a case's trial id on the Trials
-heading.
+on the Glossary's heading (its definition is also the link's hover text; a goal check's name carries one fixed hover
+instead, since its definition is the host's expression), and a case's trial id on the Trials heading.
+
+**A goal check is named, never printed as its expression**, in every header, row and lead: by the display name its
+template declares (`goal_check_names`), else by what it tests, read off the expression (`state.refund.amount <= ...`
+is `Refund amount check`, and so is `state.order.total > 0 and state.refund.amount <= ...`, since a guarded check is
+named by what its guard lets through; `call_count("discord.send_message") >= 1 or call_count("discord.reply") >= 1`
+is `Send message or reply check`), numbered only where two checks would share a name, and `Goal check` where the
+expression names nothing a reader can read or tests more than two things (a production `call_count(...) >= 1 or ...`
+over three calls). A host that wants a better name than `Goal check` declares one (`goal_check_names`). A case
+parameter (`variation.ask`) is what a check holds the end state to, never what it tests, and a guard over the end
+state is passed over for what it lets through. A name is built from the expression's identifiers, never its literal
+text. An expression keeps its
+name on every aspect and run unless a check named beside it would share that name: then both are numbered, so a
+sibling check added in a later run can renumber it. The Glossary defines each name by its expression, whole,
+once, and names the aspect where one name stands for different expressions. A report document's own tables, and the
+evidence record laid out after it, name a check the same way, through one call over one set of checks, and the
+document's appendix lists its Checks after Method, each name defined by its expression once.
 
 - **Decision**: the aspect's floors, in the `Floors on <aspect>` table: one row per floor and reading, the floor's
   own sentence first (`no pass rate drops by more than 5 points`; a floor naming one reading says `no tone rate drops
@@ -285,12 +332,11 @@ heading.
   the arms (both 16 of 16)`; a drop past the margin on its point estimate alone is unclear, and says so with its
   interval). One line under the table: `A floor warns and never decides: a broken one warns on the first screen. A floor reads
   its own interval, uncorrected, which can differ from the contrasts table's.` A rate floor reads the bounded
-  interval at the nominal 95%, wider than the t interval the Contrasts table prints: it holds its error rate on a
-  few coarse cases, where the t interval does not
-  ([why](measuring-soundly.md#a-floor-is-held-only-on-the-bounded-interval)). So a floor can read unclear beside a
-  contrast that is not separated. A campaign that asks a question and declares no floor gets one line, `No floor
-  was declared on routing.`; an exploratory comparison, which asks nothing and so declares no floor, gets none.
-  **An unclear floor says what would show it holds**, computed, never the memo's guess: a `To show the floors hold`
+  interval at the nominal 95%: it holds its error rate on a few coarse cases, where a t interval does not
+  ([why](measuring-soundly.md#a-floor-is-held-only-on-the-bounded-interval)). The Contrasts table draws a rate on
+  the same bounded interval, at its family's corrected level, so the floor's interval sits inside the contrast's. An
+  aspect that declares no floor gets no floor table and no line about it.
+  **An unclear floor says what would show it holds**, computed, never a writer's guess: a `To show the floors hold`
   table gives each unclear floor's two counts with their cost, `If no difference` and `If as observed` (`121 cases,
   $3.1`; `none would` where the observed drop is at or past the margin; `re-run the lost trials` where the interval
   already clears and only lost trials keep it open; a cost floor's no-difference cell blank, since arms that do not
@@ -301,26 +347,9 @@ heading.
   narrow an interval only by steadying each case's share, far less than new cases do. A count is always more than the
   run had, and where every count is, the line says so: `This run used 12 cases; showing the floors hold needs about
   121 to 223, more than it ran.` A floor broken or held projects nothing.
-- **What it means**: each finding as one sentence its writer wrote, unnumbered, and a table code built from the
-  readings it chose (a check's pass rate as a count, `11 of 12`; money as `$`); its confidence, trials and caveats
-  sit in a closed `Evidence` fold, one row with a column per fact so each header links its definition. Findings are
-  evidence: one that names no reading is not a finding, so it is not laid out here but noted in one line under Not
-  tested (`The analysis also noted: …`). The memo's words are printed as written (below).
-  On a campaign's page the findings are a section of their own, **Findings**, and the next steps another,
-  **Next steps**, both before the aspect folds. A campaign's summary and recommendation are on its first screen, not
-  in a fold; the writer's summary of the aspect
-  opens the fold ([one memo per campaign](#having-a-model-write-the-analysis-over-frozen-evidence)).
-  **Each finding traces to its evidence, in HTML.** Each figure in its table links to a cell printing the same
-  figure of the same reading on the same arm: a contrast's arm or control, a guardrail's mean, a one-arm page's
-  reading, an arm's cost per reply; a figure printed only in the closed `Bars` table links to that fold. A figure is
-  never linked to a different number: a contrast that read fewer cases prints a paired mean, which is another figure.
-  Each trial id in its `Evidence` fold links to the Trials heading; one the page does not hold is not linked. On a
-  campaign's page each finding's `Evidence` fold lists what it cites with its figure, each linked to the heading of
-  the aspect's fold that prints it. Code draws every link from the cells and trials the
-  memo cites, never from its words; a finding none of whose figures or trials the page prints says
-  `No contrast, guardrail, bar or cost on this page shows this finding's figures.` in its fold.
-- **Contrasts**: one table headed by its control (`Against v1`), a row per reading: `Reading | ▸ control | arm | Change |
-  Interval (99%) | Verdict | Cases`, each value with its interval, the change and its interval drawn in the row
+- **Contrasts**: one table headed by its control (`Against v1`), a row per reading: `Reading | Arm | ▸ control | Value |
+  Change | 95% interval (adjusted for 42 comparisons) | Verdict | Cases`, the interval's header saying what the
+  family's intervals hold at together, each value with its interval, the change and its interval drawn in the row
   ([the marks](#the-marks)); one line instead when no contrast can resolve under the case floor. Then the effect
   size, pairing and adjusted p in a closed `Statistics` fold, the `Guardrails` table, and the `By stratum` and
   `Per label` tables, folded. A one-arm page contrasts nothing, so the section is headed **Readings** and lists
@@ -336,25 +365,25 @@ heading.
   most of a large campaign's page: `report_read`'s `trials="all"` (`campaign_report(..., trials="all")`,
   `report --trials all`) lays each one out under `T4 · double-charge · cheaper candidate · failed` (never the
   start of what the case asked), the first twelve open, and the row then leaves its result to the record. An
-  aspect's own page (`build_report`, `build_code_only_report`, the quick path's `Result.report`) lays out every
-  record unless asked. A failed check is named by its declared name, else by its expression, as code
-  (``check: `call_count("music.queue_track") >= 2` ``), and a judge's fail by its dimensions (`judge: tone`), else
-  `failed by the judge`. A record names a named check by its name and its expression; whatever the trial detail,
-  the campaign's **Checks** legend, under Design & provenance, pairs each declared name with its expression once. The passed trials are one closed `Passed trials` table
+  aspect's own page (`build_code_only_report`, the quick path's `Result.report`) lays out every
+  record unless asked. A failed goal check is named as every header names it (`Queue track calls check`), any other
+  check by the value that failed it (`check: Never topped up is true`), with `check:` in front unless every name
+  already says check, and a judge's fail by its dimensions (`judge: tone`), else `failed by the judge`. A record
+  names the check and its expression; whatever the trial detail, the Glossary pairs each check's name with its expression once. The passed trials are one closed `Passed trials` table
   (trial, case, arm, stored result), so each result id stays reachable with `result_get`; when every trial passed,
   the census line stands alone.
 - **Not tested**: what the campaign could not speak to, one line each. A lever that ran at one level
-  (`Lever model is unswept: one level ran.`) or that fewer than two results exercised
+  (`One model ran, so this page says nothing of changing the model.`) or that fewer than two results exercised
   (`research model: no research call was made on either arm.`), a case an arm has no usable trial of, a goal check
   not shown to beat doing nothing, the measures with no margin and how to declare one, each judge not yet calibrated,
-  a finding that names no reading, the readings no declared question asked about, and, folded, a cost not measured.
+  the readings no declared question asked about, and, folded, a cost not measured.
   With none of these, `Nothing declared went untested.`
 - **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the bundle); and the engine's own
   disclosures in a closed fold. The per-lever coverage map (status, findings that name it, next steps) is in the
   bundle's `coverage`, in the `bundle-<aspect>.json` written beside a saved page (the command line's `report --out`); the page lists each `thin` or `unswept` lever under Not tested.
-  `threetears.evals.analysis.build_report` lays it out as a closed `Coverage` fold, one row per lever, for one analysis. Then the **Glossary**: every term of
+  Then the **Glossary**: every term of
   art the page links, in one plain sentence. Every column header that is a term of art links its entry, and in HTML a
-  hover reads it.
+  hover reads it. A term is linked at its first use in prose, never inside a measure's or a column's name.
 
 ### Style
 
@@ -362,24 +391,29 @@ heading.
 about the page ("rests on", "written by", "a count, not a ranking"), no hedge on a measured fact ("no measurable"),
 no `key=value`, no chain of dashes, no sentence over 28 words or with more than three numbers (that is a table), no
 header over three words, and the declared question only on its own quoted line. `humanize` is the one seam an
-identifier passes on its way to a reader. Those rules hold the text code writes. The memo's words are printed as
-written, whitespace aside: code checks code, and a model's prose is measured by a model, a host's reporter eval on the dimensions its rubric declares, calibrated
-by people, in whatever language the memo is written. The writer's prompt states the same rules (no restated numbers,
-no sample size or cost of its own, no dispute of a floor code settled, no discount of a reading for when its runs
-ran), and the writer view carries the facts they rest on (`to_settle`, each run's `k_runs`, the late criteria in `disclosures`).
-No floor rewrites a memo's recommendation: a floor only warns, and the page's first line is the warning.
+identifier passes on its way to a reader. Those rules hold the text code writes. The analyst's words are printed as
+written: code checks code, through the report's invariants (every number a figure key, no internal id above the
+appendix), and a model's prose is measured by a model, the editor and the writer's own eval, calibrated by people,
+in whatever language the report is written. No floor rewrites a report's recommendation: a floor only warns, and the
+page's first line is the warning.
 
 ### The marks
 
 The page draws two marks, as inline SVG with no dependency. The **outcome bar**, under the scoreboard, is the page's
-one chart: a census, so it is always drawn, one bar per arm with its label above it, passed, failed and lost to the
-test setup cause by cause, each count written beside the bar, and a key naming only the states that occur. A
-failure's causes share its one colour and differ in ink alone (solid, then a lighter tone), each alike on every bar,
-and the key names each (`failed: check`, `failed: judge`); a lost cause's edge is dashed, the next dotted. An
-**interval glyph** is drawn in the table row that states the figure (Tufte's table-graphic): the interval as a
-whisker, the point as a dot, a zero line for a change, and a declared margin as a quiet band. Every cell of a column
-in one unit shares one scale, written once under the table (`Change drawn from -7 to 36.7 pts`), so the rows compare
-at a glance. There are no standalone interval charts: the tables carry the intervals.
+one chart: a census, so it is always drawn, one bar per arm, each its arm's trials as shares from 0 to 100% so arms
+with unequal trials read alike, passed, failed and lost to the test setup cause by cause, the share passed and its
+counts written beside the bar (`20% passed · 167 of 836`), and a key naming only the states that occur. A
+failure's causes share the fail colour and differ in texture alone (hatched, crossed, dotted, then rows and columns),
+each alike on every bar, and the key names each (`failed: check`, `failed: judge`); a lost cause is a neutral grey,
+solid and then textured, so no loss reads as a failure. An **interval glyph** is drawn in the table row that states
+the figure (Tufte's table-graphic): the interval as a whisker, the point as a dot, a zero line for a change, and a
+declared margin as a quiet band. Every cell of a column in one unit shares one scale, written once under the table,
+its two ends at one precision (`Each column drawn from -12.8 to +10.0 pts`; whole points, `-13 to +10 pts`, on a column that reads whole), so the rows compare at a glance. A
+change's matrix opens that line with what its marks draw and what their intervals guarantee together (`Each mark is a
+candidate's change from production (the tick) with its 95% interval (adjusted for 3 comparisons); right is better.
+Drawn from -88 to +68 pts.`); each interval's own corrected level is in Methods. A scale of levels
+runs below zero only where an interval on a measure not declared non-negative does. There are no standalone interval
+charts: the tables carry the intervals.
 
 No colour is the only encoding: a glyph is drawn in the page's ink and its verdict is the word in the next cell,
 every figure is text in the row, the bar has a `<title>` and a `<desc>` stating its values, and a visually hidden
@@ -388,12 +422,27 @@ dark alike.
 
 ### Embedding the page in a host
 
-Serve the directory `write` produces as static files; or keep a route that returns `report_read(format="html")`
-with a strict content security policy (`default-src 'none'; style-src 'unsafe-inline'` holds: the page has no
-script and inline SVG needs no `img-src`); or show that route in an `<iframe sandbox>` with no `allow-scripts`,
-changing the host's own `frame-ancestors` to `'self'`. Linking to the route needs no change at all.
+Serve the directory `write` produces as static files; or keep a route that returns `report_read(format="html")`.
+The default page carries the package's `kit.js` inline and loads nothing, so it needs a policy that allows that one
+inline script (by its hash, which changes only when the package's `kit.js` does) and inline styles. Its faces are IBM
+Plex where the reader has it installed, else the system's, each stack ending in a generic family. A host restyles the
+page through its seven `--host-*` tokens and stamps its theme on the page's one `<html>` tag
+([Fitting the page to the host](adopting-a-host.md#fitting-the-report-page-to-the-host)).
 
-`Report.basis` says whether an analysis wrote the memo (`analysis`) or none did (`code_only`); `report.verdicts`
+A host whose policy runs and loads nothing asks for `report_read(format="html", static=True)` (or
+`report_html(report, static=True)`, `campaign_report_html(report, static=True)`): that page needs no `script-src` at
+all. It has no `<script>` and no `<link>`, and it carries its charts as inline SVG,
+drawn on the server by the kit's geometry and colour tokens, so they follow the page's light and dark themes; each
+mark's tooltip is its `<title>`, and each chart's values table stays under it for a screen reader and for copying the
+numbers out. A gate matrix, a lattice, example cards and interval rows are shown as their tables, each saying so in
+one line. `default-src 'none'; style-src 'unsafe-inline'` holds over it. Either page can also be shown in an
+`<iframe sandbox>` with no `allow-scripts`, changing the host's own `frame-ancestors` to `'self'`; the default page
+then reads as its tables, the static page with its charts. Linking to the route needs no change at all.
+
+A host that shows the page as an administrative view can frame the static page as an iframe's `srcdoc` with an
+empty `sandbox`: nothing on it needs a script, a link or a URL, so it reads whole there, the analyst's page included.
+
+`Report.basis` says whether an analysis wrote the page's words (`analysis`) or none did (`code_only`); `report.verdicts`
 holds every verdict typed — each guardrail, each bar on each arm, each contrast — for a program to branch on.
 
 ## Reading a comparison
@@ -409,10 +458,12 @@ under one rig. How its columns, and the `Statistics` fold under it, are computed
 - **The change, the means, and `Cases`** (`30 paired`) are all over the cases the test read. A case only one arm
   ran is left out of a paired test, and the row counts it, so a mean here can differ from the cell's own mean.
 - **The interval on the change** comes from the same test, at `1 − 0.05/m` for a family of `m` tested rows
-  (Bonferroni), and the column's header states that level (`Interval (99%)` over five rows). All of a family's
-  intervals cover together at least 95% of the time. A separation needs both
+  (Bonferroni): 99% over five rows. All of a family's intervals cover together at least 95% of the time, and that is
+  what the column's header states (`95% interval (adjusted for 5 comparisons)`); the per-interval level is in Method and the
+  glossary, as stored. A separation needs both
   an adjusted p below 0.05 and an interval that excludes zero, so the two never disagree: a row Holm's later
-  steps would separate while its interval still touches zero reads not separated, its p below 0.05 notwithstanding.
+  steps would separate while its interval still touches zero reads cannot tell apart, its p below 0.05
+  notwithstanding.
 - **Hedges' g** is the standardized difference, corrected for small samples. Cohen's d reads 0.88 for a
   true 0.5 at three paired cases; g reads 0.5. There is none at two pairs, where no unbiased estimate exists.
 - **Pairing r** is the correlation between the two arms' per-case means over the paired cases: what pairing
@@ -428,14 +479,14 @@ under one rig. How its columns, and the `Statistics` fold under it, are computed
 
 Each verdict is printed naming both arms by label, never "the control", with a reading's better end in brackets
 where it is the lower one: `v2 better than v1`, `v2 worse than v1 (lower is better)`, `v2 and v1 equivalent, within
-the measure's margin`, `v2 and v1 not separated`. The verdict line names the reading too (`v2 better than v1 on
-cost per reply (lower is better)`).
+the measure's margin`, `the evidence cannot tell v2 and v1 apart` (in a table cell, `cannot tell apart`). The
+verdict line names the reading first (`Accuracy: v2 better than v1`).
 
 | Verdict | Means | Do |
 |---|---|---|
 | better / worse (typed `improved` / `regressed`) | adjusted p < 0.05, in that direction | act on it, unless the row says *immaterial* (below the measure's margin) |
 | equivalent | the paired difference is shown inside ± the measure's margin by TOST, corrected in the same family | treat the arms as interchangeable on this reading |
-| not separated | the cases could not tell the arms apart, or every shared case moved by exactly the same amount on a measure with no declared range, which no test of the mean can call (the row says so) | add cases, declare a margin, or declare `value_range`; never read it as a tie |
+| cannot tell apart (typed `not_separated`) | the cases could not tell the arms apart, which never means they are the same, or every shared case moved by exactly the same amount on a measure with no declared range, which no test of the mean can call (the row says so) | add cases, declare a margin, or declare `value_range`; never read it as a tie |
 | untested | no test could decide: fewer than two cases on a side; the row says why | fix what it names (usually too few cases) |
 
 Latency read while other cells or runs executed beside it is never in this table: the bundle withholds it
@@ -454,7 +505,8 @@ guardrail. The printed verdict is rendered from it, so code branches on the outc
 same values drive the CI gate ([`gate`](serving.md#gate)). The typed values are in the measure's own units; the
 rows `Result.contrasts()` and `Result.guardrails()` return are the page's figures on the page's ruler (a share in
 percent, its change in points, a cost per 1,000 replies where the page states it so), and each contrast row's
-`unit` says which.
+`unit` says which. They are numbers as computed, never rounded: the text the page prints for each is decided once for
+the campaign ([below](#how-a-figure-is-printed)), and a table cell that prints one carries it as `value_text`.
 
 `equivalent` needs a margin and a paired test. A host declares a measure's margin
 (`MetricDescriptor.materiality_threshold`); accuracy, whose description the engine owns, takes one declared on
@@ -484,26 +536,51 @@ when the eval is built. The p is corrected in the same Holm family as the separa
 compared rows (Shaffer's refinement: a difference cannot be both zero and at least the margin), so the
 chance that any verdict in the family is wrong stays at 5%.
 
+### How a figure is printed
+
 No report states a change as a percent of the control: a Δ is in the reading's own unit. A reading that is a share
-on 0–1 (a pass rate, an accuracy, a precision, a pass/fail grader or judged dimension) is stated as a percent to one
-decimal, `98.9%`, and a change in it in points, `-1.1 pts`, with its interval `[-4.2, 2] pts`; the level every
-interval holds at is said once, in the column's header (`Interval (99%)`). A cost per reply under a cent on every arm
-is stated per 1,000 replies, and the heading says so (`Cost per 1,000 replies`, `Production cost ($/1,000 replies)`).
+on 0–1 (a pass rate, an accuracy, a precision, a pass/fail grader or judged dimension) is stated as a percent, and a
+change in it in points. Each measure reads at one precision on every page of its campaign, the written page, the code
+page and each aspect page alike, so one value reads the same in a table, a chart, a tooltip, the prose and the CLI.
+
+- **The digits come from the measure's uncertainty**: the first significant digit of the narrowest 95% half-width
+  among the figures a reader compares (each arm's level and each comparison's change), or the second when that digit
+  is a 1 or a 2. A pooled figure, such as a code page's campaign-wide pass rate, prints at that form and never sets
+  it. A pass rate over a few hundred cases reads whole (`85%`, `-8 pts`); a check near the ceiling, whose interval
+  is narrow, reads a decimal (`99.7%`).
+- **A rate, or a change in points, never goes past one decimal**, except where an end would round onto zero, 0% or
+  100%: it takes just enough digits to stay off it, so `99.7%` never reads `100%`, and an interval that excludes zero
+  never reads as touching it (`-15 to -0.03 pts`). A judge's preference share keeps off even, 50%, the same way.
+- **An interval reads `low to high`**, its unit once (`-13 to -2 pts`), a change's ends signed.
+- **A heading states what a family's intervals hold at together**: a chart's `95% intervals (adjusted for 16
+  comparisons)`, a column's `95% interval (adjusted for 16 comparisons)`, plain `95%` where nothing is adjusted.
+  Each interval's own level (99.69%) is in Method and the glossary, and the key `{family.level}` cites it.
+- **Figures that are not measurements keep fixed forms**: a count whole (`765 of 897`), a declared margin as declared
+  (`-15 pts`), a criterion's gap or the weakest margin as a bare distance (signed only by `|signed`), a p-value as
+  APA writes it (`< 0.001`, `0.005`, `0.50`), an effect size or correlation to two decimals (`0.08`), an exact zero
+  whole with its unit (`0 notices`).
+
+Two measures on one page can differ in decimals, since each reads to its own uncertainty, and a level and its change
+are rounded apart, so at whole points a change can miss its two levels' difference by one. A cost per reply is
+stated per 1,000 replies on every page of a campaign (per 1,000,000 where that is under a cent), and the heading says
+so (`Cost per 1,000 replies`, `Production cost, per 1,000 replies`). The policy and why: [the number policy](design.md#the-number-policy).
 
 ## Reading the guardrails
 
 A guardrail is something an arm must not get worse on: a judged dimension on the `boundary` axis, or a
 measure the host declared `guardrail`. On the quick path, `grader(fn, guard=margin)` declares one on a grader and
 `Judge(guard={dimension: margin})` one on a judged dimension, every grade higher-is-better
-([rung 3](ladder.md#rung-3-two-prompts-compared)). The Guardrails table
+([rung 3c](ladder.md#rung-3c-a-guardrail-decided-on-its-own)). The Guardrails table
 (`guardrails` in the bundle, under the contrasts on every report, `Result.guardrails()` in code) decides each one
-for each arm, on its own 95% interval on `arm − control`. Guardrails are never in the contrasts table, the composite or pass^k, so a gain there
-cannot hide a loss here.
+for each arm, on its own 95% interval on `arm − control`. A guardrail has no row in the contrasts table and joins no
+composite, so a gain there cannot hide a loss here. A guardrail that is a check (a pass/fail grader, or a host's
+boolean with a better end) still fails each trial it fails, in the pass rate and in pass^k, and its row here is read on
+top. A judged guardrail fails no trial.
 
 | Decision | Means | Do |
 |---|---|---|
 | held | the whole interval is on the good side of the margin, and the reading declares its range | nothing; the arm did not get worse by more than you tolerate |
-| breached | the whole interval is beyond the margin | it warns: the writer is refused if it recommends the arm, whatever it gained; the person decides |
+| breached | the whole interval is beyond the margin | it warns: a report that recommends the arm is flagged to its editor, whatever it gained; the person decides |
 | undecided | the interval straddles the line, no interval exists, or the reading declares no range; the row says why | do not read it as safe; the contrasts open with a line naming the arm, and the verdict line says it. To decide it, add cases, declare a margin, or declare the reading's range |
 
 The margin is the measure's `materiality_threshold`, and a judged dimension's is the one its campaign declares
@@ -536,10 +613,10 @@ dimensions it was not checked on (`boundary_unchecked`).
 A campaign's question says what it set out to learn, and each aspect's merit axes say what it asks about there. A
 reading on no merit axis of its aspect is **exploratory**: worth reporting as a lead for the next campaign, never as
 a confirmed answer. Where a question was asked, the bundle lists those readings (`reading_scope`), the code-only
-report names them under Not tested, and a finding resting only on them carries a `Scope` fact. Where none was,
-every finding is exploratory: the verdict line says so, every finding carries the `Scope` fact, and the analysis
-writer may adopt nothing. A campaign that declared no design at all is an exploratory campaign, and that sentence
-says so: its readings confirm nothing, and the design its comparisons read was inferred from the runs, not declared
+report names them under Not tested, and a report that recommends a candidate shown better only on them is flagged
+to its editor. Where none was, every reading is exploratory: the verdict line says so, and a report that recommends
+a candidate anyway is flagged to its editor. A campaign that declared no design at all is an exploratory campaign,
+and that sentence says so: its readings confirm nothing, and the design its comparisons read was inferred from the runs, not declared
 ([when to declare one](measuring-soundly.md#start-from-the-question)). A guardrail is never exploratory.
 
 **A criterion set after its readings is said, never demoted; data age is never said.** What pre-registration
@@ -632,7 +709,7 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 | Interval on a mean | t on `n_cases − 1` degrees of freedom with a cluster-robust standard error over cases (Miller 2024), clipped to the measure's scale, or at zero for a time, a spend or a count (`nonnegative`). One case gives no interval. |
 | Interval on a rate (accuracy, precision, recall, any 0/1 measure) | Wilson, on the effective sample size the clustering of repeats leaves, with t on `n_cases − 1` df. F1 has none. |
 | Mean composite | The mean of each result's capability dimensions put on 0–1, per case first. Every pooled composite (run summary, compare, pivot cell, frontier point, history point, a lever's dispersion) names the dimension sets it was meaned over, and a pool whose results carried different sets is marked *ragged*: its mean averages different questions. |
-| pass^k | An attempt passes when every goal-state check passed and every capability criterion reached the behavior's pass threshold (3 of 5 unless declared; recorded as `rubric_threshold`, printed as `pass^k (k=3, criterion >= 4 of 5)`). An attempt with no goal-state check and no judge, such as a classifier scored only against its expected label, has nothing to pass: it is left out and counted (`n_no_criterion_excluded`), and an arm with none measurable has no pass^k (`pass_hat_k_unmeasured_reason`), never 0. Unbiased C(c, k) / C(n, k) per case, averaged over the cases with n ≥ k, pooled across the runs of one cell; its interval is Clopper–Pearson on an effective size. |
+| pass^k | An attempt passes when every goal-state check passed, its label matched, every check the host declares held, and every capability criterion reached the behavior's pass threshold (3 of 5 unless declared; recorded as `rubric_threshold`, printed as `pass^k (k=3, criterion >= 4 of 5)`). An attempt with no goal-state check, no label, no declared check and no judge has nothing to pass: it is left out and counted (`n_no_criterion_excluded`), and an arm with none measurable has no pass^k (`pass_hat_k_unmeasured_reason`), never 0. Unbiased C(c, k) / C(n, k) per case, averaged over the cases with n ≥ k, pooled across the runs of one cell; its interval is Clopper–Pearson on an effective size. |
 | A contrast against the control | Paired t-test on per-case means over the shared cases (two or more), else Welch's t on Hsu's `min(n_a, n_b) − 1` df; a gap with no spread (every shared case moved by one amount, or each side constant) is read by the bounded test by betting on the measure's declared range, with its own interval and no g, and with no range is not separated and says why: the exact sign-flip test asks whether a move is symmetric, not whether the mean moved. Effect size Hedges' g (g_z when paired). Holm correction within each family; interval Bonferroni at 1 − α/m, clipped to the differences the measure's declared range allows (± its width). |
 | `equivalent` | Paired TOST against the measure's `materiality_threshold`, in the same Holm family, capped at the number of compared rows (Shaffer); each one-sided test is the bounded test by betting (Waudby-Smith & Ramdas) on the measure's declared range, which holds α for any distribution on the range at any n; a measure with no declared range is not tested for equivalence. |
 | A bar | Three-valued: the cell's interval against the threshold less the margin (cleared, missed, undecided). A seeded threshold is the incumbent's mean moved √2 − 1 of its half-width toward the permissive end. |
@@ -645,87 +722,144 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 
 The [simulation suite](measuring-soundly.md) checks each method's error rate against a known truth.
 
-## Having a model write the analysis, over frozen evidence
+## The analyst's report, written over frozen evidence
 
-An analysis is written from the campaign's **bundle** alone (`AnalysisContextBundle`), and every figure
-in it is a reference code resolves against that bundle. Save the bundle (`bundle.to_json()`), reload it
-(`AnalysisContextBundle.from_json`) and its `fingerprint()` is unchanged, so `generate_analysis` over the
-saved file under a second prompt compares the two prompts and nothing else; each analysis records the
-fingerprint it read on `generation.bundle_fingerprint`.
+**Why an analyst.** A page laid out per kind of campaign fits the campaigns someone anticipated, and a writer that
+reads one closed bundle in one call cannot check what it suspects. So a report is written as an expert analyst
+writes one: it investigates the campaign, decides what the story is, and writes it, while code computes every
+number and verifies the draft. Code never chooses what leads, what is grouped or what is left out, and nothing
+branches on what kind of eval it is. The full design is [ANALYST.md](../../../docs/eval-report-kit/ANALYST.md).
 
-A fingerprint is `v2:` and the sha256 of the bundle's canonical JSON with every float rounded to twelve significant
-figures. The bundle's intervals and multipliers come from C maths (`math.lgamma`, `NormalDist().inv_cdf`) whose last
-bits differ between two builds of one Python, so the rounding is what makes one evidence fingerprint alike on a
-laptop, in a container image and on another architecture, except, rarely, a value that falls exactly on a 12th-figure rounding boundary. The rounding is in the fingerprint only: the bundle keeps
-its figures as computed. A fingerprint recorded before the rounding has no prefix, and every comparison computes the
-fresh one in the recorded one's version (`fingerprint(like=recorded)`), so an analysis or a reporter case recorded then
-still matches its evidence on the machine that recorded it. The insight-ledger cutoff (`bundle_assembled_at`),
-the generation time and its cost are on that provenance, not in the bundle.
+**How one is written.** `analysis_generate` starts it as a job:
 
-The provenance also records the bundle `schema_version` the generation ran over and the
-`host_declarations_digest`, a digest of the host's declared sweepables and world dimensions computed from its
-registries. Re-assembling a stored analysis's bundle (`inspect_analysis_bundle`) compares fingerprints, and when they
-differ `mismatch_cause` names why: `package_shape` (the bundle schema moved), `host_declarations` (the host added,
-removed or renamed a declaration), or `evidence` (neither moved, so the runs, results or insights did).
+1. **Freeze.** The campaign's evidence is frozen as a [snapshot](concepts.md#report-snapshot). The same evidence
+   names the same snapshot, every tool reads only it, and runs added later change nothing under the report.
+2. **Investigate.** The analyst, the host's `analyst` model, reads the snapshot through read-only tools (the
+   `evals_analyst` tool): readings and contrasts, examples with the judge's reasons, the caveats code assigns, where
+   a call or a reading flips, where a difference is concentrated, which options dominate, the price of a point. A
+   skill the package ships guides it: principles, story forms, charts, statistics, writing, and reasoning notes on
+   worked campaigns.
+3. **Write.** It submits a report document: a headline, a lede and an optional flag; the arms it recommends; its
+   confidence and caveats; decision entries; claims in reading order, each with one or two evidence blocks; what it
+   left out and why; next steps, each with what it would settle; and method. Every number is a figure key, which code
+   renders; a digit typed outside one is refused.
+4. **Check.** Code holds the draft to six mechanical invariants: numbers through keys, every block resolves and
+   draws, every caveat that bears on the call is shown, the confidence form fits the caveats left open, no internal
+   id above the appendix, and the appendix and method are present. A failing draft goes back with each fault and its
+   remedy, and costs no review.
+5. **Review.** An editor (the same model, in a fresh context that never sees the analyst's reasoning) reads the page
+   as a reader will, with facts code computed for it to weigh, and scores seven items from 0 to 2: the first screen,
+   a coherent story, honest emphasis, sound elision, confounds handled, actionable next steps, and evidence that fits
+   its claims. Code adds the scores. A review passes with no 0 and at least 11 of 14. From the second review, each
+   finding says which earlier finding it continues, or that it is new, and the review lists the earlier ones now
+   resolved. While a finding is open the analyst revises, at most twice. A review that passes with no blocking
+   finding open clears the report: every must-fix blocks, and so does a finding first raised in the first review as a
+   must-fix and carried at should-fix. A should-fix first raised as a should-fix, in any review, never blocks: it is
+   listed open on the page, and the report is finished.
+6. **Store.** The document is stored with its snapshot, how the writing ended, the editor's findings left open, the
+   cost of each role, round and turn, and each session's transcript.
 
-Prior insights reach the bundle bounded: the newest live insight per claim, at most a fixed number of them, with
-`prior_insights_omitted` counting the rest. `refused_merges` and `next_experiments` are capped the same way, with
-`refused_merges_omitted` and `next_experiments_omitted`. A generation that restates a live insight's claim (same
-words, ignoring case, spacing and a final period) replaces that insight in the ledger rather than adding a second
-one, so regenerating over unchanged evidence leaves the ledger its size. Archiving the analysis that minted an
-insight retracts it; each insight's `invalidation_trigger` states both rules. The `insights_list` and `insight_get`
-actions show the ledger and each insight's standing (live, retracted or orphaned); `insight_delete` removes one wrong
-insight.
+A write that ends `stored`, or `stored_with_findings` once both revisions are spent, is the campaign's report. One the
+budget stops keeps its last reviewed draft with that review's findings, and stores nothing if no draft was reviewed.
+Only `stored` is a finished report. Any other stored report is a draft: its page says so on its first line under the
+masthead ("Draft: its editor's review left 6 findings open."), its appendix lists those findings, and `draft` is true
+on the stored document, on `report_read`'s result and on its line in `analyses_list`, so a host's list can show it.
+One that runs out of bounces, whose editor's answer cannot be read twice, or that a provider fails, stores nothing,
+and the job fails with its ending and reason.
 
-**One memo per campaign: a summary, findings, one recommendation, a summary per aspect.** The writer authors no
-headline, no chart and no count: the warnings and readings are code's. It reads the campaign bundle (each aspect's
-readings, trials, their states, causes, failed checks and the judge's reasons) and writes one `summary`, its read
-across every aspect in a sentence, required of every kind and laid out after the warnings and the question; findings,
-each naming in `trials` the trials it is drawn from; at most one recommendation (`Recommendation`: an arm, reasons,
-confidence, the findings it `rests_on`); one summary per aspect (what changed, how sure, what it means here), laid out
-at the top of that aspect's fold; and next steps. The summary is prose like a finding's body: a number in it is a
-figure reference code renders, an empty one is refused through the one repair round, and the page prints it as
-written. Code holds the recommendation to the campaign's kind, refusing it through the one repair round:
+### Reading the analyst's page
 
-| Kind | The writer must | The writer may not |
+Top to bottom, simplest first:
+
+| Part | Whose | What it says |
 |---|---|---|
-| measurement | write findings and summaries | recommend anything |
-| choice | pick an arm, or say no clear winner | pick at more than `low` confidence when no pair separated its pick ahead; leave unanswered an aspect where another arm is shown ahead (`behind_on`) |
-| change | recommend a switch or keeping the control | switch on exploratory evidence alone, to a candidate with no better reading or improved contrast on any asked aspect and not every floor held on them (each asked aspect declaring one), or to one that breached a guardrail |
+| Masthead | code's | what kind of eval it is, the system under test, its counts and when it ran |
+| Draft line | code's | on a draft only: that its editor's review left findings open, and how many |
+| Headline, lede, flag | the analyst's | the finding, in a sentence; the flag only for what a reader must know first |
+| Confidence | both | the form in code's words, then each caveat: the analyst's clause for what would make it matter, or code's line that it was checked and cannot change the call |
+| Decision | the analyst's | the call and its whys, or for a tradeoff the trade, where it flips, the lean and what would settle it |
+| Options | code's | every arm, with its settings, served model and cost (with its price source, the provider that served it and the share of calls priced); the recommended arms marked |
+| Claims | the analyst's words, code's blocks | the story in order, each with the evidence that shows it and the caveats that touch it |
+| Explore, next steps | the analyst's | what a reader could change and what it would do; each next step and what it would settle |
+| Appendix | code's | the arms key, every table the snapshot holds, what was left out and why, method, the editor's open findings, and the made line: the models, the served models, the cost, the skill's version and the date |
 
-Every kind answers its pick's warnings, each once and each with a why: a broken floor in `floors_overridden`, a
-missed bar in `bars_missed`. A switch rests on at least one finding; keeping the control may rest on none. The page
-sets each why beside the warning it answers, and a floor the memo overrides still warns on the first screen.
+**Confidence** says how sure the call is, read from the method and the variance of the evidence, never the result
+alone ([confidence](concepts.md#confidence)). `high` means nothing is open; `high, if the caveats below aren't material`
+lists each open caveat with its condition; `low` is always allowed. A lead's risk of reading the wrong way is stated
+beside the lead, and does not lower the form by itself.
 
-**A finding's title never states a null its evidence did not establish, and names only arms its evidence reads.**
-"Halving the budget does not change latency, cost or delivery" decides as surely as a measured result does, and over
-a contrast that did not separate it asserts a result the campaign never measured; a title naming an arm none of its
-finding's readings is taken at states a result the reader is shown nothing of. Both are the prompt's rule 9, and a host's
-reporter eval can measure them on the dimensions its rubric declares. The generator once refused such titles by an English phrase list and by matching arm
-names in the title; it reads no prose now (owner, 2026-10-24).
+**Cost is stated with where it came from.** The options table gives each arm's cost per run, or per 1,000 runs where any arm's is
+too small for cents, by one rule down the column (each cost to two significant figures; a third where the month beside it
+needs one), with the price source, the provider that served it and the share of
+calls priced. A partly unpriced arm says how many calls were priced, and never shows a smaller total. Prices are the
+host's ([who sets the prices](cost-and-budgets.md#who-sets-the-prices)). Monthly figures appear only where the
+campaign declares a volume.
 
-**The analysis keeps its evidence.** A stored analysis carries the bundle it was written over (`EvalAnalysis.bundle`),
-so its report is laid out over that frozen evidence, whatever is archived or re-run afterwards.
+**A stored report reads as written.** A report is never edited: regenerating writes a new one, and the page shows the
+newest analysis that is not archived. Read later, a stored report degrades rather than refuses: a key that no longer
+resolves prints "—", a block that no longer draws prints its values, and the page carries one note to regenerate. No
+earlier shape of evidence is read, as stored or otherwise, and nothing is migrated: names left the evidence at bundle
+shape 66 and campaign bundle shape 4 (below), so a report written in any earlier shape gets the code-only page and one
+line, written in a shape this version no longer reads; regenerate with `analysis_generate`, naming why ("frozen before
+names left the evidence", or, for a campaign bundle, "frozen before names left the readings"). Each stored analysis is
+regenerated once.
 
-The bundle stays closed: the generator has no tools to fetch more context, such as a `runs_bisect` or `scope_pivot`
-drill-down. A generator that fetched its own context would read different inputs on every call, so nothing could
-be fingerprinted before generation and two prompts could no longer be compared on one bundle. A question the
-bundle cannot answer is answered by adding a field to it.
-[`tests/fixtures/generate_analysis/llm_analysis.py`](../tests/fixtures/generate_analysis/llm_analysis.py) does all of it in one file.
+**Names are presentation, never evidence.** The bundle an analysis is frozen over, and every fingerprint and digest
+taken over it, carries ids and structured facts only; every name is applied when a page is rendered (owner ruling,
+2026-11-11). What a page calls a lever (`lever_names`, one rule across the campaign: the first declared axis to store
+a name, else the host's), an arm's or an aspect's short name, a goal check's or a stratum's name is no part of any
+fingerprint. A derived arm's label is frozen with its levers spelled by their ids read as words (`chunk tokens 1024tok,
+retriever top k 3`) and printed with their stored names (`Chunk size 1024tok, retrieval depth 3`); the sentences on
+factors that moved in lockstep, on how many factor pairs were examined and on each co-varying pair are worded at render
+from the facts the bundle holds, each factor by its name. A measure is held by its key (a trial's failed check, a
+campaign reading, a bar) and named from the measure catalog when the page is rendered, its reader name outside every
+fingerprint; a level is held by its content hash, the name a campaign's declaration gives it (else the host's display)
+outside every fingerprint, and nothing the bundle orders is ordered by a declared name. So renaming a lever, a measure
+or a level moves no fingerprint and stales no analysis; a page built now prints the new name, and a stored analysis's
+page prints the names frozen with it until it is regenerated.
+
+**The transcripts are kept.** Each session, the analyst's and each editor round's, is stored whole beside the report,
+so `report_read` with a report's id and `include_sessions` returns what the analyst read and did, for an audit.
+Reading or listing reports otherwise loads none of them.
+
+**What the analyst could not do is collected.** When it works around a missing capability, or a result looks wrong,
+the analyst records a capability gap. Gaps are stored with their provenance, and `analyst_gaps_list` returns them
+grouped and ranked, each group as text ready to file as an issue ([serving](serving.md#the-analysts-tool)).
+
+### Reports a retired writer wrote
+
+Two earlier writers are retired: the memo writer, which read one campaign bundle in one call, and the report planner,
+which chose a page from a fixed vocabulary of sections and charts. An analysis either one stored still reads. It
+reads as the code-only page, its first screen naming the retired writer and saying to regenerate with
+`analysis_generate`; `analyses_list` counts no findings for it and marks it to regenerate.
+
+Every stored analysis carries the bundles it was written over (`EvalAnalysis.bundle`). A bundle's fingerprint is `v2:` and the
+sha256 of its canonical JSON with every float rounded to twelve significant figures, so the same evidence
+fingerprints alike across builds and machines (except, rarely, a value exactly on a rounding boundary); a fingerprint
+recorded before the rounding, with no prefix, was taken over a shape no build reads, so it never matches.
+Re-assembling a stored analysis's bundle (`inspect_analysis_bundle`) compares
+fingerprints, and when they differ `mismatch_cause` names why: `package_shape` (the bundle schema moved),
+`host_declarations` (the host added, removed or renamed a declaration), or `evidence` (the runs, results or insights
+did). Renaming a lever, a measure or a level is none of these: a name is no part of a fingerprint.
+
+**Insights.** A claim the analyst marks durable becomes an insight later campaigns read in their overview. Two claims
+stating one thing mint it once, and a later analysis restating a claim retires the earlier insight, so regenerating
+over unchanged evidence leaves the ledger its size. Archiving
+the analysis that minted an insight retracts it; each insight's `invalidation_trigger` states the rules. The
+`insights_list` and `insight_get` actions show the ledger and each insight's standing (live, retracted or orphaned);
+`insight_delete` removes one wrong insight.
 
 ## How a measure and a question are named
 
 A measure is headed by its reader-facing name (`MetricDescriptor.reader_name`, frozen on the decision surface as
 `MeasureFacts.reader_name`) in every table header and chart title, every evidence, contrast, guardrail and strata
-row, and the memo. A judged dimension is printed under its rubric name with `(judged)` after it, and a reserved judge
+row. A judged dimension is printed under its rubric name with `(judged)` after it, and a reserved judge
 axis as `transcript` or `outcome`. The key is still there to cite: on each `EvidenceRow`, and as `measure_id` on
 each row `Result.contrasts()` returns (which filters on either the key or the heading).
 A measure the surface froze no reader name for prints an engine measure by the engine's name, and a host
 measure nothing describes by its key.
 
-A declared question is printed as the words it was asked, both in the memo and in the contrasts table. In the memo,
-each finding's evidence is
-one table (Arm, Measure, Value, n, Spread), laid out like the report's evidence table.
+A declared question is printed as the words it was asked, in the contrasts table as on the first screen.
 
 ## How an arm is named
 
@@ -886,9 +1020,7 @@ with its Wilson interval and a mean with its standard error, each over the cases
 `VariationAxis(..., stratum=True)` and each case generated takes that axis's value as its stratum. A case
 generated before the axis was nominated keeps the stratum it was written with, which is none.
 
-**Limits.** An analysis's writer reads the strata in its bundle, but a finding's evidence still cites a
-cell's pooled figure: a reference names a cell and a measure, and there is no reference to one stratum of
-a cell yet.
+The report's analyst cites a stratum's own figures by key, as it cites an aspect's or a cell's.
 
 **On the quick path**, each case carries its kind under the reserved key `stratum`. The key is taken out of the
 case before the runner, a grader or the judge is handed it, and stored as the test case's stratum. A report
@@ -910,8 +1042,8 @@ never hides a reading for a weak tier; it tells you how much weight it can bear.
 
 Every judged reading carries a tier that code decides from what the judge's reliability was measured to be
 (`threetears.evals.kernel.evidence_tiers`): `evidence_tier` on each `judged_measures` arm and each judged
-reading on the decision surface, and `judged_tier` on a finding's resolved evidence row. Code decides it, never
-the analysis writer, because how far a score can be leaned on depends on two measurements of the judge and on
+reading on the decision surface, and `judged_tier` on a resolved evidence row. Code decides it, never
+the report's writer, because how far a score can be leaned on depends on two measurements of the judge and on
 nothing a report's author says:
 
 | Tier | When |
@@ -974,10 +1106,11 @@ judge phase records no prompt identity, and reads as config `None`, a judge of i
 ([judges and calibration](judges-and-calibration.md#step-4-run-the-judge)).
 
 **Where tiers appear.** The bundle lists each judge's tier per dimension with both criteria
-(`judge_evidence_tiers`); a finding stands on the weakest tier among its rows
-(`FindingResolution.evidence_tier`: `mechanical`, `calibrated`, `separation`, `undetermined`, `incidental`
-or `none`), which every report states beside the finding; a code-only report also states each judge's tier
-with the numbers behind it. Tiers are flagged, never a reason to drop a reading.
+(`judge_evidence_tiers`: `mechanical`, `calibrated`, `separation`, `undetermined`, `incidental` or `none`), and a
+code-only report states each judge's tier with the numbers behind it. Tiers are flagged, never a reason to drop a
+reading. One rule reads them: code's decision sets aside an improvement whose judge is not yet calibrated
+(`undetermined`, or `insufficient` evidence), so it is shown and shows no candidate better; a judge at `separation`
+or `incidental` still counts.
 
 **A tier read from a stored judge profile.** When a campaign's own evidence leaves a judge `undetermined` and a
 judge campaign recorded a profile of that very judge and criterion that decides a tier, the tier is the profile's.

@@ -11,6 +11,11 @@ silently when it fails at all:
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -236,3 +241,92 @@ class TestSubjectSnapshotShape:
         )
 
         assert SubjectSnapshot.model_validate(original.model_dump(mode="json")) == original
+
+
+_NO_CLOCK_AT_IMPORT = textwrap.dedent(
+    """
+    import datetime
+    import importlib
+    import sys
+    import sysconfig
+    import time
+    from pathlib import Path
+
+    # Every clock read the project's own code makes, wherever it is: a stored model's timestamp factory in any module,
+    # a uuid7 id (which reads time.time_ns inside the stdlib), or a bare datetime.now. A read inside the stdlib is
+    # charged to the first frame above it outside the stdlib, as the test pool charges it, unless it was the stdlib
+    # importing itself (logging stamps its start time), which the pool charges to no test.
+    TREE = str(Path.cwd() / "packages") + "/"
+    STDLIB = (sysconfig.get_paths()["stdlib"], "<frozen")
+    CLOCKS = (time.time, time.time_ns)
+    STAMPS = ("now", "utcnow", "today")
+    reads = []
+
+
+    def is_clock(called):
+        if any(called is clock for clock in CLOCKS):
+            return True
+        owner = getattr(called, "__self__", None)
+        return getattr(called, "__name__", "") in STAMPS and isinstance(owner, type) and issubclass(owner, datetime.date)
+
+
+    def watch(code, offset, called, arg0):
+        if not is_clock(called):
+            # A call site names one callee, so one that called no clock never will and stops being watched. A frozen
+            # clock is the exception: under freezegun, datetime.now and time.time_ns at a site that reads the real
+            # clock once the freeze ends are its fakes, so that site stays watched.
+            if getattr(called, "__module__", None) == "freezegun.api":
+                return None
+            return sys.monitoring.DISABLE
+        frame = sys._getframe(1)
+        while frame is not None and frame.f_code.co_filename.startswith(STDLIB):
+            if frame.f_code.co_name == "<module>":
+                return
+            frame = frame.f_back
+        if frame is not None and frame.f_code.co_filename.startswith(TREE):
+            where = frame.f_code.co_filename.removeprefix(TREE)
+            reads.append(f"{where}:{frame.f_lineno} {frame.f_code.co_qualname}")
+
+
+    TOOL = sys.monitoring.DEBUGGER_ID
+    sys.monitoring.use_tool_id(TOOL, "no clock at import")
+    sys.monitoring.register_callback(TOOL, sys.monitoring.events.CALL, watch)
+    sys.monitoring.set_events(TOOL, sys.monitoring.events.CALL)
+    for name in ("tests.factories", "tests.fixtures.toyhost", "tests.fixtures.courierhost"):
+        importlib.import_module("packages.evals." + name)
+    for path in sorted(Path("packages/evals/tests").glob("test_*.py")):
+        importlib.import_module("packages.evals.tests." + path.stem)
+
+    # The control: after every import, the two reads this guard exists for must still be seen, a stored model's
+    # timestamp and its uuid7 id. A guard that has stopped watching either site, or whose TREE is not where the
+    # package's source runs from, would otherwise pass having seen nothing.
+    from threetears.evals.schema import models
+
+    seen = len(reads)
+    models.utc_now_iso()
+    models.EvalRun.model_fields["id"].default_factory()
+    control = reads[seen:]
+    del reads[seen:]
+    sys.monitoring.set_events(TOOL, sys.monitoring.events.NO_EVENTS)
+    for wanted in (" utc_now_iso", " EvalRun.<lambda>"):
+        if not any(read.endswith(wanted) for read in control):
+            sys.exit(f"the guard no longer sees the read at{wanted}; it saw only {control}")
+
+    if reads:
+        sys.exit("the clock was read while importing:\\n" + "\\n".join(sorted(set(reads))))
+    """
+)
+
+
+def test_importing_every_evals_test_module_reads_no_clock() -> None:
+    """A subject built at import stamps the clock then, so every later test in the process is uncacheable.
+
+    This test is itself uncacheable (it starts a process); the cost is one test, not the suite.
+    """
+    root = Path(__file__).resolve().parents[3]
+
+    done = subprocess.run(
+        [sys.executable, "-c", _NO_CLOCK_AT_IMPORT], cwd=root, capture_output=True, text=True, check=False
+    )
+
+    assert done.returncode == 0, done.stderr[-2000:]

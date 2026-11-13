@@ -1,0 +1,347 @@
+{
+  "mode": "decide",
+  "headline_kind": "decision",
+  "headline": "Deploy {arm:brisk-s.few}. It is the only configuration that clears latency, overall accuracy, and every cell floor.",
+  "lede": "{arm:brisk-s.few} delivers {measure.balanced_accuracy.brisk-s.few.mean} Balanced accuracy at {measure.latency_ms.brisk-s.few.p95} p95 latency. Lowering the cell floor below {criteria.cell_floor.nano-xs.few.complex.news.value} would allow the cheaper {arm:nano-xs.few}.",
+  "decision": {
+    "slots": [
+      {
+        "key": "recommendation",
+        "text": "Adopt {arm:brisk-s.few}: it satisfies all gates with {criteria.overall.brisk-s.few.value} Balanced accuracy, clears all nine target cells, and costs {measure.cost_per_1m.brisk-s.few.mean} per million turns.",
+        "caveats": []
+      },
+      {
+        "key": "why_not",
+        "text": "{arm:nano-xs.few} misses the cell floor on complex news turns; {arm:atlas-m.rubric} exceeds the latency budget; and {arm:brisk-s.zero} fails overall accuracy.",
+        "caveats": []
+      },
+      {
+        "key": "watch",
+        "text": "The tightest margin is {weakest.arm}: {weakest.value} against {weakest.criterion} at {weakest.threshold}, a clearance of {weakest.margin} points. Calibration on complex news remains unmeasured.",
+        "caveats": []
+      },
+      {
+        "key": "next",
+        "text": "Test targeted few-shot examples for complex news on {arm:nano-xs.few} to evaluate whether its {criteria.cell_floor.nano-xs.few.complex.news.value} accuracy can clear the floor.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "high",
+      "caveats": []
+    }
+  },
+  "method": [
+    {
+      "term": "Evaluation design",
+      "text": "Full factorial evaluation testing {count.arms|words} configurations across {count.cells|words} complexity and domain target matrix cells.",
+      "caveats": []
+    },
+    {
+      "term": "Sample size",
+      "text": "Evaluated across {scoreboard.brisk-s.few.cases} stratified dialogue turns sampled from production corpus distributions.",
+      "caveats": []
+    },
+    {
+      "term": "Passing criteria",
+      "text": "A turn passes only when predicted labels match ground truth for both complexity level and domain category.",
+      "caveats": []
+    },
+    {
+      "term": "Operational gates",
+      "text": "Requires Balanced accuracy at or above {criteria.overall.threshold}, cell accuracy at or above {criteria.cell_floor.threshold}, and p95 latency at or below {criteria.p95.threshold}.",
+      "caveats": []
+    },
+    {
+      "term": "Cost basis",
+      "text": "Calculated from observed token usage multiplied by standard vendor list prices per million turns.",
+      "caveats": []
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "factorial",
+    "baseline": "none",
+    "score_type": "class_label",
+    "strata": "target_matrix",
+    "criteria": "hard_gates",
+    "cross_cutting": [],
+    "log_cost_axis": true
+  },
+  "shape": "C",
+  "masthead": {
+    "kind": "Choice · candidates compared",
+    "system": "Turn router: complexity × domain",
+    "counts": "9 arms",
+    "run_date": "{meta.run_date}",
+    "synthetic": true
+  },
+  "arms": [
+    {
+      "id": "atlas-m.zero",
+      "color_slot": 0
+    },
+    {
+      "id": "atlas-m.few",
+      "color_slot": 1
+    },
+    {
+      "id": "atlas-m.rubric",
+      "color_slot": 2
+    },
+    {
+      "id": "brisk-s.zero",
+      "color_slot": 3
+    },
+    {
+      "id": "brisk-s.few",
+      "color_slot": 4
+    },
+    {
+      "id": "brisk-s.rubric",
+      "color_slot": 5
+    },
+    {
+      "id": "nano-xs.zero",
+      "color_slot": 6
+    },
+    {
+      "id": "nano-xs.few",
+      "color_slot": 7
+    },
+    {
+      "id": "nano-xs.rubric",
+      "color_slot": 8
+    }
+  ],
+  "show_arms_key": true,
+  "flag": [],
+  "options": {
+    "rows": [
+      {
+        "option": "brisk-s.few",
+        "role": "recommended"
+      },
+      {
+        "option": "nano-xs.few",
+        "role": "near_miss"
+      },
+      {
+        "option": "atlas-m.rubric",
+        "role": "most_accurate"
+      },
+      {
+        "option": "brisk-s.zero",
+        "role": "cheapest"
+      }
+    ],
+    "columns": [
+      "gate",
+      "cost_per_1k"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "bars",
+      "title": "Balanced accuracy across candidates",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "balanced_accuracy"
+        ],
+        "arms": [
+          "brisk-s.few",
+          "nano-xs.few",
+          "atlas-m.rubric",
+          "brisk-s.zero"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [
+        {
+          "kind": "floor",
+          "key": "criteria.overall.threshold"
+        }
+      ],
+      "emphasis": "brisk-s.few",
+      "level": "",
+      "unit": "pct",
+      "domain": []
+    },
+    {
+      "kind": "bars",
+      "title": "Cost per million turns",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "cost_per_1m"
+        ],
+        "arms": [
+          "brisk-s.few",
+          "nano-xs.few",
+          "atlas-m.rubric",
+          "brisk-s.zero"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "brisk-s.few",
+      "level": "",
+      "unit": "usd_per_1m",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "factorial_accuracy",
+      "eyebrow": "Model and prompt interaction",
+      "headline": "Few-shot prompting lifts every model above ninety percent Balanced accuracy",
+      "takeaway": "Compare Balanced accuracy across models and prompt styles against the gating threshold.",
+      "chart": {
+        "kind": "lattice",
+        "title": "",
+        "query": {
+          "source": "configs",
+          "aspect": "",
+          "measures": [
+            "balanced_accuracy"
+          ],
+          "arms": [],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "brisk-s.few",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "matrix_cells",
+      "eyebrow": "Cell-level robustness",
+      "headline": "{arm:brisk-s.few} clears all cell floors while {arm:nano-xs.few} fails on complex news",
+      "takeaway": "Each cell shows joint accuracy across complexity and domain against the {criteria.cell_floor.threshold} floor.",
+      "chart": {
+        "kind": "heatmap",
+        "title": "",
+        "query": {
+          "source": "cells",
+          "aspect": "",
+          "measures": [
+            "accuracy"
+          ],
+          "arms": [
+            "brisk-s.few",
+            "nano-xs.few"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "arm"
+        },
+        "reference": [
+          {
+            "kind": "floor",
+            "key": "criteria.cell_floor.threshold"
+          }
+        ],
+        "emphasis": "brisk-s.few",
+        "level": "95% uncorrected",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "complexity_confusion",
+      "eyebrow": "Classification error patterns",
+      "headline": "Errors concentrate primarily in medium complexity turns misclassified as simple",
+      "takeaway": "Row percentages show predicted complexity levels for each ground-truth category.",
+      "chart": {
+        "kind": "confusion",
+        "title": "",
+        "query": {
+          "source": "confusion",
+          "aspect": "",
+          "measures": [
+            "complexity"
+          ],
+          "arms": [
+            "brisk-s.few",
+            "nano-xs.few"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "arm"
+        },
+        "reference": [],
+        "emphasis": "brisk-s.few",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Threshold sensitivity",
+      "controls": [
+        {
+          "id": "cell_floor_threshold",
+          "kind": "slider",
+          "title": "Cell floor threshold",
+          "binds": "floor:cell_floor",
+          "min": 70.0,
+          "max": 85.0,
+          "step": 1.0,
+          "default": 80.0,
+          "options": []
+        }
+      ],
+      "recomputes": "Adjusting the cell floor recalculates arm eligibility; setting the floor at or below {criteria.cell_floor.nano-xs.few.complex.news.value} qualifies {arm:nano-xs.few}."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "gate_matrix_full",
+    "configs",
+    "cells"
+  ],
+  "durable_claims": [
+    {
+      "text": "{arm:brisk-s.few} satisfies all operational criteria, attaining {criteria.overall.brisk-s.few.value} Balanced accuracy and {criteria.p95.brisk-s.few.value} p95 latency with {count.failing.cell_floor.brisk-s.few} failing cells.",
+      "confidence": "very_high",
+      "keys": [
+        "criteria.overall.brisk-s.few.value",
+        "criteria.p95.brisk-s.few.value",
+        "count.failing.cell_floor.brisk-s.few"
+      ]
+    },
+    {
+      "text": "{arm:nano-xs.few} reaches {criteria.overall.nano-xs.few.value} Balanced accuracy but drops to {criteria.cell_floor.nano-xs.few.complex.news.value} on complex news turns.",
+      "confidence": "high",
+      "keys": [
+        "criteria.overall.nano-xs.few.value",
+        "criteria.cell_floor.nano-xs.few.complex.news.value"
+      ]
+    }
+  ],
+  "answers": []
+}

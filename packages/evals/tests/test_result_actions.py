@@ -236,7 +236,7 @@ async def test_a_spend_below_a_hundredth_of_a_cent_reads_as_money(tools: dict[st
     off_loop(fixture.host.eval_host.storage.save_eval_result, _result("res-cheap", "tc-c", 1, cost_usd=0.00003))
     outcome = await _call(tools["evals"], fixture, {"action": "results_list", "run_id": RUN_ID})
     (line,) = [line for line in outcome.text.splitlines() if line.startswith("- res-cheap:")]
-    assert "cost $0.0000300;" in line and "e-" not in line
+    assert "cost $0.000030;" in line and "e-" not in line
 
 
 def test_the_operation_lists_every_row_when_no_surface_bounds_it() -> None:
@@ -278,7 +278,7 @@ async def test_a_result_whose_every_action_failed_reads_back_each_failure_as_sto
     for action in FAILED_TURN["actions"]:
         assert f'"result": "{action["result"]}", "success": false' in outcome.text
     assert "call ledger (0 call(s) the kind recorded as succeeded):" in outcome.text
-    assert '"role": "candidate"' in outcome.text and "cost $0.00400 over" in outcome.text
+    assert '"role": "candidate"' in outcome.text and "cost $0.0040 over" in outcome.text
     assert 'goal check call_count("notes.write") >= 1: failed\n' in outcome.text
 
 

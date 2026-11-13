@@ -87,8 +87,23 @@ pass it to every entrypoint. It holds:
   you declare (`MetricDescriptor`) carries a `reader_name`, the few words a table header, chart title or axis
   label prints in place of its key ("Output speed", not `candidate_output_tokens_per_s`). `MeasureRegistry`
   refuses a measure without one, and one whose `reader_name` matches another measure's (yours or the engine's,
-  ignoring case), so the mistake surfaces at startup, not on a chart. The key stays what the store files the
-  number under and what a reader cites. Your bars (`BarRegistry`, each a `Bar`, with any per-behavior
+  ignoring case), so the mistake surfaces at startup, not on a chart. It refuses a measure with a better end
+  (`higher_is_better`) or declared a `diagnostic` and no `data_type` too, since no bundle would carry it. The key stays what the store files the
+  number under and what a reader cites. The reader name is no identity either: a bundle holds the measure by its key
+  and its `reader_name` and `reader_prose` outside every fingerprint, so renaming a measure stales no analysis (a
+  stored analysis's page keeps the name it was written with until it is regenerated). The same holds for the name a
+  campaign's declaration gives a level (`SweptAxis.values[].display`): a level is held by its content hash. Every lever you declare carries a reader name the same way, the words every page names it by
+  (`prompt style`, never `extractor.prompt_style`): `Sweepable(reader_name=...)` on each fixed lever,
+  `member_reader_name=` (a function from a member's lever name to its words) on each open family, and `title=` on
+  each overlay field of a kind contract (a map field's entries are named by its title and the entry's key). The
+  registry refuses a lever without one, naming it (`lever chunk_tokens has no reader_name — ...; declare
+  Sweepable(reader_name=...) with the words a reader calls it`), and a kind contract a field without a title. A
+  campaign stores the name on each axis it declares (`SweptAxis.reader_name`): yours where you give one, else the
+  lever's, filled when the campaign is created or updated, so a page rebuilt later names each declared axis's lever
+  as it was named then; a lever no declared axis names is named as the host reading the store declares it. A
+  `member_reader_name` returning a blank is refused where a member is named, naming the family and the member. The
+  name is no identity: renaming it moves no variant key, context or fingerprint, and stales no analysis (an arm code
+  labels from its levers is frozen by their ids and printed with their names). Your bars (`BarRegistry`, each a `Bar`, with any per-behavior
   `PassThreshold`) can be built in code or kept as data: `load_bar_registry(mapping)` reads
   `{"bars": [...], "pass_thresholds": [...]}`, each entry its type's fields. It refuses a field it does not
   know and a value of the wrong type rather than ignoring or coercing them, because a misspelt `rationale`
@@ -98,7 +113,10 @@ pass it to every entrypoint. It holds:
   and is refused when the template does not declare it, exactly as a campaign's own bar on a judged dimension is;
 
 - the `EvalStorage` you read and write through;
-- a factory for the completion clients the engine's own judge, simulator and analysis roles call. Every
+- a factory for the completion clients the engine's own roles call: the judge, the simulator, case generation, the
+  proposers and the report writer (`analyst`, one model for both the analyst and its editor, whose client must also
+  take tool turns; one that cannot is refused before anything is spent). The `analysis` role was the retired memo
+  writer's, and the engine no longer asks for it. Every
   completion a client returns is read by `CompletionResult`'s attribute names, and the usage ledger reads the
   token and cost attributes with a default, so a renamed attribute would degrade every usage row to
   "unreported" in silence. Check your completion type in your own suite with
@@ -162,16 +180,11 @@ pass it to every entrypoint. It holds:
   makes an agent's verdict a person's**: its cases then count in judge campaigns and judge profiles as people's
   labels, which is exactly what the check exists to stop. The case's author is the name you return, and the case
   records the caller (`collected_by`), which is not part of the case, so the same case relayed by two callers, or
-  seeded, is one case under one id. The `reporter_case_freeze` action asks it for each reader its labels name (a
-  label naming no `reader` is the caller's own), since each label is a reader's verdict on a memo and the judge's
-  agreement with readers reads it as a person's: one refused reader refuses the freeze, each label is stored under
-  the name you return with the caller as its `collected_by`, and neither is part of what makes two freezes the same
-  case, so re-freezing the same verdicts returns the stored case. A freeze with no labels asks nothing. Every action
-  that records a verdict as a person's asks you. The check guards the operations themselves, not only the actions:
-  without one, `judge_case_author` and `reporter_case_freeze` (with labels) refuse every call, your own code's direct
-  call included. Your own code that names its people itself asks no attestation: the seed corpus's `judge_cases`, an
-  `AuthoredJudgeCase` you build and freeze with `freeze_judge_cases(authored=)`, `freeze_reporter_case` with labels
-  naming their `reader` (or none), and `rate_result` with `rater_kind="person"`.
+  seeded, is one case under one id. Every action that records a verdict as a person's asks you. The check guards
+  the operations themselves, not only the actions: without one, `judge_case_author` refuses every call, your own
+  code's direct call included. Your own code that names its people itself asks no attestation: the seed corpus's
+  `judge_cases`, an `AuthoredJudgeCase` you build and freeze with `freeze_judge_cases(authored=)`, and `rate_result`
+  with `rater_kind="person"`.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
@@ -238,12 +251,15 @@ reasoning_effort='high'`), so moving your judge's reasoning effort or output cap
 replaying answers the new configuration never asked for. Each line also keeps what the call's request was actually
 SENT with, when your completion reports it (`sent_settings`, below), and a replayed completion reports the same, so
 a replay records what the recorded call was sent with, never the settings it was asked under. A recording made by a
-build before `.25` (recording format 1, `RecordedCompletions.FORMAT_VERSION` is 2) kept none, and is refused by name:
+build before `.25` (recording format 1; `RecordedCompletions.FORMAT_VERSION` is 3) kept none, and is refused by name:
 re-record it.
 
 A call is matched on its prompt (`system`, `user`, `response_format`), the model and temperature its completion
 reported, the settings the client was built with, and how many times that prompt was asked before, so `k` repeats
-replay as the `k` answers they were. A prompt the recording does not hold, or one asked once more than it was, is
+replay as the `k` answers they were. Inside an eval's cell, each call is also recorded with the cell it was made for
+(the arm, the case, the repeat), and a replay serves each cell the call recorded for it, so two arms sending a judge
+one prompt get back what each got, whatever order the cells run in. A recording made before format 3 noted no cell
+and is still read: repeat `i` is served the call of index `i`, and otherwise the first call left. A prompt the recording does not hold, or one asked once more than it was, is
 refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
 an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. To name a prompt that
 changed under its recording before a replay starts, hand
@@ -261,6 +277,17 @@ The package's own examples run this way: each calls a cheap model through `Model
 Gemini's flash-lite judges, both through OpenRouter), records the run when `RECORD=1` is set with `OPENROUTER_API_KEY`,
 and otherwise replays the recording kept beside it, so it runs offline on what a real model said rather than on a
 stand-in's text, and its test checks the recording still covers its prompts ([the examples' README](../examples/README.md#recording)).
+
+### Freezing the clock in your suite
+
+**Resolve the names you use before you freeze, or import them from their modules first.** `threetears.evals`
+serves its ladder (`Eval`, `Model`, `World`, ...) lazily, so `import threetears.evals` loads none of it.
+freezegun's `start()` swaps in its fake `date` and `datetime`, then reads every attribute of every loaded module,
+and that read imports each lazy name's module under the fakes. A pydantic model there with a `date` field cannot
+build on freezegun's `FakeDate`, so `start()` raises after it has frozen the clock and before your `with` block
+entered, and nothing stops it: every later test in the process reads a frozen clock, and each import of that model
+fails the same way. Read `threetears.evals.Model` (and any other name you freeze around) once, on the real clock,
+in a session fixture or at the top of the test module, and a freeze afterwards imports nothing.
 
 ## Bringing a provider
 
@@ -318,10 +345,21 @@ temperature, and only then without enforcement, for that call alone. The refused
 billed, so the price ceiling is one request's, but each refused send can take up to a request timeout
 (`MAX_RESENDS`, 4).
 
-**Pricing.** An OpenRouter call is priced by OpenRouter's own figure (`usage.cost`); under bring-your-own-key that
+**What your host pays is yours to say.** Hand each model your pricer (`Model(..., pricer=...)`), the port every call
+the model makes is priced through, a completion or a tool turn alike. Before a call it answers the rates you are
+billed for that model on that provider, and whether they are guaranteed; the engine computes the bound from them,
+so you never write the bound's arithmetic, and a bound on rates you do not guarantee admits the call as a disclosed
+estimate. After a call it receives the provider's usage block as returned, the provider that served it and the cache
+writes split by how long they are kept, and answers the price and its source: your own figure, your router's billed
+figure, or `None` with a reason. A model you hand no pricer gets the package's default, for standalone and
+development use: Anthropic's published rates for a direct Anthropic call, then the catalogue. Unpriced is
+`None` with `pricing_failure` saying why, never `0`.
+
+**How the default prices.** An OpenRouter call is priced by OpenRouter's own figure (`usage.cost`); under bring-your-own-key that
 figure is OpenRouter's fee alone, so the cost is it plus `cost_details.upstream_inference_cost`, and a BYOK reply
 without the upstream figure is unpriced. A reply that carries no `is_byok` is unpriced too (`cost_usd` and
-`price_source` are `None`, `pricing_failure` says why), since its `cost` may be the fee alone. A direct Anthropic or OpenAI call is priced by the catalogue row
+`price_source` are `None`, `pricing_failure` says why), since its `cost` may be the fee alone. A direct Anthropic call is priced at Anthropic's published rates, which need no
+fetch; a direct OpenAI call, or an Anthropic model those rates do not list, is priced by the catalogue row
 for the matching `vendor/model`, from the same reading of the row as the price ceiling: at the tier its prompt fell
 in, its reasoning tokens at the reasoning rate where the row lists one apart from the completion rate, its cache reads
 and writes at their rates, plus the request fee. Where a price applies that the reply's counts cannot price (reasoning
@@ -329,7 +367,8 @@ tokens it does not split out) the call is unpriced, never priced lower; its `pri
 when a cache share was priced at a rate the row does not list for it. The `price_source` words are `PriceSource`'s (host contract, from
 `threetears.evals.providers`, each member the string itself): `OPENROUTER_REPORTED`, `OPENROUTER_REPORTED_UPSTREAM`
 (the BYOK sum, `openrouter:reported+upstream`) and `OPENROUTER_CATALOGUE`, the prefix of
-`openrouter-catalogue:<id>`. Compare a stored `price_source` with them rather than spelling the words. Unpriced is `None` with `pricing_failure` saying why, never `0`. A
+`openrouter-catalogue:<id>`. Compare a stored `price_source` with them rather than spelling the words.
+A
 model's `price_ceiling` answers once its catalogue is loaded. The engine awaits the model's `refresh_prices()`
 before it prices a call, which loads it; `await clients.load_prices()` at boot reads it early and says which models
 it cannot price. A long-lived process is not priced from its first
@@ -389,8 +428,8 @@ client, in your suite, hold the wrapper to what the engine reads.
 
 **A client builder of your own sends every reasoning field.** The judge asks by a token budget
 (`JUDGE_REQUEST_SETTINGS.reasoning_max_tokens`, with `reasoning_effort=None`), so its reasoning is bounded where a
-model takes a budget; `SIMULATOR_REQUEST_SETTINGS` and `analysis_gen_request_settings_for`'s value ask by
-`reasoning_effort` and hold `reasoning_max_tokens=None`. A builder that reads only one of the two fields sends no
+model takes a budget; `SIMULATOR_REQUEST_SETTINGS` asks by
+`reasoning_effort` and holds `reasoning_max_tokens=None`. A builder that reads only one of the two fields sends no
 reasoning parameter to the roles that ask by the other, so they reason at the provider's default while the run
 records what they asked for. Build the request from every field: `wire_settings_for(settings, temperature)`
 (`threetears.evals.negotiation`) turns the engine's value into what `negotiate` sends, so nothing is hand-copied and
@@ -403,8 +442,8 @@ named in words your mapping does not know (no finish reason at all, a value newe
 Anthropic's `pause_turn`), and `error` only when the provider reported an error in place of a completion
 (OpenRouter's `error` finish reason) or returned no choices. Map anything you do not recognise to `truncated`, never to
 `end_turn`, which would read a cut-short reply as finished, and never to `error`, which tells the operator the call
-failed when it produced output. Every word but `end_turn` is cut short: the judge and the analysis generator never
-parse or repair such a reply, and their message says why for each; for `truncated` the provider's raw value is what
+failed when it produced output. Every word but `end_turn` is cut short: the judge never
+parses or repairs such a reply, and its message says why for each; for `truncated` the provider's raw value is what
 to look at, so log it.
 
 **Every enum a strict reply format sends is a string.** A provider's strict mode can accept an integer enum without
@@ -414,6 +453,28 @@ bare integer still read. `strict_response_format` (`threetears.evals.kernel`), w
 reply type through, refuses a schema whose `enum` or `const` holds anything but strings with `UnportableSchema`,
 naming where it sits, rather than rewrite a type your parser expects: declare such values as strings (a `Literal` of
 strings, a `str` enum) and convert them on read.
+
+### Fallback keys
+
+A key with prepaid credit runs dry mid-run, and the provider says so (Anthropic's 400 "credit balance is too low",
+a 402 on OpenRouter), which stops the run as the account's failure. To go on with another key, set
+`<VARIABLE>_FALLBACKS` to a comma list of other variables' names, tried in order after the provider's own:
+
+```bash
+ANTHROPIC_API_KEY_FALLBACKS=ANTHROPIC_API_KEY_LUMENS,ANTHROPIC_API_KEY_3
+```
+
+On a spent key's refusal the model sends the same request again on the next key; the refused call was not billed.
+A spent key is never sent again in the process, by any model reading that variable, and each switch is logged once at
+WARNING naming the two variables, never a key. Only that refusal fails over: a refused key (401, 403), a bad request,
+a 5xx and a timeout keep their behaviour. When every key's credit is spent, the account failure is raised as before,
+naming every variable it tried. A name in the list the environment does not set is refused when the model is built.
+Any provider's variable takes a list; OpenAI's own spent quota (a 429 `insufficient_quota`) is not read as spent
+credit and does not fail over, while an OpenAI-compatible endpoint's 402 does. A key passed as `Model(..., api_key=...)` never fails
+over: which key a call spends is then yours. A tool turn's `resent_after` lists the resend on the next key with the
+provider's answer, never a variable or key. Nothing changes unless a `_FALLBACKS` variable is set, and no key or
+variable name enters a recording.
+A spent-credit error OpenRouter answers inside a 200's body does not fail over: it stops the run as before.
 
 ### Reporting what each request was sent with
 
@@ -447,7 +508,7 @@ carried, send it once more with the closest setting the model takes, or without 
 carried. On a router that enforces parameters (OpenRouter's `require_parameters`, whose "no endpoint" answer names
 no parameter), drop the refused settings first, the temperature before any other, keeping enforcement; only when
 the request still finds no endpoint, send it without enforcement, and report `strict_output=False`. The engine's
-judge, simulated user and analysis generator all ask for `strict_output=True`, so a strict call your router cannot
+judge and simulated user both ask for `strict_output=True`, so a strict call your router cannot
 place is answered unenforced rather than failed: the call is recorded as sent unenforced, disclosed, and never
 pooled with an enforced one.
 
@@ -576,7 +637,7 @@ asked, because `supported_parameters` says some endpoint takes it, not that one 
 request's others; so it never rules a temperature out of a 404, and the temperature is still the first thing dropped.
 Read the catalogue once, at boot, and keep the facts: facts that moved mid-run because something else fetched the
 catalogue would send two calls of one run differently for no reason the run records. Build `asked` from the engine's
-own value (`wire_settings_for(JUDGE_REQUEST_SETTINGS, temperature)`, or the simulator's or the analysis generator's),
+own value (`wire_settings_for(JUDGE_REQUEST_SETTINGS, temperature)`, or the simulator's),
 never from constants copied by hand.
 
 **What a refusal teaches lasts for the process; enforcement is decided per call.** `LearnedSettings` holds what a
@@ -716,7 +777,12 @@ typed `DefinitionStore` cannot reach a run, and a test of one hands it only that
 
 **Watch the read tier's size.** The lenses that read a whole scope — `pivot` and `export_results` (and the
 `scope_pivot` / `scope_export` operations over them) — project and aggregate every result in Python on each
-call, which suits a scope of dozens-to-hundreds of cells. Each call logs one line on the
+call, which suits a scope of dozens-to-hundreds of cells. The aggregates (`pivot`, `history`, `frontier`,
+`program_budget`, `orphaned_runs`, `comparison_sets`) read results without `world_events` and `kind_payload`, which
+none of them reads, and so do an export's reads of a scope, of named runs and of a page of whole runs (its rows are
+the same projection's), so a store that projects `exclude` never ships those bytes; a run too large for one page is read
+a page at a time by id, each page whole. A host reader handed those results (a sweepable's `read`, a residual or production
+reader) sees both as none, as a paged reader's are; read what your kind reports into its measures as the cell ends. Each call logs one line on the
 `threetears.evals.analysis.reads` logger, at INFO:
 
 ```
@@ -725,8 +791,8 @@ eval.read_tier lens=pivot scope_id=acme runs_in=12 results_in=480 records_out=28
 
 `runs_in` and `results_in` are what the call read, `records_out` the score records it projected, `cells_out`
 the pivot's cells (`refused` when the pivot was refused; absent on an export) and `elapsed_ms` its wall time.
-Once `records_out` passes `READ_TIER_ROW_BUDGET` (50,000, in `threetears.evals.analysis`) the line is logged
-at WARNING and ends `over READ_TIER_ROW_BUDGET=50000`, so you can alert on the level alone. Crossing it means
+Once `records_out` passes `READ_TIER_ROW_BUDGET` (66,003, in `threetears.evals.analysis`) the line is logged
+at WARNING and ends `over READ_TIER_ROW_BUDGET=66003`, so you can alert on the level alone. Crossing it means
 the scope has outgrown the in-Python projection, the signal to push it down into your store; it fires
 before a page is slow, and you can alert on `elapsed_ms` instead.
 
@@ -736,10 +802,19 @@ more. Past `EXPORT_PAGE_RESULTS` (1,000) it exports in pages of whole runs (`Sco
 run, so one call never holds the scope. A run past the ceiling, in the scope's pages or named alone, is exported in
 pages of whole cases of it, the cursor naming the case (`page.next_after_case_id`).
 
-The aggregating lenses (`comparison_sets`, `pivot`, `frontier`, `history`, `program_budget` and `orphaned_runs`, and
-the `scope_pivot`, `scope_frontier` and `scope_history` operations and actions over them) cannot page: part of a
-pivot, a frontier or a history reads as the whole of it. They make the same estimate and hold it to
-`READ_TIER_ROW_BUDGET`, before reading anything:
+The aggregating lenses (`comparison_sets`, `pivot`, `frontier`, `history`, `program_budget` and `orphaned_runs`,
+and the `scope_pivot`,
+`scope_frontier` and `scope_history` operations and actions over them) cannot page: part of a pivot, a frontier or a
+history reads as the whole of it. They make the same estimate and hold it to their read budget, before reading
+anything. Each budget is the bytes per result that reader holds at its peak against the memory one call may take,
+measured on the paths a host runs (constants of `threetears.evals.analysis.reads`): `READING_BUDGET` (66,003 results, 256 MiB) for
+`comparison_sets`,
+`frontier`, `history` and the regression watch; `PIVOT_READ_BUDGET` (27,108, 1 GiB) for `pivot`; `BUNDLE_READ_BUDGET`
+(28,116, 1 GiB) for a campaign's bundle; `PLANNING_READ_BUDGET` (37,010, 256 MiB) for a launch estimate's planning
+block; `SPEND_READ_BUDGET` (105,196, 1 GiB) for `program_budget` and `orphaned_runs`, which read each result's
+spend figures off one grouped read, never a result, but hold that read whole before folding it (1,683 bytes a result
+on a store offering grouped reads, 10,207 on a store without them, whose rows the engine groups). They take no
+filter, so past it they are refused, the remedy naming where to read the spend a page at a time.
 
 - **A scope within the budget** is read whole, as before.
 - **A scope past it** is refused (`VALIDATION_FAILED`, with `details` `runs`, `results_estimated` and
@@ -756,7 +831,10 @@ pivot, a frontier or a history reads as the whole of it. They make the same esti
 - **A read that returns more than the budget** (a deleted run's results are in no listing) is not aggregated. A
   call for one subject reads that subject's runs instead; any other call is refused.
 
-Campaign reports read their member runs by id, so the budget never applies to them. Answering a scope past the
+Campaign reports read their member runs by id, so the scope's size never refuses them. A campaign's own runs are
+held to the same budget: `assemble_context_bundle` (every analysis and campaign report) estimates the runs it reads
+from the batch run read it already makes and refuses past the budget before reading a result, naming a campaign
+of fewer member runs, archiving members it need not read, or an aspect that reads fewer runs. Answering a scope past the
 budget in one call needs the projection pushed down into SQL (#996).
 
 **A run is read a page at a time.** A run's summary (`summarize_run`, `run_get`), a take-up of it (`job_resume`, the
@@ -768,7 +846,22 @@ by run, the one a whole read of the run made, now once a walk and shipping no he
 key. Leaving the fields out costs what your store's `exclude` costs: one rebuild of each document per path when it
 drops them one at a time; a store whose fields are top-level keys of a Postgres `jsonb` can drop them all in one
 operation (`data - text[]`). A store that applies `exclude` after fetching should project each row as it reads it, or
-the pass holds every row's text at once. A few readers still read a run whole; the CHANGELOG lists them.
+the pass holds every row's text at once. Every other reader of a whole run reads it the same way, in the store's
+order: a comparison or bisection of two runs, a run written lost, the witnessed judge ceiling, `results_list`,
+`list_results`, `delete_run` (its ids only), a calibration and the judge passes. A campaign's bundle reads its member
+runs' results as their compact readings (`iter_result_readings`: one call over a store that offers `ResultReadings`,
+else one key read per run and one read by id per 1,000 results), then the trials it keeps whole by id in one more call,
+without the verbatim fields. A regression watch's judged tiers read many runs in one call, each without
+`world_events` and `kind_payload` (`query_eval_results_by_runs(..., elide=VERBATIM_RESULT_FIELDS)`, a by-type read with
+`exclude` and `field_in` together: the conformance case `projection.exclude_with_field_in` pins that a store projects
+it); a launch
+estimate's planning block (`detectable_effects`) walks each earlier run a page at a time, keeping each result's
+per-case values; past the budget above each reads no result, and the bundle and the tiers are
+refused while a launch estimate is still priced, its planning block saying why in `cannot_estimate`. A reader that keeps
+every result to fold into figures keeps it without `world_events` and `kind_payload`, so a host callable handed a run's
+results there (a sweepable's `read`, `row_columns`) reads them without those two fields; read what your kind reports
+into its measures as the cell ends.
+Aggregates over a scope are bounded by the read budget above instead.
 
 ## Stored data: what is kept
 
@@ -782,9 +875,9 @@ types the engine stores, and says three things about each:
   documents: analyses, insights, judge profiles).
 - **lifecycle**: `kept` (the evidence core: read from the core baseline on, and deleted by a core baseline reset),
   `durable` (what people author: templates, rubric dims, judge configs and their tombstones, case sets, test cases,
-  calibration ratings and campaigns; never wiped by a core baseline, read forever from durable v15, changed only
-  additively or through an upgrader) or `regenerable` (refused after a format change, and made again: an analysis, insight or
-  judge profile is regenerated, a cassette re-captured).
+  calibration ratings and campaigns, and the analyst's capability gaps; never wiped by a core baseline, read forever
+  from durable v15, changed only additively or through an upgrader) or `regenerable` (refused after a format change,
+  and made again: an analysis, insight or judge profile is regenerated, a cassette re-captured).
 - **suppresses**: for a tombstone, the type it suppresses (`rubric_dim_tombstone` holds a `rubric_dim`'s
   slot, `judge_config_tombstone` a `judge_config`'s).
 
@@ -801,7 +894,8 @@ a host action's job (its result). `CORE_DOC_TYPES` lists them. The core is basel
 and deleted with `reset_core` (below).
 
 **What people author is durable, and no core baseline ever touches it.** Templates, rubric dims, judge configs
-(with their tombstones), case sets, test cases, calibration ratings and campaigns (`DURABLE_DOC_TYPES`) have a version space
+(with their tombstones), case sets, test cases, calibration ratings and campaigns, and the analyst's capability gaps
+(`DURABLE_DOC_TYPES`), have a version space
 of their own, forked from core v15 at `.26` (`DURABLE_SCHEMA_VERSION`, `DURABLE_SCHEMA_MINOR`). Its baseline,
 `DURABLE_BASELINE_VERSION`, is 15 forever, and a durable shape changes only additively (a minor) or with an
 upgrader (`DURABLE_UPGRADERS`); a durable major never resets. No durable document needs a core one to be read: a
@@ -842,11 +936,11 @@ or the other, an added optional field included:
   open vocabulary, a new doc type. Its ledger entry says, in words, that an older build that ignores the change
   reads the document correctly and its writes leave it true (`MINOR_ADDITIVITY_SENTENCE`); when that is false, the
   change is a major. **A minor rolls with no stop, in either direction,** with one exception the ledger states
-  where it applies: a minor that adds a field inside an opaque payload a kind reads. The durable v16.1 and v16.2
-  minors added fields to a reporter case's labels, inside `EvalTestCase.host_payload`. An older build keeps that
-  payload verbatim, so the document still rolls, but its reporter kind cannot read a case carrying the new fields,
-  and one such case stops that reporter template on the older pods (its launches, prices, freezes, calibration reads
-  and restores) until they upgrade. Freeze none until every pod runs the newer build. Otherwise, a build reads any newer minor of its own
+  where it applies: a minor that adds a field inside an opaque payload a kind reads, such as
+  `EvalTestCase.host_payload`. An older build keeps that payload verbatim, so the document still rolls, but its kind
+  cannot read a case carrying the new fields, and one such case stops that kind's template on the older pods until
+  they upgrade. Write none until every pod runs the newer build. (The durable v16.1 and v16.2 minors were this case,
+  for the retired reporter kind's labels.) Otherwise, a build reads any newer minor of its own
   major: every field it does not declare, at every depth, is kept on the model, out of every attribute, dump and
   digest, and written back where it was the next time the engine writes that document, stamped with the newer
   minor. So while a fleet is half upgraded, an older process reads what a newer one wrote as if the new fields
@@ -892,7 +986,7 @@ subject's insights, so one insight from before the bump refuses every generation
 that subject until it is gone; the refusal names this step. With the engine stopped:
 
 ```python
-dropped = storage.drop_derived(["support"])          # analyses, insights and judge profiles of these scopes
+dropped = storage.drop_derived(["support"])          # analyses, reports, insights and judge profiles of these scopes
 for profile in dropped.judge_profiles:                # the one kind that does not come back by itself
     judge_profiles_record(host, JudgeProfilesRecord(judge_run_ids=profile.run_ids), profile.scope_id)
 ```
@@ -900,16 +994,17 @@ for profile in dropped.judge_profiles:                # the one kind that does n
 `drop_derived` deletes nothing else: runs, results, cassettes and every durable document stay. Analyses come back by
 generating them again and insights with the analyses that mint them; a judge profile only by recording it again, and
 until then a campaign that took its judges' tier from it reads its own evidence's tier. The campaign rewrite (durable v16) is such a bump
-(regenerable v12: one memo per campaign), and so is the memo's summary across its aspects (regenerable v13). A
+(regenerable v12: one analysis per campaign), and so is regenerable v13 (a summary across aspects, written by the
+retired memo writer). A
 cassette is not touched by either bump: its format has its own `CASSETTE_SCHEMA_VERSION`, bumped only
 when the cassette itself changes, because re-capturing a corpus calls your third-party tools again. A cassette
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.7), durable documents (v16.3), regenerable documents
+**Each version space moves on its own.** Core documents (v15.11), durable documents (v16.9), regenerable documents
 (v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`), the cell model
-(`CELL_MODEL_VERSION`) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
-form.
+(`CELL_MODEL_VERSION`) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The code-only page has none: it is rendered from the bundle, which is the versioned machine
+form. Report documents and their sessions carry a version of their own, as cassettes do: a change to the report document's shape moves that version alone, the shared regenerable version stays where it is, and a report from before it reads as the code-only page with a line to regenerate it.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
 each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or
 `<config id>@<sha12>`, your `JudgeConfig` and a fingerprint of the reply-format suffix the engine appends to its
@@ -1028,10 +1123,16 @@ The router refuses to start (`RouteChanged`) when a type would be read from a st
 two stores are passed under each other's names, and when no store has a record yet. `RoutedDocumentStore.relocate`
 moves every document of the scopes and host types you name to its new store, then writes the records. Run it
 once when you adopt the router and again whenever you change the route, with the engine stopped. If it is
-interrupted, run it again. A release that adds a type needs no relocation unless your route places the new type
-somewhere other than your `unregistered` store. A release that adds a fact value needs your route to map it: a
+interrupted, run it again. A release that adds a type needs no relocation, wherever your route places it: the
+records list every type registered when they were written, so a type they do not name has no documents yet, and the
+router places it by the route and records it. This assumes you never keep your own documents under an `eval_*` name;
+one the engine later registers is read from that type's placement, and you relocate to move them. If you roll back
+and run an older build's `relocate`, it moves the newer types' documents to your `unregistered` store; relocate again
+once the newer build is back. During a rolling deploy, once a pod of the newer build has started and rewritten the
+records, an older pod that restarts refuses to start (`RouteChanged`): finish rolling forward rather than restarting
+older pods. A release that adds a fact value needs your route to map it: a
 lifecycle route must map `durable` (from `.26`), or it is refused when built. Giving `durable` a store other than
-the one `kept` types were written to moves the nine durable types, so the first start raises `RouteChanged` for
+the one `kept` types were written to moves the ten durable types, so the first start raises `RouteChanged` for
 them until you relocate (or run `RoutedDocumentStore.reset_core`, which relocates).
 
 **Ask whether the stores hold anything before you relocate.** A host's start that adopts tables, rather than
@@ -1074,8 +1175,8 @@ release, on:
 
 - **`host-contract`** is what a host writes against: the host and its profile, the registries, the kind seam,
   launching, the stored documents a kind builds, the store port with its conformance kits and the engine's own
-  stores, the refusals, the version constants, the `Known*` vocabularies and their value tuples (`USAGE_ROLES`, …),
-  the quick path and what it returns, and every name this guide, the [ladder](ladder.md), the README or an
+  stores, the refusals, the version constants, the `Known*` vocabularies a declared signature takes and the value
+  tuples a page names (`USAGE_ROLES`, …), the quick path and what it returns, and every name this guide, the [ladder](ladder.md), the README or an
   example imports. Such a name moves only with
   a `MIGRATIONS.toml` record and a deprecation cycle: the release that moves it exports the new name beside the old
   one, which keeps working for that minor release and is named in its notes, and the next minor release removes the
@@ -1088,14 +1189,20 @@ release, on:
   below a root. Such a name is promised nothing: it may change or move in any release, and the
   [reference](reference.md#public-api) does not list it.
 
-The first two tiers are the declared surface, about 540 names, mapped by rung in [the surface](surface.md).
+The first two tiers are the declared surface, about 500 names, mapped by rung in [the surface](surface.md). A declared
+name stays declared while something outside the package imports it, a shipped page teaches it or a declared
+signature reaches it, or while it is a port you implement, a version constant or a one-minor shim, or a stable name
+only a known host's tests import, until that host accepts that it may move (the rules, in full:
+[the surface](surface.md)). Otherwise it is provisional; a name that goes provisional still imports, nothing warns,
+and `MIGRATIONS.toml` names it.
 `packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
 signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two
 tiers, with the reason for each group of names. The [reference](reference.md#public-api) lists the declared names
-and marks each host-contract one *host contract*. Nothing a host imports is provisional: each adopting host's import
-list sits in `packages/evals/tests/fixtures/host_imports/`, and a test fails while a name on one is provisional. If
-your host binds to a provisional name, send your list to be added: promoting a name costs nothing, and demoting one
-is a break.
+and marks each host-contract one *host contract*. Nothing a host's production code imports is provisional: each
+adopting host's import list sits in `packages/evals/tests/fixtures/host_imports/`, and a test fails while a name on
+one is provisional, unless the host accepted that a name only its tests import may move. If your host binds to a
+provisional name, send your list to be added: promoting a name costs nothing, and demoting one withdraws a promise,
+so it is recorded.
 
 **The installed build ships its tiers**, so your suite can gate its own imports against the version it runs
 (`surface_tier` raises `KeyError` for a name no root exports, so a reach below a root fails too):
@@ -1144,7 +1251,7 @@ snapshot:
   the README, this guide, the ladder or an example imports must be on it (`tests/test_api_tiers.py`); no name this
   guide's prose teaches may be provisional (`tests/test_guide_names_are_declared.py`).
 - **A name moved, renamed or removed.** The test fails until `MIGRATIONS.toml`'s first section (the release being
-  prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name. A name the last
+  prepared) records it. The snapshot script refuses to write a snapshot that drops an unrecorded name. A name the last
   final release did not export never reached a porter, so it needs only a regeneration, and a record of it is
   refused.
 - **A section that names the tag before it (`since`).** The test reads both surfaces from git and holds the
@@ -1175,7 +1282,9 @@ What a kind adds to the engine's own fields is two Pydantic models you name once
 `kinds`, in a `KindContract`:
 
 - Its **overlays** are the knobs a launch may turn: validated by field before any run exists, frozen onto
-  the run, and read back as levers whose levels enter the variant key.
+  the run, and read back as levers whose levels enter the variant key. Each field declares a `description`
+  (what the knob is) and a `title` (what a page calls it, `Field("standard", title="prompt style",
+  description=...)`); a field missing either is refused when the contract is built.
 - Its **spec** is what a template of that kind declares (`kind_spec`), such as a label set or a table
   setup: refused by field at authoring, then validated again and frozen onto each run.
 
@@ -1202,7 +1311,7 @@ lever, and the surface is compared with the swept entries removed.
 Only arms can test a fold: every run of one arm resolves the same surface, so only a knob level held by two or
 more arms (differing in, say, the model) can show the surface moving on its own. A plain two-arm `low` / `high`
 sweep still folds, but every comparison that does carries an `unverified_fold:llm_parameters` confound, which the
-analysis generator and the code-only report both state.
+code-only report states and the report input carries to the analyst.
 
 A residual reader checks that sweep. `ResolvesInto("llm_parameters", read_residual=reader)` takes a
 `reader(run, results, removed)` that returns the surface with the knob's contribution taken out (`removed` is the
@@ -1236,12 +1345,9 @@ anything is spent.
 sink keeps the cell's spend by source, and the cap is read between cells, against the cells already recorded: a
 cell running when the cap is reached finishes whole, and a run may land past it by up to the width's worth of cells
 ([Cost and budgets: caps](cost-and-budgets.md#caps)). Report each paid call's cost as it lands: wrap the client in
-`CappedCompletion(client, sink=sink, source="candidate")`, which does it for every call, or take a handle,
-`held = sink.reserve("candidate", ceiling)`, then `held.settle(cost)` when it returns and `held.release()` if it
-raises. Spend you learn of any other way, report as it lands (`sink.add_spend(source, cost)`); it adds, and never
+`CappedCompletion(client, sink=sink, source="candidate")`, which does it for every call, or call
+`sink.add_spend(source, cost)` once a call returns; a call that raises counts nothing. Each call adds, and never
 replaces what another source reported. Return the cell's spend on its output; that is what the cap counts.
-`sink.reserve` never refuses, `sink.cost_cap_reached()` is always `False`, and `CostCapReached` is no longer raised
-by the engine: they stay so a host that imports them keeps importing, and a kind has nothing to catch.
 
 A run is one arm with one `candidate_model`; a launch naming several models starts one run per model, and
 runs of different kinds are always different variants. A reader of yours that answers for a run its lever
@@ -1385,12 +1491,17 @@ async def test_no_call_waits_on_a_model(case: JobsConformanceCase) -> None:
 
 The engine holds some of its own work to inner ceilings, and every outer budget you set around that work (an action
 job's `budget_s`, the output cap of the client you build for the simulator or the proposer, a retry budget around a
-scheduling call, a deadline over a generation or a cell's judge phase) must sit at or above the ceiling inside it, or
+scheduling call, a deadline over a report or a cell's judge phase) must sit at or above the ceiling inside it, or
 you cancel work the engine would still finish inside its own bound, after it was billed. `Ceilings` (host contract,
 in `threetears.evals.run`) carries them as one value: `Ceilings()` holds `scheduler_call_attempts`,
-`simulator_max_tokens`, `simulator_answer_budget_tokens` and `proposer_max_tokens`, and the two functions
-`generation_ceiling_s` and `judge_phase_ceiling_s`, which turn your own ceiling for one request into the ceiling of a
-generation or a judge phase. Derive each outer budget from a field, never from a number you copied: a release that
+`simulator_max_tokens`, `simulator_answer_budget_tokens` and `proposer_max_tokens`, and the functions
+`judge_phase_ceiling_s` and `writer_ceiling_s`, which turn your own ceiling for one request into the ceiling of a
+judge phase or of the writing of a report (every analyst round, revision, bounce and editor review its limits allow).
+`writer_ceiling_s` also takes the writer's limits, the same ones the report is
+written under, and the turn cap of your report budget (`turns=`, `ReportBudget.turns`). A report's job budget is
+`writer_ceiling_s` plus your headroom. Declare a turn cap even on a dollar budget (`ReportBudget(usd=10.0,
+turns=60)`): dollars bound what a report spends, never how many turns it sends, so without one the ceiling is every
+turn the limits allow at your full request ceiling, which at a long request ceiling runs to days and stops nothing. Derive each outer budget from a field, never from a number you copied: a release that
 raises an inner ceiling then raises your budget with it, so the budget cannot drift below it. The package exports
 no other name for them: the six separate constants and functions `.32` kept beside `Ceilings` were removed in `.33`.
 
@@ -1416,7 +1527,7 @@ A judged measure fires only when every judge behind the step's scores is `calibr
 [Judges and calibration](judges-and-calibration.md)). A run that ended any other way than `completed` is
 not a point on the history, so it is never checked. The engine ships no delivery: with no watch, nothing
 is checked. A sink that raises is logged, the next alert is still delivered, and the run's status never
-changes. The watch reads the history of the run's own subject, so a scope past `READ_TIER_ROW_BUDGET` is still
+changes. The watch reads the history of the run's own subject, so a scope past `READING_BUDGET` is still
 checked wherever that subject fits; a judged alert then carries `narrowed_read_disclosure`, saying its judges were
 tiered on that subject's results alone. When the subject alone is past the budget, the watch checks nothing on the
 run and logs it at ERROR (`eval.regression watch checked nothing on run=...`), saying nothing narrower exists
@@ -1461,8 +1572,8 @@ a default and one leaving it out are one condition.
 A campaign that compares arms to make a decision asks **one question** of them, measured on one or more
 **aspects**, before its first run (`create_campaign`, or the `campaign_create` action). Each aspect is one template,
 its runs, the margin a candidate may fall below the control by there, and its design. **Code reports, the writer
-recommends, a person decides**: code reads each aspect against the control; the floors only warn; and nothing on the
-page decides for the person reading it.
+recommends, a person decides**: code reads each aspect against the control; the floors warn (a broken one also caps the
+candidate's standing in code's dominance read); and nothing on the page decides for the person reading it.
 
 ```python
 definition = {
@@ -1524,7 +1635,7 @@ campaign_record(
 )
 ```
 
-The call is read against code's readings of the evidence as it stands, never the memo's words, and is refused:
+The call is read against code's readings of the evidence as it stands, never the report's words, and is refused:
 
 | When | Why |
 |---|---|
@@ -1542,26 +1653,96 @@ joined since it was made. In a choice, an arm shown behind another on some aspec
 beside the call.
 
 
+## Campaign reports: what your host supplies
+
+`analysis_generate` writes a campaign's report as a job: it freezes the evidence, runs the analyst and its editor
+([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)), and stores the
+document, linked to the campaign as its analysis. Your host supplies four things:
+
+- **The model**, from your factory's `analyst` role, built on your own key. One model serves the analyst and the
+  editor. Its client must take tool turns, or the job is refused before anything is spent, naming what to forward.
+- **The budget and the time**, on your `AnalysisGeneration`, each read on every generation so a value kept in your
+  config changes without a restart: the report budget (dollars, or tokens for a model you have no price
+  for, either with a turn cap), which no caller can raise; `budget_s`, the job's time, `writer_ceiling_s` plus your headroom
+  ([deriving your budgets](#deriving-your-budgets-from-the-engines-ceilings)); and `preparation_budget_s`, the bound
+  on its preparation (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s). How the budget admits each turn is in
+  [Cost and budgets](cost-and-budgets.md#spend-outside-any-run).
+- **The page.** `report_read` serves the newest report in each format; serve the static HTML, or frame it as an
+  iframe's `srcdoc` with an empty `sandbox` ([embedding](reading-reports.md#embedding-the-page-in-a-host)). A report
+  this version no longer reads is never refused: it reads as the code-only page with one line to regenerate.
+
+Two document types come with it, routed like any other: each report's session transcripts, derived and swept with
+their report, and the analyst's capability gaps, durable. The engine posts no gap anywhere; if you want a digest or
+filed issues, run `analyst_gaps_list` from a scheduled job of your own and post its groups with your own credentials.
+To let your own agents investigate a campaign the way the analyst does, mount the `evals_analyst` tool beside `evals`
+([serving](serving.md#the-analysts-tool)).
+
+### Fitting the report page to the host
+
+A report page framed in your app should look like your app. You can set its faces and its main colours, and stamp
+its theme. The page reads seven CSS custom properties and declares none of them. Each falls back to the page's own
+value, so you set only the ones you want:
+
+| Token | What it sets | Page default, light / dark |
+|---|---|---|
+| `--host-font-body` | body text and headings | `"IBM Plex Sans"` (headings `"IBM Plex Sans Condensed"`), then `system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif` |
+| `--host-font-mono` | ids, expressions, payloads | `"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace` |
+| `--host-color-text` | text | `#11151b` / `#eef1f5` |
+| `--host-color-muted` | quiet text: captions, tick labels | `#5f6774` / `#8a93a1` |
+| `--host-color-surface` | the ground and every card | `#f5f6f8` and `#ffffff` / `#0e1115` and `#161a20` |
+| `--host-color-link` | links | the accent |
+| `--host-color-accent` | the accent: the decided verdict, the recommended row, focus | `#1f5fbf` / `#6aa2f0` |
+
+The page mixes its secondary text, rules, sunken tint and the accent's wash from these with `color-mix`, so they follow
+your palette. The arm, outcome, status and scale colours stay the page's: a brand colour can never make a fail look
+like a pass.
+
+**Where to set them.** A `srcdoc` frame cannot see your stylesheet, so set them on the page's own `<html>` tag. Every
+page opens with exactly one `<html lang="en">`, right after `<!doctype html>`. Rewrite that tag before you hand the
+page to the frame:
+
+```html
+<html lang="en" data-theme="dark" style="--host-font-body:'Bricolage Grotesque',sans-serif;--host-color-accent:#d8b46a">
+```
+
+An inline style beats every rule in the page, in either theme. Pass the values for the theme you stamp. Leave out any
+value holding `;`, `{` or `}`, and leave a page untouched if it does not carry exactly one such tag.
+
+**The theme.** `data-theme="dark"` or `"light"` on that tag wins over the reader's colour-scheme setting. Without it
+the page follows the setting, which a sandboxed frame reads from the operating system, not from your app.
+
+**Fonts.** The page fetches nothing: no font host, no stylesheet link. A face reaches the frame only if the frame
+can load it, which a sandbox usually cannot, so end every font value in a generic family (`sans-serif`, `monospace`).
+IBM Plex is used where the reader has it installed, else the system's faces.
+
+**Width.** Every table fits a 688 px frame or scrolls inside its own frame. A shadow at an edge shows there is more,
+and the first column stays in view while you scroll. A table whose rows are told apart by two columns (By stratum,
+and the contrasts over two or more candidates) keeps both in view. A pinned column is never narrower than its floor
+(8rem, or 30% of the frame where that is less) nor wider than about a third of the frame, and wraps at its words; only
+an id-like cell (an expression, a digest) breaks anywhere. The page's own section links stay above every table as it
+scrolls beneath them, and under 700 px the headings are a step smaller.
+
 ## The engine's prompts: shipped defaults, optional overrides
 
-The engine steers three LLM calls of its own with a prompt: the analysis generator (`ANALYSIS_GEN_PROMPT`), the
-capability proposer (`PROPOSER_PROMPT`) and the boundary proposer (`BOUNDARY_GEN_PROMPT`). **A new host does
-nothing here.** Each call runs the default the package ships (`EVAL_ANALYSIS_GEN_DEFAULT` in `analysis`,
-`EVAL_PROPOSER_TEMPLATE_DEFAULT` and `EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT` in `gen`) unless you hand it a prompt
-of your own: an `AnalysisGeneration` with no `resolve_prompt`, and `plan_draft(axis=..., subject_feed=...,
-catalog_feed=...)` with no `system_prompt` (`default_system_prompt(axis)` is the text it sends).
+**The report writer reads a skill, not a prompt you hold.** A campaign report is written by the analyst and its
+editor from the skill the package ships as data (principles, story forms, charts, statistics, writing, reasoning
+notes, and the editor's rubric). It is not overridable today: an improvement lands as a change to the package, checked
+against the acceptance campaigns and the editor's scores. Each report records the skill's digest as its provenance.
+
+The engine steers its other LLM calls with a prompt: the capability proposer (`PROPOSER_PROMPT`) and the boundary
+proposer (`BOUNDARY_GEN_PROMPT`). The retired writers' slots, the memo writer's (`eval_analysis_gen`) and the report
+planner's (`eval_report_plan`), are neither listed nor read, and no root constant seeds either. Drop both slot
+declarations; a stored override of either is inert.
+**A new host does nothing here.** Each call runs the default the package ships (`EVAL_PROPOSER_TEMPLATE_DEFAULT` and
+`EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT` in `gen`) unless you hand it a prompt of your own: `plan_draft(axis=...,
+subject_feed=..., catalog_feed=...)` with no `system_prompt` (`default_system_prompt(axis)` is the text it sends).
 
 **An override is yours to keep.** If an operator tunes a prompt without a deploy, keep the copy in your own
-registry and hand it in: `AnalysisGeneration(resolve_prompt=..., prompt_id=...)` (the id is recorded on every
-analysis as its provenance), and `plan_draft(..., system_prompt=..., reset=...)`. `SEED_PROMPTS` (from
-`threetears.evals.kernel`) lists the three, one `SeedPrompt` each: its id (`prompt_type`), its registry kind
+registry and hand it in: `plan_draft(..., system_prompt=..., reset=...)`. `SEED_PROMPTS` (from
+`threetears.evals.kernel`) lists them (the two proposers'), one `SeedPrompt` each: its id (`prompt_type`), its registry kind
 (`template` or `text`) and `seed_ref`, the `(module, constant)` its default is imported from. Seed an empty slot
 from each and never overwrite a stored one. The engine's ids start with `eval_`, so your own prompts can use any
 other name.
-
-**The preparation bound is yours to set.** `AnalysisGeneration(preparation_budget_s=...)` bounds a generation's
-preparation (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s), alongside `budget_s`, which bounds its generator calls.
-Both are read on every generation, so a timeout kept in host config can change without a restart.
 
 **A proposer override states the draft shape it was written for, and the engine checks it.** Each shipped
 proposer default ends with its output-contract line, `eval-output-contract: rubric_proposal <fingerprint>`
@@ -1572,8 +1753,7 @@ another fingerprint (`outdated`) or none (`undeclared`). The error names the pro
 to the shipped default, or rewrite the edit's output instructions for the current shape and make its line read the
 current one. The registry is yours, so name your reset as `reset=` (an action or a command your operator can
 run), which an override requires. An edited copy that carries the current line passes: the line is the editor's
-statement that the edit was written for this shape. The analysis generator's prompt states no shape (its schema is
-sent and its grammar appended by code), so it binds no contract.
+statement that the edit was written for this shape.
 
 **The drift check is opt-in.** A stored copy seeded from an older default keeps being sent after an upgrade
 changes the default. To see that before you pay for it, record `seed_digest(default)` when you seed a slot and read
@@ -1593,63 +1773,12 @@ would refuse the copy (`contract` is `outdated` or `undeclared`). Pass a templat
 `SeedTemplate.from_dict(payload)` and a text prompt's as its string. A host that keeps no copies has nothing to
 check.
 
-### Launching the analysis reporter
+### The analysis reporter is retired
 
-The analysis reporter (`REPORTER_KIND`) evaluates the analysis writer itself. Its cases are frozen campaign
-bundles (see [Serving](serving.md#reporter-runs-evaluating-the-analysis-writer-itself)). A
-candidate is a preset of the `ANALYSIS_GEN_PROMPT` prompt on a generator model, or `AS_RECORDED_MODEL`,
-which replays the memo each campaign got.
-
-The kind is declared by the engine, so your host supplies only two things:
-
-- **Your prompt registry**, as a `ReporterPrompts`: `resolve(preset)` returns that preset's text, or the
-  system default for `None`. It returns `None` for a preset you do not hold, never the default in its
-  place. A registry that fell back would bill the incumbent prompt under the candidate's name.
-- **Your model resolution**, as a `ReporterModelResolver`: `(role, named)` returns the provider model,
-  or the role's default when `named` is `None`. The roles are `generator` and `judge`. Raise
-  `ValidationFailedError` for a name you do not know.
-
-Declare `REPORTER_KIND_CONTRACT` (from `threetears.evals.analysis`) on your profile's `kinds`. Its one
-overlay is `prompt_preset`, and it seats the judge and the spend ceiling. If the profile refuses it for
-leaving one of your own apparatus dimensions unseated, build it with
-`reporter_kind_contract(host_seats=[...])`. On a reporter template, your `refuse_undeliverable_template`
-hook calls `refuse_undeliverable_reporter_template`.
-
-Then register the kind's launch entry, a `LaunchableKind` (from `threetears.evals.run`) whose arguments come from
-`threetears.evals.ops` (`REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`, `plan_reporter_arm`, `price_largest_reporter_call`):
-
-```python
-LaunchableKind(
-    launch=your_reporter_launcher,
-    resolve_subject=your_reporter_subject,  # admits the one subject id your reporter launches label
-    unhonoured_launch_arguments=REPORTER_UNHONOURED_LAUNCH_ARGUMENTS,
-    plan_arm=lambda request: plan_reporter_arm(eval_host, request, prompts=load_prompts(), resolve_model=resolve),
-    price_largest_call=lambda request: price_largest_reporter_call(
-        eval_host, request, prompts=load_prompts(), resolve_model=resolve
-    ),
-)
-```
-
-`price_largest_reporter_call` prices each case's first generator request before anything is spent, built as
-the cell builds it, on the client your factory builds in the `analysis` role for the arm's model. The
-estimate and the launch then refuse an arm whose largest generator call is reserved above its cap. Without
-it, that call is refused only when the run reaches it, after the cases before it were paid for. Pass the
-`eval_host` your launcher builds the generator client on, so the price is that client's. The memo's judge
-call stays unpriced, since the memo it judges does not exist yet.
-
-`plan_reporter_arm` and `admit_reporter_launch` make every refusal before the arm is priced, in this order:
-
-1. a template asking for apparatus a memo writer cannot honour, or with no rubric;
-2. a preset you do not hold, or no default;
-3. a model named by alias (a name you resolve to another model), since the run records the name and an
-   alias's target moves;
-4. a template with no live case, or a campaign-and-memo pair holding two live cases. When the launch
-   names a case set, its cases run instead, and each must carry a reporter case;
-5. the replay over a case with no recorded memo.
-
-Your launcher calls `admit_reporter_launch` again, off the event loop. It builds `ReporterKind` (prompt id
-`ANALYSIS_GEN_PROMPT`) or `AsRecordedReporterKind` from what that returns, and wires its client, subject,
-cell ceiling (`reporter_cell_timeout_s`) and judge as for any kind.
+The analysis reporter kind measured the memo writer and the report planner, which are retired, so its cases and
+actions are gone, and so are its contract, kinds and launch names. Delete the reporter kind's registration, its launch
+entry and its template check. The report writer is measured by
+a writer campaign instead ([Serving](serving.md#writer-campaigns-evaluating-the-report-writer)).
 
 ## A world, through the cell's session
 
@@ -1786,6 +1915,12 @@ scope holds no version of is minted over their stored ids through `mint_case_set
 and reported under `case_set` as `<name> v1`; a scope holding any version keeps it (the next version is
 `case_set_mint`'s), so a host's own minting script over `case_set_mint` can be dropped.
 
+**A stored template's presentation fields reach it through `update_template`.** The seed fills empty slots only, and
+the template digest a reset reads leaves `goal_check_names` and `stratum_names` out, so `update_template` is the one
+seam that gives a stored template a check's or a stratum's reader name. A name holds at most `DECLARED_NAME_CHARS`
+characters, and `check_names(checks, {})` over the host's seeded checks shows which the namer leaves `GOAL_CHECK`, the
+ones worth a declared name.
+
 **A corpus edit reaches a seeded scope only through a reset.** The seed fills empty slots and never updates, so a
 template whose cases grew in git stays as first seeded. Every definition the seed writes records the digest of what it
 wrote, and a release step reads drift and resets what is behind, deliberately (never at boot, so a store an operator
@@ -1811,9 +1946,16 @@ A reset never edits in place. A template's new content is its next **revision**:
 content they ran against, and a launch, the seed and `load_template_by_name` resolve the name to the newest revision,
 which `templates_list` shows beside each template (`revision`). A judge template's new revision holds the corpus's
 whole battery, and the corpus's case sets over it are minted again; a template the corpus gives cases gets every one
-of them in its new revision. The reset refuses `customized` and `unknown`, and a judge template (or a template the
-corpus gives cases) holding live cases the corpus does not carry, unless `overwrite_customized=True`; it writes
-nothing when it refuses and names every refusal. Each row of the result (`DefinitionReset.reset`) names what it wrote
+of them in its new revision. The reset refuses `customized` and `unknown` unless `overwrite_customized=True`. It
+refuses a judge template (or a template the corpus gives cases) holding live cases the corpus does not carry, such as
+cases frozen from people's ratings, unless one of two flags says what becomes of them. `carry_live_cases=True` copies
+each into the new revision beside the corpus's cases, content and labels unchanged, the copy naming its source
+(`EvalTestCase.carried_from`) and the source staying on the archived revision with its runs; the template then reads
+`current`, the same reset again writes nothing, and freezing the same labels into the new revision names the copy
+rather than adding the case again. `overwrite_customized=True` leaves them on the archived revision alone. The flags are independent: carrying never accepts a `customized` or `unknown` definition, and both together
+write the corpus over it and carry the cases. A case set outside the corpus over the archived revision is not minted
+again: `DefinitionReset.stranded_case_sets` names each one, and `carried` maps each source case to its copy for its
+next mint. A reset writes nothing when it refuses and names every refusal. Each row of the result (`DefinitionReset.reset`) names what it wrote
 and the stored record it replaced (`replaced_id`), and reads `discarded: true` only where that stored copy read
 `customized` or `unknown` and was written over under the flag. A campaign holding runs of two revisions of one
 template is refused (at creation, adding a run, and its bundle), since their results are two datasets; two templates
@@ -1874,6 +2016,15 @@ stores and never reads; register a measure for whatever should be compared.
 **Spend.** Your kind reports its own calls' spend only as usage rows (`CandidateTelemetry.usage`). How
 the engine turns those rows into a result's `cost_usd`, and what happens when a call cannot be priced, is
 in [Cost and budgets: how a result's cost is counted](cost-and-budgets.md#how-a-results-cost-is-counted).
+
+**Calls nobody answered.** Count them on the ledger with `RoleUsageLedger.add_unanswered(model=, retried=, lost=,
+reasons=)`, never on a row you build yourself. Pass the key fields you passed `add` for the calls they sit beside. A
+lost call names no served model, and the ledger folds it into its model's answered row anyway, so you need not know
+which row it belongs to. The counts sit beside the row's `call_count` and never in its cost. A model none of whose calls
+was answered keeps a row of its own (`RoleUsage.answers_nothing`): its `call_count` is None, because it answered
+nothing, and no cost reads it. A reader that keys rows on `call_count` should expect that row. Each count you leave
+out reads as not counted, never as zero. So where your rate measures need the counts on every row, mark a row whose
+calls were all answered with `add_unanswered(model=..., retried=0, lost=0)` on its key.
 
 ## Cassettes: recording and replaying tools
 

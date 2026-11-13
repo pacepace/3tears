@@ -1,13 +1,13 @@
-"""An arm whose largest call's reservation is above its cap on its own is refused before anything is spent.
+"""An arm whose largest call's ceiling is above its cap on its own is refused before anything is spent.
 
 A judge campaign on a flash model (6 cases, k=1, ``max_cost_usd=0.5``) was estimated at $0.023 and admitted, then
 went ``budget_stopped`` after one result: "a call priced at up to $0.5801 would have taken the run to $0.5801
-against a $0.5000 cap". A run reserves a priced call's ceiling before making it (``CellSink.reserve``) and refuses
-the call when the ceiling would take it past its cap — so a call whose ceiling is above the whole cap can never be
-made, whatever the run is predicted to spend, and the case reaching it is excluded after the cases before it were
-paid for. Neither the estimate nor the launch said so.
+against a $0.5000 cap". A run then reserved a priced call's ceiling before making it and refused the call when the
+ceiling would take it past its cap, so a call whose ceiling was above the whole cap could never be made, and the
+case reaching it was excluded after the cases before it were paid for. Neither the estimate nor the launch said
+so. The cap is read between cells now and refuses no call inside one; a launch still refuses the arm up front.
 
-The judge kind prices every case's call before launch, as its cell reserves it (the client's ``price_ceiling`` for
+The judge kind prices every case's call before launch, as its cell makes it (the client's ``price_ceiling`` for
 the case's prompt, times the judge's parse-retry attempts), and the arm carries the largest
 (``ArmPlan.call_ceiling``). One rule refuses the arm when that ceiling is above its cap, for the estimate and the
 launch alike, naming the cap one call needs and what lowers the ceiling. A cap at or above it is admitted.
@@ -42,7 +42,7 @@ from threetears.evals.run import (
     quote_launch,
     start_run,
 )
-from threetears.evals.schema import EvalTemplate, EvalTestCase, JudgedArtifact, JudgeEvidence
+from threetears.evals.schema import EvalTemplate, EvalTestCase, JudgeConfig, JudgedArtifact, JudgeEvidence
 from threetears.evals.schema.models import TRANSCRIPT_DIM_ID
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.judge import ToyJudgeCompletion
@@ -185,7 +185,7 @@ class _JudgeCampaign:
         [arm] = (await launch_estimate(OpsHost(launch=self.host), arguments, TOYHOST_SCOPE)).arms
         return arm
 
-    async def launch(self, max_cost_usd: float) -> list[Any]:
+    async def launch(self, max_cost_usd: float, *, overlays: dict[str, Any] | None = None) -> list[Any]:
         runs = await start_run(
             self.host,
             template_id=_TEMPLATE_ID,
@@ -194,6 +194,7 @@ class _JudgeCampaign:
             k_runs=1,
             max_cost_usd=max_cost_usd,
             scope_id=TOYHOST_SCOPE,
+            overlays=overlays,
         )
         async with asyncio.timeout(10):
             while any(self.host.job_manager.is_active(run.id) for run in runs):
@@ -244,6 +245,26 @@ async def test_a_cap_at_or_above_one_calls_ceiling_is_admitted() -> None:
     runs = await campaign.launch(0.59)
     assert len(runs) == 1
     assert len(campaign.client.calls) == 6, "every case's call was admitted and made"
+
+
+async def test_a_launch_overlaying_a_stored_judge_config_reads_it_off_the_event_loop() -> None:
+    # A config overlay is a store read while the kind is built; the store refuses a call on the loop's thread, so a
+    # launch that built the kind there failed before its run started, though pricing (built off the loop) passed.
+    campaign = off_loop(_JudgeCampaign)
+    config = JudgeConfig(
+        scope_id=TOYHOST_SCOPE,
+        name="transcript-production",
+        rubric_dim_id=TRANSCRIPT_DIM_ID,
+        prompt_template="Score the transcript as the production judge does.",
+    )
+    off_loop(campaign.host.eval_host.storage.save_judge_config, config)
+
+    runs = await campaign.launch(0.59, overlays={"config_ids": {TRANSCRIPT_DIM_ID: config.id}})
+
+    assert len(runs) == 1
+    assert len(campaign.client.calls) == 6, "the overlaid kind was built and judged every case"
+    [stored] = off_loop(campaign.host.eval_host.storage.query_eval_runs, TOYHOST_SCOPE)
+    assert stored.overlays is not None and stored.overlays["config_ids"] == {TRANSCRIPT_DIM_ID: config.id}
 
 
 async def test_a_call_above_the_hosts_own_ceiling_is_named_as_the_hosts_to_raise() -> None:

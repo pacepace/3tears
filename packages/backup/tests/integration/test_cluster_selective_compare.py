@@ -20,7 +20,7 @@ from uuid import UUID, uuid7
 import asyncpg
 import pytest
 from pydantic import SecretStr
-from threetears.core.testing.containers import check_docker_available
+from threetears.core.testing.services import require_services, running_postgres
 
 from threetears.backup.cluster import ClusterBackup, replace_database
 from threetears.backup.compare import DriftComparator
@@ -37,10 +37,19 @@ from threetears.object_store.filesystem import FilesystemObjectStore
 _TOOLS = ("pg_dump", "pg_restore", "pg_dumpall", "psql")
 _TOOLS_PRESENT = all(shutil.which(tool) for tool in _TOOLS)
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(not _TOOLS_PRESENT, reason="postgres client tools not on PATH"),
-]
+pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _client_tools() -> None:
+    """stop the module unless the Postgres client tools it shells out to are on PATH (a failure on the pool).
+
+    :return: None
+    :rtype: None
+    """
+    if not _TOOLS_PRESENT:
+        require_services("postgres client tools not on PATH")
+
 
 #: low scrypt work factor: these tests exercise plumbing, not the KDF's memory-hardness.
 _TEST_WORK_FACTOR = 2**14
@@ -60,17 +69,10 @@ def cluster_dsn() -> Any:
     ``beta`` exists to prove enumeration finds databases nobody passed in. A ``drill_reader``
     role proves the globals dump captures cluster-level objects.
     """
-    if not check_docker_available():
-        pytest.skip("docker unavailable")
     major = _client_tool_major()
     if major is None:
-        pytest.skip("cannot determine pg client version")
-    from testcontainers.community.postgres import PostgresContainer  # noqa: PLC0415
-
-    with PostgresContainer(f"postgres:{major}") as container:
-        url = container.get_connection_url()
-        if url.startswith("postgresql+psycopg2://"):
-            url = url.replace("postgresql+psycopg2://", "postgresql://", 1)
+        require_services("cannot determine pg client version")
+    with running_postgres(f"postgres:{major}") as url:
         yield url
 
 

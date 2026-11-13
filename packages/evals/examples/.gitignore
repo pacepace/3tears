@@ -1,3 +1,4 @@
 # What running a rung writes beside it (its store and reports under .evals/, rung 3's report/); never committed.
+# report/ is anchored to a rung's own directory, so recordings/report/ (the harness door's turns) can be committed.
 .evals/
-report/
+/*/report/

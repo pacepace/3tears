@@ -12,8 +12,8 @@ from typing import Any
 
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.kernel.campaign import EvalAnalysis
-from threetears.evals.ops import UndescribableArmsListing, analyses_undescribable, analysis_generate
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
+from threetears.evals.ops import UndescribableArmsListing, analyses_undescribable
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, generate, ops_fixture, OpsFixture, settled
 from packages.evals.tests.off_loop import off_loop
 
 REASON = "its key was minted by variant predicate v1, which this build does not reproduce"
@@ -22,7 +22,7 @@ REASON = "its key was minted by variant predicate v1, which this build does not 
 async def _two_analyses() -> tuple[OpsFixture, EvalAnalysis, EvalAnalysis]:
     """The toy campaign's generated analysis, and a copy of it whose first arm cannot be described."""
     fixture = off_loop(ops_fixture)
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    (job,) = (await generate(fixture.host, fixture.campaign.id)).jobs
     assert (await settled(fixture.host, job.job_id)).state == "completed"
     storage = fixture.host.eval_host.storage
     (described,) = off_loop(storage.list_analyses_by_campaign, fixture.campaign.id, TOYHOST_SCOPE)

@@ -16,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from threetears.evals.kernel.candidate_kind import CandidateOutput, CellPending, CellReservation
+from threetears.evals.kernel.candidate_kind import CandidateOutput, CellPending
 from threetears.evals.schema.models import ActorPolicy
 
 __all__ = ["DONE", "FakeCellSink", "Raw", "ScriptedResponse", "ScriptedTable", "actor"]
@@ -100,13 +100,11 @@ class FakeCellSink:
     """One cell alone, keeping its spend as the engine's sink does.
 
     The engine's rule: a running total per source, only ever added to. It asks no ceiling: the cost cap is read
-    between cells, so a reservation is never refused and the cap is never reported reached.
+    between cells.
     """
 
     #: Each source's running total.
     spent: dict[CellPending, float | None] = field(default_factory=dict)
-    #: The reservations of the calls in flight.
-    held: list[_HeldOnFakeSink] = field(default_factory=list)
     pending: list[CellPending] = field(default_factory=list)
     #: The kind's last reading of its candidate side (``report_progress``), or ``None`` when it registered none.
     progress: Callable[[], CandidateOutput] | None = None
@@ -121,32 +119,3 @@ class FakeCellSink:
         assert cost_usd is None or cost_usd >= 0, cost_usd
         total = self.spent.get(source, 0.0)
         self.spent[source] = None if total is None or cost_usd is None else total + cost_usd
-
-    def reserve(self, source: CellPending, ceiling_usd: float | None) -> _HeldOnFakeSink:
-        hold = _HeldOnFakeSink(sink=self, source=source, ceiling_usd=ceiling_usd or 0.0)
-        self.held.append(hold)
-        return hold
-
-    def cost_cap_reached(self) -> bool:
-        return False
-
-
-@dataclass(eq=False)
-class _HeldOnFakeSink(CellReservation):
-    """One held call on :class:`FakeCellSink`, closed once."""
-
-    sink: FakeCellSink
-    source: CellPending
-    ceiling_usd: float
-    closed: bool = False
-
-    def settle(self, cost_usd: float | None) -> None:
-        assert not self.closed, "a reservation is settled once"
-        self.closed = True
-        self.sink.held.remove(self)
-        self.sink.add_spend(self.source, cost_usd)
-
-    def release(self) -> None:
-        if not self.closed:
-            self.closed = True
-            self.sink.held.remove(self)

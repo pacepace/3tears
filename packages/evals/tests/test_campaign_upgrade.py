@@ -328,16 +328,21 @@ class TestACampaignWithNoRule:
         assert (upgraded["declared_at"], upgraded["declared_by"], upgraded["call"]) == (None, "", None)
 
 
-@pytest.mark.parametrize(
-    "stored",
-    [
-        pytest.param(_frozen(), id="frozen"),
+@pytest.fixture(
+    params=[
+        pytest.param(lambda: _frozen(), id="frozen"),
         pytest.param(
-            _stored(V15Question(text="Switch?", decision=V15Rule(clauses=(RateDrop(max_points=5),)))), id="ruled"
+            lambda: _stored(V15Question(text="Switch?", decision=V15Rule(clauses=(RateDrop(max_points=5),)))),
+            id="ruled",
         ),
-        pytest.param(_v15(run_ids=["run-1"]), id="exploratory"),
-    ],
+        pytest.param(lambda: _v15(run_ids=["run-1"]), id="exploratory"),
+    ]
 )
+def stored(request: pytest.FixtureRequest) -> dict[str, Any]:
+    """The stored document, built when the test runs: a document stamps its id, which an import must not."""
+    return request.param()
+
+
 class TestTheStepIsPure:
     def test_its_input_is_not_modified(self, stored: dict[str, Any]) -> None:
         before = copy.deepcopy(stored)

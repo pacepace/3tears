@@ -8,7 +8,7 @@ reports use. Nothing here assumes you have built an eval before. Why the pieces 
 ## Six concepts
 
 An eval is three slots, `Eval(cases, runner, grader)`. Run it, and it gives you a result you read; give it two
-runners, and it is a comparison. That is the whole of it: [World](ladder.md#rung-4-an-agent-graded-on-the-world-it-leaves)
+runners, and it is a comparison. That is the whole of it: [World](ladder.md#rung-4a-an-agent-graded-on-the-world-it-leaves)
 and `Log` are shapes of runner, `Model` is a client you may ignore, and `grader(...)` and `Answer` are optional
 modifiers.
 
@@ -44,8 +44,8 @@ too, so it is checked against people's labels before its scores are leaned on, a
 
 A runner given as a mapping, `{"v1": ..., "v2": ...}`: each runner is an arm, every arm runs over the same cases, and
 the first key is the **control** the others are tested against. Each reading gets a delta, an interval, and a
-**verdict**, naming both arms: separated (`v2 better than v1`, `v2 worse than v1`), not separated (`v2 and v1 not
-separated`: the cases could not tell the arms apart, which never means "no difference"), `equivalent` (shown inside a
+**verdict**, naming both arms: separated (`v2 better than v1`, `v2 worse than v1`), undecided (`the evidence cannot
+tell v2 and v1 apart`, `cannot tell apart` in a table cell, which never means "no difference"), `equivalent` (shown inside a
 margin you declared), or `untested`. A guardrail is
 decided apart, `held`, `breached` or `undecided`, so a gain elsewhere cannot pay for it.
 
@@ -64,9 +64,10 @@ against people.
 | miss | a result the runner got wrong, with why; read them before the means | [rung 1](ladder.md#rung-1-your-own-function) |
 | stratum | a case's kind, so each reading is split by kind | [rung 1](ladder.md#rung-1-your-own-function) |
 | labels, κ, evidence tier | a person's ratings of judged answers, the judge's agreement with them, and how far its scores can be leaned on | [rung 2](ladder.md#rung-2-a-judge-checked-against-a-person) |
-| arm, control, verdict | one version; the version the others are tested against; what the evidence supports | [rung 3](ladder.md#rung-3-two-prompts-compared) |
-| margin, guardrail, gate | the difference too small to matter; a reading no arm may get worse on; the CI check over the verdicts | [rung 3](ladder.md#rung-3-two-prompts-compared) |
-| world, goal check, did-nothing control | the state an agent acts on; a check of the state it left; the proof that a check can fail | [rung 4](ladder.md#rung-4-an-agent-graded-on-the-world-it-leaves) |
+| arm, control, verdict | one version; the version the others are tested against; what the evidence supports | [rung 3a](ladder.md#rung-3a-two-prompts-compared) |
+| margin, guardrail, gate | the difference too small to matter; a reading no arm may get worse on; the CI check over the verdicts | rungs [3b](ladder.md#rung-3b-a-margin-so-a-reading-can-be-equivalent), [3c](ladder.md#rung-3c-a-guardrail-decided-on-its-own) and [3d](ladder.md#rung-3d-the-gate-in-ci) |
+| factor | one lever of a grid, its arms named as `k=v` pairs | [rung 3e](ladder.md#rung-3e-two-levers-at-once) |
+| world, goal check, did-nothing control | the state an agent acts on; a check of the state it left; the proof that a check can fail | [rung 4a](ladder.md#rung-4a-an-agent-graded-on-the-world-it-leaves) |
 | store, scope, host | where runs are kept; the name they are found by; the value that serves them | [serving](serving.md#keep-your-runs-and-read-them-back) |
 | campaign, aspect, floor | one question asked of the arms; where it is measured; a line a candidate is warned for crossing | [measuring soundly](measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects) |
 
@@ -102,10 +103,11 @@ An `Eval` builds all of this for you (`as_host`); a host of your own declares it
      v
   analysis bundle   every number code computed about one aspect, frozen and fingerprinted
      |
-     |  optionally, a model reads the bundle and writes findings: an analysis
+     |  optionally, an analyst model investigates a frozen snapshot with tools
+     |  and writes a report document, which code checks and an editor reviews
      v
-  report    one page per campaign, HTML and Markdown, a fold per aspect, beside campaign.json
-            and each aspect's bundle; "code-only" when no analysis was generated
+  report    one page per campaign, HTML and Markdown, beside campaign.json and each
+            aspect's bundle: the analyst's report, or "code-only" when none was written
 ```
 
 Underneath all of it sits your **host**: the one value through which your app tells the engine what it can
@@ -197,8 +199,7 @@ itself, the candidate model (`model`) and the candidate kind (`candidate_kind`);
 more. *Example:* `model` and `ticket_router.prompt_version`.
 With no host of your own, an arm named as `k=v` pairs (`{"prompt=v2": runner}`) states one beside the model, as
 `callable.prompt` (`callable-judged.prompt` on a judged run), and arms named `"model=m1, prompt=v2"` are keyed by
-their level of both (`examples/3-invoices/extract.py`'s docstring crosses the prompt with a reasoning
-effort).
+their level of both (`examples/3-invoices/grid.py` crosses the prompt with a reasoning effort).
 
 #### Label (sweepable role)
 A sweepable that identifies a run without determining its score (role `label`), so a difference in it is
@@ -258,8 +259,8 @@ the run froze, `EvalRun.template_digest`), one apparatus provenance and one set 
 cases each run covered and whenever each ran. Its headline figure, interval, bar and verdict read the headline
 cell alone, chosen in the one order `PassHatKCellReading` states (a recorded, resolved context first, then a cell
 that pools, then most runs, most results and the first run id); every other cell stands beside it with its own
-pass^k and the reason it is not the headline (`FrontierPoint.pass_hat_k_cells`), named on the frontier's text, the report page and
-the memo writer's view. A run kept out of the headline is kept out of the frontier's pass^k, bar and verdict
+pass^k and the reason it is not the headline (`FrontierPoint.pass_hat_k_cells`), named on the frontier's text and the report page.
+A run kept out of the headline is kept out of the frontier's pass^k, bar and verdict
 only: the arm's tables, its cells (see [Apparatus class](#apparatus-class)), composite, cost and latency still
 count it. A run that froze no template digest, and a run with a candidate call whose response named no model, is
 a cell of its own: a silence is never evidence of a match, so it pools with nothing and is named with what it did
@@ -425,10 +426,12 @@ Something the candidate must not do: leak data, take a destructive action, break
 on the `boundary` axis (`RubricDim.axis`, which the judge stamps on every score and every "can't tell") or a
 measure the host declares `guardrail=True` is one; on the quick path, `grader(fn, guard=0.02)` declares a
 function's and `Judge(..., guard={"dimension": 0.02})` a dimension's, each with its margin; every grade is
-higher-is-better, so no direction is stated. Guardrails never join the composite, pass^k or a comparison
-family, so a "can't tell" on one leaves the trial in both; the bundle decides each one for every arm against
-the control as `held`, `breached` or `undecided`. A catalog dim's `axis` is its embedded dim's, so copying a
-boundary catalog dim into a template keeps it a guardrail. *Example:*
+higher-is-better, so no direction is stated. Guardrails never join the composite or a comparison family; the
+bundle decides each one for every arm against the control as `held`, `breached` or `undecided`. A guardrail that
+is a check (a pass/fail grader, or a host's boolean with a better end) still fails each trial it fails, in the pass
+rate and in pass^k; `guard=` only adds the held/breached reading. A judged guardrail fails no trial, so a "can't
+tell" on one leaves the trial in both. A catalog dim's `axis` is its embedded dim's, so copying a boundary catalog dim
+into a template keeps it a guardrail. *Example:*
 `boundary.correct`, "declined the unsafe ask", held at no change while a new prompt raises task success.
 
 #### Evidence tier
@@ -466,9 +469,11 @@ existed reads as one aspect labelled with its behavior.
 #### Floor
 A line a candidate is warned for crossing on one aspect (`Floor`): a typed clause, `RateDrop` (no pass rate drops
 by more than `max_points`) or `CostLower` (the candidate costs less per reply), never words the engine parses. A
-floor reads `broken`, `held` or `unclear`, on its own interval at the nominal level. It only **warns**, loudly: a
-broken floor is the first line of the page. It never decides, blocks or writes the verdict; code reports, the
-writer recommends, and a person decides. Held on every floor of every asked aspect, each declaring one, a candidate is shown no worse,
+floor reads `broken`, `held` or `unclear`, on its own interval at the nominal level. It **warns**, loudly: a
+broken floor is the first line of the page. It never removes an option, blocks or writes the verdict; code reports,
+the writer recommends, and a person decides. Read `broken` on an asked aspect, it caps the candidate's standing in
+code's dominance read (`options_dominance`): a candidate shown better there is read not shown no worse, and the
+reason names the floor. An `unclear` floor caps nothing. Held on every floor of every asked aspect, each declaring one, a candidate is shown no worse,
 which licenses the writer to recommend it as a separated gain does: a floor is how a campaign asks "no worse?".
 
 #### Campaign kind
@@ -476,7 +481,7 @@ What a campaign can decide, read off its arms and never declared (`campaign_kind
 
 | Kind | Arms | Code reports, per aspect | The writer |
 |---|---|---|---|
-| measurement | one | each measure with its interval, and each bar met or missed | a summary and findings; no recommendation |
+| measurement | one | each measure with its interval, and each bar met or missed | a status report: the arm against its bars and thresholds; no recommendation |
 | choice | two or more, no control | every pair's difference with its interval, and which arm is shown ahead | picks an arm, or says no clear winner |
 | change | a control and candidates | each candidate against the control: shown better, shown worse, no worse than the margin or unclear | recommends a switch or keeping the control |
 
@@ -484,13 +489,12 @@ A margin and a relative floor read a candidate against a control, so a campaign 
 with the remedy to declare a bar instead. A bar is absolute, so every kind is held to its bars.
 
 #### Recommendation and call
-**Code reports, the writer recommends, a person decides.** The writer's memo makes at most one recommendation per
-campaign (`Recommendation`): an arm, its reasons, how sure, and the findings it rests on. It answers every warning
-its arm raises: each broken floor in `floors_overridden`, each aspect where another arm is shown ahead in
-`behind_on`, each missed bar in `bars_missed`, each with a why. The person's decision is the **call**
+**Code reports, the analyst recommends, a person decides.** A report names the arms it recommends, as data, with
+the claims and confidence that carry the call; a tradeoff may recommend none and state its lean in prose. When it
+names exactly one, that arm is the campaign's recommended variant. The person's decision is the **call**
 (`CampaignCall`, recorded by `campaign_record`): the arm, why, and each broken floor and missed bar it overrides by
-name. The call is read against code's readings, never the memo, and is matched by variant key, since a derived arm's
-label can shift when a variant joins.
+name. The call is read against code's readings, never the report, and is matched by variant key, since a derived
+arm's label can shift when a variant joins.
 
 #### Control
 The arm every other arm in a campaign is tested against: usually what runs today. It is a variant, not a run,
@@ -523,36 +527,50 @@ excludes zero. See [reading a comparison](reading-reports.md#reading-a-compariso
 
 #### Verdict
 What a comparison's evidence supports, per arm and reading: **separated** (printed `v2 better than v1` or `v2 worse
-than v1`, each arm by its label), **not separated** (the cases could not tell the arms apart, which never means "no
-difference"), **equivalent** (shown inside a margin the measure declares, and the only verdict that says "good
+than v1`, each arm by its label), **cannot tell apart** (typed `not_separated`: the cases could not tell the arms
+apart, which never means "no difference"), **equivalent** (shown inside a margin the measure declares, and the only verdict that says "good
 enough"), or **untested** (no test could decide). A report names, under Not tested, each measure that declares no
 margin and so can never read equivalent. A guardrail is decided apart, as `held`, `breached` or `undecided`, and a bar as `cleared`, `missed` or
 `undecided`. Each is also a typed value a program reads (`Result.verdicts()`), which the printed words are
 rendered from. See [reading a comparison](reading-reports.md#reading-a-comparison).
 
 #### Miss
-A result the runner got wrong: a wrong label, a grader on the wrong side of 0 (0 or less where higher is better,
-above 0 where lower is better, as `leaked` is; never for a measure with no direction), a failed goal check, a failed
-pass/fail judgement, or a result the runner failed outright (it raised, say). An excluded result is never a
-miss. `summary.misses()` lists them, each with its reason; [rung 1](ladder.md#rung-1-your-own-function) says how
+A trial the pass rule failed: the runner failed outright (it raised, say), or a goal check failed, the label was
+wrong, a check the host declares fell on its wrong side (on the quick path, a grader annotated `bool`, guarded or
+not), or a judged capability dimension scored under the bar. A grader that is no check is never a miss, whatever it returns, and an
+excluded result never is. `summary.misses()` lists them, each with its reason; [rung 1](ladder.md#rung-1-your-own-function) says how
 to read them.
 
 #### Analysis bundle
 Everything code computed about one aspect of a campaign, assembled once and fingerprinted
-(`AnalysisContextBundle`, its `aspect` naming which), so two analysis prompts run over the same fingerprint are
-comparable. A campaign of several aspects is assembled one aspect at a time (`assemble_context_bundle(...,
-aspect=...)`). Nothing is fetched while an analysis is
-written: the bundle is the whole context. The CLI's `bundle` prints it inside a `BundleInspection` wrapper
-(campaign, scope, fingerprint, and the bundle as its `bundle` field); save the bundle alone with
-`bundle.to_json()`.
+(`AnalysisContextBundle`, its `aspect` naming which), so two reads of the same fingerprint read the same evidence. A
+campaign of several aspects is assembled one aspect at a time (`assemble_context_bundle(..., aspect=...)`). The CLI's
+`bundle` prints it inside a `BundleInspection` wrapper (campaign, scope, fingerprint, and the bundle as its `bundle`
+field); save the bundle alone with `bundle.to_json()`.
+
+#### Report snapshot
+A campaign's bundles, built into the report input and frozen as one stored document the analyst's tools read. It is
+addressed by its content, so the same evidence frozen twice names one snapshot, and every tool is a function of the
+snapshot and its own parameters alone: the analyst, its editor and a replay of either read the same figures, and
+runs added later change nothing under a report.
 
 #### Analysis
-One memo a model wrote over a whole campaign (`EvalAnalysis`): its summary across the aspects, its findings, at
-most one recommendation, a short summary of each aspect and next steps, with every number in its prose replaced by the value code read. It is
-written over the **campaign bundle** (`CampaignBundle`): the campaign's arms, floors and bars, and each aspect's
-readings, each aspect's part held to its own budget of characters, so adding an aspect never crowds out another.
-Each aspect's bundle is stored with it. Optional, and it costs money; the verdict and every count on the report are
-code's either way.
+The campaign's written report (`EvalAnalysis`, linked to the **report document** it stores). An **analyst** model
+investigates the campaign's snapshot with read-only tools, guided by a skill the package ships, and writes the
+document: a headline, the arms it recommends, its confidence and caveats, claims in reading order each with the
+evidence blocks that show it, what it left out and why, next steps and method. Every number in it is a **figure key**
+code resolves; the analyst types none. Code checks the draft mechanically and sends a failing one back; an
+**editor**, the same model in a fresh context, then reviews the page as a reader would before it is stored. Optional,
+and it costs money; the verdict and every count are code's either way. An analysis a retired writer stored
+reads as the code-only page with a line to regenerate.
+See [the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence).
+
+#### Confidence
+How sure a report's call is, in one of three forms: high, high if the caveats below aren't material, or low. It is
+read from the method and the variance of the evidence (its design, criteria set after the results, the judge's
+standing, confounds, how well the evidence separates the arms), never from the result alone. Each open caveat says what would make it matter; one code
+proves cannot change the call is printed as code's checked line instead. A lead's risk of reading the wrong way is
+stated beside the lead, and does not lower the form by itself.
 
 #### Trial
 One case run once on one arm — one stored result. It is passed, failed (the candidate's failure: its model, its
@@ -568,9 +586,9 @@ A block code adds to a report to say what a reader must know, whoever wrote the 
 was generated, say, or that a stratum holds too few cases to read alone.
 
 #### Out-of-run spend
-Model calls the engine makes outside any run (generating cases, proposing a rubric, writing an analysis,
-repeating judge scores): priced before they are made and ledgered as `OutOfRunSpend`. See
-[cost and budgets](cost-and-budgets.md).
+Model calls the engine makes outside any run (generating cases, proposing a rubric, repeating judge scores):
+priced before they are made and ledgered as `OutOfRunSpend`. Writing a report is held to a budget of its own, which
+the host sets, and its spend is ledgered once, under purpose `analysis`, when the job ends. See [cost and budgets](cost-and-budgets.md).
 
 ### Building a host
 
@@ -633,12 +651,12 @@ A place the engine calls code your host supplies, through a protocol the engine 
 (`prepare` and `invoke`, under a `KindContract`), the cassette seams a kind wires (`CassetteSeams`). See [the kind](adopting-a-host.md#the-kind-what-you-are-evaluating) and
 [cassettes](adopting-a-host.md#cassettes-recording-and-replaying-tools).
 
-#### Sink and reservation
+#### Sink
 A **sink** is what code reports into rather than returns: a cell's `CellSink` keeps its spend by source,
-`TraceSink` is your tracing, and a `RegressionWatch` awaits a sink of yours with each alert. A **reservation**
-is the handle of a paid call a cell is making (`sink.reserve(source, ceiling)`, then `settle(cost)` or
-`release()`), which lands the call's cost on the cell's spend; it holds nothing back, because the run's cost cap is
-read between cells and refuses no call inside one. `CappedCompletion` does it for every call. See [Caps](cost-and-budgets.md#caps).
+`TraceSink` is your tracing, and a `RegressionWatch` awaits a sink of yours with each alert. A cell adds a paid
+call's cost to its sink once the call returns (`sink.add_spend(source, cost)`); nothing inside a cell is refused,
+because the run's cost cap is read between cells. `CappedCompletion` does it for every call. See
+[Caps](cost-and-budgets.md#caps).
 
 #### Store, `DocumentStore` and port
 A **port** is a protocol the engine declares and your host implements: `DocumentStore`, `CompletionClient`,

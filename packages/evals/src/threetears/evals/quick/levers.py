@@ -65,7 +65,8 @@ def refuse_unusable_lever_names(names: Iterable[str]) -> tuple[str, ...]:
 
 
 def levers_model(names: Iterable[str]) -> type[CallableLevers]:
-    """The overlay model declaring one required, non-blank string level per lever name.
+    """The overlay model declaring one required, non-blank string level per lever name, each titled by its name as the
+    caller wrote it: what every page calls the lever (``prompt``, never ``callable.prompt``).
 
     :param names: The levers' names.
     :ptype names: Iterable[str]
@@ -74,7 +75,10 @@ def levers_model(names: Iterable[str]) -> type[CallableLevers]:
     :raises ValueError: As :func:`refuse_unusable_lever_names`.
     """
     fields: dict[str, object] = {
-        name: (str, Field(pattern=r"\S", description=f"the {name} level the arm ran at, as its caller named it"))
+        name: (
+            str,
+            Field(pattern=r"\S", title=name, description=f"the {name} level the arm ran at, as its caller named it"),
+        )
         for name in refuse_unusable_lever_names(names)
     }
     model: type[CallableLevers] = create_model("CallableLevers", __base__=CallableLevers, **fields)  # type: ignore[call-overload]

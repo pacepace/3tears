@@ -7,8 +7,8 @@ A table is printed only where it says more than a sentence would (rule 2 of the 
   (:func:`~threetears.evals.analysis.depth.repeats_sentence`);
 - the pass^k depth table is one sentence where pass^k compares pass rates on every aspect, at a common and planned
   depth of 1 with no case left out;
-- the precision table drops a column empty on every row, and sits under the Methods where every arm ran each case
-  once, since no repeat then splits its noise;
+- the precision table drops a column empty on every row, and sits folded under the Methods: what limits an interval is
+  how it was read, one step further from the answer than the scorecard;
 - what extra repeats cannot lower is said once, in Design & provenance, where a between-case share is read
   (:func:`depth_provenance_blocks`).
 """
@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 
 from threetears.evals.analysis.arms import short_digest
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME, AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.depth import (
     COMMON_DEPTH_ONE_EVERYWHERE,
@@ -30,11 +30,11 @@ from threetears.evals.analysis.depth import (
 from threetears.evals.analysis.depth_reading import AspectDepth, SubjectDepth, aspect_depth
 from threetears.evals.analysis.report.campaign.common import named_arms
 from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     Report,
     ReportBlock,
-    ReportSection,
     TableBlock,
     TableCell,
     TableColumn,
@@ -52,7 +52,12 @@ def _label_of(bundle: AnalysisContextBundle, labels: Mapping[str, str]) -> Calla
 
 
 def depth_blocks(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    reports: Mapping[str, Report],
+    *,
+    names: AspectNames,
+    forms: PageForms,
 ) -> list[ReportBlock]:
     """How deep each arm ran on each aspect, what pass^k compares at, and what limits each comparison's interval:
     each a table with one sentence under it where the arms differ, or one sentence where that says all a table would.
@@ -65,6 +70,8 @@ def depth_blocks(
     :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
+    :param forms: The page's forms.
+    :ptype forms: PageForms
     :return: The tables and their sentences; nothing where no arm ran.
     :rtype: list[ReportBlock]
     """
@@ -85,11 +92,11 @@ def depth_blocks(
             {
                 "aspect": names.cell(depth.aspect),
                 "arm": arm,
-                "cases": held.cases,
-                "trials": held.trials,
-                "fewest": held.repeats_min,
-                "median": held.repeats_median,
-                "most": held.repeats_max,
+                "cases": forms.count_cell(held.cases),
+                "trials": forms.count_cell(held.trials),
+                "fewest": forms.count_cell(held.repeats_min),
+                "median": forms.count_cell(held.repeats_median),
+                "most": forms.count_cell(held.repeats_max),
             }
         )
         for _, depth in depths
@@ -102,9 +109,10 @@ def depth_blocks(
         blocks: list[ReportBlock] = [DisclosureBlock(section="scorecard", source="comparisons", text=once)]
     else:
         blocks = [*_depth_table(rows), *_differ_lines(depths)]
-    blocks += _pass_k_depth_blocks(depths, labels, names)
-    once_each = all(held.uniform() and held.repeats_min == 1 for _, depth in depths for held in depth.arms.values())
-    blocks += _precision_blocks(readings, names, section="methods" if once_each else "scorecard")
+    blocks += _pass_k_depth_blocks(depths, labels, names, forms)
+    # What limits each interval is a method, read one step from the answer only by someone who asks, so it is folded under
+    # the page's methods, never on the scorecard.
+    blocks += _precision_blocks(readings, names, forms)
     return blocks
 
 
@@ -149,7 +157,10 @@ def _pass_rates_alike(subjects: Sequence[SubjectDepth]) -> bool:
 
 
 def _pass_k_depth_blocks(
-    depths: Sequence[tuple[AnalysisContextBundle, AspectDepth]], labels: Mapping[str, str], names: AspectNames
+    depths: Sequence[tuple[AnalysisContextBundle, AspectDepth]],
+    labels: Mapping[str, str],
+    names: AspectNames,
+    forms: PageForms,
 ) -> list[ReportBlock]:
     """Each frontier point's depth beside its pass^k: the planned depth, the cases short of it, and its reading at the
     common depth, the fewest runs any arm gave a shared case; a sentence on the common depth, or that the arms share no
@@ -162,7 +173,7 @@ def _pass_k_depth_blocks(
         lines = compared[0].lines() if len(compared) == 1 else [COMMON_DEPTH_ONE_EVERYWHERE]
         return [
             *(DisclosureBlock(section="scorecard", source="comparisons", text=line) for line in lines),
-            *_model_blocks(depths, labels, names),
+            *_model_blocks(depths, labels, names, forms),
         ]
     rows: list[dict[str, TableCell]] = []
     for bundle, depth in depths:
@@ -173,18 +184,20 @@ def _pass_k_depth_blocks(
                 continue
             for point in subject.points:
                 rows.append(
-                    table_row(
-                        {
-                            "aspect": TableCell(value=said.where, ref=names.folds.get(bundle.aspect)),
-                            "arm": name(point.variant_key),
-                            "planned": subject.k,
-                            "short": point.n_cases_short_of_k,
-                            "common": subject.common_depth,
-                            "reading": None
-                            if point.common_pass_hat_k is None
-                            else round(100 * point.common_pass_hat_k, 1),
-                            "left_out": point.n_cases_left_out,
-                        }
+                    _of_the_pass_rate(
+                        table_row(
+                            {
+                                "aspect": TableCell(value=said.where, ref=names.folds.get(bundle.aspect)),
+                                "arm": name(point.variant_key),
+                                "planned": forms.count_cell(subject.k),
+                                "short": forms.count_cell(point.n_cases_short_of_k),
+                                "common": forms.count_cell(subject.common_depth),
+                                "reading": _pass_k_cell(forms, point.common_pass_hat_k),
+                                "left_out": forms.count_cell(point.n_cases_left_out),
+                            }
+                        ),
+                        ("reading",),
+                        forms,
                     )
                 )
     if not rows:
@@ -213,7 +226,7 @@ def _pass_k_depth_blocks(
         for _, depth in depths
         for line in depth.pass_k_lines()
     ]
-    return blocks + _model_blocks(depths, labels, names)
+    return blocks + _model_blocks(depths, labels, names, forms)
 
 
 #: The two arms a precision row compares.
@@ -224,18 +237,25 @@ _MODEL_SAID = f"Each figure here is {MODEL_ASSUMES}. Its arm ran no case that de
 
 
 def _model_blocks(
-    depths: Sequence[tuple[AnalysisContextBundle, AspectDepth]], labels: Mapping[str, str], names: AspectNames
+    depths: Sequence[tuple[AnalysisContextBundle, AspectDepth]],
+    labels: Mapping[str, str],
+    names: AspectNames,
+    forms: PageForms,
 ) -> list[ReportBlock]:
     """The opt-in model-based pass^k of each point at a depth it never reached, in a table of its own, labelled a
     model with what it assumes: never beside a measured figure as one."""
     rows = [
-        table_row(
-            {
-                "aspect": TableCell(value=said.where, ref=names.folds.get(bundle.aspect)),
-                "arm": _label_of(bundle, labels)(point.variant_key),
-                "depth": point.model_pass_hat_k.k,
-                "model": round(100 * point.model_pass_hat_k.pass_hat_k, 1),
-            }
+        _of_the_pass_rate(
+            table_row(
+                {
+                    "aspect": TableCell(value=said.where, ref=names.folds.get(bundle.aspect)),
+                    "arm": _label_of(bundle, labels)(point.variant_key),
+                    "depth": forms.count_cell(point.model_pass_hat_k.k),
+                    "model": _pass_k_cell(forms, point.model_pass_hat_k.pass_hat_k),
+                }
+            ),
+            ("model",),
+            forms,
         )
         for bundle, depth in depths
         for subject, said in zip([sub for sub in bundle.frontier.subjects if sub.points], depth.subjects, strict=True)
@@ -267,9 +287,9 @@ def _model_blocks(
     ]
 
 
-def _precision_blocks(readings: CampaignReadings, names: AspectNames, *, section: ReportSection) -> list[ReportBlock]:
+def _precision_blocks(readings: CampaignReadings, names: AspectNames, forms: PageForms) -> list[ReportBlock]:
     """What limits each pass-rate comparison's interval: its half-width, each arm's own, the arm limiting it and the
-    between-case share of its variance, in ``section``; a column no row fills is left out."""
+    between-case share of its variance, folded under the methods; a column no row fills is left out."""
     compared: list[tuple[str, Precision]] = [(row.aspect, row.precision) for row in readings.readings if row.precision]
     compared += [(pair.aspect, pair.precision) for pair in readings.pairs if pair.precision]
     if not compared:
@@ -284,16 +304,22 @@ def _precision_blocks(readings: CampaignReadings, names: AspectNames, *, section
         # The sides in the order the comparison read them: the control, or the arm first in key order, first.
         (first, first_width), (second, second_width) = precision.half_widths.items()
         rows.append(
-            table_row(
-                {
-                    "aspect": names.cell(aspect),
-                    "arms": ARMS_PAIR.format(first=named(first), second=named(second)),
-                    "half_width": round(precision.half_width, 1),
-                    "first": round(first_width, 1),
-                    "second": round(second_width, 1),
-                    "limited_by": named(precision.limited_by) if precision.limited_by else None,
-                    "between": None if precision.between_share is None else round(100 * precision.between_share),
-                }
+            _of_the_pass_rate(
+                table_row(
+                    {
+                        "aspect": names.cell(aspect),
+                        "arms": ARMS_PAIR.format(first=named(first), second=named(second)),
+                        "half_width": _half_width_cell(forms, precision.half_width),
+                        "first": _half_width_cell(forms, first_width),
+                        "second": _half_width_cell(forms, second_width),
+                        "limited_by": named(precision.limited_by) if precision.limited_by else None,
+                        "between": None
+                        if precision.between_share is None
+                        else _share_cell(forms, precision.between_share),
+                    }
+                ),
+                ("half_width", "first", "second"),
+                forms,
             )
         )
     columns = [
@@ -308,13 +334,14 @@ def _precision_blocks(readings: CampaignReadings, names: AspectNames, *, section
     filled = [column for column in columns if any(row[column.key].value is not None for row in rows)]
     return [
         TableBlock(
-            section=section,
+            section="methods",
             name="precision",
             title="Precision",
             columns=filled,
             rows=[{column.key: row[column.key] for column in filled} for row in rows],
             order="aspect by aspect, each comparison as the readings list it",
             total_rows=len(rows),
+            details=True,
         )
     ]
 
@@ -333,3 +360,35 @@ def depth_provenance_blocks(readings: CampaignReadings) -> list[ReportBlock]:
     if not any(precision is not None and precision.between_share is not None for precision in read):
         return []
     return [DisclosureBlock(section="provenance", source="comparisons", text=REPEATS_FLOOR)]
+
+
+def _of_the_pass_rate(row: dict[str, TableCell], keys: Sequence[str], forms: PageForms) -> dict[str, TableCell]:
+    """A depth row whose cells under ``keys`` are figures of the pass rate (a pass^k, an interval's half-width), which
+    the page's column rules record them under."""
+    return {
+        key: forms.of_measure(cell, measure=TRIAL_PASS_NAME, kind="trial") if key in keys else cell
+        for key, cell in row.items()
+    }
+
+
+def _pass_k_cell(forms: PageForms, value: float | None) -> TableCell:
+    """A pass^k as its depth table's cell holds it, bare under the column's ``(%)``, at the places the page's forms
+    read it at."""
+    printed = forms.pass_k(TRIAL_PASS_NAME, value, kind="trial")
+    return (
+        TableCell(value=printed.held, value_text=printed.digits) if printed.held is not None else TableCell(value=None)
+    )
+
+
+def _half_width_cell(forms: PageForms, value: float) -> TableCell:
+    """An interval's half-width as the precision table's cell holds it, bare under the column's ``(pts)``, at the
+    places the page's forms read the pass rate's changes at."""
+    printed = forms.half_width(TRIAL_PASS_NAME, value, kind="trial")
+    return TableCell(value=printed.held, value_text=printed.digits)
+
+
+def _share_cell(forms: PageForms, share: float) -> TableCell:
+    """A between-case share as the precision table's cell holds it, bare under the column's ``(%)``, in whole
+    percent."""
+    printed = forms.share(share)
+    return TableCell(value=printed.held, value_text=printed.digits)

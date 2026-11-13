@@ -1,0 +1,63 @@
+START 2026-11-06T19:06:55Z
+P2 acceptance
+
+Does the gate read the shipped skill with no editor revisions (one review, never sent back) as writing worse reports than the shipped skill with 2?
+
+| Arm | Role | Skill | Files differing from shipped | Editor digest | Cases | Run |
+|---|---|---|---|---|---|---|
+| shipped | control | 4e14e276b568 | none | 07e15b95eed5 | 25 | completed |
+| no-editor | candidate | 4e14e276b568 | none | 07e15b95eed5 | 25 | completed |
+
+Both arms write on claude-sonnet-5-5; the scoring judge is google/gemini-3.8-flash.
+The no-editor arm is given 0 revisions and the control 2, so its editor reviews each report once and never sends it back.
+
+| Part | Cap | Spent |
+|---|---|---|
+| shipped | $22.40 | $2.58 |
+| no-editor | $22.40 | $2.58 |
+| pairwise pass (14 calls) | $11.20 | $0.05 |
+
+| Reading | Role | Reads | Difference | Interval | Level |
+|---|---|---|---|---|---|
+| Preferred by the judge, side by side | primary | not separated | 0.21 | -0.04369 to 0.5036 | 0.95 |
+| Preferred by the judge, side by side, both pages finished | reported | untested |  |  |  |
+| report_writer.actionable_next_steps (judged) | gated | not separated | 0.4286 | -0.9054 to 1.763 | 0.9958 |
+| report_writer.coherent_story (judged) | gated | not separated | 0.5714 | -1.083 to 2.226 | 0.9958 |
+| report_writer.confounds_handled (judged) | gated | not separated | 0.4286 | -1.94 to 2.798 | 0.9958 |
+| report_writer.evidence_fits_claims (judged) | gated | not separated | 0.2857 | -1.84 to 2.411 | 0.9958 |
+| report_writer.first_screen (judged) | gated | not separated | -0.1429 | -0.7837 to 0.498 | 0.9958 |
+| report_writer.honest_emphasis (judged) | gated | not separated | 0 | -2.573 to 2.573 | 0.9958 |
+| report_writer.sound_elision (judged) | gated | not separated | 0.5714 | -1.992 to 3.135 | 0.9958 |
+| Production cost | gated | not separated | -0.001852 | -0.01561 to 0.0119 | 0.9958 |
+| Bounces | gated | not separated | 0.08 | -0.3648 to 0.5248 | 0.9958 |
+| Report finished | gated | not separated | 0 | -0.2417 to 0.2417 | 0.9958 |
+| Must-fix findings open | gated | not separated | 0 | -1.384 to 1.384 | 0.9958 |
+| the pass rate | gated | not separated | 0 | -0.2417 to 0.2417 | 0.9958 |
+
+| Order check | Figure |
+|---|---|
+| Cases scored in both orders | 7 |
+| Of those, both orders picked the same side | 7 |
+| Order consistency, the primary void below 0.7 | 1 |
+| Cases scored in one order only, counted apart | 0 |
+| Answers the judge could not tell | 0 |
+| Calls that failed | 0 |
+| Held-out cases like these that would settle the primary | 43 |
+
+Undecided: the primary reading does not separate no-editor from shipped, and only an improved primary reading promotes.
+
+| Pass criterion | Reads | Holds |
+|---|---|---|
+| both arms ran every case | shipped completed, 25 of 25; no-editor completed, 25 of 25 | yes |
+| the read answers keep | undecided | no |
+| the primary reading reads regressed | not separated | no |
+| it separated, its interval below 0 | not separated, -0.044 to 0.504 at 0.95 | no |
+| the judge's order consistency stands at 0.7 or more | 1.00 (7 of 7 cases) | yes |
+| bounces do not separate | not separated | yes |
+
+FAIL: not held: the read answers keep; the primary reading reads regressed; it separated, its interval below 0. About 43 held-out cases like these would settle the primary; this run stops here.
+shipped: writer turns of 25 case(s) recorded to /opt/3tears/.claude/wt/evals-reset/.prawduct/acceptance-no-editor-25/recordings/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2, 0 replayed
+no-editor: writer turns of 25 case(s) recorded to /opt/3tears/.claude/wt/evals-reset/.prawduct/acceptance-no-editor-25/recordings/no-editor-4e14e276b568-claude-sonnet-5-5-medium-r0, 0 replayed
+11 case(s) name example results stored only where they were frozen
+exit 4
+END 2026-11-06T19:16:03Z

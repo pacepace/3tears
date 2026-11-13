@@ -13,22 +13,21 @@ halves are asserted, because a guard over a directed relation can be exactly inv
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, get_args
 
 import dataclasses
 
 import pytest
 
-from threetears.evals.kernel.host.world import WorldDimension, WorldRegistry
+from threetears.evals.kernel.host.world import Triggered, WorldDimension, WorldRegistry
 from threetears.evals.kernel.host.world_conformance import (
     CheckName,
     ConformanceResult,
-    ObligationRow,
     Outcome,
     Qualification,
     WorldConformanceError,
     check_world_conformance,
-    obligation_rows,
     obligations,
 )
 from threetears.evals.kernel.host.world_schema import json_equal
@@ -72,28 +71,39 @@ async def _report(**kwargs: Any) -> tuple[ConformanceResult, ...]:
     return (await check_world_conformance(registry)).results
 
 
-class TestEveryObligationRowHasAFixture:
-    """A row nobody has a fixture for is a row nobody has run, while the report still says
+#: Every registrable shape the kit owes a different set of proofs, each read off a declaration's own fields:
+#: seeded and read by machine or by a label, perceived without being seeded, and triggered by the world or by a
+#: person. Rows overlap on purpose: a triggered dimension is also a seeded one, and owes both rows' proofs.
+_SHAPES: dict[str, Callable[[WorldDimension], bool]] = {
+    "seeded, read by machine": lambda declared: declared.seedable and declared.evidence != "labeled",
+    "seeded, read by a label": lambda declared: declared.seedable and declared.evidence == "labeled",
+    "perceived, not seeded": lambda declared: declared.perceivable and not declared.seedable,
+    "triggered automatically": lambda declared: isinstance(declared.when, Triggered) and declared.when.kind != "human",
+    "triggered by a person": lambda declared: isinstance(declared.when, Triggered) and declared.when.kind == "human",
+}
+
+
+class TestEveryShapeHasAFixture:
+    """A shape nobody has a fixture for is a shape nobody has run, while the report still says
     "conformance"."""
 
-    def test_the_toy_host_covers_every_row_of_the_obligations_table(self) -> None:
-        """The coverage matrix is generated from the same table the kit derives obligations from.
-
-        Hand-listing the rows beside the kit is how a new shape silently gets zero checks: the
-        list stops matching and nothing says so. Reading both from ``ObligationRow`` means adding
-        a row without a fixture fails here.
-        """
+    def test_the_toy_host_covers_every_registrable_shape(self) -> None:
+        """Each shape the kit owes a different set of proofs has a dimension in the toy host's world."""
         registry, _state = toyhost_world()
 
-        covered = {row for declared in registry.declarations for row in obligation_rows(declared)}
+        uncovered = [
+            shape for shape, holds in _SHAPES.items() if not any(holds(declared) for declared in registry.declarations)
+        ]
 
-        assert covered == set(get_args(ObligationRow))
+        assert uncovered == []
 
-    def test_every_declared_dimension_lands_on_a_row(self) -> None:
-        """A shape on no row would owe nothing, and would render as conformant for that reason."""
+    async def test_every_declared_dimension_owes_a_proof_and_the_report_speaks_for_it(self) -> None:
+        """A shape that owed nothing would render as conformant for that reason."""
         registry, _state = toyhost_world()
+        report = await check_world_conformance(registry)
 
-        assert all(obligation_rows(declared) for declared in registry.declarations)
+        assert all(obligations(declared) for declared in registry.declarations)
+        assert [declared.name for declared in registry.declarations if not report.for_dimension(declared.name)] == []
 
     async def test_every_registrable_quadrant_gets_a_verdict(self) -> None:
         """The kit's acceptance, made mechanical rather than read off a report by eye.

@@ -19,9 +19,7 @@ import asyncpg
 import pytest
 from uuid_utils import uuid7
 
-from threetears.agent.skills.migrations import register as register_skills
 from threetears.agent.wake.collections import WakeFireCollection, WebhookSubscriptionCollection
-from threetears.agent.wake.migrations import register as register_wake
 from threetears.agent.wake.tools import (
     load_webhook_subscription_create_tool,
 )
@@ -32,13 +30,9 @@ from threetears.agent.wake.types import (
     WakeTrigger,
 )
 from threetears.agent.wake.webhook_adapter import webhook_receive
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.asyncpg_init import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
-
-from .conftest import AsyncpgStore
 
 
 pytestmark = pytest.mark.integration
@@ -109,18 +103,7 @@ class _RecordingHandler(HandlerCallback):
         )
 
 
-async def _apply_schema(url: str, schema: str) -> asyncpg.Pool:
-    setup_conn = await asyncpg.connect(url)
-    try:
-        await setup_conn.execute(f'SET search_path TO "{schema}", public')
-        runner = MigrationRunner()
-        register_conversations(runner)
-        register_skills(runner)
-        register_wake(runner)
-        store = AsyncpgStore(setup_conn)
-        await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
-    finally:
-        await setup_conn.close()
+async def _schema_pool(url: str, schema: str) -> asyncpg.Pool:
     pool = await asyncpg.create_pool(
         url,
         min_size=2,
@@ -193,10 +176,10 @@ def _hmac_header(secret: str, payload: bytes) -> str:
 
 @pytest.mark.asyncio
 async def test_webhook_receive_valid_signature_dispatches(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
@@ -233,10 +216,10 @@ async def test_webhook_receive_valid_signature_dispatches(
 
 @pytest.mark.asyncio
 async def test_webhook_receive_invalid_signature_rejected(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
@@ -260,10 +243,10 @@ async def test_webhook_receive_invalid_signature_rejected(
 
 @pytest.mark.asyncio
 async def test_webhook_receive_missing_signature_rejected(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
@@ -287,10 +270,10 @@ async def test_webhook_receive_missing_signature_rejected(
 
 @pytest.mark.asyncio
 async def test_webhook_receive_unknown_subscription_404(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     subscriptions, fires = _receive_collections(pool)
     try:
         result = await webhook_receive(
@@ -311,10 +294,10 @@ async def test_webhook_receive_unknown_subscription_404(
 
 @pytest.mark.asyncio
 async def test_webhook_receive_source_ip_allow_list_403(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
@@ -342,10 +325,10 @@ async def test_webhook_receive_source_ip_allow_list_403(
 
 @pytest.mark.asyncio
 async def test_webhook_receive_rate_limit_429(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
@@ -390,10 +373,10 @@ async def test_webhook_receive_rate_limit_429(
 
 @pytest.mark.asyncio
 async def test_webhook_receive_template_render_error_400(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
@@ -425,10 +408,10 @@ async def test_webhook_receive_template_render_error_400(
 
 @pytest.mark.asyncio
 async def test_webhook_receive_paused_subscription_404(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
@@ -457,7 +440,7 @@ async def test_webhook_receive_paused_subscription_404(
 
 @pytest.mark.asyncio
 async def test_webhook_receive_pre_verified_skips_hmac_compute(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
     """With ``pre_verified=True`` the adapter trusts the caller's verify
     decision and skips the inline HMAC compute (so a deliberately
@@ -468,8 +451,8 @@ async def test_webhook_receive_pre_verified_skips_hmac_compute(
     verifier-registry dispatch then calls this function with
     ``pre_verified=True``, and the adapter does NOT re-verify.
     """
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
@@ -540,10 +523,10 @@ async def _post(
 
 @pytest.mark.asyncio
 async def test_each_refused_delivery_is_kept_with_why_and_an_accepted_one_leaves_none(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         sub_id, secret = await _seed_subscription(
             pool, conversation_id=_new_uuid(), allowed_source_pattern=r"^10\.", rate_limit_per_minute=1
@@ -579,10 +562,10 @@ async def test_each_refused_delivery_is_kept_with_why_and_an_accepted_one_leaves
 
 @pytest.mark.asyncio
 async def test_a_delivery_to_a_paused_subscription_is_kept_and_one_to_no_subscription_is_not(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         conv = _new_uuid()
         sub_id, secret = await _seed_subscription(pool, conversation_id=conv)
@@ -600,10 +583,10 @@ async def test_a_delivery_to_a_paused_subscription_is_kept_and_one_to_no_subscri
 
 @pytest.mark.asyncio
 async def test_refusals_are_counted_per_minute_pruned_when_old_and_go_with_their_subscription(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         conv = _new_uuid()
         sub_id, _secret = await _seed_subscription(pool, conversation_id=conv)

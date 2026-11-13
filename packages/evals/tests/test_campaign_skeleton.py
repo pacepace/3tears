@@ -32,7 +32,6 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
     TableCell,
 )
-from threetears.evals.analysis.report.svg import chart_svg
 
 from packages.evals.tests.report_shapes_support import SHAPES, Shape, s1_change, s3_measurement, s4_change
 
@@ -98,11 +97,11 @@ def test_no_page_holds_a_block_in_the_glossary_which_is_written_from_its_terms(b
 
 
 def test_a_flag_is_printed_after_its_value_and_a_cell_without_one_prints_as_before() -> None:
-    assert TableCell(value=-60.0).text == "-60"
-    assert TableCell(value=-60.0, flag="floor broken").text == "-60 (floor broken)"
+    assert TableCell(value=-60.0, value_text="-60").text == "-60"
+    assert TableCell(value=-60.0, value_text="-60", flag="floor broken").text == "-60 (floor broken)"
     assert TableCell(value=None, flag="cannot show a drop").text == "— (cannot show a drop)"
     with pytest.raises(ValidationError):
-        TableCell(value=1.0, flag="")
+        TableCell(value=1.0, value_text="1", flag="")
 
 
 @pytest.mark.parametrize("build", [s1_change, s4_change], ids=["s1", "s4"])
@@ -139,9 +138,15 @@ def test_a_cost_quality_chart_draws_a_point_per_arm_and_prints_every_figure_as_a
         points=[_point("alpha", 0.004, 85.0), _point("beta", 0.0008, 60.0)],
     )
     headers, rows = chart.values_table()
-    assert headers == ["Arm", "Cost ($)", "Cost interval ($)", "Pass rate (%)", "Interval (%)"]
+    # The table states cost per 1,000 replies, as the chart's axis does: $0.004 a reply is $4. Each cost carries its
+    # dollar sign as the scoreboard writes it (P17), so the head names the count alone.
+    assert headers == ["Arm", "Cost per 1,000 replies", "Interval", "Pass rate (%)", "Interval (%)"]
+    assert chart.kit_chart()[1]["x_title"] == "Cost per 1,000 replies"  # type: ignore[index]
     assert [row[0] for row in rows] == ["alpha", "beta"]
-    assert rows[0][3] == "85" and rows[0][4] == "[80, 90]"
+    # One form over the chart's costs (#993): $0.80 needs cents, so $4 beside it reads $4.00.
+    assert (rows[0][1], rows[0][2], rows[1][1]) == ("$4.00", "$3.60 to $4.40", "$0.80"), rows
+    # Each interval in its one form, ``low to high``.
+    assert rows[0][3] == "85" and rows[0][4] == "80 to 90"
 
 
 def test_a_cost_quality_chart_of_one_point_or_another_kind_s_marks_is_refused() -> None:
@@ -167,7 +172,7 @@ def test_a_cost_quality_chart_of_one_point_or_another_kind_s_marks_is_refused() 
             ChartBlock(section="scorecard", chart="cost_quality", title="t", points=two, **marks)
 
 
-def test_a_cost_quality_chart_is_drawn_one_dot_per_arm_with_its_figures_in_words() -> None:
+def test_a_cost_quality_chart_is_drawn_one_point_per_arm_with_its_figures_in_words() -> None:
     chart = ChartBlock(
         section="scorecard",
         chart="cost_quality",
@@ -175,10 +180,24 @@ def test_a_cost_quality_chart_is_drawn_one_dot_per_arm_with_its_figures_in_words
         unit="usd",
         points=[_point("alpha", 0.004, 85.0), _point("beta", 0.0008, 60.0)],
     )
-    svg = chart_svg(chart, chart_id="c1")
-    assert svg.count('<circle class="viz-dot"') == 2
-    assert ">alpha</text>" in svg and ">beta</text>" in svg
-    assert "alpha: $0.004 [$0.0036, $0.0044] per reply, pass rate 85% [80%, 90%]" in svg
+    drawn = chart.kit_chart()
+    assert drawn is not None
+    kind, data = drawn
+    assert kind == "scatter_frontier" and "frontier" not in data, "no frontier is tested, so none is drawn"
+    points = data["points"]
+    assert isinstance(points, list) and [point["label"] for point in points] == ["alpha", "beta"]  # type: ignore[index]
+    assert points[0]["tip"] == [  # type: ignore[index]
+        "alpha",
+        # One form over the chart (#993), its interval on the chart's ruler: never $4 beside $0.8, nor a cost under a
+        # cent spelled per reply.
+        "$4.00 ($3.60 to $4.40) per 1,000 replies",
+        "pass rate 85% (80 to 90)",
+    ]
+    # Each axis is set to the data (the review's P46): it holds every interval end, within 0 to 100 for the pass rate.
+    x_low, x_high = data["x_domain"]  # type: ignore[misc]
+    y_low, y_high = data["y_domain"]  # type: ignore[misc]
+    assert 0 < x_low <= 0.72 and x_high >= 4.4, data["x_domain"]
+    assert 0 < y_low <= 55 and 90 <= y_high <= 100, data["y_domain"]
 
 
 def test_an_aspect_is_called_by_its_full_label_as_declared() -> None:
@@ -192,6 +211,7 @@ def test_an_aspect_is_called_by_its_full_label_as_declared() -> None:
 
 
 @pytest.mark.parametrize("name", ["s1", "s2"])
-def test_the_page_json_is_shape_5(name: str) -> None:
+def test_the_page_json_is_shape_6(name: str) -> None:
     document = json.loads(serialize_report(SHAPES[name]().page(), "json"))
-    assert CAMPAIGN_JSON_SHAPE == 5 and document["shape"] == 5
+    assert CAMPAIGN_JSON_SHAPE == 6 and document["shape"] == 6
+    assert "recommendation" not in document, "shape 6: the always-null recommendation left the JSON"

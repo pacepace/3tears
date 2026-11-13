@@ -1,8 +1,9 @@
 """End-to-end integration tests for the schedule + webhook tool factories.
 
-Spins up a fresh schema via the canonical ``pg_schema`` fixture,
-applies the conversations + skills + wake migrations, and exercises
-the real Collections against live Postgres.
+Takes a database of its own with the conversations + skills + wake
+migrations applied (the conftest's ``applied_schema``, migrated once per
+session and copied per test), and exercises the real Collections against
+live Postgres.
 
 Covers:
 
@@ -29,7 +30,6 @@ from threetears.agent.wake.collections import (
 )
 from threetears.agent.wake.manual import claim_manual_fire
 from threetears.agent.wake.tools.webhook_tools import SECRET_REDACTED
-from threetears.agent.wake.migrations import register as register_wake
 from threetears.agent.wake.tools import (
     WakeRegistryClient,
     load_wake_fires_tool,
@@ -51,14 +51,9 @@ from threetears.agent.wake.tools import (
     load_webhook_subscription_rotate_secret_tool,
     load_webhook_subscription_update_tool,
 )
-from threetears.agent.skills.migrations import register as register_skills
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.asyncpg_init import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
-
-from .conftest import AsyncpgStore
 
 
 pytestmark = pytest.mark.integration
@@ -129,18 +124,7 @@ class _IdentityEncryption:
         return ciphertext.decode("utf-8")
 
 
-async def _apply_schema(url: str, schema: str) -> asyncpg.Pool:
-    setup_conn = await asyncpg.connect(url)
-    try:
-        await setup_conn.execute(f'SET search_path TO "{schema}", public')
-        runner = MigrationRunner()
-        register_conversations(runner)
-        register_skills(runner)
-        register_wake(runner)
-        store = AsyncpgStore(setup_conn)
-        await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
-    finally:
-        await setup_conn.close()
+async def _schema_pool(url: str, schema: str) -> asyncpg.Pool:
     pool = await asyncpg.create_pool(
         url,
         min_size=2,
@@ -169,10 +153,10 @@ def _build_collections(
 
 @pytest.mark.asyncio
 async def test_schedule_lifecycle_create_list_pause_resume_delete(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, _ = _build_collections(pool)
         conv_id = _new_uuid()
@@ -245,11 +229,11 @@ async def test_schedule_lifecycle_create_list_pause_resume_delete(
 
 @pytest.mark.asyncio
 async def test_schedule_include_conversation_history_persists_and_updates(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
     """The history switch defaults on, persists when set off, and flips on update."""
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, _ = _build_collections(pool)
         conv_id = _new_uuid()
@@ -309,11 +293,11 @@ async def test_schedule_include_conversation_history_persists_and_updates(
 
 @pytest.mark.asyncio
 async def test_schedule_create_enforces_the_agent_cap_across_conversations(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
     """The cap counts the agent's active wakes in every conversation, under the agent's lock."""
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, _ = _build_collections(pool)
         user_id = _new_uuid()
@@ -366,11 +350,11 @@ async def test_schedule_create_enforces_the_agent_cap_across_conversations(
 
 @pytest.mark.asyncio
 async def test_schedule_list_reaches_across_the_agents_conversations(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
     """A wake created in one conversation is listed from another of the same agent, and by no other agent."""
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, _ = _build_collections(pool)
         conv_a = _new_uuid()
@@ -412,10 +396,10 @@ async def test_schedule_list_reaches_across_the_agents_conversations(
 
 @pytest.mark.asyncio
 async def test_schedule_update_rejects_self_context_from_cycle(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, _ = _build_collections(pool)
         conv_id = _new_uuid()
@@ -458,7 +442,7 @@ async def test_schedule_update_rejects_self_context_from_cycle(
 
 @pytest.mark.asyncio
 async def test_schedule_create_acl_denied_skill_does_not_persist(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
     """ACL-denied skill_id on create must NOT persist the schedule row.
 
@@ -467,8 +451,8 @@ async def test_schedule_create_acl_denied_skill_does_not_persist(
     this test runs the rejection against testcontainers Postgres so the
     "no row written on ACL denial" contract has a real-stack guard.
     """
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, _ = _build_collections(pool)
         conv_id = _new_uuid()
@@ -510,7 +494,7 @@ async def test_schedule_create_acl_denied_skill_does_not_persist(
 
 @pytest.mark.asyncio
 async def test_schedule_update_cross_agent_returns_not_found(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
     """Agent B cannot read or mutate a schedule owned by agent A.
 
@@ -518,8 +502,8 @@ async def test_schedule_update_cross_agent_returns_not_found(
     update via agent B's update tool. The attempt MUST surface as "not
     found" (existence is not leaked) and MUST NOT mutate the row.
     """
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, _ = _build_collections(pool)
         conv_id = _new_uuid()
@@ -572,11 +556,11 @@ async def test_schedule_update_cross_agent_returns_not_found(
 
 @pytest.mark.asyncio
 async def test_webhook_update_cross_agent_returns_not_found(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
     """Agent B cannot read or mutate a webhook subscription owned by agent A."""
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         _, subs = _build_collections(pool)
         conv_id = _new_uuid()
@@ -627,10 +611,10 @@ async def test_webhook_update_cross_agent_returns_not_found(
 
 @pytest.mark.asyncio
 async def test_webhook_lifecycle_create_list_rotate_delete(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         _, subs = _build_collections(pool)
         conv_id = _new_uuid()
@@ -715,11 +699,11 @@ async def test_webhook_lifecycle_create_list_rotate_delete(
 
 @pytest.mark.asyncio
 async def test_the_same_wake_made_twice_is_made_once_and_a_different_one_is_made(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
     """A wake made twice fires twice; the second create names the first and makes nothing."""
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, _ = _build_collections(pool)
         conv_id, other_conv, user_id, agent_id = _new_uuid(), _new_uuid(), _new_uuid(), _new_uuid()
@@ -779,10 +763,10 @@ async def test_the_same_wake_made_twice_is_made_once_and_a_different_one_is_made
 
 @pytest.mark.asyncio
 async def test_a_listing_that_cannot_be_read_does_not_cost_the_create(
-    pg_schema: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+    applied_schema: tuple[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, _ = _build_collections(pool)
 
@@ -833,10 +817,10 @@ async def _made_schedule(pool: asyncpg.Pool, schedules: WakeScheduleCollection, 
 
 @pytest.mark.asyncio
 async def test_the_listing_and_the_get_state_the_schedule_and_its_fires_in_the_callers_zone(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, _ = _build_collections(pool)
         agent_id, user_id = _new_uuid(), _new_uuid()
@@ -888,9 +872,9 @@ async def test_the_listing_and_the_get_state_the_schedule_and_its_fires_in_the_c
 
 
 @pytest.mark.asyncio
-async def test_next_fires_steps_as_the_tick_will_for_each_repeating_type(pg_schema: tuple[str, str]) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+async def test_next_fires_steps_as_the_tick_will_for_each_repeating_type(applied_schema: tuple[str, str]) -> None:
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, _ = _build_collections(pool)
         agent_id = _new_uuid()
@@ -915,9 +899,9 @@ async def test_next_fires_steps_as_the_tick_will_for_each_repeating_type(pg_sche
 
 
 @pytest.mark.asyncio
-async def test_an_update_says_what_changed_and_the_same_values_change_nothing(pg_schema: tuple[str, str]) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+async def test_an_update_says_what_changed_and_the_same_values_change_nothing(applied_schema: tuple[str, str]) -> None:
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, _ = _build_collections(pool)
         agent_id, user_id = _new_uuid(), _new_uuid()
@@ -949,9 +933,9 @@ async def test_an_update_says_what_changed_and_the_same_values_change_nothing(pg
 
 
 @pytest.mark.asyncio
-async def test_pause_resume_and_delete_state_what_the_wake_was(pg_schema: tuple[str, str]) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+async def test_pause_resume_and_delete_state_what_the_wake_was(applied_schema: tuple[str, str]) -> None:
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, _ = _build_collections(pool)
         agent_id = _new_uuid()
@@ -981,9 +965,9 @@ async def test_pause_resume_and_delete_state_what_the_wake_was(pg_schema: tuple[
 
 
 @pytest.mark.asyncio
-async def test_wake_fires_shows_each_fire_how_it_started_and_how_it_ended(pg_schema: tuple[str, str]) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+async def test_wake_fires_shows_each_fire_how_it_started_and_how_it_ended(applied_schema: tuple[str, str]) -> None:
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, subs = _build_collections(pool)
         fires = _fires(pool)
@@ -1043,10 +1027,10 @@ async def test_wake_fires_shows_each_fire_how_it_started_and_how_it_ended(pg_sch
 
 @pytest.mark.asyncio
 async def test_a_webhook_is_read_in_full_its_changes_are_said_and_its_refusals_are_shown(
-    pg_schema: tuple[str, str],
+    applied_schema: tuple[str, str],
 ) -> None:
-    url, schema = pg_schema
-    pool = await _apply_schema(url, schema)
+    url, schema = applied_schema
+    pool = await _schema_pool(url, schema)
     try:
         schedules, subs = _build_collections(pool)
         fires = _fires(pool)

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.stats import PAIRED_TEST_NAME, UNPAIRED_TEST_NAME
 
 if TYPE_CHECKING:
@@ -134,11 +134,12 @@ def format_significance(
     # significant figures already allow, and its small end is the one that
     # matters: a p of 3e-7 must not round to a zero. The effect size is a
     # measured magnitude with no bound, so its large end needs the rule too.
+    forms = PageForms.off_page()
     parts = [
         part
         for part in (
-            f"p={format_number(p)}" if p is not None else "",
-            f"{effect_label}={format_number(effect)}" if effect is not None else "",
+            f"p={forms.lone(p).text}" if p is not None else "",
+            f"{effect_label}={forms.lone(effect).text}" if effect is not None else "",
             f"n={n}" if n is not None else "",
         )
         if part

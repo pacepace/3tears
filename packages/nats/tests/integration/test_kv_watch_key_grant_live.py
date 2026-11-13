@@ -18,7 +18,8 @@ As in ``test_user_jwt_scoped_grant_live``, the minted allow-lists are applied as
 ``authorization`` permissions rather than through a live auth-callout responder: the grant strings
 are what is under test, and this is the credential the server would enforce.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -34,7 +35,6 @@ from uuid import UUID
 import nats
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats import NatsClient
 from threetears.nats.kv_watch import KvKeyUpdate
 from threetears.nats.subject_permissions import (
@@ -132,9 +132,6 @@ async def test_watch_key_works_under_the_one_key_grant_where_the_stock_watch_is_
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """current value, updates, delete marker, consumer replacement and close, under the real grant."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     previous_ns = get_default_namespace()
     set_default_namespace(_NS)
     try:

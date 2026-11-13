@@ -1,0 +1,54 @@
+# The declared names held back, for tests/test_declared_holdbacks.py, which says what holds each reason to the tree.
+# One `<name> | <reason>` per line, sorted. A declared name not listed is held by something the tree shows: an import
+# here (a shipped page, an example, the courier host, another package), Discodon's import list
+# (tests/fixtures/host_imports/discodon.txt, its production and test imports mixed), a shipped page's prose or code,
+# or a declared signature.
+#
+#   discodon-tests-only       Only Discodon's tests import it: no page names it, no declared signature reaches it.
+#                             It goes provisional once Discodon accepts that it may move. None: Discodon accepted
+#                             it for all 24 on 2026-11-06, and they are provisional
+#                             (tests/test_host_imports_are_declared.py's PROVISIONAL_FOR_HOST_TESTS).
+#   port-host-implements      A declared protocol a host's code implements and hands the engine.
+#   protocol-engine-provides  A declared protocol the engine implements and hands a host's code, or that the engine's
+#                             own storage satisfies over the host's store.
+#   unreached                 Declared, and nothing imports, names or reaches it. None.
+#
+# Computed 2026-11-06 over this tree at a3f15bfd8 and Discodon develop at e5a7f2a56 (2026-11-03): a Discodon test is
+# a file under tests/, a conftest.py or a test_*.py; the rest is its production code, which also reads the four
+# seed defaults (gen.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT, gen.EVAL_PROPOSER_TEMPLATE_DEFAULT,
+# analysis.EVAL_ANALYSIS_GEN_DEFAULT, and analysis.EVAL_REPORT_PLAN_DEFAULT; both analysis constants are removed in
+# this release, so that read breaks at re-pin) by name. 24 discodon-tests-only (25 less generate_analysis, removed with the
+# shims in R4), 18 port-host-implements, 13 protocol-engine-provides, 0 unreached. Since (R5, 2026-11-06): the 24
+# discodon-tests-only names, and CampaignBundle and testing.ReaderSample, which only their signatures reached, are
+# provisional, so 0 discodon-tests-only.
+threetears.evals.kernel.ActionSeam | port-host-implements
+threetears.evals.kernel.CandidateKind | port-host-implements
+threetears.evals.kernel.CassetteStore | protocol-engine-provides
+threetears.evals.kernel.CellCassettes | protocol-engine-provides
+threetears.evals.kernel.CellSink | protocol-engine-provides
+threetears.evals.kernel.CellSpanWindow | protocol-engine-provides
+threetears.evals.kernel.DefinitionStore | protocol-engine-provides
+threetears.evals.kernel.DeliveryRecorder | protocol-engine-provides
+threetears.evals.kernel.DeliveryReplay | protocol-engine-provides
+threetears.evals.kernel.DeliverySeam | port-host-implements
+threetears.evals.kernel.DeliveryTicket | protocol-engine-provides
+threetears.evals.kernel.JobStore | protocol-engine-provides
+threetears.evals.kernel.Recordable | port-host-implements
+threetears.evals.kernel.ResultStore | protocol-engine-provides
+threetears.evals.kernel.RunRecordStore | protocol-engine-provides
+threetears.evals.kernel.RunStore | protocol-engine-provides
+threetears.evals.kernel.host.CompletionClients | port-host-implements
+threetears.evals.kernel.host.TemplateCaseFields | protocol-engine-provides
+threetears.evals.providers.Pricer | port-host-implements
+threetears.evals.run.CellExecutor | port-host-implements
+threetears.evals.run.KindFactory | port-host-implements
+threetears.evals.schema.AsyncDocumentStore | port-host-implements
+threetears.evals.schema.AsyncStoreClock | port-host-implements
+threetears.evals.schema.BoundCompletionClient | port-host-implements
+threetears.evals.schema.CompletionClient | port-host-implements
+threetears.evals.schema.CompletionResult | port-host-implements
+threetears.evals.schema.DocumentStore | port-host-implements
+threetears.evals.schema.ProviderFailureDescriber | port-host-implements
+threetears.evals.schema.StoreClock | port-host-implements
+threetears.evals.schema.ToolTurnClient | port-host-implements
+threetears.evals.schema.TraceSink | port-host-implements

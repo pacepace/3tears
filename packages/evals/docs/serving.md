@@ -1,6 +1,6 @@
 # Serving: the command line, the actions and MCP
 
-**For** anyone at rung 4 who wants the team to read an eval's runs, run evals from CI, or let an agent launch and
+**For** anyone at rung 4b who wants the team to read an eval's runs, run evals from CI, or let an agent launch and
 read them, and anyone mounting the same commands under their own app. **Answers:** how a file runs from the command
 line, how runs are kept and read back, how [`examples/4-booking/serve.py`](../examples/4-booking/serve.py) serves
 them, what each host command does and exits with, and how operations, the action catalogue and the FastMCP
@@ -90,7 +90,7 @@ Run it twice. The second run reads the first run's results from the file, becaus
 
 ## Serving the runs to the team
 
-[`serve.py`](../examples/4-booking/serve.py), beside rung 4's agent, is the whole server. Its `host()` is
+[`serve.py`](../examples/4-booking/serve.py), rung 4b, beside rung 4a's agent, is the whole server. Its `host()` is
 `as_host([booking], store=".evals/evals.sqlite")`, the store every run of `agent.py` fills; hand `as_host` any
 `DocumentStore` instead (your own database) to share the runs. It serves them two ways:
 
@@ -114,7 +114,7 @@ python -m threetears.evals run    --host myapp.evals:build_host --scope dev --te
                                   [--n-variations N] [--variation-model MODEL] [--apparatus-settings JSON]
                                   [--measure-latency]
 python -m threetears.evals ls     --host myapp.evals:build_host --scope dev
-python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev [--format markdown|html|json] [--out DIR]
+python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev [--format markdown|html|json] [--trials table|all] [--out DIR]
 python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
 python -m threetears.evals spend  --host myapp.evals:build_host --scope dev [--purpose P] [--launch-group ID] [--template ID]
 python -m threetears.evals frontier --host myapp.evals:build_host --scope dev [--bar B] [--subject S] [--json]
@@ -174,7 +174,7 @@ fingerprint; the bundle itself is the wrapper's `bundle` field. Neither command 
 ### `spend`
 
 `spend` prints what the engine spent outside any run in the scope — case generations, rubric proposals,
-analysis generations, judge repeats and judge temperature comparisons
+campaign reports, judge repeats and judge temperature comparisons
 (`--purpose variation|proposer|analysis|judge|second_judge`) — narrowed by its flags.
 
 ### `frontier`
@@ -245,18 +245,18 @@ evals")`; your users then never name the host.
 ## Operations and jobs
 
 The operations (`threetears.evals.ops`) run over an `OpsHost`: the `LaunchHost`, plus `AnalysisGeneration`
-(the prompt, output cap and budget a background generation runs under). Each returns a typed model.
+(the report budget and the time bounds a campaign report is written under). Each returns a typed model.
 
 **No transport call waits on a model.** Every operation whose work calls one is a **job**: `run_launch`,
 `sweep_launch`, `analysis_generate`, `judge_second`, `judge_drift_check` and `judge_temperature` return
 `JobsStarted`, and `job_poll` / `job_cancel` take any job id they returned; `job_resume` takes up a run's, a
 sweep's or a launch's job that ended before its work did (below). The call does what it can
 refuse cheaply before money is spent — the refusals it can name from a few store reads, and the admission
-ceiling — and refuses there with nothing spent; the job does the spending. An analysis generation does less in
-its call: assembling its bundle reads every member run's results, so its job assembles it, builds the client and
-prices the first call against the cap, and a refusal at any of those ends the job `failed` with
+ceiling — and refuses there with nothing spent; the job does the spending. A report does less in its call:
+freezing its evidence reads every member run's results, so its job freezes it, builds the client and admits each turn
+against the report budget before sending it, and a refusal before the first turn ends the job `failed` with
 `refused before any call: <why>` for `job_poll` to read, with nothing spent. That preparation is bounded: one
-that has not finished in `AnalysisGeneration.preparation_budget_s` (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s; the host may set it per call) ends the same way.
+that has not finished in `AnalysisGeneration.preparation_budget_s` (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s) ends the same way.
 So a call is a few store round-trips, and a transport holds every call to one fixed timeout (`mount_fastmcp(..., call_timeout_s=...)`, 60s by default)
 rather than one sized to what a call might spend. The timeout may be a function in place of the number, read once
 as each call starts, so an operator retunes it from live configuration without remounting.
@@ -268,7 +268,7 @@ Each job writes its own record, and polling reads it:
 | `launch:<id>` | `run_launch`; `job_resume` takes it up again | `EvalLaunch`: the case generation and every arm's preparation, then the runs to their end | `run_ids`, in arm order (from the moment they start), and each run's status in `progress` |
 | `run:<id>` | one run of a launch; `job_resume` takes it up again | the `EvalRun` | the run's status; read it with `run_get` |
 | `sweep:<id>` | `sweep_launch`; `job_resume` takes it up again | `EvalSweep` | the arms launched and finished |
-| `analysis:<campaign>:<attempt>` | `analysis_generate` | `EvalAnalysisAttempt` | the stored analysis's id; read it with `report_read` |
+| `analysis:<campaign>:<attempt>` | `analysis_generate` | `EvalAnalysisAttempt` | how the writing ended and the stored analysis's id; read it with `report_read` |
 | `second-judge:<id>` | `judge_second`, `judge_drift_check` | `EvalSecondJudgePass`, its id the pass id every paired score names | `result`: the pass's report, agreement and drift |
 | `judge-temperature:<id>` | `judge_temperature` | `EvalJudgeTemperatureCheck`, every answer kept | `result`: the comparison |
 | `action:<id>` | a host action ([Adopting the engine](adopting-a-host.md)) | `EvalActionJob` | `result`: the action's typed result |
@@ -382,8 +382,8 @@ not listed again among `jobs`.
 
 On a host that enforces its ceilings (`LaunchSettings.enforcement_enabled`), every spend operation is bounded
 in dollars before it spends: a launch by the per-run ceiling and its case generation by the host's out-of-run
-cap, an analysis generation and the judge actions by the host's out-of-run cap. With enforcement off, none is
-capped. The full rules are in [Cost and budgets](cost-and-budgets.md).
+cap, and the judge actions by the host's out-of-run cap. A report is held to its own report budget, which the host
+sets in dollars or in tokens and turns. With enforcement off, no run or out-of-run call is capped. The full rules are in [Cost and budgets](cost-and-budgets.md).
 
 ## The action catalogue
 
@@ -438,7 +438,8 @@ To ask again after the runs, `campaign_create` with `aspects_from` adopts the as
 so it reads as the campaign declared before the runs did; what it adds (`margins` for an adopted aspect, a floor, an
 arm) is dated now and named on the page where that is later than its aspect's first result.
 
-4. `report_read` the campaign's page; `analysis_generate` adds the writer's memo;
+4. `analysis_generate` writes the campaign's report (a job; `analysis_estimate` answers its budget), and
+   `report_read` reads the campaign's page, the analyst's once one is stored and the code-only page before (a `plan` analysis, or a document this version no longer reads, reads code-only with one line to regenerate it; `trials="all"` adds each failed or lost trial's evidence record after a document's page);
 5. `campaign_record` the person's call: the arm, `call_reason`, and each broken floor (`floors_overridden`, by key,
    `billing/rate_drop/*`) and missed bar (`bars_overridden`, `tone/cost_usd`) it overrides. It is refused while the
    arm leaves one unnamed, or names one the arm did not raise, and on a measurement
@@ -451,9 +452,10 @@ arm) is dated now and named on the page where that is later than its aspect's fi
 | Key | Holds |
 |---|---|
 | `kind`, `shape` | `"campaign"` and the shape's version (`CAMPAIGN_JSON_SHAPE`) |
-| `campaign_id`, `basis`, `analysis_id` | the campaign; `analysis` or `code_only`; the memo's analysis, or null |
+| `campaign_id`, `basis`, `analysis_id` | the campaign; whether an analysis wrote the page's words or code alone did; the analysis the page renders or stands in for, or null |
+| `needs_regeneration` | the one regenerate line and why, on a page standing in for an analysis this version no longer reads; null otherwise |
 | `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason. Every float is to twelve significant figures (a declared one, like `alpha`, a bar or a margin, has fewer and is unchanged), so one campaign serves the same JSON across Python builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary |
-| `recommendation` | the writer's `arm` (its label, for display), its `variant_key` (the key the analysis recorded for that arm, which a call's `variant_key` is compared to) and `confidence`, or null |
+| `report_doc` | the stored report document, its id, and how it was written (its ending, models and cost), without its session transcripts, when the campaign's analysis is one |
 | `call` | the recorded call (`CampaignCall`), or null |
 | `aspects` | each aspect's `aspect`, `bundle_fingerprint` (`v2:` and a digest; one with no prefix was recorded before fingerprints rounded floats), `bundle_schema_version` and `late_criteria`: each criterion set after the aspect's readings were visible (`criterion`: `aspect`, `control`, `margin`, `bar` or `floor`; `name`; `set_at`, null with no orderable time), empty where none. Its readings read the same either way; this says when, for a reader to judge |
 
@@ -549,15 +551,15 @@ To install the extra from a pre-release or an unreleased checkout, use the repos
 [the README shows](../README.md#install):
 `pip install "3tears-evals[fastmcp] @ git+https://github.com/pacepace/3tears.git@<tag>#subdirectory=packages/evals"`.
 
-A result carries its text and the result model's JSON as structured content, less the one field an action declares
-its text is (`Action.text_field`, the field its render returns verbatim). `report_read` declares `body`, so its
-structured content holds `campaign_id`, `basis`, `analysis_id` and `format`, the report is the text block, and a page
-of megabytes is sent once. No other engine action declares one, and a host's action sends its whole result unless it
-does. A refused call is an MCP
-error result (`isError`) carrying the teaching text, with the refusal as structured content:
+A result carries its text and, as structured content, the result model's JSON whole. The structured content is the
+result and the text block its rendering for a client that reads only text; a client that shows structured content in
+place of the text still sees everything. `report_read`'s report is in both: the text block is the body, and the
+structured content carries it as `body` beside the report's other fields (`campaign_id`, `basis`, `analysis_id`,
+`format` and the rest). A refused call is an MCP error result (`isError`) carrying the teaching text, with how it
+ended and the refusal as structured content, plus `recovery` where the call has a corrected form:
 
 ```json
-{"refusal": {"kind": "not_found", "status": 404}}
+{"ending": "refused", "refusal": {"kind": "not_found", "status": 404}}
 ```
 
 ### Serving several tenants
@@ -613,10 +615,10 @@ mount_fastmcp(
 - **A resolver that refuses answers the call as a refusal.** A caller or host resolver that raises an
   `EvalServiceError` (your own subclass among them, say a 503 for a host still booting, with a remedy telling the
   agent when to come back) is answered exactly as an action's refusal is: the `refused:` text with its `remedy:`
-  line, and `{"refusal": {"kind": ..., "status": ...}}` with the error flag. No action runs. A host resolver's
-  refusal still enters the `around` hook, because the caller is known: the hook runs to its yield and is handed the
-  refusal as its outcome, so your audit log records "no host could serve this call" from the same hook as every
-  other call. Its `ToolCall` has `host` and `context` both `None`, and `call.refused` is the very `EvalServiceError`
+  line, and `{"ending": ..., "refusal": {"kind": ..., "status": ...}}` with the error flag. No action runs. A host
+  resolver's refusal still enters the `around` hook, because the caller is known: the hook runs to its yield and is
+  handed the refusal as its outcome, so your audit log records "no host could serve this call" from the same hook as
+  every other call. Its `ToolCall` has `host` and `context` both `None`, and `call.refused` is the very `EvalServiceError`
   the resolver raised, so both `around` and `annotate` can read your subclass's own attributes. The outcome carries
   only the kind and status, which two cases of one error class share; `call.refused` tells them apart with no
   context variable set before the raise:
@@ -670,21 +672,217 @@ failure after the action ran would report an error for work that was done (a lau
 that landed), and an agent would repeat it. An audit that must hold *before* an action runs belongs in the
 host or the action, which can refuse. A hook is not a gate.
 
-## Reporter runs: evaluating the analysis writer itself
+## The analyst's tool
 
-A reporter run (the `analysis_reporter` kind, which measures the analysis writer itself) starts from a
-frozen case, never a generated one.
+The report writer investigates a campaign through one domain tool, `evals_analyst`, and a host can mount the same
+tool beside `evals` for its own agents (`analyst_tools`, from `threetears.evals.actions`, through `mount_fastmcp`).
+It reads a frozen [snapshot](concepts.md#report-snapshot): freeze one with `report_snapshot_freeze`, its one write,
+then call any read action by its id. The actions answer what an analyst asks: the campaign's overview, readings and
+contrasts, a measure by arm or slice, examples with the judge's reasons, the caveats code assigns, where a call
+flips, where a difference is concentrated, which options dominate, the price of a point, two arms compared, what one
+setting buys, the cases that would settle an open reading, and a block's values as the page would draw it.
+`report_check` returns a draft report's every mechanical verdict and its page as text, and stores nothing. Every
+figure an action returns carries its figure key; `help` lists the actions and the figure-key grammar. Mount it
+read-only (`writes=False`) for an agent that should only read snapshots frozen another way.
 
-- `reporter_case_freeze` (write) freezes a campaign's analysis bundle into a case of a reporter template —
-  with `recorded_analysis_id`, the memo the campaign got too, and any reader `labels` on it — and answers
-  with the case id, its bundle fingerprint and the `limits` the freeze recorded. Each label is a reader's verdict:
-  it names its `reader` (omitted, the caller), and the host's `attests_person` must vouch that the caller relays
-  that reader's verdict, or the freeze is refused (403) and nothing is written; a freeze with no labels asks nothing.
-- `reporter_cases_list` reads the template's bank: which case each campaign and memo launches, and what
-  superseded or retired the rest.
-- `reporter_case_archive` retires a case or restores it.
+**Gaps.** `capability_gap` records what the analyst or the editor worked around (`missing`) or a result that looks
+wrong (`suspect`, with the keys and calls that reproduce it). `analyst_gaps_list`, a read action on `evals`, returns
+the gaps since a date, grouped by kind and need, suspect ones first, each group as text ready to file as an issue.
 
-The template then launches through `run_launch`, by the reporter kind the host registers.
+**Reading a report's transcripts.** `report_read` takes a report's id (`report_doc_id`) to read any stored version,
+and `include_sessions` (JSON only) to return its full session transcripts: what the analyst and each editor round were sent and
+did.
+
+## Reporter runs are retired
+
+The analysis reporter kind, its cases and its three actions (`reporter_case_freeze`, `reporter_cases_list`,
+`reporter_case_archive`) are retired with the memo writer and the report planner they measured. The report writer
+is measured by a writer campaign (below, and rung 5, `examples/5-writer/`), judged pairwise
+([Judges and calibration](judges-and-calibration.md#pairwise-preference-for-the-report-writer)).
+
+## Writer campaigns: evaluating the report writer
+
+A writer campaign (the `report_writer` kind) measures the analyst that writes a campaign's report: its skill, its
+reasoning effort, its revisions or its model. A host enables it by registering `launchable_report_writer_kind` on its
+launch registry and declaring `WRITER_KIND_CONTRACT` in its profile's kinds and `WRITER_KIND_MEASURES` on its measure
+registry. It builds its case bank from its own campaigns through four actions, and launches the arms between them:
+
+- `writer_template_create` (write) writes a template of the writer kind. Its scoring rubric is the editor rubric this
+  build ships, copied in when the template is written. Refused on a host that does not launch the writer kind.
+- `writer_case_mint` (write) freezes one campaign, stored analysis or snapshot into a writer case, with the exemplar
+  notes its analyst is never given, and lists it in its side's set (`writer-dev` or `writer-held-out` unless named).
+  A group keeps one side. Minting the same source again returns the stored case.
+- `writer_case_archive` (write) retires a case or restores it. Retire a case whose campaign's evidence moved, then mint
+  the campaign again.
+- Then `run_launch` the writer template once per arm, over the held-out set: `case_set_name` naming it
+  (`writer-held-out` unless the mint named another) and `case_set_version` naming one of its versions (the latest
+  mint's), so every arm runs the same held-out cases. Name the same
+  `judge_model` for every arm, of another model family than the writer's. An arm whose editor runs on a model of its
+  own (`editor_model`) holds that model to the same rule: a judge of the editor's family is refused too, and the run
+  records both checks. A launch with no judge is refused, and one
+  with no case set runs the template's live cases on both sides of the split, which the promotion read refuses to
+  decide on: that campaign is paid for and never decided.
+- `writer_pairwise` (spend, a job) shows the scoring judge each case's two stored pages, candidate and control, once
+  in each order, and reads the preference on `report_writer.preferred`: the promotion's primary reading.
+- `writer_promotion` (read) reads that pass (its job as `pairwise_job`) and the campaign's corrected verdicts for one
+  candidate arm, and answers promote, keep or undecided: promote only on a primary improved with no other reading
+  regressed and every guardrail held, keep on any regression (too few cases included) or a breached guardrail. The
+  judge's order consistency below 0.7 voids the primary. It reports the reading over the pairs whose pages were both
+  finished beside the primary, and for a primary that does not separate, the held-out cases that would settle it.
+  With no pass named it never promotes. It records nothing; a person records the call with `campaign_record`.
+
+### Exporting a campaign for the mint
+
+The engine exports a campaign's closure as the three files the mint reads, read-only, so no host writes a closure of
+its own. From the host's environment:
+
+```
+python -m threetears.evals.harness export --host module:callable --scope SCOPE --campaign CAMPAIGN --out DIR \
+    [--built-by module:callable]
+```
+
+`--host` names the zero-argument callable that returns the host's `EvalHost`, whose store holds the campaign.
+`--built-by` names the factory the profile came from, written into `profile.json` as `built_by`: provenance, which the
+mint never imports. Omitted, it is `--host`, which the mint's operator can pass as the mint's own `--host` too, since
+the mint reads only the profile of the host a factory returns. It must be `module:callable`; an export naming
+anything else is refused. The command writes
+`documents.json`, `profile.json` and `manifest.json` as the directory `DIR`, which must not exist yet or be empty: it
+writes them into a new sibling directory and renames that to `DIR`, so either all three are there or none is, and a
+run that fails part-way can simply run again. It exits 0 when the files are written, 2 when the export is refused (a
+campaign the scope does not hold, a `DIR` holding files, a factory that does not load or returns no host, a stored
+judge value in a form its document's type does not record), and 3 when the factory raises.
+
+A host whose code serves the engine's actions exports with no code of its own: `campaign_export` (read) takes
+`campaign_id` and, optionally, `built_by` (provenance the profile records; the mint never imports it), reads the caller's scope, and returns `documents`, `profile` and `manifest`
+as its JSON. A closure past one page is paged by whole documents, under `page.byte_ceiling` bytes of them a page, each
+page carrying the profile and the manifest whole; its text names the next call (`export_after_doc_type` with
+`export_after_document_id`). Join the pages' documents in order.
+
+The pages bound a response for a client, not the read: every page call reads, sorts and slices the whole closure,
+so reading a campaign of many pages costs about as many whole reads. Export a large campaign (hundreds of megabytes,
+most of it traces) once, through the command line or the function below, each of which reads the closure once.
+
+So the action is bounded. While it gathers the closure it counts each document it keeps as canonical JSON (sorted
+keys, no whitespace, ASCII, so its characters and its bytes as text), and it refuses the moment the total passes the
+host's ceiling, naming the bytes reached and the ceiling. No read by id or by field returns more than 16 whole
+documents: a read by a field fetches the matching ids first, the store leaving out every other field the type's model
+declares, then the documents 16 at a time, each 16 counted before the next is read. So those reads leave a refused
+call holding at most the ceiling and 16 documents. Two things sit outside that bound: the three whole-type scans
+(rubric dims, launches and judge profiles, small types each read whole in one read and filtered, only the documents
+kept counted), and a field a stored document carries that its model does not declare, which
+the read of ids cannot leave out.
+
+The ceiling counts JSON, not heap. Decoded, a document takes about 3 to 5 times its JSON on the heap (3.3 to 4.8
+times, measured with `tracemalloc` over the package's fixture campaigns), so a call at the default 16,000,000 holds
+about 80 MB at its peak. Set `OpsHost(campaign_export_max_bytes=...)`, or `OpsHost.reading(eval_host,
+campaign_export_max_bytes=...)` for a host serving a reading host, at a tenth of the serving process's headroom or
+less. A campaign past it is exported in a process of its own with `python -m threetears.evals.harness export`, or
+`campaign_export(...)` in code; neither holds a ceiling.
+
+Pages are not a snapshot either. A write between two page calls can drop a document from the join or leave the
+manifest disagreeing with the joined documents. Every page's manifest carries `closure_documents` and
+`closure_keys_digest` (the sha256 of the closure's sorted `(doc_type, id)` keys): compare each page's with the first
+page's, and when they differ, read the export again from the first page. In code, `campaign_export(host, scope_id, campaign_id,
+built_by=...)` (`threetears.evals.ops`) returns the whole `CampaignExport`, and `CampaignExport.files()` its three
+files' bytes, for a host serving them from a route of its own.
+
+What the closure holds:
+
+- the campaign, the runs its aspects name, and each run's template, test cases, case set, cassettes and sweep;
+- each run's results and traces, calibration ratings, second judge passes, temperature checks and out-of-run spend;
+- the judge configs its runs and results record, a deleted config's tombstone, and each config's rubric dim. A run
+  records the bare config id it committed to at launch; a result records the configured judge's identity,
+  `<config id>@<sha12>` (read with the package's `judge_config_of`), the config and a fingerprint of the reply format
+  it was sent. A value in the other type's form refuses the export. A built-in judge's identity, `builtin:<sha12>`, is
+  listed in the manifest's `builtin_judge_config_ids` and names no document;
+- the campaign's analyses, report snapshots, report documents and their sessions and analyst gaps;
+- every insight on the campaign's subject in the scope, whichever campaign minted it;
+- the launches and judge profiles naming its runs.
+
+The closure follows stored links, never the scope: a sibling campaign's runs and results are not in it. Each document
+is exported verbatim, each `(doc_type, id)` once, in `(doc_type, id)` order. The manifest counts every document type
+the engine stores, names the two no link reaches (`eval_action_job`, `rubric_dim_tombstone`), lists each link the
+scope does not hold under `unresolved`, and states its rules in `closure_rules`. It names each analysis, report
+document and insight under `reasoned_on`, which the mint reads to withhold notes: a report document as
+`report <id>: <campaign name>`, never by its headline. Nothing in an export records when it was made, so exporting
+an unchanged campaign again writes the same bytes.
+
+### Minting a case from a production export
+
+A host whose production store may only be read mints its writer cases from an export: the three files `export`
+writes (above), from which the command freezes the campaign into one case file (`format: writer-case/1`), writing
+nothing to the host's store:
+
+```
+python -m threetears.evals.harness mint --documents documents.json [--profile profile.json] [--manifest manifest.json] \
+    --campaign CAMPAIGN --name NAME [--group GROUP] [--stratum STRATUM] [--withhold NOTE ...] [--skill DIR] \
+    [--as-of INSTANT] [--scope SCOPE] --host module:callable [--created-by WHO] --out NAME.json.gz
+```
+
+It runs in the host's own environment: the freeze calls the profile's readers, which only the host's code holds.
+`--host` names the profile's factory, and it is the only module the mint imports. Without `--profile` the
+declarations digest is not checked, and `--group` defaults to the case's name. The mint never imports the
+`built_by` an export names: a host's chat agent can call `campaign_export` and choose it, and the mint runs in the
+operator's environment, so the operator names the code. The mint runs where the `--host` module imports; if the host's
+package is not installed in that environment, put its source on `PYTHONPATH` for the command. The three files and the export are checked before the profile's factory is imported, so an export is dry-checked anywhere:
+a refusal of the documents, the manifest or the declaration comes first. `--scope` reads only the documents of that
+scope; omitted, the campaign is read in the scope its document carries, and an export holding it in two is refused.
+
+**`documents.json`** is one JSON list of the campaign's closure, each document verbatim as stored, with its
+`doc_type`, `id` and `scope_id`. The freeze reads these and ignores every other document, so a host may export every
+eval document reachable from the campaign:
+
+| Document type | What it holds | Without it |
+|---|---|---|
+| `eval_campaign` | the campaign named | refused |
+| `eval_run` | every run the campaign names | refused, naming the runs missing |
+| `eval_template` | the template every run names (a quick eval's run names none) | refused, naming the templates missing |
+| `eval_result` | the runs' results | refused |
+| `eval_trace` | the results' traces, where a judge's evidence is read | refused, naming each trace a result records and the export lacks |
+| `eval_test_case` | the cases the runs ran, read for their strata | read when present |
+| `eval_insight` | every insight on the campaign's subject in its scope, from any campaign | read when present |
+| `eval_analysis` | the analyses that minted those insights, read for whether each still stands | read when present |
+
+The insight ledger is the subject's, not the campaign's: an insight a sibling campaign minted on the same subject is in
+the bundle an analysis of this campaign reads, so the export carries it. Nothing else of a sibling campaign is read.
+
+**`profile.json`** is the host's declaration of its profile, a JSON object. The mint reads two keys:
+
+| Key | What it is |
+|---|---|
+| `built_by` | provenance: the factory, `module:callable`, the exporter says the profile came from. The mint checks it is text and never imports it |
+| `host_declarations_digest` | the digest of the declarations that partition observations (each sweepable's name, role, blank rule and rig dimension, and the world's names), as every analysis bundle records it, computed with `threetears.evals.analysis.host_declarations_digest(profile)`; required, and a declaration without it is refused, naming any key that looks like it |
+
+The rest of the declaration (measures, bars, kinds, release label) is the host's record. The freeze calls each
+sweepable's reader, the host's lever reader and each kind contract's levels on every run, so the profile is built
+live from `--host`: a zero-argument `module:callable` returning the `HostProfile` the runs were measured under, or
+the `EvalHost` carrying it (only its profile is read). A live profile whose digest is not the declared one is
+refused, naming both: the campaign was measured under other sweepables or another world.
+
+**`manifest.json`** names the documents that reasoned on the campaign; any other key is the host's:
+
+```json
+{"campaign_id": "CAMPAIGN",
+ "reasoned_on": [{"doc_type": "eval_insight", "id": "...", "name": "the insight's statement"},
+                 {"doc_type": "eval_report_doc", "id": "...", "name": "the report's title"}]}
+```
+
+A case withholds notes of the analyst skill (the shipped one, or `--skill DIR`), by file name. Every note holding a
+listed document's id or name, read case- and whitespace-blind, is withheld, and so is a note naming the campaign's id;
+an id or a name under 12 characters matches nothing. The case file records which document led to each note and
+which documents no note holds (`minted`), so a reader checks those by hand. `--withhold` adds notes by name, and a note
+the skill does not hold is refused. A manifest of another campaign is refused.
+
+**The blindness rule.** A case's analyst must not have read about its campaign. List every analysis, report and
+insight that reasoned on it, and mint one campaign as one case: two cases of one campaign are one case counted twice,
+unless they share a group and withhold the same notes.
+
+**The same evidence mints the same bytes.** The snapshot's id is derived from the campaign's id and its report input,
+and the case is frozen at one instant: `--as-of`, or, omitted, the moment the campaign's evidence was complete (the
+latest of the campaign's creation and its runs' completions). An exported insight observed at or after that instant
+is left out, so an insight a later analysis of this campaign minted never reaches its case; whether an insight kept is
+retracted is read from the export as it stands. Re-minting the same export writes the same
+file. The command exits 0 when the case is written, 2 when the mint is refused, and 3 when the profile factory raises.
 
 ## Judge campaigns: evaluating a judge itself
 

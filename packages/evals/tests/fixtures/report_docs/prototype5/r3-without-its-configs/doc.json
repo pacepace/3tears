@@ -1,0 +1,344 @@
+{
+  "schema": "report-doc/1",
+  "story": "decision",
+  "headline": "Use {arm:brisk-s.few}: of {count.arms|words} router configurations it alone clears the balanced-accuracy gate, every cell floor and the latency budget.",
+  "lede": "It clears the {criteria.overall.threshold} balanced-accuracy gate by {criteria.overall.brisk-s.few.gap|abs|pts} points, interval {overall_interval.balanced_accuracy.brisk-s.few.interval}. {arm:nano-xs.few} saves {price.nano-xs.few.brisk-s.few.balanced_accuracy.monthly_cost_gap|abs|usd_whole} a month at this run's unnamed routing (volume read as turns) but fails Complex × News and is borderline on balanced accuracy.",
+  "flag": null,
+  "recommends": [
+    "brisk-s.few"
+  ],
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {
+        "id": "point_estimate:p95",
+        "label": null,
+        "material_if": "The high applies to the balanced-accuracy and cell-floor readings; the latency gate stays open until {arm:brisk-s.few}'s p95 is measured in production with an interval. It becomes material if that p95 runs more than {criteria.p95.brisk-s.few.gap} above today's {measure.latency_ms.brisk-s.few.p95}: then no configuration passes every gate and the choice becomes a trade between latency and accuracy.",
+        "checked": null
+      },
+      {
+        "id": "best_of_n",
+        "label": null,
+        "material_if": "Only if a fresh run reads {arm:brisk-s.few}'s balanced accuracy more than {criteria.overall.brisk-s.few.gap|abs|pts} points lower: the one pick out of {count.arms|words} reads high by chance, though today's interval sits wholly above the gate.",
+        "checked": null
+      },
+      {
+        "id": "no_control",
+        "label": null,
+        "material_if": "Only for claims that one configuration beats another: with no control, each gap is read from the two configurations' own intervals combined as independent, which reads wider than a paired comparison would. The gates read each configuration on its own figures, so the call does not rest on it.",
+        "checked": null
+      }
+    ]
+  },
+  "decision": [
+    {
+      "slot": "recommendation",
+      "text": "Ship {arm:brisk-s.few} as the turn router's classifier now: balanced accuracy {measure.balanced_accuracy.brisk-s.few.mean}, p95 latency {measure.latency_ms.brisk-s.few.p95}, its weakest cell {cells.complex.news.brisk-s.few.accuracy.mean}, {cost_per_month.brisk-s.few|usd_whole} a month at this run's unnamed routing with the volume read as turns."
+    },
+    {
+      "slot": "why_not",
+      "text": "Every Atlas-M prompt and {arm:brisk-s.rubric} miss the {criteria.p95.threshold} latency budget, though most are more accurate. {arm:nano-xs.few} is the cheapest near-miss but scores {cells.complex.news.nano-xs.few.accuracy.mean} on Complex × News, below the {criteria.cell_floor.threshold} floor with its interval clear of it, and its balanced accuracy is borderline. The other zero-shot and rubric prompts fall short on balanced accuracy or a cell floor."
+    },
+    {
+      "slot": "watch",
+      "text": "The weakest margin is the recommendation's own balanced-accuracy gate: {weakest.value} against {weakest.threshold} for {weakest.arm}, clear on its interval but picked out of {count.arms|words}. The latency budget is cleared on a point estimate only, {criteria.p95.brisk-s.few.gap} under it. Complex × News is the nearest cell, {criteria.cell_floor.brisk-s.few.complex.news.gap|abs|pts} points above the floor."
+    },
+    {
+      "slot": "next",
+      "text": "Ship now and measure production p95 with an interval in parallel; also give {arm:nano-xs.few} Complex × News examples and re-run it, the one result that could move the call to a cheaper option."
+    }
+  ],
+  "claims": [
+    {
+      "id": "only-survivor",
+      "text": "{arm:brisk-s.few} is the only configuration that passes all three declared gates; each of the others fails at least one.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "gate_matrix",
+          "query": {
+            "source": "configs",
+            "aspect": "",
+            "measures": [],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "brisk-s.few",
+          "caption": "Each configuration against the balanced-accuracy gate (declared under the name Overall accuracy), the cell floor and the latency budget, with the figure that fails it."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "latency-wall",
+      "text": "Every configuration with higher balanced accuracy than {arm:brisk-s.few} misses the latency budget; the most accurate, {arm:atlas-m.rubric}, runs at {measure.latency_ms.atlas-m.rubric.p95}.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "gate_scatter",
+          "query": {
+            "source": "configs",
+            "aspect": "",
+            "measures": [
+              "latency_ms",
+              "balanced_accuracy"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "brisk-s.few",
+          "caption": "Balanced accuracy against p95 latency, latency on a log scale; the horizontal line is the balanced-accuracy gate, printed under its declared name, and the region inside both gates is shaded."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "nano-cell",
+      "text": "{arm:nano-xs.few} trails {arm:brisk-s.few} by only {compare.brisk-s.few.nano-xs.few.balanced_accuracy.overall.difference|abs|pts} points on balanced accuracy and stays close in most cells, but trails by {compare.brisk-s.few.nano-xs.few.accuracy.cells.complex.news.difference|abs|pts} points on Complex × News, which puts it below the cell floor.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "diverging_bars",
+          "query": {
+            "source": "compare",
+            "aspect": "",
+            "measures": [
+              "balanced_accuracy"
+            ],
+            "arms": [
+              "brisk-s.few",
+              "nano-xs.few"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Brisk-S few-shot minus Nano-XS few-shot on balanced accuracy, overall, with its unpaired interval."
+        },
+        {
+          "block": "table",
+          "query": {
+            "source": "compare",
+            "aspect": "",
+            "measures": [
+              "accuracy"
+            ],
+            "arms": [
+              "brisk-s.few",
+              "nano-xs.few"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Each cell's accuracy for Brisk-S few-shot (first) and Nano-XS few-shot (second), their gap and its unpaired interval; the Simple × Science bound prints unrounded and reads as just below zero."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "cost-gap",
+      "text": "As this run's unnamed provider routing served them, {arm:brisk-s.few} costs {measure.cost_per_1m.brisk-s.few.mean} against {measure.cost_per_1m.nano-xs.few.mean} for {arm:nano-xs.few}; reading the declared volume as turns, that is {price.nano-xs.few.brisk-s.few.balanced_accuracy.monthly_cost_gap|abs|usd_whole} more a month, the price of meeting the Complex × News floor.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "bars",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "cost_per_1m"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "brisk-s.few",
+          "caption": "Cost per million turns for each configuration, on a log scale, as this run's provider routing served it; the routing is not named."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "prompt-lever",
+      "text": "On Nano-XS, few-shot examples are what lift balanced accuracy: {lever.prompt.nano-xs.zero.nano-xs.few.balanced_accuracy.effect|abs|pts} points over zero-shot, with the rubric prompt {lever.prompt.nano-xs.few.nano-xs.rubric.balanced_accuracy.effect|abs|pts} points below few-shot. On Brisk-S, the rubric edges few-shot by {lever.prompt.brisk-s.few.brisk-s.rubric.balanced_accuracy.effect|abs|pts} points but takes p95 to {measure.latency_ms.brisk-s.rubric.p95}.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "diverging_bars",
+          "query": {
+            "source": "levers",
+            "aspect": "",
+            "measures": [
+              "balanced_accuracy"
+            ],
+            "arms": [
+              "brisk-s.zero",
+              "brisk-s.few",
+              "brisk-s.rubric",
+              "nano-xs.zero",
+              "nano-xs.few",
+              "nano-xs.rubric"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Change in balanced accuracy from moving one setting, Brisk-S and Nano-XS only, with unpaired intervals; the model rows include the overall Brisk-S to Nano-XS gap at each prompt, and interactions follow the effects."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "margins",
+      "text": "On balanced accuracy and all {count.cells|words} cell floors, {arm:brisk-s.few} clears its line on today's interval, Complex × News nearest at {criteria.cell_floor.brisk-s.few.complex.news.gap|abs|pts} points; the latency budget is cleared on a point estimate only, {criteria.p95.brisk-s.few.gap} under it.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "table",
+          "query": {
+            "source": "settle",
+            "aspect": "",
+            "measures": [],
+            "arms": [
+              "brisk-s.few"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Each line Brisk-S few-shot is read against: its distance, the cases a fresh run needs to settle it, and how often a run of today's size reads the other side; the latency row carries no interval, so nothing is sized for it."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    }
+  ],
+  "explore": [
+    {
+      "control": "Cell floor",
+      "binds": "Which configuration survives",
+      "outcome": "Read on point estimates: at a floor at or below {criteria.cell_floor.nano-xs.few.complex.news.value}, {arm:nano-xs.few} becomes the pick, though its balanced accuracy stays borderline; above {criteria.cell_floor.brisk-s.few.complex.news.value}, no configuration passes; in between the call is {arm:brisk-s.few}."
+    },
+    {
+      "control": "Balanced-accuracy gate",
+      "binds": "Whether anything passes",
+      "outcome": "Above {criteria.overall.brisk-s.few.value} nothing passes; at any lower gate the call stays {arm:brisk-s.few}, since {arm:nano-xs.few} still misses its cell floor."
+    },
+    {
+      "control": "Latency budget",
+      "binds": "How many configurations pass",
+      "outcome": "Below {criteria.p95.brisk-s.few.value} nothing passes. A looser budget admits more accurate, costlier configurations, and on cost the call stays {arm:brisk-s.few}."
+    }
+  ],
+  "omitted": [
+    {
+      "what": "Traffic-weighted accuracy and macro F1 from the body",
+      "why": "Not gated, and neither reorders the survivor against the near-misses; both stay in the full tables."
+    },
+    {
+      "what": "Confusion tables by complexity and by domain",
+      "why": "They describe which labels get confused; no gate reads them and they do not change the call."
+    },
+    {
+      "what": "Atlas-M rows of the prompt-and-model chart",
+      "why": "Atlas-M is out on latency at every prompt; the Brisk-S and Nano-XS rows, model rows included, carry the point."
+    },
+    {
+      "what": "Atlas-M cell figures from the body",
+      "why": "They pass every cell floor but miss the latency budget, so the cells do not bear on them; they stay in the full cell table."
+    },
+    {
+      "what": "Failure examples",
+      "why": "The snapshot keeps none."
+    }
+  ],
+  "next": [
+    {
+      "text": "Add Complex × News examples to {arm:nano-xs.few}'s few-shot prompt and re-run every cell.",
+      "settles": "Whether it clears the cell floor. Its balanced accuracy also sits on the gate (a run of today's size reads it on the wrong side {settle.criteria.overall.nano-xs.few.overall.wrong_side} of the time, and settling it four times in five takes {settle.criteria.overall.nano-xs.few.overall.cases_needed_two_sided_80|int} cases), so only a fix that lifts it settles the switch."
+    },
+    {
+      "text": "Measure {arm:brisk-s.few}'s p95 latency on production hardware and load, with an interval.",
+      "settles": "Whether the latency budget holds outside the test rig, closing the one gate read on a point estimate."
+    },
+    {
+      "text": "Run {arm:brisk-s.few} in shadow on fresh traffic, at least {settle.criteria.overall.brisk-s.few.overall.cases_needed_two_sided_80|int} turns, sampled by cell to keep today's per-cell proportions, so the rarer complex cells and Complex × News (today {spread.brisk-s.few.accuracy.cells.complex.news.n|int} cases) keep their share.",
+      "settles": "Whether its balanced accuracy holds above the gate once the pick-of-many optimism is gone; that size, at today's mix of cells, settles it four times in five if today's estimate is the truth."
+    },
+    {
+      "text": "Have the provider routing and the unit of the monthly volume declared.",
+      "settles": "Whether the monthly cost gap is stated in the right units and at the routing production will use."
+    }
+  ],
+  "method": [
+    {
+      "term": "Cases",
+      "text": "{scoreboard.brisk-s.few.cases|int} labelled turns per configuration, spread across {count.cells|words} complexity × domain cells; none lost or failed. Repeats are not stated.",
+      "caveats": []
+    },
+    {
+      "term": "Pass",
+      "text": "A turn passes when the predicted label matches the gold label. Balanced accuracy is the plain mean of the cells' accuracies, so every cell weighs the same whatever its traffic; it is not the traffic-weighted accuracy in the full tables.",
+      "caveats": []
+    },
+    {
+      "term": "Gates",
+      "text": "All three were declared before the run: balanced accuracy at least {criteria.overall.threshold} (declared under the name Overall accuracy, which the charts and tables print), accuracy at least {criteria.cell_floor.threshold} in every cell, p95 latency at most {criteria.p95.threshold}. A gate is read on the point estimate; an interval crossing its line marks the option borderline.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals",
+      "text": "Cell accuracies carry stated half-widths at the {overall_interval.balanced_accuracy.brisk-s.few.level} level. Balanced accuracy's interval is derived from its cells: the root of the cells' squared standard errors over their count, the cells read as independent. Gaps between configurations combine each one's own spread as independent, uncorrected for the number of comparisons.",
+      "caveats": []
+    },
+    {
+      "term": "Latency",
+      "text": "p95 per configuration on the test setup, with no interval stated.",
+      "caveats": []
+    },
+    {
+      "term": "Cost",
+      "text": "Cost per million turns as this run was served; the served model is named for each arm, the provider for none. Monthly figures read the declared volume of {meta.volume_per_month|int} as turns, which the input does not state.",
+      "caveats": []
+    },
+    {
+      "term": "Not compared",
+      "text": "No control or production baseline.",
+      "caveats": []
+    },
+    {
+      "term": "Source",
+      "text": "{meta.provenance}, run {meta.run_date}.",
+      "caveats": []
+    }
+  ]
+}

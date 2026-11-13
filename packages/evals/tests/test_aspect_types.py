@@ -19,6 +19,8 @@ from threetears.evals.analysis import AspectReading, CampaignReadings, aspect_vi
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.schema.campaign_upgrade import UPGRADED_CONTROL_LABEL
 from threetears.evals.kernel.declaration import (
+    DesignRefused,
+    refuse_an_undeclarable_design,
     Aspect,
     AspectDesign,
     BarOverride,
@@ -35,6 +37,8 @@ from threetears.evals.kernel.declaration import (
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
 from threetears.evals.schema.values import SweepableValue
+from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.v15_shapes import V15Design
 
 #: The frozen v15 campaign: a design declaring a control and asking no question.
@@ -108,6 +112,12 @@ class TestTheAspectDesign:
             ),
             pytest.param({"merit_priority": ["cost", "cost"]}, "merit_priority names cost", id="priority"),
             pytest.param(
+                {"measure_order": ["accuracy", "total", "accuracy"]},
+                "measure_order names accuracy more than once",
+                id="measure-order",
+            ),
+            pytest.param({"measure_order": [" "]}, "measure_order names a blank measure", id="blank-measure"),
+            pytest.param(
                 {"skipped_cells": [{"model": "nowhere", "temperature": "0"}]},
                 "is none of its declared levels",
                 id="cell",
@@ -121,6 +131,35 @@ class TestTheAspectDesign:
     def test_it_refuses_a_merit_axis_named_twice(self) -> None:
         with pytest.raises(ValidationError, match="merit_axes names quality more than once"):
             minimal_aspect_design(merit_axes=["quality", "quality"])
+
+    def test_a_measure_order_is_written_only_when_stated(self) -> None:
+        """A design stating no order is stored as it was before the field; one stating it keeps its order."""
+        assert "measure_order" not in minimal_aspect_design().to_dict()
+        assert minimal_aspect_design(measure_order=["total", "accuracy"]).to_dict()["measure_order"] == [
+            "total",
+            "accuracy",
+        ]
+
+    def test_a_measure_order_naming_no_measure_the_aspect_declares_is_refused_naming_what_it_declares(self) -> None:
+        """A typo in the order would pass the page's lead on to the next measure without a word: the declaration
+        gate refuses it, naming the entry and every measure the host and template declare."""
+        profile, template = toyhost_profile(), toyhost_template()
+        refuse_an_undeclarable_design(
+            minimal_aspect_design(measure_order=["field_accuracy", "accuracy"]),
+            behavior="b",
+            template=template,
+            profile=profile,
+        )
+        with pytest.raises(
+            DesignRefused, match="measure_order names 'acuracy', which no grader of this aspect reads"
+        ) as refused:
+            refuse_an_undeclarable_design(
+                minimal_aspect_design(measure_order=["field_accuracy", "acuracy"]),
+                behavior="b",
+                template=template,
+                profile=profile,
+            )
+        assert "field_accuracy" in refused.value.remedy
 
     def test_no_question_is_not_an_unscoped_one(self) -> None:
         assert minimal_aspect_design().merit_axes is None

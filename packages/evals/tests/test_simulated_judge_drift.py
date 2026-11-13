@@ -23,6 +23,7 @@ Seeded; each tolerance is Monte-Carlo error (:mod:`packages.evals.tests.simulati
 from __future__ import annotations
 
 import math
+from functools import cache
 import random
 from collections.abc import Callable
 
@@ -34,7 +35,12 @@ from packages.evals.tests.simulation_support import TOLERANCE_Z, at_least, at_mo
 _DIMS = ("dim.a", "dim.b")
 _SECOND = SecondJudge(model="judge/second")
 _ALPHA = 0.05
-_BASE = make_eval_result(rubric_scores=[], goal_state_outcomes=[])
+
+
+@cache
+def _base() -> EvalResult:
+    """The shared result, built on first use: a result stamps its id and clock, which an import must not."""
+    return make_eval_result(rubric_scores=[], goal_state_outcomes=[])
 
 
 def _results(
@@ -67,7 +73,7 @@ def _results(
                 )
             judging = SecondJudging(pass_id="pass", judge=_SECOND, sample_fraction=1.0, sample_seed=0, scores=scores)
             results.append(
-                _BASE.model_copy(
+                _base().model_copy(
                     update={"id": f"r-{case}-{repeat}", "test_case_id": f"case-{case}", "judge_seconds": [judging]}
                 )
             )

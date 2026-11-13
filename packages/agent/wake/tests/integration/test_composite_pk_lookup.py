@@ -19,7 +19,6 @@ import asyncpg
 import pytest
 from uuid_utils import uuid7
 
-from threetears.agent.skills.migrations import register as register_skills
 from threetears.agent.wake.collections import (
     WakeFireCollection,
     WakeScheduleCollection,
@@ -30,15 +29,10 @@ from threetears.agent.wake.entities import (
     WakeScheduleEntity,
     WebhookSubscriptionEntity,
 )
-from threetears.agent.wake.migrations import register as register_wake
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.asyncpg_init import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
 from threetears.core.exceptions import ConcurrentModificationError
-
-from .conftest import AsyncpgStore
 
 
 pytestmark = pytest.mark.integration
@@ -49,19 +43,8 @@ def _new_uuid() -> UUID:
     return UUID(str(uuid7()))
 
 
-async def _apply_schema(url: str, schema: str) -> asyncpg.Pool:
+async def _schema_pool(url: str, schema: str) -> asyncpg.Pool:
     """Apply migrations and return a pool bound to the schema."""
-    setup_conn = await asyncpg.connect(url)
-    try:
-        await setup_conn.execute(f'SET search_path TO "{schema}", public')
-        runner = MigrationRunner()
-        register_conversations(runner)
-        register_skills(runner)
-        register_wake(runner)
-        store = AsyncpgStore(setup_conn)
-        await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
-    finally:
-        await setup_conn.close()
     pool = await asyncpg.create_pool(
         url,
         min_size=1,
@@ -102,11 +85,11 @@ class TestScheduleRoundTrip:
 
     async def test_round_trip_through_collection(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """Save a schedule, read it back via composite pk, fields match."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             coll = _build_schedule_collection(pool)
             conv = _new_uuid()
@@ -150,11 +133,11 @@ class TestScheduleRoundTrip:
 
     async def test_pause_and_resume_round_trip(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``pause`` then ``resume`` flips status + next_fire_at."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             coll = _build_schedule_collection(pool)
             conv = _new_uuid()
@@ -192,11 +175,11 @@ class TestScheduleRoundTrip:
 
     async def test_a_save_of_a_row_paused_since_it_was_read_is_refused(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """the fenced UPDATE against Postgres: an edit read before a pause cannot resume it."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             coll = _build_schedule_collection(pool)
             conv = _new_uuid()
@@ -249,11 +232,11 @@ class TestScheduleRoundTrip:
 
     async def test_list_due_for_tick_returns_only_active_due(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``list_due_for_tick`` filters by status='active' AND next_fire_at <= now."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             coll = _build_schedule_collection(pool)
             base = datetime.now(UTC)
@@ -312,11 +295,11 @@ class TestScheduleRoundTrip:
 
     async def test_count_active_for_conversation(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``count_active_for_conversation`` counts active rows only."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             coll = _build_schedule_collection(pool)
             conv = _new_uuid()
@@ -359,11 +342,11 @@ class TestFireRoundTrip:
 
     async def test_record_and_get_round_trip(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``record`` persists a fire; ``get`` reads it back via tuple pk."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             sched_coll = _build_schedule_collection(pool)
             fire_coll = _build_fire_collection(pool)
@@ -413,11 +396,11 @@ class TestFireRoundTrip:
 
     async def test_record_rejects_mismatched_conversation_id(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``record`` raises ValueError if the partition contract is violated."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             fire_coll = _build_fire_collection(pool)
             entity = fire_coll.create(
@@ -436,11 +419,11 @@ class TestFireRoundTrip:
 
     async def test_latest_for_schedule(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``latest_for_schedule`` returns the most recent fire only."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             sched_coll = _build_schedule_collection(pool)
             fire_coll = _build_fire_collection(pool)
@@ -478,10 +461,10 @@ class TestFireRoundTrip:
         finally:
             await pool.close()
 
-    async def test_count_in_window(self, pg_schema: tuple[str, str]) -> None:
+    async def test_count_in_window(self, applied_schema: tuple[str, str]) -> None:
         """``count_in_window`` returns fires since the supplied instant."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             sched_coll = _build_schedule_collection(pool)
             fire_coll = _build_fire_collection(pool)
@@ -523,11 +506,11 @@ class TestFireRoundTrip:
 
     async def test_count_in_window_scoped_to_one_webhook_subscription(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``webhook_subscription_id`` narrows the window count to one subscription."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             sub_coll = _build_subscription_collection(pool)
             fire_coll = _build_fire_collection(pool)
@@ -591,10 +574,10 @@ class TestFireRoundTrip:
 class TestSubscriptionRoundTrip:
     """Subscription Collection round-trip + domain methods."""
 
-    async def test_round_trip(self, pg_schema: tuple[str, str]) -> None:
+    async def test_round_trip(self, applied_schema: tuple[str, str]) -> None:
         """save + get preserves every typed field."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             coll = _build_subscription_collection(pool)
             conv = _new_uuid()
@@ -630,11 +613,11 @@ class TestSubscriptionRoundTrip:
 
     async def test_find_by_id_cross_partition(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``find_by_id`` resolves a subscription with no conversation context."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             coll = _build_subscription_collection(pool)
             conv = _new_uuid()
@@ -660,10 +643,10 @@ class TestSubscriptionRoundTrip:
         finally:
             await pool.close()
 
-    async def test_rotate_secret(self, pg_schema: tuple[str, str]) -> None:
+    async def test_rotate_secret(self, applied_schema: tuple[str, str]) -> None:
         """``rotate_secret`` overwrites the ciphertext."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             coll = _build_subscription_collection(pool)
             conv = _new_uuid()
@@ -691,11 +674,11 @@ class TestSubscriptionRoundTrip:
 
     async def test_pause_resume_subscription(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``pause`` / ``resume`` flips status."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             coll = _build_subscription_collection(pool)
             conv = _new_uuid()
@@ -727,11 +710,11 @@ class TestSubscriptionRoundTrip:
 
     async def test_record_fire_stamps_last_fired_at(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``record_fire`` updates the denormalised ``last_fired_at``."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             coll = _build_subscription_collection(pool)
             conv = _new_uuid()

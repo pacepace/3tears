@@ -76,32 +76,39 @@ class _Undescribed(BaseModel):
     knob: int = 1
 
 
+class _Untitled(BaseModel):
+    knob: int = Field(1, description="a knob described for a reader and named for none")
+
+
 class _Aliased(BaseModel):
-    knob: int = Field(1, alias="dial", description="a knob a launch would have to call by another name")
+    knob: int = Field(1, alias="dial", title="knob", description="a knob a launch would have to call by another name")
 
 
 class _OrdinalWithoutOrder(BaseModel):
-    knob: Annotated[str, Ordinal()] = Field("a", description="a string nobody declared an order for")
+    knob: Annotated[str, Ordinal()] = Field("a", title="knob", description="a string nobody declared an order for")
 
 
 class _IntervalOverText(BaseModel):
-    knob: Annotated[str, Interval(unit="pages")] = Field("a", description="text claiming a unit")
+    knob: Annotated[str, Interval(unit="pages")] = Field("a", title="knob", description="text claiming a unit")
 
 
 class _MapKeyedByNumber(BaseModel):
-    knob: dict[int, str] = Field(default_factory=dict, description="entries no lever could be named after")
+    knob: dict[int, str] = Field(
+        default_factory=dict, title="knob", description="entries no lever could be named after"
+    )
 
 
 @pytest.mark.parametrize(
     ("model", "said"),
     [
         (_Undescribed, "has no description"),
+        (_Untitled, "has no title, and a lever with no reader name prints its id on every page"),
         (_Aliased, "declares an alias"),
         (_OrdinalWithoutOrder, "marked Ordinal but is not a Literal or an Enum"),
         (_IntervalOverText, "marked Interval but is not an int or a float"),
         (_MapKeyedByNumber, "keyed by something other than str"),
     ],
-    ids=["no-description", "alias", "ordinal-without-order", "interval-over-text", "map-keyed-by-number"],
+    ids=["no-description", "no-title", "alias", "ordinal-without-order", "interval-over-text", "map-keyed-by-number"],
 )
 def test_a_field_the_engine_cannot_read_as_a_lever_is_refused_at_declaration_by_name(model, said):
     with pytest.raises(KindContractError) as refused:
@@ -111,13 +118,13 @@ def test_a_field_the_engine_cannot_read_as_a_lever_is_refused_at_declaration_by_
 
 
 class _RequiredKnob(BaseModel):
-    knob: int = Field(description="a knob with no default: no launch runs at one")
+    knob: int = Field(title="knob", description="a knob with no default: no launch runs at one")
 
 
 class _DefaultItsFieldRefuses(BaseModel):
     model_config = ConfigDict(validate_default=True)
 
-    knob: int = Field(-1, ge=0, description="a knob whose default its own constraint refuses")
+    knob: int = Field(-1, ge=0, title="knob", description="a knob whose default its own constraint refuses")
 
 
 def test_an_overlay_model_with_a_required_field_has_no_default_to_compare_against():
@@ -137,11 +144,13 @@ def test_an_overlay_model_refusing_its_own_defaults_is_refused_at_declaration():
 
 
 class _Excluded(BaseModel):
-    knob: int = Field(1, exclude=True, description="a knob the record would never see")
+    knob: int = Field(1, exclude=True, title="knob", description="a knob the record would never see")
 
 
 class _ExcludedWhenFalsy(BaseModel):
-    knob: int = Field(1, exclude_if=lambda value: not value, description="a knob the record sometimes drops")
+    knob: int = Field(
+        1, exclude_if=lambda value: not value, title="knob", description="a knob the record sometimes drops"
+    )
 
 
 class _Encounter(BaseModel):
@@ -149,7 +158,9 @@ class _Encounter(BaseModel):
 
 
 class _NestedExclusion(BaseModel):
-    encounters: list[_Encounter] = Field(default_factory=list, description="the encounters a session builds to")
+    encounters: list[_Encounter] = Field(
+        default_factory=list, title="encounters", description="the encounters a session builds to"
+    )
 
 
 @pytest.mark.parametrize(
@@ -179,8 +190,12 @@ def test_a_set_freezes_in_one_order_whatever_order_it_was_built_in():
     """
 
     class Tables(BaseModel):
-        open_tables: set[int] = Field(default_factory=set, description="the tables a session may seat")
-        rules_by_table: dict[str, frozenset[int]] = Field(default_factory=dict, description="each table's rules")
+        open_tables: set[int] = Field(
+            default_factory=set, title="open tables", description="the tables a session may seat"
+        )
+        rules_by_table: dict[str, frozenset[int]] = Field(
+            default_factory=dict, title="rules by table", description="each table's rules"
+        )
 
     contract = KindContract("tables", overlays=Tables)
     one = freeze(contract.validate_overlays({"open_tables": [8, 0], "rules_by_table": {"a": [8, 0]}}))
@@ -267,8 +282,8 @@ def test_an_enum_marked_ordinal_ranks_in_declaration_order_and_an_unmarked_one_i
         HIGH = "high"
 
     class Tiers(BaseModel):
-        ranked: Annotated[Tier, Ordinal()] = Field(Tier.LOW, description="a ranked tier")
-        unranked: Tier = Field(Tier.LOW, description="a tier nobody said was ordered")
+        ranked: Annotated[Tier, Ordinal()] = Field(Tier.LOW, title="ranked", description="a ranked tier")
+        unranked: Tier = Field(Tier.LOW, title="unranked", description="a tier nobody said was ordered")
 
     contract = KindContract("tiers", overlays=Tiers)
     run = make_eval_run(
@@ -374,7 +389,9 @@ def test_a_profile_refuses_a_kinds_lever_the_host_registered_by_hand():
 
 
 class _Table(BaseModel):
-    house_rules: dict[str, str] = Field(default_factory=dict, description="the house rules the table plays by")
+    house_rules: dict[str, str] = Field(
+        default_factory=dict, title="house rules", description="the house rules the table plays by"
+    )
 
 
 @pytest.mark.parametrize(
@@ -457,7 +474,7 @@ def test_a_run_of_another_kind_never_shares_a_level_with_a_none_overlay():
     """
 
     class Seating(BaseModel):
-        table: str | None = Field(None, description="the table a session is seated at, if any")
+        table: str | None = Field(None, title="table", description="the table a session is seated at, if any")
 
     contract = KindContract("gm", overlays=Seating)
     unseated = make_eval_run(candidate_kind="gm", overlays=freeze(contract.validate_overlays({})))
@@ -585,7 +602,7 @@ def test_a_literal_level_outside_its_declaration_cannot_be_ranked():
     """A frozen value the model's ``Literal`` does not list reads nominal rather than being given a rank."""
 
     class Ladder(BaseModel):
-        rung: Annotated[Literal["low", "high"], Ordinal()] = Field("low", description="a two-rung ladder")
+        rung: Annotated[Literal["low", "high"], Ordinal()] = Field("low", title="rung", description="a two-rung ladder")
 
     contract = KindContract("ladder", overlays=Ladder)
     run = make_eval_run(candidate_kind="ladder", overlays={"rung": "middle"})

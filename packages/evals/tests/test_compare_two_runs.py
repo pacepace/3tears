@@ -145,5 +145,5 @@ class TestTwoRunsNoJudgeScored:
         arm, text = self._compared()
         assert (arm["pass_hat_k_n_cases_a"], arm["pass_hat_k_n_cases_b"]) == (4, 4)
         assert arm["pass_criteria_a"] == arm["pass_criteria_b"] == ["goal_checks"]
-        assert "pass^k (k=2, every goal check): 1 vs 1 (delta 0; 4 vs 4 case(s))" in text
+        assert "pass^k (k=2, every goal check): 100% vs 100% (delta 0 pts; 4 vs 4 case(s))" in text
         assert "criterion >= 3 of 5" not in text

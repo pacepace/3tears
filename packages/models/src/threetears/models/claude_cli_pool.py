@@ -402,12 +402,20 @@ def _signal(pid: int, sig: int) -> bool:
 def _alive(pid: int) -> bool:
     """Whether ``pid`` names a running process.
 
+    A zombie -- exited, and not yet collected by its parent -- still takes signal 0, but it is not
+    running: there is nothing left to stop. Counted as running, a CLI that exited at its SIGTERM
+    held :func:`kill_process_tree` for its whole grace whenever its parent had not collected it yet.
+
     :param pid: the process to check
     :ptype pid: int
     :return: whether it is running
     :rtype: bool
     """
-    return _signal(pid, 0)
+    if not _signal(pid, 0):
+        return False
+    tokens = _stat_tokens(pid)
+    # no /proc to read (or the process just went): signal 0 landing is the answer, as before
+    return tokens is None or tokens[0] not in ("Z", "X")
 
 
 def kill_process_tree(pid: int, *, grace_seconds: float = 2.0) -> int:

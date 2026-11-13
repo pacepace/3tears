@@ -48,7 +48,7 @@ class AsyncpgStore:
 @pytest.fixture
 async def pg_schema(pg_url: str) -> AsyncIterator[tuple[str, str]]:
     """create a fresh schema per test; yield ``(pg_url, schema)`` and drop on teardown."""
-    schema = f"id_it_{id(object())}".lower().replace("-", "_")
+    schema = f"id_it_{uuid.uuid4().hex}".lower().replace("-", "_")
     conn = await asyncpg.connect(pg_url)
     try:
         await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')

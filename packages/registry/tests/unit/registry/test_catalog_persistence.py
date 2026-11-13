@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -33,9 +34,13 @@ from .copy_entries import uniform_entry
 
 _BUCKET = "tool_catalog"
 
-#: how long a test waits for the background declaration to reach the state it expects; the owner's
-#: retry schedule starts at half a second and doubles
+#: how long a test waits for the background declaration to reach the state it expects; a deadline
+#: that only matters when the state never comes
 _SETTLE_SECONDS = 5.0
+
+#: the declaration's retry schedule starts here and doubles: short, so a retry the test waits for
+#: comes at once (production keeps the owner's own schedule)
+_RETRY_FIRST_DELAY = timedelta(milliseconds=50)
 
 
 class _UnansweredClient(FakeNatsClient):
@@ -77,7 +82,7 @@ async def _started(
     client: FakeNatsClient, catalog: ToolCatalog | None = None
 ) -> tuple[ToolCatalog, PersistedCopyBucket]:
     held = catalog if catalog is not None else ToolCatalog()
-    owner = catalog_bucket(catalog=held, client=client, bucket=_BUCKET)
+    owner = catalog_bucket(catalog=held, client=client, bucket=_BUCKET, retry_first_delay=_RETRY_FIRST_DELAY)
     await owner.start()
     return held, owner
 
@@ -229,7 +234,8 @@ async def test_stop_ends_a_declaration_still_retrying() -> None:
 
     await asyncio.wait_for(owner.stop(), timeout=2.0)
     attempts = len(client.declarations)
-    await asyncio.sleep(1.0)
+    # a retry still running would come within a few first delays of the last attempt
+    await asyncio.sleep(4 * _RETRY_FIRST_DELAY.total_seconds())
 
     assert len(client.declarations) == attempts, "the declaration kept retrying after stop"
 
@@ -274,8 +280,7 @@ async def test_the_late_load_never_replaces_an_entry_registered_meanwhile() -> N
     catalog, owner = await _started(client)
     await catalog.register(_entry("threetears.calculator"))
     await _until(lambda: client.unanswered == 0 and owner.bucket is not None)
-    for _ in range(50):
-        await asyncio.sleep(0.01)
+    assert await owner.wait_loaded(timeout=_SETTLE_SECONDS), "the late load never finished"
 
     held = catalog.get("threetears.calculator@1.0.0")
     assert held is not None and held.endpoints[0].status == "available", "the live registration was kept"

@@ -20,6 +20,8 @@ from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, Protocol
 
+from threetears.evals.kernel.numbers import round_half_even
+
 
 class EvalCellTimeout(Exception):
     """A cell outlived the wall-clock budget its timeout context was enforcing.
@@ -47,7 +49,9 @@ class EvalCellTimeout(Exception):
         :param attribution: The host's name for what was innermost, or ``None``.
         :ptype attribution: str | None
         """
-        super().__init__(f"cell exceeded its {budget_s:.0f}s budget after {elapsed_s:.0f}s")
+        super().__init__(
+            f"cell exceeded its {round_half_even(budget_s, 0)}s budget after {round_half_even(elapsed_s, 0)}s"
+        )
         self.budget_s = budget_s
         self.elapsed_s = elapsed_s
         self.attribution = attribution

@@ -1,5 +1,6 @@
-"""Rung 2, ``examples/2-replies/``: a judge as a grader, its hard negatives, and calibration that starts uncalibrated.
+"""Rung 2, ``examples/2-replies/``: a judge as a grader, checked two ways: on its examples, and against a person.
 
+The run grades the judge's four examples as it grades the replies and says how many it got right, from the recording.
 The rung ships with no person's labels, so the run it records says so, by name, with the step that changes it; that
 state is the lesson and is asserted here. The ``to_label.csv`` beside it is what the recorded run wrote, and a run
 replayed from the recordings writes the same rows. One test fills that file in to show ``Judge(labels=...)`` reading
@@ -28,17 +29,21 @@ from packages.evals.tests.rung_support import (
     recorded_cost,
     recorded_settings,
     root_only_imports,
-    rung_copy,
 )
+from packages.evals.tests.ladder_support import offline_copy
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 
 RUNG = EXAMPLES / "2-replies"
 
 #: What the honest first run prints about its judge: no labels, and the step that calibrates it.
 UNCALIBRATED = (
-    "judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs in the "
-    "to_label.csv the report writes, without looking at the judge's verdict"
+    "judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs of each "
+    "dimension in the to_label.csv the report writes, which holds 40 per dimension, without looking at the judge's "
+    "verdict"
 )
+
+#: What the run prints about the judge's examples: each graded twice, as the recording holds it.
+EXAMPLES_GRADED = "judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00086 over 8 call(s))"
 
 #: The columns of a ``to_label.csv`` row that are the same whichever run wrote it. The ids are each run's own, and a
 #: case's two repeats may take its two recorded replies in either order, so ``repeat`` is left out too.
@@ -48,7 +53,7 @@ _STABLE = ("case", "dimension", "case_material", "answer", "output_fingerprint",
 @pytest.fixture
 def replies_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A copy of ``examples/2-replies/`` as the working directory, with no key: every call must replay."""
-    return rung_copy("2-replies", tmp_path, monkeypatch)
+    return offline_copy("2-replies", tmp_path, monkeypatch)
 
 
 def _load(path: Path) -> ModuleType:
@@ -88,8 +93,8 @@ def test_the_judge_is_three_pass_fail_dimensions_four_hard_negatives_and_another
         ("safe", "pass"),
     ]
     assert judge.labels == Path("labels.csv")
-    writer_family, judge_family = module.writer.model_name.split("/")[0], judge.model.split("/")[0]
-    assert (writer_family, judge_family) == ("deepseek", "google")
+    drafter_family, judge_family = module.drafter.model_name.split("/")[0], judge.model.split("/")[0]
+    assert (drafter_family, judge_family) == ("deepseek", "google")
 
 
 def test_the_runner_s_recording_covers_every_reply(replies_dir: Path) -> None:
@@ -103,7 +108,7 @@ def test_the_runner_s_recording_covers_every_reply(replies_dir: Path) -> None:
     calls = [RecordedPrompt(system, email["email"]) for email in emails for _ in range(2)]
     RecordedCompletions.check_covers(path, calls, settings=recorded_settings(path), rerecord="RECORD=1")
     judged = recorded(replies_dir / "recordings" / "judge.jsonl")
-    assert len(judged) == 20 * 2 * 3
+    assert len(judged) == 20 * 2 * 3 + 4 * 2, "every reply on every dimension, and every example, each twice"
     assert {line["result"]["model"] for line in judged} == {"google/gemini-2.5-flash-lite"}  # type: ignore[index]
     assert {line["result"]["temperature"] for line in judged} == {0.0}  # type: ignore[index]
 
@@ -116,8 +121,16 @@ def test_the_run_replays_offline_and_says_its_judge_is_uncalibrated_with_the_nex
     printed = capsys.readouterr().out
     assert "40 result(s): 40 scored, 0 excluded" in printed
     for dimension in ("grounded", "answers", "safe"):
-        assert f"answer.{dimension} (judged pass/fail): mean 1 (n=40" in printed
+        assert f"answer {dimension} (judged), scored pass/fail: 100%, 40 of 40 trials" in printed
     assert UNCALIBRATED in printed.splitlines()
+    # Read right under it: the judge on the answers it must grade a known way, each twice, every one as it must be.
+    assert printed.splitlines()[printed.splitlines().index(UNCALIBRATED) + 1] == EXAMPLES_GRADED
+    assert "  missed: " not in printed
+    page = (replies_dir / ".evals" / "reports" / "replies" / "report.md").read_text(encoding="utf-8")
+    assert (
+        "The judge graded 4 of 4 of its examples as they must be on every one of 2 repeats ($0.00086 over 8 call(s))."
+        in page.splitlines()
+    ), "the page states what the examples cost, as the print does"
     # The judge is another family, so nothing warns that a model judged its own answers.
     assert "self-judging:" not in printed
 
@@ -140,6 +153,20 @@ async def test_the_judge_s_spend_is_its_own_and_its_model_judged_none_of_its_own
     assert (summary.n_cases, summary.k_runs, summary.n_results, summary.n_scored) == (20, 2, 40, 40)
     assert summary.measures == [], "the judge is the only grade"
     assert summary.role_spend("judge").calls == 120, "20 emails x 2 repeats x 3 dimensions, one call each"
+    examples = result.judge_examples
+    assert examples is not None and examples.repeats == 2
+    assert [(grade.example.dimension, grade.expected, grade.verdicts) for grade in examples.grades] == [
+        ("grounded", "fail", ("fail", "fail")),
+        ("grounded", "pass", ("pass", "pass")),
+        ("safe", "fail", ("fail", "fail")),
+        ("safe", "pass", ("pass", "pass")),
+    ]
+    # The examples' calls are the judge's, apart from the replies' results: 4 examples x 2 repeats, one call each.
+    assert (examples.spend.role, examples.spend.calls, examples.spend.unpriced_calls) == ("judge", 8, 0)
+    # They were recorded after the replies' 120, onto the same file, and cost what those 8 lines say.
+    added = [line["result"] for line in recorded(replies_dir / "recordings" / "judge.jsonl")[120:]]
+    costs = [result["cost_usd"] for result in added if isinstance(result, dict)]
+    assert len(costs) == 8 and examples.spend.cost_usd == pytest.approx(sum(costs))
     assert summary.judge_shares_candidate_model == [] and summary.self_judging_warning is None
     assert result.calibration_lines() == [UNCALIBRATED]
     assert page_violations(result.report) == []

@@ -47,6 +47,7 @@ from threetears.core.backends.git import (
 )
 from threetears.nats import NatsClient, set_default_namespace
 from threetears.nats.forward import ForwardedHandlerError
+from threetears.nats.kv import KvTimings
 from threetears.nats.oplog import OpLog
 
 pytestmark = pytest.mark.integration
@@ -114,9 +115,9 @@ def namespace() -> str:
 async def connect(nats_container: str, namespace: str) -> AsyncIterator[Callable[..., Awaitable[NatsClient]]]:
     clients: list[NatsClient] = []
 
-    async def make(name: str, url: str | None = None) -> NatsClient:
+    async def make(name: str, url: str | None = None, kv_timings: KvTimings | None = None) -> NatsClient:
         client = await NatsClient.connect(
-            nats_url=url or nats_container, nats_subject_namespace=namespace, client_name=name
+            nats_url=url or nats_container, nats_subject_namespace=namespace, client_name=name, kv_timings=kv_timings
         )
         clients.append(client)
         return client
@@ -229,8 +230,14 @@ async def test_a_writer_cut_off_from_nats_loses_the_lease_and_commits_nothing_af
     await proxy.start()
     try:
         tree = tmp_path / "shared"
+        # after the cut, the cut-off process's commit first forwards to a writer it cannot reach, then tries the
+        # lease: each waits out its own bound, the forward's and the KV operation's. the KV bound also spares the
+        # 5s nats-py API timeout of each re-open and bind a transport failure would otherwise run, twice
         cut = await opened(
-            await connect("cut", f"nats://127.0.0.1:{proxy.port}"), work_tree=tree, remote_url=str(origin)
+            await connect("cut", f"nats://127.0.0.1:{proxy.port}", KvTimings(op_timeout_seconds=2.0)),
+            work_tree=tree,
+            remote_url=str(origin),
+            forward_timeout=timedelta(seconds=2),
         )
         survivor = await opened(await connect("survivor"), work_tree=tree, remote_url=str(origin))
         assert cut.is_writer

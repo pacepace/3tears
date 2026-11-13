@@ -26,7 +26,6 @@ from threetears.agent.intention.types import INTENTION_STATUS_VALUES
 
 from .conftest import (
     AsyncpgStore,
-    apply_migrations,
     build_collection,
     make_pool,
     runner_apply,
@@ -181,9 +180,8 @@ class TestMigrationChain:
 class TestIntentionsCollectionThreeTier:
     """save + get round-trips through the tiers; find_by_user isolates."""
 
-    async def test_save_and_get_round_trip(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+    async def test_save_and_get_round_trip(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             nats = _InMemoryNatsBus()
@@ -216,10 +214,9 @@ class TestIntentionsCollectionThreeTier:
         finally:
             await pool.close()
 
-    async def test_find_by_user_isolates_and_ranks(self, pg_schema: tuple[str, str]) -> None:
+    async def test_find_by_user_isolates_and_ranks(self, applied_schema: tuple[str, str]) -> None:
         """find_by_user returns only the caller's wants, salience-ranked."""
-        url, schema = pg_schema
-        await apply_migrations(url, schema)
+        url, schema = applied_schema
         pool = await make_pool(url, schema)
         try:
             nats = _InMemoryNatsBus()

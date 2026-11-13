@@ -65,7 +65,8 @@ keeps the two answers the same.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Final, Protocol, runtime_checkable
@@ -74,16 +75,63 @@ from threetears.core.exceptions import GenerationNotCommittedError, GenerationUn
 from threetears.observe import get_logger
 
 __all__ = [
+    "CHANGED_ROWS_FIELD",
     "GENERATIONS_FAILED_REPLY_FIELD",
     "GENERATIONS_REPLY_FIELD",
     "GENERATION_UNAVAILABLE_ERROR_CODE",
     "BrokerGenerationSource",
     "GenerationReader",
     "forget_reply_generations",
+    "named_changed_rows",
+    "naming_changed_rows",
     "record_reply_generations",
 ]
 
 _logger = get_logger(__name__)
+
+#: the request field naming, for each table a collection's write changes, the rows it changes:
+#: ``{table: [ChangedRow, ...]}``, each row as ``ChangedRow`` dumps it (``ids``, and the optional
+#: ``l2_current_scope`` and ``columns``). Sent on ``l3.query``, ``l3.batch`` and ``l3.tx.commit`` for a
+#: write made inside :func:`naming_changed_rows`, so the broker that advances the table's generation
+#: stores exactly those rows as the epoch's change record. A write that names none sends no field;
+#: the broker then records the epoch's keys as unknown. The hub imports this name.
+CHANGED_ROWS_FIELD: Final = "changed_rows"
+
+#: the rows the writes in flight in this context change, as ``(table, row)`` pairs, innermost last
+_NAMED_ROWS: ContextVar[tuple[tuple[str, Mapping[str, Any]], ...]] = ContextVar(
+    "threetears_named_changed_rows", default=()
+)
+
+
+@contextmanager
+def naming_changed_rows(table_name: str, rows: Sequence[Mapping[str, Any]]) -> Iterator[None]:
+    """name the rows the L3 writes made inside this block change, for the broker's epoch record.
+
+    :param table_name: the table written
+    :ptype table_name: str
+    :param rows: each changed row as ``ChangedRow.model_dump`` gives it
+    :ptype rows: Sequence[Mapping[str, Any]]
+    :return: a context in which every write request names the rows
+    :rtype: Iterator[None]
+    """
+    token = _NAMED_ROWS.set(_NAMED_ROWS.get() + tuple((table_name, row) for row in rows))
+    try:
+        yield
+    finally:
+        _NAMED_ROWS.reset(token)
+
+
+def named_changed_rows() -> dict[str, list[Mapping[str, Any]]]:
+    """the rows the writes in flight in this context change, by table, as :data:`CHANGED_ROWS_FIELD` carries them.
+
+    :return: each table's rows, each once; empty when no write in flight named any
+    :rtype: dict[str, list[Mapping[str, Any]]]
+    """
+    by_table: dict[str, dict[tuple[str, ...], Mapping[str, Any]]] = {}
+    for table, row in _NAMED_ROWS.get():
+        by_table.setdefault(table, {})[tuple(str(each) for each in row["ids"])] = row
+    return {table: list(rows.values()) for table, rows in by_table.items()}
+
 
 #: the reply field naming, for each switched-on table a commit wrote, the generation token the
 #: broker's advance after that commit wrote. The hub imports this name.

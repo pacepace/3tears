@@ -65,23 +65,13 @@ _SOURCE_ROOTS = tuple(
     )
 )
 
-#: modules this release moved, as (module path at the baseline tag, module path now). The 3tears-interfaces
-#: consolidation folded 3tears-media-contracts into threetears.interfaces.media, renaming no name. A name public
-#: at the baseline under the mapped old module, with the same name, was released before and is not new; every
-#: other name in the new modules answers to the gate as usual. Only the modules holding a moved name that stays
-#: public with no caller in this repo are listed: EXTRACTION_STATUS_NONE, the default of the closed six-value
-#: extraction-status vocabulary (tests/enforcement/test_extraction_status_vocabulary.py holds the set), and its
-#: re-export. Every other moved name has a caller, so it needs no entry.
-_MOVED_MODULES: tuple[tuple[str, str], ...] = (
-    (
-        "packages/media-contracts/src/threetears/media/contracts/__init__.py",
-        "packages/interfaces/src/threetears/interfaces/media/__init__.py",
-    ),
-    (
-        "packages/media-contracts/src/threetears/media/contracts/protocols.py",
-        "packages/interfaces/src/threetears/interfaces/media/protocols.py",
-    ),
-)
+#: modules the release in progress moved, as (module path at the baseline tag, module path now). A name public at
+#: the baseline under the mapped old module, with the same name, was released before and is not new; every other
+#: name in the new modules answers to the gate as usual. List only the modules holding a moved name that stays
+#: public with no caller in this repo, and empty the map once the release that made the move is the baseline:
+#: the baseline then holds the new modules, and the pool ships release tags' trees, not the history between them.
+#: The 3tears-interfaces consolidation (media-contracts into threetears.interfaces.media) shipped in v0.93.0.
+_MOVED_MODULES: tuple[tuple[str, str], ...] = ()
 
 
 def _public_at_baseline(
@@ -274,20 +264,28 @@ class TestPublicApiHasACaller:
     def test_every_moved_module_is_a_real_move(self, scan: _Scan) -> None:
         """guard the guard: a map entry with a mistyped path would excuse nothing, silently.
 
-        The old path is gone from the tree and was in history at or before the baseline (still true once a
-        later tag is the baseline); the new path is in the tree.
+        The old path is gone from the tree and was released: it is a file in the tree of some release tag at or
+        before the baseline, by version (still true once a later tag is the baseline); the new path is in the tree.
+        Read from the tags' trees alone, not from history, since a testament runner's checkout carries the release
+        tags (``.testament.toml``'s ``[git] tags``) as refs to their trees but no commits or ancestry. The map
+        empties once its release is the baseline, so an empty map passes.
         """
+        tags = release_tags(_REPO_ROOT)
+        released = sorted(tag for tag, version in tags.items() if version <= tags[scan.baseline])
         for old, new in _MOVED_MODULES:
             assert not (_REPO_ROOT / old).exists(), f"{old} is still in the tree; it did not move"
             assert (_REPO_ROOT / new).is_file(), f"{new} is not in the tree"
-            history = subprocess.run(
-                ["git", "rev-list", "-1", scan.baseline, "--", old],
+            # one read for every tag: `<tag>:<path>` answers `<sha> blob <size>`, or `<tag>:<path> missing`
+            found = subprocess.run(
+                ["git", "cat-file", "--batch-check"],
                 cwd=_REPO_ROOT,
+                input="".join(f"{tag}:{old}\n" for tag in released),
                 capture_output=True,
                 text=True,
                 check=True,
             )
-            assert history.stdout.strip(), f"{old} never existed at or before {scan.baseline}"
+            kinds = [line.split()[1] for line in found.stdout.splitlines() if not line.endswith(" missing")]
+            assert "blob" in kinds, f"{old} is in no release tag's tree at or before {scan.baseline}"
 
     def test_every_name_added_since_the_last_release_has_a_caller_or_names_one(self, scan: _Scan) -> None:
         ledger = _ledger()

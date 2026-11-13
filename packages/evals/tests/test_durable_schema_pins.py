@@ -1,8 +1,8 @@
 """The durable space's shape is pinned, and it is the one space where a major must ship an upgrader.
 
 ``schema/versioning.py`` splits what people author (templates, rubric dims, judge configs and their tombstones, case
-sets, test cases, calibration ratings, and since durable v16 campaigns) out of the evidence core into a version space
-of its own, forked from core v15 at ``.26``. The core may reset its baseline (a stamp and a refusal, no steps); the durable space never does, so
+sets, test cases, calibration ratings, since durable v16 campaigns, and since a later minor the analyst's gap notes) out of
+the evidence core into a version space of its own, forked from core v15 at ``.26``. The core may reset its baseline (a stamp and a refusal, no steps); the durable space never does, so
 this file is the gate that holds it to its promise:
 
 - every durable type's validation JSON schema, embedded shapes included, is pinned to a digest under the durable
@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from packages.evals.tests.schema_pin_support import keeps, minors_missing_the_sentence
+from packages.evals.tests.schema_pin_support import ADDED_AT_MAJOR, keeps, minors_missing_the_sentence
 from packages.evals.tests.stored_models import doc_type_of, stored_models
 from packages.evals.tests.test_core_schema_pins import core_shape_digest
 from threetears.evals.schema import versioning
@@ -52,22 +52,23 @@ from threetears.evals.schema.versioning import (
 NEVER_MOVES = 15
 
 #: The ``DURABLE_SCHEMA_VERSION`` every digest below was taken under.
-PINNED_DURABLE_SCHEMA_VERSION = 16
+PINNED_DURABLE_SCHEMA_VERSION = 17
 
 #: The ``DURABLE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_DURABLE_SCHEMA_MINOR = 3
+PINNED_DURABLE_SCHEMA_MINOR = 0
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "b185e9d06cd747482dc37336a3100db47885b74c64843457b818210101e1daec",
-    "case_set": "def689cc1d49d06bddfb32727c98f0e3fb775f6187939b989699e495c2f6e0c5",
-    "eval_campaign": "152214f8642384967bc1811383034a8d949ff4c407dd7145ad5edeefee4392b4",
-    "eval_template": "68b1ed828aa9331c88b07350666abc2b1531f93d6b4e11968af2394780067127",
-    "eval_test_case": "6a6719dfbf17f23f7a0cb6728782478230221c3bac218471f4f32a855962c85e",
-    "judge_config": "cd643621bc3f6ac1d2c023626c6cf8e702fcd9ebce0b55a3deba82bdf4bd6209",
-    "judge_config_tombstone": "c100c9502bc1ad870d47c4be0aee1a479c84835e025620ac4453b578963b3643",
-    "rubric_dim": "4cbb75caa72b9e2f90f1b4644489e0a7f00d9e57d1f964beb3938e22950cbf8c",
-    "rubric_dim_tombstone": "160dde8507b727fc7f1169cb12520b9e64f85b093757e8194c21f24b92da69e1",
+    "calibration_rating": "8477ebd5e374d893776e65a7e731e0f38631146dc58ce107d5ee12e849d2ea46",
+    "case_set": "8f0165d26d157517528f3ee5d3e09cff75405025ae3643abbbf5f661f99ae197",
+    "eval_analyst_gap": "e0ac1f149ed22d466e610dff66dcc1c34af0ddc552a47dac5a153ff6e5d62836",
+    "eval_campaign": "96ceb75b5776dd0c5812054dcac4d013357131035d10087ca2b43af09b556f44",
+    "eval_template": "95d91727e479a9e99529ceb4bc2cc2c3dc0d2b62574cc3ac14a0d5cd6e1179b4",
+    "eval_test_case": "97a970e4edfe2100ff9b65de77fc83d164a133764833f35c7b792aec890be5fb",
+    "judge_config": "45695e6285c81ac8033850d9a8e62bfd227ac5cb86ab0de0e756fbb34d151faa",
+    "judge_config_tombstone": "27d8ee74be598ae29c60bd1f3e865d819bded0f623cfa58ae6b1c6f92a9ae4bc",
+    "rubric_dim": "c857ffe7dd2ce098fca9578474350074c9fb7a9f7e6e71601d85bf2a077a2793",
+    "rubric_dim_tombstone": "9737ebc5236c74117d12d9232630daf544076e0643504096675ace2dacc44507",
 }
 
 #: The fields the store addresses each durable type by, pinned: a durable step may never touch one.
@@ -97,13 +98,15 @@ PINNED_DURABLE_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     "eval_campaign": frozenset(
         {"id", "doc_type", "schema_version", "scope_id", "subject_id", "behavior", "archived", "created_at"}
     ),
+    "eval_analyst_gap": frozenset({"id", "doc_type", "schema_version", "scope_id", "created_at"}),
 }
 
 #: The frozen durable corpus: one directory per durable major, one stored document per durable type.
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "durable_documents"
 
 #: Each frozen durable fixture's sha256: the ``.25`` documents and the campaign's v15 one, moved from the core corpus
-#: with these exact bytes, and the v16 corpus this build writes.
+#: with these exact bytes, the v16 corpus as the build before the lever's reader name wrote it, and the v17 corpus
+#: this build writes.
 FIXTURE_DIGESTS: dict[str, str] = {
     "v15/calibration_rating.json": "894f74e31dcdb42e26cb949b080cbcb2e76bb20d8361ed1c17bc74a9c7864e7e",
     "v15/case_set.json": "1a30692918a1dcd4ff1702bf3c2095133e6652021e30961f29a8528a673cd082",
@@ -115,6 +118,7 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v15/rubric_dim.json": "b65c88b862dddf2723ea3972be8381cca002131d7d9ae524418602d1bc2f6378",
     "v15/rubric_dim_tombstone.json": "da3fb751ac55bf182f339faf233fc65aeeb0d467044c78ee9709844761042cef",
     "v16/calibration_rating.json": "085d1e7f28b15a7b6fffc850dca73c88bb7afcc543169367fd42bb1b21ee775c",
+    "v16/eval_analyst_gap.json": "b1c02467eb7abad961ae645d37ddc59c9fe203f4349d007ec4f594f94b67d9c6",
     "v16/case_set.json": "cae61566ce663fc6eff2ddb4604e6b5a066e4b347bd998ea391647e2dcb7730c",
     "v16/eval_campaign.json": "b074a1ff416888f86382dd13997f788805ab8429c3a65330ffa59fb0f0d4f70e",
     "v16/eval_template.json": "0ffbc44743965bd0786cf8d8ad0d2482cc0c96a8a0628bd93ab82cca6dcdd113",
@@ -123,6 +127,16 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v16/judge_config_tombstone.json": "4831dcf1c41fa3725f578d2119d046473c832cec7fb25a3ab04fa57d5b26eea7",
     "v16/rubric_dim.json": "34a340255217cbafb3b9be7c6517d3b200b77aa07aedf77c32f06b372db3bc45",
     "v16/rubric_dim_tombstone.json": "374d32a4b7497c976dec064095209bffd224d861dac6f17b492366e60034ad09",
+    "v17/calibration_rating.json": "64213ddc7847462b483759ce1ee07928b2245c1c6572deabaebe1801d3044370",
+    "v17/eval_analyst_gap.json": "a3a45b37c6417984f079bc78856bfd29a852bd62a8b2971eabe91ea202220258",
+    "v17/case_set.json": "60fa982745ed59772ca13d6a5637efd2abf6d8226fe101635370e0fae4a08129",
+    "v17/eval_campaign.json": "0613719edaf6c065fc0a6c0a8a817201f4816b9a46228e488c7cdbc7215d9556",
+    "v17/eval_template.json": "0545ce364d5b9d53bc4d43f72dcda0fe94d3c9a85df18a154c4fed2603794a33",
+    "v17/eval_test_case.json": "beee7e08a6e2eb89c221f609bc0f080f5b7004427434d643f89ec14561614abd",
+    "v17/judge_config.json": "7fd4653547ff67d5b376a778c16ffec8c5b822777c2e9d7a5d14665e22242743",
+    "v17/judge_config_tombstone.json": "8c91225ea1b2d7aede15d8a3d5f2bd2c2053a0a1934f9b06021f7f3b38e3a230",
+    "v17/rubric_dim.json": "f22602972b2a3f87e2d6e351ebd0a35a5d8641683f655724ba253932513df012",
+    "v17/rubric_dim_tombstone.json": "e9bd18ac6b00fbcaeafb76f608f2e6699b45c2df227e19b7fa398da7bc7e7c07",
 }
 
 
@@ -247,9 +261,12 @@ def test_the_standing_rule_is_in_the_durable_ledger() -> None:
 
 
 def test_every_durable_version_has_a_whole_frozen_corpus() -> None:
+    """A major's corpus holds every type that existed at it; a type added later has no earlier document to freeze."""
+    assert set(ADDED_AT_MAJOR) <= DURABLE_DOC_TYPES
     for version in range(DURABLE_BASELINE_VERSION, DURABLE_SCHEMA_VERSION + 1):
         held = {path.stem for path in (FIXTURES / f"v{version}").glob("*.json")}
-        assert held == DURABLE_DOC_TYPES, f"durable v{version}'s frozen corpus holds {sorted(held)}"
+        existed = {kind for kind in DURABLE_DOC_TYPES if ADDED_AT_MAJOR.get(kind, DURABLE_BASELINE_VERSION) <= version}
+        assert held == existed, f"durable v{version}'s frozen corpus holds {sorted(held)}"
 
 
 def test_no_frozen_durable_fixture_was_edited() -> None:
@@ -298,6 +315,50 @@ def test_a_frozen_v15_campaign_reads_as_one_aspect() -> None:
 
 def test_every_other_durable_type_passes_the_v15_step_unchanged() -> None:
     for path in sorted((FIXTURES / "v15").glob("*.json")):
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if document["doc_type"] == "eval_campaign":
+            continue
+        assert upgrade_durable_document(document) == {**document, "schema_version": DURABLE_SCHEMA_VERSION}
+
+
+def test_a_frozen_v16_campaign_reads_with_every_axis_named() -> None:
+    """The v16 step names each declared axis that stores no reader name from its id, once; nothing else moves."""
+    document = json.loads((FIXTURES / "v16" / "eval_campaign.json").read_text(encoding="utf-8"))
+    campaign = _durable_models()["eval_campaign"].from_dict(document)
+
+    (axis,) = campaign.aspects[0].design.axes  # type: ignore[attr-defined]
+    assert (axis.axis_id, axis.reader_name) == ("model", "model")
+    stepped = upgrade_durable_document(document)
+    stepped["aspects"][0]["design"]["axes"][0].pop("reader_name")
+    assert stepped == {**document, "schema_version": DURABLE_SCHEMA_VERSION}, (
+        "the step names axes and moves nothing else"
+    )
+
+
+@pytest.mark.parametrize(
+    ("axis_id", "named"),
+    [
+        ("model", "model"),
+        ("callable.prompt", "prompt"),
+        ("callable-judged.effort", "effort"),
+        ("extractor.prompt_style", "extractor prompt style"),
+        ("max_output_tokens", "max output tokens"),
+    ],
+)
+def test_the_v16_step_names_an_unnamed_axis_from_its_id_and_keeps_a_named_one(axis_id: str, named: str) -> None:
+    """The step names an axis by the one rule that reads a lever's id as words, less the quick path's kind namespace."""
+    document = json.loads((FIXTURES / "v16" / "eval_campaign.json").read_text(encoding="utf-8"))
+    axis = document["aspects"][0]["design"]["axes"][0]
+    axis["axis_id"] = axis_id
+    kept = json.loads(json.dumps(document))
+    kept["aspects"][0]["design"]["axes"][0]["reader_name"] = "Reasoning budget"
+
+    assert upgrade_durable_document(document)["aspects"][0]["design"]["axes"][0]["reader_name"] == named
+    assert upgrade_durable_document(kept)["aspects"][0]["design"]["axes"][0]["reader_name"] == "Reasoning budget"
+
+
+def test_every_other_durable_type_passes_the_v16_step_unchanged() -> None:
+    for path in sorted((FIXTURES / "v16").glob("*.json")):
         document = json.loads(path.read_text(encoding="utf-8"))
         if document["doc_type"] == "eval_campaign":
             continue

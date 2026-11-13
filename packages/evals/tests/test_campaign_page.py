@@ -1,9 +1,8 @@
 """A campaign's page: code's readings across its aspects on the first screen, then one fold per aspect.
 
 The fixture (:mod:`~packages.evals.tests.campaign_page_support`) is two real runs read as one campaign of two
-aspects: billing regresses past its floor, tone improves. The broken floor is first of all; the writer's summary
-across the aspects and its recommendation, when there is a memo, come next, then code's table, then the person's
-call. Each aspect's own page sits in its fold. These are the page's order, its folds, its JSON and its invariants.
+aspects: billing regresses past its floor, tone improves. The broken floor is first of all, then code's table, then
+the person's call. Each aspect's own page sits in its fold. These are the page's order, its folds, its JSON and its invariants.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ import re
 from html.parser import HTMLParser
 
 import pytest
+from pydantic import ValidationError
 
 from threetears.evals.analysis import (
     AnalysisContextBundle,
@@ -27,29 +27,25 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.report.model import (
     CAMPAIGN_JSON_SHAPE,
-    CampaignAspectFold,
     DisclosureBlock,
     TableBlock,
 )
 from threetears.evals.analysis.report.words import FIRST_SCREEN_BANNED
+from packages.evals.tests.page_contract_support import links, parsed, what_runs
 from packages.evals.tests.style_support import lint_page
-from threetears.evals.kernel.errors import RefusedInput
 
 from packages.evals.tests.campaign_support import (
     ASSEMBLED_AT,
     CANDIDATE_LABEL,
     CONTROL_LABEL,
     QUESTION,
-    arms_of,
 )
 
 from packages.evals.tests.campaign_page_support import (
     aspect_fixture,
-    campaign_fixture,
     first_screen_markdown,
     kind_fixture,
     page_of,
-    two_aspect_memo,
 )
 
 
@@ -64,7 +60,7 @@ async def test_a_campaign_of_one_aspect_has_one_row_and_its_fold_holds_the_aspec
     # Every section the aspect's own page holds is in the fold, under the fold's prefix.
     sections = re.findall(r'<section id="([a-z_]+)">', own)
     assert sections and all(
-        f'<section id="a-billing-{section}">' in html for section in sections if section != "glossary"
+        f'<section id="a-billing--{section}">' in html for section in sections if section != "glossary"
     )
     assert html.count("<h1>") == 1
 
@@ -79,24 +75,27 @@ class _Tags(HTMLParser):
 
 
 async def test_the_page_keeps_the_embed_s_invariants() -> None:
-    page = await page_of("billing", "tone", memo=two_aspect_memo())
+    page = await page_of("billing", "tone")
     html = campaign_report_html(page)
     parser = _Tags()
     parser.feed(html)
     tags = parser.tags
-    assert not [tag for tag, _ in tags if tag in {"script", "iframe", "object", "embed", "link", "base", "img"}]
+    # Nothing runs but the kit's script, and nothing loads: no link at all.
+    assert what_runs(html) == []
+    assert links(html) == []
     assert not [name for _, attrs in tags for name in attrs if name.startswith("on")]
     ids = [attrs["id"] for _, attrs in tags if attrs.get("id")]
     assert len(ids) == len(set(ids)), "an id is repeated"
-    hrefs = [attrs["href"] for _, attrs in tags if "href" in attrs]
+    # Every other link is to a place on the page itself.
+    hrefs = [attrs["href"] for tag, attrs in tags if "href" in attrs and tag != "link"]
     assert all(href is not None and href.startswith("#") for href in hrefs)
     assert {href[1:] for href in hrefs if href} <= set(ids), "a link lands nowhere"
     assert "<header>" in html and '<section id="aspect-billing">' in html and '<section id="glossary">' in html
-    assert ("article", {"data-basis": "analysis", "data-page": "campaign"}) in tags
+    assert ("article", {"data-basis": "code_only", "data-page": "campaign"}) in tags
 
 
 async def test_the_page_passes_the_style_rules_and_its_first_screen_speaks_a_reader_s_words() -> None:
-    page = await page_of("billing", "tone", memo=two_aspect_memo())
+    page = await page_of("billing", "tone")
     markdown = campaign_report_markdown(page)
     assert lint_page(markdown, question=QUESTION, names=[CONTROL_LABEL, f"▸ {CONTROL_LABEL}", CANDIDATE_LABEL]) == []
     first = first_screen_markdown(page)
@@ -112,39 +111,13 @@ async def test_json_is_the_readings_and_each_aspect_s_bundle_by_its_fingerprint(
     page = await page_of("billing", "tone")
     document = json.loads(serialize_report(page, "json"))
     assert (document["kind"], document["shape"]) == ("campaign", CAMPAIGN_JSON_SHAPE)
-    assert document["recommendation"] is None
+    assert "recommendation" not in document
     assert document["readings"]["aspects"] == ["billing", "tone"]
     assert [aspect["bundle_fingerprint"] for aspect in document["aspects"]] == [
         fold.report.source.bundle_fingerprint for fold in page.aspects
     ]
     assert serialize_report(page, "markdown") == campaign_report_markdown(page)
     assert serialize_report(page, "html") == campaign_report_html(page)
-
-
-async def test_with_a_memo_the_json_carries_the_recommendation_its_arm_named_by_label_and_by_key() -> None:
-    page = await page_of("billing", "tone", memo=two_aspect_memo())
-    document = json.loads(serialize_report(page, "json"))
-    control = page.readings.control
-    assert control is not None and page.recommended_variant_key == control
-    assert document["recommendation"] == {"arm": CONTROL_LABEL, "variant_key": control, "confidence": "high"}
-
-
-async def test_a_page_whose_memo_recommends_an_arm_is_refused_without_that_arm_s_key() -> None:
-    campaign, measured = await campaign_fixture("billing", "tone")
-    bundles = {one.bundle.aspect: one.bundle for one in measured}
-    read = campaign_readings(campaign, bundles, arms=arms_of(measured[0]))
-    reports = {
-        label: build_code_only_report(
-            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
-        )
-        for label, evidence in bundles.items()
-    }
-    with pytest.raises(RefusedInput, match="no variant key for that arm") as refused:
-        build_campaign_report(campaign, read, reports, two_aspect_memo())
-    assert "EvalAnalysis.recommended_variant_key" in refused.value.remedy
-    # A key is the recommendation's: a page with none holds none.
-    page = build_campaign_report(campaign, read, reports, None, recommended_variant_key="a" * 64)
-    assert (page.recommendation, page.recommended_variant_key) == (None, None)
 
 
 async def test_a_fold_names_the_arms_as_the_campaign_s_table_does() -> None:
@@ -158,39 +131,36 @@ async def test_a_fold_names_the_arms_as_the_campaign_s_table_does() -> None:
 
 async def test_a_fold_leaves_out_the_aspect_s_own_verdict_line() -> None:
     page = await page_of("billing", "tone")
+    html = campaign_report_html(page)
+    # What a reader reads: the page's text with its first-use glossary links read through, not its markup.
+    shown = "".join(parsed(html).text)
     for fold in page.aspects:
         verdict = next(
             block for block in fold.report.blocks if isinstance(block, DisclosureBlock) and block.source == "verdict"
         )
         assert verdict not in fold.head
         assert verdict.text not in campaign_report_markdown(page)
-        assert 'class="verdict"' not in campaign_report_html(page)
+        assert verdict.text not in shown
+    # The page's one verdict line is the campaign's own lead, under its question, in its header; no fold carries one.
+    (lead,) = [block for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "verdict"]
+    assert html.count('class="verdict"') == 1 and lead.text in shown
+    assert 'class="verdict"' not in html.split("</header>", 1)[1]
 
 
-async def test_a_code_only_page_refuses_a_fold_that_renders_an_analysis() -> None:
+@pytest.mark.parametrize("link", [{"finding": 0}, {"rests_on": [0]}], ids=["finding", "rests_on"])
+async def test_a_campaign_page_refuses_a_block_naming_a_finding_field_it_no_longer_has(link: dict[str, object]) -> None:
+    """A block has no ``finding`` or ``rests_on``, so a campaign's page refuses a block naming either as an unknown key."""
     page = await page_of("billing")
-    (fold,) = page.aspects
-    analysed = CampaignAspectFold(
-        aspect=fold.aspect,
-        shows=fold.shows,
-        report=fold.report.model_copy(
-            update={
-                "basis": "analysis",
-                "source": fold.report.source.model_copy(update={"analysis_id": "analysis-1", "generator_model": "m"}),
-            }
-        ),
-    )
-    with pytest.raises(ValueError, match="renders an analysis"):
-        CampaignReport(
-            basis="code_only",
-            title=page.title,
-            campaign_id=page.campaign_id,
-            scope_id=page.scope_id,
-            finding_count=0,
-            blocks=page.blocks,
-            aspects=[analysed],
-            readings=page.readings,
-        )
+    linked = {"kind": "disclosure", "section": "provenance", "source": "design", "text": "linked", **link}
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        CampaignReport.model_validate({**dict(page), "blocks": [*page.blocks, linked]})
+
+
+async def test_a_code_only_campaign_page_refuses_an_analysis_id() -> None:
+    page = await page_of("billing")
+    assert page.basis == "code_only"
+    with pytest.raises(ValueError, match="a code-only page lays out no analysis, and this one names a"):
+        CampaignReport.model_validate({**dict(page), "analysis_id": "a"})
 
 
 async def test_a_fold_s_markdown_heading_is_inert() -> None:
@@ -216,6 +186,17 @@ async def test_a_fold_of_a_choice_names_the_arms_by_the_campaign_s_labels() -> N
     report = build_code_only_report(
         tone.bundle, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
     )
-    page = build_campaign_report(tone.campaign, read, {"tone": report}, None)
-    fold = campaign_report_markdown(page).split("\n## tone", 1)[1]
+    page = build_campaign_report(tone.campaign, read, {"tone": report})
+    # The fold's heading: the aspect's name, or its evidence where the aspect is named as the page is.
+    fold = campaign_report_markdown(page).split(f"\n## {page.aspects[0].heading}", 1)[1]
     assert "| ALPHA |" in fold and "| alpha |" not in fold
+
+
+@pytest.mark.parametrize("second", ["billing body", "billing trials", "billing 2"])
+async def test_an_aspect_whose_label_extends_anothers_never_takes_its_ids(second: str) -> None:
+    """An aspect's slug may read as another's plus a word ("billing" and "billing body"); the ids derived from a slug
+    join it with a separator no slug holds, so neither fold claims the other's ids, in HTML or Markdown."""
+    page = await page_of("billing", second)
+    for rendered in (campaign_report_html(page), campaign_report_markdown(page)):
+        ids = re.findall(r'\bid="([^"]+)"', rendered)
+        assert ids and len(ids) == len(set(ids)), sorted(i for i in ids if ids.count(i) > 1)

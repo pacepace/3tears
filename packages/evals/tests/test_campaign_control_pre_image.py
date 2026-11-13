@@ -14,11 +14,11 @@ on the cells stamped after — and the control must name both. Pinned here:
   here. The campaign keeps the key as declared.
 - **A campaign carrying both keys keeps ONE control arm**: the cells under this build's predicate. The cells under
   the earlier one are named as the control under that predicate, disclosed in the bundle, the code-only report and
-  the time positions they ran at, and kept out of every contrast, guardrail, frontier boundary check and adoption
-  check, and out of the control's numbers. A marginal row, read over the whole campaign, counts them at the
+  the time positions they ran at, and kept out of every contrast, guardrail and frontier boundary check, and out of
+  the control's numbers. A marginal row, read over the whole campaign, counts them at the
   control's level, as it counts every cell there.
 - **Every reading agrees on which arm is the control**: the realized design decides it once, and the decision
-  surface, the surface's row order, the time axis, the adoption check and the report's scoreboard read that.
+  surface, the surface's row order, the time axis, the stored analysis and the report's scoreboard read that.
 - **A key nothing can carry is disclosed, never silent**: a typed key from another predicate that no cell carries
   reads as ``stale`` with the remedy, in the bundle and in the code-only report.
 - **The pre-image is the server's**: an arm is never typed — a caller names its runs, never its key — and the
@@ -29,7 +29,6 @@ A predicate change is exercised as the identity tests exercise one: documents st
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
@@ -39,13 +38,11 @@ from threetears.evals.analysis import (
     TableBlock,
     aspect_view,
     assemble_context_bundle,
-    build_report,
     variant_key_of_run,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaigns import set_campaign_control
 from threetears.evals.analysis.cells import variant_of_cell_ref
-from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.analysis.report.build import build_code_only_report
 from threetears.evals.kernel import EvalCampaign, IDENTITY_VERSION
@@ -60,10 +57,10 @@ from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.schema.values import SweepableValue
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS, TOYHOST_NARROW, toyhost_aspect_design
-from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, arm_at, cell_at, memo_payload
+from packages.evals.tests.toyhost_cells import cell_at
+from packages.evals.tests.writer_host_support import doc_analysis_over
 
 #: The predicate before this build's, which every "declared under another predicate" document here is stamped with.
 _EARLIER = IDENTITY_VERSION - 1
@@ -381,38 +378,15 @@ def test_every_bundle_reading_names_the_arm_the_realized_design_matched(cells_st
             assert position.cells[0].variant_key == expected, "each time position leads with the control too"
 
 
-async def test_the_adoption_check_and_the_report_name_the_arm_the_realized_design_matched() -> None:
-    bundle, expected = off_loop(_toy_campaign_with_an_earlier_control, cells_stamped_earlier=False)
+def test_the_stored_analysis_and_the_page_name_the_arm_the_realized_design_matched() -> None:
+    bundle, expected = _toy_campaign_with_an_earlier_control(cells_stamped_earlier=False)
     assert bundle.declared is not None and bundle.declared.control is not None
     assert bundle.declared.control.variant_key != expected
-    payload = memo_payload(bundle)
-    payload["recommendation"][0]["arm"] = arm_at(campaign_bundle(bundle), TOYHOST_NARROW)
-    # Every reading unseparated: recommending any arm but the control is refused, so acceptance proves the check
-    # exempted the arm the realized design matched — not the declaration's own key, which no cell here carries.
-    families = [
-        family.model_copy(
-            update={"comparisons": [c.model_copy(update={"verdict": "not_separated"}) for c in family.comparisons]}
-        )
-        for family in bundle.multiple_comparisons.families
-    ]
-    bundle = bundle.model_copy(
-        update={"multiple_comparisons": bundle.multiple_comparisons.model_copy(update={"families": families})}
-    )
-    client = FixturedClient(json.dumps(payload))
 
-    analysis, _insights = await generate_analysis(
-        campaign_bundle(bundle),
-        prompt=PROMPT,
-        model=MODEL,
-        client=client,
-        prompt_id=PROMPT_ID,
-        bundle_assembled_at=utc_now_iso(),
-        profile=toyhost_profile(),
-    )
+    analysis, _insights = doc_analysis_over(campaign_bundle(bundle))
 
-    assert len(client.calls) == 1, "adopting the control needs no separation"
     assert analysis.aspects[0].decision_surface.control_variant_key == expected
-    report = build_report(analysis)
+    report = build_code_only_report(bundle, assembled_at=utc_now_iso())
     (scoreboard,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "scoreboard"]
     assert sum(str(row["arm"]).startswith("▸ ") for row in scoreboard.values()) == 1
     assert report.bundle.design.control_arm is not None and report.bundle.design.control_arm.variant_key == expected
@@ -675,29 +649,12 @@ def test_a_time_position_before_the_change_names_its_control_rather_than_reading
     assert before.control_disclosure in [getattr(block, "text", None) for block in report.blocks]
 
 
-async def test_keeping_the_control_under_the_earlier_predicate_needs_no_separation() -> None:
-    fixture, campaign, _earlier_run, rerun, stored_key, _current_key = off_loop(_split_control_campaign)
-    bundle = off_loop(_assemble, fixture, campaign)
-    # The toy memo names the narrow arm by its one run; read without the rerun's summary, that is the earlier cells.
-    payload = memo_payload(
-        bundle.model_copy(update={"run_summaries": [s for s in bundle.run_summaries if s.run_id != rerun]})
-    )
-    assert campaign_bundle(bundle).label_of(stored_key) == payload["recommendation"][0]["arm"], (
-        "the earlier cells are named as the control is"
-    )
-    client = FixturedClient(json.dumps(payload))
+def test_the_stored_analysis_keeps_the_control_under_the_earlier_predicate() -> None:
+    fixture, campaign, _earlier_run, _rerun, stored_key, _current_key = _split_control_campaign()
+    bundle = _assemble(fixture, campaign)
 
-    analysis, _insights = await generate_analysis(
-        campaign_bundle(bundle),
-        prompt=PROMPT,
-        model=MODEL,
-        client=client,
-        prompt_id=PROMPT_ID,
-        bundle_assembled_at=utc_now_iso(),
-        profile=fixture.host.eval_host.profile,
-    )
+    analysis, _insights = doc_analysis_over(campaign_bundle(bundle))
 
-    assert len(client.calls) == 1, "the earlier cells are the control: adopting them is keeping it, never checked"
     surface = analysis.aspects[0].decision_surface
     assert surface.earlier_control == bundle.design.earlier_control
     assert surface.earlier_control is not None

@@ -236,18 +236,20 @@ def test_an_aspect_naming_a_template_refuses_a_run_of_another(named: bool) -> No
     assert storage.load_campaign(campaign.id, _SCOPE) == campaign, "nothing was attached"
 
 
-def test_each_aspect_infers_its_own_template_and_refuses_a_declared_design_with_no_margin() -> None:
+def test_each_aspect_infers_its_own_template_and_files_a_declared_design_with_no_margin_as_written() -> None:
+    """Owner, 2026-11-06: no margin is ever assumed. A question of a control with none is a superiority question,
+    filed as written; one asking nothing, or naming no control, needs none either."""
     storage, _ = _store()
     inferred = _create(storage, aspects=[{"label": "tone", "run_ids": ["tpl-tone-a", "tpl-tone-b"]}], exploratory=True)
 
     control = [{"label": "a", "role": "control", "from_run_ids": ["tpl-tone-a"]}]
-    with pytest.raises(ValidationFailedError, match="declare a design and no margin, and the campaign asks"):
-        _create(
-            storage,
-            question="Is b as good as a?",
-            aspects=[_aspect("tone", "tpl-tone", "tpl-tone-a", margin=None)],
-            arms=control,
-        )
+    superiority = _create(
+        storage,
+        question="Does b do better than a?",
+        aspects=[_aspect("tone", "tpl-tone", "tpl-tone-a", margin=None)],
+        arms=control,
+    )
+    assert superiority.control is not None and superiority.aspects[0].margin is None
     unasked = _create(storage, aspects=[_aspect("tone", "tpl-tone", margin=None)])
     uncontrolled = _create(storage, question="Which is better?", aspects=[_aspect("tone", "tpl-tone", margin=None)])
 
@@ -526,6 +528,30 @@ def test_a_floor_added_at_adoption_reads_as_declared_after_the_evidence_only_onc
     added = {floor.key: floor.declared_at for floor in view.floors}["tone/cost_lower/*"]
     assert _declared_before_the_evidence(added, scored) is not results_first
     assert ("aspect", None) not in _late(adopted, "tone"), "the adopted aspect keeps its own standing"
+
+
+def test_a_late_floor_carries_its_aspect_and_reading_beside_its_key() -> None:
+    """A floor's key joins its aspect, kind and reading with slashes, and a goal check's text may hold one, so the
+    late criterion carries the floor's aspect and reading as they were declared, and no reader splits the key."""
+    storage, _ = _store()
+    tone = _source(storage, "tone", "tpl-tone")
+    check = "ratio/total >= 0.5"
+    later = tone.model_copy(
+        update={
+            "floors": [
+                Floor(
+                    aspect="tone",
+                    clause=RateDrop(max_points=4.0, reading=check),
+                    declared_at="2026-03-01T00:00:00+00:00",
+                )
+            ]
+        }
+    )
+
+    declared = aspect_view(later, "tone").declared
+    (floor,) = [late for late in late_criteria(declared, _RAN["tpl-tone"]) if late.criterion == "floor"]
+    assert floor.name == f"tone/rate_drop/{check}"
+    assert (floor.aspect, floor.reading) == ("tone", check)
 
 
 def test_an_arm_named_at_adoption_is_dated_now_and_one_the_source_already_named_keeps_its_time() -> None:

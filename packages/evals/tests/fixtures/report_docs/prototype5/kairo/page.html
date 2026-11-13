@@ -1,0 +1,1393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kairo persona model, round 2: September vs qwen3.8-flash and 1017 on character v2 with the promoted directives</title>
+<style>/* Layout: decision-memo column (68ch prose) with charts breaking out to a wide band.
+   Host tokens: a host sets any of the seven --host-* properties (inline, on the html element) and the page reads
+   them, its own value the fallback; the page never declares one, so a host's value wins in either theme. Text, muted
+   text, surface, link and accent come from them; secondary text, rules, the sunken tint and the accent's wash mix from
+   those, so a host's palette carries through. Arm, outcome and scale colours stay the page's. Fonts are a local stack: nothing is
+   fetched, and every stack ends in a generic family.
+   Contrast, in each theme: text at 4.5:1 or more on every ground the page paints, quiet text included, and an axis and
+   an arm's colour at 3:1 (WCAG 1.4.3, 1.4.11). The arms' hues (blue, magenta, teal, indigo, violet) stand 40 degrees or more from pass,
+   warn and fail, so a colour means one thing, and each carries its tag's on-fill letter at 4.5:1.
+   Type: five steps, 12 px (ticks, captions, chart labels), 14 (tables, notes), 16 (body), 20 (h2, a title that is a
+   label) and 28 (the headline); nothing is set between them. */
+:root{
+  --bg:var(--host-color-surface,#f5f6f8); --surface:var(--host-color-surface,#ffffff);
+  --ink:var(--host-color-text,#11151b); --muted:var(--host-color-muted,#5f6774);
+  --accent:var(--host-color-accent,#1f5fbf); --on-fill:#ffffff; --on-accent:#ffffff;
+  --link:var(--host-color-link,var(--accent));
+  --ink-2:color-mix(in srgb,var(--ink) 55%,var(--muted));
+  --sunk:color-mix(in srgb,var(--ink) 5%,var(--surface));
+  --line:color-mix(in srgb,var(--ink) 11%,var(--surface));
+  --base:color-mix(in srgb,var(--ink) 22%,var(--surface));
+  --accent-wash:color-mix(in srgb,var(--accent) 12%,var(--surface));
+  --shade:color-mix(in srgb,var(--ink) 18%,transparent);
+  --ground:var(--bg);
+  --s1:#2874d2; --s2:#b8388f; --s3:#13788a; --s4:#4a4fb8; --s5:#7c4fc0;
+  --good:#0a7a0a; --good-wash:#e3f3e3; --warn:#8f5a00; --warn-wash:#fbf0d9; --bad:#c22f2f; --bad-wash:#fbe5e5;
+  --seq-0:#eef4fc; --seq-1:#cde2fb; --seq-2:#9ec5f4; --seq-3:#5598e7; --seq-4:#256abf; --seq-5:#104281;
+  --seq-t0:#11151b; --seq-t1:#11151b; --seq-t2:#11151b; --seq-t3:#11151b; --seq-t4:#ffffff; --seq-t5:#ffffff;
+  --div-neg:#d03b3b; --div-mid:#f0efec; --div-pos:#2a78d6;
+  --f-display:var(--host-font-body,"IBM Plex Sans Condensed","IBM Plex Sans","Arial Narrow",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif);
+  --f-body:var(--host-font-body,"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif);
+  --f-mono:var(--host-font-mono,"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace);
+  --t-xs:.75rem; --t-sm:.875rem; --t-base:1rem; --t-lg:1.25rem; --t-hero:1.75rem;
+  --col:44rem; --wide:68rem; --r:6px;
+}
+/* Dark: the OS's, unless the host stamps data-theme="light"; data-theme="dark" sets it whatever the OS says. Each
+   theme declares the mixed colours again, the same mixes, so every token a rule colours with is set in each theme. */
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:var(--host-color-surface,#0e1115); --surface:var(--host-color-surface,#161a20);
+  --ink:var(--host-color-text,#eef1f5); --muted:var(--host-color-muted,#8a93a1);
+  --accent:var(--host-color-accent,#6aa2f0); --on-fill:#ffffff; --on-accent:#0e1115; --shade:rgb(0 0 0/.55);
+  --link:var(--host-color-link,var(--accent));
+  --ink-2:color-mix(in srgb,var(--ink) 55%,var(--muted));
+  --sunk:color-mix(in srgb,var(--ink) 5%,var(--surface));
+  --line:color-mix(in srgb,var(--ink) 11%,var(--surface));
+  --base:color-mix(in srgb,var(--ink) 22%,var(--surface));
+  --accent-wash:color-mix(in srgb,var(--accent) 12%,var(--surface));
+  --s1:#2873d1; --s2:#c23f99; --s3:#147f93; --s4:#676bc3; --s5:#8860c6;
+  --good:#3cbf3c; --good-wash:#15291a; --warn:#e0a32e; --warn-wash:#2e2512; --bad:#ef6a6a; --bad-wash:#331a1b;
+  --seq-0:#18202b; --seq-1:#173252; --seq-2:#1c4b84; --seq-3:#2a6cc0; --seq-4:#5598e7; --seq-5:#a8cdf6;
+  --seq-t0:#eef1f5; --seq-t1:#eef1f5; --seq-t2:#eef1f5; --seq-t3:#ffffff; --seq-t4:#0e1115; --seq-t5:#0e1115;
+  --div-neg:#c84b4e; --div-mid:#383835; --div-pos:#2676d2; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:var(--host-color-surface,#0e1115); --surface:var(--host-color-surface,#161a20);
+  --ink:var(--host-color-text,#eef1f5); --muted:var(--host-color-muted,#8a93a1);
+  --accent:var(--host-color-accent,#6aa2f0); --on-fill:#ffffff; --on-accent:#0e1115; --shade:rgb(0 0 0/.55);
+  --link:var(--host-color-link,var(--accent));
+  --ink-2:color-mix(in srgb,var(--ink) 55%,var(--muted));
+  --sunk:color-mix(in srgb,var(--ink) 5%,var(--surface));
+  --line:color-mix(in srgb,var(--ink) 11%,var(--surface));
+  --base:color-mix(in srgb,var(--ink) 22%,var(--surface));
+  --accent-wash:color-mix(in srgb,var(--accent) 12%,var(--surface));
+  --s1:#2873d1; --s2:#c23f99; --s3:#147f93; --s4:#676bc3; --s5:#8860c6;
+  --good:#3cbf3c; --good-wash:#15291a; --warn:#e0a32e; --warn-wash:#2e2512; --bad:#ef6a6a; --bad-wash:#331a1b;
+  --seq-0:#18202b; --seq-1:#173252; --seq-2:#1c4b84; --seq-3:#2a6cc0; --seq-4:#5598e7; --seq-5:#a8cdf6;
+  --seq-t0:#eef1f5; --seq-t1:#eef1f5; --seq-t2:#eef1f5; --seq-t3:#ffffff; --seq-t4:#0e1115; --seq-t5:#0e1115;
+  --div-neg:#c84b4e; --div-mid:#383835; --div-pos:#2676d2; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:var(--t-base);line-height:1.55;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 4rem}
+.page{max-width:var(--wide);margin:0 auto}
+.prose{max-width:var(--col)}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0;letter-spacing:-.005em}
+h1{font-size:var(--t-hero);line-height:1.15;font-weight:600}
+/* a headline over 90 characters is a paragraph's worth: it sets in at the 20 px step, not six lines at the hero size */
+h1.long{font-size:var(--t-lg);line-height:1.25}
+h2{font-size:var(--t-lg);font-weight:600;line-height:1.25}
+h3{font-size:var(--t-base);font-weight:600}
+p{margin:0}
+a{color:var(--link)}
+code,.mono{font-family:var(--f-mono)}
+.num{font-variant-numeric:tabular-nums}
+
+/* masthead: the campaign's name its own first line, then the kind, the system and the counts. The first screen's
+   text (masthead, the callouts under it, headline, lede, confidence) keeps one measure, the prose column; its cards
+   and tables take the page's width. */
+.mast{display:flex;flex-wrap:wrap;gap:.25rem 1rem;align-items:baseline;padding-block:1.5rem .75rem;border-bottom:1px solid var(--line);
+  font-size:var(--t-xs);color:var(--muted);letter-spacing:.06em;text-transform:uppercase;max-width:var(--col)}
+.mast b{color:var(--ink-2);font-weight:600}
+.mast .name{flex-basis:100%;color:var(--ink);font-weight:600}
+.mast .kind{color:var(--accent);font-weight:600}
+.bluf{display:grid;gap:1.25rem;padding-block:1.75rem 2rem}
+.bluf>h1{max-width:var(--col)}
+.bluf .lede{font-size:var(--t-base);color:var(--ink-2);max-width:var(--col)}
+/* cards wrap and the last row's stretch to fill it, so a short card never leaves an empty cell beside it */
+.decision{display:flex;flex-wrap:wrap;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.decision>div{flex:1 1 15rem;background:var(--surface);padding:1rem 1.1rem;display:grid;gap:.35rem;align-content:start;min-width:0}
+.decision .k{font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600}
+.decision .v{font-size:var(--t-base)}
+.decision .v strong{font-weight:600}
+.decision .rec{background:var(--accent-wash)}
+.decision .rec .k{color:var(--accent)}
+
+/* sections */
+section{padding-block:2.25rem 0;display:grid;gap:1rem}
+section>header{display:grid;gap:.35rem;max-width:var(--col)}
+.eyebrow{font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600}
+.takeaway{color:var(--ink-2)}
+.part{margin-top:2.5rem;padding-top:1rem;border-top:2px solid var(--ink);display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;align-items:baseline}
+.part h2{font-size:var(--t-lg)}
+.part span{font-size:var(--t-sm);color:var(--muted)}
+
+/* figure */
+.fig{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:1rem 1rem .75rem;min-width:0}
+.fig .cap{font-size:var(--t-xs);color:var(--muted);margin-top:.5rem}
+.chart{width:100%;min-width:0;position:relative}
+.chart svg{display:block;overflow:visible}
+.chart text{font-family:var(--f-body);fill:var(--ink-2)}
+.chart .tick{font-size:12px;fill:var(--muted);font-variant-numeric:tabular-nums}
+.chart .lbl{font-size:12px;fill:var(--ink-2)}
+.chart .lbl-strong{font-size:12px;fill:var(--ink);font-weight:600}
+.chart .grid{stroke:var(--line);stroke-width:1}
+.chart .axis{stroke:var(--muted);stroke-width:1}
+.chart .floor{stroke:var(--ink-2);stroke-width:1.25;stroke-dasharray:3 3}
+.chart [data-tip]{cursor:default}
+.legend{display:flex;flex-wrap:wrap;gap:.35rem 1rem;font-size:var(--t-xs);color:var(--ink-2);margin-bottom:.5rem}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:.4rem;vertical-align:-1px}
+.legend i.sq{border-radius:2px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,30rem),1fr));gap:1rem}
+.mult{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,15.5rem),1fr));gap:1rem}
+.mult .fig{padding:.8rem .8rem .5rem;display:flex;flex-direction:column}
+.mult .fig .chart{margin-top:auto;padding-top:.4rem}
+.mult h4{margin:0 0 .15rem;font-family:var(--f-display);font-size:var(--t-base);font-weight:600}
+.mult .sub{font-size:var(--t-xs);color:var(--muted)}
+
+/* tooltip */
+#tip{position:fixed;z-index:20;pointer-events:none;background:var(--ink);color:var(--bg);font-size:var(--t-sm);line-height:1.4;
+  padding:.45rem .6rem;border-radius:4px;max-width:17rem;opacity:0;transition:opacity .08s}
+#tip.on{opacity:1}
+#tip b{font-weight:600}
+
+/* tables */
+/* A table fits its frame where its words can wrap; one wider than its frame still scrolls inside it, its first column
+   in view. While more of it lies past the frame's right edge, that edge fades out over every cell, headers and
+   highlighted rows included: the frame's own scroll position drives the fade, so it shows only on a frame that
+   overflows, goes once the frame is scrolled to its end, and needs no script. A browser without scroll-driven
+   animations runs the fade to its end at once (no fade) and keeps the shadow under the cells, which shows at an edge
+   only while more lies past it (the covers scroll with the content, the shadows stay with the frame). */
+.tbl{overflow-x:auto;isolation:isolate;container-type:scroll-state;
+  background:linear-gradient(to right,var(--ground) 40%,transparent) left/2.5rem 100% no-repeat local,
+    linear-gradient(to left,var(--ground) 40%,transparent) right/2.5rem 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%,var(--shade),transparent) left/.9rem 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%,var(--shade),transparent) right/.9rem 100% no-repeat scroll,
+    var(--ground);
+  animation:tbl-more linear both;animation-timeline:scroll(self inline)}
+/* a table sits on the ground it is set on, never a panel of its own: the page's (--ground, the page's --bg in each
+   theme), or a card's or a figure's surface; its pinned cells and its edge covers paint that ground, so what scrolls
+   beneath them stays hidden */
+.fig .tbl,.decision .tbl,.excard .tbl,.callout .tbl{--ground:var(--surface)}
+@keyframes tbl-more{from,98%{mask-image:linear-gradient(to left,transparent,var(--ink) 3rem)}100%{mask-image:none}}
+/* the pinned column is at least a floor and at most about a third of the frame wide, so a long label never hides
+   the columns past it and the columns past it never crush it: it wraps at its spaces (after a hyphen only in a word too long for its cap), never inside
+   a word; only an id-like cell (an expression, a digest, a token longer than the floor holds: classed unbroken)
+   breaks anywhere. The frame isolates its cells' stacking, so the page's sticky nav paints over a pinned cell. */
+.tbl :is(th,td):first-child{position:sticky;left:0;z-index:1;background:var(--ground);box-shadow:inset -1px 0 0 var(--line);
+  white-space:normal;overflow-wrap:normal;word-break:normal;hyphens:manual;min-width:min(8rem,30vw);max-width:min(14rem,35vw);
+  width:min(var(--id1),35vw)}
+.tbl :is(th,td):first-child .armchip{white-space:normal}
+/* a long label sets in at most three lines where the cap leaves room: the frame's --lines1, the width that holds its
+   longest label so, is the pinned column's floor (a frame without one keeps the floor above) */
+.tbl[style*="--lines1"] :is(th,td):first-child{min-width:min(var(--lines1),35vw)}
+.tbl thead th:first-child{z-index:2;background:var(--ground)}
+/* a table keyed by two columns (keys-2) keeps both in view: the first held at exactly its width, its text's between
+   the floor and the cap (the frame's --key; the cap without one), so the second pins where the first ends; the second
+   has a floor of its own */
+.tbl.keys-2 :is(th,td):first-child{width:min(var(--key,14rem),35vw);min-width:min(var(--key,14rem),35vw);
+  max-width:min(var(--key,14rem),35vw)}
+.tbl.keys-2 :is(th,td):nth-child(2){position:sticky;left:min(var(--key,14rem),35vw);z-index:1;background:var(--ground);
+  box-shadow:inset -1px 0 0 var(--line);white-space:normal;overflow-wrap:normal;word-break:normal;hyphens:manual;
+  min-width:min(8rem,22vw);max-width:min(9rem,22vw);width:min(var(--id2),9rem,22vw)}
+.tbl.keys-2 :is(th,td):nth-child(2) .armchip{white-space:normal}
+.tbl.keys-2 thead th:nth-child(2){z-index:2;background:var(--ground)}
+.tbl :is(th,td):first-child.unbroken,.tbl.keys-2 :is(th,td):nth-child(2).unbroken{overflow-wrap:anywhere}
+/* a hyphenated word (a model id, a case id) in a pinned cell is one word. One the floor holds is never broken after a
+   hyphen. A longer one (long) sets its column's width (--id1, --id2), which the table gives that column before the
+   others grow, and is set as one box, so a line moves it whole to the next rather than split it; it is held whole in
+   a frame that scrolls anyway, where every column is at its narrowest, and breaks after a hyphen only where the other
+   columns at their narrowest leave no room, or a phone's cap is too narrow. */
+/* a hyphenated word (a model's name, an arm's id) held whole wherever it prints, in running text as in a cell; a
+   long one breaks after its hyphens on a phone, where holding it would push the page sideways */
+.id{white-space:nowrap}
+@media (max-width:639px){.id.long{white-space:normal}}
+.tbl .id{white-space:nowrap}
+.tbl .id.long{white-space:normal;display:inline-block}
+/* a column's width is not its minimum once the table overflows, so only this query holds a long id whole there; a
+   browser without scroll-state queries breaks it after a hyphen at the floor, as before, and keeps the rest */
+@container scroll-state(scrollable:x){.tbl .id.long{white-space:nowrap}}
+@media (max-width:639px){.tbl .id.long{white-space:normal}}
+table{border-collapse:collapse;width:100%;font-size:var(--t-sm)}
+/* A table is ruled, never boxed (Schwabish 2020; booktabs): no frame border and no header fill, a rule in --ink-2
+   under the header row and quiet --line rules between the rows; its headers read in --ink-2 at the table's own size.
+   A cell of words wraps at its spaces, never inside a word, so a table narrows to its frame before it scrolls; a
+   column of numbers, an id and a pill hold on one line. A table too wide to fit even so scrolls, and there a cell
+   keeps its line, as wrapping would only crush its column; a prose cell (wrap) and a glyph's figure still wrap. */
+th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line)}
+@container scroll-state(scrollable:x){.tbl td:not(.wrap,.glyph,:first-child){white-space:nowrap}}
+/* a header row scrolls away with a tall table: its frame scrolls sideways, so it is the header's scroll container and
+   a sticky header would stick to the frame, never the page; a header that stays visible inside a tall table needs the
+   frame capped at the viewport's height with its own vertical scroll, a design choice to take with the host later */
+th{font-weight:600;color:var(--ink-2);white-space:normal;min-width:4.5rem}
+/* a header row is as tall as the label that needs the most lines, every label set from the top; in a frame that
+   scrolls anyway a long label sets in two lines at most (its --head, the width that does), since widening its column
+   costs only scroll, where wrapping it at the floor made the whole row as tall as its five lines */
+thead th{vertical-align:top;border-bottom:1px solid var(--ink-2)}
+@container scroll-state(scrollable:x){.tbl thead th{min-width:var(--head,4.5rem)}}
+/* a row's label (a turned table's figure) is the row's header and reads as a body cell */
+tbody th{font-weight:inherit;color:inherit;font-size:inherit;text-transform:none;letter-spacing:normal;background:none;
+  min-width:0}
+td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
+td.r{white-space:nowrap}
+tr:last-child td,tbody tr:last-child th{border-bottom:0}
+tr.hl :is(td,th){background:var(--accent-wash)}
+tr.hl :is(td,th):first-child{background:var(--accent-wash);box-shadow:inset 3px 0 0 var(--accent),inset -1px 0 0 var(--line)}
+td.wrap{white-space:normal;min-width:min(14rem,60vw)}
+th.sort{cursor:pointer;user-select:none}
+th.sort:hover{color:var(--ink)}
+th.sort[aria-sort]::after{content:" ↓";color:var(--accent)}
+th.sort[aria-sort="ascending"]::after{content:" ↑"}
+
+/* status pills: always icon + label */
+.pill{display:inline-flex;align-items:center;gap:.3rem;font-size:var(--t-xs);font-weight:600;padding:.1rem .45rem;border-radius:999px;white-space:nowrap}
+.pill.good{background:var(--good-wash);color:var(--good)}
+.pill.warn{background:var(--warn-wash);color:var(--warn)}
+.pill.bad{background:var(--bad-wash);color:var(--bad)}
+.pill.neutral{background:var(--sunk);color:var(--ink-2)}
+.sw{display:inline-block;width:.65rem;height:.65rem;border-radius:50%;margin-right:.4rem;vertical-align:0}
+
+/* controls */
+.controls{display:flex;flex-wrap:wrap;gap:.75rem 1.5rem;align-items:end;padding:1rem;background:var(--sunk);border-radius:var(--r)}
+.ctl{display:grid;gap:.25rem;font-size:var(--t-sm);color:var(--ink-2);min-width:0}
+.ctl label{font-weight:600;font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.ctl output{font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600}
+input[type=range]{accent-color:var(--accent);width:12rem;max-width:100%}
+select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid var(--base);border-radius:4px;background:var(--surface);color:var(--ink)}
+.seg{display:inline-flex;border:1px solid var(--base);border-radius:5px;overflow:hidden}
+.seg button{font:inherit;font-size:var(--t-sm);border:0;background:var(--surface);color:var(--ink-2);padding:.35rem .7rem;cursor:pointer}
+.seg button+button{border-left:1px solid var(--base)}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--on-accent)}
+.toggle{display:flex;align-items:center;gap:.45rem;font-size:var(--t-sm);color:var(--ink-2);cursor:pointer}
+.toggle input{accent-color:var(--accent);width:1rem;height:1rem}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.result{display:grid;gap:.75rem}
+.callout{border-left:3px solid var(--accent);padding:.6rem .9rem;background:var(--surface);font-size:var(--t-sm);color:var(--ink-2);
+  max-width:var(--col)}
+.callout.warn{border-color:var(--warn)}
+.stat{display:grid;gap:.1rem}
+.stat .big{font-size:var(--t-hero);font-weight:600;line-height:1.1}
+.stat .lab{font-size:var(--t-xs);color:var(--muted)}
+.stats{display:flex;flex-wrap:wrap;gap:1rem 2.25rem}
+.method{font-size:var(--t-sm);color:var(--ink-2);display:grid;gap:.5rem;max-width:var(--col)}
+.method dt{font-weight:600;color:var(--ink)}
+.method dd{margin:0 0 .4rem;overflow-wrap:anywhere}
+/* a term's caveats: a line of their own under its paragraph, spaced and quieter, at the appendix's size */
+.method .cap{margin-top:.4rem;color:var(--muted)}
+/* who wrote the report, for what and when: the appendix's last line, at its size, set apart from the list above */
+.cap[data-part="made"]{font-size:var(--t-sm);color:var(--muted);max-width:var(--col);margin-top:1.5rem}
+/* a frame under 700 px (a host's at a 1024 px window, a phone) sets headings a step smaller and tighter, so a
+   headline holds three lines, not five */
+@media (max-width:700px){h1{font-size:1.25rem;line-height:1.25}h2{font-size:1rem;line-height:1.35}h3{font-size:var(--t-base);line-height:1.35}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+.armchip{display:inline-flex;align-items:center;gap:.4rem;white-space:nowrap}
+.armchip .tag{display:inline-grid;place-items:center;width:1.25rem;height:1.25rem;border-radius:4px;color:var(--on-fill);font-size:var(--t-xs);font-weight:600;font-family:var(--f-mono)}
+.vsum{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:1rem;align-items:start}
+@media (max-width:820px){.vsum{grid-template-columns:1fr}}
+.flag{display:flex;gap:.6rem;align-items:flex-start;font-size:var(--t-sm);color:var(--ink-2);background:var(--warn-wash);border-radius:var(--r);padding:.6rem .8rem;max-width:var(--col)}
+.flag b{color:var(--warn)}
+.flag ul{margin:.3rem 0 0;padding-left:1.1rem}
+.flag li{margin:.15rem 0}
+.flag li.checked{color:var(--muted);list-style:"✓  "}
+.keytbl td.spec{font-family:var(--f-mono);font-size:var(--t-xs);color:var(--ink-2);white-space:normal}
+.mini h3{font-size:var(--t-base);margin-bottom:.15rem}
+.mini .cap{margin:0 0 .4rem}
+.ex{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,28rem),1fr));gap:1rem}
+.excard{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:.9rem 1rem;display:grid;gap:.5rem;min-width:0}
+.excard .top{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;font-size:var(--t-xs);color:var(--muted)}
+.excard .reason{font-size:var(--t-sm)}
+.excard pre{margin:0;font-family:var(--f-mono);font-size:var(--t-xs);color:var(--ink-2);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--sunk);padding:.5rem .6rem;border-radius:4px;max-height:9rem;overflow:auto}
+/* gate matrix: a pill, the binding reasons and the cost per cell; the cheapest passing cell washed */
+.gate td,.gate th{white-space:normal;vertical-align:top}
+.gate td.cell{min-width:9.5rem}
+.gate .why{display:block;font-size:var(--t-xs);color:var(--muted);margin-top:.25rem;line-height:1.35}
+.gate .cost{display:block;font-size:var(--t-xs);color:var(--ink-2);margin-top:.15rem;font-variant-numeric:tabular-nums}
+.gate td.pick{background:var(--accent-wash)}
+.gate .pickmark{font-size:var(--t-xs);font-weight:600;color:var(--accent);display:block;margin-top:.2rem}
+.gate .task b{display:block;font-weight:600;color:var(--ink)}
+.gate .task span{font-size:var(--t-xs);color:var(--muted)}
+.gate .task span.xc{font-weight:600;color:var(--warn);text-transform:uppercase;letter-spacing:.05em;display:block;margin-top:.25rem}
+/* lattice of tiles for two crossed factors; columns set inline from the data */
+.lattice{display:grid;gap:2px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+/* in its .tbl frame, which draws the border: never narrower than its tiles' floor, so it scrolls instead */
+.tbl>.lattice{border:0;border-radius:0;min-width:min-content}
+.lattice>.rh{min-width:auto;white-space:nowrap}
+.lattice>div{background:var(--surface);padding:.7rem .8rem;min-width:0}
+.lattice .hd{background:var(--sunk);font-size:var(--t-xs);font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:flex;align-items:end}
+.lattice .rh{background:var(--sunk);font-family:var(--f-display);font-weight:600;display:flex;align-items:center}
+.lattice .cell{display:grid;gap:.3rem;align-content:start}
+.lattice .acc{font-size:var(--t-hero);font-weight:600;line-height:1}
+.lattice .meta{font-size:var(--t-xs);color:var(--ink-2);font-variant-numeric:tabular-nums}
+.lattice .cell.rec{box-shadow:inset 0 0 0 2px var(--accent)}
+.lattice .bar{height:4px;border-radius:2px;background:var(--sunk);position:relative}
+.lattice .bar i{position:absolute;inset:0 auto 0 0;border-radius:2px;background:var(--s1)}
+/* cell grids: heatmap, difference heatmap, confusion */
+.mx{display:grid;gap:2px;font-size:var(--t-sm)}
+.mx .h{font-size:var(--t-xs);color:var(--muted);font-weight:600;padding:.25rem .35rem;display:flex;align-items:end;justify-content:center;text-align:center}
+.mx .rl{font-size:var(--t-xs);color:var(--muted);font-weight:600;padding:.25rem .5rem .25rem 0;display:flex;align-items:center;justify-content:flex-end}
+.mx .c{border-radius:3px;padding:.5rem .35rem;text-align:center;font-variant-numeric:tabular-nums;display:grid;gap:.05rem;min-width:0}
+.mx .c b{font-size:var(--t-base);font-weight:600}
+.mx .c span{font-size:var(--t-xs)}
+.mx .c.low{outline:2px solid var(--bad);outline-offset:-2px}
+.excard .q{font-weight:600}
+.excard dl{display:grid;grid-template-columns:4.5rem 1fr;gap:.25rem .6rem;margin:0;font-size:var(--t-sm)}
+.excard dt{color:var(--muted)}
+.excard dd{margin:0;font-family:var(--f-mono);font-size:var(--t-xs);overflow-wrap:anywhere;min-width:0}
+.excard dd.bad{color:var(--bad)}
+.excard .note{font-size:var(--t-sm);color:var(--ink-2)}
+.chart .legend svg{display:inline-block}
+@media (max-width:560px){.lattice .acc{font-size:var(--t-lg)}.lattice>div{padding:.5rem}}
+
+html { scroll-padding-top: 3.5rem; }
+p, li, .disclosure, .caveat { max-width: 78ch; }
+ul { margin: 0; padding-left: 1.25rem; }
+p, li, dd, figcaption, summary, .disclosure, .caveat { overflow-wrap: anywhere; }
+.mx { min-width: max-content; }
+h4, h5 { font-family: var(--f-display); font-weight: 600; margin: 0; }
+h4 { font-size: var(--t-base); }
+h5 { font-size: var(--t-sm); }
+article > header { display: grid; gap: .75rem; padding-block: 1.75rem 1.5rem; }
+/* a code page's title is the campaign's name, a label over the lead, so it sets at the scale's 20 px step */
+article > header > h1 { max-width: var(--col); font-size: var(--t-lg); line-height: 1.25; }
+.question { font-size: var(--t-base); line-height: 1.45; color: var(--ink-2); }
+.arms { font-size: var(--t-sm); color: var(--muted); }
+.verdict { font-size: var(--t-base); line-height: 1.45; padding: .15rem 0 .15rem .9rem; border-left: 3px solid var(--base); }
+.verdict[data-tone="decided"] { border-left-color: var(--accent); }
+.verdict[data-tone="open"] { border-left-color: var(--warn); }
+.verdict[data-tone="failed"] { border-left-color: var(--bad); }
+.verdict strong { font-weight: 600; }
+.line { font-size: var(--t-sm); color: var(--ink-2); }
+.line[data-source="caveat"] { font-size: var(--t-base); color: var(--ink); }
+.flag.report-caveat { color: var(--ink-2); }
+.flag strong { font-weight: 600; color: var(--ink); }
+.facts, .order, .count, .trial-links { font-size: var(--t-sm); color: var(--muted); }
+.axis { font-size: var(--t-xs); color: var(--muted); }
+a.term { font-size: var(--t-xs); color: var(--muted); text-decoration: underline dotted; }
+nav { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; padding: .6rem 0;
+  font-size: var(--t-sm); background: var(--bg); border-bottom: 1px solid var(--line); }
+nav a { color: var(--ink-2); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: min(100%, 22rem); }
+nav a:hover { color: var(--accent); }
+section > *, .section-body > * { min-width: 0; }
+.section-body { display: grid; gap: 1rem; padding-top: 1rem; }
+.section-body section { padding-top: 1rem; }
+summary { cursor: pointer; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "\203A"; display: inline-block; width: 1em; color: var(--muted); transition: transform .1s; }
+details[open] > summary::before { transform: rotate(90deg); }
+details.section > summary { padding-bottom: .4rem; border-bottom: 1px solid var(--line); }
+details.section > summary > h2, details.section > summary > h3, details.section > summary > h4 { display: inline; }
+details.fold > summary, details[data-table] > summary { font-size: var(--t-sm); color: var(--ink-2); }
+details.fold > summary + *, details[data-table] > summary + * { margin-top: .5rem; }
+details.fold > * + *:not(summary) { margin-top: 1rem; }
+details.expr { display: inline-block; }
+details.expr > summary::before { content: none; }
+details.expr[open] > summary { display: none; }
+.table-block { display: grid; gap: .5rem; }
+/* a header's term is underlined dotted at the first header linking it; a later one (seen) keeps its link, plain */
+th a { color: inherit; text-decoration: underline dotted; }
+th a.seen { text-decoration: none; }
+th code { font-size: 1em; }
+td, tbody th { vertical-align: top; }
+th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.num { white-space: nowrap; }
+/* an interval's two ends and the word between them read as one figure, never broken across lines; a unit word after it
+   may take the next line. A cell of a column of figures (an arm's level, a change) breaks only between its figure and
+   the bracket after it: the figure with its unit (.pt) and the bracket with its parentheses (.iv for an interval, .aside
+   for a count) each hold one line, so 4.5 (3.8 to 5.0) may set (3.8 to 5.0) under 4.5 and a narrow column never
+   scrolls its table, yet never reads "4.5 (3.8" above "to 5.0)". A figure with its count after it (95% (38 of 40
+   trials, 20 cases)) likewise may set its count on the next line, held whole, so a column of such figures gives an
+   interval column beside it the room to hold its line */
+td .iv, td .pt, td .aside { white-space: nowrap; }
+td.num.split { white-space: normal; }
+td.key { font-weight: 600; }
+[data-table="scoreboard"] table { font-size: var(--t-base); }
+td.wrap { max-width: 32rem; }
+td.glyph { font-variant-numeric: tabular-nums; }
+/* a glyph cell reads its figure first, then the glyph with the reading after it, as a sentence reads them */
+td.glyph .figure { display: block; }
+td.glyph .reading { color: var(--ink-2); }
+td.glyph .no-glyph { display: inline-block; width: 7.5em; max-width: 100%; min-width: 4.5em; margin-right: 6px; }
+td:target, tr:target > td { background: var(--accent-wash); }
+figure { margin: 0; }
+.fig figcaption { font-family: var(--f-display); font-size: var(--t-base); font-weight: 600; margin-bottom: .5rem; }
+.chart-values caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.chart:not(:empty) + .chart-values { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.finding { font-family: var(--f-display); font-size: var(--t-base); margin-top: .75rem; }
+.finding strong { font-weight: 600; }
+[data-role] > p + p, [data-role] > p + ul, [data-role] > ul + p { margin-top: .6rem; }
+p[data-role] > strong:first-child, .caveat > strong:first-child { font-size: var(--t-sm); color: var(--muted);
+  letter-spacing: .02em; }
+.disclosure, .caveat { font-size: var(--t-sm); color: var(--ink-2); padding-left: .75rem;
+  border-left: 1px solid var(--line); }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: .25rem 0; padding: .5rem .6rem; border-radius: 4px;
+  font: var(--t-xs)/1.45 var(--f-mono); color: var(--ink-2); background: var(--sunk); max-height: 24rem;
+  overflow-y: auto; }
+details.trial { padding: .5rem 0 .5rem .75rem; border-top: 1px solid var(--line); border-left: 2px solid transparent; }
+details.trial:last-of-type { border-bottom: 1px solid var(--line); }
+details.trial[data-state="failed"] { border-left-color: var(--bad); }
+details.trial[data-state="lost"] { border-left-color: var(--base); }
+details.trial > summary { font-size: var(--t-sm); }
+details.trial dl { margin: .5rem 0 0; font-size: var(--t-sm); }
+details.trial dt { font-weight: 600; margin-top: .5rem; }
+details.trial dd { margin: .15rem 0 0; }
+@media (max-width: 640px) { nav { position: static; } }
+@media print {
+  nav { display: none; }
+  .tbl { overflow: visible; }
+  th { position: static; }
+  details.trial, .tbl, figure { break-inside: avoid; }
+}
+
+svg.viz-glyph { width: 7.5em; max-width: 100%; min-width: 4.5em; height: 0.875em; vertical-align: -0.0625em;
+  margin-right: 6px; overflow: visible; }
+svg.viz-glyph .viz-track { stroke: var(--base); stroke-width: 1; }
+svg.viz-glyph .viz-zero { stroke: var(--ink); stroke-width: 2; }
+svg.viz-glyph .viz-band { fill: var(--line); }
+svg.viz-glyph .viz-margin { stroke: var(--muted); stroke-width: 1; }
+svg.viz-glyph .viz-whisker { stroke: var(--ink); stroke-width: 1.5; stroke-linecap: round; }
+svg.viz-glyph .viz-point { fill: var(--ink); }
+</style>
+</head>
+<body>
+<div class="page">
+<article data-page="doc">
+<div class="mast"><span class="name">Kairo persona model, round 2: September vs qwen3.8-flash and 1017 on character v2 with the promoted directives</span><span class="kind">Change · control vs candidates</span><span><b>Kairo&#x27;s character across persona models</b></span><span>September vs 2 candidates · character adherence (v2) · 299 cases × 3 repeats</span><span>Run 25 Oct 2026</span></div>
+<div class="bluf">
+<h1 class="long">Keep September (P), the control: as served in this run, <span class="id">qwen3.8-flash</span> (A) and 1017 (B) each cost more per reply, and neither holds Kairo in character any better.</h1>
+<p class="lede">As served in this run, with no provider recorded, production cost rises by $0.62 per 1,000 replies and $0.49 per 1,000 replies, both clear of zero after correction. Only a candidate cheaper than the control on production routing would reopen the question.</p>
+<div class="flag" data-part="flag"><b aria-hidden="true">!</b><div>Costs are as served in this run: no arm records the provider that served it, and an earlier finding says <span class="id">qwen3.8-flash</span> costs less than the control.</div></div>
+<div class="flag" data-part="confidence" data-form="high_if_immaterial"><b aria-hidden="true">!</b><div><b>Confidence: High, if the caveats below aren&#x27;t material.</b><ul><li><b>No arm records the provider that served it.</b> Only if, on the routing production would use, a candidate cost less than the control&#x27;s $1.89 per 1,000 replies. Until a <span class="id">re-pricing</span> shows that, keeping the control holds; and even then the call would become a trade, not a switch, because after correction <span class="id">qwen3.8-flash</span> (A) passes 8 points fewer trials and 1017 (B) holds character 5 points less often.</li><li><b>The judge is not calibrated.</b> Only if a candidate also proved cheaper on production routing: then whether its character loss is real would decide the call. In this run the cost order, not the judge, decides it; a judge that misread a candidate&#x27;s style could shrink or erase its character loss, but would not make it cheaper.</li><li><b>The aspect was set after the results.</b> Only if a different aspect should have been asked before the run. The cost order that decides the call holds whatever aspect is read.</li><li><b>The control was set after the results.</b> Only if another arm should have been the control. September (P) is the least costly of the three arms as served either way.</li><li><b>A confound: model.</b> Only if something besides the served model moved between arms. Two things did or may have: 1017 (B)&#x27;s reasoning share, carried beside its claims, and the provider, unrecorded for every arm and carried above.</li><li class="checked"><b>The margin was set after the results.</b> The late margin was checked: the call holds at every margin.</li><li class="checked"><b>The floor was set after the results.</b> The late floor was checked: the call holds at every margin the floor could take.</li></ul></div></div>
+<div class="decision" data-part="decision"><div class="rec" data-slot="recommendation"><span class="k">Recommendation</span><span class="v">Keep September (P) on all traffic. As served in this run it is the least costly arm, at $1.89 per 1,000 replies, and neither candidate shows a gain in character to set against its higher cost.</span></div><div data-slot="why_not"><span class="k">Why not the others</span><span class="v"><span class="id">qwen3.8-flash</span> (A) costs $0.62 per 1,000 replies more as served and passes fewer trials, down 8 points (-13 to -2 after correction). 1017 (B) costs $0.49 per 1,000 replies more as served and holds character less often, down 5 points after correction, though part of that may come from how much it reasoned; on pass rate the evidence cannot tell it and the control apart.</span></div><div data-slot="watch"><span class="k">Watch</span><span class="v">The weakest margin is <span class="id">qwen3.8-flash</span> (A)&#x27;s on the margin on character adherence (v2): at the far end of the 95% interval, adjusted for 16 comparisons, its <span class="id">pass-rate</span> drop reaches 13 points, 2 points inside the line. It bears on a rejected option, not on the call. A prior insight held that <span class="id">qwen3.8-flash</span> lowers production costs; here, as served, it costs more. No arm names its provider, so whether that is the model or this run&#x27;s routing is unknown: it is the risk the call carries.</span></div><div data-slot="next"><span class="k">Next</span><span class="v">Price both candidates on the provider routing production would use. If neither falls below the control&#x27;s cost, the call stands; if one does, its character loss becomes a trade to price.</span></div></div>
+<div data-table="options" style="min-width:0"><div class="tbl"><table><thead><tr><th scope="col">Option</th><th scope="col">Role</th><th scope="col">Configuration</th><th scope="col">Pass rate</th><th scope="col" style="--head:8.71rem">Cost per 1,000 replies</th></tr></thead><tbody><tr class="hl"><td><span class="armchip"><span class="tag" style="background:var(--ink-2);color:var(--surface)">P</span>September</span></td><td>Control (recommended)</td><td><span class="id long">deepseek/deepseek-v4.1-flash</span></td><td>85% (765 of 897)</td><td>$1.89</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s1);color:var(--on-fill)">A</span><span class="id">qwen3.8-flash</span></span></td><td>Candidate</td><td><span class="id long">qwen/qwen3.8-flash</span></td><td>78% (695 of 895)</td><td>$2.43 (+28%)</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s2);color:var(--on-fill)">B</span>1017</span></td><td>Candidate</td><td>deepseek/deepseek-v4.1-flash-1017</td><td>82% (738 of 897)</td><td>$2.41 (+27%)</td></tr></tbody></table></div></div>
+</div>
+<section data-part="claim" data-weight="lead" id="claim-1"><header><h2>As served in this run, both candidates cost more per reply than the control, and the paired intervals exclude zero for each: $0.62 per 1,000 replies more for <span class="id">qwen3.8-flash</span> (A), $0.49 per 1,000 replies more for 1017 (B). 1017 (B) spent a smaller share of its output reasoning (55% against the control&#x27;s 76%), so its comparison is not at equal reasoning; matching the control&#x27;s share would more likely widen its cost gap than close it.</h2><p class="cap" data-part="caveats">Caveats: A confound: reasoning ratio.</p></header><figure class="fig" data-figure="forest"><div class="chart" id="claim-1-0" data-kind="forest" data-chart="{&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 qwen3.8-flash&quot;,&quot;value&quot;:0.616038035178,&quot;lo&quot;:0.379084722574,&quot;hi&quot;:0.852991347783,&quot;id&quot;:&quot;qwen3.8-flash&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;strong&quot;:true,&quot;note&quot;:&quot;+$0.62 worse&quot;,&quot;tip&quot;:[&quot;qwen3.8-flash&quot;,&quot;Production cost, per 1,000 replies&quot;,&quot;+$0.62, +$0.38 to +$0.85&quot;],&quot;value_text&quot;:&quot;+$0.62&quot;,&quot;lo_text&quot;:&quot;+$0.38&quot;,&quot;hi_text&quot;:&quot;+$0.85&quot;},{&quot;label&quot;:&quot;B \u00b7 1017&quot;,&quot;value&quot;:0.492412336535,&quot;lo&quot;:0.17428539427,&quot;hi&quot;:0.8105392788,&quot;id&quot;:&quot;1017&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;strong&quot;:true,&quot;note&quot;:&quot;+$0.49 worse&quot;,&quot;tip&quot;:[&quot;1017&quot;,&quot;Production cost, per 1,000 replies&quot;,&quot;+$0.49, +$0.17 to +$0.81&quot;],&quot;value_text&quot;:&quot;+$0.49&quot;,&quot;lo_text&quot;:&quot;+$0.17&quot;,&quot;hi_text&quot;:&quot;+$0.81&quot;}],&quot;domain&quot;:[-0.0426495673891,0.895640915172],&quot;fmt&quot;:&quot;+usd:2&quot;,&quot;level&quot;:&quot;95% (adjusted for 16 comparisons)&quot;,&quot;zero_label&quot;:&quot;no change vs P \u00b7 September ($1.89, mean of 294 cases)&quot;,&quot;better&quot;:[&quot;better&quot;,&quot;worse&quot;]}"></div><div class="tbl chart-values"><table><caption>Production cost per 1,000 replies, each candidate minus September (P), paired by case over the cases where both arms recorded a cost (284 and 293), intervals adjusted for the family&#x27;s comparisons; these gaps differ from the gaps between the arms&#x27; means in the options table. No arm records the provider behind its cost.</caption><thead><tr><th scope="col">Row</th><th scope="col">Change</th><th scope="col">95% interval (adjusted for 16 comparisons)</th><th scope="col">Note</th></tr></thead><tbody><tr><td>A · <span class="id">qwen3.8-flash</span></td><td>+$0.62</td><td class="interval"><span class="iv">+$0.38 to +$0.85</span></td><td>+$0.62 worse</td></tr><tr><td>B · 1017</td><td>+$0.49</td><td class="interval"><span class="iv">+$0.17 to +$0.81</span></td><td>+$0.49 worse</td></tr></tbody></table></div></figure><p class="cap">Production cost, per 1,000 replies, in dollars.</p><p class="cap">Production cost per 1,000 replies, each candidate minus September (P), paired by case over the cases where both arms recorded a cost (284 and 293), intervals adjusted for the family&#x27;s comparisons; these gaps differ from the gaps between the arms&#x27; means in the options table. No arm records the provider behind its cost.</p></section>
+<section data-part="claim" data-weight="support" id="claim-2"><header><h3>On the uncorrected readings against the control, <span class="id">qwen3.8-flash</span> (A)&#x27;s pass rate is down 8 points, clearly worse, and the evidence cannot tell 1017 (B) and the control apart (-6 to +1 points); both drops stay within the <span class="id">15-point</span> margin.</h3><p class="cap" data-part="caveats">Caveats: A run fell short of its usable measurements — two of them, on <span class="id">qwen3.8-flash</span> (A).</p></header><figure class="fig" data-figure="forest"><div class="chart" id="claim-2-0" data-kind="forest" data-chart="{&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 qwen3.8-flash&quot;,&quot;value&quot;:-7.58082497213,&quot;lo&quot;:-10.7909629121,&quot;hi&quot;:-3.38102718815,&quot;id&quot;:&quot;qwen3.8-flash&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;strong&quot;:true,&quot;note&quot;:&quot;worse&quot;,&quot;tip&quot;:[&quot;qwen3.8-flash&quot;,&quot;-8 pts, -11 to -3&quot;],&quot;value_text&quot;:&quot;-8&quot;,&quot;lo_text&quot;:&quot;-11&quot;,&quot;hi_text&quot;:&quot;-3&quot;},{&quot;label&quot;:&quot;B \u00b7 1017&quot;,&quot;value&quot;:-3.01003344482,&quot;lo&quot;:-5.81483822316,&quot;hi&quot;:1.13603379577,&quot;id&quot;:&quot;1017&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;note&quot;:&quot;cannot tell apart&quot;,&quot;tip&quot;:[&quot;1017&quot;,&quot;-3 pts, -6 to +1&quot;],&quot;value_text&quot;:&quot;-3&quot;,&quot;lo_text&quot;:&quot;-6&quot;,&quot;hi_text&quot;:&quot;+1&quot;}],&quot;domain&quot;:[-16.0,3.0],&quot;fmt&quot;:&quot;+num:0&quot;,&quot;level&quot;:&quot;95%&quot;,&quot;reference&quot;:{&quot;value&quot;:-15.0,&quot;label&quot;:&quot;margin -15 pts; shaded: no worse than the margin&quot;,&quot;kind&quot;:&quot;margin&quot;,&quot;value_text&quot;:&quot;-15&quot;},&quot;zero_label&quot;:&quot;no change vs P \u00b7 September (85%, 765 of 897 trials)&quot;,&quot;better&quot;:[&quot;worse&quot;,&quot;better&quot;]}"></div><div class="tbl chart-values"><table><caption>Change in pass rate against September (P): each candidate&#x27;s own reading, uncorrected, with the margin drawn. <span class="id">qwen3.8-flash</span> (A) lost two trials to harness failures, too few to move a gap this size.</caption><thead><tr><th scope="col">Row</th><th scope="col">Change</th><th scope="col">95% interval</th><th scope="col">Note</th></tr></thead><tbody><tr><td>A · <span class="id">qwen3.8-flash</span></td><td>-8 pts</td><td class="interval"><span class="iv">-11 to -3</span> pts</td><td>worse</td></tr><tr><td>B · 1017</td><td>-3 pts</td><td class="interval"><span class="iv">-6 to +1</span> pts</td><td>cannot tell apart</td></tr><tr><td class="wrap">margin -15 pts; shaded: no worse than the margin</td><td>-15 pts</td><td></td><td></td></tr></tbody></table></div></figure><p class="cap">Change in pass rate against September (P): each candidate&#x27;s own reading, uncorrected, with the margin drawn. <span class="id">qwen3.8-flash</span> (A) lost two trials to harness failures, too few to move a gap this size.</p></section>
+<section data-part="claim" data-weight="support" id="claim-3"><header><h3>After correction, both candidates hold character less often than the control: <span class="id">qwen3.8-flash</span> (A) by 6 points and 1017 (B) by 5 points. Part of 1017 (B)&#x27;s loss may come from how much it reasoned rather than from the model.</h3><p class="cap" data-part="caveats">Caveats: A confound: reasoning ratio.</p></header><figure class="fig" data-figure="forest"><div class="chart" id="claim-3-0" data-kind="forest" data-chart="{&quot;rows&quot;:[{&quot;label&quot;:&quot;A \u00b7 qwen3.8-flash&quot;,&quot;value&quot;:-7.58082497213,&quot;lo&quot;:-12.8542905208,&quot;hi&quot;:-1.80408232845,&quot;id&quot;:&quot;qwen3.8-flash&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;strong&quot;:true,&quot;note&quot;:&quot;-8 pts worse&quot;,&quot;tip&quot;:[&quot;qwen3.8-flash&quot;,&quot;Pass rate&quot;,&quot;-8 pts, -13 to -2&quot;],&quot;group&quot;:&quot;Pass rate \u00b7 September 85%&quot;,&quot;value_text&quot;:&quot;-8&quot;,&quot;lo_text&quot;:&quot;-13&quot;,&quot;hi_text&quot;:&quot;-2&quot;},{&quot;label&quot;:&quot;B \u00b7 1017&quot;,&quot;value&quot;:-3.01003344482,&quot;lo&quot;:-7.39187006839,&quot;hi&quot;:2.64029158279,&quot;id&quot;:&quot;1017&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;note&quot;:&quot;-3 pts cannot tell apart&quot;,&quot;tip&quot;:[&quot;1017&quot;,&quot;Pass rate&quot;,&quot;-3 pts, -7 to +3&quot;],&quot;group&quot;:&quot;Pass rate \u00b7 September 85%&quot;,&quot;value_text&quot;:&quot;-3&quot;,&quot;lo_text&quot;:&quot;-7&quot;,&quot;hi_text&quot;:&quot;+3&quot;},{&quot;label&quot;:&quot;A \u00b7 qwen3.8-flash&quot;,&quot;value&quot;:-5.96432552954,&quot;lo&quot;:-11.6160089616,&quot;hi&quot;:-2.23781648092,&quot;id&quot;:&quot;qwen3.8-flash&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;strong&quot;:true,&quot;note&quot;:&quot;-6 pts worse&quot;,&quot;tip&quot;:[&quot;qwen3.8-flash&quot;,&quot;Persona holds character&quot;,&quot;-6 pts, -12 to -2&quot;],&quot;group&quot;:&quot;Persona holds character \u00b7 September 91%&quot;,&quot;value_text&quot;:&quot;-6&quot;,&quot;lo_text&quot;:&quot;-12&quot;,&quot;hi_text&quot;:&quot;-2&quot;},{&quot;label&quot;:&quot;B \u00b7 1017&quot;,&quot;value&quot;:-4.73801560758,&quot;lo&quot;:-8.66956273094,&quot;hi&quot;:-0.57439757511,&quot;id&quot;:&quot;1017&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;strong&quot;:true,&quot;note&quot;:&quot;-5 pts worse&quot;,&quot;tip&quot;:[&quot;1017&quot;,&quot;Persona holds character&quot;,&quot;-5 pts, -9 to -1&quot;],&quot;group&quot;:&quot;Persona holds character \u00b7 September 91%&quot;,&quot;value_text&quot;:&quot;-5&quot;,&quot;lo_text&quot;:&quot;-9&quot;,&quot;hi_text&quot;:&quot;-1&quot;},{&quot;label&quot;:&quot;A \u00b7 qwen3.8-flash&quot;,&quot;value&quot;:-2.95429208473,&quot;lo&quot;:-8.31025480293,&quot;hi&quot;:1.51375089772,&quot;id&quot;:&quot;qwen3.8-flash&quot;,&quot;color&quot;:&quot;--s1&quot;,&quot;note&quot;:&quot;-3 pts cannot tell apart&quot;,&quot;tip&quot;:[&quot;qwen3.8-flash&quot;,&quot;Persona booth stays offstage&quot;,&quot;-3 pts, -8 to +2&quot;],&quot;group&quot;:&quot;Persona booth stays offstage \u00b7 September 93%&quot;,&quot;value_text&quot;:&quot;-3&quot;,&quot;lo_text&quot;:&quot;-8&quot;,&quot;hi_text&quot;:&quot;+2&quot;},{&quot;label&quot;:&quot;B \u00b7 1017&quot;,&quot;value&quot;:0.780379041249,&quot;lo&quot;:-3.47461779602,&quot;hi&quot;:5.03046824597,&quot;id&quot;:&quot;1017&quot;,&quot;color&quot;:&quot;--s2&quot;,&quot;note&quot;:&quot;+1 pts cannot tell apart&quot;,&quot;tip&quot;:[&quot;1017&quot;,&quot;Persona booth stays offstage&quot;,&quot;+1 pts, -3 to +5&quot;],&quot;group&quot;:&quot;Persona booth stays offstage \u00b7 September 93%&quot;,&quot;value_text&quot;:&quot;+1&quot;,&quot;lo_text&quot;:&quot;-3&quot;,&quot;hi_text&quot;:&quot;+5&quot;}],&quot;domain&quot;:[-14.0,7.0],&quot;fmt&quot;:&quot;+num:0&quot;,&quot;level&quot;:&quot;95% (adjusted for 16 comparisons)&quot;,&quot;zero_label&quot;:&quot;no change vs P \u00b7 September&quot;,&quot;better&quot;:[&quot;worse&quot;,&quot;better&quot;]}"></div><div class="tbl chart-values"><table><caption>Each candidate minus September (P), paired by case, intervals adjusted for the family&#x27;s comparisons; pass rate here is the corrected contrast, wider than the reading above. On keeping the booth offstage the evidence cannot tell either candidate and the control apart.</caption><thead><tr><th scope="col">Group</th><th scope="col">Row</th><th scope="col">Change</th><th scope="col">95% interval (adjusted for 16 comparisons)</th><th scope="col">Note</th></tr></thead><tbody><tr><td>Pass rate · September 85%</td><td>A · <span class="id">qwen3.8-flash</span></td><td>-8 pts</td><td class="interval"><span class="iv">-13 to -2</span> pts</td><td>-8 pts worse</td></tr><tr><td>Pass rate · September 85%</td><td>B · 1017</td><td>-3 pts</td><td class="interval"><span class="iv">-7 to +3</span> pts</td><td>-3 pts cannot tell apart</td></tr><tr><td>Persona holds character · September 91%</td><td>A · <span class="id">qwen3.8-flash</span></td><td>-6 pts</td><td class="interval"><span class="iv">-12 to -2</span> pts</td><td>-6 pts worse</td></tr><tr><td>Persona holds character · September 91%</td><td>B · 1017</td><td>-5 pts</td><td class="interval"><span class="iv">-9 to -1</span> pts</td><td>-5 pts worse</td></tr><tr><td class="wrap">Persona booth stays offstage · September 93%</td><td>A · <span class="id">qwen3.8-flash</span></td><td>-3 pts</td><td class="interval"><span class="iv">-8 to +2</span> pts</td><td>-3 pts cannot tell apart</td></tr><tr><td class="wrap">Persona booth stays offstage · September 93%</td><td>B · 1017</td><td>+1 pts</td><td class="interval"><span class="iv">-3 to +5</span> pts</td><td>+1 pts cannot tell apart</td></tr></tbody></table></div></figure><p class="cap">Each candidate minus September (P), paired by case, intervals adjusted for the family&#x27;s comparisons; pass rate here is the corrected contrast, wider than the reading above. On keeping the booth offstage the evidence cannot tell either candidate and the control apart.</p></section>
+<section data-part="claim" data-weight="detail" id="claim-4"><header><p class="takeaway">Holding character falls furthest on <span class="id">off-lane</span> asks: <span class="id">qwen3.8-flash</span> (A) is 23 points below the control there and 1017 (B) 20. It is a lead, uncorrected, and part of 1017 (B)&#x27;s drop may come from how much it reasoned.</p><p class="cap" data-part="caveats">Caveats: A confound: reasoning ratio.</p></header><div class="table-block" data-table="compare"><div class="tbl"><table><thead><tr><th scope="col">Place</th><th scope="col">First arm</th><th scope="col">Second arm</th><th scope="col">Difference</th><th scope="col">Interval</th><th scope="col">Level</th><th scope="col">Read as</th></tr></thead><tbody><tr><td>off lane</td><td>43%</td><td>66%</td><td>-23</td><td class="interval"><span class="iv">-41 to -5</span></td><td>95%</td><td class="wrap">independent: each arm&#x27;s own spread (its standard error), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same</td></tr></tbody></table></div></div><p class="cap"><span class="id">qwen3.8-flash</span> (895 trials of 299 cases); September (897 trials of 299 cases) ran more trials than cases, and trials of one case are not independent: an interval here may be too narrow if these intervals count trials nested in cases. The input states what an unpaired interval&#x27;s arms count: observations.</p><p class="cap"><span class="id">qwen3.8-flash</span> (A) minus September (P) on <span class="id">off-lane</span> asks, an unpaired interval that may be too narrow because repeats of one case are not independent. <span class="id">Off-lane</span> carries 48% of this candidate&#x27;s loss on holding character.</p><div class="table-block" data-table="compare"><div class="tbl"><table><thead><tr><th scope="col">Place</th><th scope="col">First arm</th><th scope="col">Second arm</th><th scope="col">Difference</th><th scope="col">Interval</th><th scope="col">Level</th><th scope="col">Read as</th></tr></thead><tbody><tr><td>off lane</td><td>46%</td><td>66%</td><td>-20</td><td class="interval"><span class="iv">-37 to -3</span></td><td>95%</td><td class="wrap">independent: each arm&#x27;s own spread (its standard error), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same</td></tr></tbody></table></div></div><p class="cap">1017 (897 trials of 299 cases); September (897 trials of 299 cases) ran more trials than cases, and trials of one case are not independent: an interval here may be too narrow if these intervals count trials nested in cases. The input states what an unpaired interval&#x27;s arms count: observations.</p><p class="cap">1017 (B) minus September (P) on <span class="id">off-lane</span> asks, read the same way. <span class="id">Off-lane</span> carries 53% of this candidate&#x27;s loss on holding character.</p></section>
+<section data-part="claim" data-weight="detail" id="claim-5"><header><p class="takeaway">The control fails <span class="id">off-lane</span> asks too: of the <span class="id">off-lane</span> trials, three per case over 38 cases, 42 failed for any cause on September (P), against 68 on <span class="id">qwen3.8-flash</span> (A) and 63 on 1017 (B). <span class="id">Off-lane</span> is a weakness of the persona, not only of the candidates.</p></header><figure class="fig" data-figure="examples"><div class="chart" id="claim-5-0" data-kind="examples" data-chart="{&quot;cards&quot;:[{&quot;meta&quot;:[{&quot;text&quot;:&quot;T15&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;oft-match-score&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;off lane&quot;},{&quot;tag&quot;:&quot;B&quot;,&quot;label&quot;:&quot;1017&quot;,&quot;color&quot;:&quot;--s2&quot;},{&quot;status&quot;:&quot;bad&quot;,&quot;label&quot;:&quot;judged&quot;},{&quot;text&quot;:&quot;repeat 2&quot;}],&quot;fields&quot;:[{&quot;term&quot;:&quot;Input&quot;,&quot;text&quot;:&quot;The world as it stood before the persona&#x27;s first turn:\n\n## music\n{\n  \&quot;catalog\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Two Shell\&quot;,\n      \&quot;tags\&quot;: \&quot;uk electronic\&quot;,\n      \&quot;title\&quot;: \&quot;home\&quot;\n    },\n    {\n      \&quot;artist\&quot;: \&quot;Bakey\&quot;,\n      \&quot;tags\&quot;: \&quot;uk garage\&quot;,\n      \&quot;title\&quot;: \&quot;Pinball\&quot;\n    }\n  ],\n  \&quot;history\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Loraine James\&quot;,\n      \&quot;duration_ms\&quot;: 165000,\n      \&quot;minutes_ago\&quot;: 9.4,\n      \&quot;title\&quot;: \&quot;2003\&quot;,\n      \&quot;uri\&quot;: \&quot;ht\u2026&quot;}],&quot;reason&quot;:&quot;The first reply brushes off the match question and pivots to Joy Orbison in Kairo\u2019s dry DJ voice. But the queued spoken line\u2014\u201cJules asks me who won the match tonight\u201d\u2014sounds like a behind-the-scenes recap rather than Kairo addressing the listener, so the replies do not consistently hold character.&quot;,&quot;excerpt&quot;:&quot;\u2026usand seven. South London, a producer nobody had seen, cutting garage vocals into something that sounded like a city at four in the morning. Untrue was the record that taught a whole generation that bass could be grief. Listen for the vocal \u2014 chopped, pitched, buried \u2014 that&#x27;s the ghost in the machine, and it&#x27;s deliberate.\&quot;, \&quot;track_ref\&quot;: \&quot;r3\&quot;}) \u2192 **Queued #5 (audio resolving):** Burial, Archangel by Hyperdub *(3:59)*&quot;},{&quot;meta&quot;:[{&quot;text&quot;:&quot;T44&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;oft-landlord-email&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;off lane&quot;},{&quot;tag&quot;:&quot;A&quot;,&quot;label&quot;:&quot;qwen3.8-flash&quot;,&quot;color&quot;:&quot;--s1&quot;},{&quot;status&quot;:&quot;bad&quot;,&quot;label&quot;:&quot;judged&quot;},{&quot;text&quot;:&quot;repeat 1&quot;}],&quot;fields&quot;:[{&quot;term&quot;:&quot;Input&quot;,&quot;text&quot;:&quot;The world as it stood before the persona&#x27;s first turn:\n\n## music\n{\n  \&quot;catalog\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Two Shell\&quot;,\n      \&quot;tags\&quot;: \&quot;uk electronic\&quot;,\n      \&quot;title\&quot;: \&quot;home\&quot;\n    },\n    {\n      \&quot;artist\&quot;: \&quot;Bakey\&quot;,\n      \&quot;tags\&quot;: \&quot;uk garage\&quot;,\n      \&quot;title\&quot;: \&quot;Pinball\&quot;\n    }\n  ],\n  \&quot;history\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Loraine James\&quot;,\n      \&quot;duration_ms\&quot;: 165000,\n      \&quot;minutes_ago\&quot;: 9.4,\n      \&quot;title\&quot;: \&quot;2003\&quot;,\n      \&quot;uri\&quot;: \&quot;ht\u2026&quot;}],&quot;reason&quot;:&quot;Jules asked for help with a non-music task, and Kairo gave practical advice to put the breakage date in writing, keep replies, and said the boiler was the landlord\u2019s job. The musical turn to King Tubby does not undo that out-of-lane answer.&quot;,&quot;excerpt&quot;:&quot;\u2026t man&#x27;s room.\&quot;, \&quot;track_ref\&quot;: \&quot;r1\&quot;}) \u2192 **Queued #4 (audio resolving):** Zion Gate Dub by King Tubby - Topic *(3:13)*\n  \u2713 discord.send_message({\&quot;channel_id\&quot;: 1503186183688032286, \&quot;content\&quot;: \&quot;instead of a boiler, you get steam from the right kind \u2014 going back to the source for you. king tubby, zion gate dub. the whole tonight&#x27;s uk bass line runs through this man&#x27;s mixing desk \ud83c\uddef\ud83c\uddf2\&quot;}) \u2192 Message sent to Discord via webhook&quot;},{&quot;meta&quot;:[{&quot;text&quot;:&quot;T14&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;oft-match-score&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;off lane&quot;},{&quot;tag&quot;:&quot;P&quot;,&quot;label&quot;:&quot;September&quot;,&quot;color&quot;:&quot;--ink-2&quot;},{&quot;status&quot;:&quot;bad&quot;,&quot;label&quot;:&quot;judged&quot;},{&quot;text&quot;:&quot;repeat 2&quot;}],&quot;fields&quot;:[{&quot;term&quot;:&quot;Input&quot;,&quot;text&quot;:&quot;The world as it stood before the persona&#x27;s first turn:\n\n## music\n{\n  \&quot;catalog\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Two Shell\&quot;,\n      \&quot;tags\&quot;: \&quot;uk electronic\&quot;,\n      \&quot;title\&quot;: \&quot;home\&quot;\n    },\n    {\n      \&quot;artist\&quot;: \&quot;Bakey\&quot;,\n      \&quot;tags\&quot;: \&quot;uk garage\&quot;,\n      \&quot;title\&quot;: \&quot;Pinball\&quot;\n    }\n  ],\n  \&quot;history\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Loraine James\&quot;,\n      \&quot;duration_ms\&quot;: 165000,\n      \&quot;minutes_ago\&quot;: 9.4,\n      \&quot;title\&quot;: \&quot;2003\&quot;,\n      \&quot;uri\&quot;: \&quot;ht\u2026&quot;}],&quot;reason&quot;:&quot;The first line brushes off the score in Kairo\u2019s DJ voice, but the follow-up says \u201cScores and fixtures, I can\u2019t help you with \u2014 but I got something for you,\u201d which shifts into customer-service-style inability and an offer of help. That makes the delivered replies slip out of the persona.&quot;,&quot;excerpt&quot;:&quot;\u2026g):** Carrier by Rhythm &amp; Sound - Topic *(9:39)*\n  \u2713 music.queue_voice({\&quot;acting_instructions\&quot;: \&quot;warm, dry, a little amused\&quot;, \&quot;position\&quot;: \&quot;head\&quot;, \&quot;text\&quot;: \&quot;Jules, welcome in. Scores and fixtures, I can&#x27;t help you with \u2014 but I got something for you. Overmono, Anz, and a bit of Berlin dub coming through the speakers. Sit down.\&quot;}) \u2192 queued voice (i5): Jules, welcome in. Scores and fixtures, I can&#x27;t help you wit\u2026 \u2014 this \u2026&quot;},{&quot;meta&quot;:[{&quot;text&quot;:&quot;T67&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;oft-wash-jeans&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;off lane&quot;},{&quot;tag&quot;:&quot;B&quot;,&quot;label&quot;:&quot;1017&quot;,&quot;color&quot;:&quot;--s2&quot;},{&quot;status&quot;:&quot;bad&quot;,&quot;label&quot;:&quot;judged&quot;},{&quot;text&quot;:&quot;repeat 1&quot;}],&quot;fields&quot;:[{&quot;term&quot;:&quot;Input&quot;,&quot;text&quot;:&quot;The world as it stood before the persona&#x27;s first turn:\n\n## music\n{\n  \&quot;catalog\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Two Shell\&quot;,\n      \&quot;tags\&quot;: \&quot;uk electronic\&quot;,\n      \&quot;title\&quot;: \&quot;home\&quot;\n    },\n    {\n      \&quot;artist\&quot;: \&quot;Bakey\&quot;,\n      \&quot;tags\&quot;: \&quot;uk garage\&quot;,\n      \&quot;title\&quot;: \&quot;Pinball\&quot;\n    }\n  ],\n  \&quot;history\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Loraine James\&quot;,\n      \&quot;duration_ms\&quot;: 165000,\n      \&quot;minutes_ago\&quot;: 9.4,\n      \&quot;title\&quot;: \&quot;2003\&quot;,\n      \&quot;uri\&quot;: \&quot;ht\u2026&quot;}],&quot;reason&quot;:&quot;The reply says \u201cCold\u201d in direct response to the laundry question, supplying the requested non-music fact despite the brush-off. That alone fails the persona check.&quot;,&quot;excerpt&quot;:&quot;\u2026ason half the records I play sound the way they do.\&quot;, \&quot;track_ref\&quot;: \&quot;r3\&quot;}) \u2192 **Queued #4 (audio resolving):** Burial, Archangel by Hyperdub *(3:59)*\n  \u2713 music.set_channel_mood({\&quot;mood\&quot;: \&quot;UK bass lineage at 9pm \u2014 garage warmth drifting into dub-techno haze and Burial&#x27;s rain-soaked small hours\&quot;}) \u2192 Channel mood set: UK bass lineage at 9pm \u2014 garage warmth drifting into dub-techno haze and Burial&#x27;s rain-soaked small hours&quot;},{&quot;meta&quot;:[{&quot;text&quot;:&quot;T70&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;oft-wash-jeans&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;off lane&quot;},{&quot;tag&quot;:&quot;A&quot;,&quot;label&quot;:&quot;qwen3.8-flash&quot;,&quot;color&quot;:&quot;--s1&quot;},{&quot;status&quot;:&quot;bad&quot;,&quot;label&quot;:&quot;judged&quot;},{&quot;text&quot;:&quot;repeat 1&quot;}],&quot;fields&quot;:[{&quot;term&quot;:&quot;Input&quot;,&quot;text&quot;:&quot;The world as it stood before the persona&#x27;s first turn:\n\n## music\n{\n  \&quot;catalog\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Two Shell\&quot;,\n      \&quot;tags\&quot;: \&quot;uk electronic\&quot;,\n      \&quot;title\&quot;: \&quot;home\&quot;\n    },\n    {\n      \&quot;artist\&quot;: \&quot;Bakey\&quot;,\n      \&quot;tags\&quot;: \&quot;uk garage\&quot;,\n      \&quot;title\&quot;: \&quot;Pinball\&quot;\n    }\n  ],\n  \&quot;history\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Loraine James\&quot;,\n      \&quot;duration_ms\&quot;: 165000,\n      \&quot;minutes_ago\&quot;: 9.4,\n      \&quot;title\&quot;: \&quot;2003\&quot;,\n      \&quot;uri\&quot;: \&quot;ht\u2026&quot;}],&quot;reason&quot;:&quot;Jules asked for non-music advice about washing jeans, and Kairo supplied a temperature and instructions: \u201ccold wash, 30 max, inside out.\u201d That gives the requested off-lane advice, so it fails the stated check.&quot;,&quot;excerpt&quot;:&quot;## Jules\nwhat temp do i wash jeans at\n\n## Persona\ncold wash, 30 max, inside out \u2014 hot water&#x27;s how you get crease fades you never asked for \ud83e\uddca\n\nthat sorted, you want me to stay in this dub haze or push it harder tonight?\n\nTool actions:\n  \u2713 discord.send_message({\&quot;channel_id\&quot;: 1503186183688032286, \&quot;content\&quot;: \&quot;cold wash, 30 max, inside out \u2014 hot water&#x27;s how you get crease fades you never asked for \ud83e\uddca\n\nthat sorted, you wa\u2026&quot;},{&quot;meta&quot;:[{&quot;text&quot;:&quot;T42&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;oft-landlord-email&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;off lane&quot;},{&quot;tag&quot;:&quot;P&quot;,&quot;label&quot;:&quot;September&quot;,&quot;color&quot;:&quot;--ink-2&quot;},{&quot;status&quot;:&quot;bad&quot;,&quot;label&quot;:&quot;judged&quot;},{&quot;text&quot;:&quot;repeat 1&quot;}],&quot;fields&quot;:[{&quot;term&quot;:&quot;Input&quot;,&quot;text&quot;:&quot;The world as it stood before the persona&#x27;s first turn:\n\n## music\n{\n  \&quot;catalog\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Two Shell\&quot;,\n      \&quot;tags\&quot;: \&quot;uk electronic\&quot;,\n      \&quot;title\&quot;: \&quot;home\&quot;\n    },\n    {\n      \&quot;artist\&quot;: \&quot;Bakey\&quot;,\n      \&quot;tags\&quot;: \&quot;uk garage\&quot;,\n      \&quot;title\&quot;: \&quot;Pinball\&quot;\n    }\n  ],\n  \&quot;history\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Loraine James\&quot;,\n      \&quot;duration_ms\&quot;: 165000,\n      \&quot;minutes_ago\&quot;: 9.4,\n      \&quot;title\&quot;: \&quot;2003\&quot;,\n      \&quot;uri\&quot;: \&quot;ht\u2026&quot;}],&quot;reason&quot;:&quot;Kairo starts with an in-character brush-off, but then supplies a suggested opening for the landlord email: \u201cOpen with \u2018the boiler\u2019s dead again\u2019.\u201d That is help with a non-music task, so the reply fails the stated check.&quot;,&quot;excerpt&quot;:&quot;\u2026cs do the shouting. Meanwhile the Joy Orbison&#x27;s keeping this room warm, so settle in. \ud83d\udd25\n\nTool actions:\n  \u2713 discord.send_message({\&quot;channel_id\&quot;: 1503186183688032286, \&quot;content\&quot;: \&quot;Love, I mix records, not grievances \u2014 that email&#x27;s all you. Open with \&quot;the boiler&#x27;s dead *again*\&quot; and let the italics do the shouting. Meanwhile the Joy Orbison&#x27;s keeping this room warm, so settle in. \ud83d\udd25\&quot;}) \u2192 Message sent to Discord via webhook&quot;},{&quot;meta&quot;:[{&quot;text&quot;:&quot;T77&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;oft-which-phone&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;off lane&quot;},{&quot;tag&quot;:&quot;B&quot;,&quot;label&quot;:&quot;1017&quot;,&quot;color&quot;:&quot;--s2&quot;},{&quot;status&quot;:&quot;bad&quot;,&quot;label&quot;:&quot;judged&quot;},{&quot;text&quot;:&quot;repeat 1&quot;}],&quot;fields&quot;:[{&quot;term&quot;:&quot;Input&quot;,&quot;text&quot;:&quot;The world as it stood before the persona&#x27;s first turn:\n\n## music\n{\n  \&quot;catalog\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Two Shell\&quot;,\n      \&quot;tags\&quot;: \&quot;uk electronic\&quot;,\n      \&quot;title\&quot;: \&quot;home\&quot;\n    },\n    {\n      \&quot;artist\&quot;: \&quot;Bakey\&quot;,\n      \&quot;tags\&quot;: \&quot;uk garage\&quot;,\n      \&quot;title\&quot;: \&quot;Pinball\&quot;\n    }\n  ],\n  \&quot;history\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Loraine James\&quot;,\n      \&quot;duration_ms\&quot;: 165000,\n      \&quot;minutes_ago\&quot;: 9.4,\n      \&quot;title\&quot;: \&quot;2003\&quot;,\n      \&quot;uri\&quot;: \&quot;ht\u2026&quot;}],&quot;reason&quot;:&quot;Kairo opens with an in-character brush-off, but then gives purchase advice: \u201cBuy whatever plays the bass cleanest.\u201d The persona\u2019s directive is to brush off non-music asks without answering them, and the brush-off does not excuse advice that follows.&quot;,&quot;excerpt&quot;:&quot;## Jules\nwhich phone should i buy, iphone or android\n\n## Persona\nJules, love \u2014 do I look like a phone salesman? Only thing I care about a phone for is whether it holds a crate of dub. Buy whatever plays the bass cleanest and come talk to me about music.\n\nTool actions:\n  \u2713 discord.send_message({\&quot;channel_id\&quot;: 1503186183688032286, \&quot;content\&quot;: \&quot;Jules, love \u2014 do I look like a phone salesman? Only thing I care about a pho\u2026&quot;},{&quot;meta&quot;:[{&quot;text&quot;:&quot;T79&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;oft-which-phone&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;off lane&quot;},{&quot;tag&quot;:&quot;A&quot;,&quot;label&quot;:&quot;qwen3.8-flash&quot;,&quot;color&quot;:&quot;--s1&quot;},{&quot;status&quot;:&quot;bad&quot;,&quot;label&quot;:&quot;judged&quot;},{&quot;text&quot;:&quot;repeat 2&quot;}],&quot;fields&quot;:[{&quot;term&quot;:&quot;Input&quot;,&quot;text&quot;:&quot;The world as it stood before the persona&#x27;s first turn:\n\n## music\n{\n  \&quot;catalog\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Two Shell\&quot;,\n      \&quot;tags\&quot;: \&quot;uk electronic\&quot;,\n      \&quot;title\&quot;: \&quot;home\&quot;\n    },\n    {\n      \&quot;artist\&quot;: \&quot;Bakey\&quot;,\n      \&quot;tags\&quot;: \&quot;uk garage\&quot;,\n      \&quot;title\&quot;: \&quot;Pinball\&quot;\n    }\n  ],\n  \&quot;history\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Loraine James\&quot;,\n      \&quot;duration_ms\&quot;: 165000,\n      \&quot;minutes_ago\&quot;: 9.4,\n      \&quot;title\&quot;: \&quot;2003\&quot;,\n      \&quot;uri\&quot;: \&quot;ht\u2026&quot;}],&quot;reason&quot;:&quot;The reply brushes off \u201cphone wars\u201d but then answers the non-music ask by recommending Android and giving phone-feature comparisons (\u201cLDAC/aptX,\u201d file management, and iPhone Bluetooth). A brush-off does not excuse supplying the requested recommendation, so this fails criterion (1).&quot;,&quot;excerpt&quot;:&quot;## Jules\nwhich phone should i buy, iphone or android\n\n## Persona\nphone wars? not my lane, love. but for *listening* \u2014 Android. LDAC/aptX codecs, sideload your FLACs, actual file management. iPhone&#x27;s Bluetooth is stuck on AAC and always will be. unless the ecosystem&#x27;s the whole point, then do you.\n\nTool actions:\n  \u2713 discord.send_message({\&quot;channel_id\&quot;: 1503186183688032286, \&quot;content\&quot;: \&quot;phone wars? not my lane, love. b\u2026&quot;},{&quot;meta&quot;:[{&quot;text&quot;:&quot;T64&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;oft-wash-jeans&quot;,&quot;mono&quot;:true},{&quot;text&quot;:&quot;off lane&quot;},{&quot;tag&quot;:&quot;P&quot;,&quot;label&quot;:&quot;September&quot;,&quot;color&quot;:&quot;--ink-2&quot;},{&quot;status&quot;:&quot;bad&quot;,&quot;label&quot;:&quot;judged&quot;},{&quot;text&quot;:&quot;repeat 1&quot;}],&quot;fields&quot;:[{&quot;term&quot;:&quot;Input&quot;,&quot;text&quot;:&quot;The world as it stood before the persona&#x27;s first turn:\n\n## music\n{\n  \&quot;catalog\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Two Shell\&quot;,\n      \&quot;tags\&quot;: \&quot;uk electronic\&quot;,\n      \&quot;title\&quot;: \&quot;home\&quot;\n    },\n    {\n      \&quot;artist\&quot;: \&quot;Bakey\&quot;,\n      \&quot;tags\&quot;: \&quot;uk garage\&quot;,\n      \&quot;title\&quot;: \&quot;Pinball\&quot;\n    }\n  ],\n  \&quot;history\&quot;: [\n    {\n      \&quot;artist\&quot;: \&quot;Loraine James\&quot;,\n      \&quot;duration_ms\&quot;: 165000,\n      \&quot;minutes_ago\&quot;: 9.4,\n      \&quot;title\&quot;: \&quot;2003\&quot;,\n      \&quot;uri\&quot;: \&quot;ht\u2026&quot;}],&quot;reason&quot;:&quot;The reply brushes off the laundry question, but then answers it with \u201cCold,\u201d giving the requested non-music advice. That triggers failure (1), even though the rest of the line stays in Kairo\u2019s DJ voice.&quot;,&quot;excerpt&quot;:&quot;\u2026how little they play \u2014 that&#x27;s the discipline.\&quot;, \&quot;track_ref\&quot;: \&quot;r10\&quot;}) \u2192 **Queued #5 (audio resolving):** Rhythm &amp; Sound w Tikiman \u2013 Never Tell You 1996 (vinyl record) by vinyl record *(12:39)*\n  \u2713 music.set_channel_mood({\&quot;mood\&quot;: \&quot;rain-soaked 2-step and Berlin dub \u2014 late-night London dissolving into deepest space\&quot;}) \u2192 Channel mood set: rain-soaked 2-step and Berlin dub \u2014 late-night London dissolving into deepest space&quot;}]}"></div><div class="tbl chart-values"><table><caption><span class="id">Off-lane</span> trials failed for any cause, of three per case over 38 cases: 42 on September (P), 68 on <span class="id">qwen3.8-flash</span> (A), 63 on 1017 (B). The cards are every kept one, three per arm, each a nought on holding character, so none shows a trial a check failed. The two <span class="id">match-score</span> cards slip out of the DJ voice in a spoken line; most other cards answer the <span class="id">off-lane</span> ask after brushing it off, one answers it outright, and the laundry cards on every arm, the control&#x27;s included, give the wash temperature.</caption><thead><tr><th scope="col">Example</th><th scope="col">Details</th><th scope="col">Reason</th><th scope="col">Excerpt</th></tr></thead><tbody><tr><td class="wrap">T15 · <span class="id long">oft-match-score</span> · off lane · 1017 · judged · repeat 2</td><td class="wrap">Input: The world as it stood before the persona&#x27;s first turn:
+
+## music
+{
+  &quot;catalog&quot;: [
+    {
+      &quot;artist&quot;: &quot;Two Shell&quot;,
+      &quot;tags&quot;: &quot;uk electronic&quot;,
+      &quot;title&quot;: &quot;home&quot;
+    },
+    {
+      &quot;artist&quot;: &quot;Bakey&quot;,
+      &quot;tags&quot;: &quot;uk garage&quot;,
+      &quot;title&quot;: &quot;Pinball&quot;
+    }
+  ],
+  &quot;history&quot;: [
+    {
+      &quot;artist&quot;: &quot;Loraine James&quot;,
+      &quot;duration_ms&quot;: 165000,
+      &quot;minutes_ago&quot;: 9.4,
+      &quot;title&quot;: &quot;2003&quot;,
+      &quot;uri&quot;: &quot;ht…</td><td class="wrap">The first reply brushes off the match question and pivots to Joy Orbison in Kairo’s dry DJ voice. But the queued spoken line—“Jules asks me who won the match tonight”—sounds like a behind-the-scenes recap rather than Kairo addressing the listener, so the replies do not consistently hold character.</td><td class="wrap">…usand seven. South London, a producer nobody had seen, cutting garage vocals into something that sounded like a city at four in the morning. Untrue was the record that taught a whole generation that bass could be grief. Listen for the vocal — chopped, pitched, buried — that&#x27;s the ghost in the machine, and it&#x27;s deliberate.&quot;, &quot;track_ref&quot;: &quot;r3&quot;}) → **Queued #5 (audio resolving):** Burial, Archangel by Hyperdub *(3:59)*</td></tr><tr><td class="wrap">T44 · <span class="id long">oft-landlord-email</span> · off lane · <span class="id">qwen3.8-flash</span> · judged · repeat 1</td><td class="wrap">Input: The world as it stood before the persona&#x27;s first turn:
+
+## music
+{
+  &quot;catalog&quot;: [
+    {
+      &quot;artist&quot;: &quot;Two Shell&quot;,
+      &quot;tags&quot;: &quot;uk electronic&quot;,
+      &quot;title&quot;: &quot;home&quot;
+    },
+    {
+      &quot;artist&quot;: &quot;Bakey&quot;,
+      &quot;tags&quot;: &quot;uk garage&quot;,
+      &quot;title&quot;: &quot;Pinball&quot;
+    }
+  ],
+  &quot;history&quot;: [
+    {
+      &quot;artist&quot;: &quot;Loraine James&quot;,
+      &quot;duration_ms&quot;: 165000,
+      &quot;minutes_ago&quot;: 9.4,
+      &quot;title&quot;: &quot;2003&quot;,
+      &quot;uri&quot;: &quot;ht…</td><td class="wrap">Jules asked for help with a non-music task, and Kairo gave practical advice to put the breakage date in writing, keep replies, and said the boiler was the landlord’s job. The musical turn to King Tubby does not undo that out-of-lane answer.</td><td class="wrap">…t man&#x27;s room.&quot;, &quot;track_ref&quot;: &quot;r1&quot;}) → **Queued #4 (audio resolving):** Zion Gate Dub by King Tubby - Topic *(3:13)*
+  ✓ discord.send_message({&quot;channel_id&quot;: 1503186183688032286, &quot;content&quot;: &quot;instead of a boiler, you get steam from the right kind — going back to the source for you. king tubby, zion gate dub. the whole tonight&#x27;s uk bass line runs through this man&#x27;s mixing desk 🇯🇲&quot;}) → Message sent to Discord via webhook</td></tr><tr><td class="wrap">T14 · <span class="id long">oft-match-score</span> · off lane · September · judged · repeat 2</td><td class="wrap">Input: The world as it stood before the persona&#x27;s first turn:
+
+## music
+{
+  &quot;catalog&quot;: [
+    {
+      &quot;artist&quot;: &quot;Two Shell&quot;,
+      &quot;tags&quot;: &quot;uk electronic&quot;,
+      &quot;title&quot;: &quot;home&quot;
+    },
+    {
+      &quot;artist&quot;: &quot;Bakey&quot;,
+      &quot;tags&quot;: &quot;uk garage&quot;,
+      &quot;title&quot;: &quot;Pinball&quot;
+    }
+  ],
+  &quot;history&quot;: [
+    {
+      &quot;artist&quot;: &quot;Loraine James&quot;,
+      &quot;duration_ms&quot;: 165000,
+      &quot;minutes_ago&quot;: 9.4,
+      &quot;title&quot;: &quot;2003&quot;,
+      &quot;uri&quot;: &quot;ht…</td><td class="wrap">The first line brushes off the score in Kairo’s DJ voice, but the follow-up says “Scores and fixtures, I can’t help you with — but I got something for you,” which shifts into customer-service-style inability and an offer of help. That makes the delivered replies slip out of the persona.</td><td class="wrap">…g):** Carrier by Rhythm &amp; Sound - Topic *(9:39)*
+  ✓ music.queue_voice({&quot;acting_instructions&quot;: &quot;warm, dry, a little amused&quot;, &quot;position&quot;: &quot;head&quot;, &quot;text&quot;: &quot;Jules, welcome in. Scores and fixtures, I can&#x27;t help you with — but I got something for you. Overmono, Anz, and a bit of Berlin dub coming through the speakers. Sit down.&quot;}) → queued voice (i5): Jules, welcome in. Scores and fixtures, I can&#x27;t help you wit… — this …</td></tr><tr><td class="wrap">T67 · <span class="id">oft-wash-jeans</span> · off lane · 1017 · judged · repeat 1</td><td class="wrap">Input: The world as it stood before the persona&#x27;s first turn:
+
+## music
+{
+  &quot;catalog&quot;: [
+    {
+      &quot;artist&quot;: &quot;Two Shell&quot;,
+      &quot;tags&quot;: &quot;uk electronic&quot;,
+      &quot;title&quot;: &quot;home&quot;
+    },
+    {
+      &quot;artist&quot;: &quot;Bakey&quot;,
+      &quot;tags&quot;: &quot;uk garage&quot;,
+      &quot;title&quot;: &quot;Pinball&quot;
+    }
+  ],
+  &quot;history&quot;: [
+    {
+      &quot;artist&quot;: &quot;Loraine James&quot;,
+      &quot;duration_ms&quot;: 165000,
+      &quot;minutes_ago&quot;: 9.4,
+      &quot;title&quot;: &quot;2003&quot;,
+      &quot;uri&quot;: &quot;ht…</td><td class="wrap">The reply says “Cold” in direct response to the laundry question, supplying the requested non-music fact despite the brush-off. That alone fails the persona check.</td><td class="wrap">…ason half the records I play sound the way they do.&quot;, &quot;track_ref&quot;: &quot;r3&quot;}) → **Queued #4 (audio resolving):** Burial, Archangel by Hyperdub *(3:59)*
+  ✓ music.set_channel_mood({&quot;mood&quot;: &quot;UK bass lineage at 9pm — garage warmth drifting into dub-techno haze and Burial&#x27;s rain-soaked small hours&quot;}) → Channel mood set: UK bass lineage at 9pm — garage warmth drifting into dub-techno haze and Burial&#x27;s rain-soaked small hours</td></tr><tr><td class="wrap">T70 · <span class="id">oft-wash-jeans</span> · off lane · <span class="id">qwen3.8-flash</span> · judged · repeat 1</td><td class="wrap">Input: The world as it stood before the persona&#x27;s first turn:
+
+## music
+{
+  &quot;catalog&quot;: [
+    {
+      &quot;artist&quot;: &quot;Two Shell&quot;,
+      &quot;tags&quot;: &quot;uk electronic&quot;,
+      &quot;title&quot;: &quot;home&quot;
+    },
+    {
+      &quot;artist&quot;: &quot;Bakey&quot;,
+      &quot;tags&quot;: &quot;uk garage&quot;,
+      &quot;title&quot;: &quot;Pinball&quot;
+    }
+  ],
+  &quot;history&quot;: [
+    {
+      &quot;artist&quot;: &quot;Loraine James&quot;,
+      &quot;duration_ms&quot;: 165000,
+      &quot;minutes_ago&quot;: 9.4,
+      &quot;title&quot;: &quot;2003&quot;,
+      &quot;uri&quot;: &quot;ht…</td><td class="wrap">Jules asked for non-music advice about washing jeans, and Kairo supplied a temperature and instructions: “cold wash, 30 max, inside out.” That gives the requested off-lane advice, so it fails the stated check.</td><td class="wrap">## Jules
+what temp do i wash jeans at
+
+## Persona
+cold wash, 30 max, inside out — hot water&#x27;s how you get crease fades you never asked for 🧊
+
+that sorted, you want me to stay in this dub haze or push it harder tonight?
+
+Tool actions:
+  ✓ discord.send_message({&quot;channel_id&quot;: 1503186183688032286, &quot;content&quot;: &quot;cold wash, 30 max, inside out — hot water&#x27;s how you get crease fades you never asked for 🧊
+
+that sorted, you wa…</td></tr><tr><td class="wrap">T42 · <span class="id long">oft-landlord-email</span> · off lane · September · judged · repeat 1</td><td class="wrap">Input: The world as it stood before the persona&#x27;s first turn:
+
+## music
+{
+  &quot;catalog&quot;: [
+    {
+      &quot;artist&quot;: &quot;Two Shell&quot;,
+      &quot;tags&quot;: &quot;uk electronic&quot;,
+      &quot;title&quot;: &quot;home&quot;
+    },
+    {
+      &quot;artist&quot;: &quot;Bakey&quot;,
+      &quot;tags&quot;: &quot;uk garage&quot;,
+      &quot;title&quot;: &quot;Pinball&quot;
+    }
+  ],
+  &quot;history&quot;: [
+    {
+      &quot;artist&quot;: &quot;Loraine James&quot;,
+      &quot;duration_ms&quot;: 165000,
+      &quot;minutes_ago&quot;: 9.4,
+      &quot;title&quot;: &quot;2003&quot;,
+      &quot;uri&quot;: &quot;ht…</td><td class="wrap">Kairo starts with an in-character brush-off, but then supplies a suggested opening for the landlord email: “Open with ‘the boiler’s dead again’.” That is help with a non-music task, so the reply fails the stated check.</td><td class="wrap">…cs do the shouting. Meanwhile the Joy Orbison&#x27;s keeping this room warm, so settle in. 🔥
+
+Tool actions:
+  ✓ discord.send_message({&quot;channel_id&quot;: 1503186183688032286, &quot;content&quot;: &quot;Love, I mix records, not grievances — that email&#x27;s all you. Open with &quot;the boiler&#x27;s dead *again*&quot; and let the italics do the shouting. Meanwhile the Joy Orbison&#x27;s keeping this room warm, so settle in. 🔥&quot;}) → Message sent to Discord via webhook</td></tr><tr><td class="wrap">T77 · <span class="id long">oft-which-phone</span> · off lane · 1017 · judged · repeat 1</td><td class="wrap">Input: The world as it stood before the persona&#x27;s first turn:
+
+## music
+{
+  &quot;catalog&quot;: [
+    {
+      &quot;artist&quot;: &quot;Two Shell&quot;,
+      &quot;tags&quot;: &quot;uk electronic&quot;,
+      &quot;title&quot;: &quot;home&quot;
+    },
+    {
+      &quot;artist&quot;: &quot;Bakey&quot;,
+      &quot;tags&quot;: &quot;uk garage&quot;,
+      &quot;title&quot;: &quot;Pinball&quot;
+    }
+  ],
+  &quot;history&quot;: [
+    {
+      &quot;artist&quot;: &quot;Loraine James&quot;,
+      &quot;duration_ms&quot;: 165000,
+      &quot;minutes_ago&quot;: 9.4,
+      &quot;title&quot;: &quot;2003&quot;,
+      &quot;uri&quot;: &quot;ht…</td><td class="wrap">Kairo opens with an in-character brush-off, but then gives purchase advice: “Buy whatever plays the bass cleanest.” The persona’s directive is to brush off non-music asks without answering them, and the brush-off does not excuse advice that follows.</td><td class="wrap">## Jules
+which phone should i buy, iphone or android
+
+## Persona
+Jules, love — do I look like a phone salesman? Only thing I care about a phone for is whether it holds a crate of dub. Buy whatever plays the bass cleanest and come talk to me about music.
+
+Tool actions:
+  ✓ discord.send_message({&quot;channel_id&quot;: 1503186183688032286, &quot;content&quot;: &quot;Jules, love — do I look like a phone salesman? Only thing I care about a pho…</td></tr><tr><td class="wrap">T79 · <span class="id long">oft-which-phone</span> · off lane · <span class="id">qwen3.8-flash</span> · judged · repeat 2</td><td class="wrap">Input: The world as it stood before the persona&#x27;s first turn:
+
+## music
+{
+  &quot;catalog&quot;: [
+    {
+      &quot;artist&quot;: &quot;Two Shell&quot;,
+      &quot;tags&quot;: &quot;uk electronic&quot;,
+      &quot;title&quot;: &quot;home&quot;
+    },
+    {
+      &quot;artist&quot;: &quot;Bakey&quot;,
+      &quot;tags&quot;: &quot;uk garage&quot;,
+      &quot;title&quot;: &quot;Pinball&quot;
+    }
+  ],
+  &quot;history&quot;: [
+    {
+      &quot;artist&quot;: &quot;Loraine James&quot;,
+      &quot;duration_ms&quot;: 165000,
+      &quot;minutes_ago&quot;: 9.4,
+      &quot;title&quot;: &quot;2003&quot;,
+      &quot;uri&quot;: &quot;ht…</td><td class="wrap">The reply brushes off “phone wars” but then answers the non-music ask by recommending Android and giving phone-feature comparisons (“LDAC/aptX,” file management, and iPhone Bluetooth). A brush-off does not excuse supplying the requested recommendation, so this fails criterion (1).</td><td class="wrap">## Jules
+which phone should i buy, iphone or android
+
+## Persona
+phone wars? not my lane, love. but for *listening* — Android. LDAC/aptX codecs, sideload your FLACs, actual file management. iPhone&#x27;s Bluetooth is stuck on AAC and always will be. unless the ecosystem&#x27;s the whole point, then do you.
+
+Tool actions:
+  ✓ discord.send_message({&quot;channel_id&quot;: 1503186183688032286, &quot;content&quot;: &quot;phone wars? not my lane, love. b…</td></tr><tr><td class="wrap">T64 · <span class="id">oft-wash-jeans</span> · off lane · September · judged · repeat 1</td><td class="wrap">Input: The world as it stood before the persona&#x27;s first turn:
+
+## music
+{
+  &quot;catalog&quot;: [
+    {
+      &quot;artist&quot;: &quot;Two Shell&quot;,
+      &quot;tags&quot;: &quot;uk electronic&quot;,
+      &quot;title&quot;: &quot;home&quot;
+    },
+    {
+      &quot;artist&quot;: &quot;Bakey&quot;,
+      &quot;tags&quot;: &quot;uk garage&quot;,
+      &quot;title&quot;: &quot;Pinball&quot;
+    }
+  ],
+  &quot;history&quot;: [
+    {
+      &quot;artist&quot;: &quot;Loraine James&quot;,
+      &quot;duration_ms&quot;: 165000,
+      &quot;minutes_ago&quot;: 9.4,
+      &quot;title&quot;: &quot;2003&quot;,
+      &quot;uri&quot;: &quot;ht…</td><td class="wrap">The reply brushes off the laundry question, but then answers it with “Cold,” giving the requested non-music advice. That triggers failure (1), even though the rest of the line stays in Kairo’s DJ voice.</td><td class="wrap">…how little they play — that&#x27;s the discipline.&quot;, &quot;track_ref&quot;: &quot;r10&quot;}) → **Queued #5 (audio resolving):** Rhythm &amp; Sound w Tikiman – Never Tell You 1996 (vinyl record) by vinyl record *(12:39)*
+  ✓ music.set_channel_mood({&quot;mood&quot;: &quot;rain-soaked 2-step and Berlin dub — late-night London dissolving into deepest space&quot;}) → Channel mood set: rain-soaked 2-step and Berlin dub — late-night London dissolving into deepest space</td></tr></tbody></table></div></figure><p class="cap"><span class="id">Off-lane</span> trials failed for any cause, of three per case over 38 cases: 42 on September (P), 68 on <span class="id">qwen3.8-flash</span> (A), 63 on 1017 (B). The cards are every kept one, three per arm, each a nought on holding character, so none shows a trial a check failed. The two <span class="id">match-score</span> cards slip out of the DJ voice in a spoken line; most other cards answer the <span class="id">off-lane</span> ask after brushing it off, one answers it outright, and the laundry cards on every arm, the control&#x27;s included, give the wash temperature.</p></section>
+<section data-part="explore"><header><h2>What you could change</h2></header><div class="tbl" style="--lines1:8.03rem"><table><thead><tr><th scope="col">What you could change</th><th scope="col" style="--head:5.34rem">What it decides</th><th scope="col" style="--head:8.15rem">What happens as it moves</th></tr></thead><tbody><tr><td>The margin on character adherence</td><td class="wrap">Whether each candidate counts as no worse than the control on pass rate</td><td class="wrap">The call to keep September (P) holds at every margin, because it rests on cost. On the uncorrected readings, 1017 (B) stops reading as within the margin below 6 points and qwen3.8-flash (A) below 11; on the corrected contrast Watch cites, qwen3.8-flash (A)&#x27;s drop reaches 13.</td></tr></tbody></table></div></section>
+<section data-part="next"><header><h2>Next steps</h2></header><ul><li>Price <span class="id">qwen3.8-flash</span> (A) and 1017 (B) on the provider routing production would use, and reconcile with the earlier finding that <span class="id">qwen3.8-flash</span> lowers cost. <em>Whether either candidate can cost less than the control; only then is its character loss a trade worth pricing.</em></li><li>Calibrate the judge against human ratings on holding character, weighted toward <span class="id">off-lane</span> asks. <em>Whether the candidates&#x27; character losses, and the control&#x27;s <span class="id">off-lane</span> failures, are real or the judge&#x27;s reading.</em></li><li>Rerun 1017 (B) with its reasoning share matched to the control&#x27;s. <em>Whether its cost and character gaps belong to the model or to how much it reasoned.</em></li><li>Revise the <span class="id">off-lane</span> directive so a <span class="id">brush-off</span> carries no answer, and rerun the <span class="id">off-lane</span> asks on all arms. <em>Whether the stratum that carries the most loss for every arm, the control included, can lift.</em></li></ul></section>
+<div class="part" data-part="appendix"><h2>Full results</h2></div>
+<section data-part="arms"><header><span class="eyebrow">The arms</span><p class="takeaway">Each arm&#x27;s full configuration, once. The rest of the page names an arm by its letter tag and name.</p></header><div class="table-block" data-table="arms_key"><div class="tbl"><table><thead><tr><th scope="col">Arm</th><th scope="col">Role</th><th scope="col">Configuration</th><th scope="col">Served model</th><th scope="col" style="--head:9.84rem">Share of output spent reasoning</th><th scope="col">Trials usable</th></tr></thead><tbody><tr><td><span class="armchip"><span class="tag" style="background:var(--ink-2);color:var(--surface)">P</span>September</span></td><td>Control</td><td><span class="id long">deepseek/deepseek-v4.1-flash</span></td><td><span class="id long">deepseek/deepseek-v4.1-flash</span></td><td>76%</td><td>897 of 897</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s1);color:var(--on-fill)">A</span><span class="id">qwen3.8-flash</span></span></td><td>Candidate</td><td><span class="id long">qwen/qwen3.8-flash</span></td><td><span class="id long">qwen/qwen3.8-flash</span></td><td>68%</td><td>895 of 897</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s2);color:var(--on-fill)">B</span>1017</span></td><td>Candidate</td><td>deepseek/deepseek-v4.1-flash-1017</td><td>deepseek/deepseek-v4.1-flash-1017</td><td>55%</td><td>897 of 897</td></tr></tbody></table></div></div></section>
+<section><div class="table-block" data-table="arms_by_measure"><h3>Every arm by measure</h3><div class="tbl" style="--lines1:10.24rem"><table><thead><tr><th scope="col">Measure</th><th scope="col">P · September</th><th scope="col">A · qwen3.8-flash</th><th scope="col">B · 1017</th></tr></thead><tbody><tr><th scope="row">Pass rate</th><td>85% (765 of 897)</td><td>78% (695 of 895)</td><td>82% (738 of 897)</td></tr><tr><th scope="row">Outcome (1–5)</th><td>4.69</td><td>4.48</td><td>4.71</td></tr><tr><th scope="row">Transcript (1–5)</th><td>2.94</td><td>2.81</td><td>2.96</td></tr><tr><th scope="row">Persona booth stays offstage</th><td>93%</td><td>90%</td><td>94%</td></tr><tr><th scope="row">Persona holds character</th><td>91%</td><td>85%</td><td>87%</td></tr><tr><th scope="row" class="wrap">Measuring spend, all roles, per 1,000 replies</th><td>$5.40</td><td>$6.28</td><td>$5.76</td></tr><tr><th scope="row">Items delivered</th><td>0 items</td><td>0 items</td><td>0 items</td></tr><tr><th scope="row"><span class="id">Failed-reply</span> notices</th><td>0.002 notices</td><td>0 notices</td><td>0 notices</td></tr><tr><th scope="row"><a href="#g-check-send-message-or-queue-voice-check" title="Code runs this goal check on every trial; the glossary states it in full.">Send message or queue voice check</a></th><td>99.7%</td><td>98.7%</td><td>100.0%</td></tr><tr><th scope="row">Production cost, per 1,000 replies</th><td>$1.89</td><td>$2.43</td><td>$2.41</td></tr><tr><th scope="row">Tool provider faults</th><td>0 faults</td><td>0 faults</td><td>0 faults</td></tr><tr><th scope="row">Turns that ran over budget</th><td>0 turns</td><td>0.008 turns</td><td>0 turns</td></tr></tbody></table></div></div><div class="table-block" data-table="contrasts"><h3>Every corrected comparison</h3><div class="tbl"><table><thead><tr><th scope="col">Arm</th><th scope="col">Measure</th><th scope="col">Change</th><th scope="col">Interval</th><th scope="col">Level</th><th scope="col">Adjusted p</th><th scope="col">Verdict</th><th scope="col">Confounds</th></tr></thead><tbody><tr><td><span class="armchip"><span class="tag" style="background:var(--s1);color:var(--on-fill)">A</span><span class="id">qwen3.8-flash</span></span></td><td>Production cost, per 1,000 replies</td><td>+$0.62</td><td class="interval"><span class="iv">+$0.38 to +$0.85</span></td><td>95% (adjusted for 16 comparisons)</td><td>&lt; 0.001</td><td><span class="pill bad"><span aria-hidden="true">✕</span>Regressed</span></td><td>—</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s1);color:var(--on-fill)">A</span><span class="id">qwen3.8-flash</span></span></td><td>Outcome (1–5)</td><td>-0.21</td><td class="interval"><span class="iv">-0.31 to -0.12</span></td><td>95% (adjusted for 16 comparisons)</td><td>&lt; 0.001</td><td><span class="pill bad"><span aria-hidden="true">✕</span>Regressed</span></td><td>—</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s2);color:var(--on-fill)">B</span>1017</span></td><td>Production cost, per 1,000 replies</td><td>+$0.49</td><td class="interval"><span class="iv">+$0.17 to +$0.81</span></td><td>95% (adjusted for 16 comparisons)</td><td>&lt; 0.001</td><td><span class="pill bad"><span aria-hidden="true">✕</span>Regressed</span></td><td>observed:reasoning ratio</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s1);color:var(--on-fill)">A</span><span class="id">qwen3.8-flash</span></span></td><td>Pass rate</td><td>-8 pts</td><td class="interval"><span class="iv">-13 to -2</span> pts</td><td>95% (adjusted for 16 comparisons)</td><td>&lt; 0.001</td><td><span class="pill bad"><span aria-hidden="true">✕</span>Regressed</span></td><td>—</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s1);color:var(--on-fill)">A</span><span class="id">qwen3.8-flash</span></span></td><td>Persona holds character</td><td>-6 pts</td><td class="interval"><span class="iv">-12 to -2</span> pts</td><td>95% (adjusted for 16 comparisons)</td><td>&lt; 0.001</td><td><span class="pill bad"><span aria-hidden="true">✕</span>Regressed</span></td><td>—</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s2);color:var(--on-fill)">B</span>1017</span></td><td>Persona holds character</td><td>-5 pts</td><td class="interval"><span class="iv">-9 to -1</span> pts</td><td>95% (adjusted for 16 comparisons)</td><td>&lt; 0.001</td><td><span class="pill bad"><span aria-hidden="true">✕</span>Regressed</span></td><td>observed:reasoning ratio</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s1);color:var(--on-fill)">A</span><span class="id">qwen3.8-flash</span></span></td><td>Transcript (1–5)</td><td>-0.13</td><td class="interval"><span class="iv">-0.24 to -0.02</span></td><td>95% (adjusted for 16 comparisons)</td><td>0.005</td><td><span class="pill bad"><span aria-hidden="true">✕</span>Regressed</span></td><td>—</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s1);color:var(--on-fill)">A</span><span class="id">qwen3.8-flash</span></span></td><td>Send message or queue voice check</td><td>-1.0 pts</td><td class="interval"><span class="iv">-3.6 to +1.6</span> pts</td><td>95% (adjusted for 16 comparisons)</td><td>0.11</td><td><span class="pill neutral"><span aria-hidden="true">–</span>Cannot tell apart</span></td><td>—</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s1);color:var(--on-fill)">A</span><span class="id">qwen3.8-flash</span></span></td><td>Persona booth stays offstage</td><td>-3 pts</td><td class="interval"><span class="iv">-8 to +2</span> pts</td><td>95% (adjusted for 16 comparisons)</td><td>0.18</td><td><span class="pill neutral"><span aria-hidden="true">–</span>Cannot tell apart</span></td><td>—</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s2);color:var(--on-fill)">B</span>1017</span></td><td>Pass rate</td><td>-3 pts</td><td class="interval"><span class="iv">-7 to +3</span> pts</td><td>95% (adjusted for 16 comparisons)</td><td>0.28</td><td><span class="pill neutral"><span aria-hidden="true">–</span>Cannot tell apart</span></td><td>observed:reasoning ratio</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s2);color:var(--on-fill)">B</span>1017</span></td><td>Send message or queue voice check</td><td>+0.3 pts</td><td class="interval"><span class="iv">-2.1 to +2.8</span> pts</td><td>95% (adjusted for 16 comparisons)</td><td>0.50</td><td><span class="pill neutral"><span aria-hidden="true">–</span>Cannot tell apart</span></td><td>observed:reasoning ratio</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s2);color:var(--on-fill)">B</span>1017</span></td><td><span class="id">Failed-reply</span> notices</td><td>-0.002 notices</td><td class="interval"><span class="iv">-0.007 to +0.002</span> notices</td><td>95% (adjusted for 16 comparisons)</td><td>0.79</td><td><span class="pill neutral"><span aria-hidden="true">–</span>Cannot tell apart</span></td><td>observed:reasoning ratio</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s1);color:var(--on-fill)">A</span><span class="id">qwen3.8-flash</span></span></td><td><span class="id">Failed-reply</span> notices</td><td>-0.002 notices</td><td class="interval"><span class="iv">-0.007 to +0.002</span> notices</td><td>95% (adjusted for 16 comparisons)</td><td>0.79</td><td><span class="pill neutral"><span aria-hidden="true">–</span>Cannot tell apart</span></td><td>—</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s2);color:var(--on-fill)">B</span>1017</span></td><td>Outcome (1–5)</td><td>+0.01</td><td class="interval"><span class="iv">-0.06 to +0.09</span></td><td>95% (adjusted for 16 comparisons)</td><td>1.00</td><td><span class="pill neutral"><span aria-hidden="true">–</span>Cannot tell apart</span></td><td>observed:reasoning ratio</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s2);color:var(--on-fill)">B</span>1017</span></td><td>Transcript (1–5)</td><td>+0.02</td><td class="interval"><span class="iv">-0.09 to +0.12</span></td><td>95% (adjusted for 16 comparisons)</td><td>1.00</td><td><span class="pill neutral"><span aria-hidden="true">–</span>Cannot tell apart</span></td><td>observed:reasoning ratio</td></tr><tr><td><span class="armchip"><span class="tag" style="background:var(--s2);color:var(--on-fill)">B</span>1017</span></td><td>Persona booth stays offstage</td><td>+1 pts</td><td class="interval"><span class="iv">-3 to +5</span> pts</td><td>95% (adjusted for 16 comparisons)</td><td>1.00</td><td><span class="pill neutral"><span aria-hidden="true">–</span>Cannot tell apart</span></td><td>observed:reasoning ratio</td></tr></tbody></table></div></div><div class="table-block" data-table="strata"><h3>Every stratum</h3><div class="tbl"><table><thead><tr><th scope="col">Stratum</th><th scope="col">Measure</th><th scope="col" class="num">Cases</th><th scope="col">P · September</th><th scope="col">A · qwen3.8-flash</th><th scope="col">B · 1017</th></tr></thead><tbody><tr><td>off lane</td><td>Outcome (1–5)</td><td class="num">38</td><td>4.75</td><td>4.75</td><td>4.74</td></tr><tr><td>off lane</td><td>Transcript (1–5)</td><td class="num">38</td><td>2.82</td><td>3.17</td><td>2.74</td></tr><tr><td>off lane</td><td>Persona booth stays offstage</td><td class="num">38</td><td>96%</td><td>96%</td><td>98%</td></tr><tr><td>off lane</td><td>Persona holds character</td><td class="num">38</td><td>66%</td><td>43%</td><td>46%</td></tr><tr><td>machinery</td><td>Outcome (1–5)</td><td class="num">30</td><td>4.70</td><td>4.51</td><td>4.69</td></tr><tr><td>machinery</td><td>Transcript (1–5)</td><td class="num">30</td><td>2.70</td><td>2.87</td><td>2.88</td></tr><tr><td>machinery</td><td>Persona booth stays offstage</td><td class="num">30</td><td>69%</td><td>75%</td><td>74%</td></tr><tr><td>machinery</td><td>Persona holds character</td><td class="num">30</td><td>90%</td><td>85%</td><td>86%</td></tr><tr><td>about</td><td>Outcome (1–5)</td><td class="num">23</td><td>4.78</td><td>4.64</td><td>4.80</td></tr><tr><td>about</td><td>Transcript (1–5)</td><td class="num">23</td><td>2.91</td><td>2.71</td><td>2.97</td></tr><tr><td>about</td><td>Persona booth stays offstage</td><td class="num">23</td><td>99%</td><td>97%</td><td>99%</td></tr><tr><td>about</td><td>Persona holds character</td><td class="num">23</td><td>99%</td><td>96%</td><td>99%</td></tr><tr><td>superlative</td><td>Outcome (1–5)</td><td class="num">22</td><td>4.82</td><td>4.14</td><td>4.80</td></tr><tr><td>superlative</td><td>Transcript (1–5)</td><td class="num">22</td><td>3.65</td><td>2.77</td><td>3.29</td></tr><tr><td>superlative</td><td>Persona booth stays offstage</td><td class="num">22</td><td>95%</td><td>90%</td><td>95%</td></tr><tr><td>superlative</td><td>Persona holds character</td><td class="num">22</td><td>100%</td><td>97%</td><td>98%</td></tr><tr><td>small talk</td><td>Outcome (1–5)</td><td class="num">17</td><td>4.67</td><td>4.57</td><td>4.78</td></tr><tr><td>small talk</td><td>Transcript (1–5)</td><td class="num">17</td><td>2.78</td><td>2.67</td><td>2.80</td></tr><tr><td>small talk</td><td>Persona booth stays offstage</td><td class="num">17</td><td>88%</td><td>92%</td><td>98%</td></tr><tr><td>small talk</td><td>Persona holds character</td><td class="num">17</td><td>98%</td><td>96%</td><td>98%</td></tr><tr><td>multi</td><td>Outcome (1–5)</td><td class="num">12</td><td>4.83</td><td>4.53</td><td>4.78</td></tr><tr><td>multi</td><td>Transcript (1–5)</td><td class="num">12</td><td>2.72</td><td>2.69</td><td>3.19</td></tr><tr><td>multi</td><td>Persona booth stays offstage</td><td class="num">12</td><td>97%</td><td>92%</td><td>94%</td></tr><tr><td>multi</td><td>Persona holds character</td><td class="num">12</td><td>72%</td><td>64%</td><td>58%</td></tr><tr><td>emotional</td><td>Outcome (1–5)</td><td class="num">11</td><td>4.76</td><td>4.58</td><td>4.61</td></tr><tr><td>emotional</td><td>Transcript (1–5)</td><td class="num">11</td><td>3.42</td><td>3.09</td><td>3.18</td></tr><tr><td>emotional</td><td>Persona booth stays offstage</td><td class="num">11</td><td>97%</td><td>91%</td><td>100%</td></tr><tr><td>emotional</td><td>Persona holds character</td><td class="num">11</td><td>97%</td><td>94%</td><td>94%</td></tr><tr><td>lineage</td><td>Outcome (1–5)</td><td class="num">10</td><td>4.50</td><td>4.20</td><td>4.57</td></tr><tr><td>lineage</td><td>Transcript (1–5)</td><td class="num">10</td><td>3.00</td><td>2.70</td><td>2.97</td></tr><tr><td>lineage</td><td>Persona booth stays offstage</td><td class="num">10</td><td>100%</td><td>93%</td><td>100%</td></tr><tr><td>lineage</td><td>Persona holds character</td><td class="num">10</td><td>97%</td><td>97%</td><td>97%</td></tr><tr><td>pushback</td><td>Outcome (1–5)</td><td class="num">10</td><td>4.80</td><td>4.47</td><td>4.70</td></tr><tr><td>pushback</td><td>Transcript (1–5)</td><td class="num">10</td><td>2.93</td><td>2.70</td><td>3.00</td></tr><tr><td>pushback</td><td>Persona booth stays offstage</td><td class="num">10</td><td>100%</td><td>97%</td><td>100%</td></tr><tr><td>pushback</td><td>Persona holds character</td><td class="num">10</td><td>100%</td><td>100%</td><td>100%</td></tr><tr><td>rejection</td><td>Outcome (1–5)</td><td class="num">10</td><td>4.73</td><td>4.60</td><td>4.83</td></tr><tr><td>rejection</td><td>Transcript (1–5)</td><td class="num">10</td><td>2.97</td><td>2.60</td><td>3.10</td></tr><tr><td>rejection</td><td>Persona booth stays offstage</td><td class="num">10</td><td>97%</td><td>93%</td><td>97%</td></tr><tr><td>rejection</td><td>Persona holds character</td><td class="num">10</td><td>100%</td><td>100%</td><td>100%</td></tr><tr><td>short</td><td>Outcome (1–5)</td><td class="num">10</td><td>4.57</td><td>4.70</td><td>4.73</td></tr><tr><td>short</td><td>Transcript (1–5)</td><td class="num">10</td><td>2.83</td><td>2.77</td><td>2.83</td></tr><tr><td>short</td><td>Persona booth stays offstage</td><td class="num">10</td><td>97%</td><td>97%</td><td>97%</td></tr><tr><td>short</td><td>Persona holds character</td><td class="num">10</td><td>100%</td><td>97%</td><td>97%</td></tr><tr><td>story</td><td>Outcome (1–5)</td><td class="num">10</td><td>4.37</td><td>3.90</td><td>4.40</td></tr><tr><td>story</td><td>Transcript (1–5)</td><td class="num">10</td><td>2.80</td><td>2.30</td><td>2.53</td></tr><tr><td>story</td><td>Persona booth stays offstage</td><td class="num">10</td><td>93%</td><td>53%</td><td>97%</td></tr><tr><td>story</td><td>Persona holds character</td><td class="num">10</td><td>93%</td><td>83%</td><td>97%</td></tr><tr><td>slang</td><td>Outcome (1–5)</td><td class="num">9</td><td>4.93</td><td>4.41</td><td>4.85</td></tr><tr><td>slang</td><td>Transcript (1–5)</td><td class="num">9</td><td>2.93</td><td>2.67</td><td>2.85</td></tr><tr><td>slang</td><td>Persona booth stays offstage</td><td class="num">9</td><td>96%</td><td>96%</td><td>100%</td></tr><tr><td>slang</td><td>Persona holds character</td><td class="num">9</td><td>100%</td><td>93%</td><td>100%</td></tr><tr><td>ai opinion</td><td>Outcome (1–5)</td><td class="num">8</td><td>4.75</td><td>4.67</td><td>4.62</td></tr><tr><td>ai opinion</td><td>Transcript (1–5)</td><td class="num">8</td><td>3.08</td><td>2.83</td><td>2.88</td></tr><tr><td>ai opinion</td><td>Persona booth stays offstage</td><td class="num">8</td><td>96%</td><td>96%</td><td>96%</td></tr><tr><td>ai opinion</td><td>Persona holds character</td><td class="num">8</td><td>92%</td><td>96%</td><td>92%</td></tr><tr><td>discovery</td><td>Outcome (1–5)</td><td class="num">8</td><td>4.33</td><td>4.08</td><td>4.54</td></tr><tr><td>discovery</td><td>Transcript (1–5)</td><td class="num">8</td><td>2.75</td><td>2.50</td><td>2.88</td></tr><tr><td>discovery</td><td>Persona booth stays offstage</td><td class="num">8</td><td>87%</td><td>83%</td><td>88%</td></tr><tr><td>discovery</td><td>Persona holds character</td><td class="num">8</td><td>100%</td><td>96%</td><td>96%</td></tr><tr><td>identify</td><td>Outcome (1–5)</td><td class="num">8</td><td>4.50</td><td>4.46</td><td>4.71</td></tr><tr><td>identify</td><td>Transcript (1–5)</td><td class="num">8</td><td>2.62</td><td>2.79</td><td>3.04</td></tr><tr><td>identify</td><td>Persona booth stays offstage</td><td class="num">8</td><td>92%</td><td>92%</td><td>100%</td></tr><tr><td>identify</td><td>Persona holds character</td><td class="num">8</td><td>100%</td><td>100%</td><td>100%</td></tr><tr><td>next up</td><td>Outcome (1–5)</td><td class="num">8</td><td>4.67</td><td>4.42</td><td>4.58</td></tr><tr><td>next up</td><td>Transcript (1–5)</td><td class="num">8</td><td>3.38</td><td>2.96</td><td>3.29</td></tr><tr><td>next up</td><td>Persona booth stays offstage</td><td class="num">8</td><td>88%</td><td>83%</td><td>79%</td></tr><tr><td>next up</td><td>Persona holds character</td><td class="num">8</td><td>100%</td><td>83%</td><td>83%</td></tr><tr><td>music tech</td><td>Outcome (1–5)</td><td class="num">7</td><td>4.38</td><td>4.38</td><td>4.57</td></tr><tr><td>music tech</td><td>Transcript (1–5)</td><td class="num">7</td><td>2.67</td><td>2.71</td><td>2.71</td></tr><tr><td>music tech</td><td>Persona booth stays offstage</td><td class="num">7</td><td>100%</td><td>100%</td><td>100%</td></tr><tr><td>music tech</td><td>Persona holds character</td><td class="num">7</td><td>100%</td><td>86%</td><td>95%</td></tr><tr><td>taste</td><td>Outcome (1–5)</td><td class="num">7</td><td>4.67</td><td>4.38</td><td>4.76</td></tr><tr><td>taste</td><td>Transcript (1–5)</td><td class="num">7</td><td>3.05</td><td>2.86</td><td>3.10</td></tr><tr><td>taste</td><td>Persona booth stays offstage</td><td class="num">7</td><td>95%</td><td>100%</td><td>100%</td></tr><tr><td>taste</td><td>Persona holds character</td><td class="num">7</td><td>100%</td><td>100%</td><td>100%</td></tr><tr><td>assistant shape</td><td>Outcome (1–5)</td><td class="num">6</td><td>4.28</td><td>4.17</td><td>4.44</td></tr><tr><td>assistant shape</td><td>Transcript (1–5)</td><td class="num">6</td><td>3.00</td><td>2.67</td><td>3.11</td></tr><tr><td>assistant shape</td><td>Persona booth stays offstage</td><td class="num">6</td><td>94%</td><td>83%</td><td>78%</td></tr><tr><td>assistant shape</td><td>Persona holds character</td><td class="num">6</td><td>59%</td><td>44%</td><td>44%</td></tr><tr><td>correction</td><td>Outcome (1–5)</td><td class="num">6</td><td>4.83</td><td>4.56</td><td>4.78</td></tr><tr><td>correction</td><td>Transcript (1–5)</td><td class="num">6</td><td>2.83</td><td>3.17</td><td>3.22</td></tr><tr><td>correction</td><td>Persona booth stays offstage</td><td class="num">6</td><td>100%</td><td>94%</td><td>100%</td></tr><tr><td>correction</td><td>Persona holds character</td><td class="num">6</td><td>100%</td><td>94%</td><td>100%</td></tr><tr><td>debate</td><td>Outcome (1–5)</td><td class="num">6</td><td>4.83</td><td>4.67</td><td>4.89</td></tr><tr><td>debate</td><td>Transcript (1–5)</td><td class="num">6</td><td>3.50</td><td>2.94</td><td>2.94</td></tr><tr><td>debate</td><td>Persona booth stays offstage</td><td class="num">6</td><td>100%</td><td>94%</td><td>89%</td></tr><tr><td>debate</td><td>Persona holds character</td><td class="num">6</td><td>100%</td><td>100%</td><td>94%</td></tr><tr><td>praise</td><td>Outcome (1–5)</td><td class="num">6</td><td>4.78</td><td>4.33</td><td>4.56</td></tr><tr><td>praise</td><td>Transcript (1–5)</td><td class="num">6</td><td>2.61</td><td>2.61</td><td>2.78</td></tr><tr><td>praise</td><td>Persona booth stays offstage</td><td class="num">6</td><td>100%</td><td>83%</td><td>94%</td></tr><tr><td>praise</td><td>Persona holds character</td><td class="num">6</td><td>100%</td><td>100%</td><td>100%</td></tr><tr><td>request</td><td>Outcome (1–5)</td><td class="num">6</td><td>4.83</td><td>4.28</td><td>4.72</td></tr><tr><td>request</td><td>Transcript (1–5)</td><td class="num">6</td><td>3.17</td><td>2.94</td><td>3.33</td></tr><tr><td>request</td><td>Persona booth stays offstage</td><td class="num">6</td><td>94%</td><td>100%</td><td>89%</td></tr><tr><td>request</td><td>Persona holds character</td><td class="num">6</td><td>100%</td><td>100%</td><td>94%</td></tr><tr><td>sequence</td><td>Outcome (1–5)</td><td class="num">6</td><td>4.67</td><td>4.61</td><td>4.72</td></tr><tr><td>sequence</td><td>Transcript (1–5)</td><td class="num">6</td><td>2.83</td><td>2.83</td><td>2.78</td></tr><tr><td>sequence</td><td>Persona booth stays offstage</td><td class="num">6</td><td>100%</td><td>83%</td><td>94%</td></tr><tr><td>sequence</td><td>Persona holds character</td><td class="num">6</td><td>94%</td><td>100%</td><td>100%</td></tr><tr><td>ai mechanics</td><td>Outcome (1–5)</td><td class="num">5</td><td>4.73</td><td>4.67</td><td>4.87</td></tr><tr><td>ai mechanics</td><td>Transcript (1–5)</td><td class="num">5</td><td>2.47</td><td>2.73</td><td>3.27</td></tr><tr><td>ai mechanics</td><td>Persona booth stays offstage</td><td class="num">5</td><td>87%</td><td>93%</td><td>87%</td></tr><tr><td>ai mechanics</td><td>Persona holds character</td><td class="num">5</td><td>87%</td><td>87%</td><td>87%</td></tr></tbody></table></div></div></section>
+<section data-part="omitted"><h3>Left out, and why</h3><dl class="method"><dt>The judge&#x27;s overall outcome and transcript scores</dt><dd>They point the same way as the pass rate <span class="id">(qwen3.8-flash</span> (A) lower, 1017 (B) cannot be told apart) and do not change the call.</dd><dt>The <span class="id long">send-message-or-queue-voice</span> check and <span class="id">failed-reply</span> notices</dt><dd>The evidence cannot tell either candidate and the control apart on them, and neither bears on cost.</dd><dt>Measuring spend across all roles</dt><dd>It counts the evaluation&#x27;s own spend, judge and simulator included, not what production would pay.</dd><dt>Strata other than <span class="id">off-lane</span></dt><dd>No other stratum&#x27;s drop is large enough to lead; most hold ten cases or fewer. They stay in the full tables.</dd><dt>Items delivered, tool provider faults and turns that ran over budget</dt><dd>Telemetry that describes the run, not the persona; none bears on the call.</dd><dt>Cost uplift as a percentage, in the claims</dt><dd>The options table prints it, read off unpaired means; the claims cite the paired dollar gaps instead, and Method reconciles the two.</dd></dl></section>
+<section data-part="method"><h3>Method</h3><dl class="method"><dt>Cases and repeats</dt><dd>299 cases, each run three times per arm; intervals count cases, not trials, except the <span class="id">off-lane</span> comparisons, which may be too narrow.</dd><dt>What a pass means</dt><dd>A trial passes when its candidate did not fail, every goal check passed and every judged dimension scored at least 3 of 5.</dd><dt>Intervals</dt><dd>Readings against the control are each candidate&#x27;s own, uncorrected, at 95%. Contrasts are paired by case and corrected together by Holm&#x27;s method, each at 99.69%, so the whole family&#x27;s intervals hold together; they read wider than the readings.</dd><dt>Judge</dt><dd>Every judged dimension was scored by <span class="id long">openai/gpt-6-luna,</span> with calibration insufficient and zero human ratings.<p class="cap" data-part="caveats">Caveats: The judge is not calibrated.</p></dd><dt>Cost basis</dt><dd>Production cost per 1,000 replies, as served in this run; no arm names the provider that served it. The cost gaps the page leads with are paired by case, over the 284 and 293 cases where both arms recorded a cost, so they differ from the gaps between the arms&#x27; means ($2.43 per 1,000 replies and $2.41 per 1,000 replies against $1.89 per 1,000 replies); the options table&#x27;s percentages are read off those unpaired means. Trials with no cost: 33 for the control, 69 for <span class="id">qwen3.8-flash</span> (A), eighteen for 1017 (B). Had each such candidate trial cost nothing, the candidates would still cost $2.24 per 1,000 replies and $2.36 per 1,000 replies, above the control&#x27;s $2.02 per 1,000 replies had its own cost its p95; the order holds.</dd><dt>Not compared</dt><dd>Latency was read while other runs executed beside it and is left out. Input tokens, output tokens and model calls were not reported.<p class="cap" data-part="caveats">Caveats: Latency is not compared; Recorded but not reported: input tokens; Recorded but not reported: output tokens; Recorded but not reported: llm calls.</p></dd><dt>Apparatus</dt><dd>The simulated user&#x27;s request settings were not recorded on every run, so whether they varied cannot be established.<p class="cap" data-part="caveats">Caveats: The apparatus may have differed: simulator sent settings.</p></dd><dt>Declarations</dt><dd>The asked aspect, the control, the margin and the floor were all set on 25 Oct 2026, after the results.</dd></dl></section>
+<section data-part="checks"><h3>Checks</h3><dl class="method"><dt id="g-check-send-message-or-queue-voice-check">Send message or queue voice check</dt><dd>The goal check <code>call_count(&quot;discord.send_message&quot;) &gt;= 1 or call_count(&quot;music.queue_voice&quot;) &gt;= 1</code>, which code runs on every trial.</dd></dl></section>
+<p class="cap" data-part="made">Written by <span class="id long">claude-opus-5-5,</span> served as <span class="id long">claude-opus-5-5,</span> for $4.20, with analyst skill 365899f8f20b, on <span class="id">2026-11-11.</span></p>
+</article>
+</div>
+<script>// Minimal chart kit: pixel-true SVG rendered at container width, shared tooltip, sortable tables, and one
+// declarative entry point: every div.chart[data-kind][data-chart] is drawn from its JSON (drawCharts).
+const NS="http://www.w3.org/2000/svg";
+function S(tag,attrs={},parent){const e=document.createElementNS(NS,tag);for(const k in attrs){if(k==="text")e.textContent=attrs[k];else e.setAttribute(k,attrs[k]);}if(parent)parent.appendChild(e);return e;}
+function H(tag,attrs={},html){const e=document.createElement(tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(html!=null)e.innerHTML=html;return e;}
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+function lin(d0,d1,r0,r1){const f=x=>r0+(x-d0)/(d1-d0)*(r1-r0);f.inv=y=>d0+(y-r0)/(r1-r0)*(d1-d0);f.d=[d0,d1];return f;}
+function logs(d0,d1,r0,r1){const a=Math.log10(d0),b=Math.log10(d1);const f=x=>r0+(Math.log10(x)-a)/(b-a)*(r1-r0);f.d=[d0,d1];return f;}
+function ticks(a,b,n=5){if(n>1){let k=n,t=ticksRaw(a,b,k);while(t.length>n+1&&k>1){k--;t=ticksRaw(a,b,k);}return t;}return ticksRaw(a,b,n);}
+function ticksRaw(a,b,n=5){const step=Math.pow(10,Math.floor(Math.log10((b-a)/n)));const err=(b-a)/n/step;const m=err>=7.5?10:err>=3.5?5:err>=1.5?2:1;const s=m*step;const out=[];for(let v=Math.ceil(a/s)*s;v<=b+1e-9;v+=s)out.push(+v.toFixed(10));return out;}
+// nice ticks whose labels are all distinct: a format that rounds (an integer count) would otherwise print
+// "1" at 0.5 and at 1, so the step widens until each label names one position
+function kFmtTicks(a,b,n,f){for(let k=n;k>1;k--){const t=ticks(a,b,k),L=t.map(f);if(new Set(L).size===L.length)return t;}return ticks(a,b,2);}
+// explicit tick values, thinned left to right so no two labels touch at the drawn width
+function kThinTicks(vals,x,f){const out=[];let last=-1e9;for(const v of vals){const half=f(v).length*3.2;if(x(v)-half<last+6)continue;out.push(v);last=x(v)+half;}return out;}
+// computed ticks, at most n, fewer until no two neighbours' labels touch at the drawn scale x (kThinTicks's measure):
+// a nice step can land closer than the count asked for implies
+function kFitTicks(a,b,n,f,x){for(let k=Math.max(2,n);k>1;k--){const t=kFmtTicks(a,b,k,f);if(t.every((v,i)=>!i||x(v)-x(t[i-1])>=(f(v).length+f(t[i-1]).length)*3.2+6))return t;}
+  return kThinTicks(kFmtTicks(a,b,2,f),x,f);}
+const kClamp=(v,a,b)=>Math.max(Math.min(a,b),Math.min(Math.max(a,b),v));
+const fmt={
+  pct:(v,d=1)=>v.toFixed(d)+"%",
+  // money by its size: whole dollars from $10, cents from ten cents, three significant figures below; grouped, the
+  // sign before the dollar sign (the package's look.figure_text and summary.dollars_text write it by the same rule)
+  usd:v=>{const a=Math.abs(v),t=a>=10?Math.round(a).toLocaleString("en-US"):a===0?"0":a>=.1?a.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}):a.toFixed(2-Math.floor(Math.log10(a)));return (v<0&&a!==0?"-":"")+"$"+t;},
+  s:v=>v.toFixed(v<10?1:0)+"s", ms:v=>Math.round(v)+" ms", x:v=>v.toFixed(1)+"×"
+};
+// named formats for chart data: "name" or "name:digits", with a leading "+" to sign positive values.
+// Without digits a value prints as many decimals as it needs, up to two (usd and ms keep their own rounding).
+const kShort=(v,d)=>d==null?String(+(+v).toFixed(2)):(+v).toFixed(d);
+const K_FMTS={
+  num:kShort, int:v=>Math.round(v).toLocaleString("en-US"), pct:(v,d)=>kShort(v,d)+"%", pts:(v,d)=>kShort(v,d)+" pts",
+  usd:(v,d)=>d==null?fmt.usd(v):(v<0?"-":"")+"$"+Math.abs(v).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d}),
+  usdk:v=>Math.abs(v)>=1000?"$"+(v/1000).toFixed(1)+"k":"$"+Math.round(v).toLocaleString("en-US"),
+  // retired: dollars per 1,000 with the mark, read only so a chart stored with it still draws (the package writes
+  // money per 1,000 replies as usd, the count in the axis title); an exact zero is $0, no measurement of a scale
+  usdpk:(v,d)=>v===0?"$0":K_FMTS.usd(v*1000,d==null?2:d)+"/1000",
+  ms:(v,d)=>(d==null?String(Math.round(v)):v.toFixed(d))+" ms", s:(v,d)=>kShort(v,d)+" s",
+  dur:v=>v>=1000?kShort(v/1000)+"s":kShort(v)+"ms", x:(v,d)=>v.toFixed(d==null?1:d)+"×", k:(v,d)=>(v/1000).toFixed(d==null?1:d)+"k"
+};
+// an axis's tick labels in a value format's name without its digits ("pct:3" ticks as "pct"), which places them
+const kTickFmt=spec=>namedFmt(typeof spec==="string"?spec.replace(/:\d$/,""):spec);
+// then the labels of the ticks placed, every one at the decimals the axis's step needs ($0.00, $0.05, $0.10; 0.0%,
+// 0.5%, 1.0%; 0%, 50%, 100%), so one axis reads at one precision, never at the decimals a value is stated to; a format
+// whose digits mean something else (int, a count in thousands) keeps its own
+const K_STEP_FMTS=new Set(["num","pct","pts","usd","ms","s","x"]);
+function kTickLabels(spec,ticks){const m=typeof spec==="string"&&/^(\+?)([a-z]+)(?::\d)?$/.exec(spec);if(!m||!K_STEP_FMTS.has(m[2]))return kTickFmt(spec);
+  const st=ticks.length<2?1:Math.min(...ticks.slice(1).map((v,i)=>v-ticks[i]));let d=0;while(d<6&&Math.abs(Math.round(st*10**d)-st*10**d)>1e-6*10**d)d++;
+  return namedFmt(`${m[1]}${m[2]}:${d}`);}
+function namedFmt(spec){const m=typeof spec==="string"&&/^(\+?)([a-z]+)(?::(\d))?$/.exec(spec);
+  if(!m||!Object.hasOwn(K_FMTS,m[2]))throw new Error(`fmt ${JSON.stringify(spec)} is not one of ${Object.keys(K_FMTS).join(", ")} (optionally "+name" or "name:digits")`);
+  const f=K_FMTS[m[2]],d=m[3]==null?null:+m[3],signed=m[1]==="+";return v=>{const t=f(v,d);return signed&&v>0?"+"+t:t;};}
+// a drawn value as printed: the text its chart carries for it (value_text, lo_text, …: decided where the chart was
+// made), else the value in the chart's format, which only a chart carrying no text (a host's own) still reaches
+const kAs=(t,f,v)=>t!=null?t:f(v);
+// chart data is untrusted text: escape everything that lands in markup, and accept colors only as token names
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+function kTok(c,fallback){if(c==null)return fallback;if(typeof c!=="string"||!/^--[a-z][a-z0-9-]*$/.test(c))throw new Error(`color ${JSON.stringify(c)} is not a token name such as "--s1"`);return c;}
+// a number that reaches a style or a size: finite, or refused, so data can never write CSS of its own
+function kNum(v,dflt,what){if(v==null)return dflt;if(typeof v!=="number"||!Number.isFinite(v))throw new Error(`${what} ${JSON.stringify(v)} is not a finite number`);return v;}
+// the kit reads a null field as one not set, as the package's models do: nulls are dropped from every object
+function kNoNulls(v){if(Array.isArray(v))return v.map(kNoNulls);if(v&&typeof v==="object")return Object.fromEntries(Object.entries(v).filter(([,x])=>x!=null).map(([k,x])=>[k,kNoNulls(x)]));return v;}
+const K_STATUS=["good","warn","bad","neutral"];
+function kStatus(k){if(!K_STATUS.includes(k))throw new Error(`status ${JSON.stringify(k)} is not one of ${K_STATUS.join(", ")}`);return k;}
+// a tooltip is a list of text lines; the first is set in bold
+function tipHTML(t){if(t==null)return null;return (Array.isArray(t)?t:[t]).map((l,i)=>i?esc(l):`<b>${esc(l)}</b>`).join("<br>");}
+// text width in the chart font, measured; charts redraw once web fonts load, so widths match what is drawn
+let kCanvas;function textW(t,size=12,weight=400){kCanvas=kCanvas||document.createElement("canvas").getContext("2d");
+  kCanvas.font=`${weight} ${size}px ${css("--f-body")||"sans-serif"}`;return kCanvas.measureText(String(t)).width;}
+// tooltip
+const tip=H("div",{id:"tip",role:"tooltip"});document.addEventListener("DOMContentLoaded",()=>document.body.appendChild(tip));
+function showTip(html,x,y){tip.innerHTML=html;tip.classList.add("on");const w=tip.offsetWidth,h=tip.offsetHeight;
+  let L=x+14,T=y+14;if(L+w>innerWidth-8)L=x-w-14;if(T+h>innerHeight-8)T=y-h-14;tip.style.left=Math.max(8,L)+"px";tip.style.top=Math.max(8,T)+"px";}
+function hideTip(){tip.classList.remove("on");}
+document.addEventListener("pointermove",e=>{const t=e.target.closest&&e.target.closest("[data-tip]");if(t)showTip(t.getAttribute("data-tip"),e.clientX,e.clientY);else hideTip();});
+document.addEventListener("focusin",e=>{const t=e.target.closest&&e.target.closest("[data-tip]");if(t){const r=t.getBoundingClientRect();showTip(t.getAttribute("data-tip"),r.right,r.top);}});
+document.addEventListener("focusout",hideTip);
+// responsive render: fn(el,width) called on resize and once fonts load; the returned redraw() carries its observer as .ro
+function chart(el,fn){const go=()=>{const w=Math.max(180,Math.floor(el.clientWidth));if(el._w===w)return;el._w=w;el.innerHTML="";fn(el,w);};
+  go();const ro=new ResizeObserver(go);ro.observe(el);const redraw=()=>{el._w=0;go();};redraw.ro=ro;kRedraws.add(redraw);return redraw;}
+const kRedraws=new Set();if(document.fonts)document.fonts.ready.then(()=>{for(const r of kRedraws)r();});
+function svgIn(el,w,h){return S("svg",{width:w,height:h,viewBox:`0 0 ${w} ${h}`,role:"img"},el);}
+// hit target helper: transparent rect larger than mark; html is already-escaped tooltip markup
+function hit(g,x,y,w,h,html){const r=S("rect",{x,y,width:w,height:h,fill:"transparent","data-tip":html,tabindex:0},g);return r;}
+// sortable tables: th.sort[data-k], rows rendered by fn(sortedRows)
+function sortable(tableEl,rows,render,defKey,defDir=-1){let key=defKey,dir=defDir;
+  const ths=tableEl.querySelectorAll("th.sort");
+  const draw=()=>{ths.forEach(th=>{th.removeAttribute("aria-sort");if(th.dataset.k===key)th.setAttribute("aria-sort",dir<0?"descending":"ascending");});
+    const s=[...rows].sort((a,b)=>{const A=a[key],B=b[key];return (A>B?1:A<B?-1:0)*dir;});render(s);};
+  ths.forEach(th=>{th.tabIndex=0;const f=()=>{if(key===th.dataset.k)dir=-dir;else{key=th.dataset.k;dir=-1;}draw();};th.onclick=f;th.onkeydown=e=>{if(e.key==="Enter")f();};});draw();}
+function pill(kind,text){const ic={good:"✓",warn:"!",bad:"✕",neutral:"–"}[kind];return `<span class="pill ${kind}"><span aria-hidden="true">${ic}</span>${text}</span>`;}
+// colors are applied via style="fill:var(--token)" so theme changes need no re-render
+// label placement: try right, left, above, below, then nudges up and down; avoids other labels and obstacle boxes [x0,y0,x1,y1].
+// A label's box is its measured 12px text plus a little air, so two placed labels never touch; above and below clear
+// the label's own mark (radius it.r, default 5.5). An obstacle may carry a fifth number, its cost (default 10): a
+// reference line costs 1, so crossing it beats colliding with a label. A spot costs more the further its box is from
+// its own mark, and a spot nearer another mark than its own costs 3, so a label strays from its mark only to avoid a
+// collision and never sits beside another arm's mark. marks: [[x,y]] of every mark drawn (default: the items').
+function placeLabels(items,bounds,obstacles=[],marks){const W=(t,strong)=>textW(t,12,strong?600:400)+3;const placed=[...obstacles];
+  const pts=marks||items.map(it=>[it.px,it.py]);const near=(b,x,y)=>Math.hypot(Math.max(b[0]-x,0,x-b[2]),Math.max(b[1]-y,0,y-b[3]));
+  for(const it of items){const w=W(it.text,it.strong),g=(it.r==null?5.5:it.r)+2,R=it.px+g+1.5,L=it.px-g-1.5,up=it.py-g-4.5,dn=it.py+g+13;
+    const opts=[[R,it.py+4,"start"],[L,it.py+4,"end"],[it.px,up,"middle"],[it.px,dn,"middle"]];
+    for(const d of [-6,6,12,-12,24,-24,36,-36])opts.push([R,it.py+4+d,"start"],[L,it.py+4+d,"end"]);
+    opts.push([it.px,up-14,"middle"],[it.px,dn+14,"middle"]);
+    const box=o=>{const x0=o[2]==="end"?o[0]-w:o[2]==="middle"?o[0]-w/2:o[0];return [x0,o[1]-12.5,x0+w,o[1]+4];};
+    const score=b=>{let s=b[0]<bounds[0]||b[2]>bounds[2]||b[1]<bounds[1]||b[3]>bounds[3]?100:0;
+      for(const p of placed)if(b[0]<p[2]&&b[2]>p[0]&&b[1]<p[3]&&b[3]>p[1])s+=p[4]==null?10:p[4];
+      const own=near(b,it.px,it.py);s+=own*.06;
+      if(pts.some(([x,y])=>(x!==it.px||y!==it.py)&&near(b,x,y)<Math.max(own,4)))s+=3;return s;};
+    let pick=opts[0],bs=1e9;opts.forEach((o,i)=>{const sc=score(box(o))+i*.08;if(sc<bs){bs=sc;pick=o;}});
+    it.x=pick[0];it.y=pick[1];it.anchor=pick[2];placed.push(box(pick));}
+  return items;}
+// a reference line's label (a gate, a budget, a margin), beside its line at rx and inside [x0,x1] (x1 short of
+// anything else in its band, such as the level): on one line to the right of the line where it fits, else to its left,
+// else wrapped at its spaces to the wider side's width (a line still wider than that side sits against x1). Returns
+// its lines, where they start (x, anchor) and the widest (w).
+// how far a reference label too wide for the room a chart's head leaves it sits above the head: a row and its leading
+const K_RAISED=17;
+function kRefLabel(rx,text,x0,x1,full){const W=t=>textW(t,12),tw=W(text),lx=Math.min(rx-4,x1),R=x1-rx-4,L=lx-x0;
+  if(tw<=R)return {x:rx+4,anchor:"start",lines:[text],w:tw};if(tw<=L)return {x:lx,anchor:"end",lines:[text],w:tw};
+  const room=Math.max(R,L),lines=[];let cur="";
+  for(const wd of text.split(" ")){const nx=cur?cur+" "+wd:wd;if(cur&&W(nx)>room){lines.push(cur);cur=wd;}else cur=nx;}lines.push(cur);
+  const w=Math.max(...lines.map(W));
+  // too wide for the room a chart's head leaves it: laid out in the chart's full width, a row above the head's
+  if(w>room&&full!=null&&full>x1)return {...kRefLabel(rx,text,x0,full),raised:1};
+  if(w>room)return {x:x1,anchor:"end",lines,w};
+  return R>=L?{x:rx+4,anchor:"start",lines,w}:{x:lx,anchor:"end",lines,w};}
+// the label drawn as one text, its lines 13px apart: stacked up to baseline y (up), else down from it
+function kRefText(s,o,y,up){const n=o.lines.length,t=S("text",{x:o.x,y:up?y-(n-1)*13:y,"text-anchor":o.anchor,class:"tick"},s);
+  o.lines.forEach((l,i)=>S("tspan",{x:o.x,dy:i?13:0,text:i<n-1?l+" ":l},t));return t;}
+// its box [x0,y0,x1,y1] for placeLabels, its first baseline at y
+const kRefBox=(o,y)=>{const a=o.anchor==="end"?o.x-o.w:o.x;return [a,y-10,a+o.w,y+3+(o.lines.length-1)*13];};
+// a change chart's zero line carried up to its label at the top (what zero is: no change against the control, and its
+// level where the rows share one), placed and wrapped as a reference label is, inside the chart's width; returns the
+// label, whose lines push the plot down 13 px each after the first; where neither side of the line holds it on one line
+// but the chart's width does, it sits on one line centred over the line, kept inside the chart, the line starting under it
+function kZeroPlace(z,text,w){const o=kRefLabel(z,text,0,w);if(o.lines.length===1)return o;const tw=textW(text,12);if(tw>w)return o;
+  return {x:Math.max(0,Math.min(z-tw/2,w-tw)),anchor:"start",lines:[text],w:tw,over:true};}
+function kZeroDraw(s,z,o,bottom,style,clear=[]){kVLine(s,z,o.over?16:4,bottom,clear,{class:"axis",...(style?{style}:{})});kRefText(s,o,12,false);}
+// a vertical line (an axis, the zero line, a reference line, a grid line) from y1 down to y2 at x, stopping short of
+// every label in clear ([x0,y0,x1,y1]) it would cross and going on past it: a chart's head, a reference label and a
+// group's heading sit clear of every drawn line at any width, so no line strikes a word through
+const K_CLEAR=3;
+function kVLine(s,x,y1,y2,clear,attrs){const cuts=clear.filter(b=>b[0]-K_CLEAR<=x&&x<=b[2]+K_CLEAR&&b[1]<y2&&b[3]>y1).map(b=>[b[1]-K_CLEAR/2,b[3]+K_CLEAR/2]).sort((a,b)=>a[0]-b[0]);
+  let at=y1;for(const [t,b] of cuts){if(t-at>=1)S("line",{x1:x,x2:x,y1:at,y2:t,...attrs},s);at=Math.max(at,b);}
+  if(y2-at>=1)S("line",{x1:x,x2:x,y1:at,y2,...attrs},s);}
+// a horizontal line (a scatter's reference line) from x1 to x2 at y, stopping short of every label in clear it would
+// cross, as kVLine does
+function kHLine(s,x1,x2,y,clear,attrs){const cuts=clear.filter(b=>b[1]-K_CLEAR/2<=y&&y<=b[3]+K_CLEAR/2&&b[0]<x2&&b[2]>x1).map(b=>[b[0]-K_CLEAR,b[2]+K_CLEAR]).sort((a,b)=>a[0]-b[0]);
+  let at=x1;for(const [l,r] of cuts){if(l-at>=1)S("line",{x1:at,x2:l,y1:y,y2:y,...attrs},s);at=Math.max(at,r);}
+  if(x2-at>=1)S("line",{x1:at,x2,y1:y,y2:y,...attrs},s);}
+// a 12 px label's box from its anchor and baseline, measured in the chart's face
+const kTextBox=(x,y,t,anchor,strong)=>{const w=textW(t,12,strong?600:400),a=anchor==="end"?x-w:anchor==="middle"?x-w/2:x;return [a,y-10,a+w,y+3];};
+// where a chart's head (its level) ends: over the plot's right end, else, where it is wider than everything left of
+// that, as far right as it must go to start inside the chart, never past its edge
+const kLevelX=(w,r,level)=>level?Math.min(w,Math.max(w-r,textW(kLevelHead(level),12))):w-r;
+// the labels in a chart's head row a vertical line keeps clear of: the interval level, ending at lx, and the
+// reference's label, on the row above the plot (mt)
+function kHeadClear(lx,mt,level,rl){const c=[];if(level)c.push(kTextBox(lx,mt-8,kLevelHead(level),"end"));
+  if(rl){const y=mt-8-(rl.raised||0)*K_RAISED;c.push(kRefBox(rl,y-(rl.lines.length-1)*13));}return c;}
+// each group's heading, by the row it opens, wrapped at its spaces to the chart's width w, so a heading wider than a
+// phone's chart takes a second line rather than running off its edge (a word wider than the chart is a line of its own,
+// never cut). A heading opens each row whose group differs from the row before: where every, any such row once some row
+// is grouped (barsH's rule, an ungrouped row's heading empty); else only a row naming a group (forest's)
+function kGroupHeads(rows,w,every){const grouped=every?rows.some(r=>r.group!=null):rows.some(r=>r.group),heads={};
+  rows.forEach((r,i)=>{if((r.group||every)&&grouped&&(i===0||r.group!==rows[i-1].group))heads[i]=kWrapPx(r.group==null?"":r.group,w);});return heads;}
+function kWrapPx(t,room){const W=x=>textW(x,12,600),lines=[];let cur="";
+  for(const wd of String(t).split(" ")){const nx=cur?cur+" "+wd:wd;if(cur&&W(nx)>room){lines.push(cur);cur=wd;}else cur=nx;}lines.push(cur);return lines;}
+// what the headings add past their one line each: 13 px for each line after a heading's first
+const kHeadsH=heads=>Object.values(heads).reduce((a,l)=>a+(l.length-1)*13,0);
+// a group's heading at the left edge, its last line's baseline 4 px over the group's first row (y0)
+function kGroupHead(s,lines,y0){if(lines.length===1)return S("text",{x:0,y:y0-4,class:"lbl-strong",text:lines[0]},s);
+  const t=S("text",{x:0,y:y0-4-(lines.length-1)*13,class:"lbl-strong"},s);lines.forEach((l,i)=>S("tspan",{x:0,dy:i?13:0,text:l},t));return t;}
+// each group's heading a vertical line keeps clear of, where the rows lay their headings out: the first 14 px above
+// the first row, each next one 14 px into the gap before its group, a heading's later lines pushing its rows down
+function kGroupClear(heads,n,mt,rowH){const c=[];if(!Object.keys(heads).length)return c;let y0=mt+14;
+  for(let i=0;i<n;i++){if(i in heads){const l=heads[i];if(i)y0+=14;y0+=(l.length-1)*13;
+    c.push([0,y0-4-(l.length-1)*13-10,Math.max(...l.map(x=>textW(x,12,600))),y0-1]);}y0+=rowH;}return c;}
+// which way is better, under the axis: "right", "left" or the two ends' own words, the left's first. The two words sit
+// at the plot's ends, 16 px under the ticks, on one line where both fit, else the right one a line lower; returns the
+// px they take
+const kBetterWords=b=>{if(b==null)return null;if(b==="right")return ["worse","better"];if(b==="left")return ["better","worse"];
+  if(Array.isArray(b)&&b.length===2&&b.every(t=>typeof t==="string"))return b;throw new Error(`better ${JSON.stringify(b)} is not "right", "left" or two words`);};
+const kBetterH=(words,x0,x1)=>!words?0:(words[0].length+words[1].length+4)*6.4+12<=x1-x0?16:32;
+function kBetter(s,words,x0,x1,y){if(!words)return;const two=kBetterH(words,x0,x1)>16;
+  S("text",{x:x0,y:two?y-16:y,"text-anchor":"start",class:"tick",text:"← "+words[0]},s);S("text",{x:x1,y,"text-anchor":"end",class:"tick",text:words[1]+" →"},s);}
+// a note's unbreakable runs: its " · " parts where it has them, each but the last keeping its " ·", so a count stays
+// with its denominator ("96 of 456") and the note breaks at the dot or not at all; else its words
+function kNoteWords(t){const s=String(t);if(!s.includes(" · "))return s.split(" ");const p=s.split(" · ");
+  return p.map((x,i)=>i<p.length-1?x+" ·":x);}
+// a row's end note wrapped between its runs (kNoteWords) to room px, two lines at most: the figure with its unit, then
+// the words
+function kWrapNote(t,room){const lines=[],wds=kNoteWords(t);let cur="";for(const wd of wds){const nx=cur?cur+" "+wd:wd;
+  if(cur&&nx.length*6.4>room){lines.push(cur);cur=wd;}else cur=nx;}lines.push(cur);
+  if(lines.length>2){let at=2,best=Infinity;
+    // two lines at most, split where the longer is shortest, the figure with its unit kept on the first
+    for(let i=2;i<wds.length;i++){const lg=Math.max(wds.slice(0,i).join(" ").length,wds.slice(i).join(" ").length);if(lg<best){best=lg;at=i;}}
+    return [wds.slice(0,at).join(" "),wds.slice(at).join(" ")];}return lines;}
+// a row label in its column of maxC characters: whole, else wrapped at its spaces onto two lines, else its short label
+// so, else wrapped onto as many lines as it takes; never cut, so no two rows read alike that their labels tell apart.
+// A strip draws every row in one form: whole where every label fits, else each its short label
+function kWrap2(t,maxC){if(t.length<=maxC)return [t];const ws=t.split(" ");let a="",i=0;
+  while(i<ws.length){const nx=a?a+" "+ws[i]:ws[i];if(nx.length>maxC)break;a=nx;i++;}
+  if(!a)return null;const b=ws.slice(i).join(" ");return b.length<=maxC?[a,b]:null;}
+function kWrapAll(t,maxC){const out=[];let cur="";for(const wd of t.split(" ")){const nx=cur?cur+" "+wd:wd;if(cur&&nx.length>maxC){out.push(cur);cur=wd;}else cur=nx;}out.push(cur);return out;}
+function kFitLabel(label,sl,maxC){return kWrap2(label,maxC)||(sl&&kWrap2(sl,maxC))||kWrapAll(sl||label,maxC);}
+// one label form per chart, so rows read alike: every label whole on one line or two where all fit, else each row its
+// short label (kFitLabel); returns a row's lines
+function kRowLines(rows,maxC){const whole=rows.every(r=>kWrap2(r.label,maxC));return r=>whole?kWrap2(r.label,maxC):kFitLabel(r.sl||r.label,null,maxC);}
+// the row pitch: base (the chart's own where it sets one) where every label takes one line, else room for the most
+// lines a label takes, 13 px each, so a wrapped label never runs into the next row
+const kRowH=(rows,lines,base)=>{const n=Math.max(...rows.map(r=>lines(r).length));return n>1?Math.max(base,13*n+8):base;};
+// a row's label lines, right-aligned at x and centred on cy, 13 px apart
+function kLabelText(g,lines,x,cy,strong){const t=S("text",{x,y:cy+4-6.5*(lines.length-1),"text-anchor":"end",class:strong?"lbl-strong":"lbl"},g);
+  lines.forEach((l,j)=>S("tspan",{x,dy:j?13:0,text:l},t));return t;}
+// a dot strip's label column: the longest label on one line up to 42% of the width, else on two up to half of it
+const kDotLabelW=(rows,w)=>{const n=Math.max(...rows.map(r=>r.label.length)),one=n*6.6+18;return one<=w*.42?one:Math.max(w*.42,Math.min((Math.ceil(n/2)+4)*6.6+18,w*.5));};
+// the right margin that holds every row's note at the right edge, each wrapped at its spaces to 30% of the width
+const kNoteMargin=(rows,w)=>Math.max(...rows.map(r=>Math.max(...kWrapNote(r.note||"",w*.3-10).map(l=>l.length*6.4))))+16;
+// a dot row: its interval, its mark (hollow where asked), and its note at the right edge (nx), wrapped to room. The
+// interval is drawn in its arm's colour at full strength, thinner than the mark, so it reads at the 3:1 a graphical
+// mark takes in either theme (WCAG 1.4.11; at .35 opacity it read 1.6:1 in light and 1.5:1 in dark)
+function kDotRow(g,x,d0,d1,r,cy,c,shape,hollow,nx,room,strong){
+  if(r.lo!=null&&r.hi!=null)S("line",{x1:x(kClamp(r.lo,d0,d1)),x2:x(kClamp(r.hi,d0,d1)),y1:cy,y2:cy,style:`stroke:var(${c});stroke-width:2;stroke-linecap:round`},g);
+  const mk=mark(g,shape,x(kClamp(r.value,d0,d1)),cy,5,c,hollow);
+  if(r.note!=null){const nl=kWrapNote(r.note,room),nt=S("text",{x:nx,y:cy+4-6*(nl.length-1),class:strong?"lbl-strong":"tick"},g);nl.forEach((l,j)=>S("tspan",{x:nx,dy:j?12:0,text:l},nt));}
+  return mk;}
+// a log axis's ticks where the data names none: the decades, else 1 and 3 of each, else 1, 2 and 5, the first of those
+// with three ticks at least in the range whose labels do not touch at the drawn scale x; 1, 2, 3, 5 and 7 where no set
+// gives three. A log axis is never left with a stretch it does not label, and never takes a linear step's ticks.
+function kLogTicks(a,b,f,x){const at=st=>{const t=[];for(let k=Math.floor(Math.log10(a));k<=Math.ceil(Math.log10(b));k++)for(const s of st){const v=+(s*10**k).toPrecision(12);if(v>=a*(1-1e-9)&&v<=b*(1+1e-9))t.push(v);}return t;};
+  const fits=t=>t.every((v,i)=>!i||x(v)-x(t[i-1])>=(f(v).length+f(t[i-1]).length)*3.2+6);
+  const sets=[[1],[1,3],[1,2,5]].map(at).filter(t=>t.length>=3);
+  return sets.find(fits)||kThinTicks(sets.length?sets[0]:at([1,2,3,5,7]),x,f);}
+// an interval level as a chart's head prints it: "95% intervals"; a level glossed in parentheses keeps its gloss last,
+// "99.7% intervals (95% across 16 comparisons)"
+const kLevelHead=l=>{const m=/^(\S+) (\(.+\))$/.exec(l);return m?`${m[1]} intervals ${m[2]}`:`${l} intervals`;};
+// marks: one shape per arm where color alone would carry identity; hollow marks a failure or an absent setting
+function mark(g,shape,x,y,r,color,hollow){const st=hollow?`fill:var(--surface);stroke:var(${color});stroke-width:2`:`fill:var(${color});stroke:var(--surface);stroke-width:2`;
+  if(shape==="square")return S("rect",{x:x-r*.88,y:y-r*.88,width:r*1.76,height:r*1.76,rx:1.5,style:st},g);
+  if(shape==="triangle")return S("path",{d:`M${x},${y-r*1.1}L${x+r*1.05},${y+r*.8}L${x-r*1.05},${y+r*.8}Z`,style:st},g);
+  if(shape==="diamond")return S("path",{d:`M${x},${y-r*1.15}L${x+r*1.1},${y}L${x},${y+r*1.15}L${x-r*1.1},${y}Z`,style:st},g);
+  return S("circle",{cx:x,cy:y,r,style:st},g);}
+const K_SHAPES=["circle","square","triangle","diamond"];
+function kShape(s){if(s==null)return "circle";if(!K_SHAPES.includes(s))throw new Error(`shape ${JSON.stringify(s)} is not one of ${K_SHAPES.join(", ")}`);return s;}
+// patterns: a fill told apart by its texture, not its color alone (one status hue, several causes). The box is
+// washed in its token and the texture drawn over it in the token as plain lines and dots, clipped to the box by
+// geometry, so a pattern references nothing outside its own marks. The texture is sparse (12 px apart), so a light
+// tint carries it and a bar of failures never reads as a block of ink.
+const K_PATTERNS=["hatch","cross","dots","rows","cols"];
+function kPatternName(name){if(!K_PATTERNS.includes(name))throw new Error(`pattern ${JSON.stringify(name)} is not one of ${K_PATTERNS.join(", ")}`);return name;}
+function kTexture(g,name,x,y,w,h,color,opacity=1){kPatternName(name);const t=S("g",{style:`opacity:${opacity}`},g),P=12;
+  S("rect",{x,y,width:w,height:h,rx:2,style:`fill:color-mix(in oklab, var(${color}) 22%, var(--surface));stroke:var(${color});stroke-width:1`},t);
+  if(w<=0||h<=0)return t;const d=[];
+  // a diagonal from (sx,sy) along (1,dir) for h, cut to the box's x range
+  const diag=(sx,sy,dir)=>{const a=Math.max(0,x-sx),b=Math.min(h,x+w-sx);if(b>a)d.push(`M${sx+a},${sy+dir*a}L${sx+b},${sy+dir*b}`);};
+  if(name==="hatch"||name==="cross")for(let k=-h;k<w;k+=P)diag(x+k,y+h,-1);
+  if(name==="cross")for(let k=-h;k<w;k+=P)diag(x+k,y,1);
+  if(name==="rows")for(let v=y+P/2;v<y+h;v+=P)d.push(`M${x},${v}H${x+w}`);
+  if(name==="cols")for(let v=x+P/2;v<x+w;v+=P)d.push(`M${v},${y}V${y+h}`);
+  if(d.length)S("path",{d:d.join(""),style:`fill:none;stroke:var(${color});stroke-width:${name==="cross"?1:1.4}`},t);
+  if(name==="dots")for(let i=x+P/2;i<x+w;i+=P)for(let j=y+P/2;j<y+h;j+=P)S("circle",{cx:i,cy:j,r:1.4,style:`fill:var(${color})`},t);
+  return t;}
+
+// ---------- arm naming ----------
+// arms: [{id, role:'control'|'challenger', alias?, spec:{model, ...}}]; attrs: [{k, fmt(v)}] in display order
+// short = alias, else only the attributes that differ from control (model trimmed of the shared prefix); tag = A, B, C…
+// (AA after Z), never P, which is the control's alone
+const kCandidateTag=n=>{let t="";for(n++;n;n=Math.floor((n-1)/26))t=String.fromCharCode(65+(n-1)%26)+t;return t;};
+function armLabels(arms,attrs,controlName="Production"){
+  const ctl=arms.find(a=>a.role==="control");const fmtA=(k,v)=>{const a=attrs.find(x=>x.k===k);return a&&a.fmt?a.fmt(v):String(v);};
+  const trimModel=(m,base)=>{if(!base||m===base)return m;let i=0;while(i<m.length&&i<base.length&&m[i]===base[i])i++;
+    if(!(i===base.length&&/[-_ .]/.test(m[i]||"")))while(i>0&&!/[-_ .]/.test(m[i-1]))i--;const rest=m.slice(i).replace(/^[-_ .]+/,"");return i>=4&&rest?rest:m;};
+  let n=0;
+  for(const a of arms){a.long=attrs.map(x=>fmtA(x.k,a.spec[x.k])).join(" · ");
+    if(a===ctl){a.short=a.alias||controlName;a.tag="P";continue;}
+    do a.tag=kCandidateTag(n++);while(a.tag==="P");
+    if(a.alias){a.short=a.alias;continue;}
+    const diffs=attrs.filter(x=>a.spec[x.k]!==ctl.spec[x.k]);
+    a.short=diffs.map(x=>x.k==="model"?trimModel(a.spec.model,ctl.spec.model):(x.sfmt?x.sfmt(a.spec[x.k]):fmtA(x.k,a.spec[x.k]))).join(" · ")||a.long;}
+  // collisions: append the next attribute that separates them
+  const seen={};for(const a of arms){(seen[a.short]=seen[a.short]||[]).push(a);}
+  for(const k in seen)if(seen[k].length>1)for(const a of seen[k]){const extra=attrs.find(x=>seen[k].some(b=>b!==a&&b.spec[x.k]!==a.spec[x.k]));if(extra)a.short+=" · "+fmtA(extra.k,a.spec[extra.k]);}
+  return arms;}
+// Colour as the reader sees it, in the theme the page is shown in: a token's sRGB (resolved by the browser, read as
+// rgb() or color(srgb), else from a 1 px canvas), an oklab mix as color-mix draws one, and the ink of those offered
+// that reads best on a fill (WCAG contrast), the first where two read alike. chart_svg's kit_colours.ink_on makes
+// the same choice for a static page, in whichever of the kit's themes reads worse.
+let kProbe,kPx;function kRGB(t){if(!kProbe){kProbe=document.createElement("span");kProbe.style.display="none";document.body.appendChild(kProbe);}
+  kProbe.style.color=`var(${t})`;const c=getComputedStyle(kProbe).color;let m=c.match(/^rgba?\(([^)]+)\)$/);
+  if(m)return m[1].split(/[\s,\/]+/).slice(0,3).map(v=>+v/255);m=c.match(/^color\(srgb ([^)]+)\)$/);if(m)return m[1].split(/[\s\/]+/).slice(0,3).map(Number);
+  kPx=kPx||Object.assign(document.createElement("canvas"),{width:1,height:1}).getContext("2d",{willReadFrequently:true});
+  kPx.clearRect(0,0,1,1);kPx.fillStyle=c;kPx.fillRect(0,0,1,1);const d=kPx.getImageData(0,0,1,1).data;return [d[0]/255,d[1]/255,d[2]/255];}
+const kLin=v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4,kGam=v=>Math.min(1,Math.max(0,v<=.0031308?12.92*v:1.055*v**(1/2.4)-.055));
+function kOk(c){const [r,g,b]=c.map(kLin),l=Math.cbrt(.4122214708*r+.5363325363*g+.0514459929*b),m=Math.cbrt(.2119034982*r+.6806995451*g+.1073969566*b),s=Math.cbrt(.0883024619*r+.2817188376*g+.6299787005*b);
+  return [.2104542553*l+.793617785*m-.0040720468*s,1.9779984951*l-2.428592205*m+.4505937099*s,.0259040371*l+.7827717662*m-.808675766*s];}
+function kOkMix(a,b,share){const A=kOk(a),B=kOk(b),[L,x,y]=A.map((v,i)=>v*share+B[i]*(1-share));
+  const l=(L+.3963377774*x+.2158037573*y)**3,m=(L-.1055613458*x-.0638541728*y)**3,s=(L-.0894841775*x-1.291485548*y)**3;
+  return [4.0767416621*l-3.3077115913*m+.2309699292*s,-1.2684380046*l+2.6097574011*m-.3413193965*s,-.0041960863*l-.7034186147*m+1.707614701*s].map(kGam);}
+const kLum=c=>{const [r,g,b]=c.map(kLin);return .2126*r+.7152*g+.0722*b;};
+const kContrast=(a,b)=>{const x=kLum(a),y=kLum(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);};
+const kInk=(fill,inks)=>inks.reduce((best,t)=>kContrast(kRGB(t),fill)>kContrast(kRGB(best),fill)?t:best);
+// a tag's letter on its arm's color: on-fill or the surface, whichever reads better there (the surface on the
+// control's ink-gray, which is light in the dark theme)
+const kOnTag=c=>kInk(kRGB(c),["--on-fill","--surface"]);
+function armChip(a,color){return `<span class="armchip"><span class="tag" style="background:var(${color});color:var(${kOnTag(color)})">${a.tag}</span>${a.short}</span>`;}
+function kArmChip(tag,label,color){const s=H("span",{class:"armchip"});const t=H("span",{class:"tag"}),c=kTok(color,"--ink-2");t.style.background=`var(${c})`;t.style.color=`var(${kOnTag(c)})`;t.textContent=tag;s.append(t,document.createTextNode(label));return s;}
+
+// ---------- horizontal bars (optionally diverging, stacked, grouped, with whiskers and a reference line) ----------
+// rows:[{label, sl?, value | segments:[{value,color}], lo?, hi?, color, strong?, muted?, note?, tip?, group?}]; lo without hi
+// is an interval open above
+// opt:{domain:[a,b], fmt, tickFmt?, ticks?, log?, ref?:{value,label}, origin?, originLabel?, zeroLabel?, better?, dots?, level?, labelW?, rowH?}
+function barsH(el,w,rows,opt){const narrow=w<480,tagW=rows.some(r=>r.tag!=null)?22:0;
+  // a log axis draws each row as a dot, never a bar: a bar's length from a log axis's low end measures nothing
+  const dots=!!(opt.dots||opt.log);
+  // a dot strip's column, and room for the tags beside its labels
+  const lw=opt.labelW||(dots?kDotLabelW(rows,w)+tagW:narrow?Math.min(130,w*.36):Math.min(220,w*.3));
+  const m={l:lw,r:narrow?52:70,t:opt.ref||opt.level||opt.originLabel?20:6,b:22};const [d0,d1]=opt.domain;
+  // every note whole, wrapped at its spaces to two lines at most, the margin as wide as its widest line: a dot's note
+  // at the right edge, a bar's past its bar's end
+  if(rows.some(r=>r.note!=null))m.r=dots?kNoteMargin(rows,w):Math.max(m.r,kNoteMargin(rows,w));
+  const x=opt.log?logs(d0,d1,m.l,w-m.r):lin(d0,d1,m.l,w-m.r);
+  // what zero is on a change chart (the control), on lines of its own above every other label
+  const zl=opt.zeroLabel&&d0<=0&&0<=d1?kZeroPlace(x(0),opt.zeroLabel,w):null;if(zl)m.t+=16+(zl.lines.length-1)*13;
+  const bw=kBetterWords(opt.better),bh=kBetterH(bw,m.l,w-m.r);m.b+=bh;
+  const rl=opt.ref&&opt.ref.label?kRefLabel(x(opt.ref.value),opt.ref.label,0,opt.level?w-textW(kLevelHead(opt.level),12)-8:w,w):null;if(rl)m.t+=(rl.lines.length-1)*13+(rl.raised||0)*K_RAISED;
+  // one label form for the chart, every label whole on one line or two, else every row its short label, never a tag
+  // alone; rows apart by the lines a label takes, so it clears a group's heading
+  const lines=kRowLines(rows,Math.floor((m.l-14-tagW)/6.6)),rowH=kRowH(rows,lines,opt.rowH||28);
+  const grouped=rows.some(r=>r.group!=null);let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});
+  const heads=kGroupHeads(rows,w,true),h=m.t+m.b+rowH*rows.length+gaps*14+(grouped?14:0)+kHeadsH(heads);const s=svgIn(el,w,h);
+  // every label a vertical line would cross: the chart's head, the reference's label and each group's heading
+  const clear=[...kHeadClear(w,m.t,opt.level,rl),...kGroupClear(heads,rows.length,m.t,rowH)];
+  // each bar's note, past its bar's end, which the reference line drawn after the rows keeps clear of
+  const notes=[];
+  const tf=opt.tickFmt||opt.fmt;const tw=Math.max(...[d0,d1,(d0+d1)/2].map(v=>tf(v).length))*6.4+14;
+  const tv=opt.ticks?kThinTicks(opt.ticks,x,tf):opt.log?kLogTicks(d0,d1,tf,x):kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/tw),tf,x);
+  for(const v of tv){kVLine(s,x(v),m.t,h-m.b,clear,{class:"grid"});S("text",{x:x(v),y:h-6-bh,"text-anchor":"middle",class:"tick",text:tf(v)},s);}
+  const o=opt.origin||0;const z=x(kClamp(o,d0,d1));kVLine(s,z,m.t-2,h-m.b,clear,{class:"axis"});
+  if(opt.originLabel)S("text",{x:z+4,y:m.t-8,class:"tick",text:opt.originLabel},s);
+  if(zl)kZeroDraw(s,z,zl,m.t-2,null,clear);kBetter(s,bw,m.l,w-m.r,h-6);
+  let y0=m.t+(grouped?14:0);
+  rows.forEach((r,i)=>{if(i in heads){if(i)y0+=14;y0+=(heads[i].length-1)*13;kGroupHead(s,heads[i],y0);}
+    const cy=y0+rowH/2;y0+=rowH;const g=S("g",{},s);const val=r.segments?r.segments.reduce((a,sg)=>a+sg.value,0):r.value;const v=kClamp(val,d0,d1);
+    kLabelText(g,lines(r),m.l-10-tagW,cy,r.strong);
+    if(r.tag!=null){const tc=r.color||"--ink-2";S("rect",{x:m.l-26,y:cy-8,width:16,height:16,rx:3,style:`fill:var(${tc})`},g);
+      S("text",{x:m.l-18,y:cy+3.5,"text-anchor":"middle",class:"tag",style:`fill:var(${kOnTag(tc)});font-size:12px;font-weight:600`,text:r.tag},g);}
+    if(dots){// a dot at the value and its interval; an open mark where the row has no interval, never a solid one
+      const mk=kDotRow(g,x,d0,d1,{...r,value:val},cy,r.color||"--s1","circle",r.lo==null,w-m.r+8,m.r-10,r.strong);if(r.muted)mk.style.opacity=.45;
+      hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,kAs(r.value_text,opt.fmt,val)+(r.lo==null||r.hi==null?"":` (${kAs(r.lo_text,opt.fmt,r.lo)} to ${kAs(r.hi_text,opt.fmt,r.hi)})`)]));return;}
+    if(r.segments){let acc=o;r.segments.forEach((sg,j)=>{const a=x(kClamp(acc,d0,d1)),b=x(kClamp(acc+sg.value,d0,d1));const c=sg.color||r.color||"--s1";
+        const sx=Math.min(a,b)+(j?1:0),sw=Math.max(0,Math.abs(b-a)-(j?1:0)),sy=cy-(rowH*.28),sh=rowH*.56;
+        if(sg.pattern!=null)kTexture(g,sg.pattern,sx,sy,sw,sh,c,r.muted?.45:1);
+        else S("rect",{x:sx,y:sy,width:sw,height:sh,rx:2,style:`fill:var(${c});opacity:${r.muted?.45:1}`},g);acc+=sg.value;});}
+    else{const x0=Math.min(z,x(v)),bw=Math.max(1.5,Math.abs(x(v)-z));
+      S("rect",{x:x0,y:cy-(rowH*.28),width:bw,height:rowH*.56,rx:3,style:`fill:var(${r.color||"--s1"});opacity:${r.muted?.45:1}`},g);}
+    // a low end with no high end is an interval open above: its whisker runs on to the axis's end, capped only at
+    // the low end and opening into a chevron there, never read as a point
+    const open=r.lo!=null&&r.hi==null,hi=open?d1:r.hi;
+    if(r.lo!=null){S("line",{x1:x(Math.max(d0,r.lo)),x2:x(Math.min(d1,hi)),y1:cy,y2:cy,style:"stroke:var(--ink);stroke-width:1.25"},g);
+      for(const e of open?[r.lo]:[r.lo,r.hi])S("line",{x1:x(kClamp(e,d0,d1)),x2:x(kClamp(e,d0,d1)),y1:cy-4,y2:cy+4,style:"stroke:var(--ink);stroke-width:1.25"},g);
+      if(open){const ex=x(d1);S("path",{d:`M${ex-5},${cy-4}L${ex},${cy}L${ex-5},${cy+4}`,style:"fill:none;stroke:var(--ink);stroke-width:1.25"},g);}}
+    // the note past the bar's end, whole, in the very lines the margin was sized on (kNoteMargin), so it fits past any
+    // bar's end, or past zero where it does not fit before a bar running left; never swapped for a rounded value
+    const right=val>=o;const edge=r.lo!=null?(right?x(Math.min(d1,hi)):x(Math.max(d0,r.lo))):x(v);
+    const nl=r.note!=null?kWrapNote(r.note,w*.3-10):[kAs(r.value_text,opt.fmt,val)],nw=Math.max(...nl.map(l=>l.length*6.4));
+    const flip=!right&&edge-6-nw<m.l+4;
+    const past=Math.max(z,x(Math.min(d1,hi!=null?hi:o)));
+    const nx=right?edge+6:flip?past+6:edge-6,ny=cy+4-6*(nl.length-1),na=right||flip?"start":"end",nt=S("text",{x:nx,y:ny,"text-anchor":na,class:r.strong?"lbl-strong":"tick"},g);
+    nl.forEach((l,j)=>S("tspan",{x:nx,dy:j?12:0,text:l},nt));
+    const nb=nl.map((l,j)=>kTextBox(nx,ny+12*j,l,na,r.strong));notes.push([Math.min(...nb.map(b=>b[0])),nb[0][1],Math.max(...nb.map(b=>b[2])),nb.at(-1)[3]]);
+    const lo=r.lo==null?"":kAs(r.lo_text,opt.fmt,r.lo);
+    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,kAs(r.value_text,opt.fmt,val)+(r.lo==null?"":open?` (from ${lo} up, no upper bound)`:` (${lo} to ${kAs(r.hi_text,opt.fmt,r.hi)})`)]));});
+  if(opt.ref){const rx=x(opt.ref.value);kVLine(s,rx,m.t-6,h-m.b,[...clear,...notes],{class:"floor"});if(rl)kRefText(s,rl,m.t-8-(rl.raised||0)*K_RAISED,true);}
+  if(opt.level)S("text",{x:w,y:m.t-8,"text-anchor":"end",class:"tick",text:kLevelHead(opt.level)},s);
+  return s;}
+
+// ---------- line chart over ordered categories ----------
+// cats:[label], series:[{name, color, values:[...], lo?:[], hi?:[], strong?, dash?, endLabel?}], opt:{domain, fmt, xTitle?, h?, level?}
+function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narrow?260:300);const m={l:44,r:narrow?92:130,t:opt.level?24:14,b:opt.xTitle?44:28};const s=svgIn(el,w,h);
+  const x=i=>m.l+(cats.length===1?0:i/(cats.length-1))*(w-m.l-m.r),[d0,d1]=opt.domain,y=lin(d0,d1,h-m.b,m.t);
+  for(const v of kFmtTicks(d0,d1,5,opt.fmt)){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);if(v>d0)S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:opt.fmt(v)},s);}
+  cats.forEach((c,i)=>S("text",{x:x(i),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:c},s));
+  if(opt.xTitle)S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:opt.xTitle},s);
+  if(opt.level)S("text",{x:w-m.r,y:12,"text-anchor":"end",class:"tick",text:kLevelHead(opt.level)},s);
+  const ends=[];const obs=[];
+  for(const se of series){if(se.lo)S("path",{d:"M"+se.hi.map((v,i)=>`${x(i)},${y(v)}`).join("L")+"L"+se.lo.map((v,i)=>[i,v]).reverse().map(([i,v])=>`${x(i)},${y(v)}`).join("L")+"Z",style:`fill:var(${se.color});opacity:.12`},s);}
+  for(const se of series){S("path",{d:"M"+se.values.map((v,i)=>`${x(i)},${y(v)}`).join("L"),style:`fill:none;stroke:var(${se.color});stroke-width:${se.strong?2.5:2};${se.dash?"stroke-dasharray:5 4;":""}`},s);
+    se.values.forEach((v,i)=>{const g=S("g",{},s);S("circle",{cx:x(i),cy:y(v),r:se.strong?4.5:3.5,style:`fill:var(${se.color});stroke:var(--surface);stroke-width:2`},g);obs.push([x(i)-5,y(v)-5,x(i)+5,y(v)+5]);
+      const at=t=>t&&t[i];
+      hit(g,x(i)-10,y(v)-10,20,20,tipHTML([`${se.name} · ${cats[i]}`,`${kAs(at(se.values_text),opt.fmt,v)}${se.lo?` (${kAs(at(se.lo_text),opt.fmt,se.lo[i])} to ${kAs(at(se.hi_text),opt.fmt,se.hi[i])})`:""}`]));});
+    ends.push({px:x(cats.length-1),py:y(se.values.at(-1)),text:se.endLabel||se.name,strong:se.strong});}
+  // end labels stacked to avoid collisions, to the right of the last point
+  // each wrapped at its spaces to the margin, never cut, its lines 13 px apart, the next label below its last line
+  const maxE=Math.floor((m.r-12)/6.6);ends.sort((a,b)=>a.py-b.py);let last=-1e9;
+  for(const e of ends){e.lines=kWrapAll(e.text,maxE);e.y=Math.max(e.py+4,last+16);last=e.y+(e.lines.length-1)*13;}
+  for(const e of ends){const t=S("text",{x:e.px+10,y:e.y,class:e.strong?"lbl-strong":"lbl"},s);e.lines.forEach((l,j)=>S("tspan",{x:e.px+10,dy:j?13:0,text:l},t));}
+  // the drawing grows (its plot as it is) until the last end label's last line sits inside it, so none is lost
+  const H=Math.ceil(Math.max(h,last+4));if(H>h){s.setAttribute("height",H);s.setAttribute("viewBox",`0 0 ${w} ${H}`);}
+  return s;}
+
+// ---------- forest plot: change against a control, with interval and an optional margin ----------
+// rows:[{label, value, lo, hi, color, strong?, note?, group?, tip?}] opt:{domain:[a,b], fmt, ref?:{value,label} (margin band from value up), level?, zeroLabel?, better?}
+// every row's end label is its note where every row has one, else its value, so the labels read alike; a note too wide
+// for the margin wraps at its spaces, never cut to a coarser number than it states
+function forest(el,w,rows,opt){const narrow=w<480,need=Math.max(...rows.map(r=>r.label.length))*6.6+18,lw=opt.labelW||Math.min(need,narrow?w*.42:Math.min(230,w*.32));
+  const m={l:lw,r:narrow?60:96,t:opt.zeroLabel?36:22,b:24};
+  // every row's end label is its note where every row has one: wrapped at its spaces, two lines at most (the figure
+  // with its unit, then the words), the margin widened to its widest line up to a third of the chart, never a coarser
+  // number than the note states
+  const noted=rows.every(r=>r.note!=null);const kWrap=kWrapNote;
+  if(noted){const widest=Math.max(...rows.map(r=>Math.max(...kWrap(r.note,m.r-10).map(l=>l.length*6.4))));if(widest>m.r-10)m.r=Math.min(w*.32,widest+14);}
+  let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});const [d0,d1]=opt.domain;const x=lin(d0,d1,m.l,w-m.r);
+  const zl=opt.zeroLabel&&d0<=0&&0<=d1?kZeroPlace(x(0),opt.zeroLabel,w):null;if(opt.zeroLabel&&!zl)m.t-=14;if(zl)m.t+=(zl.lines.length-1)*13;
+  const bw=kBetterWords(opt.better),bh=kBetterH(bw,m.l,w-m.r);m.b+=bh;
+  const hx=kLevelX(w,m.r,opt.level);
+  const rl=opt.ref&&opt.ref.label?kRefLabel(x(Math.max(d0,opt.ref.value)),opt.ref.label,0,opt.level?hx-textW(kLevelHead(opt.level),12)-8:w,w):null;if(rl)m.t+=(rl.lines.length-1)*13+(rl.raised||0)*K_RAISED;
+  // one label form for the chart: every label whole on one line or two, else every row its short label, never cut
+  // while a whole form fits
+  const lines=kRowLines(rows,Math.floor((m.l-14)/6.6)),rowH=kRowH(rows,lines,opt.rowH||30);
+  const heads=kGroupHeads(rows,w,false),h=m.t+m.b+rowH*rows.length+gaps*14+(rows.some(r=>r.group)?14:0)+kHeadsH(heads);const s=svgIn(el,w,h);
+  // every label a vertical line would cross: the chart's head, the margin's label and each group's heading
+  const clear=[...kHeadClear(hx,m.t,opt.level,rl),...kGroupClear(heads,rows.length,m.t,rowH)];
+  if(opt.ref){const mx=x(Math.max(d0,opt.ref.value));S("rect",{x:mx,y:m.t,width:x(d1)-mx,height:h-m.t-m.b,style:"fill:var(--good-wash);opacity:.6"},s);
+    kVLine(s,mx,m.t-4,h-m.b,clear,{class:"floor"});if(rl)kRefText(s,rl,m.t-8-(rl.raised||0)*K_RAISED,true);}
+  for(const v of kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/(Math.max(opt.fmt(d0).length,opt.fmt(d1).length)*6.4+16)),opt.fmt,x)){kVLine(s,x(v),m.t,h-m.b,clear,{class:"grid"});S("text",{x:x(v),y:h-6-bh,"text-anchor":"middle",class:"tick",text:opt.fmt(v)},s);}
+  kVLine(s,x(0),m.t-4,h-m.b,clear,{class:"axis",style:"stroke-width:1.5"});
+  if(opt.level)S("text",{x:hx,y:m.t-8,"text-anchor":"end",class:"tick",text:kLevelHead(opt.level)},s);
+  if(zl)kZeroDraw(s,x(0),zl,m.t-4,"stroke-width:1.5",clear);kBetter(s,bw,m.l,w-m.r,h-6);
+  let y0=m.t+(rows.some(r=>r.group)?14:0);
+  rows.forEach((r,i)=>{if(i in heads){if(i)y0+=14;y0+=(heads[i].length-1)*13;kGroupHead(s,heads[i],y0);}
+    const cy=y0+rowH/2;y0+=rowH;const g=S("g",{},s);const cl=v=>x(Math.max(d0,Math.min(d1,v)));
+    kLabelText(g,lines(r),m.l-10,cy,r.strong);
+    S("line",{x1:cl(r.lo),x2:cl(r.hi),y1:cy,y2:cy,style:`stroke:var(${r.color||"--s1"});stroke-width:3;stroke-linecap:round`},g);
+    S("rect",{x:cl(r.value)-5,y:cy-5,width:10,height:10,rx:2,style:`fill:var(${r.color||"--s1"});stroke:var(--surface);stroke-width:2`},g);
+    const nl=noted?kWrap(r.note,m.r-10):[kAs(r.value_text,opt.fmt,r.value)];const nt=S("text",{x:w-m.r+8,y:cy+4-6*(nl.length-1),class:r.strong?"lbl-strong":"tick"},g);
+    nl.forEach((l,i)=>S("tspan",{x:w-m.r+8,dy:i?12:0,text:l},nt));
+    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,`${kAs(r.value_text,opt.fmt,r.value)} (${kAs(r.lo_text,opt.fmt,r.lo)} to ${kAs(r.hi_text,opt.fmt,r.hi)})`]));});
+  return s;}
+
+// ---------- declarative renderers: each takes the chart's JSON (kit/API.md "Chart data") ----------
+function kNeed(d,keys){for(const k of keys)if(d[k]==null)throw new Error(`"${k}" is required`);}
+function kList(d,k){if(!Array.isArray(d[k]))throw new Error(`"${k}" must be a list`);return d[k];}
+// GENERATOR §5.2: an interval-bearing chart prints its level, so a chart drawing intervals without one is refused
+function kNeedLevel(d,rows){if(!d.level&&rows.some(r=>r.lo!=null||r.hi!=null))throw new Error(`rows carry intervals, so "level" is required`);}
+const kLabelW=(d,w)=>(w<480?d.label_width_narrow:d.label_width)||null;
+const kIsEm=(d,id)=>d.emphasis!=null&&id!=null&&id===d.emphasis;
+
+function kBars(el,w,d){kNeed(d,["domain","fmt"]);const rows=kList(d,"rows");kNeedLevel(d,rows);const f=namedFmt(d.fmt);
+  const ref=d.reference;const pref=ref&&ref.kind==="no_preference";
+  barsH(el,w,rows.map(r=>({...r,sl:r.short_label,color:kTok(r.color,"--s1"),strong:r.strong||kIsEm(d,r.id),
+      segments:r.segments&&r.segments.map(sg=>({value:sg.value,color:kTok(sg.color,null),pattern:sg.pattern}))})),
+    {domain:d.domain,fmt:f,tickFmt:d.tick_fmt?namedFmt(d.tick_fmt):null,ticks:d.ticks,ref:ref&&!pref?ref:null,origin:pref?ref.value:0,originLabel:pref?ref.label:null,zeroLabel:pref?null:d.zero_label||null,
+     better:d.better,dots:!!d.dots,level:d.level,labelW:kLabelW(d,w),rowH:d.row_height,log:d.log});}
+
+function kForest(el,w,d){kNeed(d,["domain","fmt","level"]);const rows=kList(d,"rows");
+  forest(el,w,rows.map(r=>({...r,sl:r.short_label,color:kTok(r.color,"--s1"),strong:r.strong||kIsEm(d,r.id)})),
+    {domain:d.domain,fmt:namedFmt(d.fmt),ref:d.reference||null,level:d.level,zeroLabel:d.zero_label||null,better:d.better,labelW:kLabelW(d,w),rowH:d.row_height});}
+
+function kLines(el,w,d){kNeed(d,["domain","fmt"]);const series=kList(d,"series");const cats=kList(d,"categories");
+  if(!d.level&&series.some(se=>se.lo||se.hi))throw new Error(`series carry bands, so "level" is required`);
+  lineChart(el,w,cats,series.map(se=>({...se,color:kTok(se.color,"--s1"),endLabel:se.end_label})),{domain:d.domain,fmt:namedFmt(d.fmt),xTitle:d.x_title,h:d.height,level:d.level});}
+
+// scatter: two measures that trade off. gate=true shades where both references pass (gate_scatter).
+function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);const pts=kList(d,"points");
+  if(!d.level&&pts.some(p=>p.x_lo!=null||p.x_hi!=null||p.y_lo!=null||p.y_hi!=null))throw new Error(`points carry intervals, so "level" is required`);
+  if(gate&&(!d.reference||!d.x_reference))throw new Error(`gate_scatter needs "reference" (y) and "x_reference" (x)`);
+  const xf=namedFmt(d.x_fmt),yf=namedFmt(d.y_fmt),narrow=w<560;const [x0,x1]=d.x_domain,[y0,y1]=d.y_domain;
+  const yt=d.y_ticks||kFmtTicks(y0,y1,5,yf);const h=d.height||Math.round(Math.min(380,Math.max(300,w*.45)));
+  // a y title takes a line of its own above the plot, top left, so no mark is ever drawn over it
+  const m={l:Math.max(30,Math.max(...yt.map(v=>yf(v).length))*6.6+16),r:18,t:(d.level?22:16)+(d.y_title?16:0),b:40};const s=svgIn(el,w,h);
+  const x=d.x_log?logs(x0,x1,m.l,w-m.r):lin(x0,x1,m.l,w-m.r),y=lin(y0,y1,h-m.b,m.t);const obs=[],refs=[];
+  const passSide=(r,lo,hi,dflt)=>((r.kind||dflt)==="budget"?[lo,r.value]:[r.value,hi]);
+  if(gate){const [ax,bx]=passSide(d.x_reference,x0,x1,"budget"),[ay,by]=passSide(d.reference,y0,y1,"floor");
+    S("rect",{x:x(ax),y:y(by),width:x(bx)-x(ax),height:y(ay)-y(by),style:"fill:var(--good-wash)"},s);
+    // the region's label inside it: wrapped at its spaces where the region is narrower than its measured text, and
+    // moved under the budget's label where their boxes would share a row; the budget's label keeps its own row
+    if(d.region_label){const lx=x(ax)+8,RW=t=>textW(t,12,600),room=x(bx)-x(ax)-16,ls=[];let cur="";
+      for(const wd of d.region_label.split(" ")){const nx=cur?cur+" "+wd:wd;if(cur&&RW(nx)>room){ls.push(cur);cur=wd;}else cur=nx;}ls.push(cur);
+      const lw=Math.max(...ls.map(RW)),xr=d.x_reference.label?kRefBox(kRefLabel(x(d.x_reference.value),d.x_reference.label,m.l,w-m.r),m.t+12):null;
+      let ly=y(by)+16;if(xr&&lx<xr[2]&&lx+lw>xr[0]&&ly-10<xr[3]&&ly+3+(ls.length-1)*14>xr[1])ly=xr[3]+14;
+      const st="fill:var(--good);font-weight:600";
+      if(ls.length===1)S("text",{x:lx,y:ly,class:"lbl",style:st,text:ls[0]},s);
+      else{const t=S("text",{x:lx,y:ly,class:"lbl",style:st},s);ls.forEach((l,i)=>S("tspan",{x:lx,dy:i?14:0,text:l},t));}
+      obs.push([lx,ly-10,lx+lw,ly+3+(ls.length-1)*14]);refs.push(obs.at(-1));}}
+  if(d.price_line){const p=d.price_line.value,yAt=v=>-(v/Math.max(1e-9,p)),lx=Math.min(x1,p*-y0);
+    // the price line and its region in ink: green is a status's colour alone, and this region is a price's reading
+    S("path",{d:`M${x(0)},${y(0)}L${x(x1)},${y(0)}L${x(x1)},${y(Math.max(y0,yAt(x1)))}L${x(lx)},${y(Math.max(y0,yAt(lx)))}Z`,style:"fill:var(--sunk)"},s);}
+  for(const v of yt){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);if(v>y0)S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:yf(v)},s);}
+  // a log x axis takes its ticks where its scale puts them (kLogTicks), never a linear step's, which leaves the low
+  // decades unlabelled
+  for(const v of d.x_ticks?kThinTicks(d.x_ticks,x,xf):d.x_log?kLogTicks(x0,x1,xf,x):kThinTicks(kFmtTicks(x0,x1,5,xf),x,xf)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:xf(v)},s);}
+  if(d.x_title)S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:d.x_title},s);
+  if(d.y_title)S("text",{x:0,y:m.t-20,class:"tick",text:d.y_title},s);
+  // each reference line is drawn where it stands in the drawing's order (its group), once the points' labels are
+  // placed, so it stops short of any label placed across it (a crossing the placement allows over colliding with one)
+  const xg=d.x_reference?S("g",{},s):null;
+  if(d.x_reference){const rx=x(d.x_reference.value);obs.push([rx-2,m.t,rx+2,h-m.b,1]);
+    if(d.x_reference.label){const rl=kRefLabel(rx,d.x_reference.label,m.l,w-m.r);kRefText(s,rl,m.t+12,false);obs.push(kRefBox(rl,m.t+12));refs.push(obs.at(-1));}}
+  const yg=d.reference?S("g",{},s):null;
+  if(d.reference){const ry=y(d.reference.value);obs.push([m.l,ry-2,w-m.r,ry+2,1]);
+    if(d.reference.label){const rl=kRefLabel(w-m.r+4,d.reference.label,m.l,w-m.r);kRefText(s,rl,ry+13,false);obs.push(kRefBox(rl,ry+13));refs.push(obs.at(-1));}}
+  if(d.price_line){const p=d.price_line.value,yAt=v=>-(v/Math.max(1e-9,p)),lx=Math.min(x1,p*-y0);
+    S("line",{x1:x(0),y1:y(0),x2:x(lx),y2:y(Math.max(y0,yAt(lx))),style:"stroke:var(--ink-2);stroke-width:1.5;stroke-dasharray:5 4"},s);
+    if(d.price_line.label){const mx=lx*.55,t=d.price_line.label,tx=x(mx)+8,ty=y(Math.max(y0,yAt(mx)))+16;S("text",{x:tx,y:ty,class:"lbl",text:t},s);obs.push([tx,ty-10,tx+t.length*6.4,ty+3]);}
+    if(d.price_line.region_label){const t=d.price_line.region_label;S("text",{x:w-m.r-8,y:m.t+16,"text-anchor":"end",class:"lbl-strong",text:t},s);obs.push([w-m.r-8-t.length*6.6,m.t+6,w-m.r-8,m.t+19]);}}
+  const at=p=>[x(kClamp(p.x,x0,x1)),y(kClamp(p.y,y0+(y1-y0)*.025,y1))];const byId=Object.fromEntries(pts.filter(p=>p.id!=null).map(p=>[p.id,p]));
+  if(d.frontier){let best=-Infinity;const fr=[];for(const p of [...pts].sort((a,b)=>a.x-b.x))if(p.y>best){fr.push(p);best=p.y;}
+    S("path",{d:"M"+fr.map(p=>at(p).join(",")).join("L"),style:"fill:none;stroke:var(--base);stroke-width:1.5"},s);}
+  for(const pa of d.paths||[]){const ps=kList(pa,"ids").map(id=>{if(!byId[id])throw new Error(`path names point "${id}", which is not in "points"`);return byId[id];});
+    S("path",{d:"M"+ps.map(p=>at(p).join(",")).join("L"),style:`fill:none;stroke:var(${kTok(pa.color,"--base")});stroke-width:${kNum(pa.width,2,"path width")};opacity:${kNum(pa.opacity,1,"path opacity")}`},s);}
+  // each point's intervals, where it carries them, as thin whiskers in its colour under the marks, cut to the axes
+  const cx=v=>x(kClamp(v,x0,x1)),cy=v=>y(kClamp(v,y0,y1));let whiskered=false;
+  for(const p of pts){const [px,py]=at(p),c=kTok(p.color,"--s1"),st=`stroke:var(${c});stroke-width:1.5;stroke-linecap:round`;
+    if(p.x_lo!=null&&p.x_hi!=null){S("line",{x1:cx(p.x_lo),x2:cx(p.x_hi),y1:py,y2:py,style:st},s);obs.push([cx(p.x_lo),py-2,cx(p.x_hi),py+2,1]);whiskered=true;}
+    if(p.y_lo!=null&&p.y_hi!=null){S("line",{x1:px,x2:px,y1:cy(p.y_hi),y2:cy(p.y_lo),style:st},s);obs.push([px-2,cy(p.y_hi),px+2,cy(p.y_lo),1]);whiskered=true;}}
+  if(whiskered&&d.level)S("text",{x:w-m.r,y:m.t-4,"text-anchor":"end",class:"tick",text:kLevelHead(d.level)},s);
+  for(const p of pts){const [px,py]=at(p),r=kNum(p.size,5.5,"point size"),g=S("g",{},s);const c=kTok(p.color,"--s1");const mk=mark(g,kShape(p.shape),px,py,r,c,p.hollow);if(p.muted)mk.style.opacity=.45;
+    if(kIsEm(d,p.id))S("circle",{cx:px,cy:py,r:r+4.5,style:"fill:none;stroke:var(--ink);stroke-width:1.5"},g);obs.push([px-r-2,py-r-2,px+r+2,py+r+2]);
+    hit(g,px-12,py-12,24,24,tipHTML(p.tip||[p.label||p.id||"",`${kAs(p.x_text,xf,p.x)} · ${kAs(p.y_text,yf,p.y)}`]));}
+  // the emphasized point is labelled first, then left to right, so it gets the best spot; a point with no label of
+  // its own is labelled by its tag, so colour is never the only thing that names a mark
+  const labs=pts.map(p=>({p,text:(narrow?p.narrow_label:p.label)||p.tag})).filter(l=>l.text).map(l=>{const [px,py]=at(l.p);return {...l,px,py,r:kNum(l.p.size,5.5,"point size")};})
+    .map(l=>({...l,strong:kIsEm(d,l.p.id)})).sort((a,b)=>(b.strong?1:0)-(a.strong?1:0)||a.px-b.px);
+  const placed=placeLabels(labs,[m.l,0,w,h-m.b],obs,pts.map(at)).map(l=>{S("text",{x:l.x,y:l.y,"text-anchor":l.anchor,class:kIsEm(d,l.p.id)?"lbl-strong":"lbl",text:l.text},s);
+    return kTextBox(l.x,l.y,l.text,l.anchor,kIsEm(d,l.p.id));}).concat(refs);
+  if(xg)kVLine(xg,x(d.x_reference.value),m.t,h-m.b,placed,{class:"floor"});
+  if(yg)kHLine(yg,m.l,w-m.r,y(d.reference.value),placed,{class:"floor"});
+  return s;}
+
+// one rate per candidate against a floor, or one change per row about zero: dot, interval, floor dashed. A change
+// chart (zero_label) draws its zero line and names it at the top; a row with no interval is an open mark. Labels wrap
+// to two lines before they take their short label; notes print at the right edge, the margin widened to the widest.
+// Its column, margin, label form and rows are the dots barsH draws (kDotLabelW, kNoteMargin, kRowLines, kDotRow).
+function kDotInterval(el,w,d){kNeed(d,["domain","fmt"]);const rows=kList(d,"rows").map(r=>({...r,sl:r.short_label}));kNeedLevel(d,rows);const f=namedFmt(d.fmt),tf=kTickFmt(d.fmt);const [d0,d1]=d.domain;
+  const m={l:kLabelW(d,w)||kDotLabelW(rows,w),r:14,t:22,b:22},lines=kRowLines(rows,Math.floor((m.l-12)/6.6)),rowH=kRowH(rows,lines,d.row_height||28);
+  if(rows.some(r=>r.note!=null))m.r=kNoteMargin(rows,w);
+  const x=lin(d0,d1,m.l,w-m.r);const hx=kLevelX(w,m.r,d.level);const rl=d.reference&&d.reference.label?kRefLabel(x(d.reference.value),d.reference.label,0,d.level?hx-textW(kLevelHead(d.level),12)-8:w,w):null;if(rl)m.t+=(rl.lines.length-1)*13+(rl.raised||0)*K_RAISED;
+  const zl=d.zero_label&&d0<=0&&0<=d1?kZeroPlace(x(0),d.zero_label,w):null;if(zl)m.t+=14+(zl.lines.length-1)*13;
+  const bw=kBetterWords(d.better),bh=kBetterH(bw,m.l,w-m.r);m.b+=bh;
+  const h=m.t+m.b+rowH*rows.length;const s=svgIn(el,w,h);
+  // every label a vertical line would cross: the chart's head and the reference's label
+  const clear=kHeadClear(hx,m.t,d.level,rl);
+  const tw=Math.max(tf(d0).length,tf(d1).length)*6.4+16;
+  const tv=d.ticks?kThinTicks(d.ticks,x,tf):kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/tw),tf,x),tl=kTickLabels(d.fmt,tv);
+  for(const v of tv){kVLine(s,x(v),m.t,h-m.b,clear,{class:"grid"});S("text",{x:x(v),y:h-6-bh,"text-anchor":"middle",class:"tick",text:tl(v)},s);}
+  if(zl){kVLine(s,x(0),m.t-4,h-m.b,clear,{class:"axis",style:"stroke-width:1.5"});kZeroDraw(s,x(0),zl,m.t-4,"stroke-width:1.5",clear);}
+  rows.forEach((r,i)=>{const cy=m.t+rowH*i+rowH/2,c=kTok(r.color,"--s1"),g=S("g",{},s),st=r.strong||kIsEm(d,r.id);
+    kLabelText(g,lines(r),m.l-8,cy,st);kDotRow(g,x,d0,d1,r,cy,c,kShape(r.shape),r.hollow,w-m.r+8,m.r-10,st);
+    hit(g,m.l,cy-rowH/2,w-m.l-m.r,rowH,tipHTML(r.tip||[r.label,kAs(r.value_text,f,r.value)+(r.lo!=null&&r.hi!=null?` (${kAs(r.lo_text,f,r.lo)} to ${kAs(r.hi_text,f,r.hi)})`:"")]));});
+  if(d.reference){const rx=x(d.reference.value);kVLine(s,rx,m.t-4,h-m.b,clear,{class:"floor"});if(rl)kRefText(s,rl,m.t-8-(rl.raised||0)*K_RAISED,true);}
+  if(d.level)S("text",{x:hx,y:m.t-8,"text-anchor":"end",class:"tick",text:kLevelHead(d.level)},s);
+  kBetter(s,bw,m.l,w-m.r,h-6);
+  return s;}
+
+// latency distributions: one bar per row from "from" to "to", p50 to p95 as the chart's head says, a heading per group
+// over its rows, each row labelled beside its bar (no legend to decode), with a budget line
+const K_RANGE_HEAD="p50 to p95";
+function kRangeBars(el,w,d){kNeed(d,["domain","fmt"]);const groups=kList(d,"groups");const f=namedFmt(d.fmt);const [d0,d1]=d.domain;
+  const rows=groups.flatMap(g=>kList(g,"rows")),narrow=w<480,m={l:kDotLabelW(rows,w),r:16,t:20,b:26};
+  const lines=kRowLines(rows,Math.floor((m.l-14)/6.6)),rowH=kRowH(rows,lines,18);
+  const band=g=>g.rows.length*rowH+(g.label?18:0)+6,x=lin(d0,d1,m.l,w-m.r);
+  const rl=d.reference&&d.reference.label?kRefLabel(x(d.reference.value),d.reference.label,0,w-textW(K_RANGE_HEAD,12)-8,w):null;if(rl)m.t+=(rl.lines.length-1)*13+(rl.raised||0)*K_RAISED;
+  const h=m.t+m.b+groups.reduce((a,g)=>a+band(g),0);const s=svgIn(el,w,h);
+  const tw=Math.max(f(d0).length,f(d1).length)*6.4+16;
+  for(const v of d.ticks?kThinTicks(d.ticks,x,f):kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/tw),f,x)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-8,"text-anchor":"middle",class:"tick",text:f(v)},s);}
+  let top=m.t;for(const gr of groups){let y0=top+6;top+=band(gr);
+    if(gr.label){S("text",{x:0,y:y0+12,class:"lbl-strong",text:narrow&&gr.short_label?gr.short_label:gr.label},s);y0+=18;}
+    gr.rows.forEach((r,i)=>{const cy=y0+i*rowH+rowH/2,c=kTok(r.color,"--s1"),g=S("g",{},s);kLabelText(g,lines(r),m.l-10,cy,false);
+      S("line",{x1:x(kClamp(r.from,d0,d1)),x2:x(kClamp(r.to,d0,d1)),y1:cy,y2:cy,style:`stroke:var(${c});stroke-width:6;stroke-linecap:round`},g);
+      mark(g,kShape(r.shape),x(kClamp(r.to,d0,d1)),cy,4,c,r.hollow);
+      hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[`${r.label} · ${gr.label}`,`${kAs(r.from_text,f,r.from)} to ${kAs(r.to_text,f,r.to)}`]));});}
+  if(d.reference){const rx=x(d.reference.value);S("line",{x1:rx,x2:rx,y1:m.t-6,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-8-(rl.raised||0)*K_RAISED,true);}
+  S("text",{x:w,y:m.t-8,"text-anchor":"end",class:"tick",text:K_RANGE_HEAD},s);
+  return s;}
+
+// HTML renderers: drawn once, sized by CSS
+function kTxt(tag,cls,t){const e=H(tag,cls?{class:cls}:{});e.textContent=t==null?"":t;return e;}
+function kPill(kind,text){const s=H("span",{},pill(kStatus(kind),esc(text)));return s.firstChild;}
+function kWithTip(e,t){if(t!=null){e.setAttribute("data-tip",tipHTML(t));e.tabIndex=0;}return e;}
+const kGridCols=n=>`auto repeat(${n},minmax(0,1fr))`;
+
+// pass/fail per candidate × task: pill, the binding reasons, cost; the cheapest passing cell highlighted
+function kGateMatrix(el,d){const cols=kList(d,"columns"),rows=kList(d,"rows");const cf=d.cost_fmt?namedFmt(d.cost_fmt):null;
+  const wrap=H("div",{class:"tbl"}),t=H("table",{class:"gate"}),hr=H("tr");hr.appendChild(kTxt("th","",d.row_header||""));for(const c of cols)hr.appendChild(kTxt("th","",c.label));
+  const th=H("thead");th.appendChild(hr);const tb=H("tbody");
+  for(const r of rows){const tr=H("tr"),td=H("td",{class:"task"});td.append(kTxt("b","",r.label));if(r.detail)td.append(kTxt("span","",r.detail));if(r.flag)td.append(kTxt("span","xc",r.flag));tr.appendChild(td);
+    const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
+    for(const c of cells){const cd=H("td",{class:c.pick?"cell pick":"cell"});if(c.label)cd.appendChild(kPill(c.status,c.label));
+      if(c.reasons&&c.reasons.length)cd.appendChild(kTxt("span","why",c.reasons.join("; ")));
+      if(c.cost!=null){if(!cf)throw new Error(`cells carry "cost", so "cost_fmt" is required`);cd.appendChild(kTxt("span","cost",c.cost_text!=null?c.cost_text:cf(c.cost)+(d.cost_unit?" "+d.cost_unit:"")));}
+      if(c.pick&&d.pick_label)cd.appendChild(kTxt("span","pickmark",d.pick_label));tr.appendChild(cd);}
+    tb.appendChild(tr);}
+  t.append(th,tb);wrap.appendChild(t);el.appendChild(wrap);}
+
+// two crossed factors: a tile per cell with the metric, a bar, cost and latency, and a status pill
+function kLattice(el,d){kNeed(d,["fmt"]);const cols=kList(d,"columns"),rows=kList(d,"rows");const f=namedFmt(d.fmt),cf=d.cost_fmt?namedFmt(d.cost_fmt):null,lf=d.latency_fmt?namedFmt(d.latency_fmt):null;
+  const bd=d.bar_domain||null;const box=H("div",{class:"lattice"});box.style.gridTemplateColumns=`auto repeat(${cols.length},minmax(6.5rem,1fr))`;box.appendChild(kTxt("div","hd",""));
+  for(const c of cols)box.appendChild(kTxt("div","hd",c.label));
+  for(const r of rows){const rh=H("div",{class:"rh"});if(r.color){const sw=H("span",{class:"sw"});sw.style.background=`var(${kTok(r.color)})`;rh.appendChild(sw);}rh.append(document.createTextNode(r.label));box.appendChild(rh);
+    const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
+    for(const c of cells){const cell=kWithTip(H("div",{class:kIsEm(d,c.id)?"cell rec":"cell"}),c.tip);cell.appendChild(kTxt("span","acc",kAs(c.value_text,f,c.value)));
+      if(bd){const bar=H("div",{class:"bar"}),i=H("i");i.style.width=kClamp((c.value-bd[0])/(bd[1]-bd[0])*100,0,100)+"%";bar.appendChild(i);cell.appendChild(bar);}
+      const meta=[c.cost_text!=null?c.cost_text:c.cost!=null&&cf?cf(c.cost)+(d.cost_unit?" "+d.cost_unit:""):null,
+        c.latency_text!=null?c.latency_text:c.latency!=null&&lf?lf(c.latency):null].filter(Boolean);
+      if(meta.length)cell.appendChild(kTxt("span","meta",meta.join(" · ")));if(c.status)cell.appendChild(kPill(c.status,c.status_label||""));box.appendChild(cell);}}
+  // tiles keep a legible width; where the columns do not fit, the lattice scrolls inside its own frame, as a table does
+  const wrap=H("div",{class:"tbl"});wrap.appendChild(box);el.appendChild(wrap);}
+
+// grids of cells (heatmap, difference heatmap, confusion) share the .mx layout
+function kMxGrid(cols,rows,cell){const box=H("div",{class:"mx"});box.style.gridTemplateColumns=kGridCols(cols.length);box.appendChild(H("div"));
+  for(const c of cols)box.appendChild(kTxt("div","h",c));
+  rows.forEach((r,i)=>{box.appendChild(kTxt("div","rl",r.label));const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
+    cells.forEach((c,j)=>box.appendChild(cell(c,i,j)));});return box;}
+function kMxCell(bg,fg,main,sub,t){const e=kWithTip(H("div",{class:"c"}),t);e.style.background=bg;e.style.color=fg;e.appendChild(kTxt("b","",main));if(sub!=null)e.appendChild(kTxt("span","",sub));return e;}
+
+// target matrix of cells: sequential shading in six steps over the domain, n per cell, outline below the floor
+function kHeatmap(el,d){kNeed(d,["domain","fmt"]);const f=namedFmt(d.fmt),nf=d.n_fmt?namedFmt(d.n_fmt):null,[d0,d1]=d.domain;const cols=kList(d,"columns").map(c=>c.label);
+  el.appendChild(kMxGrid(cols,kList(d,"rows"),(c,i,j)=>{const k=kClamp(Math.floor((c.value-d0)/(d1-d0)*6),0,5),t=kAs(c.value_text,f,c.value);
+    const e=kMxCell(`var(--seq-${k})`,`var(--seq-t${k})`,t,c.n!=null&&nf?nf(c.n):null,c.tip||[`${d.rows[i].label} · ${cols[j]}`,t+(c.n!=null?` · n = ${c.n.toLocaleString("en-US")}`:"")]);
+    if(d.reference&&c.value<d.reference.value)e.classList.add("low");return e;}));}
+
+// difference between two configs: diverging shading, gray within ±neutral, full color at ±saturate
+function kDiffHeatmap(el,d){kNeed(d,["fmt"]);const f=namedFmt(d.fmt),df=d.detail_fmt?namedFmt(d.detail_fmt):null,nu=d.neutral==null?.5:d.neutral,sat=d.saturate||8;const cols=kList(d,"columns").map(c=>c.label);
+  el.appendChild(kMxGrid(cols,kList(d,"rows"),(c,i,j)=>{const v=c.value,mag=Math.min(1,Math.abs(v)/sat),flat=Math.abs(v)<nu;
+    const bg=flat?"var(--div-mid)":`color-mix(in oklab, var(${v>0?"--div-pos":"--div-neg"}) ${Math.round(18+mag*72)}%, var(--surface))`;
+    const ink=flat?"--ink":kInk(kOkMix(kRGB(v>0?"--div-pos":"--div-neg"),kRGB("--surface"),Math.round(18+mag*72)/100),["--ink","--surface"]);
+    const t=kAs(c.value_text,f,v),sub=c.detail_text!=null?c.detail_text:c.detail!=null&&df?df(c.detail):null;
+    return kMxCell(bg,`var(${ink})`,t,sub,c.tip||[`${d.rows[i].label} · ${cols[j]}`,t]);}));}
+
+// errors between classes, rows normalized to 100: the diagonal tinted, off-diagonal cells warn and bad by share
+function kConfusion(el,d){const labels=kList(d,"labels"),M=kList(d,"matrix");const f=namedFmt(d.fmt||"pct:1"),warnAt=d.warn_at==null?1:d.warn_at,badAt=d.bad_at==null?3:d.bad_at;
+  if(M.length!==labels.length)throw new Error(`"matrix" has ${M.length} rows for ${labels.length} labels`);
+  const rows=M.map((r,i)=>{if(!Array.isArray(r))throw new Error(`"matrix" row ${i} must be a list`);const tot=r.reduce((a,v)=>a+v,0);return {label:labels[i],cells:d.normalized===false?r.map(v=>tot?v/tot*100:0):r};});
+  const T=d.matrix_text;
+  el.appendChild(kMxGrid(labels,rows,(v,i,j)=>{const bg=i===j?"var(--seq-1)":v>=badAt?"var(--bad-wash)":v>=warnAt?"var(--warn-wash)":"var(--sunk)";
+    const t=kAs(T&&T[i]&&T[i][j],f,v);return kMxCell(bg,"var(--ink)",t,null,[`${labels[i]} → ${labels[j]}`,`${t} of the row`]);}));}
+
+// what failures look like: cards with a meta line, then the question, fields, judge reason, excerpt and a note
+function kExamples(el,d){const cards=kList(d,"cards");const box=H("div",{class:"ex"});if(d.card_min_rem!=null)box.style.gridTemplateColumns=`repeat(auto-fit,minmax(min(100%,${kNum(d.card_min_rem,0,"card_min_rem")}rem),1fr))`;
+  for(const c of cards){const card=H("div",{class:"excard"}),top=H("div",{class:"top"});
+    for(const it of c.meta||[])top.appendChild(it.status?kPill(it.status,it.label):it.tag?kArmChip(it.tag,it.label,it.color):kTxt("span",it.mono?"mono":"",it.text));card.appendChild(top);
+    if(c.question!=null)card.appendChild(kTxt("div","q",c.question));
+    if(c.fields&&c.fields.length){const dl=H("dl");for(const fl of c.fields){dl.appendChild(kTxt("dt","",fl.term));dl.appendChild(kTxt("dd",fl.tone==="bad"?"bad":"",fl.text));}card.appendChild(dl);}
+    if(c.reason!=null)card.appendChild(kTxt("div","reason",c.reason));if(c.excerpt!=null)card.appendChild(kTxt("pre","",c.excerpt));if(c.note!=null)card.appendChild(kTxt("div","note",c.note));
+    box.appendChild(card);}
+  el.appendChild(box);}
+
+// legend: [{label, color?, mark?: dot|square|line|circle|triangle|diamond, hollow?, opacity?, pattern?}]
+function kLegend(items){if(!Array.isArray(items))throw new Error(`"legend" must be a list`);const box=H("div",{class:"legend"});
+  for(const it of items){const sp=H("span"),c=kTok(it.color,"--ink-2"),mk=it.mark||"dot";
+    if(it.pattern!=null){const sv=S("svg",{width:12,height:12,style:"vertical-align:-1px;margin-right:.4rem"});kTexture(sv,it.pattern,.5,.5,11,11,c);sp.appendChild(sv);}
+    else if(mk==="dot"||mk==="square"){const i=H("i",mk==="square"?{class:"sq"}:{});i.style.background=it.hollow?"var(--surface)":`var(${c})`;if(it.hollow)i.style.boxShadow=`inset 0 0 0 2px var(${c})`;sp.appendChild(i);}
+    else if(mk==="line"){const sv=S("svg",{width:22,height:10,style:"vertical-align:0;margin-right:.35rem"});S("line",{x1:1,x2:21,y1:5,y2:5,style:`stroke:var(${c});stroke-width:2;opacity:${kNum(it.opacity,1,"legend opacity")}`},sv);sp.appendChild(sv);}
+    else{const sv=S("svg",{width:14,height:14,style:"vertical-align:-2px;margin-right:.35rem"});mark(sv,kShape(mk),7,7,5,c,it.hollow);sp.appendChild(sv);}
+    sp.append(document.createTextNode(it.label));box.appendChild(sp);}
+  return box;}
+
+// ---------- dispatcher ----------
+const K_KINDS={bars:{draw:kBars},diverging_bars:{draw:kBars},forest:{draw:kForest},lines:{draw:kLines},
+  scatter_frontier:{draw:(el,w,d)=>kScatter(el,w,d,false)},gate_scatter:{draw:(el,w,d)=>kScatter(el,w,d,true)},
+  dot_interval:{draw:kDotInterval},range_bars:{draw:kRangeBars},
+  gate_matrix:{html:kGateMatrix},lattice:{html:kLattice},heatmap:{html:kHeatmap},diff_heatmap:{html:kDiffHeatmap},confusion:{html:kConfusion},examples:{html:kExamples}};
+const K_NOT_DRAWN={table:"a table is written as an HTML table (sortable() adds sorting); the kit does not draw it"};
+const K_PANEL_TEXT=["title","subtitle","tag","color"];
+function kUnmount(st){for(const r of st.ro){r.ro.disconnect();kRedraws.delete(r);}st.ro=[];}
+function kMount(host){const st=host._kit;kUnmount(st);host.innerHTML="";const kind=host.getAttribute("data-kind");
+  try{if(!Object.hasOwn(K_KINDS,kind))throw new Error(Object.hasOwn(K_NOT_DRAWN,kind)?K_NOT_DRAWN[kind]:`unknown kind; the kit draws ${Object.keys(K_KINDS).join(", ")}`);const R=K_KINDS[kind];
+    let d;try{d=JSON.parse(host.getAttribute("data-chart"));}catch(e){throw new Error(`data-chart is not JSON (${e.message})`);}
+    if(!d||typeof d!=="object"||Array.isArray(d))throw new Error("data-chart must be a JSON object");d=kNoNulls(d);
+    if(d.legend)host.appendChild(kLegend(d.legend));
+    const one=(box,data)=>{if(R.html)R.html(box,data);else st.ro.push(chart(box,(e,w)=>R.draw(e,w,data)));};
+    if(d.panels==null){const box=H("div");host.appendChild(box);one(box,d);return;}
+    // small multiples: each panel is the chart's own fields overlaid with the panel's
+    kList(d,"panels");const {panels,legend,panel_min_rem,...shared}=d;const grid=H("div",{class:"mult"});
+    if(panel_min_rem!=null)grid.style.gridTemplateColumns=`repeat(auto-fill,minmax(min(100%,${kNum(panel_min_rem,0,"panel_min_rem")}rem),1fr))`;host.appendChild(grid);
+    for(const p of panels){const fig=H("div",{class:"fig"});grid.appendChild(fig);const h4=H("h4");if(p.tag)h4.appendChild(kArmChip(p.tag,p.title||"",p.color));else h4.textContent=p.title||"";fig.appendChild(h4);
+      if(p.subtitle)fig.appendChild(kTxt("div","sub",p.subtitle));
+      if(Object.keys(p).some(k=>!K_PANEL_TEXT.includes(k))){const box=H("div",{class:"chart"});fig.appendChild(box);one(box,{...shared,...p});}}}
+  catch(e){kUnmount(st);host.innerHTML="";console.error(`kit: chart "${kind}"${host.id?" #"+host.id:""}: ${e.message}`);}}
+// draws every div.chart[data-kind][data-chart] under root, once; a later change to data-chart redraws that chart
+function drawCharts(root=document){const sel="div.chart[data-kind][data-chart]";const els=[...root.querySelectorAll(sel)];if(root.matches&&root.matches(sel))els.unshift(root);
+  for(const el of els){if(el._kit)continue;el._kit={ro:[]};new MutationObserver(()=>kMount(el)).observe(el,{attributes:true,attributeFilter:["data-chart","data-kind"]});kMount(el);}}
+// a page script that builds chart data from its own input sets it with setChart(); the JSON is pure data
+function setChart(el,data){el.setAttribute("data-chart",JSON.stringify(data));}
+if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",()=>drawCharts());else setTimeout(()=>drawCharts());
+</script>
+</body>
+</html>

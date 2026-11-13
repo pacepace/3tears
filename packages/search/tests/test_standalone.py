@@ -70,6 +70,11 @@ from packages.search.tests.searxng_payloads import TWO_RESULTS_BODY
 #: backoff small enough that a retry pin costs milliseconds rather than seconds.
 FAST_BACKOFF = {"initial_backoff": 0.001, "max_backoff": 0.002}
 
+#: how long a reply stalls where a test bounds the call at 0.05s or 0.1s: five times the longer bound, so the bound
+#: always ends the call first. The server serves the stall out before it closes, whatever the client did, so the
+#: stall is what each of those tests costs.
+STALL_PAST_A_SHORT_BOUND_S = 0.5
+
 
 def _transport(**kwargs: object) -> StandaloneTransport:
     """Build a transport that may reach loopback.
@@ -275,14 +280,14 @@ async def test_a_guard_refusal_is_stamped_too() -> None:
 
 async def test_a_deadline_that_elapses_raises_a_timeout_not_a_transport_failure() -> None:
     """SR-J1: a timeout is worth retrying later and a connect failure is not."""
-    async with LocalHttpServer((Reply(delay=2.0),)) as server:
+    async with LocalHttpServer((Reply(delay=STALL_PAST_A_SHORT_BOUND_S),)) as server:
         with pytest.raises(TimedOut):
             await _transport(max_attempts=1).request("GET", f"{server.base_url}/search", timeout_seconds=0.05)
 
 
 async def test_the_per_call_timeout_overrides_the_configured_one() -> None:
     """SR-G1/SR-G2: never a constant, and a caller's remaining budget wins."""
-    async with LocalHttpServer((Reply(delay=2.0),)) as server:
+    async with LocalHttpServer((Reply(delay=STALL_PAST_A_SHORT_BOUND_S),)) as server:
         with pytest.raises(TimedOut):
             await _transport(timeout_seconds=30.0, max_attempts=1).request(
                 "GET", f"{server.base_url}/search", timeout_seconds=0.05
@@ -1681,7 +1686,7 @@ async def test_a_per_call_stream_cap_tightens_the_deployment_cap_and_cannot_loos
 
 async def test_a_stream_whose_head_never_comes_times_out() -> None:
     """The bound covers the wait for the head, like any request."""
-    async with LocalHttpServer((Reply(delay=2.0, chunks=(b"late",)),)) as server:
+    async with LocalHttpServer((Reply(delay=STALL_PAST_A_SHORT_BOUND_S, chunks=(b"late",)),)) as server:
         with pytest.raises(TimedOut):
             await _transport(max_attempts=1).stream("POST", f"{server.base_url}/s", max_bytes=1024, timeout_seconds=0.1)
 

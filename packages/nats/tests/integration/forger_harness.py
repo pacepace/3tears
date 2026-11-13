@@ -23,8 +23,9 @@ The harness is the fixture and these helpers; each door is one case that supplie
 its genuine body, and a probe for the side effect. The cases live in
 ``test_forged_door_delivery_live.py``.
 
-Gated on docker: a checkout without docker skips cleanly. Credentials are ephemeral testcontainer
-values; nothing here reaches a real cluster. Against cobalt dev the same cases run through the
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
+Credentials are ephemeral test values; nothing here reaches a real cluster. Against cobalt dev the same cases run through the
 cluster's own NATS with credentials read by reference (see ``scripts/run-forger-harness.sh``);
 nothing is printed.
 """

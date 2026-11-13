@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from threetears.evals.kernel import (
-    ANALYSIS_GEN_PROMPT,
     BOUNDARY_GEN_PROMPT,
     KIND_TEMPLATE,
     KIND_TEXT,
@@ -23,6 +22,7 @@ from threetears.evals.kernel import (
     SeedPrompt,
     SeedTemplate,
 )
+from threetears.evals.kernel.prompts import catalogue
 
 #: The repository root.
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -40,8 +40,24 @@ def _entry(prompt_type: str) -> SeedPrompt:
 
 
 def test_the_catalogue_declares_each_of_the_packages_prompts_once():
-    assert [entry.prompt_type for entry in SEED_PROMPTS] == [ANALYSIS_GEN_PROMPT, PROPOSER_PROMPT, BOUNDARY_GEN_PROMPT]
+    assert [entry.prompt_type for entry in SEED_PROMPTS] == [PROPOSER_PROMPT, BOUNDARY_GEN_PROMPT]
     assert len({entry.prompt_type for entry in SEED_PROMPTS}) == len(SEED_PROMPTS)
+
+
+@pytest.mark.parametrize(
+    ("slot", "constant", "seed"),
+    [
+        ("eval_report_plan", "REPORT_PLAN_PROMPT", "EVAL_REPORT_PLAN_DEFAULT"),
+        ("eval_analysis_gen", "ANALYSIS_GEN_PROMPT", "EVAL_ANALYSIS_GEN_DEFAULT"),
+    ],
+)
+def test_a_retired_writers_slot_is_neither_seeded_nor_declared(slot: str, constant: str, seed: str):
+    """The report planner and the memo writer are retired: no entry seeds their slots and the catalogue declares no id
+    for either, so a fresh deployment never fills them, and the analysis root holds no constant to seed either from."""
+    assert slot not in {entry.prompt_type for entry in SEED_PROMPTS}
+    assert not hasattr(catalogue, constant)
+    assert all(entry.constant != seed for entry in SEED_PROMPTS)
+    assert not hasattr(importlib.import_module("threetears.evals.analysis"), seed)
 
 
 @pytest.mark.parametrize("entry", SEED_PROMPTS, ids=lambda entry: entry.prompt_type)

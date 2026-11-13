@@ -71,6 +71,7 @@ from pydantic import (
     model_validator,
 )
 
+from threetears.core.config import DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS, DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
 from threetears.datasources.export import ExportConfig
 from threetears.datasources.geo_config import GeoConfig
 from threetears.datasources.entities import DataSourceAccessMode, DataSourceType
@@ -176,6 +177,13 @@ class PostgresConnectionConfig(BaseModel):
     :param command_timeout_seconds: per-query asyncpg timeout. trade-off:
         too low = innocent slow queries get cancelled; too high = a
         runaway query holds a connection for the duration
+    :param connect_timeout_seconds: bound on one login while the pool
+        opens a connection. trade-off: too low = a slow but healthy
+        login fails; too high = a backend that never answers holds the
+        pool start that long
+    :param pool_startup_timeout_seconds: the least time the pool start
+        may take before it fails; the driver allows more when
+        ``pool_min_size`` logins, which run one at a time, need it
     """
 
     model_config = _CONNECTION_CONFIG
@@ -205,6 +213,20 @@ class PostgresConnectionConfig(BaseModel):
     command_timeout_seconds: int = Field(
         default=120,
         description="per-query asyncpg timeout; balances slow-but-valid queries vs runaway protection",
+    )
+    connect_timeout_seconds: float = Field(
+        default=DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS,
+        gt=0,
+        description="seconds one login may take while the pool opens a connection -- the TCP connect, "
+        "TLS and authentication together -- before it fails; lower=a backend that never answers costs "
+        "less of the pool start, higher=a slow but healthy login still fits",
+    )
+    pool_startup_timeout_seconds: float = Field(
+        default=DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS,
+        gt=0,
+        description="the least time the pool start may take before it fails. the driver allows more "
+        "when it must: its logins run one at a time, so it gives a pool of pool_min_size connections "
+        "connect_timeout_seconds for each login plus one more whenever that is longer",
     )
     allowed_schemas: list[str] = Field(
         default_factory=list,
@@ -273,6 +295,20 @@ class YugabyteConnectionConfig(BaseModel):
     command_timeout_seconds: int = Field(
         default=120,
         description="per-query asyncpg timeout; balances slow-but-valid queries vs runaway protection",
+    )
+    connect_timeout_seconds: float = Field(
+        default=DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS,
+        gt=0,
+        description="seconds one login may take while the pool opens a connection -- the TCP connect, "
+        "TLS and authentication together -- before it fails; lower=a backend that never answers costs "
+        "less of the pool start, higher=a slow but healthy login still fits",
+    )
+    pool_startup_timeout_seconds: float = Field(
+        default=DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS,
+        gt=0,
+        description="the least time the pool start may take before it fails. the driver allows more "
+        "when it must: its logins run one at a time, so it gives a pool of pool_min_size connections "
+        "connect_timeout_seconds for each login plus one more whenever that is longer",
     )
     allowed_schemas: list[str] = Field(
         default_factory=list,

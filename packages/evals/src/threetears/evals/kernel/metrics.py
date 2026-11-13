@@ -93,7 +93,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import Field, model_validator
 
@@ -118,13 +118,11 @@ if TYPE_CHECKING:
 
 __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why the aliases are exported
     "declaration_of",
-    "read_as_declared",
     "OUTCOME_DIM_ID",
     "TIME_UNITS",
     "is_latency_measure",
     "TRANSCRIPT_DIM_ID",
     "METRIC_DESCRIPTORS",
-    "HOST_PRODUCED_MEASURES",
     "CODE_GRADED_FAMILIES",
     "CLASSIFIER_FAMILY",
     "CLASSIFIER_LABEL_MEASURE_PREFIX",
@@ -158,6 +156,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "classifier_label_of",
     "confusion_cell",
     "confusion_of",
+    "measure_value_misfit",
     "undeclarable_host_measures",
     "engine_owned_names",
     "describe_classifier_label",
@@ -184,6 +183,8 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "containment_defects",
     "describe_rubric_dim",
     "list_metrics",
+    "reads_as_rate",
+    "reads_as_share",
     "rule_rates",
     "strictest_class",
 ]
@@ -228,7 +229,7 @@ AttributionScope = Literal["subsystem", "end_to_end"]
 
 #: The merit axes a measure can serve. **Engine-owned and closed**; which axis a given measure
 #: serves is the host's declaration. Generic slot, host-declared content — the same split the
-#: sweepables registry draws over levers. "Best" is never unqualified: a memo states position
+#: sweepables registry draws over levers. "Best" is never unqualified: a report states position
 #: along these, and a measure that names none contributes to no verdict.
 #:
 #: The same object as :data:`~threetears.evals.schema.models.DeclaredMeritAxis`, which a stored declaration
@@ -405,6 +406,13 @@ ENGINE_FAMILIES: Mapping[MetricFamily, MeasureFamily] = {
 }
 
 
+#: The fields of a measure's descriptor that say only how a page prints it: what a reader calls the measure
+#: (``reader_name``) and the phrase prose uses for it (``reader_prose``). An aspect bundle carries them in its measure
+#: catalog and leaves them out of its fingerprint, so naming or renaming a measure stales no analysis and moves no
+#: reporter case (owner ruling, 2026-11-11: names are presentation, never evidence).
+MEASURE_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"reader_name", "reader_prose"})
+
+
 class MetricDescriptor(EvalBaseModel):
     """What a single measure is, independent of any particular value of it."""
 
@@ -417,7 +425,8 @@ class MetricDescriptor(EvalBaseModel):
             "place of the key ('Output speed', not 'candidate_output_tokens_per_s'). REQUIRED of every measure a "
             "host registers (`MeasureRegistry` refuses one without it) and supplied by the engine for every core "
             "measure and every one it describes by construction. None only on a name nothing describes; a surface "
-            "then prints the key, which is all it has."
+            "then prints the key, which is all it has. Presentation only (`MEASURE_PRESENTATION_FIELDS`): no part of "
+            "any bundle's fingerprint, so renaming a measure stales no analysis."
         ),
     )
     data_type: MetricDataType | None = Field(
@@ -481,7 +490,8 @@ class MetricDescriptor(EvalBaseModel):
         default=None,
         description=(
             "The reader-facing sentence rendered prose prefers to the measure's key. None when the measure's "
-            "'description' already reads as that sentence, which rendered prose then uses."
+            "'description' already reads as that sentence, which rendered prose then uses. Presentation only "
+            "(`MEASURE_PRESENTATION_FIELDS`): no part of any bundle's fingerprint."
         ),
     )
     merit_axis: MeritAxis | None = Field(
@@ -1028,6 +1038,32 @@ _SEED: tuple[MetricDescriptor, ...] = (
         ),
     ),
     _d(
+        name="unanswered_retried",
+        reader_name="Calls retried unforced",
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="subsystem",
+        unit="calls",
+        description=(
+            "A usage row's calls a forced tool choice was refused on and that were answered unforced in the same "
+            "call: beside the row's call_count, never in it, and in no cost. Absent where the row counted none."
+        ),
+    ),
+    _d(
+        name="unanswered_lost",
+        reader_name="Calls lost unanswered",
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="subsystem",
+        unit="calls",
+        description=(
+            "A usage row's calls sent and never answered, so the turn they belonged to ended in error: beside the "
+            "row's call_count, never in it, and in no cost. Absent where the row counted none."
+        ),
+    ),
+    _d(
         name="provider_units",
         reader_name="Provider units",
         data_type="numeric",
@@ -1307,8 +1343,8 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         unit="iterations",
         description=(
-            "Iterations left out of pass^k because they carried nothing for it to conjoin: no goal-state check "
-            "and no judge, as a classifier scored only against its expected label. Unmeasured, never a fail; "
+            "Iterations left out of pass^k because they carried nothing for it to conjoin: no goal-state check, "
+            "no label, no declared check and no judge. Unmeasured, never a fail; "
             "where every iteration is one, pass_hat_k is null and pass_hat_k_unmeasured_reason says why."
         ),
     ),
@@ -2133,19 +2169,6 @@ def declaration_of(descriptor: MetricDescriptor) -> MeasureDeclaration:
     )
 
 
-def read_as_declared(descriptor: MetricDescriptor, declaration: MeasureDeclaration) -> MetricDescriptor:
-    """The descriptor read on a stored declaration: everything the reading host says of it, but how to read it.
-
-    :param descriptor: The reading host's descriptor of the measure.
-    :ptype descriptor: MetricDescriptor
-    :param declaration: How the runs being read were launched to read it (``EvalRun.declared_measures``).
-    :ptype declaration: MeasureDeclaration
-    :return: The descriptor with the declaration's direction, merit axis, guardrail flag, margin and range.
-    :rtype: MetricDescriptor
-    """
-    return descriptor.model_copy(update=declaration.model_dump())
-
-
 #: The core rate measures a run may declare a margin on (``EvalRun.declared_margins``,
 #: :func:`run_margin_refusal`): numeric, on 0 to 1, with a better end and a merit axis (so a comparison tests
 #: them), no guardrail, and no margin of their own. Derived from the descriptors, so a core rate measure added
@@ -2165,13 +2188,6 @@ RUN_MARGIN_MEASURES: frozenset[str] = frozenset(
 if len(METRIC_DESCRIPTORS) != len(_SEED):  # pragma: no cover - import-time invariant
     _dupes = sorted({d.name for d in _SEED if sum(1 for o in _SEED if o.name == d.name) > 1})
     raise RuntimeError(f"Duplicate measure name(s) in the metric seed: {_dupes}")
-
-#: The core measures the ENGINE declares and a host's candidate kind writes: a classifier kind lands
-#: ``match`` and ``confusion_cell`` on each result's ``host_measures``, and the engine only reads them.
-#: Every other name in :data:`METRIC_DESCRIPTORS` has an engine producer, which a test holds: a core
-#: measure that is neither produced by the engine nor named here is a descriptor that renders and is
-#: never filled, so it fails that test rather than sitting empty in every host's catalogue.
-HOST_PRODUCED_MEASURES: frozenset[str] = frozenset({"match", "confusion_cell"})
 
 
 def reader_name_defects(descriptors: Iterable[MetricDescriptor]) -> list[str]:
@@ -2580,8 +2596,8 @@ MATCH_MEASURE = "match"
 #: :data:`MATCH_MEASURE` and never landed by a kind. It is the classifier's reading on the ``quality`` merit
 #: axis, so it is what a bar, a verdict tier and a family of comparisons rank a classifier on. Derived rather
 #: than carried because a host carrying both would put one comparison into every family twice — the duplicate
-#: that made hosts mint their own ``<thing>_accuracy`` while ``match`` had no axis. A boolean has no per-case
-#: mean for a family to test, so the axis lives on the numeric reading, as a goal check's does.
+#: that made hosts mint their own ``<thing>_accuracy`` while ``match`` had no axis. ``match`` is declared on no
+#: merit axis, so the axis lives on the numeric reading, as a goal check's does.
 ACCURACY_MEASURE = "accuracy"
 
 #: The separator between the two labels of a confusion cell — the expected one, then the predicted one.
@@ -2669,6 +2685,46 @@ def confusion_of(cell: str) -> tuple[str, str] | None:
     if len(parts) != 2 or not all(part.strip() for part in parts):
         return None
     return _percent_decoded(parts[0]), _percent_decoded(parts[1])
+
+
+def measure_value_misfit(descriptor: MetricDescriptor, value: bool | float | str) -> str | None:
+    """How a value's Python type contradicts the data type its descriptor declares, or None when it fits.
+
+    The one type rule for a measure's value, held where a result is written (a kind's ``host_measures`` is refused
+    on it) and where one is read (a stored value it refuses is dropped from the statistics and named with this
+    reason). Nothing is coerced: a ``1.0`` is not a ``True``, whatever it was meant to say. A boolean measure takes a
+    ``bool``, a numeric one a number that is not a ``bool``, a categorical or text one a string, and a
+    ``confusion_cell`` a string :func:`confusion_of` splits. A descriptor declaring no data type is read as numeric,
+    so text or a ``bool`` under it is a misfit. That rule matters only where a result is written: the bundle never
+    reports an untyped measure, so never reads one through this check, but a run's summary states every measure the
+    host declares as a mean and range of its values read as numbers, where a ``bool`` would average in as 1 or 0 and
+    text would be counted and left out of the mean. The registry refuses an untyped measure with a better end or a
+    diagnostic one, so the rule guards the untyped measures a host may still declare: undirected, not diagnostic.
+
+    :param descriptor: The measure's descriptor.
+    :ptype descriptor: MetricDescriptor
+    :param value: One observation of it.
+    :ptype value: bool | float | str
+    :return: ``declared <type>, recorded as <what the value is>``, or None.
+    :rtype: str | None
+    """
+    declared = descriptor.data_type
+    if isinstance(value, bool):
+        recorded = "true or false"
+        fits = declared == "boolean"
+    elif isinstance(value, str):
+        recorded = "text"
+        fits = declared in ("categorical", "text")
+    else:
+        recorded = "a number"
+        fits = declared in ("numeric", None)
+    if declared is None:
+        return None if fits else f"declared no data type, read as numeric, recorded as {recorded}"
+    if fits and descriptor.name == CONFUSION_CELL_MEASURE and confusion_of(str(value)) is None:
+        # A confusion cell is categorical AND has a format: one that does not split into its two labels
+        # could not be counted into the matrix the per-label statistics are derived from.
+        return f"declared {declared}, recorded as text that is not one expected{CONFUSION_SEPARATOR}predicted pair"
+    return None if fits else f"declared {declared}, recorded as {recorded}"
 
 
 #: The per-label statistics a classifier's confusion matrix yields, each minted per label.
@@ -3083,6 +3139,62 @@ def describe_measure(name: str, measures: MeasureRegistry) -> MetricDescriptor:
     )
 
 
+#: A rate's range: each value the share of a case's trials or observations that passed.
+_RATE_RANGE = (0.0, 1.0)
+
+
+def reads_as_rate(
+    kind: Literal["trial", "measure", "judged"],
+    name: str,
+    *,
+    descriptor: MetricDescriptor | None = None,
+    value_range: tuple[float, float] | None = None,
+) -> bool:
+    """Whether a reading is a rate: each case's value the share of its trials or observations that passed, on 0 to 1.
+
+    The overall pass rate (``trial``) is one. A measure is one where it is a check (:attr:`MetricDescriptor.is_check`:
+    a boolean with a better end, or a measure declared ``pass_fail``), a goal check's pass rate, or a classifier's
+    accuracy (its labels' matches, one for one). A judged dimension is one where it is scored pass or fail, its scale
+    0 to 1. A numeric score that merely lies on 0 to 1 is not: its per-case value is a mean of scores, not a share.
+    The one definition every reader of a rate reads: a family contrast's interval, a floor's rates and the readings a
+    floor may name, so the three never disagree on what a rate is.
+
+    :param kind: Whether ``name`` is the overall pass rate (``trial``), a measure or a judged dimension.
+    :ptype kind: Literal['trial', 'measure', 'judged']
+    :param name: The reading's name, as the bundle spells it.
+    :ptype name: str
+    :param descriptor: A measure's descriptor; None where the catalog describes none, or for any other kind.
+    :ptype descriptor: MetricDescriptor | None
+    :param value_range: A judged dimension's scale; None where it declares none, or for any other kind.
+    :ptype value_range: tuple[float, float] | None
+    :return: Whether the reading is a rate.
+    :rtype: bool
+    """
+    if kind == "trial":
+        return True
+    if kind == "judged":
+        return value_range == _RATE_RANGE
+    return (
+        goal_check_of(name) is not None or name == ACCURACY_MEASURE or (descriptor is not None and descriptor.is_check)
+    )
+
+
+def reads_as_share(descriptor: MetricDescriptor) -> bool:
+    """Whether a measure's figures are a share on 0 to 1, which every page states in percent (number rule 4: a rate
+    carries its "%"): a boolean's share held, or a figure that declares no unit and lies on 0 to 1
+    (``value_range=(0, 1)``), a host's fraction among them. The one test every page's tables read a measure's unit by,
+    so the code page, the aspect pages and the written page never read one share apart. Wider than
+    :func:`reads_as_rate`, which asks what an interval may be computed as: a fraction of deliveries is a share in
+    percent, not a count of passed trials.
+
+    :param descriptor: The measure's descriptor.
+    :ptype descriptor: MetricDescriptor
+    :return: Whether its figures are a share.
+    :rtype: bool
+    """
+    return not descriptor.unit and (descriptor.data_type == "boolean" or descriptor.value_range == _RATE_RANGE)
+
+
 def rule_rates(descriptors: Iterable[MetricDescriptor]) -> dict[str, bool]:
     """Every measure a floor may read as a pass rate, oriented: its name -> whether its higher end passes.
 
@@ -3099,7 +3211,13 @@ def rule_rates(descriptors: Iterable[MetricDescriptor]) -> dict[str, bool]:
     return {
         descriptor.name: bool(descriptor.higher_is_better)
         for descriptor in descriptors
-        if descriptor.is_check and not descriptor.name.startswith(CLASSIFIER_LABEL_MEASURE_PREFIX)
+        if reads_as_rate("measure", descriptor.name, descriptor=descriptor)
+        and descriptor.higher_is_better is not None
+        # A goal check's rate is named by its text and accuracy's by the ``match`` it is derived from, so neither is a
+        # rate under its own key; a label's match is read through its classifier's.
+        and goal_check_of(descriptor.name) is None
+        and descriptor.name != ACCURACY_MEASURE
+        and not descriptor.name.startswith(CLASSIFIER_LABEL_MEASURE_PREFIX)
     }
 
 

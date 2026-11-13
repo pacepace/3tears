@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import os
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
@@ -34,7 +35,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any, TypeIs
 
+from threetears.evals.analysis.summary import EvalSummary
 from threetears.evals.kernel.eval_file import beside_eval_file
+from threetears.evals.kernel.eval_scope import eval_running
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel import GuardrailMargin
 from threetears.evals.kernel.host import CompletionClients, EvalHost
@@ -50,10 +53,20 @@ from threetears.evals.quick.one_call import (
     SHARED_ARM_MODEL,
     CallableArm,
     callable_host,
+    grade_judge_examples,
     refuse_an_unusable_cap,
     run_arms,
 )
-from threetears.evals.quick.result import CREATED_BY, Result, calibrate, coordinates, declare, judged_rows
+from threetears.evals.quick.result import (
+    CREATED_BY,
+    Result,
+    calibrate,
+    coordinates,
+    declare,
+    judged_rows,
+    refuse_an_unusable_margin,
+    with_judge_examples,
+)
 from threetears.evals.quick.tools import RECORD_ENV
 from threetears.evals.quick.world import World, WorldRunner
 from threetears.evals.storage import InMemoryDocumentStore, SqliteDocumentStore
@@ -192,9 +205,15 @@ class Eval:
     :ivar world: The world every arm's agent acts on, or ``None``.
     :ivar name: What titles the eval's campaign and report, and names its scope by default.
     :ivar k: Repeats per case, per arm.
-    :ivar max_cost_usd: The most the whole eval may spend, in US dollars, shared equally between its arms; ``None``
-        runs uncapped, which every summary states.
+    :ivar max_cost_usd: The most the whole eval may spend, in US dollars: each arm's run is capped at an equal share of
+        it, and a judge's examples, graded once the arms have run, draw on what the arms left of the whole. It is read
+        as a run's cap is, against the spend already landed before each cell and each example's call, so what is in
+        flight when it is reached finishes and the eval can end over it by that, which the result states; spend nobody
+        priced stops what has not started, since a cap cannot bound it. ``None`` runs uncapped, which every summary
+        states.
     :ivar measure_latency: Declare latency under test: the cases run one at a time, the arms one after another.
+    :ivar question: The one sentence the eval answers, filed as its campaign's question; ``None`` asks none.
+    :ivar margin: The question's margin in the measure's units, a non-inferiority question's; ``None`` declares none.
     """
 
     def __init__(
@@ -207,6 +226,8 @@ class Eval:
         name: str | None = None,
         max_cost_usd: float | None = None,
         measure_latency: bool = False,
+        question: str | None = None,
+        margin: float | None = None,
     ) -> None:
         """Declare the eval; nothing runs until :meth:`run`.
 
@@ -220,17 +241,36 @@ class Eval:
         :ptype grader: Any
         :param k: Repeats per case, per arm.
         :ptype k: int
-        :param name: What titles its report and names its scope; ``None`` takes the cases file's stem, else the runner's
-            name, else the arms joined by ``vs``.
+        :param name: What titles its report and names its scope, where its runs are kept; ``None`` takes the cases
+            file's stem, else the runner's name (a single arm's name, for a mapping of one). Several arms with neither
+            are refused: a name built from the arms would move the runs every time an arm is added, renamed or dropped.
         :ptype name: str | None
-        :param max_cost_usd: The most the eval may spend, shared equally between its arms.
+        :param max_cost_usd: The most the eval may spend: each arm's run capped at an equal share, and a judge's examples
+            held to what the arms left (:attr:`max_cost_usd`).
         :ptype max_cost_usd: float | None
         :param measure_latency: Declare latency under test.
         :ptype measure_latency: bool
-        :raises ValueError: No cases, an unreadable case file, a runner of no known form, a mapping with no arm or a
+        :param question: The one sentence a comparison answers (``"Does v2 read the currency right more often than
+            v1?"``), as a writer eval's ``question`` is: filed as the campaign's question, so its page quotes it and
+            reads its readings as asked rather than as leads. The question's measure is the first grader: the printed
+            first line and the page's lead read it. Alone it asks whether a candidate does better (a superiority
+            question): the pass rate reads shown better, shown worse or not separated, against zero, and no margin is
+            filed. ``None`` asks none, and every reading is a lead.
+        :ptype question: str | None
+        :param margin: How far a candidate's pass rate may fall below the control's before it is shown worse, in the
+            measure's units as ``grader(margin=)``'s are (``0.05`` is 5 points): the author's own, which makes the
+            question a non-inferiority one, its pass rate reading no worse than the margin, shown worse or neither.
+            Needs ``question``; ``None`` declares none, and the package never assumes one.
+        :ptype margin: float | None
+        :raises ValueError: A blank question, a margin that is no share strictly between 0 and 1 or one with no
+            question, no cases, an unreadable case file, a runner of no known form, a mapping with no arm or a
             blank arm name, arms naming ``k=v`` factors unlike one another, arms on two worlds, no grader or one of no
-            known form, or an expression grader with no world with state to read.
+            known form, an expression grader with no world with state to read, or several arms with no name and no
+            cases file to name the eval by.
         """
+        if question is not None and not question.strip():
+            raise ValueError("an eval's question is filed on its campaign, and this one is blank")
+        refuse_an_unusable_margin(margin, question)
         self.cases = load_cases(cases)
         source = Path(cases) if isinstance(cases, str | os.PathLike) else None
         if isinstance(runner, Mapping):
@@ -259,11 +299,16 @@ class Eval:
             )
         self.factors = self._factors()
         named = [arm for arm in arms if arm is not None]
+        if not name and source is None and len(named) > 1:
+            raise ValueError(
+                'name this eval (name="invoices"): its name is where its runs are kept, and a name built from its arms '
+                f"({', '.join(map(repr, named))}) would move them every time an arm changes"
+            )
         self.name = (
             name
             or (source.stem if source is not None else None)
             or (_runner_name(arms[None]) if None in arms else None)
-            or " vs ".join(named)
+            or (named[0] if named else "")
         )
         if not self.name or not self.name.strip():
             raise ValueError("an eval is named by name=, its cases file or its runner, and this one has none of them")
@@ -271,6 +316,8 @@ class Eval:
         self.k = k
         self.max_cost_usd = max_cost_usd
         self.measure_latency = measure_latency
+        self.question = question
+        self.margin = margin
 
     def __repr__(self) -> str:
         """The eval, by name, cases and arms."""
@@ -386,6 +433,19 @@ class Eval:
             anything the cases, the runner or the graders refuse, before anything runs.
         :raises ValidationFailedError: The launch refused, or the host refuses the campaign's declaration.
         """
+        # Its arms, its judge and every task they start read as this one run, so a replay serving one of its calls
+        # can tell this eval's calls from another's in the process (eval_running).
+        with eval_running(self.name):
+            return await self._run(store=store, host=host, scope=scope)
+
+    async def _run(
+        self,
+        *,
+        store: DocumentStore | str | os.PathLike[str] | None,
+        host: EvalHost | None,
+        scope: str | None,
+    ) -> Result:
+        """:meth:`run`'s body, inside its eval's run."""
         if host is not None and store is not None:
             raise ValueError(
                 f"store= is where the host this eval builds keeps the runs, and host {host.profile.host_id!r} brings "
@@ -426,6 +486,21 @@ class Eval:
             margins=self.plan.run_margins,
             measure_latency=self.measure_latency,
         )
+        examples = None
+        if judge is not None and judge.examples and summaries[0].template_id is not None:
+            # Graded once for the eval, after its arms, through the judge every arm's answers were graded by, each
+            # example judged as a cell's answer is (the classifier's label hidden alike), and held to what the arms
+            # left of the eval's cap. A grading that fails is said on the reading, so the arms' results still land.
+            examples = await grade_judge_examples(
+                host,
+                judge,
+                summaries[0].template_id,
+                scope_id,
+                k=self.k,
+                expected=None if self.plan.classifier is None else partial(expected_label, name=self.plan.classifier),
+                max_cost_usd=self.max_cost_usd,
+                landed_usd=_landed_usd(summaries),
+            )
         keyed = {
             arm if arm is not None else summary.candidate_model: summary
             for arm, summary in zip(self.arms, summaries, strict=True)
@@ -456,15 +531,21 @@ class Eval:
                 ],
                 measure_latency=self.measure_latency,
                 declared_at=declared_at,
+                question=self.question,
+                margin=self.margin,
+                measure_order=self.plan.readings,
             )
-            return replace(
-                result,
-                store=where,
-                fields=tuple(self.plan.fields),
-                judge=judge,
-                disclosures=disclosures,
-                calibrations=tuple(calibrate(judge, host, keyed, scope_id)),
-                to_label=tuple(judged_rows(host, keyed, scope_id, case_names)) if judge is not None else (),
+            return with_judge_examples(
+                replace(
+                    result,
+                    store=where,
+                    fields=tuple(self.plan.fields),
+                    judge=judge,
+                    disclosures=disclosures,
+                    calibrations=tuple(calibrate(judge, host, keyed, scope_id)),
+                    to_label=tuple(judged_rows(host, keyed, scope_id, case_names)) if judge is not None else (),
+                ),
+                examples,
             )
 
         # Filing the campaign and reading its report and labels are store reads and writes, so they run off the loop.
@@ -481,6 +562,23 @@ class Eval:
             )
         said += [f"outputs graded as logged in {given.path}" for given in self.arms.values() if isinstance(given, Log)]
         return said
+
+
+def _landed_usd(summaries: Sequence[EvalSummary]) -> float | None:
+    """What the arms' results landed, as a run's cost cap reads it: each result's cost summed, ``None`` where any
+    result's is unknown (it spent what nobody priced), which a cap cannot bound."""
+    landed: list[float] = []
+    for summary in summaries:
+        if summary.case_results is None:
+            if summary.total_cost_usd is None:
+                return None
+            landed.append(summary.total_cost_usd)
+            continue
+        for result in summary.case_results:
+            if result.cost_usd is None:
+                return None
+            landed.append(result.cost_usd)
+    return math.fsum(landed)
 
 
 def _case_names(cases: Sequence[Mapping[str, Any]]) -> list[str]:

@@ -16,10 +16,10 @@ REALISM
 the shard's WS-18-06 requirement is: "two simulated pods bind same
 workspace; exactly one inside the bind body at a time". task-14's
 ``test_bind_lease_race.py`` already delivers that guarantee; this file
-adds the ``@pytest.mark.integration`` marker formally (which the
-existing tests also carry) and re-asserts the peak-concurrency == 1
-property through an explicit wrapper so the shard-18 acceptance can be
-traced to this file.
+re-asserts the peak-concurrency == 1 property through an explicit
+wrapper so the shard-18 acceptance can be traced to this file. it needs
+no external service, so it carries no ``integration`` marker and runs in
+the unit suite.
 
 future graduation: when testcontainers NATS is wired into the repo, the
 fake KV imports below can be replaced with a ``nats.connect(...)`` call
@@ -57,7 +57,7 @@ from packages.agent.workspace.tests.helpers.workspace_shims import (
 )
 
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+pytestmark = pytest.mark.asyncio
 
 
 @dataclass

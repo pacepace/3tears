@@ -1,0 +1,705 @@
+{
+ "schema": "report-input/1",
+ "meta": {
+  "campaign": "Concierge model selection",
+  "behavior": "Concierge chat assistant",
+  "kind": "choice",
+  "design_shape": "undesignated",
+  "run_date": "2026-10-21",
+  "provenance": "Synthetic example data from docs/eval-report-kit/references/r1-model-selection.json",
+  "synthetic": true
+ },
+ "arms": [
+  {
+   "id": "atlas-l",
+   "name": "Atlas-L",
+   "role": "challenger",
+   "served_model": "Atlas-L",
+   "settings": {
+    "model": "Atlas-L"
+   },
+   "description": "Frontier, large"
+  },
+  {
+   "id": "atlas-m",
+   "name": "Atlas-M",
+   "role": "challenger",
+   "served_model": "Atlas-M",
+   "settings": {
+    "model": "Atlas-M"
+   },
+   "description": "Frontier, mid"
+  },
+  {
+   "id": "brisk-s",
+   "name": "Brisk-S",
+   "role": "challenger",
+   "served_model": "Brisk-S",
+   "settings": {
+    "model": "Brisk-S"
+   },
+   "description": "Small, fast"
+  },
+  {
+   "id": "open-70b",
+   "name": "Open-70B",
+   "role": "challenger",
+   "served_model": "Open-70B",
+   "settings": {
+    "model": "Open-70B"
+   },
+   "description": "Open weights, self-hosted"
+  }
+ ],
+ "aspects": [],
+ "criteria": [
+  {
+   "id": "overall",
+   "kind": "gate",
+   "measure": "overall",
+   "direction": "higher_is_better",
+   "threshold": 85,
+   "scope": "each_task",
+   "label": "Overall quality floor"
+  },
+  {
+   "id": "p95",
+   "kind": "gate",
+   "measure": "latency_s",
+   "statistic": "p95",
+   "direction": "lower_is_better",
+   "threshold": 3.0,
+   "scope": "each_task",
+   "label": "Latency budget (p95)"
+  },
+  {
+   "id": "trouble.resolves",
+   "kind": "gate",
+   "measure": "resolves",
+   "direction": "higher_is_better",
+   "threshold": 90,
+   "task": "trouble",
+   "label": "Resolves the issue"
+  },
+  {
+   "id": "trouble.steps",
+   "kind": "gate",
+   "measure": "steps",
+   "direction": "higher_is_better",
+   "threshold": 90,
+   "task": "trouble",
+   "label": "Gives clear steps"
+  },
+  {
+   "id": "trouble.confirms",
+   "kind": "gate",
+   "measure": "confirms",
+   "direction": "higher_is_better",
+   "threshold": 95,
+   "task": "trouble",
+   "label": "Confirms before account changes"
+  },
+  {
+   "id": "trouble.escalates",
+   "kind": "gate",
+   "measure": "escalates",
+   "direction": "higher_is_better",
+   "threshold": 90,
+   "task": "trouble",
+   "label": "Escalates when stuck"
+  },
+  {
+   "id": "persona.character",
+   "kind": "gate",
+   "measure": "character",
+   "direction": "higher_is_better",
+   "threshold": 90,
+   "task": "persona",
+   "label": "Stays in character"
+  },
+  {
+   "id": "research.toolcall",
+   "kind": "gate",
+   "measure": "toolcall",
+   "direction": "higher_is_better",
+   "threshold": 90,
+   "task": "research",
+   "label": "Calls research tool only when required"
+  },
+  {
+   "id": "research.cites",
+   "kind": "gate",
+   "measure": "cites",
+   "direction": "higher_is_better",
+   "threshold": 90,
+   "task": "research",
+   "label": "Cites the retrieved source"
+  },
+  {
+   "id": "research.unsupported",
+   "kind": "gate",
+   "measure": "unsupported",
+   "direction": "higher_is_better",
+   "threshold": 90,
+   "task": "research",
+   "label": "No unsupported claims"
+  },
+  {
+   "id": "specul.declines",
+   "kind": "gate",
+   "measure": "declines",
+   "direction": "higher_is_better",
+   "threshold": 95,
+   "task": "specul",
+   "label": "Declines to speculate"
+  }
+ ],
+ "scoreboard": {
+  "atlas-l": {
+   "cases": 1190
+  },
+  "atlas-m": {
+   "cases": 1190
+  },
+  "brisk-s": {
+   "cases": 1190
+  },
+  "open-70b": {
+   "cases": 1190
+  }
+ },
+ "measures": {
+  "cost_per_1k": {
+   "label": "Cost per 1k conversations",
+   "unit": "usd_per_1k",
+   "higher_is_better": false,
+   "means": "Measured tokens times list price, per 1,000 conversations."
+  },
+  "latency_s": {
+   "label": "Latency",
+   "unit": "s",
+   "higher_is_better": false,
+   "means": "End to end from user message to final token, staging environment."
+  }
+ },
+ "judged": {
+  "overall": {
+   "label": "Overall quality",
+   "scale": "ordinal",
+   "calibration": "calibrated",
+   "calibration_ratings": 200,
+   "agreement": 0.86,
+   "level": "95%"
+  },
+  "resolves": {
+   "label": "Resolves the issue",
+   "scale": "pass_fail",
+   "level": "95%"
+  },
+  "steps": {
+   "label": "Gives clear steps",
+   "scale": "pass_fail",
+   "level": "95%"
+  },
+  "confirms": {
+   "label": "Confirms before account changes",
+   "scale": "pass_fail",
+   "level": "95%"
+  },
+  "escalates": {
+   "label": "Escalates when stuck",
+   "scale": "pass_fail",
+   "level": "95%"
+  },
+  "character": {
+   "label": "Stays in character",
+   "scale": "pass_fail",
+   "level": "95%"
+  },
+  "toolcall": {
+   "label": "Calls research tool only when required",
+   "scale": "pass_fail",
+   "level": "95%"
+  },
+  "cites": {
+   "label": "Cites the retrieved source",
+   "scale": "pass_fail",
+   "level": "95%"
+  },
+  "unsupported": {
+   "label": "No unsupported claims",
+   "scale": "pass_fail",
+   "level": "95%"
+  },
+  "declines": {
+   "label": "Declines to speculate",
+   "scale": "pass_fail",
+   "level": "95%"
+  }
+ },
+ "contrasts": [],
+ "caveats": {
+  "late_criteria": []
+ },
+ "tasks": [
+  {
+   "id": "billing",
+   "name": "Billing & account Q&A",
+   "description": "Plan changes, invoices, refunds. Graded against the policy KB.",
+   "n_cases": 400,
+   "share": 0.42,
+   "routable": true,
+   "cross_cutting": false,
+   "per_arm": {
+    "atlas-l": {
+     "overall": {
+      "mean": 94,
+      "half_width": 1.1
+     },
+     "cost_per_1k": {
+      "mean": 58
+     },
+     "latency_s": {
+      "p50": 1.81,
+      "p95": 3.6
+     }
+    },
+    "atlas-m": {
+     "overall": {
+      "mean": 92,
+      "half_width": 1.1
+     },
+     "cost_per_1k": {
+      "mean": 24
+     },
+     "latency_s": {
+      "p50": 1.03,
+      "p95": 2.1
+     }
+    },
+    "brisk-s": {
+     "overall": {
+      "mean": 89,
+      "half_width": 1.1
+     },
+     "cost_per_1k": {
+      "mean": 4.6
+     },
+     "latency_s": {
+      "p50": 0.47,
+      "p95": 0.9
+     }
+    },
+    "open-70b": {
+     "overall": {
+      "mean": 86,
+      "half_width": 1.1
+     },
+     "cost_per_1k": {
+      "mean": 8.9
+     },
+     "latency_s": {
+      "p50": 0.78,
+      "p95": 1.6
+     }
+    }
+   }
+  },
+  {
+   "id": "trouble",
+   "name": "Troubleshooting (multi-turn)",
+   "description": "Device and connectivity issues over 3 to 9 turns.",
+   "n_cases": 180,
+   "share": 0.19,
+   "routable": true,
+   "cross_cutting": false,
+   "per_arm": {
+    "atlas-l": {
+     "overall": {
+      "mean": 93,
+      "half_width": 1.6
+     },
+     "cost_per_1k": {
+      "mean": 140
+     },
+     "latency_s": {
+      "p50": 2.42,
+      "p95": 4.68
+     },
+     "resolves": {
+      "mean": 91,
+      "half_width": 4.2
+     },
+     "steps": {
+      "mean": 96,
+      "half_width": 2.9
+     },
+     "confirms": {
+      "mean": 98,
+      "half_width": 2.0
+     },
+     "escalates": {
+      "mean": 94,
+      "half_width": 3.5
+     }
+    },
+    "atlas-m": {
+     "overall": {
+      "mean": 88,
+      "half_width": 1.6
+     },
+     "cost_per_1k": {
+      "mean": 59
+     },
+     "latency_s": {
+      "p50": 1.38,
+      "p95": 2.73
+     },
+     "resolves": {
+      "mean": 90,
+      "half_width": 4.4
+     },
+     "steps": {
+      "mean": 95,
+      "half_width": 3.2
+     },
+     "confirms": {
+      "mean": 98,
+      "half_width": 2.0
+     },
+     "escalates": {
+      "mean": 95,
+      "half_width": 3.2
+     }
+    },
+    "brisk-s": {
+     "overall": {
+      "mean": 79,
+      "half_width": 1.6
+     },
+     "cost_per_1k": {
+      "mean": 11
+     },
+     "latency_s": {
+      "p50": 0.57,
+      "p95": 1.17
+     },
+     "resolves": {
+      "mean": 74,
+      "half_width": 6.4
+     },
+     "steps": {
+      "mean": 90,
+      "half_width": 4.4
+     },
+     "confirms": {
+      "mean": 88,
+      "half_width": 4.7
+     },
+     "escalates": {
+      "mean": 85,
+      "half_width": 5.2
+     }
+    },
+    "open-70b": {
+     "overall": {
+      "mean": 83,
+      "half_width": 1.6
+     },
+     "cost_per_1k": {
+      "mean": 21
+     },
+     "latency_s": {
+      "p50": 1.07,
+      "p95": 2.08
+     },
+     "resolves": {
+      "mean": 82,
+      "half_width": 5.6
+     },
+     "steps": {
+      "mean": 93,
+      "half_width": 3.7
+     },
+     "confirms": {
+      "mean": 81,
+      "half_width": 5.7
+     },
+     "escalates": {
+      "mean": 90,
+      "half_width": 4.4
+     }
+    }
+   }
+  },
+  {
+   "id": "persona",
+   "name": "Persona small talk",
+   "description": "Off-task chat where the assistant must hold the brand voice.",
+   "n_cases": 220,
+   "share": 0.24,
+   "routable": true,
+   "cross_cutting": false,
+   "per_arm": {
+    "atlas-l": {
+     "overall": {
+      "mean": 91,
+      "half_width": 1.5
+     },
+     "cost_per_1k": {
+      "mean": 41
+     },
+     "latency_s": {
+      "p50": 1.39,
+      "p95": 2.88
+     },
+     "character": {
+      "mean": 95,
+      "half_width": 2.9
+     }
+    },
+    "atlas-m": {
+     "overall": {
+      "mean": 88,
+      "half_width": 1.5
+     },
+     "cost_per_1k": {
+      "mean": 17
+     },
+     "latency_s": {
+      "p50": 0.86,
+      "p95": 1.68
+     },
+     "character": {
+      "mean": 95,
+      "half_width": 2.9
+     }
+    },
+    "brisk-s": {
+     "overall": {
+      "mean": 84,
+      "half_width": 1.5
+     },
+     "cost_per_1k": {
+      "mean": 3.3
+     },
+     "latency_s": {
+      "p50": 0.35,
+      "p95": 0.72
+     },
+     "character": {
+      "mean": 86,
+      "half_width": 4.6
+     }
+    },
+    "open-70b": {
+     "overall": {
+      "mean": 90,
+      "half_width": 1.5
+     },
+     "cost_per_1k": {
+      "mean": 6.4
+     },
+     "latency_s": {
+      "p50": 0.62,
+      "p95": 1.28
+     },
+     "character": {
+      "mean": 97,
+      "half_width": 2.3
+     }
+    }
+   }
+  },
+  {
+   "id": "research",
+   "name": "Research-needed questions",
+   "description": "Questions that need the research tool, mixed with ones that don't.",
+   "n_cases": 240,
+   "share": 0.15,
+   "routable": true,
+   "cross_cutting": false,
+   "per_arm": {
+    "atlas-l": {
+     "overall": {
+      "mean": 92,
+      "half_width": 1.4
+     },
+     "cost_per_1k": {
+      "mean": 95
+     },
+     "latency_s": {
+      "p50": 2.48,
+      "p95": 4.86
+     },
+     "toolcall": {
+      "mean": 97,
+      "half_width": 2.2
+     },
+     "cites": {
+      "mean": 96,
+      "half_width": 2.5
+     },
+     "unsupported": {
+      "mean": 95,
+      "half_width": 2.8
+     }
+    },
+    "atlas-m": {
+     "overall": {
+      "mean": 89,
+      "half_width": 1.4
+     },
+     "cost_per_1k": {
+      "mean": 40
+     },
+     "latency_s": {
+      "p50": 1.53,
+      "p95": 2.84
+     },
+     "toolcall": {
+      "mean": 95,
+      "half_width": 2.8
+     },
+     "cites": {
+      "mean": 94,
+      "half_width": 3.0
+     },
+     "unsupported": {
+      "mean": 94,
+      "half_width": 3.0
+     }
+    },
+    "brisk-s": {
+     "overall": {
+      "mean": 81,
+      "half_width": 1.4
+     },
+     "cost_per_1k": {
+      "mean": 8
+     },
+     "latency_s": {
+      "p50": 0.6,
+      "p95": 1.22
+     },
+     "toolcall": {
+      "mean": 83,
+      "half_width": 4.8
+     },
+     "cites": {
+      "mean": 89,
+      "half_width": 4.0
+     },
+     "unsupported": {
+      "mean": 84,
+      "half_width": 4.6
+     }
+    },
+    "open-70b": {
+     "overall": {
+      "mean": 80,
+      "half_width": 1.4
+     },
+     "cost_per_1k": {
+      "mean": 15
+     },
+     "latency_s": {
+      "p50": 1.07,
+      "p95": 2.16
+     },
+     "toolcall": {
+      "mean": 88,
+      "half_width": 4.1
+     },
+     "cites": {
+      "mean": 85,
+      "half_width": 4.5
+     },
+     "unsupported": {
+      "mean": 86,
+      "half_width": 4.4
+     }
+    }
+   }
+  },
+  {
+   "id": "specul",
+   "name": "Speculation bait",
+   "description": "Prompts that invite guessing about outages, pricing, or roadmap. Occurs inside every other task.",
+   "n_cases": 150,
+   "share": 0,
+   "routable": false,
+   "cross_cutting": true,
+   "per_arm": {
+    "atlas-l": {
+     "overall": {
+      "mean": 90,
+      "half_width": 1.8
+     },
+     "cost_per_1k": {
+      "mean": 45
+     },
+     "latency_s": {
+      "p50": 1.7,
+      "p95": 3.24
+     },
+     "declines": {
+      "mean": 99,
+      "half_width": 1.6
+     }
+    },
+    "atlas-m": {
+     "overall": {
+      "mean": 89,
+      "half_width": 1.8
+     },
+     "cost_per_1k": {
+      "mean": 19
+     },
+     "latency_s": {
+      "p50": 1.03,
+      "p95": 1.89
+     },
+     "declines": {
+      "mean": 98,
+      "half_width": 2.2
+     }
+    },
+    "brisk-s": {
+     "overall": {
+      "mean": 83,
+      "half_width": 1.8
+     },
+     "cost_per_1k": {
+      "mean": 3.6
+     },
+     "latency_s": {
+      "p50": 0.42,
+      "p95": 0.81
+     },
+     "declines": {
+      "mean": 81,
+      "half_width": 6.3
+     }
+    },
+    "open-70b": {
+     "overall": {
+      "mean": 86,
+      "half_width": 1.8
+     },
+     "cost_per_1k": {
+      "mean": 7.0
+     },
+     "latency_s": {
+      "p50": 0.73,
+      "p95": 1.44
+     },
+     "declines": {
+      "mean": 89,
+      "half_width": 5.0
+     }
+    }
+   }
+  }
+ ]
+}

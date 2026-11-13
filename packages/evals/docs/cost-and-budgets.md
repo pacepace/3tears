@@ -1,7 +1,7 @@
 # Cost and budgets
 
-**For** anyone launching runs that call paid models or tools. **Answers:** what a launch will cost, what stops
-it spending, how long it takes, and how spend is counted. If you are writing a host, read
+**For** anyone launching runs that call paid models or tools, or writing reports. **Answers:** who sets the
+prices, what a launch or a report will cost, what stops it spending, how long it takes, and how spend is counted. If you are writing a host, read
 [Adopting the engine](adopting-a-host.md) first; the terms used here (arm, run, launcher, cell) are
 defined in [Concepts](concepts.md).
 
@@ -17,9 +17,10 @@ There, the engine does not spend money it has not priced first:
 - Every **run** has a dollar cap. Before a launch starts, the engine predicts what each arm will cost and
   refuses an arm it predicts will blow its cap — or one it cannot predict at all. A capped run stops before its
   next cell once a recorded result is unpriced.
-- Calls made **outside any run** (writing new cases, proposing a rubric, writing an analysis, re-asking a
-  judge) are priced before they are sent, against a separate out-of-run cap, and written to a ledger you
-  can read back.
+- Calls made **outside any run** (writing new cases, proposing a rubric, re-asking a judge) are priced before
+  they are sent, against a separate out-of-run cap, and written to a ledger you can read back.
+- **Writing a campaign report** is held to a budget the host sets, in dollars or, for a model with no price, in
+  tokens and turns. Every turn is admitted before it is sent.
 
 With enforcement off, runs record themselves as `uncapped` (below) and nothing is refused on price. **The quick
 path (`Eval`) runs with enforcement off:** its runner is your own function, whose spend the engine sees only
@@ -27,6 +28,29 @@ afterwards and only if it is reported (an `Answer`, or the calls it makes throug
 price it first or stop it. Bound a quick run's spend inside your runner or your client.
 
 The sections below state each rule exactly.
+
+## Who sets the prices
+
+**The engine counts; the host prices.** A host may pay a negotiated rate, route through its own key, run on a
+subscription or a local model, and the engine cannot know which. So every model call reports what it used: its tokens
+(cache reads, and cache writes by how long they are kept), the model asked for, the model and the provider that
+served it. The money comes from the host's **pricer**, which `Model` is handed and asks for every call, a completion
+or a tool turn alike. It has two halves:
+
+- **Before a call, the rates.** The pricer answers the rates the host is billed for the model on that provider, and
+  whether they are guaranteed. The engine computes the call's bound from them, the same arithmetic for every host, and
+  every cap and budget is checked against that bound. A bound built on rates the host does not guarantee (a router
+  that may serve another provider, the host's own key on a router) is an estimate: it admits the call, disclosed as
+  an estimate, and a report written that way says its cap was checked against estimates. A pricer with no rates for a
+  model leaves the bound to the default pricer.
+- **After a call, the price.** The pricer receives the provider's own usage block as returned (a router's reported
+  cost and whether the key was the host's, say), the provider that served it, and the cache writes split by how long
+  they are kept, and answers the price and where it came from. One it cannot price is `None` with a reason, never
+  `$0`.
+
+**The default pricer** is the package's own, for standalone and development use: Anthropic's published
+rates for a direct Anthropic call, then OpenRouter's public catalogue. A host replaces it. A host that brings its own
+client instead of `Model` prices its own calls and reports what each cost ([below](#how-a-results-cost-is-counted)).
 
 ## Caps
 
@@ -78,10 +102,10 @@ the unit of measurement, and it is measured whole or never begun.
 - **A call nobody can price** (a client with no `price_ceiling`, or one answering `None`) is made like any other.
   An unpriced spend still counts: a capped run stops before its next cell once a recorded result's spend could not
   be priced, because the cap cannot be read against what it cannot count.
-- **A kind reports its spend as it lands** (`CellSink.add_spend`, or settling a `CellSink.reserve` handle, or by
-  wrapping its client in `CappedCompletion`), and returns it on its output, which is what the cap counts once the
-  cell's result is recorded. `CellSink.reserve` never refuses and `CellSink.cost_cap_reached` is always `False`;
-  `CostCapReached` is no longer raised by the engine. They remain so a host that imports them keeps importing.
+- **A kind reports its spend as it lands** (`CellSink.add_spend`, or by wrapping its client in `CappedCompletion`),
+  and returns it on its output, which is what the cap counts once the cell's result is recorded.
+- **The in-cell cap's names are gone.** `CellSink.reserve`, `CellSink.cost_cap_reached` and `CostCapReached` are
+  removed: count a call's cost with `add_spend` once it returns.
   The shipped adapter's resend of a request a provider refused for a setting it carried is not another attempt:
   the refused request generated nothing and is taken to be unbilled (an assumption no provider documents), so its
   `price_ceiling` prices one attempt per request. **It is not free in time.** A refused send can take up to
@@ -124,6 +148,10 @@ says which. The cap is the per-run cap above, counting each result's reported sp
 judge's); an eval of several arms splits it equally across them. The candidate cannot be priced before it is called, so
 the cap is read between cases against the results already recorded. A run can overshoot by the cases running when
 the cap is reached; `measure_latency=True` runs one case at a time and has none. A runner that returns no `Answer` and calls no `Model` is invisible to it, and the summary says so.
+A judge's examples, graded once the arms have run, draw on what the arms left of the whole cap, read the same way
+before each example's call: the call that crosses it lands, so the eval can end over its cap by that call, and the
+examples' line says what the eval landed against it. Spend nobody priced, the arms' or the examples', stops the
+grading instead, since no cap can bound it, and the line says that.
 
 **The wall-clock budget.** Each run's job also runs under a time budget sized to its matrix (cases × k ×
 the cell timeout, plus a margin, clamped between a floor and an 8-hour cap). When it binds, the run ends
@@ -132,12 +160,13 @@ results already delivered are kept and counted in the run's completeness record.
 the two apart (a clock stop's reason opens with `wall-clock budget`), and `error_details` stays empty,
 because that list counts faults.
 
-**A generation's preparation bound.** An analysis generation's preparation (the bundle, the prompt, the client, the
-default-writer check and the first call's price) makes no model call, so it runs under its own short bound:
-`AnalysisGeneration.preparation_budget_s`, a positive finite number of seconds that defaults to
-`ANALYSIS_PREPARATION_BUDGET_S` (900 s). The host reads it from its own config and may set it per call. A
-preparation that outruns it ends the attempt `failed` with `refused before any call: preparation did not finish in
-<N> s`, N being the budget used, with nothing spent.
+**A report's two time bounds.** Writing a campaign report runs under two bounds the host sets. Its preparation (the
+evidence, the snapshot, the client) makes no model call, so it runs under its own short bound,
+`AnalysisGeneration.preparation_budget_s` (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s); one that outruns it ends
+the attempt `failed` with nothing spent. The writing itself runs under the job's `budget_s`, which the host derives
+from the engine's own worst case: every analyst round, revision, bounce and editor review the writer's limits allow,
+times the host's bound on one request. Set it above that ceiling, with headroom, so a paid write is never cut short
+([deriving your budgets](adopting-a-host.md#deriving-your-budgets-from-the-engines-ceilings)).
 
 **The cell deadline.** Each cell runs under a deadline: the kind's own (its launcher's
 `KindWiring.cell_timeout_s`, else 600 s). A cell that outlives it is excluded as `cell_timeout`. A launch can
@@ -198,24 +227,12 @@ declaration, so it stays, and no between-cells stop is read from it.
    changed, as does an earlier revision priced only under another judge, simulator, rig or model. The case
    count is not compared: the price scales per-observation cost to the arm's own cases. This is pricing only;
    analysis never pools two revisions.
-3. **Refuse.** First, it refuses an arm whose largest call is reserved above its run's cap on its own
+3. **Refuse.** First, it refuses an arm whose largest call is priced above its run's cap on its own
    (`ArmPlan.call_ceiling`): the run could never make that call, whatever the arm is predicted to cost in
    all. The kind prices it right after planning (`LaunchableKind.price_largest_call`), on the clients the
-   cells will call through, exactly as a cell reserves it. Two kinds price their largest call exactly, each
-   over every case, keeping the largest:
-   - **The judge kind** prices each case's judge call. What lowers it: a cheaper judge model, shorter frozen
+   cells will call through, built as a cell builds it:
+   - **The judge kind** prices each case's judge call exactly and keeps the largest. What lowers it: a cheaper judge model, shorter frozen
      evidence on the largest case, or a judge-role client priced at the output cap the judge asks for.
-   - **The analysis reporter** prices each case's first generator request, built from the frozen bundle, the
-     preset's text and the admitted model exactly as its cell builds it. What lowers it: a cheaper generator
-     model, a smaller bundle on the largest case, or a generator-role client that retries less or prices a
-     smaller output cap. The engine ships no ready reporter entry, so a host wires it into its own:
-     `price_largest_call=lambda request: price_largest_reporter_call(eval_host, request, prompts=..., resolve_model=...)`
-     (from `threetears.evals.ops`), with the same hooks as its `plan_arm` and the `eval_host` its launcher
-     builds the generator client on. That client comes from the host's factory in the `analysis` role. Two
-     calls stay unpriced: the memo's judge call, which judges a memo that does not exist yet, and the
-     generation's repair round-trip, which carries the first call's output. The replay
-     (`AS_RECORDED_MODEL`) calls no generator and prices nothing.
-
    - **A subject kind** (a persona, a classifier, any kind whose launcher builds its judge with
      `build_judge_service`) cannot price its largest call: its judge and simulator prompts carry a transcript
      that does not exist yet. It prices a **floor** under it instead, with `price_subject_call_floor` (from
@@ -233,8 +250,9 @@ declaration, so it stays, and no between-cells stop is read from it.
      The floor is sound on a client whose `price_ceiling` does not fall as a prompt grows, which holds for
      any ceiling priced from a bound on the prompt's length and a fixed output cap. It catches the ceilings the
      output cap and the retry multiplier dominate, whatever the transcript. A ceiling
-     a long transcript dominates it cannot see: a floor under the cap admits the arm, and that call is held to
-     the cap as the run reserves it. A candidate's own calls are the kind's and are not priced. Wire it as
+     a long transcript dominates it cannot see: a floor under the cap admits the arm, and the cell makes that
+     call anyway. Its spend lands when it returns, and the cap is read before the next cell starts, so the run
+     can land past the cap by the calls in flight. A candidate's own calls are the kind's and are not priced. Wire it as
      `price_largest_call=lambda request: price_subject_call_floor(eval_host, request, judged_artifact=...)`,
      with the `eval_host` your launcher builds its judge and simulator clients on and the declaration it hands
      `build_judge_service`. The simulator client comes from the host's factory in the `simulator` role, for
@@ -243,9 +261,10 @@ declaration, so it stays, and no between-cells stop is read from it.
    The refusal names the call, its ceiling and the cap one such call needs (rounded up to the cent, plus the
    arm's predicted spend for room around it, or the host's operator when that is above the host's ceiling),
    and what lowers the ceiling. A floor's refusal says "even the smallest such call this arm could make" is
-   reserved above the cap, and its remedy names the floor as a cap to exceed, not one that would be enough,
+   priced above the cap, and its remedy names the floor as a cap to exceed, not one that would be enough,
    since the real call adds its transcript on top. A kind that does not price its calls before launch
-   (`price_largest_call=None`) is not checked here: such a call is refused only when the run reaches it. Then
+   (`price_largest_call=None`) is not checked here: a cell makes such a call when it reaches it, and the run
+   stops before its next cell once the cap is spent. Then
    it refuses an arm predicted above its run's cap, or one
    nothing can predict — no pricer, no plan, or no history to bound — whose cap the run would merely inherit.
    An unpriceable arm under a cap the launch named runs under it. The estimate reports each arm's largest
@@ -271,7 +290,14 @@ Holm's correction asks of the family. Its variance comes from earlier runs of th
 noise, and how far two arms disagree about one case (measured where two earlier runs launched differently
 shared cases; otherwise one arm's case-to-case spread, counted twice). With no earlier run, or no repeated
 cases, a reading says it cannot estimate and why; no default variance is ever used. The block states its
-assumptions, among them near-normal per-case differences and that only the one comparison differs.
+assumptions, among them near-normal per-case differences and that only the one comparison differs. The block
+reads every earlier run's results, a page at a time, keeping of each result only its per-case values, so its memory
+holds a page of results and those values (a few of them per reading), never the results themselves. Its read time still grows with the history, so for a template whose earlier runs
+(archived ones left out) hold more than `PLANNING_READ_BUDGET` results by their matrices, or by their stored keys, it
+reads none of their results and says so in its `cannot_estimate`,
+naming the budget and how to narrow (archive earlier runs it need not plan from); the price is still estimated
+and returned, since it does not depend on the block. `detectable_effects` called
+on its own refuses past the budget, as the read tier's aggregates do.
 
 A host therefore prices no arm itself: a wrapper that priced assembled runs would be a second rule, and a
 second pricing of the same arm.
@@ -279,8 +305,9 @@ second pricing of the same arm.
 ## Spend outside any run
 
 These engine calls have no run around them: a launch's case generation (an `llm` variation axis's writer),
-the rubric proposer (`propose_draft`), an analysis generation, a judge repeat, a second judge and a judge
-temperature comparison. Under enforcement, each is bounded in dollars before it spends; every one is ledgered
+the rubric proposer (`propose_draft`), a campaign report, a judge repeat, a second judge and a judge
+temperature comparison. Each is bounded before it spends: in dollars against the out-of-run cap under enforcement,
+or, for a report, against the report budget the host sets (dollars, or tokens and turns). Every one is ledgered
 either way.
 
 **Priced in the call, spent in the job.** No transport call waits on a model, so every one of these that an
@@ -298,10 +325,9 @@ planner returns the `PlannedCall` (`gen.plan_draft` for a proposal, `kernel.plan
 generation), the caller quotes it and admits it under its `OutOfRunBudget` in its call, and the executor
 (`gen.propose_draft`, `gen.generate_variations`) takes the admitted call and only makes it, on the client it was
 priced on. The engine's own jobs (a second judge, a judge repeat, a temperature comparison) admit in their call
-the same way, and each has an estimate that quotes the same plan. An analysis generation is the one exception: its
-plan is built from the campaign's whole bundle, which takes longer to assemble than a host's call budget allows for
-a large campaign, so its job assembles, prices and admits before its first call, and its estimate quotes the same
-plan in its own call.
+the same way, and each has an estimate that quotes the same plan. Writing a report is the one exception: how many
+turns it takes is the analyst's to decide, so its job admits each turn against the report's budget before sending
+it.
 
 **Case generation.** Generation runs before any run exists, so its calls are outside every run's cost cap
 and metered-call ceiling. In the launch's call, the engine builds the writer from the host's client factory,
@@ -318,11 +344,19 @@ proposer prompt written for another draft shape before anything is priced (see
 it in the action's job with `propose_draft(client, admitted, budget=..., axis=..., subject_id=...)`, which
 releases the client. A client admitted and never made is the host's to release.
 
-**Analysis generation.** An analysis generation is held to the host's out-of-run cap
-(`LaunchSettings.max_out_of_run_cost_usd`): its first call is priced in its job before it is sent, and one the
-cap refuses ends the job `failed` with `refused before any call: ...` and nothing spent, which `job_poll` reads
-(`analysis_estimate` prices it in its call, without spending); its one repair round-trip is priced before that is
-sent, and each call is ledgered under purpose `analysis`, so `scope_out_of_run_spend` reads it.
+**A campaign report.** Writing a report (`analysis_generate`) is held to the report budget the host sets, never to
+a figure a caller passes: an action caller cannot raise spend. The budget is dollars, or tokens for a model the host
+has no price for, declared as one or the other, and either may carry a turn cap (`ReportBudget(usd=10.0, turns=60)`):
+dollars bound what a report spends, never how many turns it sends, so the turn cap is what bounds how long it runs
+and what `writer_ceiling_s(..., turns=)` counts. Every turn, the analyst's and the editor's, is admitted on
+its bound before it is sent, and a refusal sends nothing. On rates the host guarantees the budget can refuse a turn but
+never overshoot on one; on rates it does not, the bound is an estimate, and the report says its cap was checked
+against estimates.
+In dollar mode an unpriced turn is refused; in token and turn mode it is written, and the page says the report is
+unpriced. A budget that stops the writing keeps the last reviewed draft. `analysis_estimate` answers the budget as
+the bound. What each role, round and turn cost is on the stored report, and its made line prints the total. The spend is ledgered
+once, under purpose `analysis`, when the job ends, so `scope_out_of_run_spend` reads it; an unpriced share is
+ledgered as unpriced, never as `$0`.
 
 **Judge repeats.** A judge repeat (`judge_repeat`) is held to the same cap, every call — parse retries
 included — priced and admitted before the first is sent, and ledgered under purpose `judge` with the run's
@@ -372,9 +406,18 @@ asked for, and its summary says which model answered is unconfirmed
 **Every surface that states what an arm costs reads `production_replicating_cost`**, the spend of the roles
 production runs: the contrasts, each decision-surface cell, its cost column and a frontier's cost axis (which
 refuses `cost_usd`); the report heads it `Production cost`. `cost_usd` and `program_cost` also sum what a judge
-spent, which is measuring cost: never tested between arms, and labelled `Measuring spend` wherever shown, except in a campaign whose every result is judge-kind (see below), where those dollars are the arm's own spend and read `Spend, all roles`, `Program spend`, `Total spend` and `Mean spend per result`. A judge campaign is the one place the judge is the subject: every call its cells make is the judge under test, metered under the judge role, so there that role is what the arm costs (`production_replicating_cost` reads the result's `candidate_kind`). Where a
-reply costs under a cent on every arm, the report states both per 1,000 replies, and the heading says so
-(`Cost per 1,000 replies`, `Production cost ($/1,000 replies)`).
+spent, which is measuring cost: never tested between arms, and labelled `Measuring spend` wherever shown, except in a campaign whose every result is judge-kind (see below), where those dollars are the arm's own spend and read `Spend, all roles`, `Program spend`, `Total spend` and `Mean spend per result`. A judge campaign is the one place the judge is the subject: every call its cells make is the judge under test, metered under the judge role, so there that role is what the arm costs (`production_replicating_cost` reads the result's `candidate_kind`). Money reads
+one way per set: a column, an axis or a family of figures is spelled by one rule throughout. A cost per reply reads
+per 1,000 replies wherever one ruler applies, on every table and page of a campaign, and per 1,000,000 where an
+amount is under a cent there; the heading says so (`Cost per 1,000 replies`, `Production cost, per 1,000 replies`). Each money measure takes one form on every page of a campaign
+([the number policy](design.md#the-number-policy)). The rule is one count of significant figures, not one count of decimals (owner
+ruling Q3, 2026-11-07, which replaces the 2026-10-27 reading of one decimal count per set), so `$0.0080` sits beside
+`$0.11`, never `$0.1100`: below $1 an amount prints to two significant figures (`$0.020`), from $1 to under $10 in
+cents whether total or rate (`$1.90`, never `$1.9`), and from $10 up a total in cents (`$1,208.00`) and a rate to two
+significant figures (`$75`, its interval `$73 to $77`, `$120` for $123). Only an interval whose two ends would read
+alike takes a third figure, and a cost per 1,000 takes one where two would leave the month printed beside it more than
+half a percent off (`$0.302 per 1,000 calls` beside `$1,208.00 a month`). A difference takes the form of the amounts
+it compares, to the places its interval supports.
 
 **What an arm costs and what the program spent count different results.** A comparison cost — the
 candidate's own spend, `production_replicating_cost`, and every mean of it (`mean_prod_cost_usd` in a run

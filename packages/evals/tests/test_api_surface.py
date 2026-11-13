@@ -76,7 +76,7 @@ def test_no_signature_names_a_module_below_a_root() -> None:
 
 
 def test_a_name_belongs_to_the_root_holding_its_defining_module_not_the_first_that_exports_it() -> None:
-    assert surface.home_root("threetears.evals.kernel.host", "StyleProfile") == "threetears.evals.kernel.host"
+    assert surface.home_root("threetears.evals.kernel.host", "HostProfile") == "threetears.evals.kernel.host"
     assert surface.home_root("threetears.evals.ops", "EvalSummary") == "threetears.evals.analysis"
 
 
@@ -447,6 +447,28 @@ def test_each_section_is_checked_against_its_own_tags() -> None:
         assert surface.history_findings(release) == [], release.version
 
 
+def test_only_the_first_section_is_measured_against_the_working_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An older section whose tag does not exist yet (a release cut on another branch, not yet tagged) is not this
+    tree's surface: it yields nothing until its tag exists, and the first section is measured against the tree."""
+    measured: list[tuple[str, str]] = []
+
+    def section_findings(release: Any, before: Any, after: Any, after_label: str) -> list[Any]:
+        measured.append((release.version, after_label))
+        return [surface.Finding(f"{release.version} measured", False)]
+
+    monkeypatch.setattr(surface, "tag_exists", lambda tag: tag == "v1.0.0")
+    monkeypatch.setattr(surface, "exports_at", lambda ref: {})
+    monkeypatch.setattr(surface, "section_findings", section_findings)
+    migrations = _labelled(("unreleased", "v1.0.0"), ("2.0.0", "v1.0.0"))
+    [finding] = surface.history_of(migrations)
+    assert finding.problem == "unreleased measured"
+    assert measured == [("unreleased", "the working tree")]
+    # Where the untagged release is the first section, it is the one measured against the tree.
+    measured.clear()
+    assert [f.problem for f in surface.history_of(_labelled(("2.0.0", "v1.0.0")))] == ["2.0.0 measured"]
+    assert measured == [("2.0.0", "the working tree")]
+
+
 # --- a tagged release has its own section ------------------------------------------------------------------------
 
 
@@ -549,6 +571,13 @@ def test_the_main_tag_flow_follows_a_release_tagged_where_develop_cannot_reach_i
         assert surface.labelling_findings(migrations, tag, shipped=True) == []
     # A final release above the version a tree prepares has not been shipped past by it.
     assert surface.newest_release_tag(["v0.64.0", "v0.65.0", "v0.66.0"], "0.65.0") == "v0.65.0"
+
+
+def test_a_local_label_follows_the_release_it_builds_on() -> None:
+    """``0.66.0+line.1`` is a build of 0.66.0: it follows v0.66.0, and a later release stays above it."""
+    every = ["v0.65.0", "v0.66.0", "v0.67.0"]
+    assert surface.newest_release_tag(every, "0.66.0+line.1") == "v0.66.0"
+    assert surface.newest_release_tag(every, "0.65.0+line.2") == "v0.65.0"
 
 
 def test_release_order_is_numeric_and_a_non_release_tag_is_not_one() -> None:

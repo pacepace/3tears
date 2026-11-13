@@ -33,11 +33,13 @@ then never name the host::
 - ``report`` prints the campaign's report (:func:`~threetears.evals.analysis.campaign_report`, the same
   report the ``report_read`` action reads): its newest analysis that is not archived, else a code-only report of its
   evidence — whose verdict, on its first screen, is code's either way. ``--format`` is ``markdown`` (the
-  default), ``html`` (one page that needs no script) or ``json`` (the evidence bundle the report was computed
-  from, as ``bundle`` prints it); ``--out DIR`` writes all three into ``DIR`` instead (``report.html``,
-  ``report.md`` and ``bundle.json``, through :meth:`~threetears.evals.analysis.Report.write`). ``--trials all`` lays
-  out each failed or lost trial's full record beside its row (``table``, the default, as ``report_read``'s). No model
-  is called.
+  default), ``html`` (one page, its charts drawn by the kit's inlined script) or ``json`` (the page's machine form,
+  ``campaign.json``: code's readings, the person's call and each aspect's bundle by its fingerprint,
+  :meth:`~threetears.evals.analysis.CampaignReport.json_document`); ``--out DIR`` writes them into ``DIR`` instead,
+  with each aspect's whole bundle beside them (``report.html``, ``report.md``, ``campaign.json`` and one
+  ``bundle-<aspect>.json`` per aspect, through :meth:`~threetears.evals.analysis.CampaignReport.write`).
+  ``--trials all`` lays out each failed or lost trial's full record beside its row (``table``, the default, as
+  ``report_read``'s). No model is called.
 - ``bundle`` prints the campaign's analysis bundle as JSON
   (:func:`~threetears.evals.analysis.inspect_campaign_bundle`): what a generation would read, assembled
   without calling any model.
@@ -348,7 +350,10 @@ def build_parser(
         "--format",
         choices=get_args(ReportFormat),
         default="markdown",
-        help="markdown (default), html (one page, needs no script) or json (the bundle the report was computed from)",
+        help=(
+            "markdown (default), html (one page, charts drawn by its inlined kit script) or json (campaign.json: "
+            "code's readings, the person's call and each aspect's bundle by its fingerprint)"
+        ),
     )
     report.add_argument(
         "--trials",
@@ -360,7 +365,10 @@ def build_parser(
         "--out",
         type=Path,
         metavar="DIR",
-        help="write report.html, report.md and bundle.json into DIR instead of printing one form",
+        help=(
+            "write report.html, report.md, campaign.json and one bundle-<aspect>.json per aspect into DIR instead of "
+            "printing one form"
+        ),
     )
     bundle = command("bundle", "Print a campaign's analysis bundle as JSON — what a generation would read.")
     bundle.add_argument("campaign", help="the campaign, by id")

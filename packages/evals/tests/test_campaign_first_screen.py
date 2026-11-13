@@ -1,5 +1,5 @@
-"""A campaign's first screen, in order: the title, the question, the writer's summary and recommendation, what warns,
-then the person's call; code's readings follow it, under the Scorecard. Nothing stands above the title, and nothing on
+"""A campaign's first screen, in order: the title, the question, the lead, where its report is (where it has one),
+what warns, then the person's call (once one is recorded); code's readings follow it, under the Scorecard. Nothing stands above the title, and nothing on
 it is announced over it.
 
 **Who changes what here.** Chunk 03 of the senior-report plan owns this module and the order. Each part's marker
@@ -20,8 +20,7 @@ from threetears.evals.analysis import (
     campaign_report_html,
     campaign_report_markdown,
 )
-from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
-from threetears.evals.analysis.report.campaign_page import NO_CALL, NO_RECOMMENDATION
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (
     CampaignReport,
     DisclosureBlock,
@@ -32,46 +31,54 @@ from threetears.evals.analysis.report.model import (
 )
 
 from packages.evals.tests.campaign_page_support import (
-    SUMMARY,
     first_screen_markdown,
     header_html,
     kind_page_of,
     opening,
     page_of,
-    recommending_nothing,
-    two_aspect_memo,
 )
-from packages.evals.tests.campaign_support import ASSEMBLED_AT, CANDIDATE_LABEL, CONTROL_LABEL, QUESTION
+from packages.evals.tests.campaign_support import ASSEMBLED_AT, CANDIDATE_LABEL, QUESTION
 from packages.evals.tests.report_shapes_support import SHAPES, s1_change, s2_choice, s4_change
 
-#: Where code's readings are found, under the Scorecard after the first screen, by the campaign's kind (chunk 04's
-#: rows): the table's name, its caption in Markdown, and its mark in HTML.
+#: Where code's readings are found, under the Scorecard after the first screen, by the campaign's kind (the
+#: scorecard's rows): the table's name, its caption in Markdown, and its mark in HTML.
 _SCORECARD: dict[str, tuple[str, str, str]] = {
     "change": ("aspects", "**By aspect**", 'data-table="scorecard"'),
     "measurement": ("measures", "**alpha by aspect**", 'data-table="scorecard"'),
 }
 
+#: The title a change over billing and tone heads its page with: its name; what it
+#: compares and on what is the arms line under the question.
+_TITLE = "support queue"
+_ARMS = "production vs v2 · billing, tone"
+
 #: The line a change's first screen warns of billing's broken floor in.
 _FLOOR_WARNING = "Adopting v2 overrides the 10-point floor it breaks on billing."
 
-#: A change's first screen in Markdown, in order, each marker by the chunk that lays its part out.
+#: The lead a change over billing and tone opens on, on every page: each aspect's reading on its first measure, what
+#: what Accuracy was on each arm and what the interval allows.
+_CHANGE_LEAD = (
+    "Accuracy on billing: v2 worse than production. Of 60 trials each, Accuracy was right on 54 for production and "
+    "18 for v2. Over 20 paired cases, the interval puts v2 between 17 and 92 points worse. Accuracy on tone: v2 "
+    "better than production. Of 60 trials each, Accuracy was right on 18 for production and 57 for v2. Over 20 "
+    "paired cases, the interval puts v2 between 21 and 96 points better."
+)
+
+#: A change's first screen in Markdown, in order, each marker by the chunk that lays its part out. With no call
+#: recorded the warning closes it (the page says what it is, never what it lacks).
 _CHANGE_MARKDOWN: list[tuple[str, str]] = [
-    ("03", "# support queue"),
+    ("03", f"# {_TITLE}"),
     ("03", f'"{QUESTION}"'),
-    ("memo", SUMMARY),
-    ("memo", f"**Recommended:** {CONTROL_LABEL} (high confidence)"),
-    ("memo", "- The billing floor is broken"),
+    ("p4", _ARMS),
+    ("p1", f"**{_CHANGE_LEAD}**"),
     ("03", f"**{_FLOOR_WARNING}**"),
-    ("memo", NO_CALL),
 ]
 
 #: The same first screen in HTML, in order.
 _CHANGE_HTML: list[tuple[str, str]] = [
     ("03", "<h1>"),
     ("03", '<p class="question">'),
-    ("memo", 'data-role="summary"'),
-    ("memo", 'data-role="recommendation"'),
-    ("03", '<p class="warning">'),
+    ("03", '<p class="flag warning">'),
 ]
 
 
@@ -84,72 +91,64 @@ async def test_both_aspects_readings_are_in_the_scorecard_after_the_broken_floor
         ("tone", CANDIDATE_LABEL, "shown better"),
     ]
     first = first_screen_markdown(page)
-    assert first.startswith("# support queue\n")
+    assert page.title == _TITLE and first.startswith(f"# {_TITLE}\n")
     assert first.index(f'"{QUESTION}"') < first.index(f"**{_FLOOR_WARNING}**")
     # Code's readings follow what warns, wherever the scorecard lays them out.
     markdown, html = campaign_report_markdown(page), campaign_report_html(page)
     assert markdown.index(f"**{_FLOOR_WARNING}**") < markdown.index(_SCORECARD["change"][1])
     assert "shown worse" in markdown and "shown better" in markdown
     header = header_html(page)
-    assert header.index("<h1>") < header.index('<p class="warning">')
-    assert html.index('<p class="warning">') < html.index(mark)
+    assert header.index("<h1>") < header.index('<p class="flag warning">')
+    assert html.index('<p class="flag warning">') < html.index(mark)
     # The broken floor is code's: the readings carry it, and the page warns once, never announced over the title.
     assert [status.floor for status in page.readings.broken_floors()] == ["billing/rate_drop/*"]
-    assert header.count('<p class="warning">') == 1 and 'role="alert"' not in header
+    assert header.count('<p class="flag warning">') == 1 and 'role="alert"' not in header
 
 
 @pytest.mark.parametrize(("screen", "markers"), [("markdown", _CHANGE_MARKDOWN), ("html", _CHANGE_HTML)])
-async def test_the_first_screen_runs_title_question_summary_recommendation_warning_call(
-    screen: str, markers: list[tuple[str, str]]
-) -> None:
-    """A change with a recommendation reads its summary, then the recommendation, then what warns, then the call; code's
-    table after what warns, wherever the scorecard lays it out."""
-    page = await page_of("billing", "tone", memo=two_aspect_memo())
+async def test_the_first_screen_runs_title_question_lead_warning(screen: str, markers: list[tuple[str, str]]) -> None:
+    """A change reads its question, then its lead, then what warns; code's table after what warns, wherever the
+    scorecard lays it out."""
+    page = await page_of("billing", "tone")
     said = first_screen_markdown(page) if screen == "markdown" else header_html(page)
     order = [said.index(marker) for _, marker in markers]
     assert order == sorted(order)
     if screen == "markdown":
         whole, warning, table = campaign_report_markdown(page), f"**{_FLOOR_WARNING}**", _SCORECARD["change"][1]
     else:
-        whole, warning, table = campaign_report_html(page), '<p class="warning">', _SCORECARD["change"][2]
+        whole, warning, table = campaign_report_html(page), '<p class="flag warning">', _SCORECARD["change"][2]
     assert whole.index(warning) < whole.index(table)
-    assert page.basis == "analysis" and page.finding_count == 1
-    # The arms are priced, so the report-wide cost caveat closes what warns, once.
-    assert opening(page) == [
-        ("text", "summary"),
-        ("text", "recommendation"),
-        ("text", "reason"),
-        ("cost", COST_ROUTING_CAVEAT),
-    ]
+    assert page.basis == "code_only"
+    # The lead is all the page says besides its question and its warning: no line on a report it lacks, no call line
+    # before a call, and the cost's routing is a Design & provenance row, not a first-screen line.
+    assert opening(page) == [("verdict", _CHANGE_LEAD)]
 
 
-async def test_a_code_only_page_has_no_summary_and_says_no_recommendation_was_written_before_the_table() -> None:
+async def test_a_code_only_page_has_no_summary_and_leads_before_the_table() -> None:
     page = await page_of("billing", "tone")
     first = first_screen_markdown(page)
-    assert first.index(f'"{QUESTION}"') < first.index(NO_RECOMMENDATION)
+    assert first.index(f'"{QUESTION}"') < first.index(_CHANGE_LEAD)
     # Code's table is the Scorecard's, after the first screen.
     assert _SCORECARD["change"][1] not in first
     markdown = campaign_report_markdown(page)
-    assert (
-        markdown.index(NO_RECOMMENDATION) < markdown.index("\n## Scorecard\n") < markdown.index(_SCORECARD["change"][1])
-    )
-    assert opening(page)[0] == ("memo", NO_RECOMMENDATION)
+    assert markdown.index(_CHANGE_LEAD) < markdown.index("\n## Scorecard\n") < markdown.index(_SCORECARD["change"][1])
+    assert opening(page)[0] == ("verdict", _CHANGE_LEAD)
 
 
-async def test_a_measurement_opens_on_its_summary_then_its_warning_then_its_measures() -> None:
-    summary = "Alpha passes most cases on solo and costs too much a reply to meet its bar."
-    page = await kind_page_of("solo", memo=recommending_nothing(summary))
+async def test_a_measurement_opens_on_its_lead_and_warning_then_its_measures() -> None:
+    page = await kind_page_of("solo")
     _, caption, mark = _SCORECARD["measurement"]
     assert page.readings.kind == "measurement"
-    assert opening(page) == [("text", "summary"), ("cost", COST_ROUTING_CAVEAT)]
+    # One arm measured leads on its pass rate with the count it is computed over.
+    assert opening(page) == [("verdict", "alpha passed 45 of 60 trials on 20 cases.")]
     first = first_screen_markdown(page)
     assert first.startswith("# ")
-    assert first.index(summary) < first.index("**alpha falls short of the bar on solo.**")
+    assert "**alpha falls short of the bar on solo.**" in first
     markdown, html = campaign_report_markdown(page), campaign_report_html(page)
     assert markdown.index("**alpha falls short of the bar on solo.**") < markdown.index(caption)
     header = header_html(page)
-    assert header.index("<h1>") < header.index('data-role="summary"') < header.index('<p class="warning">')
-    assert html.index('<p class="warning">') < html.index(mark)
+    assert header.index("<h1>") < header.index('<p class="flag warning">')
+    assert html.index('<p class="flag warning">') < html.index(mark)
 
 
 @pytest.mark.parametrize("name", ["s1", "s2", "s4"])
@@ -182,18 +181,19 @@ def test_each_warning_is_one_plain_line_per_arm_with_no_expression_or_figure_of_
     assert len(said) == len(set(said)), "one line per arm per kind"
 
 
-def test_a_page_with_nothing_that_warns_holds_only_its_report_caveat_where_warnings_go() -> None:
+def test_a_page_with_nothing_that_warns_holds_nothing_where_warnings_go() -> None:
     page = s4_change().page()
-    # Its one report-wide caveat, that its costs are as routed, is all the section holds: nothing warns.
-    assert [block.anchor for block in page.blocks if block.section == "warnings"] == ["caveat-cost"]
-    assert '<p class="warning">' not in campaign_report_html(page)
+    # Its costs are as routed, which Design & provenance states, so the section holds nothing: nothing warns.
+    assert [block.anchor for block in page.blocks if block.section == "warnings"] == []
+    assert '<p class="flag warning">' not in campaign_report_html(page)
 
 
 def test_a_matrix_draws_every_column_s_glyphs_on_one_scale_so_they_compare_across_columns() -> None:
     page = s4_change().page()
 
     def cell(value: float, low: float, high: float) -> TableCell:
-        return TableCell(value=value, low=low, high=high, zero_line=True)
+        # As the page's forms decide a change's cell where no set decides it, no figure's text of its own.
+        return PageForms.off_page().unit_cell(value, "", (low, high)).model_copy(update={"zero_line": True})
 
     columns = [
         TableColumn(key="aspect", header="Aspect"),
@@ -271,7 +271,7 @@ def test_a_depth_row_of_one_subject_among_several_links_its_aspect_s_fold() -> N
     report = build_code_only_report(
         two, assembled_at=ASSEMBLED_AT, campaign_name=shape.name, arm_labels=shape.readings.arm_labels()
     )
-    page = build_campaign_report(shape.campaign, shape.readings, {label: report}, None)
+    page = build_campaign_report(shape.campaign, shape.readings, {label: report})
     (table,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "pass_k_depth"]
     said = {(row["aspect"].text, row["aspect"].ref) for row in table.rows}
     # Each subject's rows say where they are by the aspect and the subject, and link the aspect's own fold.

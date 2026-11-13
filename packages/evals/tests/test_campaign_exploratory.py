@@ -332,6 +332,7 @@ async def test_campaign_update_is_a_write_with_a_help_page_and_an_example(evals:
         "aspects",
         "floors",
         "short_names",
+        "arm_short_names",
         "exploratory",
         "control_from_run_id",
     }

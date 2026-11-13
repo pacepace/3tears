@@ -248,6 +248,7 @@ class ShapeDependencies:
                     table,
                     on_row=functools.partial(self._on_row, table),
                     on_table_dropped=functools.partial(self._on_dropped, table),
+                    on_caught_up=functools.partial(self._on_caught_up, table),
                 )
             )
 
@@ -324,6 +325,21 @@ class ShapeDependencies:
                 self._marks.hear(table, message.generation, message.bump_rows)
         if deps:
             self._notify(deps)
+
+    def _on_caught_up(self, table: str) -> None:
+        """take the registry's mark for ``table`` after a catch-up applied every epoch up to it.
+
+        A table's epochs are not numbered one apart, so a heard row never moves this cache's mark by
+        itself; the registry's walk of the table's epochs does, and this follows it. The floor and the
+        changes recorded stay: an answer stamped before the move is judged by them as before.
+
+        :param table: the table caught up
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        with self._lock:
+            self._marks.adopt(table, self._registry.generation_marks)
 
     def _on_dropped(self, table: str) -> None:
         """start ``table`` again from the registry's judged mark: nothing derived before is trusted.

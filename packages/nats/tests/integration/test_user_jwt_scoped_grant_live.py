@@ -29,7 +29,8 @@ We do not stand up the auth-callout responder here: the grant STRINGS are what t
 apply them directly as config-mode ``authorization`` permissions (the same allow-list the responder
 would mint) and connect with them -- a faithful, hermetic proof of the credential the server enforces.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -43,7 +44,6 @@ import nats.aio.client
 import nats.js.errors
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats.subject_permissions import (
     CROSS_PLATFORM_CACHE_INVALIDATE,
     JsResource,
@@ -206,9 +206,6 @@ async def _connect(
 
 
 async def test_scoped_grant_allows_own_bucket_and_denies_cross_bucket() -> None:
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     pub_allow, sub_allow = _minted_permissions()
     # sanity: the credential we are about to enforce is the scoped one, not the old broad hole.
     assert "$JS.API.>" not in pub_allow
@@ -270,9 +267,6 @@ async def test_key_scoped_grant_refuses_every_bypass_and_admits_its_own_scope() 
     and write -- both halves, because a grant that refused everything would pass the refusal half
     on its own and brick the fleet.
     """
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     pub_allow, sub_allow = _minted_allow_lists(_key_scoped_perms())
     # sanity on the credential itself before the broker ever sees it
     assert f"$KV.{_SHARED}.{_A_SCOPE}.>" in pub_allow
@@ -471,9 +465,6 @@ async def test_a_tool_pods_keys_are_refused_to_every_other_principal() -> None:
     must genuinely read and write, and the static user must genuinely reach a bucket it is not
     denied, before either refusal means anything.
     """
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     previous_namespace = get_default_namespace()
     set_default_namespace(_TP_NS)
     try:

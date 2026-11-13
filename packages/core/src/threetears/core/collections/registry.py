@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid7
 
 from pydantic import BaseModel, ValidationError
 from threetears.nats import KV_KEY_SCOPE_GRAMMAR, Subjects
 from threetears.nats.errors import PublishError
+from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader, EpochWalk, walk_by_count
 from threetears.core.collections.generation import (
     GenerationMarks,
     GenerationVerdict,
@@ -26,10 +26,12 @@ from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.core.exceptions import GenerationUnavailableError, InvalidL2ScopeError, L2ScopeNotConfiguredError
 from threetears.observe import contain, get_logger
+from threetears.observe.metrics import counter, gauge
 
 if TYPE_CHECKING:
     from threetears.core.backends import L3Backend
     from threetears.core.collections.generation import GenerationSource
+    from threetears.core.collections.l2_first import EpochLogStore
 
     # annotation-only. `Subjects` above is a genuine runtime use, but it lives
     # in a nats-py-free submodule, so importing it eagerly costs nothing.
@@ -42,6 +44,36 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+# the epoch catch-up's instruments, fetched where they are moved, never held at import: a module that a
+# fresh import of the package runs again would register them twice
+
+
+def _epochs_applied() -> Any:
+    return counter(
+        "collection_epoch_changes_applied_total",
+        description="epoch change records a follower fetched and applied because it had not heard every row of them",
+        label_names=("table",),
+    )
+
+
+def _epochs_behind() -> Any:
+    return counter(
+        "collection_epoch_behind_total",
+        description=(
+            "times a followed table fell behind, by why: record_missing (L2 does not hold the epoch's change "
+            "record), keys_unknown (the record says its writer named no rows), record_unreadable, replaced (the "
+            "generation's store was replaced); the pod serves what it has"
+        ),
+        label_names=("table", "reason"),
+    )
+
+
+def _tables_behind() -> Any:
+    return gauge(
+        "collection_epoch_tables_behind",
+        description="followed tables this registry is behind on: an epoch it could not apply, awaiting its record in L2",
+    )
 
 
 def _as_l3_backend(l3_pool: Any) -> Any:
@@ -137,6 +169,40 @@ class CacheInvalidationMessage(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
+class _L2KeptChanges:
+    """the epoch change log of a table kept in L2, read through its collection."""
+
+    collection: Any
+
+    async def change(self, table_name: str, token: str) -> EpochChange | None:
+        """the record of the advance that wrote ``token``, from beside the table's generation in L2.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param token: the generation that advance wrote
+        :ptype token: str
+        :return: the record, or ``None`` when L2 does not hold it
+        :rtype: EpochChange | None
+        """
+        record: EpochChange | None = await self.collection.l2_epoch_change(table_name, token)
+        return record
+
+    async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+        """the table's epochs after ``after`` up to ``upto``: an L2-kept table numbers them one apart.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param after: the mark
+        :ptype after: str
+        :param upto: the generation read
+        :ptype upto: str
+        :return: the walk
+        :rtype: EpochWalk
+        """
+        return await walk_by_count(self, table_name, after, upto)
+
+
+@dataclass(frozen=True, slots=True)
 class DerivedCacheRegistration:
     """how one cache derived from a collection table hears that table change.
 
@@ -144,10 +210,14 @@ class DerivedCacheRegistration:
         process's own writes -- to evict exactly the entries that row reaches
     :ivar on_table_dropped: called when the table is dropped in this process because the reach of
         a change is unknown; the cache drops every entry derived from the table
+    :ivar on_caught_up: called when this registry's mark for the table moves after a catch-up: every
+        epoch up to it is applied here, so a cache that stamps what it derives with the mark may take
+        it; ``None`` for a cache that keeps no stamp
     """
 
     on_row: Callable[[CacheInvalidationMessage], None]
     on_table_dropped: Callable[[], None]
+    on_caught_up: Callable[[], None] | None = None
 
 
 def _write_generation_kind(collection: Any) -> str:
@@ -169,11 +239,6 @@ def _write_generation_kind(collection: Any) -> str:
     if isinstance(declared, NoWriteGeneration):
         return "opted_out"
     return "undeclared"
-
-
-#: how long a registry follows a table whose generation is kept in L2 with no catch-up pass judging it
-#: before it says so (and again each time as long), unless the registry is told otherwise
-L2_CATCH_UP_OVERDUE: Final = timedelta(minutes=2)
 
 
 class CollectionRegistry:
@@ -214,18 +279,20 @@ class CollectionRegistry:
         # registry: every collection on it answers to the same principal's view of the world.
         self._generation_source: GenerationSource | None = None
         self._write_marks_schema: str | None = None
+        self._epoch_log: EpochLogStore | None = None
         # Per followed table, the last write generation whose writes this registry has accounted
         # for. Empty until a table is followed (:meth:`follow_generation`).
         self._generation_marks = GenerationMarks()
         # table -> every follower's answer to whether its generation watch is running now
         self._watching: dict[str, list[Callable[[], bool]]] = {}
+        # table -> why this registry is behind on it: an epoch whose change it could not apply. It keeps
+        # serving what it holds, its derived caches included, and says so (log, counter, gauge).
+        self._behind: dict[str, str] = {}
         # table_name -> the caches derived from it, in registration order.
         self._derived_caches: dict[str, list[DerivedCacheRegistration]] = {}
         #: when the last catch_up_l2_generations pass ran, by time.monotonic(); None while none has
         self._l2_caught_up_at: float | None = None
         #: how long a followed L2-kept table may go unjudged before the registry warns
-        self.l2_catch_up_overdue: timedelta = L2_CATCH_UP_OVERDUE
-        self._l2_overdue_check: asyncio.TimerHandle | None = None
         # Per-registry (effectively per-pod) identity stamped on every
         # invalidation this registry publishes, so its own listener can
         # skip self-published messages and avoid evicting rows it just
@@ -391,11 +458,10 @@ class CollectionRegistry:
                 )
         self._collections[table] = collection
         if getattr(collection, "keeps_write_generation_in_l2", False) is True:
-            # its generation is in L2 beside its rows, read by catch_up_l2_generations: following it is
-            # what makes this registry count the table's broadcasts and its own advances, and a pass the
-            # host never schedules is said (_arm_l2_overdue_check)
+            # its generation is in L2 beside its rows, watched (threetears.epoch.follow_l2_kept_tables) or
+            # read on demand (catch_up_l2_generations): following it is what makes this registry count
+            # the table's broadcasts and its own advances
             self.follow_generation(table)
-            self._arm_l2_overdue_check()
         if l1_backend or l2_client or l3_pool:
             self._overrides[table] = {}
             if l1_backend:
@@ -475,6 +541,37 @@ class CollectionRegistry:
     def get_collection(self, table_name: str) -> Any | None:
         """Look up a registered collection by table name."""
         return self._collections.get(table_name)
+
+    def registered_tables(self) -> tuple[str, ...]:
+        """the table of every collection registered here.
+
+        :return: the table names, in registration order
+        :rtype: tuple[str, ...]
+        """
+        return tuple(self._collections)
+
+    def set_epoch_log(self, log: EpochLogStore | None) -> None:
+        """wire the L3 epoch log an L2-first collection's waiting writes save their epoch records to.
+
+        A waiting write (:class:`~threetears.core.collections.l2_first.L2First`) saves its row and its
+        epoch's record to L3 before it returns, so the refiller can put the epoch history back after NATS
+        loses it. A process that commits L2-first writes wires it; a pod that only reads does not.
+
+        :param log: the L3 epoch log, or ``None`` to unwire it
+        :ptype log: EpochLogStore | None
+        :return: nothing
+        :rtype: None
+        """
+        self._epoch_log = log
+
+    @property
+    def epoch_log(self) -> EpochLogStore | None:
+        """the L3 epoch log wired here, or ``None``.
+
+        :return: the log
+        :rtype: EpochLogStore | None
+        """
+        return self._epoch_log
 
     def get_l1_backend(self, table_name: str) -> Any:
         """Get L1 backend for a collection (override or default)."""
@@ -578,21 +675,20 @@ class CollectionRegistry:
         return getattr(collection, "keeps_write_generation_in_l2", False) is True
 
     async def catch_up_l2_generations(self) -> int:
-        """one catch-up pass over the followed tables whose write generation is kept in L2, returning how many it dropped.
+        """one catch-up pass over the followed tables whose write generation is kept in L2, returning how many it caught up.
 
-        Each table's generation is read from L2 (``BaseCollection.l2_write_generation``) and judged
-        against this registry's mark (:meth:`settle_generation`), which drops the table here when a
-        row broadcast was missed or the bucket was replaced: what this process holds of the table
-        goes, and the next read of it goes to L2. A table seen for the first time is dropped once,
-        since nothing says what was cached before its mark was taken. A generation that cannot be
-        read is logged and that table is left as it was; the next pass reads again. The caller's
-        scheduler drives the cadence, as for ``threetears.epoch.generation_catchup_tick``, which
-        runs this pass too.
+        Each table's generation is read from L2 (``BaseCollection.l2_write_generation``) and caught up
+        (:meth:`catch_up_generation`) from the change records its writers keep beside it in L2
+        (``BaseCollection.l2_epoch_change``): each epoch this registry did not hear every row of is
+        applied row by row. A record L2 does not hold leaves it behind on the table -- serving what it
+        holds, logged and counted -- never a drop. A table seen for the first time takes its mark. A generation that cannot be read is logged and that table is left as it was; the
+        next pass reads again. The caller's scheduler drives the cadence, as for
+        ``threetears.epoch.generation_catchup_tick``, which runs this pass too.
 
-        :return: how many tables were dropped
+        :return: how many tables this pass applied missed epochs to
         :rtype: int
         """
-        dropped = 0
+        caught_up = 0
         judged = False
         for table_name in self._generation_marks.followed:
             collection = self._collections.get(table_name)
@@ -601,19 +697,21 @@ class CollectionRegistry:
             try:
                 token = await collection.l2_write_generation()
             except GenerationUnavailableError as exc:
-                # NOSILENT: nothing is dropped and the mark does not move; the next pass reads again
+                # NOSILENT: nothing is applied and the mark does not move; the next pass reads again
                 log.warning(
                     "write generation unavailable in L2; the table is left as it is and the next pass reads again",
                     extra={"extra_data": {"table": table_name, "error": str(exc)}},
                 )
                 continue
             judged = True
-            if self.settle_generation(table_name, token).drops:
-                dropped += 1
+            # the records are beside the generation, in L2, and the collection reads them
+            verdict = await self.catch_up_generation(table_name, token, changes=_L2KeptChanges(collection))
+            if verdict is GenerationVerdict.MISSED and not self.behind_on(table_name):
+                caught_up += 1
         if judged:
-            # a pass that could read no generation judged nothing, and leaves the overdue warning to say so
+            # a pass that could read no generation judged nothing, and does not count as run
             self._l2_caught_up_at = time.monotonic()
-        return dropped
+        return caught_up
 
     @property
     def l2_catch_up_age(self) -> timedelta | None:
@@ -626,56 +724,13 @@ class CollectionRegistry:
             return None
         return timedelta(seconds=time.monotonic() - self._l2_caught_up_at)
 
-    def _l2_kept_tables(self) -> list[str]:
-        """the followed tables whose generation is kept in L2.
+    def l2_kept_tables(self) -> tuple[str, ...]:
+        """the followed tables whose generation is kept in L2, for a host that watches each one.
 
         :return: their names
-        :rtype: list[str]
+        :rtype: tuple[str, ...]
         """
-        return [table for table in self._generation_marks.followed if self.generation_kept_in_l2(table)]
-
-    def _arm_l2_overdue_check(self) -> None:
-        """once a table whose generation is kept in L2 is followed, check on the running loop that a pass judges it.
-
-        Following counts broadcasts; only a pass acts on one missed. A host that schedules none would keep
-        a missed write's stale rows in L1 for good and never hear of it, so the registry warns, each
-        :attr:`l2_catch_up_overdue`, while no pass has run within that time. Armed when such a table is
-        registered on a running loop, and again when the invalidation listener starts.
-
-        :return: nothing
-        :rtype: None
-        """
-        if self._l2_overdue_check is not None or not self._l2_kept_tables():
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # NOSILENT: no loop yet (a registry built before the process serves); start_invalidation_listener arms it
-            return
-        self._l2_overdue_check = loop.call_later(self.l2_catch_up_overdue.total_seconds(), self._check_l2_overdue)
-
-    def _check_l2_overdue(self) -> None:
-        """warn when no catch-up pass has judged the L2-kept tables within the bound, then check again later.
-
-        :return: nothing
-        :rtype: None
-        """
-        self._l2_overdue_check = None
-        age = self.l2_catch_up_age
-        if age is None or age > self.l2_catch_up_overdue:
-            log.warning(
-                "tables whose write generation is kept in L2 are followed and no catch-up pass has judged them; "
-                "a missed broadcast leaves their stale rows in L1. Schedule catch_up_l2_generations or "
-                "threetears.epoch.generation_catchup_tick",
-                extra={
-                    "extra_data": {
-                        "tables": self._l2_kept_tables(),
-                        "last_pass_seconds_ago": None if age is None else round(age.total_seconds(), 1),
-                        "overdue_after_seconds": self.l2_catch_up_overdue.total_seconds(),
-                    }
-                },
-            )
-        self._arm_l2_overdue_check()
+        return tuple(table for table in self._generation_marks.followed if self.generation_kept_in_l2(table))
 
     def watched_by(self, table_name: str, watching: Callable[[], bool]) -> None:
         """say that a follower watches ``table_name``'s generation, and how to ask whether it still does.
@@ -758,48 +813,208 @@ class CollectionRegistry:
         """
         self._generation_marks.account(table_name, token)
 
-    def settle_generation(self, table_name: str, token: str | None) -> GenerationVerdict:
-        """judge ``table_name``'s generation as just read, and drop the table here when it is behind.
+    async def catch_up_generation(
+        self, table_name: str, token: str | None, *, changes: EpochChangeReader | None
+    ) -> GenerationVerdict:
+        """judge ``table_name``'s generation as just read, and apply every epoch this registry has not heard.
 
-        The one decision a catch-up pass makes per table. Reading the generation is the pass's
-        job; a generation it could not read is never brought here, so nothing is dropped and the
-        mark does not move for it.
+        The one operation a follower runs, at startup, on every generation pushed or read, and after
+        a gap: fetch the change record of each advance after this registry's mark that it did not hear
+        every row of, in order, and apply exactly its rows (:meth:`apply_epoch_change`). A gap never
+        drops the table.
+
+        - :attr:`~GenerationVerdict.CURRENT`: nothing to apply.
+        - :attr:`~GenerationVerdict.FIRST_SIGHT`: the mark is taken at the generation read, the head.
+          A follower starts before it serves the table, so it holds nothing older; nothing is re-read.
+        - :attr:`~GenerationVerdict.MISSED`: each unheard epoch's record is applied and the mark moves.
+          The epochs are read by walking the table's records after the mark (``changes_after``). A
+          record L2 does not hold holds the mark there, while the epochs after it are still applied:
+          the registry is behind on the table, keeps serving what it holds, logs and counts it once,
+          and the next judgement reads the missing record again.
+        - :attr:`~GenerationVerdict.REPLACED`: the generation's store was replaced, so the epochs
+          between the mark and the replacement cannot be named. The registry is behind, as above,
+          until the mark's own epochs can be read again.
 
         :param table_name: a followed table
         :ptype table_name: str
         :param token: the table's current generation, or ``None`` when its store holds none
         :ptype token: str | None
-        :return: the verdict; the table was dropped when it :attr:`~GenerationVerdict.drops`
+        :param changes: reads each epoch's change record from L2; ``None`` when this registry has no
+            reader, so every unheard epoch leaves it behind
+        :ptype changes: EpochChangeReader | None
+        :return: the verdict before catching up; :attr:`~GenerationVerdict.CURRENT` too when every epoch
+            since the mark had been heard in full, so nothing was applied
         :rtype: GenerationVerdict
         :raises KeyError: when ``table_name`` is not followed
+        :raises GenerationUnavailableError: when a record cannot be read; nothing after it is applied
         """
-        recorded = self._generation_marks.recorded(table_name)
-        pending = self._generation_marks.pending(table_name)
-        verdict = self._generation_marks.settle(table_name, token)
-        if verdict.drops:
-            # what the judgement saw, so a drop names its own cause: an advance never heard (read beyond recorded,
-            # nothing pending), heard out of order (pending past a gap), or this registry's own write unaccounted
-            log.info(
-                "write generation judged: the table is dropped",
-                extra={
-                    "extra_data": {
-                        "table": table_name,
-                        "verdict": verdict.value,
-                        "read": token,
-                        "recorded": recorded,
-                        "pending": list(pending),
-                    }
-                },
+        marks = self._generation_marks
+        verdict = marks.judge(table_name, token)
+        if verdict is GenerationVerdict.CURRENT:
+            self._caught_up(table_name)
+            return verdict
+        if verdict is GenerationVerdict.FIRST_SIGHT:
+            # the head is the mark: a process starts following before it serves, so it holds nothing
+            # older to bring forward, and nothing is re-read from any tier
+            marks.adopt_generation(table_name, token)
+            # a cache derived from the table keeps its own marks, and starts them from this one; it
+            # holds nothing derived from before the first sight it could vouch for
+            for registration in tuple(self._derived_caches.get(table_name, ())):
+                registration.on_table_dropped()
+            self._caught_up(table_name)
+            return verdict
+        if verdict is GenerationVerdict.REPLACED or token is None:
+            self._fall_behind(
+                table_name,
+                reason="replaced",
+                detail={"read": token, "recorded": marks.recorded(table_name)},
             )
-            self.drop_table(table_name, reason=verdict.value)
-        return verdict
+            return verdict
+        assert token is not None  # narrow: a MISSED verdict reads a generation
+        recorded = marks.recorded(table_name)
+        after = recorded if recorded is not None else f"{token.rpartition(':')[0]}:0"
+        if changes is None:
+            incarnation, _, count = after.rpartition(":")
+            walk = EpochWalk(changes=(), complete=False, first_missing=f"{incarnation}:{int(count) + 1}")
+        else:
+            try:
+                walk = await changes.changes_after(table_name, after, token)
+            except GenerationUnavailableError as exc:
+                self._fall_behind(table_name, reason="record_unreadable", detail={"after": after, "error": str(exc)})
+                raise
+        # one hole holds the mark, never the epochs after it: they are applied, and the next walk skips
+        # them as heard. A record whose writer named no rows is a hole no later read fills; it is told
+        # apart in the log and the counter from a record the log does not hold.
+        hole: tuple[str, str] | None = None if walk.complete else (walk.first_missing or token, "record_missing")
+        reached: str | None = None
+        applied_any = False
+        for change in walk.changes:
+            if change.keys_unknown:
+                hole = hole or (change.token, "keys_unknown")
+                continue
+            if hole is None:
+                reached = change.token
+            if marks.heard_in_full(table_name, change.token):
+                continue
+            if change.whole_table:
+                # the mark moves first, so a cache derived from the table that re-bases on the drop
+                # starts from this epoch rather than distrusting the one it is already at
+                marks.applied(table_name, change.token)
+                await self.apply_epoch_change(change)
+            else:
+                await self.apply_epoch_change(change)
+                marks.applied(table_name, change.token)
+            applied_any = True
+            _epochs_applied().labels(table=table_name).inc()
+        if hole is not None:
+            if reached is not None:
+                marks.advance_to(table_name, reached)
+                self._tell_caught_up(table_name)
+            self._fall_behind(
+                table_name,
+                reason=hole[1],
+                detail={"epoch": hole[0], "read": token, "recorded": marks.recorded(table_name)},
+            )
+            return verdict
+        marks.advance_to(table_name, token)
+        self._tell_caught_up(table_name)
+        self._caught_up(table_name)
+        # every epoch since the mark was heard in full: the broadcasts had already done the catching up
+        return verdict if applied_any else GenerationVerdict.CURRENT
+
+    async def apply_epoch_change(self, change: EpochChange) -> None:
+        """apply one epoch's change here, exactly as hearing each of its row broadcasts would.
+
+        A record that names the whole table invalidates the table, because that is what its write did.
+
+        :param change: the epoch's change record
+        :ptype change: EpochChange
+        :return: nothing
+        :rtype: None
+        """
+        if change.whole_table:
+            self.drop_table(change.table, reason=f"epoch {change.token} changed the whole table")
+            return
+        for row in change.rows:
+            # stamped with the epoch, as its broadcast was: a derived cache counts it toward the advance
+            await self._apply_row_message(
+                CacheInvalidationMessage(
+                    table=change.table,
+                    ids=list(row.ids),
+                    l2_current_scope=row.l2_current_scope,
+                    generation=change.token,
+                    bump_rows=len(change.rows),
+                    columns=dict(row.columns) if row.columns is not None else None,
+                )
+            )
+
+    def behind_on(self, table_name: str) -> bool:
+        """whether this registry is behind on ``table_name``: an epoch it has not been able to apply.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: ``True`` while an epoch of the table awaits its change record
+        :rtype: bool
+        """
+        return table_name in self._behind
+
+    def _fall_behind(self, table_name: str, *, reason: str, detail: Mapping[str, Any]) -> None:
+        """record that the catch-up of ``table_name`` stopped short, and say so where an operator will see it.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param reason: why
+        :ptype reason: str
+        :param detail: what the judgement saw, for the log
+        :ptype detail: Mapping[str, Any]
+        :return: nothing
+        :rtype: None
+        """
+        if self._behind.get(table_name) == reason:
+            # said once when it began; the gauge says how long it lasts
+            return
+        self._behind[table_name] = reason
+        _epochs_behind().labels(table=table_name, reason=reason).inc()
+        _tables_behind().set(len(self._behind))
+        log.error(
+            "behind on a table: an epoch's change could not be applied; serving what this process holds "
+            "until the record is in L2 again. A record never written or lost with the broker comes back "
+            "only through the L3 refill of the epoch log; until that is deployed, restarting this process "
+            "(a first sight of the table) is what ends it",
+            extra={"extra_data": {"table": table_name, "reason": reason, **detail}},
+        )
+
+    def _tell_caught_up(self, table_name: str) -> None:
+        """tell every cache derived from ``table_name`` that this registry's mark for it moved.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: nothing
+        :rtype: None
+        """
+        for registration in tuple(self._derived_caches.get(table_name, ())):
+            if registration.on_caught_up is not None:
+                registration.on_caught_up()
+
+    def _caught_up(self, table_name: str) -> None:
+        """record that ``table_name`` is caught up to the generation last judged.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: nothing
+        :rtype: None
+        """
+        if self._behind.pop(table_name, None) is not None:
+            _tables_behind().set(len(self._behind))
+            log.info("caught up on a table after being behind", extra={"extra_data": {"table": table_name}})
 
     def drop_table(self, table_name: str, *, reason: str) -> None:
-        """drop everything this process holds of ``table_name``, because it cannot say what changed.
+        """drop everything this process holds of ``table_name``, because a write changed the whole table.
 
-        For when the reach of a change is unknown: a row broadcast was missed, or the store
-        holding the table's generation was replaced. A heard change never comes here; it evicts
-        its own row. Dropped, in this process only:
+        For a write whose reach is the table itself: a truncate, a file load, an announced migration,
+        here or (through its epoch's change record) in another process. A missed broadcast never
+        comes here; it is caught up epoch by epoch (:meth:`catch_up_generation`). Dropped, in this
+        process only:
 
         - every cached scan that depends on the table;
         - every row of it in L1, through its collection, which also stops trusting this
@@ -839,6 +1054,7 @@ class CollectionRegistry:
         *,
         on_row: Callable[[CacheInvalidationMessage], None],
         on_table_dropped: Callable[[], None],
+        on_caught_up: Callable[[], None] | None = None,
     ) -> Callable[[], None]:
         """tell a cache derived from ``table_name`` about each row that changes, and when to drop it all.
 
@@ -866,10 +1082,15 @@ class CollectionRegistry:
         :ptype on_row: Callable[[CacheInvalidationMessage], None]
         :param on_table_dropped: drops every entry derived from the table
         :ptype on_table_dropped: Callable[[], None]
+        :param on_caught_up: told when the registry's mark for the table moves after a catch-up, so a
+            cache stamping what it derives with the mark takes the new one; ``None`` for none
+        :ptype on_caught_up: Callable[[], None] | None
         :return: a call that removes the registration
         :rtype: Callable[[], None]
         """
-        registration = DerivedCacheRegistration(on_row=on_row, on_table_dropped=on_table_dropped)
+        registration = DerivedCacheRegistration(
+            on_row=on_row, on_table_dropped=on_table_dropped, on_caught_up=on_caught_up
+        )
         registrations = self._derived_caches.setdefault(table_name, [])
         registrations.append(registration)
 
@@ -1002,7 +1223,6 @@ class CollectionRegistry:
         :raises SubscribeError: if the underlying subscribe fails to
             register (transport / config error)
         """
-        self._arm_l2_overdue_check()
         if self._invalidation_subscription is not None:
             log.debug(
                 "Invalidation listener already running",
@@ -1019,108 +1239,13 @@ class CollectionRegistry:
             # evict OTHER pods, which carry a different origin.
             if message.origin is not None and message.origin == self._origin_id:
                 return
-            await _evict_named_row(message)
+            await self._apply_row_message(message)
             # Counted as heard only once everything above has run to the end: a row whose
             # eviction raised part-way is one this registry cannot vouch for, and leaving it
-            # uncounted is what makes the next catch-up pass drop the table. A message naming no
+            # uncounted is what makes the next catch-up apply its epoch's change record. A message naming no
             # generation -- a table not switched on, an older publisher -- counts nothing.
             if message.generation is not None and message.bump_rows is not None:
                 self._generation_marks.hear(message.table, message.generation, message.bump_rows)
-
-        async def _evict_named_row(message: CacheInvalidationMessage) -> None:
-            # Evict dependent SCANS first, and unconditionally. Every check
-            # below returns early for a table this pod does not hold as a
-            # collection -- and `role_assignments` / `group_members` are exactly
-            # that on an agent pod, while being precisely the tables whose write
-            # must drop a cached visibility scan. Ordering this after those
-            # guards would leave a revoked grant readable until the TTL lapsed.
-            self.scan_cache.drop_for_table(message.table)
-            # Derived caches next, and for the same reason ahead of every guard below: a cache
-            # derived from the access tables lives on pods that hold none of them as collections.
-            # One that raises must not cost the row its eviction, so the row is evicted either
-            # way and the failure then surfaces, leaving the message uncounted.
-            try:
-                self.tell_derived_caches(message)
-            finally:
-                await _evict_collection_row(message)
-
-        async def _evict_collection_row(message: CacheInvalidationMessage) -> None:
-            collection = self._collections.get(message.table)
-            if collection is None:
-                # unknown-table receipts are expected during partial
-                # rollouts (sender has a Collection the receiver does
-                # not). log + skip without warning.
-                return
-
-            pk_cols = collection.primary_key_columns
-            if len(message.ids) != len(pk_cols):
-                log.warning(
-                    "Invalidation pk arity mismatch",
-                    extra={
-                        "extra_data": {
-                            "table": message.table,
-                            "expected_columns": list(pk_cols),
-                            "received_values": len(message.ids),
-                        },
-                    },
-                )
-                return
-            entity_id = tuple(message.ids)
-
-            # EVICT L2 HERE, ahead of the L1 guards below, and the placement is the
-            # requirement rather than a preference.
-            #
-            # Keys are per-principal (``{scope}.{table}.{body}``), so the writer updates
-            # only ITS OWN key. A peer that drops L1 and pulls through reads L2 first --
-            # its own, still-stale key -- and re-caches the value the broadcast was sent
-            # to retract. ``max_age`` on the bucket is unlimited and no collection sets an
-            # L1 bound, so nothing heals it: a revoked grant would be enforced forever,
-            # which is worse than the exposure per-principal keys exist to close. Under
-            # the old single shared key this could not happen (the peer read the writer's
-            # fresh value), so the eviction is a scoping-induced obligation and lands with
-            # it.
-            #
-            # Behind ``l1 is None`` / ``not l1.has_table(...)`` it would skip exactly the
-            # collections whose L1 schema was never initialised -- and those are precisely
-            # the ones that would then keep the stale L2 value forever. L2 presence is
-            # independent of L1 presence.
-            #
-            # NOT ``invalidate_cache``, which looks right and RE-PUBLISHES: the origin
-            # filter above only skips SELF, so every receiver would rebroadcast under its
-            # own origin, unbounded.
-            #
-            # The arity check is hoisted above this rather than left where it was, because
-            # ``l2_key`` normalises the pk and raises on a mismatch; it touches no L1.
-            #
-            # Skipped only when a revision-fenced writer says it left THIS scope's key current:
-            # the key is shared, already newest, and deleting it would discard the only copy of a
-            # compare-and-swap value that L3 may not hold yet.
-            if message.l2_current_scope is None or message.l2_current_scope != self._kv_key_scope:
-                await collection.delete_l2_entry(entity_id)
-
-            l1 = self.get_l1_backend(message.table)
-            if l1 is None:
-                return
-            if hasattr(l1, "has_table") and not l1.has_table(message.table):
-                # this pod's L1 backend was never initialize()'d with this
-                # table's schema -- its OWN collections never touch it
-                # locally, so there is nothing to evict. Same "unknown
-                # receipts are expected during partial rollouts" treatment
-                # as the `collection is None` case above: without this
-                # check, `l1.delete_by_id` below raises straight through
-                # (sqlite3.OperationalError: no such table / DuckDB's
-                # equivalent CatalogException) on every single broadcast
-                # for a table this pod doesn't cache, which is the common
-                # case for any agent that doesn't use every framework
-                # feature (e.g. a security-scanning agent hearing knowledge-
-                # subsystem invalidations for `concepts`/`playbook_entries`
-                # it never reads). `hasattr` guards backends (or test
-                # doubles) that predate this method.
-                return
-
-            # through the collection, not the backend: a read of the key in flight on this pod read
-            # it before the eviction, and the collection's fence is what stops it caching that.
-            collection.evict_from_cache_sync(entity_id)
 
         # SubscribeError propagates deliberately: cache coherence is not
         # optional, so a process that cannot subscribe must fail its startup
@@ -1135,6 +1260,118 @@ class CollectionRegistry:
         )
         self._nats_client = nats_client
         self._invalidation_subscription = subscription
+
+    async def _apply_row_message(self, message: CacheInvalidationMessage) -> None:
+        """evict one changed row from everything this process holds of it: scans, derived caches, L2, L1.
+
+        What hearing a peer's row broadcast does, and what applying an epoch's change record does for
+        each of its rows.
+
+        :param message: the row message
+        :ptype message: CacheInvalidationMessage
+        :return: nothing
+        :rtype: None
+        """
+        # Evict dependent SCANS first, and unconditionally. Every check
+        # below returns early for a table this pod does not hold as a
+        # collection -- and `role_assignments` / `group_members` are exactly
+        # that on an agent pod, while being precisely the tables whose write
+        # must drop a cached visibility scan. Ordering this after those
+        # guards would leave a revoked grant readable until the TTL lapsed.
+        self.scan_cache.drop_for_table(message.table)
+        # Derived caches next, and for the same reason ahead of every guard below: a cache
+        # derived from the access tables lives on pods that hold none of them as collections.
+        # One that raises must not cost the row its eviction, so the row is evicted either
+        # way and the failure then surfaces, leaving the message uncounted.
+        try:
+            self.tell_derived_caches(message)
+        finally:
+            await self._evict_collection_row(message)
+
+    async def _evict_collection_row(self, message: CacheInvalidationMessage) -> None:
+        """evict one changed row from its collection's L2 entry and L1, when this process holds the table.
+
+        :param message: the row message
+        :ptype message: CacheInvalidationMessage
+        :return: nothing
+        :rtype: None
+        """
+        collection = self._collections.get(message.table)
+        if collection is None:
+            # unknown-table receipts are expected during partial
+            # rollouts (sender has a Collection the receiver does
+            # not). log + skip without warning.
+            return
+
+        pk_cols = collection.primary_key_columns
+        if len(message.ids) != len(pk_cols):
+            log.warning(
+                "Invalidation pk arity mismatch",
+                extra={
+                    "extra_data": {
+                        "table": message.table,
+                        "expected_columns": list(pk_cols),
+                        "received_values": len(message.ids),
+                    },
+                },
+            )
+            return
+        entity_id = tuple(message.ids)
+
+        # EVICT L2 HERE, ahead of the L1 guards below, and the placement is the
+        # requirement rather than a preference.
+        #
+        # Keys are per-principal (``{scope}.{table}.{body}``), so the writer updates
+        # only ITS OWN key. A peer that drops L1 and pulls through reads L2 first --
+        # its own, still-stale key -- and re-caches the value the broadcast was sent
+        # to retract. ``max_age`` on the bucket is unlimited and no collection sets an
+        # L1 bound, so nothing heals it: a revoked grant would be enforced forever,
+        # which is worse than the exposure per-principal keys exist to close. Under
+        # the old single shared key this could not happen (the peer read the writer's
+        # fresh value), so the eviction is a scoping-induced obligation and lands with
+        # it.
+        #
+        # Behind ``l1 is None`` / ``not l1.has_table(...)`` it would skip exactly the
+        # collections whose L1 schema was never initialised -- and those are precisely
+        # the ones that would then keep the stale L2 value forever. L2 presence is
+        # independent of L1 presence.
+        #
+        # NOT ``invalidate_cache``, which looks right and RE-PUBLISHES: the origin
+        # filter above only skips SELF, so every receiver would rebroadcast under its
+        # own origin, unbounded.
+        #
+        # The arity check is hoisted above this rather than left where it was, because
+        # ``l2_key`` normalises the pk and raises on a mismatch; it touches no L1.
+        #
+        # Skipped only when a revision-fenced writer says it left THIS scope's key current:
+        # the key is shared, already newest, and deleting it would discard the only copy of a
+        # compare-and-swap value that L3 may not hold yet.
+        if message.l2_current_scope is None or message.l2_current_scope != self._kv_key_scope:
+            await collection.delete_l2_entry(entity_id)
+
+        l1 = self.get_l1_backend(message.table)
+        if l1 is None:
+            return
+        if hasattr(l1, "has_table") and not l1.has_table(message.table):
+            # this pod's L1 backend was never initialize()'d with this
+            # table's schema -- its OWN collections never touch it
+            # locally, so there is nothing to evict. Same "unknown
+            # receipts are expected during partial rollouts" treatment
+            # as the `collection is None` case above: without this
+            # check, `l1.delete_by_id` below raises straight through
+            # (sqlite3.OperationalError: no such table / DuckDB's
+            # equivalent CatalogException) on every single broadcast
+            # for a table this pod doesn't cache, which is the common
+            # case for any agent that doesn't use every framework
+            # feature (e.g. a security-scanning agent hearing knowledge-
+            # subsystem invalidations for `concepts`/`playbook_entries`
+            # it never reads). `hasattr` guards backends (or test
+            # doubles) that predate this method.
+            return
+
+        # through the collection, not the backend: a read of the key in flight on this pod read
+        # it before the eviction, and the collection's fence is what stops it caching that.
+        collection.evict_from_cache_sync(entity_id)
 
     async def close_collections(self) -> None:
         """close every registered collection that has something to shut down.
@@ -1210,10 +1447,6 @@ class CollectionRegistry:
         :return: nothing
         :rtype: None
         """
-        if self._l2_overdue_check is not None:
-            # the process is shutting down; a restarted listener arms the check again
-            self._l2_overdue_check.cancel()
-            self._l2_overdue_check = None
         subscription = self._invalidation_subscription
         nats_client = self._nats_client
         if subscription is None or nats_client is None:

@@ -22,7 +22,7 @@ cover the durable carve-out at integration level.
 - monotonicity under contention: 50 random bumps from two writers
   yield strictly-monotonic last-seen on every listener.
 
-requires docker; gated by ``pytest.mark.integration``.
+needs Postgres/NATS (the pool's child processes, or testcontainers off the pool); gated by ``pytest.mark.integration``.
 """
 
 from __future__ import annotations

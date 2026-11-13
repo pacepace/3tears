@@ -62,11 +62,11 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, JsonValue, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, PrivateAttr, computed_field, model_validator
 
 from threetears.evals.analysis.agreement import InterJudgeDimension, InterJudgeTally
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.numbers import UNPRICED
 from threetears.evals.analysis.reporting import (
     ModelIdentityTally,
     RequestSettingsReading,
@@ -79,7 +79,7 @@ from threetears.evals.analysis.reporting import (
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.report.figures import NO_SUCCESSFUL_RESULTS
-from threetears.evals.analysis.quantities import display_scale, with_unit
+from threetears.evals.analysis.quantities import display_scale
 from threetears.evals.kernel import (
     NotFoundError,
     CONFUSION_CELL_MEASURE,
@@ -109,30 +109,32 @@ from threetears.evals.schema.models import (
     goal_check_proofs_as_read,
     stale_goal_check_proofs,
 )
-from threetears.evals.kernel.metrics import MetricDescriptor, describe_measure, summary_population
+from threetears.evals.kernel.metrics import MetricDescriptor, describe_measure, goal_check_of, summary_population
 from threetears.evals.kernel.host.bars import DEFAULT_PASS_THRESHOLD
 from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.bundle.trials import read_trial
+from threetears.evals.analysis.style import check_held
+from threetears.evals.kernel.scoring import FailedCheck, capability_scores, failed_checks
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals.kernel.text_block import one_line
-from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
+from threetears.evals.analysis.report.words import judged_heading, stratum_name, stratum_names
+from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NO_STRATUM, NOT_SHOWN_TO_MEASURE, TOO_FEW_CASES
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.remedies import FIND_RUN
 from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
 
 
-#: What an amount no client could price reads as. Never ``$0``: an unpriced call may have been billed.
-UNPRICED = "unpriced"
-
-
 def dollars_text(amount: float | None) -> str:
-    """Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
+    """Spend as a person reads it: two significant figures, and dollars and cents from ten cents up.
 
     A cheap model's call costs a few hundred-thousandths of a dollar, so a fixed number of decimals either
     shows it as $0.000000 or pads every larger amount with noise, and a general format shows it in
     exponent notation ($3e-05), which no one reads as money; the stored value is never rounded. From ten
     cents up, two decimals already carry two significant figures or more, and a third digit ($0.500) reads as
-    noise; below, rounding to the cent would erase the difference between two cheap runs ($0.0123 and
-    $0.0149 are not both $0.01). Public because two surfaces print spend — a run's summary and the
+    noise; below, rounding to the cent would erase the difference between two cheap runs ($0.012 and
+    $0.015 are not both $0.01). It is the money form's spelling of a total
+    (:func:`~threetears.evals.kernel.numbers.spell_dollars`), so a sentence and the table beside it read one amount
+    alike. Public because two surfaces print spend — a run's summary and the
     agent-facing rendering of its results — and one rule for both is what keeps one amount from reading two
     ways.
 
@@ -140,20 +142,20 @@ def dollars_text(amount: float | None) -> str:
     the spend was measured and was nothing. Said here rather than by each caller, so every surface that prints a
     possibly-unpriced amount says it in one word.
 
+    From a thousand dollars up the whole dollars are grouped (``$7,560.00``), with
+    :func:`~threetears.evals.kernel.numbers.group_thousands`: the package's one spelling of a grouped
+    amount, not a locale setting. A negative amount carries its sign before the dollar sign (``-$1,234.50``).
+
     :param amount: Dollars, as stored; ``None`` when the amount went unpriced.
     :ptype amount: float | None
     :return: The amount with its dollar sign: ``$0`` for zero, two decimals from ten cents up (``$0.50``,
-        ``$1.20``), three significant figures below (``$0.0123``, ``$0.000160``); :data:`UNPRICED` for ``None``.
+        ``$1.20``), two significant figures below (``$0.012``, ``$0.00016``); :data:`UNPRICED` for ``None``.
     :rtype: str
     """
     if amount is None:
         return UNPRICED
-    if amount == 0:
-        return "$0"
-    if abs(amount) >= 0.1:
-        return f"${amount:.2f}"
-    decimals = 2 - math.floor(math.log10(abs(amount)))
-    return f"${amount:.{decimals}f}"
+    # A host's own line has no page, so the amount takes its form from a surface's forms of its own.
+    return PageForms.off_page().money_total(amount).text
 
 
 def _plural(count: int, noun: str) -> str:
@@ -179,13 +181,21 @@ def budget_stop_line(stops: Sequence[BudgetStop]) -> str:
     """
     if not stops:
         raise ValueError("a stop line is written from at least one stop record")
+    forms = PageForms.off_page()
+
+    def money(value: float | None) -> str:
+        return UNPRICED if value is None else forms.money_total(value).text
+
+    def calls(value: float | None) -> str:
+        return forms.lone(value).text
+
     segments: list[str] = []
     for position, stop in enumerate(stops):
         show: Callable[[float | None], str]
         if stop.currency == "cost_usd":
-            what, show = "its cost cap", dollars_text
+            what, show = "its cost cap", money
         else:
-            what, show = "its metered-call ceiling", format_number
+            what, show = "its metered-call ceiling", calls
         settled = (
             f"{show(stop.landed_final)} once {_plural(stop.cells_in_flight, 'running cell')} finished "
             f"({'+' if stop.overshoot >= 0 else '-'}{show(abs(stop.overshoot))})"
@@ -322,18 +332,21 @@ class GoalCheckSummary(BaseModel):
             baseline = f"a candidate that did nothing passes it in {self.did_nothing_passed} of {self.did_nothing_cases} case(s)"
         if self.proven:
             return head if baseline is None else f"{head} ({baseline})"
-        if baseline is not None and self.did_nothing_passed == self.did_nothing_cases:
-            return f"{head} — NOT A MEASUREMENT: {baseline}, so this pass rate does not beat doing nothing"
+        # The page's words for a check not shown to beat doing nothing, and what follows from it; then what this run
+        # measured a candidate that did nothing to pass, which only a launch knows.
         reason = {
-            "refuted": "refuted: its control does not show it tells acting from doing nothing",
+            "refuted": CHECK_PROOF_WORDS["refuted"],
             "unproven": (
                 "unproven: its proof was recorded under an earlier proof rule and needs re-proving by a new launch"
                 if self.stale_proof
-                else "unproven: no control shows it tells acting from doing nothing"
+                else CHECK_PROOF_WORDS["unproven"]
             ),
-            None: "unproven: this run recorded no proof that it tells acting from doing nothing",
+            None: "unproven: this run recorded no proof that it can tell acting from doing nothing",
         }[self.proof]
-        return f"{head} — {reason}" + ("" if baseline is None else f"; {baseline}")
+        measured = None
+        if self.did_nothing_passed is not None and self.did_nothing_cases:
+            measured = f"at launch one passed it in {self.did_nothing_passed} of {self.did_nothing_cases} case(s)"
+        return f"{head} — {reason}; {NOT_SHOWN_TO_MEASURE}" + ("" if measured is None else f"; {measured}")
 
 
 class DimensionSummary(BaseModel):
@@ -392,12 +405,25 @@ class JudgeGrade(BaseModel):
     reasoning: str
 
 
-def _misses(value: float, higher_is_better: bool | None) -> bool:
-    """Whether a scorer's value is a miss for its direction: 0 or less where higher is better, above 0 where lower
-    is, and never where the measure declares no direction."""
-    if higher_is_better is None:
-        return False
-    return value <= 0 if higher_is_better else value > 0
+def _check_missed(
+    check: FailedCheck, catalog: Mapping[str, MetricDescriptor], *, answer: JsonValue, expected: str | None
+) -> str:
+    """One check a trial failed, as a miss reads it: a goal check by its expression, a label by the answer it got
+    against the one expected, and any other check as its pass rule words it at the value that failed it."""
+    if check.measure == MATCH_MEASURE:
+        return f"answered {_shown_value(answer)}, expected {_shown_value(expected)}"
+    if goal_check_of(check.measure) is not None:
+        return f"goal check {check.expression} failed"
+    return check_held(check.measure, catalog[check.measure], failed=True)
+
+
+def _judged_missed(grade: JudgeGrade, threshold: int) -> str:
+    """One judged dimension under the bar, as a miss reads it: a pass/fail one failed, a 1–5 one scored under the
+    level the pass rule asks, each with the judge's reason on one line."""
+    reason = " ".join(grade.reasoning.split())
+    if grade.scale == "pass_fail":
+        return f"the judge failed it on {grade.dimension}: {reason}"
+    return f"the judge scored {grade.dimension} {grade.score} of 5, under the bar of {threshold}: {reason}"
 
 
 class CaseResult(BaseModel):
@@ -425,11 +451,12 @@ class CaseResult(BaseModel):
     :ivar goal_checks: Each goal-state check, by its expression, and whether the end state passed it.
     :ivar errors: Why the result failed or was excluded, as the run recorded it; empty for a scored result.
     :ivar missed_because: Why the result is a miss, one line per reason; empty when it is not one. A miss is a
-        result the candidate failed, a classifier answer that is not the expected label, a scorer on the
-        wrong side of 0 for its direction — 0 or less where higher is better (``False`` counts as 0), more
-        than 0 where lower is better, and never for a measure that declares no direction — a goal check the end
-        state failed, or a pass/fail dimension the judge failed. An excluded result is never a miss: it says
-        nothing about the candidate.
+        trial its pass rule failed (``state`` is ``failed``), and the reasons are what failed it: the candidate's own
+        failure alone where it failed, else each check it failed as pass^k and the page read them
+        (:func:`~threetears.evals.kernel.scoring.failed_checks`: a goal check, a label that is not the expected one, a
+        check the host declares, worded by :func:`~threetears.evals.analysis.style.check_held` at the value that
+        failed it), and each judged dimension under the bar. A scorer that is no check is never a reason, whatever
+        its value, and a lost trial is never a miss: it says nothing about the candidate.
     :ivar cost_usd: What the result spent, as reported and priced; ``None`` when any of it went unpriced.
     :ivar state: How the trial ended as the report's page reads it
         (:func:`~threetears.evals.analysis.bundle.trials.read_trial`): ``passed`` when every check the template
@@ -455,6 +482,9 @@ class CaseResult(BaseModel):
     missed_because: list[str] = []
     cost_usd: float | None = None
     state: TrialState
+    #: The stratum's name among the strata of the summary that handed the result out (:meth:`EvalSummary.results`),
+    #: where two of its ids would print alike and so each prints as its id; None prints the stratum by its own name.
+    _stratum_printed: str | None = PrivateAttr(default=None)
 
     @property
     def missed(self) -> bool:
@@ -470,7 +500,6 @@ class CaseResult(BaseModel):
         given: JsonValue,
         expected: str | None,
         answer: JsonValue,
-        higher_is_better: Mapping[str, bool | None] | None = None,
         stratum: str | None = None,
         catalog: Mapping[str, MetricDescriptor] | None = None,
         rubric_threshold: int = DEFAULT_PASS_THRESHOLD,
@@ -487,20 +516,15 @@ class CaseResult(BaseModel):
         :ptype expected: str | None
         :param answer: The candidate's answer, as its kind stored it.
         :ptype answer: JsonValue
-        :param higher_is_better: Each measure's declared direction, by name. Lower-is-better (``leaked``, a count
-            of errors) misses above 0 and not at 0, guardrail or not; a measure that declares no direction
-            misses never, since "worse" needs one; a measure not named reads as higher-is-better, a scorer's
-            default.
-        :ptype higher_is_better: Mapping[str, bool | None] | None
         :param stratum: The stratum the case declares, or ``None``.
         :ptype stratum: str | None
         :param catalog: Each measure the result carries, described as the host declares it, which says which are checks;
-            the state is read through it exactly as the page reads its trials.
+            the state and the misses are read through it exactly as the page reads its trials.
         :ptype catalog: Mapping[str, MetricDescriptor] | None
         :param rubric_threshold: The 1–5 level a judged dimension must reach, as the page's trials read it.
         :ptype rubric_threshold: int
-        :return: The case result, its miss reasons decided by the rule :attr:`missed_because` states and its state by
-            the page's own reading of a trial.
+        :return: The case result, its state and its miss reasons by the page's own reading of a trial
+            (:attr:`missed_because`).
         :rtype: CaseResult
         """
         outcome = _CASE_OUTCOMES[classify_result(result)]
@@ -521,25 +545,19 @@ class CaseResult(BaseModel):
             for score in result.rubric_scores
         ]
         goal_checks = {check.expression: check.passed for check in result.goal_state_outcomes}
+        described = catalog or {}
+        reading = read_trial(result, rubric_threshold=rubric_threshold, catalog=described)
         missed: list[str] = []
-        if outcome == "failed":
+        if reading.state == "failed" and reading.cause not in ("check", "judged"):
+            # The candidate's own failure: what its checks and its judge read off a failed turn says nothing more.
             missed.extend(f"failed: {error}" for error in errors or ["the candidate failed"])
-        elif outcome == "scored":
-            if result.host_measures.get(MATCH_MEASURE) is False:
-                missed.append(f"answered {_shown_value(answer)}, expected {_shown_value(expected)}")
+        elif reading.state == "failed":
             missed.extend(
-                f"{name} gave {format_number(value)}"
-                for name, value in result.host_measures.items()
-                if name not in (MATCH_MEASURE, CONFUSION_CELL_MEASURE)
-                and not isinstance(value, str)
-                and _misses(float(value), (higher_is_better or {}).get(name, True))
+                _check_missed(check, described, answer=answer, expected=expected)
+                for check in failed_checks(result, described)
             )
-            missed.extend(f"goal check {check} failed" for check, passed in goal_checks.items() if not passed)
-            missed.extend(
-                f"the judge failed it on {grade.dimension}: {' '.join(grade.reasoning.split())}"
-                for grade in judged
-                if grade.scale == "pass_fail" and grade.score == 0
-            )
+            under = {score.dim for score in capability_scores(result) if not score.clears(rubric_threshold)}
+            missed.extend(_judged_missed(grade, rubric_threshold) for grade in judged if grade.dimension in under)
         return cls(
             case=case,
             case_id=result.test_case_id,
@@ -556,7 +574,7 @@ class CaseResult(BaseModel):
             errors=errors,
             missed_because=missed,
             cost_usd=result.cost_usd,
-            state=read_trial(result, rubric_threshold=rubric_threshold, catalog=catalog or {}).state,
+            state=reading.state,
         )
 
     def render(self) -> str:
@@ -565,13 +583,16 @@ class CaseResult(BaseModel):
         :return: The text, without a trailing newline.
         :rtype: str
         """
-        kind = "" if self.stratum is None else f"{self.stratum}, "
+        # The stratum by the name every surface prints for it, among its summary's strata where a summary handed it
+        # out; :attr:`stratum` keeps its id.
+        kind = "" if self.stratum is None else f"{self._stratum_printed or stratum_name(self.stratum)}, "
         head = f"case {self.case} ({kind}repeat {self.repeat}, {self.outcome}): answered {_shown_value(self.answer)}"
         if self.expected is not None:
             head += f", expected {_shown_value(self.expected)}"
         lines = [head]
+        forms = PageForms.off_page()
         grades = [
-            f"{name} {value if isinstance(value, str | bool) else format_number(value)}"
+            f"{name} {value if isinstance(value, str | bool) else forms.lone(value, measure=name).text}"
             for name, value in self.scores.items()
             if name != CONFUSION_CELL_MEASURE
         ]
@@ -691,7 +712,7 @@ class RoleSpend(BaseModel):
 
     def money_text(self) -> str:
         """Its dollars over its calls: the priced calls' cost (or :data:`UNPRICED`), and how many are unpriced and why."""
-        money = UNPRICED if self.cost_usd is None else dollars_text(self.cost_usd)
+        money = UNPRICED if self.cost_usd is None else PageForms.off_page().money_total(self.cost_usd).text
         text = f"{money} over {self.calls_text()}"
         if (because := self.unpriced_because) is None:
             return text
@@ -799,6 +820,8 @@ class EvalSummary(BaseModel):
     :ivar max_cost_usd_origin: Where that ceiling came from, as the run records it: ``chosen`` (the launch named
         it), ``inherited`` (the host's default), ``uncapped`` (ceiling enforcement was off, so nothing bounded
         the run), or ``None`` for a run whose writer recorded none.
+    :ivar cap_checked_on_estimates: ``True`` when that ceiling was checked against estimates (the run records it:
+        ``EvalRun.cap_checked_on_estimates``), ``None`` otherwise; left out of the JSON when unset.
     :ivar judge_shares_candidate_model: Each model that both judged the run's answers and produced them — the
         judge's model (as requested, or as a score says it was served) matching the run's candidate model or
         a model the candidate's usage rows name — sorted; empty when they share none, or for an unjudged run.
@@ -854,6 +877,7 @@ class EvalSummary(BaseModel):
     arm_schedule: ArmSchedule | None = None
     max_cost_usd: float | None = None
     max_cost_usd_origin: CostCapOrigin | None = None
+    cap_checked_on_estimates: bool | None = Field(default=None, exclude_if=lambda value: value is None)
     judge_shares_candidate_model: list[str] = []
     unconfirmed_models: list[UnconfirmedModelIdentity] = []
     request_settings: list[RequestSettingsReading] = []
@@ -873,15 +897,23 @@ class EvalSummary(BaseModel):
                 f"this summary of run {self.run_id} carries no per-case results: it was summarised without its "
                 "cases, as the CLI and run_get summarise a run; read them with threetears.evals.run.list_results"
             )
-        return list(self.case_results)
+        # Each result names its stratum as the summary's stratum lines do (:func:`stratum_names`): two ids that would
+        # print alike each print as their id there, so a result's line never reads one stratum where there are two.
+        printed = stratum_names(stratum.stratum for stratum in self.strata if stratum.stratum is not None)
+        return [
+            result.model_copy(update={"_stratum_printed": printed.get(result.stratum)})
+            if result.stratum is not None
+            else result.model_copy()
+            for result in self.case_results
+        ]
 
     def misses(self) -> list[CaseResult]:
         """The results the candidate missed, each saying why (:attr:`CaseResult.missed_because`).
 
-        A miss is a result the candidate failed, a classifier answer that is not the expected label, a scorer
-        on the wrong side of 0 for its direction (:attr:`CaseResult.missed_because`), a goal check
-        the end state failed, or a pass/fail dimension the judge failed. An excluded result is not a miss — it says
-        nothing about the candidate — so read :meth:`results` for those; the summary's :attr:`n_excluded` counts them.
+        A miss is a trial its pass rule failed, as the report's page reads it (:attr:`CaseResult.missed_because`):
+        the candidate's own failure, a check it failed (a goal check, a label that is not the expected one, a check
+        the host declares) or a judged dimension under the bar. An excluded result is not a miss — it says nothing
+        about the candidate — so read :meth:`results` for those; the summary's :attr:`n_excluded` counts them.
 
         :return: The missed results, in case order then repeat.
         :rtype: list[CaseResult]
@@ -966,7 +998,7 @@ class EvalSummary(BaseModel):
         """The spend-cap line, without indentation, or None."""
         if self.max_cost_usd is None and not self._judged_in_play and not self.spend:
             return None
-        return _spend_cap_line(self)
+        return _spend_cap_line(PageForms.off_page(), self)
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description="Each measure, in `measures` order: its state and the line printed for it."
@@ -1008,9 +1040,12 @@ class EvalSummary(BaseModel):
             # rulers read as one.
             figures = [value for value in (measure.mean, measure.minimum, measure.maximum) if value is not None]
             factor, unit = display_scale(figures, measure.unit)
+            forms = PageForms.off_page()
 
             def stated(value: float | None) -> str:
-                return with_unit(None if value is None else value * factor, unit)
+                if value is None:
+                    return forms.lone(None, measure=measure.name).text
+                return forms.in_unit(value * factor, unit, role="level", measure=measure.name).text
 
             said = (
                 f"mean {stated(measure.mean)} (n={measure.n}, "
@@ -1033,7 +1068,8 @@ class EvalSummary(BaseModel):
     @property
     def label_lines(self) -> list[str]:
         """Each label's line."""
-        return [_label_line(statistics) for statistics in self.labels]
+        forms = PageForms.off_page()
+        return [_label_line(forms, statistics) for statistics in self.labels]
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
@@ -1045,8 +1081,11 @@ class EvalSummary(BaseModel):
     def stratum_lines(self) -> list[str]:
         """Each stratum's line, then its measures' lines indented beneath it."""
         lines: list[str] = []
+        # Each stratum by the name every surface prints for it (``edge case``); :attr:`strata` keeps its id.
+        printed = stratum_names(stratum.stratum for stratum in self.strata if stratum.stratum is not None)
         for stratum in self.strata:
-            said = f"{NO_STRATUM if stratum.stratum is None else _shown(stratum.stratum)}: {stratum.n_cases} case(s), "
+            named = NO_STRATUM if stratum.stratum is None else _shown(printed[stratum.stratum])
+            said = f"{named}: {stratum.n_cases} case(s), "
             said += f"{stratum.n_results} result(s)"
             if stratum.too_few:
                 said += f" — {TOO_FEW_CASES} (fewer than {STRATUM_MIN_CASES})"
@@ -1072,7 +1111,8 @@ class EvalSummary(BaseModel):
     @property
     def dimension_lines(self) -> list[str]:
         """Each judged dimension's line."""
-        return [_dimension_line(dimension) for dimension in self.judged]
+        forms = PageForms.off_page()
+        return [_dimension_line(forms, dimension) for dimension in self.judged]
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description="The warning that a judge graded answers its own model produced; null when none did."
@@ -1130,14 +1170,15 @@ class EvalSummary(BaseModel):
         """The total-spend line, without indentation, or None."""
         if not self.spend:
             return None
+        forms = PageForms.off_page()
         if self.total_cost_usd is not None:
-            return f"total spend: {dollars_text(self.total_cost_usd)}, the results' cost"
+            return f"total spend: {forms.money_total(self.total_cost_usd).text}, the results' cost"
         # Unknown in full: what the counted roles' priced calls cost, which their lines add up to, and how many of
         # their calls are unpriced — never a bare "unknown" that drops the dollars the lines state.
         counted = [spend for spend in self.spend if spend.counted]
         priced = [spend.cost_usd for spend in counted if spend.cost_usd is not None]
         unpriced = sum(spend.unpriced_calls for spend in counted)
-        stated = f"{dollars_text(math.fsum(priced))} over the priced calls" if priced else "no call priced"
+        stated = f"{forms.money_total(math.fsum(priced)).text} over the priced calls" if priced else "no call priced"
         return f"total spend: unknown in full: {stated}, plus {unpriced} call(s) {UNPRICED}"
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
@@ -1209,7 +1250,7 @@ class EvalSummary(BaseModel):
         return f"not shown, carried by no result: {len(names)} measure{'' if len(names) == 1 else 's'} ({', '.join(names)})"
 
 
-def _spend_cap_line(summary: EvalSummary) -> str | None:
+def _spend_cap_line(forms: PageForms, summary: EvalSummary) -> str | None:
     """The spend ceiling the run was held to, or that it had none; nothing for a run that recorded neither.
 
     A cap counts the spend results report, so a capped run none of whose results reported any says that its cap
@@ -1220,14 +1261,18 @@ def _spend_cap_line(summary: EvalSummary) -> str | None:
     origin = summary.max_cost_usd_origin
     if origin is not None and origin not in COST_CAP_ORIGINS:
         ceiling = (
-            "none recorded" if summary.max_cost_usd is None else f"{dollars_text(summary.max_cost_usd)} for this run"
+            "none recorded"
+            if summary.max_cost_usd is None
+            else f"{forms.money_total(summary.max_cost_usd).text} for this run"
         )
         return f"spend cap: {ceiling} (its origin, {origin!r}, is one this build does not know)"
     if origin == "uncapped":
         return f"spend cap: {UNCAPPED_SPEND}"
     if summary.max_cost_usd is None:
         return None
-    line = f"spend cap: {dollars_text(summary.max_cost_usd)} for this run"
+    line = f"spend cap: {forms.money_total(summary.max_cost_usd).text} for this run"
+    if summary.cap_checked_on_estimates:
+        line += ", checked against estimated rates"
     if not summary.spend:
         line += "; it counts only spend a result reports, and no result reported any"
     return line
@@ -1248,39 +1293,48 @@ def _shown(label: str) -> str:
     return repr(label) if label != label.strip() or len(label.splitlines()) > 1 else label
 
 
+#: The kind a classifier label's precision, recall and F1 are held under in the ledger: each is a measure of how the
+#: label was read, by its statistic's name.
+_LABEL = "label"
+
+
 def _proportion(
-    name: str, rate: float | None, hits: int, n: int, cases: int, interval: tuple[float, float] | None
+    forms: PageForms, name: str, rate: float | None, hits: int, n: int, cases: int, interval: tuple[float, float] | None
 ) -> str:
     """A rate with its count and interval; where cases repeat, the count says over how many cases it rests on."""
     if rate is None:
         return f"{name} none (n=0)"
-    shown = f"{name} {format_number(rate)} ({hits}/{n}"
+    shown = f"{name} {forms.lone(rate, measure=name, kind=_LABEL).text} ({hits}/{n}"
     if cases < n:
         shown += f" over {cases} case{'' if cases == 1 else 's'}"
     if interval is not None:
-        shown += f", {INTERVAL_LEVEL:.0%} CI {format_number(interval[0])}-{format_number(interval[1])}"
+        level = forms.share(INTERVAL_LEVEL).text
+        low, high = (forms.lone(end, measure=name, kind=_LABEL).text for end in interval)
+        shown += f", {level} CI {low}-{high}"
     return shown + ")"
 
 
-def _dimension_line(dimension: DimensionSummary) -> str:
+def _dimension_line(forms: PageForms, dimension: DimensionSummary) -> str:
     """One judged dimension's line: its scale, its mean and range, and how often the judge could not tell."""
-    scale = {"ordinal": "judged 1-5", "pass_fail": "judged pass/fail", None: "judged"}[dimension.scale]
-    line = f"{dimension.name} ({scale}): "
+    scale = {"ordinal": ", scored 1-5", "pass_fail": ", scored pass/fail", None: ""}[dimension.scale]
+    line = f"{judged_heading(dimension.name)}{scale}: "
     if dimension.mean is None or dimension.minimum is None or dimension.maximum is None:
         line += "no result carries a score"
     else:
         line += (
-            f"mean {format_number(dimension.mean)} (n={dimension.n}, "
-            f"min {format_number(dimension.minimum)}, max {format_number(dimension.maximum)})"
+            f"mean {forms.lone(dimension.mean, measure=dimension.name, kind='judged').text} (n={dimension.n}, "
+            f"min {forms.lone(dimension.minimum, measure=dimension.name, kind='judged').text}, "
+            f"max {forms.lone(dimension.maximum, measure=dimension.name, kind='judged').text})"
         )
     if dimension.cannot_tell:
         line += f", the judge could not tell on {dimension.cannot_tell}"
     return line
 
 
-def _label_line(statistics: LabelStatistics) -> str:
+def _label_line(forms: PageForms, statistics: LabelStatistics) -> str:
     """One label's line: its precision and recall with their counts and intervals, and its F1."""
     precision = _proportion(
+        forms,
         "precision",
         statistics.precision,
         statistics.correct,
@@ -1289,6 +1343,7 @@ def _label_line(statistics: LabelStatistics) -> str:
         statistics.precision_interval,
     )
     recall = _proportion(
+        forms,
         "recall",
         statistics.recall,
         statistics.correct,
@@ -1296,7 +1351,7 @@ def _label_line(statistics: LabelStatistics) -> str:
         statistics.expected_cases,
         statistics.recall_interval,
     )
-    f1 = "f1 none" if statistics.f1 is None else f"f1 {format_number(statistics.f1)}"
+    f1 = "f1 none" if statistics.f1 is None else f"f1 {forms.lone(statistics.f1, measure='f1', kind=_LABEL).text}"
     return f"{_shown(statistics.label)}: {precision}, {recall}, {f1}"
 
 
@@ -1331,16 +1386,93 @@ def summarize_run(
     run = host.storage.load_eval_run(run_id, scope_id)
     if run is None:
         raise NotFoundError("run", run_id, remedy=FIND_RUN)
-    tally = _RunTally(host, run, case_names or {})
-    for result in iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE):
-        tally.add(result)
+    return _summary(host, run, [run], scope_id, case_names or {})
+
+
+def summarize_runs(
+    host: EvalHost, run_ids: Sequence[str], scope_id: str, *, case_names: Mapping[str, str] | None = None
+) -> EvalSummary:
+    """Summarise one arm's runs as one: a launch made in batches of its cases, each batch a run of one design.
+
+    The runs' results are folded into one summary, as :func:`summarize_run` folds one run's:
+
+    ==============================  =====================================================================
+    field                           read as
+    ==============================  =====================================================================
+    cases, results, spend, errors   every run's together, cases in the order the runs were given
+    status                          ``completed`` when every run's is, else the first other status met
+    spend ceiling                   the runs' ceilings summed; ``None`` when any run had none
+    stop reasons                    the first run's that has one; budget stops, every run's
+    run id, schedule, settings      the first run's
+    template, model, repeats,       must agree: batches of one arm are launched alike, so runs that differ
+    judge, overlays                 in any of them are refused rather than read as one arm
+    ==============================  =====================================================================
+
+    One run reads exactly as :func:`summarize_run` reads it.
+
+    :param host: The host whose store holds the runs, and whose measures are summarised.
+    :ptype host: EvalHost
+    :param run_ids: The runs, at least one, in the order they were launched.
+    :ptype run_ids: Sequence[str]
+    :param scope_id: The scope they live in.
+    :ptype scope_id: str
+    :param case_names: What each case is called in the summary's errors, by stored test case id.
+    :ptype case_names: Mapping[str, str] | None
+    :return: The summary.
+    :rtype: EvalSummary
+    :raises NotFoundError: No run with one of those ids in the scope.
+    :raises ValueError: No run is named, or the runs differ in their template, model, repeats, judge or overlays.
+    """
+    if not run_ids:
+        raise ValueError("summarize_runs reads at least one run")
+    runs: list[EvalRun] = []
+    for run_id in run_ids:
+        run = host.storage.load_eval_run(run_id, scope_id)
+        if run is None:
+            raise NotFoundError("run", run_id, remedy=FIND_RUN)
+        runs.append(run)
+    first = runs[0]
+    if len(runs) == 1:
+        return _summary(host, first, runs, scope_id, case_names or {})
+    shared = ("template_id", "candidate_model", "k_runs", "judge_model", "overlays")
+    if differ := [name for name in shared if any(getattr(run, name) != getattr(first, name) for run in runs[1:])]:
+        raise ValueError(
+            f"runs {', '.join(run.id for run in runs)} differ in {', '.join(differ)}, so they are not batches of one "
+            "arm; summarise each with summarize_run"
+        )
+    caps = [run.max_cost_usd for run in runs]
+    stops = [stop for run in runs for stop in run.budget_stops or ()]
+    merged = first.model_copy(
+        update={
+            "test_case_ids": [case_id for run in runs for case_id in run.test_case_ids],
+            "status": next((run.status for run in runs if run.status != "completed"), "completed"),
+            "error_details": [detail for run in runs for detail in run.error_details],
+            "cancellation_reason": next((run.cancellation_reason for run in runs if run.cancellation_reason), None),
+            "budget_stop_reason": next((run.budget_stop_reason for run in runs if run.budget_stop_reason), None),
+            "budget_stops": stops or None,
+            "max_cost_usd": None if None in caps else math.fsum(cap for cap in caps if cap is not None),
+        }
+    )
+    return _summary(host, merged, runs, scope_id, case_names or {})
+
+
+def _summary(
+    host: EvalHost, run: EvalRun, runs: Sequence[EvalRun], scope_id: str, case_names: Mapping[str, str]
+) -> EvalSummary:
+    """The summary of ``runs``' results, its header read off ``run``: the one run, or the runs merged."""
+    tally = _RunTally(host, run, case_names)
+    for each in runs:
+        for result in iter_run_results(host.storage, each, page_results=RUN_RESULTS_PAGE):
+            tally.add(result)
     errors = [*tally.errors, *run.error_details]
     template = None
     if run.judge_model is not None and run.template_id is not None:
         template = host.storage.load_template(run.template_id, scope_id)
     # A second judge's spend is the out-of-run ledger's, stamped with the run — never a result's usage row.
     second_rows = [
-        row for row in host.storage.query_out_of_run_spend(scope_id, purpose="second_judge") if row.run_id == run.id
+        row
+        for row in host.storage.query_out_of_run_spend(scope_id, purpose="second_judge")
+        if row.run_id in {each.id for each in runs}
     ]
     second_costs = [row.cost_usd for row in second_rows]
     outcomes = tally.outcomes
@@ -1378,6 +1510,7 @@ def summarize_run(
         arm_schedule=run.arm_schedule,
         max_cost_usd=run.max_cost_usd,
         max_cost_usd_origin=run.max_cost_usd_origin,
+        cap_checked_on_estimates=run.cap_checked_on_estimates,
         judge_shares_candidate_model=tally.self_judging.models(),
         unconfirmed_models=tally.identities.identities(),
         request_settings=tally.settings.readings(),
@@ -1615,6 +1748,9 @@ class _SpendTally:
 
     def add(self, result: EvalResult) -> None:
         for row in result.usage:
+            if row.answers_nothing:
+                # Only unanswered calls: no spend and no answered call to count (RoleUsage.answers_nothing).
+                continue
             role = self._roles.setdefault(row.role, _RoleTally())
             role.calls += row.call_count or 0
             if row.call_count is None:
@@ -1753,4 +1889,5 @@ __all__ = [
     "dollars_text",
     "self_judging_text",
     "summarize_run",
+    "summarize_runs",
 ]

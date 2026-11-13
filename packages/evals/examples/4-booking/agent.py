@@ -1,4 +1,4 @@
-"""Rung 4: is your agent doing the right thing to the world, not only saying it?
+"""Rung 4a: is your agent doing the right thing to the world, not only saying it?
 
 Each request seeds one day's calendar; the agent books through two tools, and the graders read the day it left.
 ``python -m threetears.evals examples/4-booking/agent.py`` replays ``recordings/agent.jsonl`` offline, and

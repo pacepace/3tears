@@ -188,7 +188,6 @@ async def test_every_simulator_call_lands_its_spend_on_the_simulator_total():
     await drive_conversation(driver, kind.answer, kind.post, llm=table, sink=sink)
 
     assert sink.spent == {"simulator": pytest.approx(0.002)}
-    assert sink.held == [], "every call's reservation was settled"
 
 
 async def test_a_conversation_runs_to_its_own_end_however_much_it_has_spent():
@@ -231,16 +230,6 @@ async def test_an_unpriced_simulator_call_leaves_its_source_unpriced_and_the_con
     assert table.utterance_calls == ["a", "a", "a"]
     assert driver.cost_usd is None
     assert sink.spent == {"simulator": None}, "unpriced spend leaves its source unpriced, never zero"
-
-
-async def test_the_sink_never_reports_the_cap_reached_and_never_refuses_a_reservation():
-    sink = FakeCellSink()
-
-    held = sink.reserve("candidate", 1_000_000.0)
-    held.settle(1_000_000.0)
-
-    assert sink.cost_cap_reached() is False
-    assert sink.spent == {"candidate": 1_000_000.0}
 
 
 async def _raising(*_args) -> None:

@@ -1,0 +1,418 @@
+{
+  "mode": "decide",
+  "headline_kind": "decision",
+  "headline": "Use {arm:brisk-s.low.r1}. It is the only configuration that passes both the pass-rate gate and the latency budget.",
+  "lede": "It passes {measure.pass_rate.brisk-s.low.r1.mean|pct} of tasks with a p95 latency of {measure.latency_ms.brisk-s.low.r1.p95|int} ms, inside the {criteria.p95.threshold} budget, at {cost_per_1k.brisk-s.low.r1|usd_per_1k}. A looser latency budget would let the more accurate {arm:atlas-m.high.r1} in, at several times the cost.",
+  "decision": {
+    "slots": [
+      {
+        "key": "recommendation",
+        "text": "**{arm:brisk-s.low.r1}**: {measure.pass_rate.brisk-s.low.r1.mean|pct} pass rate, p95 {measure.latency_ms.brisk-s.low.r1.p95|int} ms, {cost_per_1k.brisk-s.low.r1|usd_per_1k}. The retry is the cheapest lever in the sweep: it adds about two points of pass rate for little extra cost.",
+        "caveats": []
+      },
+      {
+        "key": "why_not",
+        "text": "**{arm:atlas-m.high.r1}** is the most accurate at {measure.pass_rate.atlas-m.high.r1.mean|pct}, but its p95 of {measure.latency_ms.atlas-m.high.r1.p95|int} ms is outside the {criteria.p95.threshold} budget. **{arm:brisk-s.high.r1}** passes more tasks but is too slow. **{arm:nano-xs.off.r0}** is the cheapest and fails the {criteria.pass_rate.threshold|pct} pass-rate gate by a wide margin.",
+        "caveats": []
+      },
+      {
+        "key": "watch",
+        "text": "The weakest margin: {weakest.arm} clears the {weakest.threshold} pass-rate gate at {weakest.value}, by {weakest.margin} points, inside the interval of about one point at this sample size. Wrong arguments, mostly date windows, are now its largest failure.",
+        "caveats": []
+      },
+      {
+        "key": "next",
+        "text": "Re-run {arm:brisk-s.low.r1} on a larger sample across every task: it clears the {criteria.pass_rate.threshold|pct} overall pass-rate gate by only {weakest.margin} points, so an overall rate below the gate leaves no configuration passing both gates and the call becomes a no call; a rate above it confirms the pick.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "high",
+      "caveats": []
+    }
+  },
+  "method": [
+    {
+      "term": "Test set",
+      "text": "Planner inputs captured from the research tool, labeled with gold call sequences, mixed across single lookups, multi-hop, date math and ambiguous entities.",
+      "caveats": []
+    },
+    {
+      "term": "Pass",
+      "text": "The executed call sequence returns the gold result, or asks for clarification where the gold answer does. Extra calls still pass but count against efficiency.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals",
+      "text": "Binomial intervals on pass rate, about one point at this sample size.",
+      "caveats": []
+    },
+    {
+      "term": "Cost",
+      "text": "Measured tokens times list price, stated per 1,000 replies (one reply is one planner call), including retries, at {meta.volume_per_month|int} calls a month.",
+      "caveats": []
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "factorial",
+    "baseline": "none",
+    "score_type": "pass_fail",
+    "strata": "tasks",
+    "criteria": "hard_gates",
+    "cross_cutting": [],
+    "log_cost_axis": true
+  },
+  "shape": "B",
+  "masthead": {
+    "kind": "Choice · candidates compared",
+    "system": "Research query planner",
+    "counts": "18 arms · 4 tasks",
+    "run_date": "{meta.run_date}",
+    "synthetic": true
+  },
+  "arms": [
+    {
+      "id": "atlas-m.off.r0",
+      "color_slot": 0
+    },
+    {
+      "id": "atlas-m.off.r1",
+      "color_slot": 1
+    },
+    {
+      "id": "atlas-m.low.r0",
+      "color_slot": 2
+    },
+    {
+      "id": "atlas-m.low.r1",
+      "color_slot": 3
+    },
+    {
+      "id": "atlas-m.high.r0",
+      "color_slot": 4
+    },
+    {
+      "id": "atlas-m.high.r1",
+      "color_slot": 5
+    },
+    {
+      "id": "brisk-s.off.r0",
+      "color_slot": 6
+    },
+    {
+      "id": "brisk-s.off.r1",
+      "color_slot": 7
+    },
+    {
+      "id": "brisk-s.low.r0",
+      "color_slot": 8
+    },
+    {
+      "id": "brisk-s.low.r1",
+      "color_slot": 9
+    },
+    {
+      "id": "brisk-s.high.r0",
+      "color_slot": 10
+    },
+    {
+      "id": "brisk-s.high.r1",
+      "color_slot": 11
+    },
+    {
+      "id": "nano-xs.off.r0",
+      "color_slot": 12
+    },
+    {
+      "id": "nano-xs.off.r1",
+      "color_slot": 13
+    },
+    {
+      "id": "nano-xs.low.r0",
+      "color_slot": 14
+    },
+    {
+      "id": "nano-xs.low.r1",
+      "color_slot": 15
+    },
+    {
+      "id": "nano-xs.high.r0",
+      "color_slot": 16
+    },
+    {
+      "id": "nano-xs.high.r1",
+      "color_slot": 17
+    }
+  ],
+  "show_arms_key": true,
+  "flag": [],
+  "options": {
+    "rows": [
+      {
+        "option": "brisk-s.low.r1",
+        "role": "recommended"
+      },
+      {
+        "option": "atlas-m.high.r1",
+        "role": "most_accurate"
+      },
+      {
+        "option": "brisk-s.high.r1",
+        "role": "near_miss"
+      },
+      {
+        "option": "nano-xs.off.r0",
+        "role": "cheapest"
+      }
+    ],
+    "columns": [
+      "pass_rate",
+      "gate",
+      "cost_per_1k"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "bars",
+      "title": "Pass rate",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "pass_rate"
+        ],
+        "arms": [
+          "brisk-s.low.r1",
+          "atlas-m.high.r1",
+          "brisk-s.high.r1",
+          "nano-xs.off.r0"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "brisk-s.low.r1",
+      "level": "",
+      "unit": "pct",
+      "domain": []
+    },
+    {
+      "kind": "bars",
+      "title": "Cost per 1,000 replies",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "cost_per_1k"
+        ],
+        "arms": [
+          "brisk-s.low.r1",
+          "atlas-m.high.r1",
+          "brisk-s.high.r1",
+          "nano-xs.off.r0"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "",
+      "level": "",
+      "unit": "usd_per_1k",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "gates",
+      "eyebrow": "All configurations against both gates",
+      "headline": "Only {arm:brisk-s.low.r1} lands inside both gates",
+      "takeaway": "Each line follows one model from reasoning off to high. Moving up costs latency; Atlas-M starts outside the budget.",
+      "chart": {
+        "kind": "gate_scatter",
+        "title": "",
+        "query": {
+          "source": "configs",
+          "aspect": "",
+          "measures": [
+            "pass_rate",
+            "latency_ms"
+          ],
+          "arms": [],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "brisk-s.low.r1",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "levers",
+      "eyebrow": "What each lever buys",
+      "headline": "One retry raises the pass rate at every model and reasoning level",
+      "takeaway": "Pass rate of every configuration, grouped by model. Compare neighbours that differ in one lever.",
+      "chart": {
+        "kind": "bars",
+        "title": "",
+        "query": {
+          "source": "configs",
+          "aspect": "",
+          "measures": [
+            "pass_rate"
+          ],
+          "arms": [],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "tasks",
+      "eyebrow": "By task type",
+      "headline": "Multi-hop questions are the weak spot for every fast configuration",
+      "takeaway": "Pass rate by task type for the options in the table.",
+      "chart": {
+        "kind": "bars",
+        "title": "",
+        "query": {
+          "source": "tasks",
+          "aspect": "",
+          "measures": [
+            "pass_rate"
+          ],
+          "arms": [
+            "brisk-s.low.r1",
+            "atlas-m.high.r1",
+            "brisk-s.high.r1",
+            "nano-xs.off.r0"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "task"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "examples",
+      "eyebrow": "What the failures look like",
+      "headline": "{arm:brisk-s.low.r1}'s shown failures are a collapsed hop, an off-by-one date window and a missed clarification",
+      "takeaway": "Representative failures of the recommended configuration, with the expected call.",
+      "chart": {
+        "kind": "examples",
+        "title": "",
+        "query": {
+          "source": "examples",
+          "aspect": "",
+          "measures": [],
+          "arms": [
+            "brisk-s.low.r1"
+          ],
+          "strata": [],
+          "limit": 4,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Pick any configuration",
+      "controls": [
+        {
+          "id": "model",
+          "kind": "segmented",
+          "title": "Model",
+          "binds": "lever:model",
+          "min": 0.0,
+          "max": 0.0,
+          "step": 0.0,
+          "default": 0.0,
+          "options": [
+            "Atlas-M",
+            "Brisk-S",
+            "Nano-XS"
+          ]
+        },
+        {
+          "id": "reasoning",
+          "kind": "segmented",
+          "title": "Reasoning budget",
+          "binds": "lever:reasoning",
+          "min": 0.0,
+          "max": 0.0,
+          "step": 0.0,
+          "default": 0.0,
+          "options": [
+            "Off",
+            "Low",
+            "High"
+          ]
+        },
+        {
+          "id": "retry",
+          "kind": "toggle",
+          "title": "Retry on failure",
+          "binds": "lever:retry",
+          "min": 0.0,
+          "max": 0.0,
+          "step": 0.0,
+          "default": 0.0,
+          "options": []
+        }
+      ],
+      "recomputes": "The chosen configuration's pass rate, latency and cost against both gates, and whether it passes; the answer only changes if a looser latency budget lets a more accurate configuration in."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "strata",
+    "gate_matrix_full",
+    "configs"
+  ],
+  "durable_claims": [
+    {
+      "text": "For tool-calling planners, one retry on failure buys about two points of pass rate at little cost; {arm:brisk-s.low.r1} reaches {measure.pass_rate.brisk-s.low.r1.mean|pct}.",
+      "confidence": "medium",
+      "keys": [
+        "measure.pass_rate.brisk-s.low.r1.mean"
+      ]
+    }
+  ],
+  "answers": []
+}

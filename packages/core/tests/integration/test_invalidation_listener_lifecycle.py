@@ -12,7 +12,7 @@ test and would silently stop cross-pod cache coherence in a fleet. so two
 registries subscribe against a real NATS, one stops, and the other must still
 evict.
 
-requires docker; gated by ``pytest.mark.integration``.
+needs Postgres/NATS (the pool's child processes, or testcontainers off the pool); gated by ``pytest.mark.integration``.
 """
 
 from __future__ import annotations

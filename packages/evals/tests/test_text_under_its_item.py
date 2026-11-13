@@ -1,22 +1,20 @@
 """A many-line text the engine prints in a list stays with its item, every line of it.
 
 Written as ``f"  error: {error}"``, a two-line error put its second line at the margin, where it read as the
-summary's next line rather than the rest of the error; a two-line caveat in the memo the judge reads put its second
-line where the next caveat starts. Each such text now goes through ``one_line`` (a line of a list) or ``under``
-(a block under its item), the evals copies of :mod:`threetears.observe.text_block`'s.
+summary's next line rather than the rest of the error. Each such text now goes through ``one_line`` (a line of a
+list) or ``under`` (a block under its item), the evals copies of :mod:`threetears.observe.text_block`'s.
 """
 
 from __future__ import annotations
 
 import dataclasses
 
-from threetears.evals.analysis import CaseResult, render_memo_as_written, summarize_run
+from threetears.evals.analysis import CaseResult, summarize_run
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.text_block import one_line, under
 from threetears.evals.quick.one_call import callable_host
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_result, make_eval_run
-from packages.evals.tests.report_support import toy_report
 
 _MANY = "the tool timed out\n\n  after 30 s, twice"
 
@@ -59,21 +57,3 @@ def test_a_summarys_many_line_error_stays_on_its_line() -> None:
     summary = summarize_run(dataclasses.replace(callable_host(), storage=storage), "run-1", "s")
     rendered = summary.model_copy(update={"errors": [_MANY]}).render().splitlines()
     assert rendered[-1] == "  error: the tool timed out after 30 s, twice"
-
-
-async def test_the_memos_many_line_caveat_and_why_sit_under_their_items() -> None:
-    _, analysis, _ = await toy_report()
-    document = analysis.document
-    finding = document.findings[0]
-    caveat = finding.caveats[0] if finding.caveats else None
-    assert caveat is not None, "the toy's first finding carries a caveat"
-    finding = finding.model_copy(update={"caveats": [caveat.model_copy(update={"text": _MANY})]})
-    assert document.next, "the toy's memo names a next step"
-    step = document.next[0].model_copy(update={"why": _MANY})
-    document = document.model_copy(update={"findings": [finding, *document.findings[1:]], "next": [step]})
-    memo = render_memo_as_written(analysis.model_copy(update={"document": document}))
-
-    caveats = memo.split("Caveats:\n", 1)[1].splitlines()[:2]
-    assert caveats == [f"- {caveat.kind}: the tool timed out", "    after 30 s, twice"]
-    why = memo.split("   - Why: ", 1)[1].splitlines()[:2]
-    assert why == ["the tool timed out", "       after 30 s, twice"]

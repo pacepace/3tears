@@ -13,7 +13,8 @@ One door is covered end to end, ``l3``. Its genuine and forged bodies are built 
 (``hub.usage.track``, ``hub.claim_grant``, ``knowledge.draft``, the service-envelope doors) are the
 same shape with their own genuine/forged bodies and are added here as each is grounded.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -35,7 +36,6 @@ from threetears.core.security import (
     verify_door_request,
 )
 from threetears.core.security.identity_token import IdentityClaims
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats import NatsClient
 from threetears.nats.subject_permissions import Principal, build_permissions
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
@@ -136,8 +136,6 @@ def _receiver_accepts(body_bytes: bytes) -> bool:
 
 
 async def test_a_forged_l3_request_put_on_the_door_by_a_real_pod_is_refused_the_genuine_one_verifies() -> None:
-    if not check_docker_available():
-        pytest.skip("Docker not available")
     genuine, forged = await _door_bodies()
     # sanity at the receiver before any bus: the door accepts the genuine and refuses the forged.
     assert _receiver_accepts(genuine) is True, "the genuine request must verify"
