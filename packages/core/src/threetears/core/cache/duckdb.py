@@ -1807,21 +1807,20 @@ class DuckDBBackend:
             return []
         select_clause = build_select_clause(self._schema_info.get(table), table, columns)
         pk_cols = self._pk_columns(primary_key)
+        # one list a key column, bound through Arrow by run_bound: a placeholder a value cost DuckDB's per-value
+        # pandas probes (100 ids ~27 ms, 1,000 ~320 ms on 200k rows, against ~2 and ~4.5 ms), and an OR a
+        # composite key ~100x that of the semi-join
+        stored = [self._stored_pk_values(table, eid, pk_cols) for eid in entity_ids]
+        lists: list[Any] = [[values[n] for values in stored] for n in range(len(pk_cols))]
         if len(pk_cols) == 1:
-            placeholders = ", ".join(["?" for _ in entity_ids])
-            sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {quote_identifier(pk_cols[0])} IN ({placeholders})"
-            params: list[Any] = [self._stored_pk_values(table, eid, pk_cols)[0] for eid in entity_ids]
+            matched = f"{quote_identifier(pk_cols[0])} = ANY(?)"
         else:
-            per_key = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
-            pk_disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
-            sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {pk_disjunct}"
-            params = []
-            for eid in entity_ids:
-                params.extend(self._stored_pk_values(table, eid, pk_cols))
+            names = ", ".join(quote_identifier(c) for c in pk_cols)
+            unnested = ", ".join("unnest(?)" for _ in pk_cols)
+            matched = f"({names}) IN (SELECT {unnested})"
+        sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {matched}"  # noqa: S608
         with self._db_lock:
-            result = self._db.execute(sql, params)
-            result_columns = [desc[0] for desc in result.description]
-            rows = result.fetchall()
+            result_columns, rows = run_bound(self._db, sql, lists, _described_rows)
         return [self._deserialize_row(table, dict(zip(result_columns, row))) for row in rows]
 
     def delete_by_id(
