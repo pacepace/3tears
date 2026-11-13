@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from threetears.evals.analysis.report.keys.vocabulary import _criterion, _printed_stratum, _stratum, _task
+from threetears.evals.analysis.report.per_input import input_memo
 from threetears.evals.analysis.report.words import (
     arm_tags,
     aspect_stratum_key,
@@ -163,11 +164,19 @@ def page_arm_names(report_input: ReportInput) -> dict[str, str]:
     snapshot's id is its content's digest. The page, its blocks, the analyst's cited figures and the store gate all
     read arms by these names.
 
+    The names are pure in the input, which is frozen, so they are read once per input
+    (:func:`~threetears.evals.analysis.report.per_input.input_memo`); each caller gets its own copy.
+
     :param report_input: The report input.
     :ptype report_input: ReportInput
     :return: Arm id -> its name on the page.
     :rtype: dict[str, str]
     """
+    return dict(input_memo(report_input).get(_page_arm_names, lambda: _page_arm_names(report_input)))
+
+
+def _page_arm_names(report_input: ReportInput) -> dict[str, str]:
+    """The names :func:`page_arm_names` reads, worked out of the input."""
     arms = report_input.arms
     control = next((arm.id for arm in arms if arm.role == "control"), None)
     tags = arm_tags([arm.id for arm in arms], control)

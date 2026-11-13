@@ -166,8 +166,8 @@ from threetears.evals.analysis.report.number_forms.written import (
     _written_level,
     _written_stated,
 )
-from threetears.evals.analysis.report.per_input import input_memo
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text, in_change_form, quantity, quantity_of
+from threetears.evals.analysis.report.per_input import input_memo
 from threetears.evals.analysis.report.said import Said, SaidFigure
 from threetears.evals.analysis.report.unit_once import interval_alone, interval_beside, unit_after, unit_spaced
 from threetears.evals.analysis.report.verdict import MIN_CASES, interval_words
