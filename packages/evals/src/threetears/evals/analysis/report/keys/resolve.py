@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -83,13 +83,17 @@ class _Stop:
     expected: tuple[str, ...] = ()
 
 
+#: The ids each id slot offered on one input, after the slots matched before it (:attr:`_InputCache.offered`).
+_Offered = dict[tuple[Callable[[ReportInput, tuple[str, ...]], Iterable[str]], tuple[str, ...]], list[str]]
+
+
 @dataclass
 class _InputCache:
     """What one report input has read as (:func:`_input_cache`): each key's figure or the refusal it raised (kept
     with no frame, :func:`_frameless`), and the ids each slot offered after the slots matched before it."""
 
     figures: dict[str, Figure | UnresolvableReference]
-    offered: dict[tuple[Callable[[ReportInput, tuple[str, ...]], Iterable[str]], tuple[str, ...]], list[str]]
+    offered: _Offered
     amounts: dict[tuple[int, tuple[str, ...], str, bool], tuple[float, ...]]
 
 
@@ -110,9 +114,9 @@ def _input_cache(report_input: ReportInput) -> _InputCache:
     return kept_for(report_input).get(_InputCache, _empty_input_cache)
 
 
-def _offered(slot: _Ids, report_input: ReportInput, values: tuple[str, ...]) -> list[str]:
-    """The ids an id slot offers on an input after the slots matched before it, read once per input."""
-    offered = _input_cache(report_input).offered
+def _offered(slot: _Ids, report_input: ReportInput, values: tuple[str, ...], offered: _Offered) -> list[str]:
+    """The ids an id slot offers on an input after the slots matched before it, read once per input into ``offered``,
+    the input's own (:func:`_input_cache`), which a walk looks up once rather than at every slot."""
     key = (slot.options, values)
     found = offered.get(key)
     if found is None:
@@ -127,6 +131,7 @@ def _walk(
     slots: tuple[_Slot, ...],
     values: tuple[str, ...],
     report_input: ReportInput,
+    offered: _Offered,
     found: list[_Reading],
     stop: _Stop,
 ) -> None:
@@ -134,7 +139,7 @@ def _walk(
     if isinstance(slot, _Word):
         options: Sequence[str] = (slot.spelling,)
     elif isinstance(slot, _Ids):
-        options = _offered(slot, report_input, values)
+        options = _offered(slot, report_input, values, offered)
     elif isinstance(slot, _Number):
         options = _number_options(path, at)
     else:
@@ -150,7 +155,7 @@ def _walk(
             advanced = True
         elif rest and end < len(path) and path[end] == ".":
             advanced = True
-            _walk(path, end + 1, family, rest, captured, report_input, found, stop)
+            _walk(path, end + 1, family, rest, captured, report_input, offered, found, stop)
     if not advanced:
         empty = "a number" if isinstance(slot, _Number) else "none in this input"
         expected = tuple(options) if options else (f"{_slot_name(slot)} ({empty})",)
@@ -167,6 +172,7 @@ def _slot_name(slot: _Slot) -> str:
 def _readings(path: str, report_input: ReportInput) -> tuple[list[_Reading], _Stop]:
     found: list[_Reading] = []
     stop = _Stop()
+    offered = _input_cache(report_input).offered
     for family in _FAMILIES:
         first = family.slots[0]
         if isinstance(first, _Word) and not path.startswith(first.spelling):
@@ -174,7 +180,7 @@ def _readings(path: str, report_input: ReportInput) -> tuple[list[_Reading], _St
             # it expected (:func:`_one_reading` names every beginning there), so it is passed over unwalked.
             stop.at = max(stop.at, 0)
             continue
-        _walk(path, 0, family, family.slots, (), report_input, found, stop)
+        _walk(path, 0, family, family.slots, (), report_input, offered, found, stop)
     return found, stop
 
 
@@ -600,12 +606,15 @@ def _sibling_values(reading: _Reading, report_input: ReportInput) -> list[tuple[
     scoreboard's cost per reply is not its trials' total), so it is never varied."""
     combos: list[tuple[str, ...]] = [()]
     values = iter(reading.values)
+    offered = _input_cache(report_input).offered
     for slot in reading.family.slots:
         if isinstance(slot, _Word):
             continue
         value = next(values)
         if isinstance(slot, _Ids) and slot.name in _ARM_SLOTS:
-            combos = [(*prefix, option) for prefix in combos for option in _offered(slot, report_input, prefix)]
+            combos = [
+                (*prefix, option) for prefix in combos for option in _offered(slot, report_input, prefix, offered)
+            ]
         else:
             combos = [(*prefix, value) for prefix in combos]
     return combos
@@ -811,6 +820,12 @@ class KeyForm:
     group: str
 
 
+#: Each family's group of the grammar's paths (:func:`~threetears.evals.analysis.report.keys.families._grouped`), read
+#: once at import: the families and their groups are constants, and a family in no group fails the import.
+_GROUP_OF: Final[Mapping[_Family, str]] = {
+    family: group for group, families in _grouped().items() for family in families
+}
+
 #: An arm key's form, as a key check names it.
 _ARM_FORM = KeyForm(form="arm:<id>", what="an arm, printed by its short name and letter tag", group="campaign")
 
@@ -832,7 +847,7 @@ def key_form(key: str, report_input: ReportInput) -> KeyForm:
     if key.startswith(_ARM_PREFIX):
         return _ARM_FORM
     family = _one_reading(key, report_input).family
-    group = next(name for name, families in _grouped().items() if family in families)
+    group = _GROUP_OF[family]
     return KeyForm(form=family.form(), what=family.what, group=group)
 
 
