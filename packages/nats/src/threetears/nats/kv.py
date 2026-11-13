@@ -98,11 +98,13 @@ from threetears.nats.raw_errors import is_bucket_not_found
 from threetears.nats.subject_permissions import kv_stream_name
 
 if TYPE_CHECKING:
+    from nats.aio.client import Client as _NatsPyClient
     from nats.aio.msg import Msg
     from nats.aio.subscription import Subscription as _NatsSubscription
     from nats.js.kv import KeyValue
 
     from threetears.nats.client import NatsClient
+    from threetears.nats.subjects import Subject
 
 __all__ = [
     "DEFAULT_KV_TIMINGS",
@@ -111,6 +113,7 @@ __all__ = [
     "KvDeclaring",
     "KvDeclaringClient",
     "KvRestoredHook",
+    "KvStreamClient",
     "KvStreamOpening",
     "KvTimings",
     "NatsChangeLog",
@@ -1496,6 +1499,30 @@ def _render_differences(differences: dict[str, tuple[Any, Any]]) -> str:
     )
 
 
+@runtime_checkable
+class KvStreamClient(Protocol):
+    """What a bucket holds its client for: the slice of :class:`~threetears.nats.NatsClient` that
+    :meth:`NatsKvBucket.open`, the bucket's own operations and its key watches use.
+
+    The bucket binds a nats-py KV handle through the client's current connection (``raw``), runs its
+    stream and consumer calls on a JetStream context (``jetstream_context``), re-binds when ``raw`` has
+    moved to a successor connection, and asks ``is_closed`` whether a watch's closed connection means
+    the client itself is gone; listing its keys and removal markers asks the stream's subjects with a raw
+    request (``request_raw``). A caller that opens a bucket by its full name types its client by this
+    (with whatever other slices it uses) rather than by the whole client.
+    """
+
+    @property
+    def raw(self) -> _NatsPyClient: ...
+
+    @property
+    def is_closed(self) -> bool: ...
+
+    def jetstream_context(self) -> Any: ...
+
+    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta = ...) -> bytes: ...
+
+
 class _KvHandleBinding(NamedTuple):
     """what one open of a bucket produces, before it is put on a :class:`NatsKvBucket`.
 
@@ -1513,7 +1540,7 @@ class _KvHandleBinding(NamedTuple):
 
 async def _bind_kv_handle(
     *,
-    client: NatsClient,
+    client: KvStreamClient,
     full_name: str,
     ttl: timedelta | None,
     storage: str,
@@ -1533,7 +1560,7 @@ async def _bind_kv_handle(
     :meth:`NatsKvBucket._reopen`, which refreshes an existing bucket in place with it.
 
     :param client: connected wrapper client
-    :ptype client: NatsClient
+    :ptype client: KvStreamClient
     :param full_name: fully-qualified bucket name
     :ptype full_name: str
     :param ttl: TTL for entries; ``None`` for no expiry
@@ -1610,7 +1637,7 @@ class NatsKvBucket:
     lifetime; do not cache across client recreations.
 
     :param client: connected wrapper client owning this bucket
-    :ptype client: NatsClient
+    :ptype client: KvStreamClient
     :param full_name: fully-qualified bucket name (``{namespace}-{suffix}``)
     :ptype full_name: str
     :param kv: underlying nats-py KeyValue handle
@@ -1663,7 +1690,7 @@ class NatsKvBucket:
     def __init__(
         self,
         *,
-        client: NatsClient,
+        client: KvStreamClient,
         full_name: str,
         kv: KeyValue,
         ttl: timedelta | None,
@@ -1748,7 +1775,7 @@ class NatsKvBucket:
     async def open(
         cls,
         *,
-        client: NatsClient,
+        client: KvStreamClient,
         full_name: str,
         ttl: timedelta | None,
         storage: str,
@@ -1777,7 +1804,7 @@ class NatsKvBucket:
         form and racing whatever startup hook reconciles it.
 
         :param client: connected wrapper client
-        :ptype client: NatsClient
+        :ptype client: KvStreamClient
         :param full_name: fully-qualified bucket name
         :ptype full_name: str
         :param ttl: TTL for entries; ``None`` for no expiry
@@ -2979,7 +3006,7 @@ class _KeyWatchConsumer:
     :param heartbeat: the consumer's idle heartbeat
     :ptype heartbeat: timedelta
     :param client: the wrapper client, asked whether it outlives the consumer's connection
-    :ptype client: NatsClient
+    :ptype client: KvStreamClient
     :param pending: how many messages the consumer held for delivery when it was created -- the
         latest message of each matching key, which a prefix watch counts down to know it has caught up
     :ptype pending: int
@@ -3004,7 +3031,7 @@ class _KeyWatchConsumer:
         stream: str,
         subject: str,
         heartbeat: timedelta,
-        client: NatsClient,
+        client: KvStreamClient,
         pending: int = 0,
     ) -> None:
         self._subscription = subscription
@@ -3038,7 +3065,7 @@ class _KeyWatchConsumer:
     async def open(
         cls,
         *,
-        client: NatsClient,
+        client: KvStreamClient,
         stream: str,
         subject: str,
         heartbeat: timedelta,
@@ -3058,7 +3085,7 @@ class _KeyWatchConsumer:
         failure is logged as before, naming the grant to check.
 
         :param client: the connected wrapper client
-        :ptype client: NatsClient
+        :ptype client: KvStreamClient
         :param stream: the bucket's backing stream
         :ptype stream: str
         :param subject: the watched key's subject

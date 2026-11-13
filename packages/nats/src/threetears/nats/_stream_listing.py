@@ -31,7 +31,7 @@ from threetears.nats.subjects import Subject
 if TYPE_CHECKING:
     from nats.js.api import RawStreamMsg
 
-    from threetears.nats.client import NatsClient
+    from threetears.nats.kv import KvStreamClient
 
 __all__ = ["latest_messages", "stream_subjects"]
 
@@ -47,7 +47,7 @@ _READS_IN_FLIGHT: Final[int] = 32
 
 
 async def stream_subjects(
-    client: NatsClient,
+    client: KvStreamClient,
     *,
     stream: str,
     subjects_filter: str,
@@ -61,7 +61,7 @@ async def stream_subjects(
     back short.
 
     :param client: the connected wrapper client
-    :ptype client: NatsClient
+    :ptype client: KvStreamClient
     :param stream: the stream
     :ptype stream: str
     :param subjects_filter: the subjects to list
@@ -96,12 +96,12 @@ async def stream_subjects(
 
 
 async def _stream_info_page(
-    client: NatsClient, *, stream: str, subjects_filter: str, offset: int, timeout_seconds: float
+    client: KvStreamClient, *, stream: str, subjects_filter: str, offset: int, timeout_seconds: float
 ) -> dict[str, Any]:
     """one ``STREAM.INFO`` answer, its subjects from ``offset``.
 
     :param client: the connected wrapper client
-    :ptype client: NatsClient
+    :ptype client: KvStreamClient
     :param stream: the stream
     :ptype stream: str
     :param subjects_filter: the subjects to list
@@ -150,7 +150,7 @@ def _page_subjects(
 
 
 async def latest_messages(
-    client: NatsClient,
+    client: KvStreamClient,
     *,
     stream: str,
     subjects: Iterable[str],
@@ -162,7 +162,7 @@ async def latest_messages(
     meets its absence the way it meets any other race.
 
     :param client: the connected wrapper client
-    :ptype client: NatsClient
+    :ptype client: KvStreamClient
     :param stream: the stream (it must run ``allow_direct``, as every bucket the platform declares does)
     :ptype stream: str
     :param subjects: the subjects
