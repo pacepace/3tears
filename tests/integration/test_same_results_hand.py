@@ -32,6 +32,8 @@ from threetears.core.keyed import Fragment, Sort, delete_keyed, keyset_page, key
 from threetears.core.testing.rewrites import assert_rewrite_same
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
+pytestmark = pytest.mark.integration
+
 #: tenant 0's thread and customer prefix; tenant 1's rows are another customer's
 _THREAD = "c0/t"
 _PREFIX = "c0/"

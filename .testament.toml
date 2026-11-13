@@ -232,9 +232,9 @@ default_selection = [
     "packages/scrape/tests/integration/test_enrichment_status_migration.py",
     "packages/scrape/tests/integration/test_health_l3_roundtrip.py",
     "packages/scrape/tests/integration/test_reprobe_booking_l3.py",
-    # the repo's own: the kept-schema path of tests/pg_template (the use-the-helper proof beside it runs by hand,
-    # on each engine)
-    "tests/integration/test_pg_template_kept.py",
+    # the repo's own: the kept-schema path of tests/pg_template, and the use-the-helper rewrite and hand-conversion
+    # equivalence proofs (their PostgreSQL half here; the YugabyteDB half where a YugabyteDB server is)
+    "tests/integration",
 ]
 env = { UV_CACHE_DIR = "/tr/cache/uv", THREETEARS_TEST_SERVICES = "process", THREETEARS_REQUIRE_SERVICES = "1" }
 

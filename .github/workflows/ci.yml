@@ -407,5 +407,7 @@ jobs:
         # noisily or hang; bringing them in is a follow-up with its own services.
         # agent/acl needs Postgres alone: its NATS is an in-memory double. It is here
         # because its integration tests measure, against a real table, the teardown
-        # queries (`list_owned_by`, `schema_in_use`) a consumer drops schemas on.
-        run: uv run pytest packages/core packages/nats packages/epoch packages/scheduled-jobs packages/agent/acl -m integration -v
+        # queries (`list_owned_by`, `schema_in_use`) a consumer drops schemas on. tests/integration is the repo's
+        # own: the use-the-helper rewrite and hand-conversion equivalence proofs (old statement vs helper call, row for
+        # row, on a schema every rewritten package's migrations build; pgvector for memory's), PostgreSQL half.
+        run: uv run pytest packages/core packages/nats packages/epoch packages/scheduled-jobs packages/agent/acl tests/integration -m integration -v

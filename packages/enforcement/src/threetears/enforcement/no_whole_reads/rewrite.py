@@ -1960,6 +1960,9 @@ from threetears.core.testing.rewrites import assert_rewrite_same, assert_source_
 {overrides_import}
 __all__: list[str] = []
 
+#: its own mark puts it in the repo's integration suite (it needs a database) and out of the unit run
+pytestmark = pytest.mark.integration
+
 _REPO = Path(__file__).resolve().parents[{depth}]
 _ENTRIES = load_manifest(_REPO / "{manifest}")
 

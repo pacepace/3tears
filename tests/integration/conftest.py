@@ -4,7 +4,11 @@ The rewrite tool's generated test (``python -m threetears.enforcement.no_whole_r
 rewritten statement to its helper call on a database holding every rewritten table, through two fixtures: ``conn``
 (PostgreSQL) and ``yugabyte_conn`` (YugabyteDB). A session's database is one engine (``db_container``, the
 ``THREETEARS_TEST_POSTGRES_URL`` a run points at), so each fixture serves the engine the session's server is and skips
-on the other: a PostgreSQL run proves the PostgreSQL half, a YugabyteDB run the YugabyteDB half.
+on the other: a PostgreSQL run proves the PostgreSQL half, a YugabyteDB run the YugabyteDB half. This directory is in
+the integration suite (``.testament.toml``'s ``[suites.integration]``, CI's integration job), so the pool and CI prove
+the PostgreSQL half on every run; the YugabyteDB half runs where a YugabyteDB server is
+(``THREETEARS_TEST_ENGINE=yugabyte`` with ``THREETEARS_TEST_POSTGRES_URL`` naming it). A run deselects the half of the
+engine it does not name (PostgreSQL when it names none). Each module marks itself ``integration``.
 
 The schema is built once a session, by each package's own migrations: the agent-scope packages (conversations, memory,
 skills, tools, workspace, langgraph, wake) and the platform-scope ones (acl and the tools columns on its namespaces,
@@ -16,9 +20,9 @@ The schema is dropped when the session ends.
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -63,14 +67,33 @@ _DECLARED = (
 #: what marks a server's version string as YugabyteDB's
 _YUGABYTE_MARK = "-YB-"
 
-_HERE = Path(__file__).resolve().parent
+#: the engine a run names (``threetears.core.testing.fixtures`` checks the server against it); unnamed, PostgreSQL
+_ENGINE_ENV = "THREETEARS_TEST_ENGINE"
+
+#: each engine's connection fixture
+_ENGINE_FIXTURES = {"conn": "postgres", "yugabyte_conn": "yugabyte"}
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """mark every test under this directory ``integration`` (the generated module carries no marker of its own)."""
-    for item in items:
-        if _HERE in Path(str(item.path)).resolve().parents:
-            item.add_marker(pytest.mark.integration)
+def _engine_of(item: pytest.Item) -> str | None:
+    """the engine a test proves: the one its connection fixture serves, named directly or as a fixture parameter;
+    None for a test that needs no database."""
+    names = [*getattr(item, "fixturenames", ())]
+    callspec = getattr(item, "callspec", None)
+    if callspec is not None:
+        names += [value for value in callspec.params.values() if isinstance(value, str)]
+    engines = {_ENGINE_FIXTURES[name] for name in names if name in _ENGINE_FIXTURES}
+    return engines.pop() if len(engines) == 1 else None
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """deselect the other engine's half: a run proves the engine it names (``THREETEARS_TEST_ENGINE``, PostgreSQL
+    when unnamed), so the other half is not run at all rather than skipped (a skip fails the pool's integration
+    suite, ``THREETEARS_REQUIRE_SERVICES=1``)."""
+    engine = os.environ.get(_ENGINE_ENV) or "postgres"
+    other = [item for item in items if _engine_of(item) not in (None, engine)]
+    if other:
+        config.hook.pytest_deselected(items=other)
+        items[:] = [item for item in items if _engine_of(item) in (None, engine)]
 
 
 class _Store:

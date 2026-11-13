@@ -296,6 +296,21 @@ def test_the_generated_test_module_parses_and_names_its_fixtures() -> None:
     assert "from tests.support.seeds import OVERRIDES" in text and "overrides=OVERRIDES" in text
 
 
+def test_the_generated_test_module_marks_itself_integration() -> None:
+    """Flips if the generated module stops carrying its own ``integration`` mark, which is what puts it in an
+    integration suite (the pool's, CI's) and keeps it out of the unit run, whatever conftest sits beside it."""
+    text = render_test_module(
+        Path("tests/integration/test_rewrites.py"), "tests/m.json", pg_fixture="conn", yb_fixture="yb"
+    )
+    module = ast.parse(text)
+    marks = [
+        ast.unparse(node.value)
+        for node in module.body
+        if isinstance(node, ast.Assign) and [ast.unparse(target) for target in node.targets] == ["pytestmark"]
+    ]
+    assert marks == ["pytest.mark.integration"]
+
+
 _WRITES = """
     #: forget one geo
     _FORGET_SQL = "DELETE FROM geos WHERE state = $1 AND geo_id = $2"
