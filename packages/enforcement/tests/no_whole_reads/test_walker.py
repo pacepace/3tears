@@ -2170,6 +2170,90 @@ def test_a_keyed_helper_is_judged_by_the_statement_it_sends(tmp_path: Path) -> N
     assert any(function == "unread" and symbol.startswith("unknown-predicate read_keyed") for function, symbol in found)
 
 
+_PAGED_ORDERS = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.data.migrations.backfill import backfill_pages
+    from threetears.core.keyed import AnyOf, Sort, keyset_page, keyset_rows
+    from threetears.core.keyset import keyset_pages
+
+    EVENTS = TableSchema(
+        name="events",
+        primary_key=("agent_id", "event_id"),
+        columns=[],
+        indexes=(
+            Index("events_by_time", "agent_id", "created_at", "event_id", purpose="src/events.py::*"),
+        ),
+    )
+    _NEWEST = (Sort("created_at", descending=True), Sort("event_id", descending=True))
+
+    async def unique_page(c, agent_id, cols, cursor):
+        return await keyset_page(
+            c, "events", columns=cols, by={"agent_id": agent_id}, order=_NEWEST, limit=5, cursor=cursor
+        )
+
+    async def first_page(c, agent_id, cols):
+        return await keyset_page(
+            c, "events", columns=cols, by={"agent_id": agent_id}, order=[Sort("created_at")], limit=5
+        )
+
+    async def unique_rows(c, cols):
+        return await keyset_rows(c, "events", columns=cols, by={}, order=[Sort("agent_id"), Sort("event_id")])
+
+    async def tied_page(c, agent_id, cols, cursor):
+        return await keyset_page(
+            c, "events", columns=cols, by={"agent_id": agent_id}, order=[Sort("created_at")], limit=5, cursor=cursor
+        )
+
+    async def tied_set(c, agents, cols):
+        return await keyset_rows(c, "events", columns=cols, by={"agent_id": AnyOf(agents)}, order=[Sort("event_id")])
+
+    async def unique_drain(pool, agent_id):
+        async for page in keyset_pages(
+            pool, "SELECT event_id FROM events", ["created_at", "event_id"], where={"agent_id": agent_id}, page_size=10
+        ):
+            return page
+
+    async def tied_drain(pool, agent_id):
+        async for page in keyset_pages(
+            pool, "SELECT event_id FROM events", ["created_at"], where={"agent_id": agent_id}, page_size=10
+        ):
+            return page
+
+    GROUPS_DDL = (
+        "CREATE TABLE groups (group_id UUID PRIMARY KEY, customer_id UUID, name TEXT);"
+        "CREATE UNIQUE INDEX uq_groups_customer_name ON groups (customer_id, name) WHERE customer_id IS NOT NULL;"
+    )
+
+    async def unique_by_name(c, customer_id, cols, cursor):
+        return await keyset_page(
+            c, "groups", columns=cols, by={"customer_id": customer_id}, order=[Sort("name")], limit=5, cursor=cursor
+        )
+
+    async def tied_platform_names(c, cols, cursor):
+        return await keyset_page(
+            c, "groups", columns=cols, by={"customer_id": None}, order=[Sort("name")], limit=5, cursor=cursor
+        )
+
+    async def unique_fill(conn):
+        return await backfill_pages(conn, "events", ["agent_id", "event_id"], columns=["x"], fill=dict)
+
+    async def tied_fill(conn):
+        return await backfill_pages(conn, "events", ["event_id"], columns=["x"], fill=dict)
+"""
+
+
+def test_a_keyset_pager_whose_pins_and_order_hold_no_primary_key_is_named(tmp_path: Path) -> None:
+    """Flips if a keyset pager (keyset_page / keyset_rows, a keyset_pages drain, a backfill) whose pinned columns and
+    order hold no primary key of its table passes: each page starts past the last row read, so the rows sharing that
+    row's order values are skipped. A column pinned to a set (AnyOf) holds many values and pins nothing; pinned and
+    ordered columns that hold the key pass, and so does a keyset_page handed no cursor (one page, past nothing). A
+    partial unique index is a key where the pins hold its predicate (``customer_id IS NOT NULL``: customer_id pinned
+    to a value), never where they pin it NULL."""
+    found = _symbols(_config(tmp_path, {"events.py": _PAGED_ORDERS}))
+    ordered = {function for function, symbol in found if symbol.startswith("non-unique-order")}
+    assert ordered == {"tied_page", "tied_set", "tied_drain", "tied_fill", "tied_platform_names"}, found
+
+
 _CONSTANT_TABLE = """
     from threetears.core.collections.schema_backed import Index, TableSchema
     from threetears.core.keyed import delete_before

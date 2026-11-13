@@ -69,10 +69,12 @@ from threetears.enforcement.no_whole_reads.helpers import (
     STEP_TARGETS,
     START_KEYWORDS,
     HelperStatement,
+    PagerOrder,
     UNSEEN,
     helper_statements,
     is_keyed_fragment,
     narrows,
+    pager_order,
     templated,
 )
 from threetears.enforcement.no_whole_reads.keys import KeySources, annotated_key, declared_key_sources
@@ -350,6 +352,14 @@ _RELATION_POSITION: Final = re.compile(r"\b(?:FROM|JOIN|UPDATE|INTO)\s*$", re.IG
 
 #: the keyset pagers whose pages are written out to record the purposed index they read through
 _CREDITED_PAGERS: Final[frozenset[str]] = frozenset({"keyset_pages", "read_keyset_pages", "keyset_arrow_pages"})
+
+#: the relation a pager's head (``SELECT <columns> FROM <relation>``) names, schema-qualified or not
+_HEAD_RELATION: Final[re.Pattern[str]] = re.compile(
+    r'\bFROM\s+((?:"[^"]+"|[\w{}]+)(?:\.(?:"[^"]+"|[\w{}]+))?)', re.IGNORECASE
+)
+
+#: a partial index's predicate that one column is not NULL: a pin of that column to a value holds it
+_NOT_NULL_PREDICATE: Final[re.Pattern[str]] = re.compile(r'\s*("?\w+"?)\s+IS\s+NOT\s+NULL\s*', re.IGNORECASE)
 
 #: helpers that read a whole table whatever they are passed
 _ALWAYS_WHOLE_CALLS: Final[frozenset[str]] = frozenset({"copy_table"})
@@ -3509,7 +3519,13 @@ class _ModuleWalk(ast.NodeVisitor):
             for each, at in self._parameter_calls(picked)
             for matched in self._match_calls(each)
         ):
-            for statement in self._helper_statements(_local_relation(call, self._declared_values)):
+            located = _local_relation(call, self._declared_values)
+            stepped = self._pager_order(located)
+            if stepped is not None:
+                unique = self._non_unique_order(stepped, self._reader(site))
+                if unique is not None:
+                    hits.setdefault(*unique)
+            for statement in self._helper_statements(located):
                 if statement.sql is UNSEEN or statement.sql is None:
                     hits.setdefault(f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(site))
                     continue
@@ -3578,6 +3594,61 @@ class _ModuleWalk(ast.NodeVisitor):
             return statements
         named = templated(call)
         return statements if named is None else list(helper_statements(named))
+
+    def _pager_order(self, call: ast.Call) -> PagerOrder | None:
+        """what a keyset pager call steps past (:func:`~threetears.enforcement.no_whole_reads.helpers.pager_order`),
+        its table named at run time read as the module's template where the module declares one, as
+        :meth:`_helper_statements` reads it.
+
+        :param call: the helper call, its arguments resolved
+        :ptype call: ast.Call
+        :return: what it steps past, or None
+        :rtype: PagerOrder | None
+        """
+        found = pager_order(call)
+        if found is not None or self._schema.templates.get(self.path) is None:
+            return found
+        named = templated(call)
+        return None if named is None else pager_order(named)
+
+    @staticmethod
+    def _non_unique_order(stepped: PagerOrder, reader: Reader) -> tuple[str, str] | None:
+        """a ``non-unique-order`` finding when a keyset pager's pinned and ordered columns hold no primary or unique key
+        of the table it pages: each page starts past the last row read, so every other row sharing that row's order values
+        is never read (a listing, a copy, a drain silently short). None when they hold one, and when the walk knows
+        no key of the relation (an undeclared or derived one: its own statements say so).
+
+        :param stepped: what the call steps past
+        :ptype stepped: PagerOrder
+        :param reader: the judgement's context: the declared tables, the module's template
+        :ptype reader: Reader
+        :return: ``(symbol, statement)``, or None
+        :rtype: tuple[str, str] | None
+        """
+        relation = stepped.relation
+        declared = reader.schema.table(relation) if bare_table(relation) is not None else reader.template
+        if declared is None or not declared.primary_keys:
+            return None
+        # a partial unique index is a key of the rows its predicate holds: those the pins say are NOT NULL in it
+        valued = {column.lower() for column in stepped.fixed - stepped.nulls}
+        partial_keys = [
+            index.columns
+            for index in declared.indexes.values()
+            if index.unique
+            and index.partial
+            and (held := _NOT_NULL_PREDICATE.fullmatch(index.where.strip().strip("()"))) is not None
+            and held.group(1).strip('"').lower() in valued
+        ]
+        declared_keys = [*declared.primary_keys, *declared.unique_keys, *partial_keys]
+        if any(stepped.covers(key) for key in declared_keys):
+            return None
+        keys = " | ".join("(" + ", ".join(key) + ")" for key in declared_keys)
+        pinned = ", ".join(sorted(stepped.fixed)) or "nothing"
+        return (
+            f"non-unique-order {relation}",
+            f"{stepped.helper} pins {pinned} and orders by ({', '.join(stepped.order)}): no key {keys} is "
+            "covered, so rows sharing a page's last order values are skipped",
+        )
 
     def _hands_on_helper_relation(self, node: ast.Call, name: str | None) -> bool:
         """whether a keyed helper call inside a keyed helper's body reads only the outer helper's relation parameter
@@ -4493,6 +4564,8 @@ class _ModuleWalk(ast.NodeVisitor):
             self._judge_named_sql(node)
         if name in _CREDITED_PAGERS:
             self._credit_pager(node)
+        if name == "backfill_pages":
+            self._judge_backfill(node)
         narrowed = narrowed or any(
             isinstance(value, ast.Dict)
             or (isinstance(value, ast.Call) and _final(value) == "dict")
@@ -4562,6 +4635,50 @@ class _ModuleWalk(ast.NodeVisitor):
             conditions.append(written if written is not None else "{}")
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         judge_sql(f"{head}{where} ORDER BY {key[0]} LIMIT 100", self._reader(node))
+        named = _HEAD_RELATION.search(head)
+        if named is not None:
+            pinned = _keyword_value(node, "where")
+            fixed = frozenset(
+                k.value
+                for k in (pinned.keys if isinstance(pinned, ast.Dict) else [])
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)
+            )
+            self._judge_pager_order(node, PagerOrder(_final(node), named.group(1), fixed, tuple(key)))
+
+    def _judge_backfill(self, node: ast.Call) -> None:
+        """judge the key a migration's backfill pages by (``backfill_pages(conn, table, key, ...)``): it pins nothing,
+        so the key it steps past must hold the table's primary key, or rows sharing a page's last key values are never
+        filled.
+
+        :param node: the backfill call
+        :ptype node: ast.Call
+        :return: nothing
+        :rtype: None
+        """
+        table = node.args[1] if len(node.args) > 1 else _keyword_value(node, "table")
+        key_node = node.args[2] if len(node.args) > 2 else _keyword_value(node, "key")
+        if not (isinstance(table, ast.Constant) and isinstance(table.value, str)):
+            return
+        if not isinstance(key_node, ast.Tuple | ast.List) or not all(
+            isinstance(e, ast.Constant) and isinstance(e.value, str) for e in key_node.elts
+        ):
+            return
+        key = tuple(e.value for e in key_node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str))
+        self._judge_pager_order(node, PagerOrder(_final(node), table.value, frozenset(), key))
+
+    def _judge_pager_order(self, node: ast.Call, stepped: PagerOrder) -> None:
+        """record a ``non-unique-order`` finding at a pager call whose key holds no primary key of its table.
+
+        :param node: the pager call
+        :ptype node: ast.Call
+        :param stepped: what it steps past
+        :ptype stepped: PagerOrder
+        :return: nothing
+        :rtype: None
+        """
+        found = self._non_unique_order(stepped, self._reader(node))
+        if found is not None:
+            self._hit(node, *found)
 
     def _judge_named_sql(self, node: ast.Call) -> None:
         """a head run through a name bound to it: ``sql = f"SELECT ... FROM {t}"; conn.fetch(sql)``.

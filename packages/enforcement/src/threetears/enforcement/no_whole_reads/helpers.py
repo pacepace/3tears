@@ -55,9 +55,11 @@ __all__ = [
     "STEP_TARGETS",
     "UNSEEN",
     "HelperStatement",
+    "PagerOrder",
     "helper_statements",
     "is_keyed_fragment",
     "narrows",
+    "pager_order",
     "templated",
 ]
 
@@ -1130,6 +1132,103 @@ def helper_statements(call: ast.Call) -> Iterator[HelperStatement]:
         return
     for sql in statements:
         yield HelperStatement(helper=helper, sql=sql)
+
+
+#: the pagers whose every page after the first starts past the last row read, in their order: the argument naming
+#: the relation paged and the one naming the order, by helper. ``copy_keyed`` (one ``COPY`` of every row) steps past
+#: nothing
+_ORDERED_PAGERS: Final[Mapping[str, tuple[str, str]]] = {
+    "keyset_page": ("table", "order"),
+    "keyset_rows": ("table", "order"),
+    "visible_rows": ("table", "order"),
+    "read_changed": ("relation", "key"),
+}
+
+#: the pagers that read one page unless the call hands them a cursor (``keyset_page(cursor=...)``): one called
+#: without reads the first rows of its order, which a tie can reorder but never skip
+_ONE_PAGE_UNLESS_CURSOR: Final[frozenset[str]] = frozenset({"keyset_page"})
+
+
+@dataclass(frozen=True)
+class PagerOrder:
+    """what a keyset pager's call steps by: a page after the first starts past the last row read in ``order``, so a
+    row sharing every order value with that row (and every pinned value, which all its rows share) is skipped unless
+    the pinned and ordered columns together hold a key of the relation.
+
+    :ivar helper: the pager's name
+    :ivar relation: the relation paged, as its statement names it
+    :ivar fixed: the columns the call pins to one value each (``by={"agent_id": a}``, ``IS NULL``); never a column
+        pinned to a set (``AnyOf``), whose rows hold many values of it
+    :ivar order: the plain columns of the order, as written; a sort by an expression (``lower(name)``) holds none
+    :ivar nulls: those of ``fixed`` pinned ``IS NULL`` (every other is pinned to a value, never NULL)
+    """
+
+    helper: str
+    relation: str
+    fixed: frozenset[str]
+    order: tuple[str, ...]
+    nulls: frozenset[str] = frozenset()
+
+    def covers(self, key: Sequence[str]) -> bool:
+        """whether the pinned and ordered columns hold every column of ``key``: then no two rows share a place.
+
+        :param key: a key of the relation
+        :ptype key: Sequence[str]
+        :return: whether they do
+        :rtype: bool
+        """
+        held = {column.lower() for column in (*self.fixed, *self.order)}
+        return bool(key) and all(column.lower() in held for column in key)
+
+
+def pager_order(call: ast.Call) -> PagerOrder | None:
+    """the columns a keyset pager call steps past (:class:`PagerOrder`), as a call to :func:`helper_statements`
+    reads its arguments; None for any other call, for a ``keyset_page`` handed no cursor (it reads one page, past
+    nothing), and for one whose relation, pins or order the walk cannot read as literals (a column named at run
+    time): that call's own statements say it is unknown.
+
+    :param call: a call the walk visits, its arguments resolved
+    :ptype call: ast.Call
+    :return: what it steps past, or None
+    :rtype: PagerOrder | None
+    """
+    helper = _name(call)
+    runner = BUILDER_CALLS.get(helper)
+    if runner is not None and runner not in _TABLE_FIRST:
+        call = ast.Call(func=call.func, args=[ast.Constant(None), *call.args], keywords=call.keywords)
+    arguments = _ORDERED_PAGERS.get(runner or helper)
+    if arguments is None:
+        return None
+    relation_argument, order_argument = arguments
+    if (runner or helper) in _ONE_PAGE_UNLESS_CURSOR:
+        cursor = _argument(call, "cursor", None)
+        if cursor is None or (isinstance(cursor, ast.Constant) and cursor.value is None):
+            return None
+    try:
+        relation, _ = _relation(_argument(call, relation_argument, 1), relation_argument)
+        pins = _by(_argument(call, "by", None))
+        order_node = _argument(call, order_argument, None)
+        if not isinstance(order_node, ast.Tuple | ast.List) or not order_node.elts:
+            return None
+        order: list[str] = []
+        for element in order_node.elts:
+            if isinstance(element, ast.Constant) and isinstance(element.value, str):
+                # a key column named by its string (``read_changed(key=["id"])``): a sort of it
+                order.append(element.value)
+                continue
+            if not (isinstance(element, ast.Call) and _name(element) == "Sort"):
+                return None
+            if _argument(element, "expression", None) is None:
+                order.append(_text(_argument(element, "column", 0), order_argument))
+    except _Unseen:
+        # NOSILENT: an argument the walk cannot read is the answer here (no order to judge); the same call's
+        # statements (helper_statements) report it as unknown-predicate, so nothing is lost by returning None
+        return None
+    if any(column.startswith(("{", _EXPRESSION)) for column, _ in pins):
+        return None
+    fixed = frozenset(column for column, how in pins if how in {"eq", "null"})
+    nulls = frozenset(column for column, how in pins if how == "null")
+    return PagerOrder(helper=helper, relation=relation, fixed=fixed, order=tuple(order), nulls=nulls)
 
 
 def is_keyed_fragment(call: ast.Call) -> bool:
