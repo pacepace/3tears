@@ -4,11 +4,12 @@ right for good.
 A number's form is its digits, sign, unit and interval as printed. Spelling one number is centralised already
 (``kernel/numbers.py``); deciding which figures form a set, and how many digits the set reads at, is not: it happens
 at hundreds of sites, at three different times, by several owners, so one measure prints two ways on one page ("85%"
-in a table, "85.3%" in the chart head). Every decision is ``analysis/report/forms.py``'s, and this test holds it there:
+in a table, "85.3%" in the chart head). Every decision is ``analysis/report/forms.py``'s (with the parts it decides
+with, under ``analysis/report/number_forms/``), and this test holds it there:
 
 * **The walk** reads every module of ``threetears/evals`` and the kit's ``kit.js``, and finds each site that decides
   a form: a digit-choosing format spec, ``round(``, a call to a spelling or set primitive outside the two owners
-  (``kernel/numbers.py`` and ``analysis/report/forms.py``), and in ``kit.js`` the digit primitives and the named
+  (``kernel/numbers.py``, and ``analysis/report/forms.py`` with its parts), and in ``kit.js`` the digit primitives and the named
   formats used outside the kit's owners of them (:data:`_KIT_OWNERS`), but a pick by a field of the chart's data,
   whose format Python decided. A package function that returns what a site produced is a primitive
   too, to the fixed point, so a call rerouted through a wrapper is still a site where it is called. That holds where
@@ -17,7 +18,7 @@ in a table, "85.3%" in the chart head). Every decision is ``analysis/report/form
   and alone, handed a value nobody decided, it is no site. A primitive stored in a table or bound to a name is a site
   where it is stored, handed on as a parameter's default or returned by name, and a wrapper property is one where
   ``self`` reads it; a class named in an ``isinstance`` or ``issubclass`` test is read, not handed on, and is none.
-  So is a public free function of ``forms.py`` (a decision relocated there): only ``PageForms``, asked by measure and
+  So is a public free function of ``forms.py`` or its parts (a decision relocated there): only ``PageForms``, asked by measure and
   role, is the migrated route.
 * **The engine** (:data:`_ENGINE_TREES`): the trees whose imports, followed to their end, never reach
   ``threetears.evals.analysis`` reach no page's forms, and what they spell (a launch's refusal, a timeout's
@@ -60,11 +61,21 @@ import pytest
 _SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
 _PACKAGE = "threetears/evals"
 
-#: The rule's spelling primitives, and the module that decides a page's forms. Nothing in either is a site: they are
-#: where a form is meant to be decided. A tree without ``forms.py`` (a self-test's) walks as before it existed.
+#: The rule's spelling primitives, and the modules that decide a page's forms: ``forms.py`` and the parts it decides
+#: with, every module under ``number_forms/``. Nothing in any of them is a site: they are where a form is meant to be
+#: decided. A tree without them (a self-test's) walks as before they existed.
 _RULE = "threetears/evals/kernel/numbers.py"
 _FORMS = "threetears/evals/analysis/report/forms.py"
-_OWNERS = (_RULE, _FORMS)
+_NUMBER_FORMS = "threetears/evals/analysis/report/number_forms"
+
+
+def _forms_modules(root: Path = _SOURCE_ROOT) -> list[Path]:
+    """``forms.py`` and every module of ``number_forms/`` under ``root``, each that exists."""
+    return [path for path in (root / _FORMS, *sorted((root / _NUMBER_FORMS).glob("*.py"))) if path.exists()]
+
+
+_FORMS_MODULES = tuple(path.relative_to(_SOURCE_ROOT).as_posix() for path in _forms_modules())
+_OWNERS = (_RULE, *_FORMS_MODULES)
 
 #: The kit's script. Its copy under ``docs/eval-report-kit/kit/`` is pinned byte-identical to this one
 #: (``test_report_kit_pages``), so walking one walks both.
@@ -87,7 +98,7 @@ _KIT_PICKERS = ("namedFmt", "kTickFmt", "kTickLabels")
 #: live where ``forms.py`` imports them, so they cannot route through it: each stays a primitive by name, so its
 #: callers are sites even where its own body is named in :data:`_PERMANENT` (a permanent site wraps nothing, so
 #: derivation alone would let them go).
-#: ``figure_keys.held_means`` is not listed: it returns a measure's floats, and what reads them to classify a measure
+#: ``keys.reads.held_means`` is not listed: it returns a measure's floats, and what reads them to classify a measure
 #: (its scale, its unit, whether it is a rubric score) sets no digits.
 #: ``figure_keys.format_figure`` is not listed: it chooses which spelling a key's filters name and refuses one that
 #: does not suit, and every number it prints, an interval's precision and how its ends are joined are a
@@ -116,13 +127,6 @@ _SET_HELPER_PREFIXES = ("percent_", "respell_", "quantity")
 #: where an effect is read, and ``build._at``, which links a cell to a finding.
 _PRIVATE_SET_HELPERS = frozenset(
     {
-        ("threetears/evals/analysis/report/campaign/scorecard.py", "_one_precision"),
-        ("threetears/evals/analysis/report/figure_keys.py", "_one_precision"),
-        # The figure-key grammar's own modules, one row each, so the helper is held wherever the grammar's code is.
-        *(
-            (path.relative_to(_SOURCE_ROOT).as_posix(), "_one_precision")
-            for path in sorted((_SOURCE_ROOT / "threetears/evals/analysis/report/keys").glob("*.py"))
-        ),
         ("threetears/evals/harness/writer_eval.py", "_places"),
     }
 )
@@ -512,18 +516,16 @@ _RULE_CALLABLES, _RULE_METHODS = _rule_primitives()
 
 
 def _forms_primitives(root: Path = _SOURCE_ROOT) -> frozenset[str]:
-    """The public module-level functions of ``forms.py``: a decision relocated there and called as a free function
-    is still decided where it is called, so its caller is a site. Only :class:`PageForms`, built once per page and
-    asked by measure and role, is the migrated route: its classes (the page's forms and the value types it hands out)
-    and their methods are not primitives. None before ``forms.py`` exists.
+    """The public module-level functions of ``forms.py`` and its parts under ``number_forms/``: a decision relocated
+    there and called as a free function is still decided where it is called, so its caller is a site. Only
+    :class:`PageForms`, built once per page and asked by measure and role, is the migrated route: its classes (the
+    page's forms and the value types it hands out) and their methods are not primitives. None before ``forms.py``
+    exists.
     """
-    path = root / _FORMS
-    if not path.exists():
-        return frozenset()
-    tree = ast.parse(path.read_text(encoding="utf-8"))
     return frozenset(
         node.name
-        for node in tree.body
+        for path in _forms_modules(root)
+        for node in ast.parse(path.read_text(encoding="utf-8")).body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")
     )
 
@@ -1862,10 +1864,14 @@ class TestAWrapperIsAPrimitive:
             encoding="utf-8",
         )
         assert _forms_primitives(tmp_path) == frozenset({"relocated"})
-        live = ast.parse((_SOURCE_ROOT / _FORMS).read_text(encoding="utf-8"))
+        part = tmp_path / _NUMBER_FORMS / "policy.py"
+        part.parent.mkdir(parents=True)
+        part.write_text("def relocated_to_a_part(v):\n    return v\n", encoding="utf-8")
+        assert _forms_primitives(tmp_path) == frozenset({"relocated", "relocated_to_a_part"})
         assert _FORMS_CALLABLES == {
             node.name
-            for node in live.body
+            for path in _forms_modules()
+            for node in ast.parse(path.read_text(encoding="utf-8")).body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")
         }
         assert _FORMS_CALLABLES <= _BASE_PRIMITIVES
@@ -1896,9 +1902,27 @@ class TestAWrapperIsAPrimitive:
     def test_forms_primitives_are_none_before_forms_exists(self, tmp_path):
         assert _forms_primitives(tmp_path) == frozenset()
 
+    def test_the_forms_free_functions_are_pinned_wherever_their_module_moves(self):
+        """The free functions read as primitives, pinned by name: a function moved out of ``forms.py`` and its parts,
+        or a part the walk stops reading, shrinks the set and fails here rather than letting its callers go unseen."""
+        assert "threetears/evals/analysis/report/number_forms/policy.py" in _FORMS_MODULES
+        assert _FORMS_CALLABLES == {
+            "campaign_set",
+            "interval_level",
+            "policy_bounded_places",
+            "policy_declared",
+            "policy_effect",
+            "policy_figure",
+            "policy_interval",
+            "policy_p",
+            "policy_percent",
+            "policy_places",
+            "policy_rate",
+        }
+
     def test_an_owner_is_not_walked_so_routing_through_it_stays_the_remedy(self, tmp_path):
         """``forms.py`` is an owner before it exists: the walk and the report trees both pass over it."""
-        for module in (_FORMS, _RULE, "threetears/evals/analysis/report/figures.py"):
+        for module in (_FORMS, f"{_NUMBER_FORMS}/policy.py", _RULE, "threetears/evals/analysis/report/figures.py"):
             (tmp_path / module).parent.mkdir(parents=True, exist_ok=True)
             (tmp_path / module).write_text("x = round(1.5)\n", encoding="utf-8")
         walked = [path.relative_to(tmp_path).as_posix() for path in _walked_modules(tmp_path)]

@@ -70,7 +70,9 @@ from threetears.evals.analysis.report.keys.vocabulary import joint_guarantee
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.cost_unit import PRICED_TRIALS_TEMPLATE, money_ruler
 from threetears.evals.analysis.report.blocks import bare_columns
-from threetears.evals.analysis.report.forms import PageForms, Printed, Role
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.number_forms.kinds import Role
+from threetears.evals.analysis.report.number_forms.printed import Printed
 from threetears.evals.analysis.report.figures import (
     NO_SUCCESSFUL_RESULTS,
     ContrastPlaces,

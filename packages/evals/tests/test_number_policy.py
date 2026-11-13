@@ -29,8 +29,8 @@ import math
 
 import pytest
 
-from threetears.evals.analysis.report.forms import (
-    MeasureForm,
+from threetears.evals.analysis.report.forms import MeasureForm
+from threetears.evals.analysis.report.number_forms.policy import (
     policy_bounded_places,
     policy_declared,
     policy_effect,

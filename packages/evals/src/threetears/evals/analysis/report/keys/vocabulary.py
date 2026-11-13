@@ -8,10 +8,10 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.keys.figure import Figure, PERCENTILE_NAMES, Scale, _SCALE_COUNTS
+from threetears.evals.analysis.report.number_forms.kinds import Role
 from threetears.evals.analysis.report.words import stratum_name, stratum_names
 from threetears.evals.analysis.report_input import (
     SHARE_UNIT,
@@ -28,11 +28,6 @@ from threetears.evals.analysis.report_input import (
     Task,
 )
 from threetears.evals.analysis.report_margins import lead_aspect
-
-if TYPE_CHECKING:
-    # A page's forms decide over the figures this module reads, so the module that decides them reads this one: every
-    # caller hands its page's forms in, and the type is named for the checker alone.
-    from threetears.evals.analysis.report.forms import Role
 
 
 # --- the vocabulary a path is matched against -------------------------------------------------------------------
@@ -307,8 +302,8 @@ def joint_guarantee(alpha: float | None, size: int, *, corrected: bool = True) -
 def joint_level(family: ContrastFamily | None) -> tuple[float, int] | None:
     """What a written page's contrast family's intervals guarantee together (:func:`joint_guarantee`), which a figure
     in the package's words holds (:attr:`Figure.joint`) and every heading states
-    (:func:`~threetears.evals.analysis.report.forms.interval_level`). None for no family, one that corrects nothing
-    (no correction, or ``none``), and every family :func:`joint_guarantee` reads none for.
+    (:func:`~threetears.evals.analysis.report.number_forms.intervals.interval_level`). None for no family, one that
+    corrects nothing (no correction, or ``none``), and every family :func:`joint_guarantee` reads none for.
 
     :param family: The contrast family, or None.
     :ptype family: ContrastFamily | None

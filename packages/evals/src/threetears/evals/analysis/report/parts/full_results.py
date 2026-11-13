@@ -67,7 +67,8 @@ from threetears.evals.analysis.report.keys.reads import (
     cost_ruler,
 )
 from threetears.evals.analysis.report.keys.resolve import format_figure, held_figure, resolve
-from threetears.evals.analysis.report.forms import ColumnMoney, MeasureForm, PageForms
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.number_forms.printed import ColumnMoney, MeasureForm
 from threetears.evals.analysis.report.parts.charting import money_words, stat_value
 from threetears.evals.analysis.report.parts.look import GATE_STATUS, PageLook, Quantity
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION

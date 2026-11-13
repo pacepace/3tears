@@ -47,9 +47,10 @@ retired planned page) are here, once:
   each by its first factor's level, the kit's series in that factor's order, and its legend names the levels.
 - **A scatter's labels** (:func:`point_labels`): every point's name where a chart draws at most eight, else only the
   stressed and the recommended one's, so labels never bury the points; narrow, the arm's letter tag.
-- **An interval's level** (:func:`~threetears.evals.analysis.report.forms.interval_level`): one form wherever it
-  prints, a chart's head and a table's cell alike: where its family corrects its comparisons together, the joint
-  guarantee they hold at (``95% (adjusted for 16 comparisons)``); any other level as the input states it, never rounded.
+- **An interval's level** (:func:`~threetears.evals.analysis.report.number_forms.intervals.interval_level`): one
+  form wherever it prints, a chart's head and a table's cell alike: where its family corrects its comparisons
+  together, the joint guarantee they hold at (``95% (adjusted for 16 comparisons)``); any other level as the input
+  states it, never rounded.
 - **Row order** (:meth:`ChartContext.arm_order`): a chart's rows in its query's order, else the page's.
 - **The descriptive rule** (:func:`separated`): a change code computes from two point figures is bold where it lies
   beyond 1.96 times the two standard errors' hypotenuse (a half-width counts as 1.96 standard errors), muted

@@ -20,6 +20,12 @@ The figure-key grammar's code moves out of `report.figure_keys` into the package
 `resolve` and `grammar`), each reading only the parts before it. `report.figure_keys` still exports every name its
 `__all__` lists; the public names it did not list are importable from their new modules, which `MIGRATIONS.toml` names.
 
+A page's number forms move the same way: the parts `report.forms.PageForms` decides with move out of `report.forms`
+into the package `report.number_forms`, one module per part (`kinds`, `policy`, `intervals`, `sets`, `printed`,
+`written` and `code_page`), each reading only the parts before it. `PageForms` stays whole in `report.forms`, which
+still exports every name its `__all__` lists; the public names it did not list are importable from their new modules,
+which `MIGRATIONS.toml` names.
+
 ### evals: a negative value on a measure declared non-negative is named
 
 **Added:** `AnalysisContextBundle.negative_values` (a list of `NegativeValues`: measure, arm, the number of results, and

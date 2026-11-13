@@ -63,7 +63,7 @@ from threetears.evals.analysis.quantities import MONEY, is_money
 from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn, bare_columns
 from threetears.evals.analysis.report.charts import OPEN_ABOVE
 from threetears.evals.analysis.report.cost_unit import MoneyRuler
-from threetears.evals.analysis.report.forms import ColumnMoney
+from threetears.evals.analysis.report.number_forms.printed import ColumnMoney
 from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
     Drawn,

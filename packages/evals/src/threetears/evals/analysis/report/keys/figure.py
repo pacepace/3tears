@@ -7,15 +7,11 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, get_args
+from typing import Literal, get_args
 
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
+from threetears.evals.analysis.report.number_forms.kinds import Role
 from threetears.evals.analysis.report.words import TOLD_APART
-
-if TYPE_CHECKING:
-    # A page's forms decide over the figures this module reads, so the module that decides them reads this one: every
-    # caller hands its page's forms in, and the type is named for the checker alone.
-    from threetears.evals.analysis.report.forms import Role
 
 
 #: What a figure is: a number, an interval (low, high), a piece of text, or an arm (rendered by name and tag).

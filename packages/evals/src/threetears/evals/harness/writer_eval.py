@@ -166,7 +166,9 @@ from threetears.evals.analysis.report.blocks import (
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.report.figures import ContrastPlaces, MeasureRuler, report_rulers
-from threetears.evals.analysis.report.forms import EVEN_SHARE, PageForms, PreferenceShares
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.number_forms.printed import PreferenceShares
+from threetears.evals.analysis.report.number_forms.sets import EVEN_SHARE
 from threetears.evals.analysis.report.charts import (
     ChartReference,
     DotIntervalChart,

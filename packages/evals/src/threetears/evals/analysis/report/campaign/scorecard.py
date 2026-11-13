@@ -65,7 +65,8 @@ from threetears.evals.analysis.report.campaign.measure_kinds import (
     shown_measures,
 )
 from threetears.evals.analysis.report.figures import MeasureRuler, Rulers, report_rulers
-from threetears.evals.analysis.report.forms import PageForms, Printed
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.number_forms.printed import Printed
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.analysis.report.campaign.common import floor_of
 from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of

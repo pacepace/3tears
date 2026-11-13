@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report.cost_unit import REPLIES, CostBasis, MoneyRuler, money_ruler, per_count, per_noun
@@ -45,6 +44,7 @@ from threetears.evals.analysis.report.keys.vocabulary import (
     _text,
     _unstated,
 )
+from threetears.evals.analysis.report.number_forms.kinds import Role
 from threetears.evals.analysis.report.words import given_name
 from threetears.evals.analysis.report_input import (
     Arm,
@@ -77,11 +77,6 @@ from threetears.evals.analysis.report_margins import (
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import lever_reader_name
 from threetears.evals.kernel.metrics import goal_check_of
-
-if TYPE_CHECKING:
-    # A page's forms decide over the figures this module reads, so the module that decides them reads this one: every
-    # caller hands its page's forms in, and the type is named for the checker alone.
-    from threetears.evals.analysis.report.forms import Role
 
 
 def _of_the_pass_rate(roles: Mapping[str, Role]) -> _LedgerAs:
