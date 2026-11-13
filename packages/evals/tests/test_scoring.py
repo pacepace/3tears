@@ -29,6 +29,7 @@ loud, so it needs a test that fires it.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Collection
 from typing import Any
 
 import pytest
@@ -56,10 +57,12 @@ from threetears.evals.kernel.scoring import (
     result_composite,
     summarize_completeness,
 )
+from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.models import (
     TRANSCRIPT_DIM_ID,
     AsyncDelivery,
     EvalResult,
+    EvalRun,
     LatencyMetrics,
     RoleUsage,
     RubricScore,
@@ -763,12 +766,18 @@ _DIGEST = "measured-digest-1"
 _SERVED = ("served-model-1",)
 
 
-def _launched(run):
+def _launched(run: EvalRun) -> EvalRun:
     """``run`` with the template digest a launch freezes on it."""
     return run.model_copy(update={"template_digest": _DIGEST})
 
 
-def _cell_of(run, profile=None, *, served=_SERVED, served_unrecorded=False):
+def _cell_of(
+    run: EvalRun,
+    profile: HostProfile | None = None,
+    *,
+    served: Collection[str] = _SERVED,
+    served_unrecorded: bool = False,
+) -> PassHatKCell:
     """The cell of ``run`` for a contestant whose responses named ``served`` (and, ``served_unrecorded``, one named none)."""
     return pass_hat_k_cell(run, profile, served=served, served_unrecorded=served_unrecorded)
 
@@ -1265,7 +1274,9 @@ def test_a_toy_host_run_with_no_async_tools_carries_none_of_them() -> None:
 # =============================================================================
 
 
-def _cost_result(model="m1", run_id="r1", k=1, cost=0.01, prod_cost=None, **kwargs):
+def _cost_result(
+    model: str = "m1", run_id: str = "r1", k: int = 1, cost: float = 0.01, prod_cost: float | None = None, **kwargs: Any
+) -> EvalResult:
     """EvalResult carrying a cost for the cost-summary tests.
 
     ``prod_cost`` attaches a candidate usage row — a production-replicating role —
