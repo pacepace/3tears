@@ -27,8 +27,8 @@ log = get_logger(__name__)
 _ACL_READER_INDEXES_DDL: tuple[str, ...] = (
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::MEMBERS_NAMING_SQL;"
     " packages/agent/acl/src/threetears/agent/acl/query_visibility.py::CALLER_VISIBLE_CUSTOMERS_SQL; packages/agent/acl/src/threetears/agent/acl/query_visibility.py::CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL;"
-    " src/aibots/hub/customers/user_merge.py::_merge_group_members;"
-    " src/aibots/hub/customers/principal_invite_endpoints.py::_remove_memberships;"
+    " src/aibots/hub/rbac/collections.py::HubGroupMemberCollection.remove_member_everywhere;"
+    " src/aibots/hub/rbac/collections.py::HubGroupMemberCollection.repoint_member;"
     " src/aibots/hub/rbac/collections.py::HubGroupCollection.list_memberships_visible_to_user\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_members_reverse\n"
     "CREATE INDEX IF NOT EXISTS idx_group_members_reverse ON group_members (member_type, member_id)",
