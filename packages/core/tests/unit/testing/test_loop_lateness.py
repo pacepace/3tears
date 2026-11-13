@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-from collections.abc import Awaitable, Callable
+import time
+from collections.abc import Awaitable, Callable, Iterator
 
 import pytest
 
@@ -21,9 +22,11 @@ from threetears.core.testing.loop_lateness import (
     hold_the_loop,
     host_lateness,
     latest,
+    quietly,
     ticks_while,
     trusted,
 )
+from threetears.core.testing import loop_lateness
 
 
 def test_lateness_the_host_shared_at_the_same_moment_is_not_the_loops() -> None:
@@ -142,6 +145,69 @@ async def test_a_host_busy_in_every_attempt_could_not_measure_never_a_pass_or_a_
 
     with pytest.raises(CouldNotMeasure, match=r"^could not measure: the host's idle loop ran 50\.0 ms late"):
         await trusted(measure, _window, host_may_be_late=_BUDGET)
+    assert len(taken) == MEASURE_ATTEMPTS
+
+
+class _ScriptedHost:
+    """a :class:`HostTicker` whose idle loop is as late as the script says, once over each block it ticks beside."""
+
+    script: Iterator[float] = iter(())
+
+    def __init__(self) -> None:
+        self.ticks: list[Tick] = []
+
+    def __enter__(self) -> _ScriptedHost:
+        self._began = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        late = next(_ScriptedHost.script)
+        ended = time.perf_counter()
+        self.ticks = [(self._began, ended + 0.001 + late), (ended + 0.001 + late, ended + 0.002 + late)]
+
+
+@pytest.fixture
+def scripted(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[float]], None]:
+    """script the host's idle loop's lateness over each measurement :func:`quietly` takes."""
+
+    def script(lates: list[float]) -> None:
+        _ScriptedHost.script = iter(lates)
+
+    monkeypatch.setattr(loop_lateness, "HostTicker", _ScriptedHost)
+    return script
+
+
+def test_a_duration_on_a_quiet_host_is_taken_once(scripted: Callable[[list[float]], None]) -> None:
+    """Flips if a duration measured on a quiet host is retaken, or not handed back as measured."""
+    scripted([0.0])
+    taken: list[int] = []
+
+    def measure() -> float:
+        taken.append(1)
+        return 0.25
+
+    assert quietly(measure, host_may_be_late=_BUDGET) == 0.25
+    assert len(taken) == 1
+
+
+def test_a_duration_on_a_busy_host_is_retaken_and_the_quiet_retake_kept(
+    scripted: Callable[[list[float]], None],
+) -> None:
+    """Flips if a duration the host was busy for is kept (a speed ratio judged on a loaded host), or a quiet retake
+    is not."""
+    scripted([0.05, 0.0])
+    durations = iter([9.0, 0.25])
+
+    assert quietly(lambda: next(durations), host_may_be_late=_BUDGET) == 0.25
+
+
+def test_a_duration_the_host_was_busy_for_every_time_could_not_measure(scripted: Callable[[list[float]], None]) -> None:
+    """Flips if a duration timed on a host busy in every attempt passes, is judged, or retakes without bound."""
+    scripted([0.05] * MEASURE_ATTEMPTS)
+    taken: list[int] = []
+
+    with pytest.raises(CouldNotMeasure, match=r"^could not measure: the host's idle loop ran 50\.0 ms late"):
+        quietly(lambda: taken.append(1), host_may_be_late=_BUDGET)
     assert len(taken) == MEASURE_ATTEMPTS
 
 

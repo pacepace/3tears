@@ -26,7 +26,15 @@ import pytest
 
 from packages.core.tests.unit.shared_arrow import jobs
 from threetears.core.shared_arrow import SharedArrowFullError, SharedArrowPool, SharedArrowStore
-from threetears.core.testing.loop_lateness import HostTicker, Tick, added_lateness, hold_the_loop, latest, ticks_while
+from threetears.core.testing.loop_lateness import (
+    HostTicker,
+    Tick,
+    added_lateness,
+    hold_the_loop,
+    latest,
+    ticks_while,
+    trusted,
+)
 
 #: the large table's first column: 100 MiB of int64
 BIG_BYTES = 100 << 20
@@ -335,13 +343,25 @@ async def _handed(
     return ticks, host.ticks, answer
 
 
+async def _trusted_hand(
+    single: SharedArrowPool, table: pa.Table, *, planted: Callable[[], None] | None = None
+) -> tuple[list[Tick], list[Tick], dict[str, Any]]:
+    """:func:`_handed`, retaken while the host's own idle loop was later over it than the loop may be
+    (:func:`~threetears.core.testing.loop_lateness.trusted`: such a run says nothing about the code)."""
+    return await trusted(
+        lambda: _handed(single, table, planted=planted),
+        lambda measured: (measured[0], measured[1]),
+        host_may_be_late=LOOP_MAY_BE_LATE,
+    )
+
+
 @pytest.mark.loop_timing
 class TestTheLoopRunsWhileALargeTableIsHanded:
     async def test_a_ticker_is_never_late_while_100mb_is_handed_to_a_worker(
         self, store: SharedArrowStore, single: SharedArrowPool, big: tuple[pa.Table, str]
     ) -> None:
         table, digest = big
-        ticks, host, answer = await _handed(single, table)
+        ticks, host, answer = await _trusted_hand(single, table)
         assert answer["sha256"] == digest
         added = added_lateness(ticks, host, every=TICK)
         assert added < LOOP_MAY_BE_LATE, (
@@ -354,7 +374,7 @@ class TestTheLoopRunsWhileALargeTableIsHanded:
     ) -> None:
         """the judgement's red case: 30 ms of blocking on the loop itself while the table is handed fails it."""
         table, digest = big
-        ticks, host, answer = await _handed(single, table, planted=lambda: hold_the_loop(0.03))
+        ticks, host, answer = await _trusted_hand(single, table, planted=lambda: hold_the_loop(0.03))
         assert answer["sha256"] == digest
         added = added_lateness(ticks, host, every=TICK)
         assert added >= LOOP_MAY_BE_LATE, f"a 30 ms block on the loop was judged {added * 1000:.1f} ms"

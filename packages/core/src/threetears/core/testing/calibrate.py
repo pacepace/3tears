@@ -29,6 +29,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from contextlib import asynccontextmanager
 from typing import Any
 
+from threetears.core.testing.loop_lateness import HostTicker, Tick, trusted
+
 __all__ = [
     "best_seconds_interleaved",
     "budget_problem",
@@ -41,6 +43,10 @@ DEFAULT_BUDGET_FACTOR = 2.0
 
 #: runs a baseline or a path is timed over; the best is kept
 _RUNS = 3
+
+#: the most the host's own idle loop may be late while a bare and a path are timed side by side for their ratio to
+#: judge the path (:func:`best_seconds_interleaved`)
+HOST_MAY_BE_LATE = 0.020
 
 
 async def best_seconds(run: Callable[[], Awaitable[Any]], *, runs: int = _RUNS) -> float:
@@ -62,12 +68,22 @@ async def best_seconds(run: Callable[[], Awaitable[Any]], *, runs: int = _RUNS) 
 
 
 async def best_seconds_interleaved(
-    bare: Callable[[], Awaitable[Any]], path: Callable[[], Awaitable[Any]], *, runs: int = _RUNS
+    bare: Callable[[], Awaitable[Any]],
+    path: Callable[[], Awaitable[Any]],
+    *,
+    runs: int = _RUNS,
+    host_may_be_late: float = HOST_MAY_BE_LATE,
 ) -> tuple[float, float]:
     """the fastest of ``runs`` awaits of each side, the two run turn about: the bare, then the path, ``runs`` times.
 
     A busy machine's noise then lands on both sides alike, so their ratio holds where two best-of-N runs taken one
-    after the other would each catch a different moment's load.
+    after the other would each catch a different moment's load. A machine busy for the whole measurement does not
+    land alike: a core-wide load stretched one real-size read's bare 485 ms against 74-89 ms alone, and its ratio
+    said nothing about the code. So the host's own idle loop ticks beside the runs (:class:`HostTicker`, in a process
+    of its own), and the runs are judged only when it was late by at most ``host_may_be_late`` over them; else they
+    are retaken, and when no measurement is trusted the call raises
+    :class:`~threetears.core.testing.loop_lateness.CouldNotMeasure` -- never a pass, never a red
+    (:func:`~threetears.core.testing.loop_lateness.trusted`).
 
     :param bare: makes the baseline's awaitable, once a run
     :ptype bare: Callable[[], Awaitable[Any]]
@@ -75,18 +91,29 @@ async def best_seconds_interleaved(
     :ptype path: Callable[[], Awaitable[Any]]
     :param runs: how many runs of each
     :ptype runs: int
+    :param host_may_be_late: the most the host's idle loop may be late over the runs
+    :ptype host_may_be_late: float
     :return: the bare's best seconds, and the path's
     :rtype: tuple[float, float]
+    :raises CouldNotMeasure: when the host was too late over every measurement
     """
-    best_bare = best_path = float("inf")
-    for _ in range(runs):
-        began = time.perf_counter()
-        await bare()
-        best_bare = min(best_bare, time.perf_counter() - began)
-        began = time.perf_counter()
-        await path()
-        best_path = min(best_path, time.perf_counter() - began)
-    return best_bare, best_path
+
+    async def measure() -> tuple[tuple[float, float], list[Tick], list[Tick]]:
+        best_bare = best_path = float("inf")
+        with HostTicker() as host:
+            first = time.perf_counter()
+            for _ in range(runs):
+                began = time.perf_counter()
+                await bare()
+                best_bare = min(best_bare, time.perf_counter() - began)
+                began = time.perf_counter()
+                await path()
+                best_path = min(best_path, time.perf_counter() - began)
+            last = time.perf_counter()
+        return (best_bare, best_path), [(first, last)], host.ticks
+
+    measured, _, _ = await trusted(measure, lambda taken: (taken[1], taken[2]), host_may_be_late=host_may_be_late)
+    return measured
 
 
 def _plain_name() -> str:

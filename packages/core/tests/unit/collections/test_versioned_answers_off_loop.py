@@ -32,6 +32,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.versioned_answers import AnswerOutcome, VersionedAnswers, answer_json
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
+from threetears.core.testing.loop_lateness import CouldNotMeasure, HostTicker, host_lateness
 
 _SCOPE = "tool_pod-answersoffloop"
 
@@ -215,6 +216,26 @@ async def _gz(text: _Answer) -> bytes:
 #: on a laptop; what this rules out is one call holding the lock for a whole answer (0.9 s for the series, 2026-10-31)
 LOOP_MAY_BE_LATER = 0.015
 
+
+async def _host_late_over(measure: Callable[[], Awaitable[Any]]) -> tuple[Any, float]:
+    """what ``measure()`` gave, and the latest the host's own idle loop (:class:`HostTicker`, in a process of its own)
+    woke over it: a pair measured while the host itself ran later than the bound says nothing about the code, and is
+    neither a pass nor a red (:func:`~threetears.core.testing.loop_lateness.trusted`)."""
+    with HostTicker() as host:
+        began = time.perf_counter()
+        measured = await measure()
+        ended = time.perf_counter()
+    return measured, host_lateness(host.ticks, [(began, ended)])
+
+
+def _could_not_measure(seen: list[float]) -> CouldNotMeasure:
+    """the failure of a bound no pair of which the host was quiet enough for."""
+    return CouldNotMeasure(
+        f"could not measure: the host's idle loop ran {max(seen) * 1000:.1f} ms late (each of {len(seen)} pairs past "
+        f"{LOOP_MAY_BE_LATER * 1000:.1f} ms: {', '.join(f'{late * 1000:.1f}' for late in seen)} ms)"
+    )
+
+
 #: how many times a loop-timing bound is measured, each time the work's lateness and then the floor beside plain
 #: Python for as long, back to back. A runner's other batches add to both only while they run, so a measurement taken
 #: while one started beside it can miss by their load, not the code's; the bound holds when one pair meets it. A
@@ -388,13 +409,24 @@ class TestTheLoopRunsWhileALargeAnswerIsWritten:
         self, answer: Any
     ) -> None:
         pairs: list[tuple[float, float]] = []
-        for _ in range(TIMING_PAIRS):
+        seen: list[float] = []
+
+        async def pair() -> tuple[float, float, str]:
             late, took, text = await _late_while(answer_json, answer)
             floor, _, _ = await _late_while(_busy, took)
+            return late, floor, text
+
+        for _ in range(TIMING_PAIRS):
+            (late, floor, text), host_late = await _host_late_over(pair)
             assert len(text) > 5_000_000
+            if host_late > LOOP_MAY_BE_LATER:
+                seen.append(host_late)
+                continue
             pairs.append((late, floor))
             if late < floor + LOOP_MAY_BE_LATER:
                 break
+        if not pairs:
+            raise _could_not_measure(seen)
         assert any(late < floor + LOOP_MAY_BE_LATER for late, floor in pairs), (
             "the loop ran late while the answer was written, in every pair: "
             + "; ".join(f"{late * 1000:.1f} ms, {floor * 1000:.1f} ms beside plain Python" for late, floor in pairs)
@@ -498,11 +530,14 @@ class TestTheLoopRunsWhileALargeAnswerIsStoredAndRead:
         expected = text.encode("utf-8")
         steps = ("stored", "read from L2", "read from L1")
         pairs: dict[str, list[tuple[float, float]]] = {name: [] for name in steps}
-        for _ in range(TIMING_PAIRS):
+        seen: list[float] = []
+
+        async def measured() -> dict[str, tuple[float, float]]:
             # a fresh bus and replicas each time, so each is stored, read from L2 and read from L1 again. Both keep
             # an L1, as a serving pod does: the writer keeps the answer it stored
             bus = FakeNatsClient()
             writer, reader = replica(bus, l1=True), replica(bus, l1=True)
+            taken: dict[str, tuple[float, float]] = {}
             for name, answers, outcome in (
                 (steps[0], writer, AnswerOutcome.COMPUTED),
                 (steps[1], reader, AnswerOutcome.READ),
@@ -514,9 +549,20 @@ class TestTheLoopRunsWhileALargeAnswerIsStoredAndRead:
                 floor, _, _ = await _late_while(_busy, took)
                 assert given.outcome is outcome
                 assert len(given.body) > 4_000_000 and gzip.decompress(given.body) == expected
-                pairs[name].append((late, floor))
+                taken[name] = (late, floor)
+            return taken
+
+        for _ in range(TIMING_PAIRS):
+            taken, host_late = await _host_late_over(measured)
+            if host_late > LOOP_MAY_BE_LATER:
+                seen.append(host_late)
+                continue
+            for name in steps:
+                pairs[name].append(taken[name])
             if all(any(late < floor + LOOP_MAY_BE_LATER for late, floor in pairs[name]) for name in steps):
                 break
+        if not pairs[steps[0]]:
+            raise _could_not_measure(seen)
         for name in steps:
             assert any(late < floor + LOOP_MAY_BE_LATER for late, floor in pairs[name]), (
                 f"the loop ran late while a large answer was {name}, in every pair: "

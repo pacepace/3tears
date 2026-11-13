@@ -51,7 +51,16 @@ from threetears.core.security import (
     verify_door_request,
 )
 from threetears.core.security.identity_token import IdentityClaims
-from threetears.core.testing.loop_lateness import HostTicker, Tick, added_lateness, hold_the_loop, latest, ticks_while
+from threetears.core.testing.loop_lateness import (
+    MEASURE_ATTEMPTS,
+    HostTicker,
+    Tick,
+    added_lateness,
+    hold_the_loop,
+    latest,
+    ticks_while,
+    trusted,
+)
 
 _TX_ID = "019d9a00-0000-7000-8000-0000000000aa"
 _HUB, _HUB_PUB = generate_signing_keypair()
@@ -418,6 +427,26 @@ async def _copy_rounds(records: list[tuple[Any, ...]], *, during_copy: Any = Non
     return rounds, host.ticks
 
 
+#: the most the host's own idle loop may be late over a run of copies for the run to judge the code: the least a copy
+#: may hold the loop (:func:`_held_too_long`'s turn, before any idle jitter)
+_HOST_MAY_BE_LATE = 0.005
+
+
+async def _trusted_rounds(
+    records: list[tuple[Any, ...]], *, during_copy: Any = None
+) -> tuple[list[_Round], list[Tick]]:
+    """:func:`_copy_rounds`, retaken while the host's own idle loop was later over the copies than a copy may hold
+    the loop (:func:`~threetears.core.testing.loop_lateness.trusted`: such a run says nothing about the code)."""
+
+    def window(measured: tuple[list[_Round], list[Tick]]) -> tuple[list[Tick], list[Tick]]:
+        rounds, host = measured
+        return [rounds[0].during[0], rounds[-1].during[-1]], host
+
+    return await trusted(
+        lambda: _copy_rounds(records, during_copy=during_copy), window, host_may_be_late=_HOST_MAY_BE_LATE
+    )
+
+
 def test_a_load_spike_at_another_moment_hides_no_stall() -> None:
     """the host loop 30 ms late before the copy credits none of a 20 ms stall after it: the round is held too long."""
     host = [(0.0, 0.031), *((0.031 + n * 0.001, 0.032 + n * 0.001) for n in range(100))]
@@ -432,14 +461,14 @@ class TestTheCallersLoopRunsWhileACopyIsBuilt:
         """the build reads the caller's rows (Python objects) on a thread and takes turns with the loop: each 12 MB
         copy holds the loop no longer than its own idle jitter and a turn, the idle measured either side of it, past
         what the host's own idle loop was late at the same moments."""
-        rounds, host = await _copy_rounds(_wide_records(16_000))
+        rounds, host = await _trusted_rounds(_wide_records(16_000))
         problem = _held_too_long(rounds, host)
         assert problem is None, problem
 
     async def test_the_host_baseline_ticks_through_every_copy(self) -> None:
         """the host loop's ticks span each copy with no gap past its own lateness: the baseline is taken at the
         copy's moments, never minutes away."""
-        rounds, host = await _copy_rounds(_wide_records(16_000))
+        rounds, host = await _trusted_rounds(_wide_records(16_000))
         for measured in rounds:
             assert host[0][0] <= measured.during[0][0] and measured.during[-1][1] <= host[-1][1]
         assert all(later[0] - earlier[1] < 0.001 for earlier, later in itertools.pairwise(host))
@@ -457,12 +486,13 @@ class TestTheCallersLoopRunsWhileACopyIsBuilt:
             return original(ipc)
 
         monkeypatch.setattr(arrow_copy, "rows_digest", holding)
-        rounds, host = await _copy_rounds(_wide_records(16_000))
-        assert len(held) == _ROUNDS
+        rounds, host = await _trusted_rounds(_wide_records(16_000))
+        # every copy of every measurement taken (a retake runs its rounds again) went through the holding build
+        assert len(held) in {_ROUNDS * taken for taken in range(1, MEASURE_ATTEMPTS + 1)}, len(held)
         assert _held_too_long(rounds, host) is not None, rounds
 
     async def test_blocking_planted_on_the_loop_is_caught(self) -> None:
         """the second red case: 30 ms of blocking on the caller's loop itself during each copy fails the judgement;
         the host loop, in its own process, is not late for it, so it credits none of it."""
-        rounds, host = await _copy_rounds(_wide_records(16_000), during_copy=lambda: hold_the_loop(0.03))
+        rounds, host = await _trusted_rounds(_wide_records(16_000), during_copy=lambda: hold_the_loop(0.03))
         assert _held_too_long(rounds, host) is not None, rounds

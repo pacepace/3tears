@@ -50,6 +50,7 @@ __all__ = [
     "hold_the_loop",
     "host_lateness",
     "latest",
+    "quietly",
     "ticks_while",
     "trusted",
 ]
@@ -256,7 +257,57 @@ async def trusted(
         if late <= host_may_be_late:
             return measured
         seen.append(late)
-    raise CouldNotMeasure(
+    raise _could_not_measure(seen, attempts, host_may_be_late)
+
+
+def quietly(
+    measure: Callable[[], _Measured], *, host_may_be_late: float, attempts: int = MEASURE_ATTEMPTS
+) -> _Measured:
+    """the first of up to ``attempts`` runs of ``measure()`` over which the host's idle loop, ticking beside it in a
+    process of its own (:class:`HostTicker`), was late by at most ``host_may_be_late``: :func:`trusted` for a
+    measurement that is no loop's ticks -- a duration, or two timed side by side for a speed ratio -- whose window is
+    the whole call.
+
+    A host too busy to run an idle loop on time stretches whatever a test times there, and stretches the two sides
+    of a ratio unevenly; such a run says nothing about the code. It is retaken, and when no run is trusted the test
+    fails with :class:`CouldNotMeasure`, never a pass and never a skip.
+
+    :param measure: takes one measurement, in full (a ratio: both sides)
+    :ptype measure: Callable[[], _Measured]
+    :param host_may_be_late: the most the host's idle loop may be late over the call
+    :ptype host_may_be_late: float
+    :param attempts: how many measurements to take at most
+    :ptype attempts: int
+    :return: the trusted measurement
+    :rtype: _Measured
+    :raises CouldNotMeasure: when the host was too late in every attempt
+    """
+    seen: list[float] = []
+    for _ in range(attempts):
+        with HostTicker() as host:
+            began = time.perf_counter()
+            measured = measure()
+            ended = time.perf_counter()
+        late = host_lateness(host.ticks, [(began, ended)])
+        if late <= host_may_be_late:
+            return measured
+        seen.append(late)
+    raise _could_not_measure(seen, attempts, host_may_be_late)
+
+
+def _could_not_measure(seen: list[float], attempts: int, host_may_be_late: float) -> CouldNotMeasure:
+    """the failure of a measurement no attempt of which the host was quiet enough for.
+
+    :param seen: the host's worst lateness in each attempt
+    :ptype seen: list[float]
+    :param attempts: how many were taken
+    :ptype attempts: int
+    :param host_may_be_late: the most it might have been
+    :ptype host_may_be_late: float
+    :return: the failure
+    :rtype: CouldNotMeasure
+    """
+    return CouldNotMeasure(
         f"could not measure: the host's idle loop ran {max(seen) * 1000:.1f} ms late "
         f"(each of {attempts} attempts past {host_may_be_late * 1000:.1f} ms: "
         f"{', '.join(f'{late * 1000:.1f}' for late in seen)} ms)"

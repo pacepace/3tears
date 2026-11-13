@@ -34,6 +34,7 @@ from threetears.core.keyed import (
     run_inline,
 )
 from threetears.core.keyed.held import HeldArrow, HeldMapping
+from threetears.core.testing.loop_lateness import quietly
 
 _HASHED = (HashColumn("name"), HashColumn("votes", HashKind.INTEGER))
 
@@ -216,6 +217,10 @@ def test_a_held_table_without_the_hash_column_is_refused(typed: duckdb.DuckDBPyC
 #: reports' held rows for one state's geographies (S/o34t: ~340k), in 120 groups
 _HELD_ROWS = 340_000
 
+#: the most the host's own idle loop may be late while the two forms are timed for the comparison to judge them: a
+#: host busier than that stretches the two sides unevenly (:func:`~threetears.core.testing.loop_lateness.quietly`)
+_HOST_MAY_BE_LATE = 0.020
+
 
 @pytest.mark.loop_timing
 def test_the_arrow_form_matches_reports_held_size_no_slower_than_the_mapping() -> None:
@@ -251,6 +256,11 @@ def test_the_arrow_form_matches_reports_held_size_no_slower_than_the_mapping() -
         return min(times)
 
     lanes, modulus = (1, 9, 17, 25), 2**32
-    by_mapping = best(lambda: HeldMapping.of(mapping, canonical, lanes, modulus))
-    by_arrow = best(lambda: HeldArrow(table, ["county", "id"], kinds, lanes, modulus, key_text))
+    by_mapping, by_arrow = quietly(
+        lambda: (
+            best(lambda: HeldMapping.of(mapping, canonical, lanes, modulus)),
+            best(lambda: HeldArrow(table, ["county", "id"], kinds, lanes, modulus, key_text)),
+        ),
+        host_may_be_late=_HOST_MAY_BE_LATE,
+    )
     assert by_arrow <= by_mapping, f"{_HELD_ROWS:,} held rows: Arrow {by_arrow:.3f} s, mapping {by_mapping:.3f} s"

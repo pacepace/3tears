@@ -30,6 +30,7 @@ import pyarrow.ipc as ipc
 import pytest
 
 from threetears.core.shared_arrow import Parts, SharedArrowStore
+from threetears.core.testing.loop_lateness import quietly
 
 TABLE = "t"
 
@@ -271,6 +272,33 @@ FLAT = 1.5
 #: and the version made current
 BARE_MULTIPLE = 2.0
 
+#: the most the host's own idle loop may be late over the rounds for them to judge the store: a host busier than that
+#: stretches the sizes and the bare write unevenly (:func:`~threetears.core.testing.loop_lateness.quietly`)
+HOST_MAY_BE_LATE = 0.020
+
+
+def _timed_rounds(small: _Copy, large: _Copy, bare_dir: Path) -> dict[str, list[float]]:
+    """each round's publish at N parts, at ten N, and the bare write, measured in turn, after one round to warm.
+
+    :return: the seconds of each, by ``n``, ``ten_n`` and ``bare``
+    :rtype: dict[str, list[float]]
+    """
+    times: dict[str, list[float]] = {"n": [], "ten_n": [], "bare": []}
+    for round_ in range(ROUNDS + 1):
+        for key, copy in (("n", small), ("ten_n", large)):
+            change = copy.change()
+            copy.swept()
+            started = time.perf_counter()
+            copy.publish(change)
+            elapsed = time.perf_counter() - started
+            copy.swept()
+            if round_:
+                times[key].append(elapsed)
+        bare = _bare_write(bare_dir, [_changed(round_) for _ in range(CHANGED)])
+        if round_:
+            times["bare"].append(bare)
+    return times
+
 
 @pytest.mark.loop_timing
 class TestAPublishTakesAsLongAsWhatItChanges:
@@ -284,20 +312,7 @@ class TestAPublishTakesAsLongAsWhatItChanges:
         small, large = copies
         bare_dir = tmp_path / "bare"
         bare_dir.mkdir()
-        times: dict[str, list[float]] = {"n": [], "ten_n": [], "bare": []}
-        for round_ in range(ROUNDS + 1):
-            for key, copy in (("n", small), ("ten_n", large)):
-                change = copy.change()
-                copy.swept()
-                started = time.perf_counter()
-                copy.publish(change)
-                elapsed = time.perf_counter() - started
-                copy.swept()
-                if round_:
-                    times[key].append(elapsed)
-            bare = _bare_write(bare_dir, [_changed(round_) for _ in range(CHANGED)])
-            if round_:
-                times["bare"].append(bare)
+        times = quietly(lambda: _timed_rounds(small, large, bare_dir), host_may_be_late=HOST_MAY_BE_LATE)
         n, ten_n, bare = (statistics.median(times[key]) for key in ("n", "ten_n", "bare"))
         print(
             f"publish of {CHANGED} parts: {PARTS} parts {n * 1000:.2f} ms; {TEN_TIMES} parts {ten_n * 1000:.2f} ms; "

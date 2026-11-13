@@ -7,7 +7,6 @@ request on the pod for 50-100 ms (cobalt prod reports pods, 2026-11-06, the star
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import json
@@ -20,6 +19,7 @@ from typing import Any
 import pytest
 from nats.js.errors import NotFoundError
 
+from threetears.core.testing.loop_lateness import HostTicker, Tick, added_lateness, latest, ticks_while, trusted
 from threetears.nats.object_store import NatsObjectStore
 
 #: past the size from which an object is hashed off the loop (1 MiB)
@@ -117,34 +117,41 @@ class TestALargeObjectIsHashedOffTheLoop:
         assert recorded["digest"] == "SHA-256=" + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode()
 
 
-async def _ticker(stop: asyncio.Event, late: list[float], every: float = 0.002) -> None:
-    """sleep ``every`` over and over, keeping how much later than asked each wake came."""
-    while not stop.is_set():
-        asked = time.perf_counter()
-        await asyncio.sleep(every)
-        late.append(time.perf_counter() - asked - every)
+#: what each tick of the loop's ticker asks to sleep
+_TICK = 0.002
+
+
+async def _hashed(data: bytes) -> tuple[list[Tick], list[Tick], int]:
+    """the loop's ticks and the host's idle loop's (:class:`HostTicker`, in a process of its own) while ``data`` is
+    put to a fresh store and got back, and the length got."""
+    store, _ = _store(chunk_bytes=8 << 20)
+    got: list[bytes] = []
+
+    async def put_and_get() -> None:
+        await store.put("enr/TX/1/huge", data)
+        got.append(await store.get("enr/TX/1/huge"))
+
+    with HostTicker() as host:
+        ticks = await ticks_while(put_and_get, every=_TICK)
+    return ticks, host.ticks, len(got[0])
 
 
 @pytest.mark.loop_timing
 class TestTheLoopRunsWhileALargeObjectIsHashed:
     async def test_a_ticker_is_never_held_while_a_256_mb_object_is_put_and_got(self) -> None:
-        store, _ = _store(chunk_bytes=8 << 20)
         data = b"\x5a" * (256 << 20)
         # how long one hash of it takes here, so the bound below is in proportion to this machine
         started = time.perf_counter()
         hashlib.sha256(data).digest()
         one_hash = time.perf_counter() - started
-        stop = asyncio.Event()
-        late: list[float] = []
-        ticking = asyncio.create_task(_ticker(stop, late))
-        await asyncio.sleep(0.01)
-        await store.put("enr/TX/1/huge", data)
-        got = await store.get("enr/TX/1/huge")
-        stop.set()
-        await ticking
-        assert len(got) == len(data)
-        worst = max(late)
-        assert worst < max(0.05, one_hash / 3), (
-            f"the loop was held {worst * 1000:.0f} ms while a 256 MB object was hashed "
-            f"(one hash takes {one_hash * 1000:.0f} ms)"
+        bound = max(0.05, one_hash / 3)
+        # judged past the host's own idle loop at the same moments, and only over a window it was on time for
+        ticks, host, got = await trusted(
+            lambda: _hashed(data), lambda measured: (measured[0], measured[1]), host_may_be_late=bound
+        )
+        assert got == len(data)
+        worst = added_lateness(ticks, host, every=_TICK)
+        assert worst < bound, (
+            f"the loop was held {worst * 1000:.0f} ms past the host's idle loop while a 256 MB object was hashed "
+            f"({latest(ticks, every=_TICK) * 1000:.0f} ms in all; one hash takes {one_hash * 1000:.0f} ms)"
         )
