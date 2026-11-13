@@ -6755,32 +6755,35 @@ def scan_whole_reads(
     imports: dict[str, dict[str, str]] = {}
     pattern = re.compile(transient) if transient else None
     modules = [(relative_posix_path(path, repo_root), path) for root in src_roots for path in iter_python_files(root)]
-    strings = {relative: _module_strings(parse_python_path(path)) for relative, path in modules}
+    # one tree per module for the whole walk: the passes below key what they find by the nodes they found it at
+    # (a builder, a forwarder, a module's tuples) and later passes look those nodes up again, so each pass must see
+    # the same tree. the shared parse cache keeps only some files' trees (its memory bound) and parses the rest
+    # anew on each call, so the walk holds its own
+    trees = {relative: parse_python_path(path) for relative, path in modules}
+    strings = {relative: _module_strings(trees[relative]) for relative, _ in modules}
     tuples: dict[str, dict[str, list[Passed]]] = {}
     # twice: a module's tuple may splice one another module binds
     for _ in range(2):
         tuples = {
             relative: _module_tuples(
-                parse_python_path(path),
-                {**_imported_strings(parse_python_path(path), strings), **strings.get(relative, {})},
-                _imported_tuples(parse_python_path(path), relative, tuples),
+                trees[relative],
+                {**_imported_strings(trees[relative], strings), **strings.get(relative, {})},
+                _imported_tuples(trees[relative], relative, tuples),
             )
-            for relative, path in modules
+            for relative, _ in modules
         }
-    cte_arguments = _cte_arguments([(relative, parse_python_path(path)) for relative, path in modules])
+    cte_arguments = _cte_arguments([(relative, trees[relative]) for relative, _ in modules])
     parameter_sites: dict[str, list[Site]] = {}
     parameter_values = _parameter_values(
-        [(relative, parse_python_path(path)) for relative, path in modules],
+        [(relative, trees[relative]) for relative, _ in modules],
         strings,
         tuples,
         parameter_sites,
         declared_parameters,
     )
-    match_builders = _match_builders([(relative, parse_python_path(path)) for relative, path in modules], strings)
-    never_none = _never_none_parameters([(relative, parse_python_path(path)) for relative, path in modules])
-    sentinel_templates = declared_templates(
-        [(relative, parse_python_path(path)) for relative, path in modules], strings
-    )
+    match_builders = _match_builders([(relative, trees[relative]) for relative, _ in modules], strings)
+    never_none = _never_none_parameters([(relative, trees[relative]) for relative, _ in modules])
+    sentinel_templates = declared_templates([(relative, trees[relative]) for relative, _ in modules], strings)
     walked: list[tuple[str, Path]] = []
     for relative, path in modules:
         excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
@@ -6790,16 +6793,16 @@ def scan_whole_reads(
         walked.append((relative, path))
     bounded = bounded_relations(
         bounded_producers or {},
-        [(relative, parse_python_path(path)) for relative, path in walked],
+        [(relative, trees[relative]) for relative, _ in walked],
         {
-            relative: {**_imported_strings(parse_python_path(path), strings), **strings.get(relative, {})}
-            for relative, path in walked
+            relative: {**_imported_strings(trees[relative], strings), **strings.get(relative, {})}
+            for relative, _ in walked
         },
     )
     scan.bounded_findings = bounded.findings
 
     def walk_of(relative: str, path: Path, forwarders: RepoForwarders | None) -> _ModuleWalk:
-        tree = parse_python_path(path)
+        tree = trees[relative]
         return _ModuleWalk(
             relative,
             tree,
@@ -6830,12 +6833,12 @@ def scan_whole_reads(
 
     # the repo's step builders, by name across every walked module: a call of one is a step judged where it is
     # written (R11)
-    builders = step_builders([parse_python_path(path) for _, path in walked])
+    builders = step_builders([trees[relative] for relative, _ in walked])
     forwarders: RepoForwarders | None = None
     if public_forwarders:
         # each module's flow settles into the repo's shared state; once a pass over every module adds nothing, a
         # forwarder's every caller is judged by what the forwarder hands a step
-        forwarders = RepoForwarders.collect([(relative, parse_python_path(path)) for relative, path in walked])
+        forwarders = RepoForwarders.collect([(relative, trees[relative]) for relative, _ in walked])
         for _ in range(_PARAMETER_DEPTH):
             before = forwarders.size()
             for relative, path in walked:
@@ -6843,7 +6846,7 @@ def scan_whole_reads(
             if forwarders.size() == before:
                 break
     for relative, path in walked:
-        tree = parse_python_path(path)
+        tree = trees[relative]
         walk = walk_of(relative, path, forwarders)
         walk.visit(tree)
         stubs.update(walk.stubs)

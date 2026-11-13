@@ -3,6 +3,7 @@ election night, and its one way out: the exemptions ledger."""
 
 from __future__ import annotations
 
+import ast
 import textwrap
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import re
 
 from threetears.core.declared import sentinel_templates
 from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, no_whole_reads_findings, use_the_helper_findings
+from threetears.enforcement.no_whole_reads import walker
 from threetears.enforcement.no_whole_reads.schema import collect_schema, index_findings
 
 #: the ledger's name, beside each repo's gate
@@ -4117,6 +4119,19 @@ def test_a_public_forwarder_of_another_module_is_judged_at_each_call_where_the_r
     assert {"over_the_table", "evicts_the_table"} <= functions, found
     library = {function for function, _ in _symbols(_config(tmp_path, modules))}
     assert {"annotated_step", "runs_step", "Thinning.kept_runs_step", "Eviction.let_go"} <= library, library
+
+
+def test_a_walk_judges_the_same_when_the_parse_cache_keeps_no_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the walk's findings change when the shared parse cache hands out a new tree on every call (what it
+    does for every file past its memory bound): the walk's passes key a forwarder, a builder or a module's tuples by
+    the nodes they found them at, so a pass handed a second tree of the same module stops finding them (reports'
+    gate went 55 -> 374 findings, 3tears' 150 -> 193, once the cache was bounded)."""
+    modules = {"pkg/rules.py": _PUBLIC_RULES, "pkg/settle.py": _PUBLIC_CALLERS, **_STEP_BUILDERS}
+    kept = _symbols(_config(tmp_path, modules, public_forwarders=True))
+    monkeypatch.setattr(walker, "parse_python_path", lambda path: ast.parse(path.read_text(encoding="utf-8")))
+    assert _symbols(_config(tmp_path, modules, public_forwarders=True)) == kept
 
 
 #: a local in each module sharing a public forwarder's name: a local, never the function used as a value
