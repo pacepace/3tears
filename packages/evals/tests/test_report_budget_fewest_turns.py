@@ -38,7 +38,7 @@ from typing import Any, Final
 import pytest
 
 from packages.evals.tests.analyst_support import fixture_snapshots
-from packages.evals.tests.offline_support import Connect, refuse_connects
+from packages.evals.tests.offline_support import Connect, assert_no_connects, refuse_connects
 from packages.evals.tests.report_writer_support import (
     FakeToolTurnClient,
     FakeTurnModel,
@@ -273,7 +273,7 @@ async def test_the_writer_eval_warns_once_and_says_what_the_paged_reports_needed
 
     result = await _eval(tmp_path, arms, WARNED_BUDGET).run()
 
-    assert offline == []
+    assert_no_connects(offline)
     # One warning for the launch, citing the records, at the figure two of its own first-turn ceiling come to.
     (warning,) = [line for line in result.disclosures if "recorded Sonnet 5.5" in line]
     twice = re.fullmatch(
@@ -334,7 +334,8 @@ async def test_a_writer_eval_whose_budget_cannot_admit_one_turn_is_refused_befor
     )
     assert said is not None, str(refused.value)
     assert _dollars(said[1]) > 0.25 and _dollars(said[2]) >= _dollars(said[1])
-    assert not (tmp_path / "evals.sqlite").exists() and offline == []
+    assert not (tmp_path / "evals.sqlite").exists()
+    assert_no_connects(offline)
 
 
 def _floor(model: str, text: str, role: str = "analyst") -> float:
@@ -371,7 +372,8 @@ async def test_an_editor_whose_first_turn_the_budget_cannot_admit_is_refused_by_
     assert said is not None, str(refused.value)
     assert _dollars(said[1]) == pytest.approx(editor, abs=0.006) and _dollars(said[2]) == pytest.approx(between)
     assert _dollars(said[3]) >= _dollars(said[1])
-    assert not (tmp_path / "evals.sqlite").exists() and offline == []
+    assert not (tmp_path / "evals.sqlite").exists()
+    assert_no_connects(offline)
 
 
 async def test_a_warning_on_a_model_no_acceptance_run_recorded_cites_no_figures(
@@ -385,7 +387,8 @@ async def test_a_warning_on_a_model_no_acceptance_run_recorded_cites_no_figures(
 
     (warning,) = [line for line in result.disclosures if "of a first turn's ceiling" in line]
     assert warning.endswith(f"so the cap may stop a report before its review; no acceptance run is recorded on {HAIKU}")
-    assert "Sonnet" not in warning and offline == []
+    assert "Sonnet" not in warning
+    assert_no_connects(offline)
 
 
 def _withheld(tmp_path: Path) -> list[list[str]]:
