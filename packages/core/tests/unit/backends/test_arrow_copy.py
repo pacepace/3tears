@@ -242,6 +242,7 @@ class _HandingLoop:
         self.handed = 0
         self.ran = 0
         self.waited: list[float] = []
+        self.first_handed = threading.Event()
 
     def is_closed(self) -> bool:
         return self.loop.is_closed()
@@ -255,27 +256,34 @@ class _HandingLoop:
             self.waited.append(time.perf_counter() - posted)
             callback()
 
-        return self.loop.call_soon_threadsafe(run)
+        handle = self.loop.call_soon_threadsafe(run)
+        self.first_handed.set()
+        return handle
 
 
 async def test_a_build_hands_its_turns_to_the_callers_loop_and_waits_for_each() -> None:
     """a turn is handed, not offered: the build schedules each turn on the caller's loop and goes on only once the loop
     ran it. A sleep-only turn let a build on a loaded host take the lock back before the loop's thread was scheduled,
-    and the loop waited out the 5 ms switch interval turn after turn."""
+    and the loop waited out the 5 ms switch interval turn after turn.
+
+    The loop stays busy from the moment the build hands its first turn, not from the build's start: how long a build
+    on a loaded host takes to reach that first turn is the host's, and a busy stretch timed from the start could end
+    before the turn was handed (pool, brooks-nas: the first turn waited 7 ms of a 30 ms busy loop). The busy stretch
+    stays well inside the build's bounded wait for a turn (50 ms), so a slow sleep cannot let the build go on."""
     loop = _HandingLoop(asyncio.get_running_loop())
-    started = threading.Event()
 
     def build() -> Any:
-        started.set()
         return copy_rows_arrow([f"c{n}" for n in range(42)], _wide_records(4_000), loop=loop)  # type: ignore[arg-type]
 
     building = loop.loop.run_in_executor(None, build)
-    started.wait(5)
-    time.sleep(0.03)  # the loop busy: the build's first turn waits for it
+    assert loop.first_handed.wait(5), "the build handed the loop no turn"
+    time.sleep(0.02)  # the loop busy past the first turn's handing: the build waits for it
+    handed_while_busy = loop.handed
     rows = await building
     assert rows.ipc
-    assert loop.handed > 0 and loop.ran == loop.handed
-    assert max(loop.waited) >= 0.02, loop.waited
+    assert loop.handed > 1 and loop.ran == loop.handed
+    assert handed_while_busy == 1, "the build went on while its handed turn waited for the loop"
+    assert loop.waited[0] >= 0.02, loop.waited
 
 
 class _TimedLoop:
