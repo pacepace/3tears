@@ -313,7 +313,9 @@ an arm names: the candidate, every judge model and the simulator model. The cand
 calls it through (`LaunchableKind.candidate_role`: the judge kind's is `judge`). A candidate the host calls through
 its own route is asked with no role, and only the host's factory can say where it goes: the shipped `Clients` does
 not route it, so it answers nothing, and the check is reported skipped rather than read from a list of a provider the
-candidate may never be sent to. The shipped `Clients` reads OpenRouter's model list, which is the price catalogue its
+candidate may never be sent to. A host turns the check on in one line: `candidate_role="<factory role>"` on its kind's
+launch entry when the candidate goes through a factory client, or a factory `model_listing` that answers for
+`role=None` ([adopting a host](adopting-a-host.md#bringing-a-provider)); the skip notice names both. The shipped `Clients` reads OpenRouter's model list, which is the price catalogue its
 models share, so one read serves this check and the pricing after it: rows younger than the catalogue's
 `refresh_after` are kept, older ones fetched again. A model that list does not name is refused, naming the model
 and the provider. A list that cannot be read, or whose refresh failed so it is not current, leaves the arm admitted,

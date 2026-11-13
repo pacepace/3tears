@@ -3008,7 +3008,9 @@ async def _served_checks(host: LaunchHost, launchable: LaunchableKind, plan: Arm
                     listed=None,
                     detail=(
                         "the host calls this candidate through its own route, and its client factory names no "
-                        "provider model list for it"
+                        "provider model list for it. To check it, set candidate_role to the factory role on the "
+                        "kind's LaunchableKind when the candidate goes through a factory client, or answer "
+                        "model_listing(model, role=None) in the host's client factory"
                     ),
                 )
             )

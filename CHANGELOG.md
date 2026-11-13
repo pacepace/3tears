@@ -211,8 +211,10 @@ list that cannot be read lets the launch go ahead, and the caller is told the ch
 the answer of `run_launch`, `sweep_launch`, `sweep_resume` and `job_resume` (a run's, a launch's or a sweep's). A
 model going to Anthropic or OpenAI directly, and every model of a factory without `model_listing`, is not checked. A
 candidate the host calls through its own route is checked only when the host's factory answers for it; otherwise its
-check is reported skipped. A kind that calls its candidate through the factory names the role
-(`LaunchableKind.candidate_role`; the judge kind's is `judge`).
+check is reported skipped. A kind that calls its candidate through the factory names the role in one line
+(`LaunchableKind.candidate_role`; the judge kind's is `judge`, and `launchable_report_writer_kind(...,
+candidate_role="analyst")` declares a writer the host builds on its analyst client), and the skip notice names that
+fix and the factory-side one.
 `Model.price_ceiling_refusal()` says why a ceiling is unknown, and `unpriced_because` words it for a refusal.
 
 **Docs:** the host guide names the boot step, `await clients.load_prices()` before a host offers launches or

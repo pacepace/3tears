@@ -359,6 +359,7 @@ async def test_a_host_routed_candidate_off_the_list_is_admitted_and_its_check_re
     assert notice is not None
     assert f"served-model check of candidate model {_FLASH!r} was skipped" in notice
     assert "calls this candidate through its own route" in notice
+    assert "set candidate_role to the factory role" in notice and "model_listing(model, role=None)" in notice
     reported = await process.ops_estimate(None)
     assert reported.served_check_skipped == [notice]
     admitted = await admit_launch(process.host, **process.arguments(None), scope_id=TOYHOST_SCOPE)
