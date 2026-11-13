@@ -20,12 +20,8 @@ does); L3 is a DuckDB answering the follower's own statements. The contract this
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import importlib.util
 import json
-import sys
 import time
-from collections.abc import Iterator
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -40,6 +36,7 @@ duckdb = pytest.importorskip("duckdb")
 
 import threetears.core as core  # noqa: E402
 from threetears.core.cache.duckdb import DuckDBBackend, StagedChange  # noqa: E402
+from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoints  # noqa: E402
@@ -88,28 +85,9 @@ def _metadata() -> MetaData:
     return metadata
 
 
-#: whether pandas is absent from this environment (the test extras install none)
-_PANDAS_ABSENT = importlib.util.find_spec("pandas") is None
-
-
-@contextlib.contextmanager
-def _pandas_known_absent() -> Iterator[None]:
-    """DuckDB answering a statement with pandas known absent, where it is.
-
-    DuckDB's Python layer tries ``import pandas`` for every value bound as a parameter, to recognise its types, and
-    a failed import is never remembered: where pandas is not installed each one is a search of the whole import
-    path. The large-commit test binds 70,000 keys a page at a time, and the stand-in L3 spent all but a second of its
-    5-9 minutes on the pool in those searches. Absent in ``sys.modules`` (``None``), the import fails at once; it is
-    put back as it was after the statement. Only the stand-in for L3 is helped: the code under test runs unchanged.
-    """
-    if not _PANDAS_ABSENT or "pandas" in sys.modules:
-        yield
-        return
-    sys.modules["pandas"] = None  # type: ignore[assignment]
-    try:
-        yield
-    finally:
-        sys.modules.pop("pandas", None)
+def _dict_rows(result: Any) -> list[dict[str, Any]]:
+    names = [d[0] for d in result.description]
+    return [dict(zip(names, row, strict=True)) for row in result.fetchall()]
 
 
 class _L3:
@@ -151,10 +129,8 @@ class _L3:
             self.fail_next = False
             raise ConnectionError("the L3 rail dropped the reply")
         cursor = self.db.cursor()
-        with _pandas_known_absent():
-            result = cursor.execute(sql, list(params))
-            names = [d[0] for d in result.description]
-            rows = [dict(zip(names, row, strict=True)) for row in result.fetchall()]
+        # bound as the 3tears DuckDB readers bind (run_bound): a page of keys through Arrow, never value by value
+        rows = run_bound(cursor, sql, params, _dict_rows)
         if sql.startswith("SELECT version()"):
             # which database it is (threetears.core.backends.dialect), asked beside a whole read: no read of the table
             return rows

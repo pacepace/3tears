@@ -20,6 +20,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from threetears.core.cache.duckdb import _ARROW_BATCH_ROWS, fetch_arrow
+from threetears.core.cache.duckdb_binds import run_bound
 from threetears.interfaces.keyed.filters import sqlite_numbered
 
 try:
@@ -35,26 +36,32 @@ __all__ = ["InlineSQLite", "ThreadedDuckDB", "ThreadedSQLite"]
 def _fetch(conn: Any, query: str, params: Sequence[Any]) -> list[dict[str, Any]]:
     cursor = conn.cursor()
     try:
-        result = cursor.execute(query, list(params))
-        names = [column[0] for column in result.description or ()]
-        return [dict(zip(names, row, strict=True)) for row in result.fetchall()]
+        return run_bound(cursor, query, params, _dict_rows)
     finally:
         cursor.close()
+
+
+def _dict_rows(result: Any) -> list[dict[str, Any]]:
+    names = [column[0] for column in result.description or ()]
+    return [dict(zip(names, row, strict=True)) for row in result.fetchall()]
 
 
 def _execute(conn: Any, query: str, params: Sequence[Any]) -> str:
     cursor = conn.cursor()
     try:
-        result = cursor.execute(query, list(params))
-        verb = query.lstrip().split(None, 1)[0].upper()
-        answered = result.fetchall() if result.description else []
-        if verb == "CREATE" and answered:
-            # ``CREATE TABLE ... AS`` answers its rows' count, as asyncpg spells it
-            return f"SELECT {int(answered[0][0])}"
-        touched = int(answered[0][0]) if answered and verb in {"INSERT", "UPDATE", "DELETE"} else 0
-        return f"INSERT 0 {touched}" if verb == "INSERT" else f"{verb} {touched}"
+        return run_bound(cursor, query, params, lambda result: _status(result, query))
     finally:
         cursor.close()
+
+
+def _status(result: Any, query: str) -> str:
+    verb = query.lstrip().split(None, 1)[0].upper()
+    answered = result.fetchall() if result.description else []
+    if verb == "CREATE" and answered:
+        # ``CREATE TABLE ... AS`` answers its rows' count, as asyncpg spells it
+        return f"SELECT {int(answered[0][0])}"
+    touched = int(answered[0][0]) if answered and verb in {"INSERT", "UPDATE", "DELETE"} else 0
+    return f"INSERT 0 {touched}" if verb == "INSERT" else f"{verb} {touched}"
 
 
 def duckdb_arrow(
@@ -84,7 +91,8 @@ def duckdb_arrow(
     """
     if not _PYARROW:
         raise ImportError("a DuckDB read as Arrow needs pyarrow: install 3tears[snapshot]")
-    answered = fetch_arrow(conn.execute(query, list(params)), _ARROW_BATCH_ROWS if size is None else size)
+    rows = _ARROW_BATCH_ROWS if size is None else size
+    answered = run_bound(conn, query, params, lambda result: fetch_arrow(result, rows))
     if types is None:
         return answered
     if sorted(answered.column_names) != sorted(types):

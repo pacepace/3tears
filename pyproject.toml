@@ -609,6 +609,8 @@ ignore_missing_imports = true
 module = [
     "threetears.core.cache.sqlite",
     "threetears.core.cache.duckdb",
+    # and a DuckDB statement's long list parameters bound as one Arrow column
+    "threetears.core.cache.duckdb_binds",
     # pyarrow ships no py.typed marker; the export reader (a warehouse export's parquet files), the SQL store's
     # direct load from files, and the L3 rail's replies read as Arrow (an Arrow read of a whole table, and its parse)
     "threetears.core.collections.complete_copy",

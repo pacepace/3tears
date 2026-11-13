@@ -22,6 +22,7 @@ from collections.abc import Coroutine, Iterable, Mapping, Sequence
 from types import TracebackType
 from typing import Any, TypeVar
 
+from threetears.core.cache.duckdb_binds import run_bound
 from threetears.core.keyed.threaded import duckdb_arrow
 
 __all__ = ["InlineDuckDB", "InlineTransaction", "run_inline"]
@@ -104,7 +105,7 @@ class InlineDuckDB:
         :return: the rows
         :rtype: list[dict[str, Any]]
         """
-        return _rows(self._conn.execute(query, list(params)))
+        return run_bound(self._conn, query, params, _rows)
 
     async def fetch_arrow(
         self, query: str, /, *params: Any, types: Mapping[str, Any] | None, size: int | None = None
@@ -137,7 +138,7 @@ class InlineDuckDB:
         :return: the status
         :rtype: str
         """
-        return _status(self._conn.execute(query, list(params)), query)
+        return run_bound(self._conn, query, params, lambda result: _status(result, query))
 
     async def executemany(self, query: str, args: Iterable[Sequence[Any]], /) -> None:
         """run one statement once for each parameter set, as asyncpg's ``executemany``.

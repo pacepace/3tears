@@ -34,6 +34,7 @@ from sqlalchemy.sql.sqltypes import ARRAY
 from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 
 from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
+from threetears.core.cache.duckdb_binds import run_bound
 from threetears.core.cache.base import (
     build_select_clause,
     bulk_columns,
@@ -303,9 +304,16 @@ def query_arrow(connection: Any, sql: str, params: Sequence[Any] = ()) -> Any:
     :return: the rows, each column naming its DuckDB type (:data:`_DUCKDB_TYPE_KEY`)
     :rtype: pyarrow.Table
     """
-    result = connection.execute(sql, list(params))
+    return run_bound(connection, sql, params, _typed_arrow)
+
+
+def _typed_arrow(result: Any) -> Any:
     described = [(str(column[0]), str(column[1])) for column in result.description]
     return _typed_answer(fetch_arrow(result, _ARROW_BATCH_ROWS), described)
+
+
+def _described_rows(result: Any) -> tuple[list[str], list[tuple[Any, ...]]]:
+    return [desc[0] for desc in result.description], result.fetchall()
 
 
 def _typed_answer(table: Any, described: Sequence[tuple[str, str]]) -> Any:
@@ -1888,9 +1896,7 @@ class DuckDBBackend:
     def execute_query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         """Execute a generic SELECT query, returning list of row dicts."""
         with self._db_lock:
-            result = self._db.execute(sql, list(params))
-            columns = [desc[0] for desc in result.description]
-            rows = result.fetchall()
+            columns, rows = run_bound(self._db, sql, params, _described_rows)
         return [dict(zip(columns, row)) for row in rows]
 
     def serialize_value(self, value: Any, col_type: str) -> Any:
