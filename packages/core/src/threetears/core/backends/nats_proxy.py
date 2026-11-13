@@ -2399,7 +2399,9 @@ class _ProxyConnection:
             JSON_COLUMNS_FIELD: rows.json_columns,
         }
 
-    def _copy_arrow_rows(self, columns: Sequence[str], records: Sequence[Sequence[Any]]) -> ArrowCopyRows | None:
+    def _copy_arrow_rows(
+        self, columns: Sequence[str], records: Sequence[Sequence[Any]], loop: asyncio.AbstractEventLoop
+    ) -> ArrowCopyRows | None:
         """a copy's rows as Arrow, when they fit one request: within its budget (:meth:`copy_budget_bytes`, or the
         ceiling and the server's ``max_payload`` when the hub announced none) with room for the envelope. Rows Arrow
         lays out wider than their JSON (small integers, nulls) may not; those are sent as JSON, which the budget sized.
@@ -2408,10 +2410,12 @@ class _ProxyConnection:
         :ptype columns: Sequence[str]
         :param records: the rows' values
         :ptype records: Sequence[Sequence[Any]]
+        :param loop: the caller's event loop, handed the build's turns
+        :ptype loop: asyncio.AbstractEventLoop
         :return: the rows, or None to send them as JSON
         :rtype: ArrowCopyRows | None
         """
-        rows = copy_rows_arrow(columns, records)
+        rows = copy_rows_arrow(columns, records, loop=loop)
         budget = self.copy_budget_bytes() or _copy_request_budget(
             _COPY_REQUEST_CEILING_BYTES, self._backend.broker_max_payload
         )
@@ -2503,7 +2507,7 @@ class _ProxyConnection:
         # a page of rows: its values converted and the request encoded on a thread, never the loop; as Arrow to a
         # hub that reads it (laid out by Arrow, its rows never JSON), else as JSON
         rows = (
-            await _on_copy_thread(self._copy_arrow_rows, columns, records)
+            await _on_copy_thread(self._copy_arrow_rows, columns, records, asyncio.get_running_loop())
             if self.copy_arrow and arrow_copy_available()
             else None
         )

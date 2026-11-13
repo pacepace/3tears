@@ -25,11 +25,13 @@ Needs ``pyarrow`` (``3tears[snapshot]``); without it every copy is sent as JSON.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
 import operator
 import struct
+import threading
 import time
 from collections.abc import Sequence
 from typing import Any, Final
@@ -122,8 +124,12 @@ def rows_digest(ipc: Any) -> str:
 #: while the holder keeps releasing and taking it back in pyarrow's calls)
 _HOLD_SECONDS: Final = 0.001
 
-#: how long the build blocks when it lets the loop run: long enough for a waiting thread to be scheduled and take the lock
+#: how long the build blocks when it lets the loop run and has no loop to hand the turn to
 _TURN_SECONDS: Final = 0.0002
+
+#: the longest the build waits for the caller's loop to take a turn it was handed: a loop that has not run by then is
+#: busy with work of its own, not waiting for the interpreter lock, and the build goes on
+_TURN_WAIT_SECONDS: Final = 0.05
 
 #: the values read or converted in Python between two of the build's turns: few enough that no stretch nears
 #: :data:`_HOLD_SECONDS` (4096 held the caller's loop a whole switch interval, 5 ms, on a loaded host)
@@ -136,22 +142,38 @@ _PIECE_BYTES: Final = 1 << 20
 
 class _Turns:
     """the build's turns with the caller's event loop: past :data:`_HOLD_SECONDS` of holding the interpreter lock, the
-    build blocks for :data:`_TURN_SECONDS`, so a thread waiting for the lock (the loop) takes it."""
+    build hands the loop a turn and blocks until the loop has run.
 
-    __slots__ = ("_since",)
+    A turn is handed, not offered: the build schedules a callback on the loop and waits for it to run. A sleep offered
+    the lock for :data:`_TURN_SECONDS` only, and on a loaded host the loop's thread was often not scheduled within it:
+    the build took the lock back, and the loop waited for CPython's 5 ms switch interval, turn after turn (pool
+    diagnostics: the loop 8-20 ms late in ``select`` while the build ran ``_sliced_array`` / ``_column_of``). With no
+    loop (a build called off any loop), the turn is the sleep.
+    """
 
-    def __init__(self) -> None:
+    __slots__ = ("_handed", "_loop", "_since")
+
+    def __init__(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         self._since = time.monotonic()
+        self._loop = loop
+        self._handed = threading.Event()
 
     def take(self) -> None:
-        """let a waiting thread run, when the build has held the lock its share.
+        """let the caller's loop run, when the build has held the lock its share.
 
         :return: nothing
         :rtype: None
         """
-        if time.monotonic() - self._since >= _HOLD_SECONDS:
+        if time.monotonic() - self._since < _HOLD_SECONDS:
+            return
+        loop = self._loop
+        if loop is None or loop.is_closed():
             time.sleep(_TURN_SECONDS)
-            self._since = time.monotonic()
+        else:
+            self._handed.clear()
+            loop.call_soon_threadsafe(self._handed.set)
+            self._handed.wait(_TURN_WAIT_SECONDS)
+        self._since = time.monotonic()
 
 
 def _converted(convert: Any, values: Sequence[Any], turns: _Turns) -> list[Any]:
@@ -290,7 +312,9 @@ def _arrow_column(values: Sequence[Any], turns: _Turns) -> tuple[Any, bool]:
     return (array, False) if array is not None else (_json_text(values, turns), True)
 
 
-def copy_rows_arrow(columns: Sequence[str], records: Sequence[Sequence[Any]]) -> ArrowCopyRows:
+def copy_rows_arrow(
+    columns: Sequence[str], records: Sequence[Sequence[Any]], *, loop: asyncio.AbstractEventLoop | None = None
+) -> ArrowCopyRows:
     """a copy's rows as an Arrow IPC stream, one column per copied column, named as they are.
 
     Blocking, and CPU for as long as the rows are many: run it on a thread, as the JSON request is encoded. The rows
@@ -302,6 +326,8 @@ def copy_rows_arrow(columns: Sequence[str], records: Sequence[Sequence[Any]]) ->
     :ptype columns: Sequence[str]
     :param records: the rows' values, each in the order of ``columns``
     :ptype records: Sequence[Sequence[Any]]
+    :param loop: the caller's event loop, handed each of the build's turns; None for a build off any loop
+    :ptype loop: asyncio.AbstractEventLoop | None
     :return: the stream, its digest and its JSON columns
     :rtype: ArrowCopyRows
     :raises ImportError: without pyarrow
@@ -309,7 +335,7 @@ def copy_rows_arrow(columns: Sequence[str], records: Sequence[Sequence[Any]]) ->
     """
     if not _PYARROW:
         raise ImportError("a copy's rows as Arrow need pyarrow: install 3tears[snapshot]")
-    turns = _Turns()
+    turns = _Turns(loop)
     width = len(columns)
     for start in range(0, len(records), _SLICE_VALUES):
         if any(len(record) != width for record in records[start : start + _SLICE_VALUES]):
