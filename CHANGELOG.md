@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: `SchemaBackedCollection.truncate()` removed -- an operator's `reset()` is the one whole-table empty
+
+**Removed:** `truncate()` (no caller in any consumer; reports resets with `reset()`). A load clears by key prefix
+(`clear_partition`) or deletes rows by key (`delete_rows`); `reset()` empties the table with `TRUNCATE` and its epoch
+names the reset. The store's `TRUNCATE` is declared `whole_read(kind="operator_reset")`.
+
+### core: an Arrow copy's build hands each turn to the caller's event loop
+
+**Changed:** `copy_rows_arrow(columns, records, *, loop=None)`: given the caller's loop, the build schedules each turn
+on it and waits until the loop ran it (50 ms ceiling), instead of offering a 0.2 ms sleep the loop's thread could miss
+on a loaded host. `NatsProxyL3Backend` passes its loop; without one the turn is the sleep, as before.
+
+### nats: a large publish or request no longer copies its payload on the event loop
+
+**Changed:** from 64 KiB (`UNJOINED_FROM_BYTES`), `NatsClient`'s publish, reply and request paths queue the `PUB`
+line, the payload and CRLF as three pending items instead of nats-py's one concatenated `bytes` (a 12 MB copy request
+held the loop 4.6-7.2 ms for the copy). Same checks, stats, flushes and response mux as nats-py; below 64 KiB nats-py
+publishes as before.
+
 ### core: shared Arrow column tokens -- which columns a write moved, from a file's footer
 
 **Added:** `threetears.core.shared_arrow.stamped(table, base)` puts a token per column and one for the row count in a
