@@ -108,7 +108,7 @@ if TYPE_CHECKING:
     # annotation-only: importing these eagerly would load the NATS client into
     # every L1-only consumer of this module. the `isinstance` below tests the
     # local `_NatsClientFromRegistry` sentinel, not `NatsClient`.
-    from threetears.nats import NatsClient, NatsKvBucket
+    from threetears.nats import KvPublisher, NatsKvBucket
 
 __all__ = [
     "NATS_CLIENT_FROM_REGISTRY",
@@ -938,7 +938,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         self,
         registry: CollectionRegistry,
         config: CoreConfig,
-        nats_client: NatsClient | _NatsClientFromRegistry | NoL2 | None = NATS_CLIENT_FROM_REGISTRY,
+        nats_client: KvPublisher | _NatsClientFromRegistry | NoL2 | None = NATS_CLIENT_FROM_REGISTRY,
         write_buffer: WriteBuffer | None = None,
     ) -> None:
         self._registry = registry
@@ -950,7 +950,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         # as a declared decision rather than a client that went missing.
         self._no_l2_by_design = isinstance(nats_client, NoL2)
         if isinstance(nats_client, _NatsClientFromRegistry):
-            self._nats_client: NatsClient | None = registry.get_l2_client(self.table_name)
+            self._nats_client: KvPublisher | None = registry.get_l2_client(self.table_name)
         elif isinstance(nats_client, NoL2):
             self._nats_client = None
             self._announce_no_l2_once()

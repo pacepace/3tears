@@ -215,6 +215,18 @@ from threetears.nats.subject_permissions import (
     kv_key_scope_for_service,
     kv_stream_name,
 )
+from threetears.nats.capabilities import (
+    DurableSubscriber,
+    JetStreamPublisher,
+    KvBucketOpener,
+    KvPublisher,
+    Publisher,
+    PullSubscriber,
+    RawReplier,
+    RawRequester,
+    Subscriber,
+    TypedSubscriber,
+)
 from threetears.nats.subjects import (
     DEAD_LETTER_ORIGINAL_SUBJECT_HEADER,
     TOOL_POD_AUDIT_TOKEN,
@@ -423,6 +435,17 @@ __all__ = [
     "NatsClient",
     "PublishPin",
     "Subscription",
+    # one capability of the client each, for a consumer to type its parameter by (capabilities.py)
+    "DurableSubscriber",
+    "JetStreamPublisher",
+    "KvBucketOpener",
+    "KvPublisher",
+    "Publisher",
+    "PullSubscriber",
+    "RawReplier",
+    "RawRequester",
+    "Subscriber",
+    "TypedSubscriber",
     "TokenCallback",
     "round_trip",
     # renewing a connection whose credential expires (NatsClient.renew_credential's arithmetic)
