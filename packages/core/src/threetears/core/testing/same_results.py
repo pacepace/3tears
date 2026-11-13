@@ -196,6 +196,48 @@ def _differ(
     return None
 
 
+def _differ_limited(
+    case: str,
+    old: list[tuple[tuple[str, Any], ...]],
+    new: list[tuple[tuple[str, Any], ...]],
+    ordered_by: Sequence[str] | None,
+) -> str | None:
+    """what differs between a ``LIMIT`` read's rows and the helper's first page, or None: the same sort values in the
+    same order, and exactly the same rows before the boundary (the last row's sort values); at the boundary, rows tied
+    with it compared by their sort values only.
+
+    :param case: the seed case
+    :ptype case: str
+    :param old: the old statement's rows, normalised
+    :ptype old: list[tuple[tuple[str, Any], ...]]
+    :param new: the helper's rows, normalised
+    :ptype new: list[tuple[tuple[str, Any], ...]]
+    :param ordered_by: the old statement's sort columns; every column when None
+    :ptype ordered_by: Sequence[str] | None
+    :return: the difference, or None
+    :rtype: str | None
+    """
+
+    def keyed(row: tuple[tuple[str, Any], ...]) -> tuple[Any, ...]:
+        if ordered_by is None:
+            return tuple(value for _, value in row)
+        return tuple(dict(row)[column] for column in ordered_by)
+
+    if [keyed(row) for row in old] != [keyed(row) for row in new]:
+        return f"{case}: the sort values differ, or come in another order (by {list(ordered_by or ['every column'])})"
+    if not old:
+        return None
+    boundary = keyed(old[-1])
+    before_old = Counter(row for row in old if keyed(row) != boundary)
+    before_new = Counter(row for row in new if keyed(row) != boundary)
+    if before_old != before_new:
+        return (
+            f"{case}: rows before the LIMIT's boundary differ; missing from the helper "
+            f"{sorted((before_old - before_new).elements())[:3]}, not in the old {sorted((before_new - before_old).elements())[:3]}"
+        )
+    return None
+
+
 async def _seed(conn: Any, table: str, rows: list[Mapping[str, Any]]) -> None:
     """empty ``table`` and insert ``rows`` (the caller's transaction rolls both back).
 
@@ -267,6 +309,7 @@ async def assert_same_results(
     ordered: bool | None = None,
     page_size: int = 5,
     state_sql: str | None = None,
+    limited: bool = False,
 ) -> None:
     """seed ``table`` for every case, run ``old_sql`` and ``helper`` on the same rows, and fail on any difference.
 
@@ -297,6 +340,10 @@ async def assert_same_results(
     :param state_sql: for a write, the read of the table after it (every column of every row, say); each side then
         runs on its own seeded table and what this reads is compared too (as a multiset, every column); None for a read
     :ptype state_sql: str | None
+    :param limited: the old statement keeps its first rows by a ``LIMIT`` (a first-of or top-n read): rows sorting
+        before the last kept row's sort values must match exactly; of the rows tied with it, only their sort values
+        and how many (which of the tied rows a ``LIMIT`` kept was the engine's choice, the helper's is its key's)
+    :ptype limited: bool
     :return: nothing
     :rtype: None
     :raises AssertionError: naming each case whose rows differ, and how
@@ -322,7 +369,11 @@ async def assert_same_results(
             difference = _differ(f"{case.name} (the table after)", old_state, new_state, None, False)
             if difference is not None:
                 differences.append(difference)
-        difference = _differ(case.name, old, new, order_by, compare_order)
+        difference = (
+            _differ_limited(case.name, old, new, order_by)
+            if limited
+            else _differ(case.name, old, new, order_by, compare_order)
+        )
         if difference is not None:
             differences.append(difference)
     assert not differences, "the helper does not give the old statement's rows:\n" + "\n".join(differences)

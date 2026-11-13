@@ -31,6 +31,15 @@ plain columns (``col [ASC|DESC] [NULLS FIRST|LAST]``, or none), becomes :func:`~
 ``LIMIT`` / ``OFFSET`` (a page, not a listing), an expression or alias in the order, a listing sent by ``fetchrow`` /
 ``fetchval`` (its first row is a first-of read), and every point-read refusal.
 
+**First-of and top-n reads** (shape ``first``, ruling 2026-11-13): a listing's statement with a trailing ``LIMIT 1``
+or ``LIMIT $n`` after its ``ORDER BY``, sent by ``fetch`` (the top n), ``fetchrow`` (the first row) or ``fetchval``
+(the first row's first column), becomes the first page of :func:`~threetears.core.keyed.keyset_page` with
+``records=True``: the statement's own sort, completed by the table's declared key (its columns the pins and the sort
+do not already hold, ascending), so which of the rows tied at the boundary it keeps is the key's choice, not the
+engine's. ``fetch`` reads the page's ``.rows``; ``fetchrow`` its first row or None; ``fetchval`` that row's column or
+None. Refused: no ``ORDER BY`` (the rows kept are the engine's choice), an ``OFFSET``, a table with no declared key,
+a key column the statement does not select, the ``LIMIT`` parameter not the last, and every listing refusal.
+
 **Keyed writes** (shape ``write``): ``UPDATE <table> SET <col> = $n | <literal> | NULL | now(), ... WHERE <pins>`` and
 ``DELETE FROM <table> WHERE <pins>`` become :func:`~threetears.core.keyed.update_keyed` /
 :func:`~threetears.core.keyed.delete_keyed` with the same ``values`` and ``by``. Sent by an awaited ``execute`` whose
@@ -66,7 +75,7 @@ import subprocess
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final
 
@@ -181,12 +190,14 @@ class PointSql:
     :ivar pins: each pinned column, in the statement's order
     :ivar order: a listing's sort (shape ``list``): each ``ORDER BY`` term as ``{"column", "descending", "nulls"}``;
         empty for a point read
+    :ivar limit: a first-of or top-n read's ``LIMIT`` (shape ``first``): ``{"param": n}`` or ``{"literal": n}``
     """
 
     table: str
     columns: tuple[str, ...] | None
     pins: tuple[Pin, ...]
     order: tuple[dict[str, Any], ...] = ()
+    limit: dict[str, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -251,6 +262,11 @@ class Rewrite:
     #: a listing's sort (shape ``list``), each ``ORDER BY`` term as ``{"column", "descending", "nulls"}``: the
     #: ``read_by`` call's ``order``; none for a point read or a write
     order: list[dict[str, Any]] = field(default_factory=list)
+    #: a first-of or top-n read's ``LIMIT`` (shape ``first``): ``{"param": n}`` or ``{"literal": n}``; not recorded
+    #: for any other shape
+    limit: dict[str, int] | None = None
+    #: shape ``first``: how many of ``order``'s terms are the statement's own; the rest complete it by the key
+    key_from: int | None = None
     # the edits that make it, not recorded: (start line, start col, end line, end col, text) in the module's bytes
     edits: list[tuple[int, int, int, int, str]] = field(default_factory=list, repr=False)
     # not recorded: index purpose entries naming the replaced constant, each (repo-relative file, old text, new text)
@@ -269,6 +285,9 @@ class Rewrite:
         entry = asdict(self)
         for kept_out in ("edits", "repoints", "notes", "imports"):
             entry.pop(kept_out)
+        if self.shape != "first":
+            entry.pop("limit")
+            entry.pop("key_from")
         return entry
 
 
@@ -358,6 +377,67 @@ def parse_list(sql: str) -> PointSql | str:
     :rtype: PointSql | str
     """
     return parse_point(sql, ordered=True)
+
+
+#: a first-of or top-n read's trailing ``LIMIT`` (shape ``first``)
+_LIMIT: Final[re.Pattern[str]] = re.compile(r"\s+limit\s+(?P<limit>\d+|\$\d+)\s*$", re.IGNORECASE)
+
+
+def parse_first(sql: str) -> PointSql | str:
+    """a first-of or top-n read: a listing's pins and ``ORDER BY`` of plain columns with a trailing ``LIMIT 1`` /
+    ``LIMIT $n``, or why it is not one.
+
+    :param sql: the statement
+    :ptype sql: str
+    :return: the parsed read, its ``limit`` set, or the refusal's reason
+    :rtype: PointSql | str
+    """
+    text = " ".join(sql.split())
+    found = _LIMIT.search(text)
+    if found is None:
+        return "no trailing LIMIT 1 / LIMIT $n after its ORDER BY (an OFFSET, or no LIMIT)"
+    parsed = parse_point(text[: found.start()], ordered=True)
+    if isinstance(parsed, str):
+        return parsed
+    if not parsed.order:
+        return "a LIMIT with no ORDER BY: which rows it keeps is the engine's choice"
+    written = found.group("limit")
+    if not written.startswith("$"):
+        return replace(parsed, limit={"literal": int(written)}) if int(written) > 0 else "LIMIT 0"
+    numbers = {pin.param for pin in parsed.pins if pin.param is not None}
+    if int(written[1:]) != len(numbers) + 1:
+        return "the LIMIT's parameter is not the statement's last"
+    return replace(parsed, limit={"param": int(written[1:])})
+
+
+def _key_completion(parsed: PointSql, declared: Any) -> list[dict[str, Any]] | str:
+    """the sort terms that complete a first-of read's order by its table's key: none when the pins and the sort
+    already hold a declared key; else the primary key's columns they do not hold, ascending.
+
+    :param parsed: the read
+    :ptype parsed: PointSql
+    :param declared: the table's declaration in the walk's schema catalogue, None when it has none
+    :ptype declared: Any
+    :return: the terms to append, or the refusal's reason
+    :rtype: list[dict[str, Any]] | str
+    """
+    if declared is None or not declared.primary_keys:
+        return f"no declared key of {parsed.table} to complete its order with"
+    held = {pin.column.lower() for pin in parsed.pins if pin.kind in _ONE_VALUE_KINDS}
+    held |= {term["column"].lower() for term in parsed.order}
+    if any({column.lower() for column in key} <= held for key in [*declared.primary_keys, *declared.unique_keys]):
+        return []
+    completing = [column for column in declared.primary_keys[0] if column.lower() not in held]
+    if parsed.columns is not None:
+        selected = {column.lower() for column in parsed.columns}
+        unselected = [column for column in completing if column.lower() not in selected]
+        if unselected:
+            return f"the key column(s) {unselected} completing the order are not selected"
+    return [{"column": column, "descending": False, "nulls": None} for column in completing]
+
+
+#: pin kinds holding a column to one value (or NULL) on every row read: no key column they hold needs ordering
+_ONE_VALUE_KINDS: Final[frozenset[str]] = frozenset({"param", "literal", "null", "nullsafe"})
 
 
 def _pins(where: str, masked: str, qualifiers: set[str | None]) -> list[Pin] | str:
@@ -1008,6 +1088,34 @@ def _render(rewrite: Rewrite, receiver: str) -> str:
     return f"{rewrite.helper}({', '.join(parts)})"
 
 
+def _render_first(rewrite: Rewrite, receiver: str) -> str:
+    """the first page of ``keyset_page``, written in the awaited ``fetch`` / ``fetchrow`` / ``fetchval`` call's place
+    and read as that method answered: the page's rows, its first row or None, that row's column or None."""
+    assert rewrite.limit is not None
+    by = "{" + ", ".join(f"{pin['column']!r}: {_value_text(pin, rewrite.args)}" for pin in rewrite.pins) + "}"
+    if rewrite.columns is None:
+        columns = "None"
+    else:
+        columns = (
+            "("
+            + ", ".join(repr(column) for column in rewrite.columns)
+            + ("," if len(rewrite.columns) == 1 else "")
+            + ")"
+        )
+    limit = str(rewrite.args[rewrite.limit["param"] - 1]) if "param" in rewrite.limit else str(rewrite.limit["literal"])
+    order = ", ".join(_sort_text(term) for term in rewrite.order)
+    page = (
+        f"(await keyset_page({receiver}, {rewrite.table!r}, columns={columns}, by={by}, order=[{order}], "
+        f"limit={limit}, records=True))"
+    )
+    if rewrite.method == "fetch":
+        return f"{page}.rows"
+    if rewrite.method == "fetchrow":
+        return f"next(iter({page}.rows), None)"
+    assert rewrite.columns is not None
+    return f"next((row[{rewrite.columns[0]!r}] for row in {page}.rows), None)"
+
+
 def _sort_text(term: Mapping[str, Any]) -> str:
     """one ``ORDER BY`` term as the helper call writes it: ``Sort("col")``, with ``descending=True`` and ``nulls=`` as
     the statement wrote them (the engine's own NULL order otherwise, as before).
@@ -1336,11 +1444,18 @@ def _parameter_names(pins: Sequence[Pin], count: int) -> list[str]:
 
 @dataclass(frozen=True)
 class _Shape:
-    """how one shape's statements are parsed and sent."""
+    """how one shape's statements are parsed and sent.
+
+    :ivar shape: the rewrite's shape
+    :ivar parse: its statement parser
+    :ivar methods: the connection methods it rewrites
+    :ivar finds: the use-the-helper shape whose findings it takes; ``shape`` when empty
+    """
 
     shape: str
     parse: Any
     methods: frozenset[str]
+    finds: str = ""
 
 
 def _value_sql(value: ast.expr) -> str | None:
@@ -1659,6 +1774,8 @@ def _plan_choice(
 _POINT: Final[_Shape] = _Shape("point", parse_point, frozenset(_HELPER_OF))
 #: a listing is sent by ``fetch`` only: its rows, every one, in its order (``read_by(order=)``)
 _LIST: Final[_Shape] = _Shape("list", parse_list, frozenset({"fetch"}))
+#: a first-of or top-n read is a listing finding with a trailing LIMIT, sent by any of the three
+_FIRST: Final[_Shape] = _Shape("first", parse_first, frozenset(_HELPER_OF), finds="list")
 _WRITE: Final[_Shape] = _Shape("write", parse_write, _WRITE_METHODS)
 
 
@@ -1686,6 +1803,19 @@ def plan_list_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[
     return _plan_reads(config, _LIST)
 
 
+def plan_first_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
+    """every first-of or top-n finding of the repo (a listing's statement with a trailing ``LIMIT 1`` / ``LIMIT $n``),
+    as the first page of :func:`~threetears.core.keyed.keyset_page` it takes, its order completed by the table's
+    key, or the refusal it gets. A listing finding with no ``LIMIT`` is refused here and planned by ``list``.
+
+    :param config: the repo's no-whole-reads config
+    :ptype config: NoWholeReadsConfig
+    :return: the rewrites, and the refusals
+    :rtype: tuple[list[Rewrite], list[Refusal]]
+    """
+    return _plan_reads(config, _FIRST)
+
+
 def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite], list[Refusal]]:
     """every read finding of ``shape`` (``point`` or ``list``) in the repo, as the rewrite it takes or the refusal it
     gets."""
@@ -1694,7 +1824,7 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
     hits = [
         hit
         for hit in _helper_hits(scan.statements, config.helper_modules, _producers(config))
-        if hit.shape == shape.shape
+        if hit.shape == (shape.finds or shape.shape)
     ]
     modules: dict[str, _Module] = {}
     rewrites: list[Rewrite] = []
@@ -1719,6 +1849,13 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
         if isinstance(parsed, str):
             refuse(parsed)
             continue
+        completion: list[dict[str, Any]] = []
+        if parsed.limit is not None:
+            completed = _key_completion(parsed, scan.schema.table(parsed.table))
+            if isinstance(completed, str):
+                refuse(completed)
+                continue
+            completion = completed
         module = modules.get(statement.path)
         if module is None:
             module = modules[statement.path] = _Module.read(config.repo_root / statement.path)
@@ -1732,6 +1869,9 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             refuse("the literal at its line is not the statement the walk found")
             continue
         choice = _choice_of(module, literal)
+        if parsed.limit is not None and (isinstance(module.parent(literal), ast.Dict) or choice is not None):
+            refuse("a first-of read held in a dict or chosen by a branch")
+            continue
         if isinstance(module.parent(literal), ast.Dict) or choice is not None:
             held = module.parent(literal) if choice is None else choice
             group = groups.get(id(held))
@@ -1756,6 +1896,8 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             refuse(elsewhere)
             continue
         numbers = sorted({pin.param for pin in parsed.pins if pin.param is not None})
+        if parsed.limit is not None and "param" in parsed.limit:
+            numbers.append(parsed.limit["param"])
         uses = Counter(pin.param for pin in parsed.pins if pin.param is not None)
         planned: list[Rewrite] = []
         for call in calls:
@@ -1771,6 +1913,8 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 problem = "fetchval of SELECT *"
             elif method not in shape.methods:
                 problem = f"a listing sent by {method}: its first row is a first-of read, not a listing"
+            elif parsed.limit is not None and not isinstance(module.parent(call), ast.Await):
+                problem = "not awaited where it is sent"
             if problem:
                 refuse(problem)
                 planned = []
@@ -1787,11 +1931,23 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 pins=[asdict(pin) for pin in parsed.pins],
                 args=[module.segment(argument) for argument in arguments],
                 shape=shape.shape,
-                order=list(parsed.order),
+                order=[*parsed.order, *completion],
+                limit=parsed.limit,
+                key_from=len(parsed.order) if parsed.limit is not None else None,
             )
-            rewrite.new_call = _render(rewrite, module.segment(call.func.value))
-            assert call.end_lineno is not None and call.end_col_offset is not None
-            rewrite.edits.append((call.lineno, call.col_offset, call.end_lineno, call.end_col_offset, rewrite.new_call))
+            spliced: ast.expr = call
+            if parsed.limit is None:
+                rewrite.new_call = _render(rewrite, module.segment(call.func.value))
+            else:
+                rewrite.helper = "keyset_page"
+                rewrite.new_call = _render_first(rewrite, module.segment(call.func.value))
+                awaited = module.parent(call)
+                assert isinstance(awaited, ast.Await)
+                spliced = awaited
+            assert spliced.end_lineno is not None and spliced.end_col_offset is not None
+            rewrite.edits.append(
+                (spliced.lineno, spliced.col_offset, spliced.end_lineno, spliced.end_col_offset, rewrite.new_call)
+            )
             planned.append(rewrite)
         if planned and constant is not None:
             planned[0].edits.append(_constant_edit(module, constant))
@@ -2186,7 +2342,7 @@ def main(argv: list[str] | None = None) -> int:
     :rtype: int
     """
     parser = argparse.ArgumentParser(prog="threetears.enforcement.no_whole_reads.rewrite")
-    parser.add_argument("shape", choices=["point", "list", "write", "test-module"])
+    parser.add_argument("shape", choices=["point", "list", "first", "write", "test-module"])
     parser.add_argument("--module", type=Path, help="test-module: where the generated test goes, repo-relative")
     parser.add_argument("--pg-fixture", default="conn")
     parser.add_argument("--yb-fixture", default="yugabyte_conn")
@@ -2213,7 +2369,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     config = _config(repo, options.config)
     before, _ = _hits(config)
-    planner = {"write": plan_write_rewrites, "list": plan_list_rewrites}.get(options.shape, plan_point_rewrites)
+    planner = {"write": plan_write_rewrites, "list": plan_list_rewrites, "first": plan_first_rewrites}.get(
+        options.shape, plan_point_rewrites
+    )
     rewrites, refusals = planner(config)
     reasons = Counter(refusal.reason.split(":")[0].split(" (")[0] for refusal in refusals)
     _say(f"{options.shape}: {len(rewrites)} rewrites, {len(refusals)} refusals")

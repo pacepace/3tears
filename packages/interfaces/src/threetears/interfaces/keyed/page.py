@@ -383,14 +383,16 @@ def exists_keyed(table: str, *, on: Mapping[str, str], by: Mapping[str, Any] | N
     return Fragment(sql=sql, params=tuple(params))
 
 
-def check_page(table: str | Derived, columns: Sequence[str | Selected], order: Sequence[Sort], limit: int) -> None:
+def check_page(
+    table: str | Derived, columns: Sequence[str | Selected] | None, order: Sequence[Sort], limit: int
+) -> None:
     """refuse a page that cannot be read: no sort, no row kept, a sort column not read, or a sort expression read
-    under a column's name.
+    under a column's name (or beside every column, whose names it cannot be told apart from).
 
     :param table: the table, for the message
     :ptype table: str | Derived
-    :param columns: the columns read
-    :ptype columns: Sequence[str | Selected]
+    :param columns: the columns read; every column of the table when None
+    :ptype columns: Sequence[str | Selected] | None
     :param order: the sort
     :ptype order: Sequence[Sort]
     :param limit: the rows a page keeps
@@ -403,6 +405,10 @@ def check_page(table: str | Derived, columns: Sequence[str | Selected], order: S
         raise ValueError(f"a page of {table} names its sort")
     if limit < 1:
         raise ValueError(f"a page keeps at least one row, got {limit}")
+    if columns is None:
+        if any(sort.expression is not None for sort in order):
+            raise ValueError(f"a page of every column of {table} sorts by its columns, not an expression")
+        return
     missing = [sort.column for sort in order if sort.expression is None and sort.column not in columns]
     if missing:
         raise ValueError(f"a page of {table} reads its sort columns, missing {missing}")
@@ -424,7 +430,7 @@ def _pinned(by: Mapping[str, Any], order: Sequence[Sort]) -> list[str]:
 
 def page_statement(
     table: str | Derived,
-    columns: Sequence[str | Selected],
+    columns: Sequence[str | Selected] | None,
     by: Mapping[str, Any],
     order: Sequence[Sort],
     rows: int,
@@ -442,8 +448,8 @@ def page_statement(
 
     :param table: the table, a TRUSTED identifier, or a derived relation
     :ptype table: str | Derived
-    :param columns: the columns read
-    :ptype columns: Sequence[str | Selected]
+    :param columns: the columns read; every column of the table (``t.*``) when None
+    :ptype columns: Sequence[str | Selected] | None
     :param by: the bound prefix
     :ptype by: Mapping[str, Any]
     :param order: the sort
@@ -502,13 +508,17 @@ def page_statement(
     for fragment in visible:
         after.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
-    selected = ", ".join(
-        [selected_column(column) for column in columns]
-        + [
-            f"{sort.expression} AS {quote_identifier(sort.column)}"
-            for sort in order
-            if sort.expression is not None and sort.column not in columns
-        ]
+    selected = (
+        "t.*"
+        if columns is None
+        else ", ".join(
+            [selected_column(column) for column in columns]
+            + [
+                f"{sort.expression} AS {quote_identifier(sort.column)}"
+                for sort in order
+                if sort.expression is not None and sort.column not in columns
+            ]
+        )
     )
 
     statements: list[str] = []

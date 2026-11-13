@@ -26,9 +26,11 @@ from threetears.enforcement.no_whole_reads.rewrite import (
     PointSql,
     WriteSql,
     apply_rewrites,
+    parse_first,
     parse_list,
     parse_point,
     parse_write,
+    plan_first_rewrites,
     plan_list_rewrites,
     plan_point_rewrites,
     plan_write_rewrites,
@@ -1077,3 +1079,82 @@ def test_two_constants_chosen_by_a_conditional_become_a_conditional_of_helper_ca
     for entry in json.loads(manifest.read_text(encoding="utf-8")):
         assert_source_says(tmp_path, entry)
     assert _unlined(no_whole_reads_findings(config)) == _unlined(before)
+
+
+_FIRSTS = """
+    async def top_names(conn, state, n):
+        return await conn.fetch(
+            "SELECT geo_id, name FROM geos WHERE state = $1 ORDER BY name DESC LIMIT $2", state, n
+        )
+
+
+    async def first_name(conn, state):
+        return await conn.fetchrow("SELECT geo_id, name FROM geos WHERE state = $1 ORDER BY name LIMIT 1", state)
+
+
+    async def first_id(conn, state):
+        return await conn.fetchval("SELECT geo_id FROM geos WHERE state = $1 ORDER BY geo_id LIMIT 1", state)
+
+
+    async def hidden_key(conn, state):
+        return await conn.fetchrow("SELECT name FROM geos WHERE state = $1 ORDER BY name LIMIT 1", state)
+
+
+    async def unordered(conn, state):
+        return await conn.fetchrow("SELECT geo_id FROM geos WHERE state = $1 LIMIT 1", state)
+
+
+    async def listed(conn, state):
+        return await conn.fetch("SELECT geo_id FROM geos WHERE state = $1 ORDER BY geo_id", state)
+"""
+
+
+def test_a_first_of_read_is_parsed_with_its_limit() -> None:
+    """Flips if a trailing ``LIMIT 1`` / ``LIMIT $n`` after a plain-column ``ORDER BY`` is not read as the shape's
+    limit, or a LIMIT with no order, an OFFSET or a LIMIT parameter not last is taken."""
+    top = parse_first("SELECT geo_id, name FROM geos WHERE state = $1 ORDER BY name DESC LIMIT $2")
+    assert isinstance(top, PointSql) and top.limit == {"param": 2}, top
+    assert top.order == ({"column": "name", "descending": True, "nulls": None},)
+    one = parse_first("SELECT * FROM geos WHERE state = $1 ORDER BY name LIMIT 1")
+    assert isinstance(one, PointSql) and one.limit == {"literal": 1} and one.columns is None, one
+    for refused in (
+        "SELECT geo_id FROM geos WHERE state = $1 LIMIT 1",
+        "SELECT geo_id FROM geos WHERE state = $1 ORDER BY geo_id LIMIT 1 OFFSET 2",
+        "SELECT geo_id FROM geos WHERE state = $2 ORDER BY geo_id LIMIT $1",
+        "SELECT geo_id FROM geos WHERE state = $1 ORDER BY geo_id",
+        "SELECT geo_id FROM geos WHERE state = $1 ORDER BY geo_id LIMIT 0",
+    ):
+        assert isinstance(parse_first(refused), str), refused
+
+
+def test_first_of_and_top_n_reads_are_rewritten_onto_keyset_page_s_first_page(tmp_path: Path) -> None:
+    """Flips if a first-of or top-n read is not rewritten onto ``keyset_page``'s first page with records, its order
+    completed by the table's key (the pins and sort holding a key complete nothing), read as the old method answered;
+    or a read with a key column unselected, no order, or no LIMIT is taken."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_FIRSTS), encoding="utf-8")
+    rewrites, refusals = plan_first_rewrites(config)
+    assert sorted(rewrite.function for rewrite in rewrites) == ["first_id", "first_name", "top_names"]
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    # ``unordered`` (a LIMIT with no ORDER BY) is a point finding, refused by the point shape: never planned here
+    assert refused.keys() == {"hidden_key", "listed"}, refused
+    assert "not selected" in refused["hidden_key"]
+
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    entries = {entry["function"]: entry for entry in json.loads(manifest.read_text(encoding="utf-8"))}
+    assert {entry["shape"] for entry in entries.values()} == {"first"}
+    assert entries["top_names"]["key_from"] == 1 and entries["top_names"]["limit"] == {"param": 2}
+    assert [term["column"] for term in entries["top_names"]["order"]] == ["name", "geo_id"]
+    assert [term["column"] for term in entries["first_id"]["order"]] == ["geo_id"]
+    source = " ".join((tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8").split())
+    assert "from threetears.core.keyed import Sort, keyset_page" in source
+    assert (
+        "(await keyset_page(conn, 'geos', columns=('geo_id', 'name'), by={'state': state}, "
+        "order=[Sort('name', descending=True), Sort('geo_id')], limit=n, records=True)).rows" in source
+    )
+    assert "next(iter((await keyset_page(conn, 'geos', columns=('geo_id', 'name')," in source
+    assert "next((row['geo_id'] for row in (await keyset_page(" in source
+    for entry in entries.values():
+        assert_source_says(tmp_path, entry)

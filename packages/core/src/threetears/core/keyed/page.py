@@ -64,7 +64,7 @@ async def keyset_page(
     conn: Any,
     table: str | Derived,
     *,
-    columns: Sequence[str | Selected],
+    columns: Sequence[str | Selected] | None,
     by: Mapping[str, Any],
     order: Sequence[Sort],
     limit: int,
@@ -72,6 +72,7 @@ async def keyset_page(
     visible: Sequence[Fragment] = (),
     where: Sequence[Fragment] = (),
     lock: Lock | None = None,
+    records: bool = False,
 ) -> KeyPage:
     """one page of ``table``'s rows ``by`` names, in ``order``, after ``cursor``.
 
@@ -81,8 +82,8 @@ async def keyset_page(
     :ptype table: str | Derived
     :param columns: the columns read, TRUSTED identifiers or :class:`~threetears.core.keyed.Selected` expressions
         under their own names (a row's hash); each sort column among them (a sort expression's name not: it is
-        selected under it)
-    :ptype columns: Sequence[str | Selected]
+        selected under it); every column of the table (``t.*``) when None, sorted by columns only
+    :ptype columns: Sequence[str | Selected] | None
     :param by: the bound prefix (a tenant, a parent), each a value or an ``AnyOf``; empty pages across every row
         in the sort's index
     :ptype by: Mapping[str, Any]
@@ -100,6 +101,10 @@ async def keyset_page(
     :ptype where: Sequence[Fragment]
     :param lock: the row lock the page takes on its rows (the caller's transaction); none when None
     :ptype lock: Lock | None
+    :param records: the page's rows as the connection answered them (asyncpg ``Record`` s on a direct connection),
+        with no copy into a dict: a first-of or top-n read rewritten onto the first page answers what its ``fetch``
+        / ``fetchrow`` answered before
+    :ptype records: bool
     :return: the page
     :rtype: KeyPage
     :raises ValueError: when the sort is empty, a sort column is not read, a sort expression's name is a column read,
@@ -128,7 +133,8 @@ async def keyset_page(
         seek_legs=legs,
         chain_legs=_chains_legs(conn),
     )
-    return KeyPage.cut(order, [dict(row) for row in await sent_by(conn).fetch(sql, *params)], limit)
+    answered = list(await sent_by(conn).fetch(sql, *params))
+    return KeyPage.cut(order, answered if records else [dict(row) for row in answered], limit)
 
 
 def _reads_l3(conn: Any) -> bool:

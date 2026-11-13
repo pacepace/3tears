@@ -356,6 +356,30 @@ class TestReadKeyed:
 
 
 class TestKeysetPage:
+    async def test_a_first_page_of_every_column_answers_the_connection_s_rows(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if columns=None reads other than every column (``t.*``) or records=True copies a row; a first-of read
+        rewritten onto the page answers what its ``fetchrow`` answered."""
+        reader = _Rows(db)
+        page = await keyset_page(
+            reader, "t", columns=None, by={"a": "k3"}, order=[Sort("b", "bigint", descending=True)], limit=2, records=True
+        )
+        assert [id(row) for row in page.rows] == [id(row) for row in reader.answered[:2]]
+        assert all(type(row) is _Row for row in page.rows)
+        assert [tuple(row.values()) for row in page.rows] == _plain(
+            db, "SELECT * FROM t WHERE a = 'k3' ORDER BY b DESC LIMIT 2"
+        )
+        assert page.next_cursor is not None
+        assert 't.*' in reader.statements[0][0]
+
+    async def test_a_page_of_every_column_refuses_a_sort_expression(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a page of every column sorts by an expression, whose name could be a column's own."""
+        with pytest.raises(ValueError, match="not an expression"):
+            await keyset_page(
+                ThreadedDuckDB(db), "t", columns=None, by={}, order=[Sort("b", "bigint", expression="t.b * 2")], limit=2
+            )
+
     async def test_pages_answer_every_row_of_the_prefix_once_in_order(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a page skips or repeats a row at its boundary, or reads past the prefix."""
         order = [Sort("b", "bigint")]

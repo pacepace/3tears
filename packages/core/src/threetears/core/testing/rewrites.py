@@ -66,6 +66,7 @@ from threetears.core.keyed import (
     AnyOf,
     Fragment,
     Increment,
+    keyset_page,
     Sort,
     delete_before,
     delete_keyed,
@@ -473,6 +474,9 @@ async def _assert_point_same(
     order = [_sort(term) for term in entry.get("order", ())]
     await conn.execute("SET session_replication_role = replica")
     try:
+        if entry.get("shape") == "first":
+            await _assert_first_same(conn, entry, row, params, by, order)
+            return
         await assert_same_results(
             conn,
             table=table,
@@ -513,6 +517,49 @@ async def _assert_point_same(
             )
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")
+
+
+#: the rows a top-n read's ``LIMIT $n`` is bound to in the comparison: inside the seed cases' 12- and 25-row tables,
+#: so the boundary falls among the rows (and among the tied ones)
+_TOP_N: Final[int] = 3
+
+
+async def _assert_first_same(
+    conn: Any,
+    entry: Mapping[str, Any],
+    row: Callable[[Seeded], dict[str, Any]],
+    params: list[Any],
+    by: dict[str, Any],
+    order: list[Sort],
+) -> None:
+    """a first-of or top-n entry (shape ``first``): ``keyset_page``'s first page, its order completed by the key, gives
+    the old ``LIMIT`` statement's rows (:func:`~threetears.core.testing.same_results.assert_same_results`,
+    ``limited``: exact before the boundary, sort values at it)."""
+    table = entry["table"]
+    limit = entry["limit"]
+    if "param" in limit:
+        params = [*params, _TOP_N]
+        rows = _TOP_N
+    else:
+        rows = int(limit["literal"])
+    own = entry["order"][: entry["key_from"]]
+
+    async def first_page(c: Any) -> list[Any]:
+        return (
+            await keyset_page(c, table, columns=entry["columns"], by=by, order=order, limit=rows, records=True)
+        ).rows
+
+    await assert_same_results(
+        conn,
+        table=table,
+        row=row,
+        old_sql=entry["old_sql"],
+        params=params,
+        helper=first_page,
+        order_by=[term["column"] for term in own],
+        ordered=True,
+        limited=True,
+    )
 
 
 async def _assert_write_same(conn: Any, entry: Mapping[str, Any], *, overrides: _Overrides | None) -> None:
@@ -832,6 +879,8 @@ def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
     if entry["helper"] == "read_value":
         column = keywords.get("column")
         return isinstance(column, ast.Constant) and column.value == entry["columns"][0]
+    if entry.get("shape") == "first" and not _first_says(keywords, entry):
+        return False
     records = keywords.get("records")
     if not (isinstance(records, ast.Constant) and records.value is True):
         return False
@@ -839,9 +888,21 @@ def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
         return False
     columns = keywords.get("columns")
     if entry["columns"] is None:
-        return columns is None
+        return columns is None or (isinstance(columns, ast.Constant) and columns.value is None)
     written: list[Any] | None = _written_columns(columns, tree)
     return written is not None and written == list(entry["columns"])
+
+
+def _first_says(keywords: Mapping[str | None, ast.expr], entry: Mapping[str, Any]) -> bool:
+    """whether a ``keyset_page`` call reads the first-of entry's ``LIMIT`` (its argument, or its literal) and, for a
+    ``SELECT *``, every column (``columns=None``)."""
+    limit = entry["limit"]
+    recorded = entry["args"][limit["param"] - 1] if "param" in limit else str(limit["literal"])
+    limited = keywords.get("limit")
+    if limited is None or not _same_expression(limited, recorded):
+        return False
+    every = keywords.get("columns")
+    return entry["columns"] is not None or (isinstance(every, ast.Constant) and every.value is None)
 
 
 def _order_says(order: ast.expr | None, terms: Sequence[Mapping[str, Any]]) -> bool:
