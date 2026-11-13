@@ -1676,3 +1676,36 @@ async def test_a_checkpoint_stage_is_reached_only_at_a_start() -> None:
     await follower.checkpointed()
     assert _copy(backend) == l3.held()
     assert stages == [1]
+
+
+@pytest.mark.parametrize("field", ["order", "partition_order"])
+def test_an_order_that_is_not_unique_is_refused_at_construction(field: str) -> None:
+    """Flips if a FollowedTable takes a page order missing a key column: a keyset read by it skips every row sharing
+    the cursor's values at each page boundary (reports' state-index order, 2026-11-13), so the copy holds fewer rows
+    than L3 under L3's epochs."""
+    with pytest.raises(ValueError, match=r"votes: .*not unique.*missing \['geo_id'\]"):
+        FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, **{field: ("state",)})  # type: ignore[arg-type]
+    FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, **{field: ("state", "votes", "geo_id")})  # type: ignore[arg-type]
+
+
+async def test_a_warm_paged_by_its_order_over_one_shared_lead_value_reads_every_row() -> None:
+    """Flips if the first warm, paged (50 a page) by an explicit order over 120 rows that all share its lead value,
+    holds fewer rows than L3."""
+    l3, log, lock = _L3(), _Log(), _Seqlock()
+    backend = DuckDBBackend()
+    backend.initialize(_metadata())
+    registry = CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    follower = CopyFollower(
+        registry,
+        [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, order=("state", "geo_id"))],
+        backend,
+        l3,
+        settled=lock.settled,
+        generation=log.current,
+        changes=log,
+        page_size=50,
+    )
+    follower.register()
+    await _warmed((l3, log, lock, backend, follower), 120)
+    assert len(_copy(backend)) == 120

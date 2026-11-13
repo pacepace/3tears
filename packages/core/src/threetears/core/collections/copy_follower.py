@@ -279,6 +279,16 @@ class FollowedTable:
             raise ValueError(f"{self.name}: the copy must hold every key column; {missing} is not among its columns")
         if self.scope is not None and self.scope[0] not in held:
             raise ValueError(f"{self.name}: the copy must hold its scope column {self.scope[0]!r}")
+        # a keyset read pages past the last row's values of its order: an order that is not unique skips every row
+        # sharing the cursor's values at each page boundary, so the copy would hold fewer rows than L3 under L3's
+        # epochs. Unique here means it holds every key column
+        for field, order in (("order", self.order), ("partition_order", self.partition_order)):
+            short = [column for column in self.key if order and column not in order]
+            if short:
+                raise ValueError(
+                    f"{self.name}: {field} {list(order)} is not unique: a keyset read by it skips rows at page "
+                    f"boundaries; it must hold every key column, missing {short}"
+                )
 
     def scope_of(self, value: Any) -> str:
         """the scope a row whose scope column holds ``value`` belongs to.
