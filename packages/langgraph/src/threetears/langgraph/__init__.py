@@ -43,6 +43,7 @@ from threetears.langgraph.caching import (
 from threetears.langgraph.catalog import ObjectCataloger
 from threetears.langgraph.checkpoint import (
     CheckpointCacheError,
+    CheckpointPruneResult,
     CheckpointPurgeIncompleteError,
     ThreeTierCheckpointSaver,
 )
@@ -154,6 +155,7 @@ __all__ = [
     "ChatModelCapabilities",
     "CheckpointAnonymization",
     "CheckpointCacheError",
+    "CheckpointPruneResult",
     "CheckpointPurgeIncompleteError",
     "CheckpointL1Cache",
     "CheckpointL2Cache",
