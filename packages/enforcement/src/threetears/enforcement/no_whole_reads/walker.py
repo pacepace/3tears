@@ -957,10 +957,6 @@ _QUOTERS: Final[frozenset[str]] = frozenset({"quote_identifier", "_quote_ident",
 _READING_METHODS: Final[frozenset[str]] = frozenset({"index", "count", "copy", "get", "keys", "values", "items"})
 
 
-#: methods of a list, tuple or mapping that read it and never change it: a local they are called on keeps its binding
-_READING_METHODS: Final[frozenset[str]] = frozenset({"index", "count", "copy", "get", "keys", "values", "items"})
-
-
 #: a local copy's relation accessors: ``snapshot.relation(NAME)`` names the copy's own table, never the L3 one
 _COPY_CALLS: Final[frozenset[str]] = COPY_CALLS
 
