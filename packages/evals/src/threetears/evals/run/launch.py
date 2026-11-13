@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 
 from threetears.evals.kernel import JobTimeoutFactory
 from threetears.evals.kernel.build_stamp import package_rev, package_version
-from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.kernel.host.eval_host import CompletionRole, EvalHost
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.schema.completion import ModelListing
 from threetears.evals.schema.models import ArmSchedule, EvalTemplate, RunDisclosure, WorldPlacement
@@ -1386,6 +1386,11 @@ class LaunchableKind:
         on it, or set every cell's judging aside having paid for the cells; and an arm with an unpriced call is refused too, since unknown is not $0. ``None`` for a kind
         that does not price its calls before launch: the engine then checks nothing here, and the run's cap counts
         each cell's spend once it is recorded. Ignored for a kind that plans nothing.
+    :ivar candidate_role: The role of the host's client factory the kind calls its candidate through (the judge kind
+        calls its candidate as a ``judge``-role client), which tells the served-model check where the candidate goes;
+        ``None`` for a kind whose candidate the host calls through its own route. Such a candidate's provider is the
+        host's to say: it is checked only when the factory's ``model_listing`` answers for it with no role, and
+        otherwise the check is reported skipped, never inferred from the model id.
     """
 
     launch: KindLauncher
@@ -1395,6 +1400,7 @@ class LaunchableKind:
     plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None
     apparatus_settings: Mapping[str, ApparatusSettingValue] = field(default_factory=lambda: MappingProxyType({}))
     price_largest_call: Callable[[LaunchRequest], Awaitable[CallCeiling | UnpricedCall | None]] | None = None
+    candidate_role: CompletionRole | None = None
 
     def __post_init__(self) -> None:
         """Refuse a name that is not a launch argument, and a default no run could store.
@@ -2946,7 +2952,7 @@ async def _planned(host: LaunchHost, launchable: LaunchableKind, request: Launch
             f"kind {kind!r} planned an arm the launch pinned to simulator {request.simulator_model!r} on "
             f"{plan.simulator_model!r}; a pinned simulator is the simulator"
         )
-    plan = replace(plan, served_checks=await _served_checks(host, plan))
+    plan = replace(plan, served_checks=await _served_checks(host, launchable, plan))
     price_largest_call = launchable.price_largest_call
     if price_largest_call is None:
         return plan
@@ -2956,17 +2962,23 @@ async def _planned(host: LaunchHost, launchable: LaunchableKind, request: Launch
     return replace(plan, call_ceiling=priced)
 
 
-async def _served_checks(host: LaunchHost, plan: ArmPlan) -> tuple[ServedCheck, ...]:
+async def _served_checks(host: LaunchHost, launchable: LaunchableKind, plan: ArmPlan) -> tuple[ServedCheck, ...]:
     """What each provider's model list, read now, says of the models an arm names: its candidate, judges, simulator.
 
     Asked of the host's client factory through its optional ``model_listing(model, *, role)``
     (:class:`~threetears.evals.schema.ModelListing`); the shipped ``Clients`` reads OpenRouter's list, the price
-    catalogue its models share, so the read serves the pricing that follows. A factory without the method, and a
-    model its factory reads no list for (it answers ``None``), is not checked. The candidate is asked with no role:
-    the host calls it through its own route, so only its id says where it goes.
+    catalogue its models share, so the read serves the pricing that follows. A factory without the method is not
+    asked, and a judge or simulator model its factory reads no list for (it answers ``None``) is not checked.
+
+    The candidate is asked in the role its kind calls it through (:attr:`LaunchableKind.candidate_role`). A candidate
+    the host calls through its own route is asked with no role, so only the host's factory can say where it goes; when
+    the factory answers nothing for it, the check is reported skipped, since a list of a provider the candidate may
+    never be sent to could refuse a launch the host would serve.
 
     :param host: The host, whose client factory reads the lists.
     :ptype host: LaunchHost
+    :param launchable: The kind's registry entry, which says how its candidate is called.
+    :ptype launchable: LaunchableKind
     :param plan: The arm's plan, naming its models.
     :ptype plan: ArmPlan
     :return: One check per model and role a list was read for, in the order the arm names them.
@@ -2977,14 +2989,30 @@ async def _served_checks(host: LaunchHost, plan: ArmPlan) -> tuple[ServedCheck, 
     listing = getattr(clients, "model_listing", None) if clients is not None else None
     if not callable(listing):
         return ()
-    asked: list[tuple[ServedRole, str]] = [("candidate", plan.candidate_model)]
+    asked: list[tuple[ServedRole, str, CompletionRole | None]] = [
+        ("candidate", plan.candidate_model, launchable.candidate_role)
+    ]
     if plan.judge is not None:
-        asked += [("judge", model) for model in (plan.judge.model, *plan.judge.effective_judges.values())]
+        asked += [("judge", model, "judge") for model in (plan.judge.model, *plan.judge.effective_judges.values())]
     if plan.simulator_model is not None:
-        asked.append(("simulator", plan.simulator_model))
+        asked.append(("simulator", plan.simulator_model, "simulator"))
     checks: list[ServedCheck] = []
-    for role, model in dict.fromkeys(asked):
-        found = await listing(model, role=None if role == "candidate" else role)
+    for role, model, client_role in dict.fromkeys(asked):
+        found = await listing(model, role=client_role)
+        if found is None and role == "candidate" and client_role is None:
+            checks.append(
+                ServedCheck(
+                    role=role,
+                    model=model,
+                    provider="the host's own route",
+                    listed=None,
+                    detail=(
+                        "the host calls this candidate through its own route, and its client factory names no "
+                        "provider model list for it"
+                    ),
+                )
+            )
+            continue
         if found is None:
             continue
         if not isinstance(found, ModelListing):

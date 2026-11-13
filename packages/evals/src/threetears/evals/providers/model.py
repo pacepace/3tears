@@ -1769,25 +1769,29 @@ class Clients:
         kept, older ones are fetched again. A list that cannot be read now, or whose refresh failed so the rows held
         are stale, answers ``listed=None`` saying why, and the launch goes ahead saying the check was skipped.
 
-        The provider is the one the factory would build ``model`` on: the role's own (a role given as a
-        :class:`Model` keeps its provider), else OpenRouter for a ``vendor/model`` id. ``role=None`` is a model the
-        host calls through its own route (a subject's candidate), read by the id alone. Only OpenRouter's list is
-        read here, so a model going to Anthropic or OpenAI directly, or to an OpenAI-compatible ``base_url``, answers
-        ``None``: there is no list to check it against.
+        The provider is the one the factory builds ``model`` on in ``role``: the role's own (a role given as a
+        :class:`Model` keeps its provider), else OpenRouter for a ``vendor/model`` id. Only OpenRouter's list is read
+        here, so a model going to Anthropic or OpenAI directly, or to an OpenAI-compatible ``base_url``, answers
+        ``None``: there is no list to check it against. ``role=None`` is a model the host calls through its own route
+        (a subject's candidate): this factory does not build it, so it does not know where it goes and answers
+        ``None``, which the launch reports as a check skipped. A host whose own route is one this factory reads a list
+        of says so by answering for ``role=None`` in a factory of its own.
 
         :param model: The model id, as the launch names it.
         :ptype model: str
         :param role: The engine role the model serves, or ``None`` for a candidate the host calls itself.
         :ptype role: CompletionRole | None
-        :return: The listing, or ``None`` when the model's provider has no list here.
+        :return: The listing, or ``None`` when the factory reads no list for the model in that role.
         :rtype: ModelListing | None
         """
+        if role is None:
+            return None
         if "/" not in model:
             return None
         # A vendor/model id goes to the router whose list the catalogue is, as Model builds it; a role's Model built
         # on another provider or a base_url derives every model of that role there, where no list is read.
         routed = _provider_of(model, None, None)
-        template = self._roles.get(role, self._default) if role is not None else None
+        template = self._roles.get(role, self._default)
         if isinstance(template, Model) and (template.base_url is not None or template.provider != routed):
             return None
         read = await self.catalogue.read()

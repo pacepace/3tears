@@ -300,8 +300,11 @@ declaration, so it stays, and no between-cells stop is read from it.
 **The served-model check.** A model a provider has retired answers every call with an error, and a run of it
 would judge each empty reply as the model doing badly. So admission asks the host's client factory, through its
 optional `model_listing(model, *, role)`, what the provider's own list of the models it serves says of each model
-an arm names: the candidate (asked with no role, since the host calls it through its own route), every judge model
-and the simulator model. The shipped `Clients` reads OpenRouter's model list, which is the price catalogue its
+an arm names: the candidate, every judge model and the simulator model. The candidate is asked in the role its kind
+calls it through (`LaunchableKind.candidate_role`: the judge kind's is `judge`). A candidate the host calls through
+its own route is asked with no role, and only the host's factory can say where it goes: the shipped `Clients` does
+not route it, so it answers nothing, and the check is reported skipped rather than read from a list of a provider the
+candidate may never be sent to. The shipped `Clients` reads OpenRouter's model list, which is the price catalogue its
 models share, so one read serves this check and the pricing after it: rows younger than the catalogue's
 `refresh_after` are kept, older ones fetched again. A model that list does not name is refused, naming the model
 and the provider. A list that cannot be read, or whose refresh failed so it is not current, leaves the arm admitted,

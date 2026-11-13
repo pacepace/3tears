@@ -390,10 +390,13 @@ priced is refused, naming the call and why, never admitted unchecked.
 OpenRouter's model list (the same catalogue, so the same read) says of a model that goes to OpenRouter, and admission
 asks it of each arm's candidate, judge and simulator models: a model the list does not name is refused, naming it,
 and a list that cannot be read lets the launch, the sweep or the resume go ahead saying the check was skipped
-(`JobsStarted.notices`, `ArmEstimate.served_check_skipped`). A model going to Anthropic or OpenAI directly is not checked. A factory of your
-own may offer the same `async model_listing(model, *, role) -> ModelListing | None` (`ModelListing` from
-`threetears.evals.schema`), answering `None` for a model whose provider keeps no list it reads; one without it is
-not checked. A long-lived process is not priced from its first
+(`JobsStarted.notices`, `ArmEstimate.served_check_skipped`). A model going to Anthropic or OpenAI directly is not
+checked. A candidate your kind calls through your own route, not a role of the factory, is asked with `role=None`:
+`Clients` does not route it and answers nothing, so its check is reported skipped. A kind that calls its candidate
+through the factory says which role (`LaunchableKind.candidate_role`), and is checked in it. A factory of your own may
+offer the same `async model_listing(model, *, role) -> ModelListing | None` (`ModelListing` from
+`threetears.evals.schema`), answering `None` for a model whose provider keeps no list it reads, and answering for
+`role=None` when it knows where your candidates go; one without it is not checked. A long-lived process is not priced from its first
 fetch forever: the catalogue refreshes on the first live call after `refresh_after` (`Catalogue(refresh_after=...)`,
 six hours by default). A refresh that fails keeps the last rates rather than failing the call, logs it, and marks the
 completions they price: `Completion.pricing_stale_since` is when those rates expired (`None` while fresh, and on an

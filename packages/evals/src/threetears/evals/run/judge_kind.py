@@ -1391,4 +1391,6 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         ignored_template_fields=frozenset(TEMPLATE_FIELDS),
         plan_arm=plan,
         price_largest_call=price_largest_call,
+        # The judge under test is called as a judge-role client of the host's factory (built()).
+        candidate_role="judge",
     )
