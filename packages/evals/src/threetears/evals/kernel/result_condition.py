@@ -94,7 +94,7 @@ class ResultOutcome(str, Enum):
 
 #: What the judge produced for this result.
 #:
-#: Four arms because a judge scores per dimension and can therefore half-succeed:
+#: Four arms because a judge scores per dimension and can therefore half-succeed, and a fifth for the run's cost cap:
 #:
 #:   ``scored``         at least one judge output landed and nothing errored.
 #:   ``partial``        outputs landed AND something errored — some dimensions scored,
@@ -103,13 +103,15 @@ class ResultOutcome(str, Enum):
 #:   ``failed``         the judge ran and errored, producing nothing.
 #:   ``not_attempted``  no judge output and no judge error: no judge service, an empty
 #:                      transcript, or a cell that never reached judging.
+#:   ``set_aside``      the run's cost cap had too little left for the judging, so the judge was not asked on
+#:                      some or all of the dimensions (``EvalResult.judging_set_aside``); nothing errored.
 #:
 #: Derived from the judge's own outputs, which is a real evidence trail rather than a
 #: correlate — a score exists only because a judge produced it. ``judge_model`` is
 #: deliberately not consulted: it is the run-level pin, present on cells that never
 #: reached a judge at all, and reading it as evidence of judging is one of the
 #: disagreeing predicates this module replaced.
-JudgingState = Literal["scored", "partial", "failed", "not_attempted"]
+JudgingState = Literal["scored", "partial", "failed", "not_attempted", "set_aside"]
 
 #: Why a result is a candidate failure. ``model_failed``: a model the configuration runs
 #: failed, recorded in ``candidate_error``. ``turn_budget``: the host's turn budget ended one of
@@ -349,9 +351,9 @@ def _classify_judging(result: EvalResult) -> JudgingState:
         or result.judge_cannot_tell
     )
     if result.judge_error and result.judging_set_aside:
-        # The cost cap kept the judge from being asked: nothing errored, so a judge that was never asked is not one
-        # that failed.
-        return "partial" if scored else "not_attempted"
+        # The cost cap kept the judge from being asked: nothing errored, so a judge never asked is not one that failed,
+        # whether or not it had answered on some dimensions first.
+        return "set_aside"
     if result.judge_error:
         return "partial" if scored else "failed"
     return "scored" if scored else "not_attempted"
@@ -461,6 +463,10 @@ _JUDGING_DISCLOSURE: dict[JudgingState, str | None] = {
     "not_attempted": "No judge produced output for this result, so it carries no scores.",
     "partial": "The judge errored partway: some dimensions were scored and some were not.",
     "failed": "The judge ran and errored, so this result carries no scores.",
+    "set_aside": (
+        "The run's cost cap had too little left for this result's judging, so the judge was not asked on every"
+        " dimension and the judged readings leave it out; a re-judge, or a launch with a higher cap, judges it."
+    ),
 }
 
 

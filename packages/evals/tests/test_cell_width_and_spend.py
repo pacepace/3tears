@@ -43,11 +43,16 @@ from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.product import ExtractionRequest
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_run, toyhost_template, toyhost_test_cases
 from packages.evals.tests.scripted_table import FakeCellSink, ScriptedResponse, ScriptedTable, actor
-from threetears.evals.analysis.summary import budget_stop_line
+from threetears.evals.analysis.summary import NOT_JUDGED_LINE, CaseResult, budget_stop_line, summarize_run
 from threetears.evals.kernel import CappedCompletion, call_ceiling
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.kernel.result_condition import ResultOutcome, classify_result, trial_exclusion
+from threetears.evals.kernel.result_condition import (
+    ResultOutcome,
+    classify_result,
+    resolve_result_condition,
+    trial_exclusion,
+)
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.run import (
     KindWiring,
@@ -717,6 +722,24 @@ async def test_judging_the_cap_has_no_room_for_is_set_aside_unasked_and_stops_th
     assert budget_stop_line(stopped.stops).endswith(
         "; 0 cells not started; 1 cell not judged, as the cap had too little left for their judging"
     )
+
+
+async def test_the_run_summary_names_a_case_the_cap_set_aside_as_not_judged_with_its_remedy() -> None:
+    """Even with no stop line to read, the summary says which case the cap left unjudged and what judges it: the case
+    reads not judged, never scored, with the line naming the cap; the results line counts it apart; and its judging
+    state is set aside, not a judge that errored."""
+    judge = _PricedJudge(cost_usd=0.0004, ceiling_usd=1.0)
+    host, run, (result,), _stopped = await _judged_run_kept(judge, cap_usd=0.5)
+
+    summary = off_loop(summarize_run, host, run.id, run.scope_id)
+    case = CaseResult.of(result, case="the case", given=None, expected=None, answer=None)
+
+    assert (summary.n_scored, summary.n_not_judged) == (0, 1)
+    assert "1 not judged, as the cost cap had too little left for their judging" in summary.results_text
+    assert any(error.endswith(NOT_JUDGED_LINE) for error in summary.errors)
+    assert case.outcome == "not_judged" and case.errors == [NOT_JUDGED_LINE]
+    assert "re-judge it" in NOT_JUDGED_LINE
+    assert resolve_result_condition(result).judging == "set_aside"
 
 
 async def test_a_re_judge_takes_up_a_cell_the_cap_set_aside_and_clears_its_mark() -> None:

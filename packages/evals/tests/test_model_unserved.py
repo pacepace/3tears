@@ -36,6 +36,7 @@ from threetears.evals.ops import LaunchArguments, OpsHost, run_launch, run_job_i
 from threetears.evals.providers import ProviderError, describe_failure
 from threetears.evals.providers.failures import error_from_response
 from threetears.evals.run import ModelUnservedError, RunnerOptions, execute_run, resumable_jobs, resume_run
+from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.schema import EvalResult, EvalRun
@@ -343,6 +344,38 @@ async def test_a_served_cell_between_unserved_ones_starts_the_circuits_count_aga
     assert len(judge.calls) > 0 and all(result.judge_scores() for result in results if not result.model_unserved), (
         "the served cells are judged"
     )
+
+
+async def test_a_run_its_cost_cap_stopped_keeps_its_stop_record_and_names_the_cells_its_model_was_not_served_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One cell meets a retired model, short of the circuit, and the cost cap then stops the run. The cap's record is
+    what the run keeps (budget_stopped: its stop line, what landed, the cells not started or not judged), and the stop
+    names the cells the model was not served for beside it; each is marked, so a take-up runs it again."""
+    host, run, template, cases, wired, judge = off_loop(
+        _judged_run, monkeypatch, _conversing_invoke(_retired, served_every=2), n_cases=3, k=2
+    )
+    service, options = wired
+    cap = EvalRunCostCap(run.id, 0.001, enabled=True)
+
+    with pytest.raises(BudgetStoppedError) as stopped:
+        await execute_run(
+            host,
+            run=run,
+            template=template,
+            test_cases=cases,
+            judge_service=service,
+            options=options,
+            budget_gate=cap.check,
+            on_cost=cap.record,
+        )
+
+    assert stopped.value.stops, "the cap's record is kept"
+    assert stopped.value.stops[0].currency == "cost_usd" and stopped.value.stops[0].cells_not_started > 0
+    assert stopped.value.unserved is not None and stopped.value.unserved[0] == RETIRED
+    assert f"the provider did not serve model {RETIRED!r}" in str(stopped.value)
+    results = _results(host.storage, run)
+    assert any(result.model_unserved for result in results), "the unserved cell is marked, for a take-up to run again"
 
 
 async def test_a_run_shorter_than_the_circuit_whose_every_cell_is_unserved_stops_all_the_same(

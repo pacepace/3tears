@@ -145,7 +145,10 @@ for the cap's room is set aside the same way, not charged to the judge. A re-jud
 action, with `apply`) takes the cell up from the evidence it stored and clears the mark; a resume counts it done. The
 first such cell stops the run (`budget_stopped`, no new cell starts), and the stop record counts the cells
 (`BudgetStop.cells_not_judged`, core v15.14). The stop line ends "N cells not judged, as the cap had too little left
-for their judging".
+for their judging". A run's summary counts those results apart from the scored ones (`n_not_judged`), reads each such
+case as not judged with the line naming the cap and the remedy, and its judging state as set aside. A run the cap
+stopped keeps its stop record even when some of its cells met a model the provider no longer serves: it ends
+`budget_stopped` and names those cells beside the stop, and a take-up runs them again.
 
 A launch's refusal of an arm whose one call is priced above its whole cap says what the run would do: make a
 candidate's or a simulated user's call and pass the cap, or set every cell's judging aside.
