@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import io
-
 import base64
+import io
 import json
 import subprocess
 import sys
 import textwrap
 
 import pytest
-
 from threetears.agent.tools.builtin.image_prep import ImagePrepError, ImagePrepTool, prepare_image_for_vision
 
 #: the long-edge limit the module documents for every image it re-encodes -- under
@@ -185,10 +183,10 @@ class TestAFailedResizeIsReported:
         assert "ModuleNotFoundError" in outcome["refused"]
 
     @pytest.mark.asyncio
-    async def test_no_exception_message_reaches_the_agent(self, monkeypatch):
+    async def test_no_exception_message_reaches_the_agent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from PIL import Image
 
-        def _planted(*args, **kwargs):
+        def _planted(*args, **kwargs) -> None:
             raise OSError("PLANTED-1a9f cannot identify image file")
 
         monkeypatch.setattr(Image, "open", _planted)
@@ -230,7 +228,9 @@ class TestInputThatIsNotBase64:
         assert result.error is not None and result.error.startswith("failed to decode base64 image data")
 
     @pytest.mark.asyncio
-    async def test_a_bug_in_the_decode_propagates_rather_than_reading_as_bad_input(self, monkeypatch) -> None:
+    async def test_a_bug_in_the_decode_propagates_rather_than_reading_as_bad_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """it used to be contained and answered as undecodable base64, blaming the model."""
         from threetears.agent.tools.builtin import image_prep
 

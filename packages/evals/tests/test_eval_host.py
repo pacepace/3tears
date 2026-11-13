@@ -13,13 +13,9 @@ from dataclasses import fields, replace
 
 import pytest
 from pydantic import ValidationError
-
-from threetears.evals.kernel import default_job_timeout
-from threetears.evals.schema import EvalRun, EvalTestCase
-from threetears.evals.kernel import EvalStorage, NotFoundError, ValidationFailedError
+from threetears.evals.kernel import EvalStorage, NotFoundError, ValidationFailedError, default_job_timeout
 from threetears.evals.kernel.errors import AdmissionRefusedError
 from threetears.evals.kernel.host import EvalHost, WorldRegistry
-from threetears.evals.schema.models import VariationCounts
 from threetears.evals.run import (
     ArmPlan,
     ArmPrice,
@@ -33,13 +29,16 @@ from threetears.evals.run import (
     launch_run,
     start_run,
 )
+from threetears.evals.schema import EvalRun, EvalTestCase
+from threetears.evals.schema.models import VariationCounts
+from threetears.evals.storage import InMemoryDocumentStore
+
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT, toyhost_observation
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host, with_registry
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template, toyhost_test_cases
-from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.off_loop import off_loop
 
 
@@ -339,7 +338,7 @@ async def test_the_launch_stamps_the_requests_cassette_mode_and_corpus_with_no_l
     ],
     ids=["replay-without-corpus", "corpus-without-replay", "corpus-run-missing"],
 )
-async def test_a_replay_corpus_the_launch_cannot_serve_is_refused_before_anything_runs(arguments, said):
+async def test_a_replay_corpus_the_launch_cannot_serve_is_refused_before_anything_runs(arguments, said) -> None:
     host, storage, handed = off_loop(_launching_with, _wired)
 
     with pytest.raises(ValidationFailedError, match=said):
@@ -466,7 +465,7 @@ def _other_template_case() -> EvalTestCase:
         "generation-unasked",
     ],
 )
-async def test_a_wiring_that_contradicts_its_request_is_refused_and_creates_no_run(overrides, arguments, said):
+async def test_a_wiring_that_contradicts_its_request_is_refused_and_creates_no_run(overrides, arguments, said) -> None:
     """Where the request and the wiring speak to one fact they must agree, or the run records one thing and runs another."""
     host, storage, _handed = off_loop(_launching_with, lambda request, world: _wired(request, world, **overrides()))
 

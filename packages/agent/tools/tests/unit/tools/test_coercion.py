@@ -17,9 +17,7 @@ broadly) gave the appearance of coverage. behavioral coverage of
 from __future__ import annotations
 
 import pytest
-
 from threetears.agent.tools.coercion import coerce_value, normalize_kwargs
-
 
 # ---------------------------------------------------------------------------
 # coerce_value: array
@@ -114,7 +112,7 @@ def test_coerce_value_object_json_array_string_does_not_become_object() -> None:
 
 
 @pytest.mark.parametrize("declared_type", ["string", "integer", "number", "boolean", None])
-def test_coerce_value_non_complex_types_pass_through(declared_type):
+def test_coerce_value_non_complex_types_pass_through(declared_type) -> None:
     """only object and array engage coercion; everything else is untouched."""
     assert coerce_value("[1,2,3]", declared_type) == "[1,2,3]"
     assert coerce_value("", declared_type) == ""

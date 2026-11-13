@@ -12,29 +12,29 @@ import asyncio
 import json
 import logging
 import socket
+import textwrap
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-import textwrap
-
 import pytest
-from packages.scrape.tests.scrape_tool_support import derived_target_id, holds_no_probe
-from packages.scrape.tests.egress_fakes import FakeEgress
-from packages.scrape.tests.pacer_fakes import FakeDelayPacer
 from pydantic import SecretStr
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitState
 from threetears.scrape.challenge import PageVerdict
 from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+from threetears.scrape.driver import NavStep, RenderedPage
 from threetears.scrape.health import ScrapeTargetHealthCollection
+from threetears.scrape.llm_retry import StructuredCallTimeoutError
 from threetears.scrape.robots import RobotsGate
 from threetears.scrape.session_state import record_session_state, seal_session_state
-from threetears.scrape.driver import NavStep, RenderedPage
-from threetears.scrape.llm_retry import StructuredCallTimeoutError
 from threetears.scrape.tool import MODEL_UNAVAILABLE_STATUS, ScrapeTool
-from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.config import DefaultCoreConfig
+
+from packages.scrape.tests.egress_fakes import FakeEgress
+from packages.scrape.tests.pacer_fakes import FakeDelayPacer
+from packages.scrape.tests.scrape_tool_support import derived_target_id, holds_no_probe
 
 _test_registry = CollectionRegistry()
 _test_config = DefaultCoreConfig()
@@ -1051,7 +1051,7 @@ class TestScrapeToolFetchCircuit:
 
 
 @pytest.mark.parametrize("driver_kind", ["api", "sidecar"], ids=["api-driver", "sidecar-driver"])
-def test_a_proxied_driver_with_an_unproxied_tool_says_so(caplog, driver_kind: str) -> None:
+def test_a_proxied_driver_with_an_unproxied_tool_says_so(caplog: pytest.LogCaptureFixture, driver_kind: str) -> None:
     """One security property, two wiring points, and getting only one right is invisible.
 
     The page leaves by TOR while the robots.txt read in front of it leaves by the container's
@@ -1092,7 +1092,7 @@ def test_a_proxied_driver_with_an_unproxied_tool_says_so(caplog, driver_kind: st
     )
 
 
-def test_matching_egress_on_both_says_nothing(caplog) -> None:
+def test_matching_egress_on_both_says_nothing(caplog: pytest.LogCaptureFixture) -> None:
     """The correct configuration must not be noisy, or the warning stops being read."""
     from threetears.core.collections.registry import CollectionRegistry
     from threetears.core.config import DefaultCoreConfig
@@ -1116,7 +1116,7 @@ def test_matching_egress_on_both_says_nothing(caplog) -> None:
     assert not caplog.records, f"the correct configuration was noisy: {[r.message for r in caplog.records]}"
 
 
-def _build_tool(caplog, **kwargs):
+def _build_tool(caplog: pytest.LogCaptureFixture, **kwargs):
     """Construct a ScrapeTool with the collections these warning tests do not care about.
 
     Returns the WARNING records emitted during construction, which is the only thing under test
@@ -1139,7 +1139,7 @@ def _build_tool(caplog, **kwargs):
     return [r.message for r in caplog.records]
 
 
-def test_a_proxied_tool_with_an_unproxied_driver_says_so(caplog) -> None:
+def test_a_proxied_tool_with_an_unproxied_driver_says_so(caplog: pytest.LogCaptureFixture) -> None:
     """The mirror case, and the more damaging one.
 
     With the gate proxied and the driver not, what leaves by the container's own address is the
@@ -1166,7 +1166,7 @@ def test_a_proxied_tool_with_an_unproxied_driver_says_so(caplog) -> None:
     )
 
 
-def test_the_backends_that_cannot_honour_an_exit_are_named(caplog) -> None:
+def test_the_backends_that_cannot_honour_an_exit_are_named(caplog: pytest.LogCaptureFixture) -> None:
     """The README points an operator at this warning, so the warning has to be worth pointing at.
 
     Most backends construct their own bare `httpx.AsyncClient` or launch a browser with no proxy
@@ -1194,7 +1194,7 @@ def test_the_backends_that_cannot_honour_an_exit_are_named(caplog) -> None:
     )
 
 
-def test_the_download_driver_is_named_even_though_it_defers_to_the_sidecar(caplog) -> None:
+def test_the_download_driver_is_named_even_though_it_defers_to_the_sidecar(caplog: pytest.LogCaptureFixture) -> None:
     """It declares no exit, so it is unproxied like the others -- but for a different reason.
 
     Every other unproxied backend builds its own client and reaches the target on the
@@ -1221,7 +1221,7 @@ def test_the_download_driver_is_named_even_though_it_defers_to_the_sidecar(caplo
     )
 
 
-def test_a_caller_supplied_proxied_gate_is_not_called_split(caplog) -> None:
+def test_a_caller_supplied_proxied_gate_is_not_called_split(caplog: pytest.LogCaptureFixture) -> None:
     """Reading the constructor argument called a correct configuration wrong.
 
     Passing a `RobotsGate` built with its own egress is the documented way to control how the
@@ -1244,7 +1244,7 @@ def test_a_caller_supplied_proxied_gate_is_not_called_split(caplog) -> None:
     assert not messages, f"a correctly proxied gate and driver were reported as split: {messages}"
 
 
-def test_a_disabled_gate_has_no_split_to_report(caplog) -> None:
+def test_a_disabled_gate_has_no_split_to_report(caplog: pytest.LogCaptureFixture) -> None:
     """With robots off there is no second request, so there is nothing to be split about.
 
     The old check would warn here, describing a robots.txt read that never happens.
@@ -1261,7 +1261,7 @@ def test_a_disabled_gate_has_no_split_to_report(caplog) -> None:
     assert not messages, f"warned about robots.txt reads for a tool with no robots gate: {messages}"
 
 
-def test_a_wrapper_driver_does_not_hide_its_inner_exit(caplog) -> None:
+def test_a_wrapper_driver_does_not_hide_its_inner_exit(caplog: pytest.LogCaptureFixture) -> None:
     """A wrapper reporting the base class's `None` lands on the safe-looking side.
 
     `NetworkCaptureDriver` wraps a real browser driver and performs no fetch of its own, so the
@@ -1526,7 +1526,7 @@ async def test_a_refused_fetch_does_not_charge_the_origins_clock() -> None:
     )
 
 
-async def test_a_render_failure_logs_what_actually_went_wrong(caplog) -> None:
+async def test_a_render_failure_logs_what_actually_went_wrong(caplog: pytest.LogCaptureFixture) -> None:
     """This is the log line an operator reads when the fleet backs off.
 
     The same guard calls `record_unreachable` three lines down, which opens the durable circuit
@@ -1679,12 +1679,11 @@ class TestEgressByName:
         resolved to, so the robots request reaching the registered exit's transport is the
         resolution, seen from outside.
         """
+        import httpx
         from threetears.core.collections.registry import CollectionRegistry
         from threetears.core.config import DefaultCoreConfig
         from threetears.core.egress import EgressRegistry
         from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
-
-        import httpx
 
         url = "https://example.gov/warn"
         schema = {"employer": "str", "affected_count": "int"}
@@ -2196,7 +2195,7 @@ class TestScrapeToolModelOutage:
         )
 
         def _down(*_args, **_kwargs):
-            async def _ainvoke(_prompt):
+            async def _ainvoke(_prompt) -> None:
                 raise RuntimeError("provider down")
 
             return SimpleNamespace(with_structured_output=lambda _schema, **_kw: SimpleNamespace(ainvoke=_ainvoke))

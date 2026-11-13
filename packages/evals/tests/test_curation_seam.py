@@ -23,17 +23,15 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-
 from threetears.evals.analysis import campaigns
-from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
-from threetears.evals.run import curation
-from threetears.evals.kernel.storage import EvalStorage
-from packages.evals.tests.factories import make_aspect_campaign
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm
+from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.run import curation
 
+from packages.evals.tests.factories import make_aspect_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-
 
 SCOPE = "uni-1"
 
@@ -75,7 +73,7 @@ def _run(run_id: str = "doomed", *, status: str = "completed") -> Any:
 
 
 @pytest.mark.parametrize("confirm", [None, "", "yes", "DOOMED", "doome"])
-def test_confirmation_refuses_anything_that_is_not_the_id(confirm):
+def test_confirmation_refuses_anything_that_is_not_the_id(confirm) -> None:
     with pytest.raises(ValidationFailedError) as excinfo:
         curation.require_delete_confirmation("run", "doomed", confirm)
     # The refusal names the id to echo, so the caller can act on it without

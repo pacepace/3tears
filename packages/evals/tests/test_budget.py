@@ -25,7 +25,6 @@ import inspect
 import logging
 
 import pytest
-
 from threetears.evals.run.budget import BudgetStoppedError, CapBreach, EvalRunCostCap
 
 
@@ -129,7 +128,7 @@ def test_an_unenforced_run_still_gets_a_cap_that_knows_its_ceiling() -> None:
 
 
 @pytest.mark.parametrize("ceiling", [0.0, -1.0, float("inf"), float("nan")])
-def test_an_enforcing_cap_without_a_positive_finite_ceiling_is_refused(ceiling):
+def test_an_enforcing_cap_without_a_positive_finite_ceiling_is_refused(ceiling) -> None:
     with pytest.raises(ValueError, match="positive, finite ceiling"):
         EvalRunCostCap("run-x", ceiling, enabled=True)
     assert EvalRunCostCap("run-x", ceiling, enabled=False).exceeded is False
@@ -146,7 +145,7 @@ def test_enforcement_must_be_stated_rather_than_defaulted() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_unpriced_spend_stops_an_enforcing_cap_however_far_below_its_ceiling(caplog):
+def test_unpriced_spend_stops_an_enforcing_cap_however_far_below_its_ceiling(caplog: pytest.LogCaptureFixture) -> None:
     """Counted as zero, an unpriced model let a capped run spend without bound inside a cap that read it as free."""
     cap = _cap(run_id="run-42", max_cost_usd=10.0)
     cap.record(0.5)

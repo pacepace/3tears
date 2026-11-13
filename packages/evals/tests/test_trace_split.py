@@ -16,7 +16,10 @@ from collections.abc import Iterator, Sequence
 from typing import Any
 
 import pytest
-
+from threetears.evals.kernel.errors import StorageError
+from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.ops import result_get
+from threetears.evals.run.reads import get_result_trace
 from threetears.evals.schema.models import (
     EvalResult,
     EvalTrace,
@@ -24,15 +27,12 @@ from threetears.evals.schema.models import (
     JudgeEvidence,
     eval_trace_doc_id,
 )
-from threetears.evals.run.reads import get_result_trace
-from threetears.evals.kernel.errors import StorageError
-from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema.store_port import omit_paths
-from threetears.evals.ops import result_get
 from threetears.evals.storage import InMemoryDocumentStore
+
+from packages.evals.tests.clock_support import frozen_clock
 from packages.evals.tests.factories import make_eval_result, make_eval_trace
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture
-from packages.evals.tests.clock_support import frozen_clock
 
 
 @pytest.fixture(autouse=True)
@@ -327,7 +327,9 @@ class TestDeletesTakeThePayloadWithThem:
         assert store.delete_eval_result("res-1", "uni-1") is True
         assert repo.written == []
 
-    def test_a_marker_whose_trace_is_already_gone_does_not_make_the_result_undeletable(self, caplog):
+    def test_a_marker_whose_trace_is_already_gone_does_not_make_the_result_undeletable(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """``has_trace=True`` with no document: nothing to orphan, so refusing would strand the result."""
         import logging
 
@@ -352,7 +354,7 @@ class TestDeletesTakeThePayloadWithThem:
 
 
 class TestTheMarkerAndTheDocumentAreCheckedAgainstEachOther:
-    def test_a_marker_with_no_document_is_logged_not_silently_dropped(self, caplog):
+    def test_a_marker_with_no_document_is_logged_not_silently_dropped(self, caplog: pytest.LogCaptureFixture) -> None:
         """`has_trace=True` with no document means a payload was lost, not that there is none.
 
         The marker is written from the payload write's own OUTCOME, so the two disagreeing
@@ -371,7 +373,7 @@ class TestTheMarkerAndTheDocumentAreCheckedAgainstEachOther:
 
         assert any("claims a stored trace" in r.getMessage() for r in caplog.records)
 
-    def test_an_honest_absence_is_not_logged(self, caplog):
+    def test_an_honest_absence_is_not_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         """`has_trace=False` and no document agree — nothing happened worth a warning."""
         import logging
 

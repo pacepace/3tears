@@ -15,14 +15,14 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
-
-from threetears.evals.schema import EvalRun
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.run import KindWiring, LaunchHost, LaunchRequest, MeteredCallLedger, launch_run, start_run
+from threetears.evals.schema import EvalRun
 from threetears.evals.storage import InMemoryDocumentStore
+
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
-from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.host import with_registry
+from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template, toyhost_test_cases
 from packages.evals.tests.off_loop import off_loop
@@ -82,7 +82,9 @@ async def _launch(host: LaunchHost, storage: EvalStorage, **arguments: Any) -> E
     return stored
 
 
-async def test_a_host_declaring_no_metered_tools_records_it_and_refuses_a_metered_call(caplog):
+async def test_a_host_declaring_no_metered_tools_records_it_and_refuses_a_metered_call(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     host, storage, admitted = off_loop(_host, max_metered_calls=None)
 
     with caplog.at_level(logging.ERROR):
@@ -158,6 +160,6 @@ def test_a_ledger_declaring_none_with_a_ceiling_is_refused() -> None:
 
 
 @pytest.mark.parametrize("ceiling", [0, -1])
-def test_a_ledger_with_a_ceiling_below_one_and_not_declaring_none_is_refused(ceiling):
+def test_a_ledger_with_a_ceiling_below_one_and_not_declaring_none_is_refused(ceiling) -> None:
     with pytest.raises(ValueError, match="at least one call"):
         MeteredCallLedger("run-1", ceiling)

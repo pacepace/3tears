@@ -25,7 +25,7 @@ class FakeCamoufoxLocator:
         self._scroll_into_view_calls = scroll_into_view_calls
         self._scroll_into_view_exc = scroll_into_view_exc
 
-    async def scroll_into_view_if_needed(self, *, timeout=None):
+    async def scroll_into_view_if_needed(self, *, timeout=None) -> None:
         self._scroll_into_view_calls.append({"selector": self._selector, "timeout": timeout})
         if self._scroll_into_view_exc is not None:
             raise self._scroll_into_view_exc
@@ -36,7 +36,7 @@ class FakeCamoufoxMouse:
     def __init__(self, *, wheel_calls: list[dict]) -> None:
         self._wheel_calls = wheel_calls
 
-    async def wheel(self, delta_x, delta_y):
+    async def wheel(self, delta_x, delta_y) -> None:
         self._wheel_calls.append({"delta_x": delta_x, "delta_y": delta_y})
 
 
@@ -57,7 +57,7 @@ class FakeCamoufoxPage:
         url=None,
         network_responses=None,
         viewport_size=None,
-    ):
+    ) -> None:
         self._goto_result = goto_result
         self._goto_exc = goto_exc
         self._wait_for_exc = wait_for_exc
@@ -93,22 +93,22 @@ class FakeCamoufoxPage:
                 self._response_handler(resp)
         return self._goto_result
 
-    async def wait_for_selector(self, selector, *, timeout=None):
+    async def wait_for_selector(self, selector, *, timeout=None) -> None:
         self.wait_for_calls.append({"selector": selector, "timeout": timeout})
         if self._wait_for_exc is not None:
             raise self._wait_for_exc
 
-    async def click(self, selector, *, timeout=None):
+    async def click(self, selector, *, timeout=None) -> None:
         self.click_calls.append({"selector": selector, "timeout": timeout})
         if self._click_exc is not None:
             raise self._click_exc
 
-    async def fill(self, selector, value, *, timeout=None):
+    async def fill(self, selector, value, *, timeout=None) -> None:
         self.fill_calls.append({"selector": selector, "value": value, "timeout": timeout})
         if self._fill_exc is not None:
             raise self._fill_exc
 
-    async def wait_for_timeout(self, ms):
+    async def wait_for_timeout(self, ms) -> None:
         self.wait_for_timeout_calls.append(ms)
 
     def locator(self, selector):
@@ -130,7 +130,7 @@ class FakeCamoufoxPage:
     async def close(self) -> None:
         self.closed = True
 
-    def on(self, event, handler):
+    def on(self, event, handler) -> None:
         if event == "response":
             self._response_handler = handler
 

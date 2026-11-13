@@ -11,8 +11,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from threetears.evals.run.jobs import EvalJobManager
+
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.job_support import InMemoryRunStore, blocked_work, start_tracked
 
@@ -21,7 +21,7 @@ def _released_work():
     """A work fn that parks until released, plus its started event and its release."""
     started, release = asyncio.Event(), asyncio.Event()
 
-    async def work(progress):
+    async def work(progress) -> None:
         started.set()
         await release.wait()
 
@@ -108,7 +108,7 @@ async def test_every_member_is_saved_before_any_starts() -> None:
     runs = [make_eval_run(), make_eval_run()]
     seen: list[set[str]] = []
 
-    async def work(progress):
+    async def work(progress) -> None:
         seen.append(set(storage.runs))
 
     tasks = await start_tracked(manager, [(run, work, None) for run in runs])

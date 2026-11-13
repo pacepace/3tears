@@ -26,22 +26,19 @@ from typing import Annotated, Any, Literal
 
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
-
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.kernel.host import (
     SHARED_CORE,
-    SweepableRegistry,
     HostProfile,
     Interval,
     KindContract,
     KindContractError,
     MeasureRegistry,
     Ordinal,
+    SweepableRegistry,
     freeze,
 )
-from threetears.evals.schema import IntervalScale, NominalScale
 from threetears.evals.kernel.host.profile import ProfileRegistrationError
-from threetears.evals.schema.values import OrdinalScale
 from threetears.evals.kernel.identity import derive_context_identity, derive_variant_identity
 from threetears.evals.run import (
     LaunchGroup,
@@ -51,15 +48,18 @@ from threetears.evals.run import (
     start_run,
     update_template,
 )
+from threetears.evals.schema import IntervalScale, NominalScale
+from threetears.evals.schema.values import OrdinalScale
+from threetears.evals.storage import InMemoryDocumentStore
+
 from packages.evals.tests.factories import make_eval_run
+from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT, ExtractorOverlays, ExtractorSpec
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
+from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
-from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT, ExtractorOverlays, ExtractorSpec
-from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
-from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.off_loop import off_loop
 
 
@@ -110,7 +110,7 @@ class _MapKeyedByNumber(BaseModel):
     ],
     ids=["no-description", "no-title", "alias", "ordinal-without-order", "interval-over-text", "map-keyed-by-number"],
 )
-def test_a_field_the_engine_cannot_read_as_a_lever_is_refused_at_declaration_by_name(model, said):
+def test_a_field_the_engine_cannot_read_as_a_lever_is_refused_at_declaration_by_name(model, said) -> None:
     with pytest.raises(KindContractError) as refused:
         KindContract("probe", overlays=model)
 
@@ -169,7 +169,7 @@ class _NestedExclusion(BaseModel):
     ids=["excluded", "excluded-conditionally", "excluded-inside-a-nested-model"],
 )
 @pytest.mark.parametrize("as_spec", [False, True], ids=["overlay", "spec"])
-def test_a_field_the_record_would_drop_is_refused_at_declaration_by_name(model, path, as_spec):
+def test_a_field_the_record_would_drop_is_refused_at_declaration_by_name(model, path, as_spec) -> None:
     """A field serialization leaves out is one the frozen record cannot see, so it would merge runs.
 
     The launcher acts on the validated model, which still holds the field; the run records the model's
@@ -399,7 +399,7 @@ class _Table(BaseModel):
     [("gm", "gm"), ("gm", "gm.house_rules"), ("gm.house_rules", "gm")],
     ids=["equal", "second-inside-first", "first-inside-second"],
 )
-def test_a_profile_refuses_two_contracts_whose_lever_prefixes_overlap(first, second):
+def test_a_profile_refuses_two_contracts_whose_lever_prefixes_overlap(first, second) -> None:
     """Overlapping prefixes can name one lever twice, and the later kind's level would overwrite the earlier's.
 
     ``gm`` and ``gm.house_rules`` overlap even with different fields: the first kind's open family
@@ -634,7 +634,7 @@ def test_a_spec_field_with_an_alias_is_refused_at_declaration_by_name() -> None:
     ],
     ids=["empty", "a-field-the-spec-does-not-grade", "a-name-the-spec-does-not-have"],
 )
-def test_a_spec_the_kinds_model_refuses_is_refused_naming_the_field(kind_spec, named):
+def test_a_spec_the_kinds_model_refuses_is_refused_naming_the_field(kind_spec, named) -> None:
     with pytest.raises(ValidationFailedError) as refused:
         TOY_EXTRACTOR_CONTRACT.validate_spec(kind_spec)
 

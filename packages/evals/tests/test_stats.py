@@ -11,7 +11,6 @@ import math
 from fractions import Fraction
 
 import pytest
-
 from threetears.evals.analysis.stats import (
     EQUIVALENCE_NEEDS_RANGE,
     PAIRED_TEST_NAME,
@@ -613,7 +612,7 @@ class TestTCriticalTwoSided:
         [(1, 12.706), (2, 4.303), (5, 2.571), (10, 2.228), (30, 2.042), (1000, 1.962)],
         ids=["df1", "df2", "df5", "df10", "df30", "df1000"],
     )
-    def test_matches_the_published_95_percent_table(self, df, expected):
+    def test_matches_the_published_95_percent_table(self, df, expected) -> None:
         assert t_critical_two_sided(0.95, df) == pytest.approx(expected, abs=0.005)
 
     def test_approaches_the_normal_multiplier_only_at_large_df(self) -> None:
@@ -625,7 +624,7 @@ class TestTCriticalTwoSided:
         assert t_critical_two_sided(0.99, 10) > t_critical_two_sided(0.95, 10)
 
     @pytest.mark.parametrize(("confidence", "df"), [(0.95, 0), (0.95, -1), (0.0, 5), (1.0, 5)])
-    def test_rejects_inputs_with_no_answer(self, confidence, df):
+    def test_rejects_inputs_with_no_answer(self, confidence, df) -> None:
         with pytest.raises(ValueError):
             t_critical_two_sided(confidence, df)
 

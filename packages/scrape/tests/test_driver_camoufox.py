@@ -10,6 +10,11 @@ lives in test_driver_contract.py, not here.
 from __future__ import annotations
 
 import pytest
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from threetears.scrape.driver import NavStep, RenderedPage
+from threetears.scrape.drivers.camoufox import CamoufoxDriver, CamoufoxDriverError
+
 from packages.scrape.tests.camoufox_fakes import (
     FakeCamoufoxBrowser,
     FakeCamoufoxNetworkResponse,
@@ -17,11 +22,6 @@ from packages.scrape.tests.camoufox_fakes import (
     FakeCamoufoxResponse,
 )
 from packages.scrape.tests.driver_log_helpers import driver_warnings
-from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-
-from threetears.scrape.driver import NavStep, RenderedPage
-from threetears.scrape.drivers.camoufox import CamoufoxDriver, CamoufoxDriverError
 
 
 class TestCamoufoxDriverName:
@@ -46,7 +46,9 @@ class TestCamoufoxDriverRender:
         assert result.timing_ms >= 0
         assert page.closed is True  # new tab closed after use, never reused
 
-    async def test_a_dropped_session_state_is_announced_rather_than_silent(self, caplog):
+    async def test_a_dropped_session_state_is_announced_rather_than_silent(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """The whole value of the warning is that it is heard, so the assertion is on the log.
 
         This driver cannot apply a human's exported session and renders unauthenticated. In
@@ -68,7 +70,7 @@ class TestCamoufoxDriverRender:
             f"a dropped session state was not announced; saw {[(r.name, r.getMessage()) for r in caplog.records]}"
         )
 
-    async def test_no_session_state_says_nothing(self, caplog):
+    async def test_no_session_state_says_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
         """A warning on every ordinary render would be noise that trains the reader to ignore it."""
         page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
         driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
@@ -563,12 +565,12 @@ class TestCamoufoxDriverNavSteps:
 
 
 class TestCamoufoxDriverLazyLaunch:
-    async def test_browser_launched_once_and_reused_across_render_calls(self, monkeypatch):
+    async def test_browser_launched_once_and_reused_across_render_calls(self, monkeypatch: pytest.MonkeyPatch) -> None:
         launched: list[dict] = []
 
         # parity-exempt: hand-rolled subset stub of camoufox's third-party AsyncCamoufox (only the async-context-manager surface CamoufoxDriver._ensure_browser calls)
         class _FakeAsyncCamoufox:
-            def __init__(self, **kwargs):
+            def __init__(self, **kwargs) -> None:
                 launched.append(kwargs)
                 self._browser = FakeCamoufoxBrowser(FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200)))
 
@@ -593,18 +595,18 @@ class TestCamoufoxDriverLazyLaunch:
 
         await driver.close()  # must not raise; injected browser's lifecycle isn't ours
 
-    async def test_close_tears_down_owned_browser(self, monkeypatch):
+    async def test_close_tears_down_owned_browser(self, monkeypatch: pytest.MonkeyPatch) -> None:
         exited: list[bool] = []
 
         # parity-exempt: hand-rolled subset stub of camoufox's third-party AsyncCamoufox (only the async-context-manager surface CamoufoxDriver._ensure_browser calls)
         class _FakeAsyncCamoufox:
-            def __init__(self, **kwargs):
+            def __init__(self, **kwargs) -> None:
                 self._browser = FakeCamoufoxBrowser(FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200)))
 
             async def __aenter__(self):
                 return self._browser
 
-            async def __aexit__(self, *exc_info):
+            async def __aexit__(self, *exc_info) -> None:
                 exited.append(True)
 
         monkeypatch.setattr("threetears.scrape.drivers.camoufox.AsyncCamoufox", _FakeAsyncCamoufox)
@@ -616,7 +618,7 @@ class TestCamoufoxDriverLazyLaunch:
         assert exited == [True]
 
 
-async def _launch_options(driver: CamoufoxDriver, monkeypatch) -> dict:
+async def _launch_options(driver: CamoufoxDriver, monkeypatch: pytest.MonkeyPatch) -> dict:
     """Render once through *driver* and return the options its browser was launched with.
 
     Camoufox is replaced at its import site by a stub that records its constructor
@@ -626,7 +628,7 @@ async def _launch_options(driver: CamoufoxDriver, monkeypatch) -> dict:
 
     # parity-exempt: hand-rolled subset stub of camoufox's third-party AsyncCamoufox (only the async-context-manager surface CamoufoxDriver._ensure_browser calls)
     class _RecordingAsyncCamoufox:
-        def __init__(self, **kwargs):
+        def __init__(self, **kwargs) -> None:
             launched.append(kwargs)
             self._browser = FakeCamoufoxBrowser(FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200)))
 
@@ -653,7 +655,7 @@ class TestTheExitReachesTheBrowserLaunch:
     the options that launch was given.
     """
 
-    async def test_a_proxy_exit_becomes_a_playwright_proxy_option(self, monkeypatch) -> None:
+    async def test_a_proxy_exit_becomes_a_playwright_proxy_option(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Camoufox is Firefox via Playwright, so the exit is `proxy={"server": ...}`.
 
         :return: nothing
@@ -668,7 +670,7 @@ class TestTheExitReachesTheBrowserLaunch:
             "proxy": {"server": "socks5://127.0.0.1:9050"},
         }
 
-    async def test_no_exit_expresses_no_opinion(self, monkeypatch) -> None:
+    async def test_no_exit_expresses_no_opinion(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """`None` must leave the launch alone rather than inventing a proxy key.
 
         :return: nothing
@@ -676,7 +678,7 @@ class TestTheExitReachesTheBrowserLaunch:
         """
         assert await _launch_options(CamoufoxDriver(), monkeypatch) == {"headless": True}
 
-    async def test_a_direct_exit_does_not_become_a_proxy_server(self, monkeypatch) -> None:
+    async def test_a_direct_exit_does_not_become_a_proxy_server(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """`direct://` is Chromium's spelling and would be a bogus host to Firefox.
 
         Forwarding it as a Playwright `server` would make Playwright try to resolve
@@ -692,7 +694,9 @@ class TestTheExitReachesTheBrowserLaunch:
 
         assert await _launch_options(driver, monkeypatch) == {"headless": True}
 
-    async def test_the_direct_sentinel_is_the_one_egress_actually_returns(self, monkeypatch) -> None:
+    async def test_the_direct_sentinel_is_the_one_egress_actually_returns(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Pins the two sides together rather than against a literal typed twice.
 
         If `DirectEgress` ever changed its spelling, a hard-coded `"direct://"` in this

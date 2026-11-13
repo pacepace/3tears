@@ -11,7 +11,6 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from threetears.observe.tracing import set_span_attribute, traced
 
 
@@ -102,7 +101,7 @@ class TestParamNames:
     """Parameter names, as the keys recorded arguments are filed under."""
 
     def test_get_param_names(self) -> None:
-        def foo(a, b, c=3):
+        def foo(a, b, c=3) -> None:
             pass
 
         assert _arg_attributes(_span_attributes(foo, 1, 2, 3)) == {"arg.a": 1, "arg.b": 2, "arg.c": 3}
@@ -118,13 +117,13 @@ class TestSafeAttrs:
     """Span attribute safety filtering, observed on the span a traced call records into."""
 
     def test_set_safe_attr_string(self) -> None:
-        def f(name):
+        def f(name) -> None:
             pass
 
         assert _arg_attributes(_span_attributes(f, "hello")) == {"arg.name": "hello"}
 
     def test_set_safe_attr_int(self) -> None:
-        def f(count):
+        def f(count) -> None:
             pass
 
         assert _arg_attributes(_span_attributes(f, 42)) == {"arg.count": 42}
@@ -132,20 +131,20 @@ class TestSafeAttrs:
     def test_set_safe_attr_uuid(self) -> None:
         from uuid import UUID
 
-        def f(id):
+        def f(id) -> None:
             pass
 
         uid = UUID("12345678-1234-5678-1234-567812345678")
         assert _arg_attributes(_span_attributes(f, uid)) == {"arg.id": str(uid)}
 
     def test_set_safe_attr_sensitive_redacted(self) -> None:
-        def f(password):
+        def f(password) -> None:
             pass
 
         assert _arg_attributes(_span_attributes(f, "secret123")) == {}
 
     def test_set_safe_attr_long_string_truncated(self) -> None:
-        def f(data):
+        def f(data) -> None:
             pass
 
         recorded = _arg_attributes(_span_attributes(f, "x" * 300))
@@ -153,7 +152,7 @@ class TestSafeAttrs:
 
     def test_record_safe_args_skips_self(self) -> None:
         class Foo:
-            def bar(self, name):
+            def bar(self, name) -> None:
                 pass
 
         recorded = _arg_attributes(_span_attributes(Foo.bar, Foo(), "hello"))

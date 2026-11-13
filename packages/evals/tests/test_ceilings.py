@@ -22,7 +22,6 @@ third copy in this file would be the same duplication one layer up.
 from __future__ import annotations
 
 import pytest
-
 from threetears.evals.run import ceilings
 from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.run.metering import MeteredCallLedger
@@ -93,7 +92,7 @@ class TestAnOverrideMayOnlyLowerTheHostsCeiling:
         [(_CONFIGURED_USD + 0.01, _CONFIGURED_USD), (_CONFIGURED_CALLS + 1, _CONFIGURED_CALLS)],
         ids=["dollars", "calls"],
     )
-    def test_an_override_above_the_configured_ceiling_is_refused(self, override, configured):
+    def test_an_override_above_the_configured_ceiling_is_refused(self, override, configured) -> None:
         with pytest.raises(ceilings.CeilingRaisedError, match="a launch may only lower the host's ceiling"):
             ceilings.refuse_raised_ceiling(override, configured=configured, name="cap", configured_name="host.cap")
         with pytest.raises(ceilings.CeilingRaisedError):
@@ -105,7 +104,7 @@ class TestAnOverrideMayOnlyLowerTheHostsCeiling:
                 )
 
     @pytest.mark.parametrize("override", [None, _OVERRIDE_USD, _CONFIGURED_USD], ids=["inherit", "lower", "equal"])
-    def test_an_override_at_or_below_the_configured_ceiling_is_a_choice(self, override):
+    def test_an_override_at_or_below_the_configured_ceiling_is_a_choice(self, override) -> None:
         ceilings.refuse_raised_ceiling(override, configured=_CONFIGURED_USD, name="cap", configured_name="host.cap")
         assert ceilings.resolve_ceiling(override, configured=_CONFIGURED_USD) == (
             _CONFIGURED_USD if override is None else override
@@ -130,7 +129,7 @@ class TestBothClassesReadTheOneCascade:
     the functions by name at import.
     """
 
-    def test_a_new_origin_value_reaches_both_classes(self, monkeypatch):
+    def test_a_new_origin_value_reaches_both_classes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(ceilings, "resolve_ceiling_origin", lambda override, *, enforcement_enabled: "renamed")
 
         assert EvalRunCostCap.resolve_ceiling_origin(_OVERRIDE_USD, enforcement_enabled=True) == "renamed"
@@ -141,7 +140,9 @@ class TestBothClassesReadTheOneCascade:
             == "renamed"
         )
 
-    def test_a_changed_enforcement_off_rule_reaches_both_recorded_ceilings(self, monkeypatch):
+    def test_a_changed_enforcement_off_rule_reaches_both_recorded_ceilings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(
             ceilings, "resolve_effective_ceiling", lambda override, *, configured, enforcement_enabled: -1
         )
@@ -159,7 +160,9 @@ class TestBothClassesReadTheOneCascade:
             == -1
         )
 
-    def test_a_changed_override_rule_reaches_the_cap_the_run_is_bounded_by(self, monkeypatch):
+    def test_a_changed_override_rule_reaches_the_cap_the_run_is_bounded_by(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The cost cap is the one that reads the UNFILTERED ceiling, so it is the class this
         substitution has to reach — the ledger's ``for_run`` goes through the effective one
         covered above, which is the asymmetry the two constructors keep.

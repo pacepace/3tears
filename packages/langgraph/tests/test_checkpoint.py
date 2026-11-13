@@ -18,11 +18,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from langgraph.checkpoint.base import WRITES_IDX_MAP
-
 from prometheus_client import REGISTRY
-
 from threetears.langgraph.checkpoint import (
     CheckpointCacheError,
     ThreeTierCheckpointSaver,
@@ -194,7 +191,7 @@ class TestCrashRecoveryWritesDegrade:
     _LOGGER = "threetears.langgraph.checkpoint"
     _CONFIG = {"configurable": {"thread_id": "t-1", "checkpoint_ns": "", "checkpoint_id": "c-1"}}
 
-    async def testaput_writes_degrades_and_reports_the_loss(self, caplog):
+    async def testaput_writes_degrades_and_reports_the_loss(self, caplog: pytest.LogCaptureFixture) -> None:
         """the warning is the ENTIRE detection surface for a lost write, so pin it.
 
         Asserting only "did not raise" passes against ``except Exception: pass``,
@@ -221,7 +218,7 @@ class TestCrashRecoveryWritesDegrade:
         assert record.exc_info is not None
 
     @pytest.mark.parametrize("channel", sorted(WRITES_IDX_MAP))
-    async def testaput_writes_reraises_for_a_control_channel(self, channel, caplog):
+    async def testaput_writes_reraises_for_a_control_channel(self, channel, caplog: pytest.LogCaptureFixture) -> None:
         """losing a control write silently changes what the run DOES."""
         executor = _make_executor()
         executor.execute.side_effect = RuntimeError("NATS request failed: nats: timeout")
@@ -252,7 +249,7 @@ class TestCrashRecoveryWritesDegrade:
             )
 
     @pytest.mark.parametrize("config", [{}, {"configurable": None}, {"configurable": {}}])
-    async def testaput_writes_does_not_raise_on_a_malformed_config(self, config):
+    async def testaput_writes_does_not_raise_on_a_malformed_config(self, config) -> None:
         """the ids are read defensively, so the guard covers the likeliest bad shapes.
 
         Subscripting them ahead of the ``try`` made "degrades, never raises"
@@ -264,7 +261,9 @@ class TestCrashRecoveryWritesDegrade:
 
         await saver.aput_writes(config, [("channel-a", "value-a")], "task-1")
 
-    async def testaput_writes_degrades_when_a_malformed_config_reaches_the_write(self, caplog):
+    async def testaput_writes_degrades_when_a_malformed_config_reaches_the_write(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """a malformed config must take the DEGRADE path, not just avoid raising.
 
         The no-raise test above runs against a succeeding executor, so it never
@@ -521,7 +520,9 @@ class TestCacheReadFailureFallsThrough:
         l2.get.side_effect = RuntimeError("L2 down")
         return l1, l2
 
-    async def test_failed_cache_reads_fall_through_to_l3_as_recorded_misses(self, caplog):
+    async def test_failed_cache_reads_fall_through_to_l3_as_recorded_misses(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         executor = _make_executor()
         l1, l2 = self._failing_caches()
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
@@ -541,7 +542,7 @@ class TestCacheReadFailureFallsThrough:
         )
         assert [r.extra_data["miss"] for r in caplog.records if hasattr(r, "extra_data")] == ["error", "error"]
 
-    async def test_a_plain_miss_records_nothing(self, caplog):
+    async def test_a_plain_miss_records_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
         executor = _make_executor()
         l1 = AsyncMock()
         l1.get.return_value = None

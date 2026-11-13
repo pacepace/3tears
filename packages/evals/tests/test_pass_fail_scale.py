@@ -14,11 +14,14 @@ from typing import Any, get_args
 
 import pytest
 from pydantic import ValidationError
-
-from threetears.evals.analysis.reporting import project_score_records
 from threetears.evals.analysis.lenses.pivot import PivotError, compute_pivot
+from threetears.evals.analysis.reporting import project_score_records
 from threetears.evals.kernel.declaration import resolve_bar_name
 from threetears.evals.kernel.host import MeasureRegistry
+from threetears.evals.kernel.provider import withhold_failure_detail
+from threetears.evals.kernel.scoring import compute_dimension_summary, compute_pass_hat_k, result_composite
+from threetears.evals.run.judge import SCALE_READERS, run_judge_llm
+from threetears.evals.run.judge_service import JudgeContext, JudgeService
 from threetears.evals.schema.models import (
     MODEL_DEFAULT_TEMPERATURE,
     SCALES,
@@ -29,10 +32,7 @@ from threetears.evals.schema.models import (
     RubricScore,
     label_key_of,
 )
-from threetears.evals.kernel.provider import withhold_failure_detail
-from threetears.evals.kernel.scoring import compute_dimension_summary, compute_pass_hat_k, result_composite
-from threetears.evals.run.judge import SCALE_READERS, run_judge_llm
-from threetears.evals.run.judge_service import JudgeContext, JudgeService
+
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
@@ -69,7 +69,7 @@ class TestTheAuthoredCriterion:
 
 class TestTheStoredScore:
     @pytest.mark.parametrize(("scale", "score"), [("ordinal", 0), ("ordinal", 6), ("pass_fail", 2), ("pass_fail", -1)])
-    def test_a_score_off_its_scale_is_refused(self, scale, score):
+    def test_a_score_off_its_scale_is_refused(self, scale, score) -> None:
         with pytest.raises(ValidationError, match="not on the"):
             RubricScore(dim="x.arc", scale=scale, score=score, axis="capability", judge_temperature=0.0)
 
@@ -136,7 +136,7 @@ class TestTheJudgesAnswer:
         assert (await _judged("fail", _PF))["criteria_ordinal_scores"] == {"arc": 0}
 
     @pytest.mark.parametrize("value", [4, 1, 0, True, "PASS", "yes", None, ["pass"]])
-    async def test_anything_else_on_a_pass_fail_criterion_is_refused(self, value):
+    async def test_anything_else_on_a_pass_fail_criterion_is_refused(self, value) -> None:
         with pytest.raises(ValueError, match="pass/fail"):
             SCALE_READERS["pass_fail"]("arc", value)
         parsed = await _judged(value, _PF)
@@ -400,7 +400,7 @@ class TestEveryScaleIsKnownEverywhere:
             SCALES["pass_fail"].labels[0] = "zero"  # type: ignore[index]
 
     @pytest.mark.parametrize("scale", sorted(get_args(RubricScale)))
-    async def test_every_scale_is_asked_for_in_its_own_words(self, scale):
+    async def test_every_scale_is_asked_for_in_its_own_words(self, scale) -> None:
         """The judge service words each scale's question; a scale it has no wording for never reaches the judge."""
         judge = _Judge("pass" if scale == "pass_fail" else 4)
 

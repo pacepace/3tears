@@ -20,19 +20,17 @@ extractor driven by a launcher that generates the way an adopter's does (once pe
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
-
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import COST_ESTIMATE_MIN_BASIS
 from threetears.evals.analysis.lenses.cost_estimate import COST_BAND_SAFETY_MARGIN
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.stats import lognormal_sum_prediction_band
-from threetears.evals.schema import EvalRun
+from threetears.evals.gen import generate_variations
 from threetears.evals.kernel import (
     AdmittedGeneration,
     EvalStorage,
@@ -42,15 +40,7 @@ from threetears.evals.kernel import (
 )
 from threetears.evals.kernel.host import CompletionRole
 from threetears.evals.kernel.identity import derive_context_identity
-from threetears.evals.schema.models import (
-    OUTCOME_DIM_ID,
-    TRANSCRIPT_DIM_ID,
-    EvalTemplate,
-    RubricDim,
-    VariationAxis,
-    VariationCounts,
-)
-from threetears.evals.gen import generate_variations
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.ops import LaunchArguments, OpsHost, history_launch_pricer, launch_estimate, run_launch
 from threetears.evals.run import (
     ArmPlan,
@@ -66,20 +56,30 @@ from threetears.evals.run import (
     launch_run,
     start_run,
 )
+from threetears.evals.schema import EvalRun
+from threetears.evals.schema.models import (
+    OUTCOME_DIM_ID,
+    TRANSCRIPT_DIM_ID,
+    EvalTemplate,
+    RubricDim,
+    VariationAxis,
+    VariationCounts,
+)
 from threetears.evals.storage import InMemoryDocumentStore
+
+from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.fixtures.toyhost.kind import (
     DOCUMENT_PARAM,
     TOY_EXTRACTOR_KIND,
     ScriptedExtractionClient,
     ToyExtractorKind,
 )
-from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_DOCUMENTS, RUN_MODELS, toyhost_template
-from packages.evals.tests.factories import make_eval_result, make_eval_run
-from packages.evals.tests.ops_support import CALLER, ops_fixture
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import CALLER, ops_fixture
 
 #: The model the launches name to write their cases.
 WRITER = "writer-a"
@@ -379,7 +379,7 @@ async def test_the_writer_enters_no_identity() -> None:
     ],
     ids=["generation-needs-a-writer", "a-writer-for-no-generation", "a-writer-for-no-llm-axis", "a-writer-alone"],
 )
-async def test_a_writer_the_launch_needs_or_cannot_use_is_refused_before_any_spend(axes, arguments, said):
+async def test_a_writer_the_launch_needs_or_cannot_use_is_refused_before_any_spend(axes, arguments, said) -> None:
     template = _template(*axes)
     host, storage, clients, handed = off_loop(_generating_host, template)
 
@@ -422,7 +422,7 @@ async def test_a_generation_recording_another_writer_than_the_one_named_is_refus
     [({"n_variations": 2}, "cannot honour n_variations=2"), ({"variation_model": WRITER}, "generates none")],
     ids=["n_variations", "variation_model"],
 )
-async def test_run_launch_hands_the_launch_both_generation_arguments(arguments, said):
+async def test_run_launch_hands_the_launch_both_generation_arguments(arguments, said) -> None:
     fixture = off_loop(ops_fixture)
     launched = LaunchArguments(
         template_id=toyhost_template().id, subject_id=TOYHOST_SUBJECT.subject_id, models=[RUN_MODELS[0]], **arguments
@@ -437,7 +437,7 @@ async def test_run_launch_hands_the_launch_both_generation_arguments(arguments, 
     [({"n_variations": 2}, "cannot honour n_variations=2"), ({"variation_model": WRITER}, "generates none")],
     ids=["n_variations", "variation_model"],
 )
-async def test_the_run_launch_action_hands_the_launch_both_generation_arguments(arguments, said):
+async def test_the_run_launch_action_hands_the_launch_both_generation_arguments(arguments, said) -> None:
     fixture = off_loop(ops_fixture)
     evals = eval_catalogue().mount_all(standard_tools())[0]
     call = {
@@ -689,7 +689,7 @@ async def test_a_generating_arm_of_a_kind_that_plans_nothing_is_unpriceable() ->
     ],
     ids=["more-cases-than-planned", "another-model-than-named"],
 )
-async def test_an_arm_that_runs_other_than_it_was_priced_is_refused(plan, said):
+async def test_an_arm_that_runs_other_than_it_was_priced_is_refused(plan, said) -> None:
     template = _template(ENUM_AXIS)
     host, storage, _clients, _handed = off_loop(_generating_host, template, **plan)
 
@@ -708,7 +708,7 @@ async def test_an_arm_that_runs_other_than_it_was_priced_is_refused(plan, said):
         ({"case_count": 1, "candidate_model": "m", "simulator_model": " "}, "simulator_model is blank"),
     ],
 )
-def test_an_arm_plan_refuses_no_cases_and_no_model(bad, said):
+def test_an_arm_plan_refuses_no_cases_and_no_model(bad, said) -> None:
     with pytest.raises(ValueError, match=said):
         ArmPlan(**{"judge": None, "simulator_model": None, **bad})
 
@@ -721,7 +721,7 @@ def test_an_arm_plan_refuses_no_cases_and_no_model(bad, said):
         ({"predicted_usd": 1.0, "basis": "  "}, "basis is blank"),
     ],
 )
-def test_an_arm_price_refuses_a_negative_or_unexplained_prediction(bad, said):
+def test_an_arm_price_refuses_a_negative_or_unexplained_prediction(bad, said) -> None:
     with pytest.raises(ValueError, match=said):
         ArmPrice(**bad)
 
@@ -1050,7 +1050,7 @@ _SIMULATED_CHEAPLY = {"simulator_model": "sim-cheap", "model_role_provenance": {
         "another-rig",
     ],
 )
-def test_the_history_pricer_draws_only_on_runs_launched_as_the_arm_will_be(history, other, same):
+def test_the_history_pricer_draws_only_on_runs_launched_as_the_arm_will_be(history, other, same) -> None:
     """A run judged by a cheaper model on any dim, or simulated or rigged otherwise, spent differently from the arm."""
     host, storage = _priced_host()
     _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20, 0.30], **history)

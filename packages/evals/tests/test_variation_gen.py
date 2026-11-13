@@ -7,14 +7,14 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-
-from threetears.evals.kernel import AdmittedGeneration, EvalStorage, OutOfRunBudget, plan_variation_calls
-from threetears.evals.schema import OutOfRunSpend
-from threetears.evals.kernel.errors import ValidationFailedError
-from threetears.evals.schema.models import ActorPolicy, ConversationSpec, EvalTemplate, EvalTestCase, VariationAxis
 from threetears.evals.gen import price_variations
 from threetears.evals.gen.variation_gen import generate_variations
+from threetears.evals.kernel import AdmittedGeneration, EvalStorage, OutOfRunBudget, plan_variation_calls
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.schema import OutOfRunSpend
+from threetears.evals.schema.models import ActorPolicy, ConversationSpec, EvalTemplate, EvalTestCase, VariationAxis
 from threetears.evals.storage import InMemoryDocumentStore
+
 from packages.evals.tests.off_loop import off_loop
 
 # =============================================================================
@@ -75,7 +75,7 @@ class _FakeLLM:
 
         return _R()
 
-    def __getattr__(self, name):
+    def __getattr__(self, name) -> None:
         raise AttributeError(name)
 
 

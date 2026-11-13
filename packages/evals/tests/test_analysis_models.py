@@ -16,7 +16,8 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-
+from threetears.evals.analysis.analyst.snapshot import report_snapshot
+from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.campaign import (
     CampaignDeclaration,
     CoverageLens,
@@ -28,8 +29,6 @@ from threetears.evals.kernel.campaign import (
     LeverCoverage,
     RunIndexEntry,
 )
-from threetears.evals.analysis.analyst.snapshot import report_snapshot
-from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.declaration import Aspect
 from threetears.evals.kernel.storage import DroppedJudgeProfile
 from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
@@ -273,7 +272,7 @@ def test_load_missing_analysis_returns_none() -> None:
 
 
 @pytest.mark.parametrize("blank_field", ["campaign_id", "subject_id", "behavior"])
-def test_analysis_required_reference_fields_reject_empty(blank_field):
+def test_analysis_required_reference_fields_reject_empty(blank_field) -> None:
     # campaign_id/subject_id/task are min_length=1 — a blank reference (the "FK
     # present" contract) must be rejected at construction, not stored empty.
     with pytest.raises(ValidationError):
@@ -322,7 +321,7 @@ def test_insight_storage_round_trip_preserves_every_field() -> None:
         ),
     ],
 )
-def test_an_authored_confidence_is_a_tier_and_nothing_else(build, bad):
+def test_an_authored_confidence_is_a_tier_and_nothing_else(build, bad) -> None:
     """What an insight stores as its confidence is a tier; a typed probability is refused."""
     with pytest.raises(ValidationError):
         build(bad)
@@ -366,7 +365,7 @@ def test_lever_coverage_requires_dispersion() -> None:
 
 
 @pytest.mark.parametrize("missing", ["n", "dispersion"])
-def test_a_resolved_evidence_row_requires_its_basis(missing):
+def test_a_resolved_evidence_row_requires_its_basis(missing) -> None:
     """A resolved number is rendered with its sample size and spread, so neither may be absent."""
     fields: dict[str, Any] = dict(
         aspect="planning", cell_ref="vk:ac", measure_id="elapsed_ms", value=1.0, n=3, dispersion="±1"
@@ -444,7 +443,7 @@ class TestAspectsAreOneEach:
         ),
     ],
 )
-def test_literal_fields_reject_out_of_set_values(build):
+def test_literal_fields_reject_out_of_set_values(build) -> None:
     with pytest.raises(ValidationError):
         build()
 
@@ -466,7 +465,7 @@ def test_literal_fields_reject_out_of_set_values(build):
     ],
     ids=["EvalInsight.statement"],
 )
-def test_required_prose_still_rejects_null(build, field):
+def test_required_prose_still_rejects_null(build, field) -> None:
     """A required prose field refuses null.
 
     Where the text is the claim itself, its absence IS the failure and must surface loudly

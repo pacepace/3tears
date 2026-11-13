@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-
 import pytest
-
-from packages.evals.tests.scripted_table import DONE, Raw, ScriptedTable, actor
-from threetears.evals.schema.models import ROUND_DONE, ConversationSpec, ConversationStopCause
 from threetears.evals.run.simulator import (
     SCHEDULER_CALL_ATTEMPTS,
     CandidateTurn,
@@ -14,6 +10,9 @@ from threetears.evals.run.simulator import (
     TurnDriver,
     next_speaker_response_format,
 )
+from threetears.evals.schema.models import ROUND_DONE, ConversationSpec, ConversationStopCause
+
+from packages.evals.tests.scripted_table import DONE, Raw, ScriptedTable, actor
 
 
 def _driver(actor_ids: list[str] = ["a", "b", "c"], **overrides) -> TurnDriver:  # noqa: B006 - read only
@@ -98,7 +97,7 @@ async def test_a_bad_reply_gets_one_repair_naming_what_was_wrong() -> None:
 
 
 @pytest.mark.parametrize("illegal", ["zed", ROUND_DONE], ids=["unknown-actor", "round-done-on-first-pick"])
-async def test_an_answer_outside_the_legal_set_is_refused_and_repaired(illegal):
+async def test_an_answer_outside_the_legal_set_is_refused_and_repaired(illegal) -> None:
     driver = _driver()
     table = ScriptedTable(picks=[illegal, "a"], lines={})
 
@@ -198,7 +197,7 @@ async def test_the_opener_opens_or_not_at_all() -> None:
 
 
 @pytest.mark.parametrize("reserved", [ROUND_DONE, "__candidate__"])
-def test_a_reserved_actor_id_is_refused(reserved):
+def test_a_reserved_actor_id_is_refused(reserved) -> None:
     with pytest.raises(ValueError, match="is reserved"):
         ConversationSpec(actors=[actor("a"), actor(reserved)])
 

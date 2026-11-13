@@ -46,11 +46,9 @@ import re
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
-
 import threetears.evals
+from pydantic import BaseModel
 from threetears.evals.schema.prose import field_is_prose
-
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
 _EVAL_ROOT = _SOURCE_ROOT / "threetears" / "evals"
@@ -236,7 +234,7 @@ class TestTheScannerFires:
             "finding.body in ('yes', 'no')",
         ],
     )
-    def test_a_planted_match_over_a_prose_field_is_found(self, planted):
+    def test_a_planted_match_over_a_prose_field_is_found(self, planted) -> None:
         assert matches_over_prose(planted, self.PROSE), planted
 
     @pytest.mark.parametrize(
@@ -253,10 +251,10 @@ class TestTheScannerFires:
             "json.loads(response.text)",
         ],
     )
-    def test_structure_and_protocol_parsing_are_not_found(self, allowed):
+    def test_structure_and_protocol_parsing_are_not_found(self, allowed) -> None:
         assert matches_over_prose(allowed, self.PROSE) == [], allowed
 
-    def test_a_planted_regex_over_a_real_prose_field_fails_the_scan(self, tmp_path):
+    def test_a_planted_regex_over_a_real_prose_field_fails_the_scan(self, tmp_path: Path) -> None:
         """End to end over the REAL population: a planted module goes red, and a waived one does not."""
         tree = tmp_path / "eval"
         tree.mkdir()

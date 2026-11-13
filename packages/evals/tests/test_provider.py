@@ -13,19 +13,18 @@ from dataclasses import dataclass
 from typing import get_args
 
 import pytest
-
-from threetears.evals.schema.completion import (
-    COMPLETION_RESULT_ATTRIBUTES,
-    JSON_OBJECT_RESPONSE_FORMAT,
-    USAGE_LEDGER_ATTRIBUTES,
-    StopReason,
-)
 from threetears.evals.kernel.provider import (
     INCOMPLETE_STOP_REASONS,
     describe_incomplete_completion,
     extract_json,
     extract_json_array,
     sum_optional_tokens,
+)
+from threetears.evals.schema.completion import (
+    COMPLETION_RESULT_ATTRIBUTES,
+    JSON_OBJECT_RESPONSE_FORMAT,
+    USAGE_LEDGER_ATTRIBUTES,
+    StopReason,
 )
 from threetears.evals.testing import CompletionConformanceFailure, check_completion_conformance
 
@@ -153,7 +152,7 @@ class TestCompletionPort:
         )
 
     @pytest.mark.parametrize("renamed", USAGE_LEDGER_ATTRIBUTES)
-    def test_renaming_any_attribute_the_ledger_reads_fails_naming_it(self, renamed):
+    def test_renaming_any_attribute_the_ledger_reads_fails_naming_it(self, renamed) -> None:
         """A rename the ledger would read as "unreported" in silence fails the host's check by name."""
         fields = {name: None for name in COMPLETION_RESULT_ATTRIBUTES}
         fields.update(content="{}", stop_reason="end_turn")
@@ -172,7 +171,7 @@ class TestCompletionPort:
             check_completion_conformance(type("RawCompletion", (), fields)())
 
     @pytest.mark.parametrize("reason", get_args(StopReason))
-    def test_every_member_of_the_vocabulary_passes_the_check(self, reason):
+    def test_every_member_of_the_vocabulary_passes_the_check(self, reason) -> None:
         """``truncated`` included: a host mapping an unnamed stop onto it conforms."""
         fields: dict[str, object] = {name: None for name in COMPLETION_RESULT_ATTRIBUTES}
         fields.update(content="{}", stop_reason=reason)

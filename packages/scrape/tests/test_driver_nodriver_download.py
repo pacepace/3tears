@@ -14,11 +14,11 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from packages.scrape.tests.driver_log_helpers import driver_warnings
-
 from threetears.scrape.driver import RenderedPage
 from threetears.scrape.drivers.document import DocumentDriverError, ParsedDocumentHtml
 from threetears.scrape.drivers.nodriver_download import NodriverDownloadDriver, NodriverDownloadError
+
+from packages.scrape.tests.driver_log_helpers import driver_warnings
 
 
 class TestNodriverDownloadDriver:
@@ -26,7 +26,7 @@ class TestNodriverDownloadDriver:
         driver = NodriverDownloadDriver("http://localhost:8088")
         assert driver.name == "nodriver_download"
 
-    async def test_render_success_parses_response(self, monkeypatch):
+    async def test_render_success_parses_response(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -60,7 +60,7 @@ class TestNodriverDownloadDriver:
         assert page.was_ocr is False
         await client.aclose()
 
-    async def test_render_sends_request_payload_shape(self, monkeypatch):
+    async def test_render_sends_request_payload_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -89,7 +89,9 @@ class TestNodriverDownloadDriver:
         assert captured["payload"] == {"url": "https://workforcewv.org/notice.pdf", "timeout": 9.5}
         await client.aclose()
 
-    async def test_render_decodes_base64_and_hands_off_to_parse_document_bytes_to_html(self, monkeypatch):
+    async def test_render_decodes_base64_and_hands_off_to_parse_document_bytes_to_html(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         mock_parse = AsyncMock(return_value=ParsedDocumentHtml(html="<html>ok</html>", was_ocr=False))
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -121,7 +123,7 @@ class TestNodriverDownloadDriver:
         )
         await client.aclose()
 
-    async def test_render_forwards_ocr_config_to_parse_step(self, monkeypatch):
+    async def test_render_forwards_ocr_config_to_parse_step(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_parse = AsyncMock(return_value=ParsedDocumentHtml(html="", was_ocr=False))
         sentinel_ocr = object()
 
@@ -147,7 +149,7 @@ class TestNodriverDownloadDriver:
         assert mock_parse.await_args.kwargs["ocr_config"] is sentinel_ocr
         await client.aclose()
 
-    async def test_render_propagates_was_ocr_true_onto_rendered_page(self, monkeypatch):
+    async def test_render_propagates_was_ocr_true_onto_rendered_page(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "threetears.scrape.drivers.nodriver_download.parse_document_bytes_to_html",
             AsyncMock(return_value=ParsedDocumentHtml(html="<html>scanned</html>", was_ocr=True)),
@@ -173,7 +175,7 @@ class TestNodriverDownloadDriver:
         assert page.was_ocr is True
         await client.aclose()
 
-    async def test_render_carries_what_the_parser_could_not_read(self, monkeypatch):
+    async def test_render_carries_what_the_parser_could_not_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "threetears.scrape.drivers.nodriver_download.parse_document_bytes_to_html",
             AsyncMock(
@@ -207,7 +209,7 @@ class TestNodriverDownloadDriver:
         assert page.page_images_fault == "PDF page images could not be rendered (RuntimeError)"
         await client.aclose()
 
-    async def test_render_propagates_document_driver_error_unwrapped(self, monkeypatch):
+    async def test_render_propagates_document_driver_error_unwrapped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 200,
@@ -220,7 +222,7 @@ class TestNodriverDownloadDriver:
                 },
             )
 
-        async def failing_parse(*args, **kwargs):
+        async def failing_parse(*args, **kwargs) -> None:
             raise DocumentDriverError("parse_failed", "[Parsing failed: corrupt pdf]")
 
         monkeypatch.setattr("threetears.scrape.drivers.nodriver_download.parse_document_bytes_to_html", failing_parse)
@@ -277,7 +279,7 @@ class TestNodriverDownloadDriver:
         assert exc_info.value.code == "transport"
         await client.aclose()
 
-    async def test_render_computes_timing_ms(self, monkeypatch):
+    async def test_render_computes_timing_ms(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "threetears.scrape.drivers.nodriver_download.parse_document_bytes_to_html",
             AsyncMock(return_value=ParsedDocumentHtml(html="", was_ocr=False)),
@@ -345,7 +347,7 @@ class TestNodriverDownloadAnnouncesADroppedSolve:
             },
         )
 
-    def _driver(self, monkeypatch) -> NodriverDownloadDriver:
+    def _driver(self, monkeypatch: pytest.MonkeyPatch) -> NodriverDownloadDriver:
         monkeypatch.setattr(
             "threetears.scrape.drivers.nodriver_download.parse_document_bytes_to_html",
             AsyncMock(return_value=ParsedDocumentHtml(html="<html>parsed</html>", was_ocr=False)),
@@ -353,7 +355,9 @@ class TestNodriverDownloadAnnouncesADroppedSolve:
         client = httpx.AsyncClient(transport=httpx.MockTransport(self._handler))
         return NodriverDownloadDriver("http://sidecar.test", client=client)
 
-    async def test_render_warns_when_it_drops_a_solve(self, caplog, monkeypatch):
+    async def test_render_warns_when_it_drops_a_solve(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         driver = self._driver(monkeypatch)
 
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.nodriver_download"):
@@ -369,7 +373,9 @@ class TestNodriverDownloadAnnouncesADroppedSolve:
         )
         assert "/v1/download" in messages[0], f"the generic remedy leaked through: {messages[0]}"
 
-    async def test_an_ordinary_render_stays_quiet(self, caplog, monkeypatch):
+    async def test_an_ordinary_render_stays_quiet(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         driver = self._driver(monkeypatch)
 
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.nodriver_download"):

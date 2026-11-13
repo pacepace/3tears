@@ -23,8 +23,6 @@ import json
 
 import httpx
 import pytest
-from packages.scrape.tests.driver_log_helpers import driver_warnings
-
 from threetears.scrape.driver import NavStep, RenderedPage, ScrapeDriver
 from threetears.scrape.drivers.api import ApiDriver, ApiDriverError
 from threetears.scrape.drivers.camoufox import CamoufoxDriver
@@ -33,6 +31,8 @@ from threetears.scrape.drivers.listing_detail import ListingDetailDriver, Listin
 from threetears.scrape.drivers.multi_document import MultiDocumentDriver
 from threetears.scrape.drivers.nodriver_download import NodriverDownloadDriver, NodriverDownloadError
 from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
+
+from packages.scrape.tests.driver_log_helpers import driver_warnings
 
 _PAGE_HTML = "<html><body>contract test page</body></html>"
 _PAGE_STATUS = 200
@@ -78,19 +78,19 @@ class _ContractFakePage:
     async def close(self) -> None:
         pass
 
-    def on(self, event, handler):
+    def on(self, event, handler) -> None:
         pass  # no response events ever fire in this minimal contract stub
 
-    async def click(self, selector, *, timeout=None):
+    async def click(self, selector, *, timeout=None) -> None:
         pass
 
-    async def fill(self, selector, value, *, timeout=None):
+    async def fill(self, selector, value, *, timeout=None) -> None:
         pass
 
-    async def wait_for_selector(self, selector, *, timeout=None):
+    async def wait_for_selector(self, selector, *, timeout=None) -> None:
         pass
 
-    async def wait_for_timeout(self, ms):
+    async def wait_for_timeout(self, ms) -> None:
         pass
 
     async def evaluate(self, expression):
@@ -122,13 +122,13 @@ class TestScrapeDriverContract:
     """Every ``ScrapeDriver`` backend must satisfy this identical contract."""
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    def test_name_is_a_stable_nonempty_string(self, make_driver):
+    def test_name_is_a_stable_nonempty_string(self, make_driver) -> None:
         driver = make_driver()
         assert isinstance(driver.name, str)
         assert driver.name
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_render_returns_a_rendered_page_with_correct_field_types(self, make_driver):
+    async def test_render_returns_a_rendered_page_with_correct_field_types(self, make_driver) -> None:
         driver = make_driver()
 
         page = await driver.render("https://example.gov/contract-page")
@@ -142,7 +142,7 @@ class TestScrapeDriverContract:
         assert isinstance(page.eval_results, list)
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_render_returns_the_backend_supplied_content(self, make_driver):
+    async def test_render_returns_the_backend_supplied_content(self, make_driver) -> None:
         driver = make_driver()
 
         page = await driver.render("https://example.gov/contract-page")
@@ -152,7 +152,7 @@ class TestScrapeDriverContract:
         assert page.final_url == _PAGE_FINAL_URL
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_render_accepts_default_and_explicit_timeout_and_wait_for(self, make_driver):
+    async def test_render_accepts_default_and_explicit_timeout_and_wait_for(self, make_driver) -> None:
         """Every backend's render() must accept the full ScrapeDriver signature,
         even if a given backend ignores wait_for internally -- the caller-facing
         contract is what's pinned here, not each backend's internal handling."""
@@ -164,7 +164,7 @@ class TestScrapeDriverContract:
         assert page_default.html == page_explicit.html
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_render_accepts_capture_network(self, make_driver):
+    async def test_render_accepts_capture_network(self, make_driver) -> None:
         """Every backend's render() must accept capture_network -- real
         capture behavior (what gets filtered in/out) is each backend's own
         test file's responsibility, per this file's own docstring."""
@@ -175,7 +175,7 @@ class TestScrapeDriverContract:
         assert isinstance(page.network_calls, list)
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_render_accepts_nav_steps(self, make_driver):
+    async def test_render_accepts_nav_steps(self, make_driver) -> None:
         """Every backend's render() must accept nav_steps -- real step
         execution (click/fill/wait_for/wait_ms semantics, failure modes) is
         each backend's own test file's responsibility, per this file's own
@@ -190,7 +190,7 @@ class TestScrapeDriverContract:
         assert page.html == _PAGE_HTML
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_evaluate_step_is_a_general_capability_not_google_specific(self, make_driver):
+    async def test_evaluate_step_is_a_general_capability_not_google_specific(self, make_driver) -> None:
         """Gaming test: runs a plain JS expression against a synthetic
         contract-test page (https://example.gov/contract-page) wholly
         unrelated to Google/Trends. If ``evaluate`` only worked there, it
@@ -206,7 +206,7 @@ class TestScrapeDriverContract:
         assert page.eval_results == [_CONTRACT_EVAL_RESULT]
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_a_parametrized_backend_accepts_and_ignores_session_state(self, make_driver):
+    async def test_a_parametrized_backend_accepts_and_ignores_session_state(self, make_driver) -> None:
         """The "accept the full signature, use what you need" rule, applied to a new parameter.
 
         A backend that cannot restore a browser session has nothing to do with one, but it
@@ -229,7 +229,7 @@ class TestScrapeDriverContract:
         assert isinstance(page, RenderedPage)
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_session_state_defaults_to_absent(self, make_driver):
+    async def test_session_state_defaults_to_absent(self, make_driver) -> None:
         """Every pre-existing caller keeps working without knowing this parameter exists."""
         driver = make_driver()
         page = await driver.render("https://example.gov/contract-page")
@@ -513,7 +513,9 @@ class TestADroppedSolveIsNeverSilent:
     """
 
     @pytest.mark.parametrize(("make_driver", "module", "error"), _DROPS_THE_SOLVE)
-    async def test_it_warns_when_a_solve_is_dropped(self, caplog, make_driver, module: str, error) -> None:
+    async def test_it_warns_when_a_solve_is_dropped(
+        self, caplog: pytest.LogCaptureFixture, make_driver, module: str, error
+    ) -> None:
         """Asserted on the emitted record, so deleting the call fails this.
 
         The failure being excluded is silent: a successful render is returned, the page is the
@@ -530,7 +532,7 @@ class TestADroppedSolveIsNeverSilent:
 
     @pytest.mark.parametrize(("make_driver", "module", "error"), _DROPS_THE_SOLVE)
     async def test_one_origin_is_reported_once_however_many_documents_it_has(
-        self, caplog, make_driver, module: str, error
+        self, caplog: pytest.LogCaptureFixture, make_driver, module: str, error
     ) -> None:
         """Per render is a storm: `MultiDocumentDriver` forwards a solve once per document, so
         one listing emitted a warning per document up to the cap, and a warning that repeats
@@ -552,7 +554,9 @@ class TestADroppedSolveIsNeverSilent:
         )
 
     @pytest.mark.parametrize(("make_driver", "module", "error"), _DROPS_THE_SOLVE)
-    async def test_a_second_site_is_still_reported(self, caplog, make_driver, module: str, error) -> None:
+    async def test_a_second_site_is_still_reported(
+        self, caplog: pytest.LogCaptureFixture, make_driver, module: str, error
+    ) -> None:
         """The opposite failure, and the one that is silent rather than noisy.
 
         `ScrapeTool` builds its driver map once and reuses it for the life of the process, so
@@ -571,7 +575,9 @@ class TestADroppedSolveIsNeverSilent:
             "silent after the first, which is the failure this cardinality exists to avoid"
         )
 
-    async def test_the_download_driver_does_not_tell_you_to_use_the_thing_it_is(self, caplog) -> None:
+    async def test_the_download_driver_does_not_tell_you_to_use_the_thing_it_is(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """It IS sidecar-backed, so the default advice names what it already is.
 
         The endpoint it posts to carries no session state, which is the actual reason and the
@@ -592,7 +598,7 @@ class TestADroppedSolveIsNeverSilent:
 _ORIGINS_PROBED = 4096
 
 
-async def test_the_dropped_solve_memory_does_not_grow_without_bound(caplog) -> None:
+async def test_the_dropped_solve_memory_does_not_grow_without_bound(caplog: pytest.LogCaptureFixture) -> None:
     """The resource guard, which was the one added branch nothing asserted.
 
     A long-lived process scraping a wide set of sites would otherwise hold one origin string
@@ -633,7 +639,7 @@ async def test_the_dropped_solve_memory_does_not_grow_without_bound(caplog) -> N
     )
 
 
-async def test_urls_with_no_parseable_origin_stay_distinct(caplog) -> None:
+async def test_urls_with_no_parseable_origin_stay_distinct(caplog: pytest.LogCaptureFixture) -> None:
     """The fallback branch the docstring's whole design argument rests on, asserted by what is reported.
 
     `robots._origin_of` returns None for these, deliberately, so it can decline to apply a
@@ -658,7 +664,7 @@ async def test_urls_with_no_parseable_origin_stay_distinct(caplog) -> None:
     assert len(one_site) == 1, "two paths on one origin were each reported; the key is the path, not the origin"
 
 
-async def test_two_unparseable_urls_are_each_reported(caplog) -> None:
+async def test_two_unparseable_urls_are_each_reported(caplog: pytest.LogCaptureFixture) -> None:
     """The behaviour that branch exists for, asserted through the warning rather than the helper."""
     driver = ApiDriver(client=_unavailable_client())
 

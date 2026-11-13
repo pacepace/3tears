@@ -5,10 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
-
-from threetears.evals.schema.models import ActorPolicy, ConversationSpec, ConversationStopCause, RoleUsage
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
-from threetears.evals.schema.completion import CompletionProtocolDefect
 from threetears.evals.run.simulator import (
     SIMULATED_USER_RESPONSE_FORMAT,
     SIMULATOR_ANSWER_BUDGET_TOKENS,
@@ -21,6 +18,8 @@ from threetears.evals.run.simulator import (
     SimulatorTurn,
     TurnDriver,
 )
+from threetears.evals.schema.completion import CompletionProtocolDefect
+from threetears.evals.schema.models import ActorPolicy, ConversationSpec, ConversationStopCause, RoleUsage
 
 # =============================================================================
 # Helpers
@@ -302,7 +301,7 @@ def test_explicit_stop_sets_cause() -> None:
     "refusal",
     ["I can't help with that.", "I'm unable to do that.", "I refuse to order that.", ""],
 )
-def test_a_refusal_does_not_end_the_conversation(refusal):
+def test_a_refusal_does_not_end_the_conversation(refusal) -> None:
     """What the candidate says is never a stop signal — a refusal's quality is the judge's to grade.
 
     Stopping on the words of a refusal truncated exactly the conversations whose refusals a
@@ -372,7 +371,7 @@ async def test_a_user_that_is_not_done_keeps_the_conversation_going() -> None:
     ],
     ids=["prose", "missing-done", "done-not-bool", "extra-field", "empty"],
 )
-async def test_a_reply_that_breaks_the_schema_is_refused_with_its_spend(raw):
+async def test_a_reply_that_breaks_the_schema_is_refused_with_its_spend(raw) -> None:
     driver = TurnDriver(conversation=_conversation([_actor("a")]), variation={})
 
     class _Billed:
@@ -497,7 +496,7 @@ class _UsageResponse:
 
     def __init__(
         self, content="hi", *, model="sim-model", inp=12, out=34, reasoning=None, cost=0.004, price_source="rate_card"
-    ):
+    ) -> None:
         self.content = _reply(content)
         self.model = model
         self.input_tokens = inp
@@ -508,7 +507,7 @@ class _UsageResponse:
 
 
 class _UsageLLM:
-    def __init__(self, response):
+    def __init__(self, response) -> None:
         self._response = response
 
     async def generate(self, *, system: str, user: str, response_format: dict | None = None):
@@ -565,7 +564,7 @@ async def test_llm_turn_from_a_client_reporting_nothing_reads_as_unobserved() ->
 class _MistypedSentResponse(_UsageResponse):
     """A billed response whose ``sent_settings`` holds a word where request settings belong: the host's defect."""
 
-    def __init__(self, content="hi"):
+    def __init__(self, content="hi") -> None:
         super().__init__(content)
         self.sent_settings = "low"
 
@@ -657,7 +656,7 @@ def test_an_actor_or_purpose_belongs_on_a_simulator_row_only() -> None:
 
 
 @pytest.mark.parametrize("role", ["candidate", "judge"])
-def test_fold_usage_refuses_another_roles_ledger(role):
+def test_fold_usage_refuses_another_roles_ledger(role) -> None:
     """Simulator spend is the program's cost; landing it on the candidate's row would misstate what it costs."""
     with pytest.raises(ValueError, match="simulator ledger"):
         _usage_driver().fold_usage(RoleUsageLedger(role=role))

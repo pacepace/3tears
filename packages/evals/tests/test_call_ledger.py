@@ -6,8 +6,8 @@ import json
 
 import pytest
 from pydantic import ValidationError
-
 from threetears.evals.schema import CallLedger, RecordedCall
+
 from packages.evals.tests.factories import make_eval_result, make_eval_trace, memory_storage
 
 
@@ -58,7 +58,7 @@ def test_a_ledger_round_trips_through_json() -> None:
     ],
     ids=["unknown ledger key", "unknown call key", "empty tool"],
 )
-def test_a_stored_ledger_is_read_as_strictly_as_every_stored_eval_shape(stored):
+def test_a_stored_ledger_is_read_as_strictly_as_every_stored_eval_shape(stored) -> None:
     with pytest.raises(ValidationError):
         CallLedger.model_validate(stored)
 

@@ -56,7 +56,6 @@ from pathlib import Path
 
 import pytest
 
-
 _SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
 _PACKAGE = "threetears/evals"
 
@@ -1608,7 +1607,7 @@ class TestTheRule:
         assert _RULE in every
         assert {site.module for site in _all_sites()} >= {_KIT_JS, _CHART_SVG}
 
-    def test_a_permanent_entry_holds_its_function_and_its_count(self, monkeypatch):
+    def test_a_permanent_entry_holds_its_function_and_its_count(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A moved line, or one rewritten in place, keeps its entry; one more of the form in the function, or the same
         expression in another function, fails; and an entry the function no longer fills outlives its site."""
         monkeypatch.setitem(_PERMANENT, ("sample.py", "g", "round()"), (1, "a self-test's permanent site"))
@@ -1689,7 +1688,7 @@ class TestTheWalkSeesEveryPythonForm:
             ('t"{value:.2f}"', ("value", ".2f")),
         ],
     )
-    def test_the_walk_sees_every_way_python_spells_a_number(self, source, expected):
+    def test_the_walk_sees_every_way_python_spells_a_number(self, source, expected) -> None:
         assert _specs(source) == [expected]
 
     def test_a_t_string_field_is_its_own_form(self) -> None:
@@ -1698,7 +1697,7 @@ class TestTheWalkSeesEveryPythonForm:
     @pytest.mark.parametrize(
         "source", ['f"{name}"', 'f"{name!r}"', 'f"{count:d}"', 'f"{label:>10}"', 'f"{format_number(v)}"']
     )
-    def test_the_walk_leaves_what_chooses_no_digits(self, source):
+    def test_the_walk_leaves_what_chooses_no_digits(self, source) -> None:
         assert _specs(source) == []
 
     @pytest.mark.parametrize(
@@ -1726,7 +1725,7 @@ class TestTheWalkSeesEveryPythonForm:
             ("math.ceil(-math.log10(top / 5))", ("<module>", "ceil(log10)", "math.ceil(-math.log10(top / 5))")),
         ],
     )
-    def test_the_walk_sees_rounding_and_every_primitive(self, source, expected):
+    def test_the_walk_sees_rounding_and_every_primitive(self, source, expected) -> None:
         assert _forms(_python_sites(source)) == [expected]
 
     def test_a_site_is_keyed_by_its_enclosing_definition(self) -> None:
@@ -1753,7 +1752,7 @@ class TestTheWalkSeesEveryPythonForm:
             "held_means(report_input, key)",
         ],
     )
-    def test_the_walk_leaves_what_decides_no_form(self, source):
+    def test_the_walk_leaves_what_decides_no_form(self, source) -> None:
         assert _python_sites(source) == []
 
 
@@ -1833,7 +1832,9 @@ class TestAWrapperIsAPrimitive:
             ("page", "spell_at()"),
         ]
 
-    def test_a_permanent_site_inside_a_helper_leaves_its_callers_unlisted(self, monkeypatch):
+    def test_a_permanent_site_inside_a_helper_leaves_its_callers_unlisted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """An SVG opacity is permanent, so the helper that writes it wraps nothing and drawing through it is no site."""
         monkeypatch.setitem(_PERMANENT, (_CHART_SVG, "_faded", "f-string spec"), (1, "an SVG opacity"))
         source = (
@@ -1844,7 +1845,7 @@ class TestAWrapperIsAPrimitive:
         assert [(site.qualname, site.form) for site in sites] == [("_faded", "f-string spec")]
         assert _unnamed(sites) == []
 
-    def test_a_relocated_decision_called_as_a_free_function_is_still_a_site(self, tmp_path):
+    def test_a_relocated_decision_called_as_a_free_function_is_still_a_site(self, tmp_path: Path) -> None:
         """A decision moved into ``forms.py`` and called from a surface is decided where it is called, so a module
         that reroutes through one never reaches zero entries by the move alone. Every public free function there is
         such a primitive, and nothing private, nor a class or its methods, is."""
@@ -1888,10 +1889,10 @@ class TestAWrapperIsAPrimitive:
         )
         assert _python_sites(source) == []
 
-    def test_forms_primitives_are_none_before_forms_exists(self, tmp_path):
+    def test_forms_primitives_are_none_before_forms_exists(self, tmp_path: Path) -> None:
         assert _forms_primitives(tmp_path) == frozenset()
 
-    def test_an_owner_is_not_walked_so_routing_through_it_stays_the_remedy(self, tmp_path):
+    def test_an_owner_is_not_walked_so_routing_through_it_stays_the_remedy(self, tmp_path: Path) -> None:
         """``forms.py`` is an owner before it exists: the walk and the report trees both pass over it."""
         for module in (_FORMS, _RULE, "threetears/evals/analysis/report/figures.py"):
             (tmp_path / module).parent.mkdir(parents=True, exist_ok=True)
@@ -1930,7 +1931,7 @@ class TestASiteHandedThroughAHelperIsStillASite:
         ],
         ids=["argument", "nested-call", "local"],
     )
-    def test_a_figure_handed_to_a_helper_makes_the_hander_a_wrapper(self, body, inner):
+    def test_a_figure_handed_to_a_helper_makes_the_hander_a_wrapper(self, body, inner) -> None:
         source = (
             _JOINED
             + "def _trimmed(text):\n    return text.strip()\n\n"
@@ -1976,7 +1977,9 @@ class TestASiteHandedThroughAHelperIsStillASite:
             ("Ruler.head", "figure()", "self.figure(v)"),
         ]
 
-    def test_a_helper_named_a_primitive_keeps_its_callers_when_its_body_is_permanent(self, monkeypatch):
+    def test_a_helper_named_a_primitive_keeps_its_callers_when_its_body_is_permanent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A permanent site wraps nothing, so a helper whose body is named permanently would lose its callers by
         derivation alone; one listed by name keeps them."""
         quantities = "threetears/evals/analysis/quantities.py"
@@ -2024,7 +2027,7 @@ class TestAPrimitiveHandedOnAsAValueIsASite:
         ],
         ids=["dict", "list", "bound-name"],
     )
-    def test_a_table_or_a_name_of_a_primitive_is_a_site(self, source, expected):
+    def test_a_table_or_a_name_of_a_primitive_is_a_site(self, source, expected) -> None:
         assert _forms(_python_sites(source)) == [expected]
 
     def test_an_annotation_a_class_test_or_a_field_read_is_not(self) -> None:
@@ -2078,7 +2081,7 @@ class TestAPrimitiveHandedOnAsAValueIsASite:
         ],
         ids=["positional", "keyword-only", "through-a-module", "lambda"],
     )
-    def test_a_primitive_as_a_parameter_s_default_is_a_site(self, source, expected):
+    def test_a_primitive_as_a_parameter_s_default_is_a_site(self, source, expected) -> None:
         assert _forms(_python_sites(source)) == [expected]
 
     def test_a_primitive_returned_by_its_name_is_a_site_and_its_returner_is_a_factory(self) -> None:
@@ -2199,7 +2202,7 @@ class TestTheEngineRule:
         ]
         assert _route_to_analysis(graph, "threetears.evals.kernel.numbers") == []
 
-    def test_the_import_graph_reads_packages_and_names_taken_from_them(self, tmp_path):
+    def test_the_import_graph_reads_packages_and_names_taken_from_them(self, tmp_path: Path) -> None:
         files = {
             "threetears/evals/run/__init__.py": "from threetears.evals.run.launch import go\n",
             "threetears/evals/run/launch.py": "from ..testing import Recorded\n\ndef go():\n    import json\n",
@@ -2247,7 +2250,7 @@ class TestTheEngineRule:
             "m = importlib.import_module('threetears.evals.analysis.quantities')\n",
         ],
     )
-    def test_every_way_of_importing_the_analysis_package_is_seen(self, source):
+    def test_every_way_of_importing_the_analysis_package_is_seen(self, source) -> None:
         assert _imports_analysis("threetears/evals/run/launch.py", source) != []
 
     @pytest.mark.parametrize(
@@ -2259,7 +2262,7 @@ class TestTheEngineRule:
             "import threetears.evals.analysis_tools\n",
         ],
     )
-    def test_what_is_not_the_analysis_package_is_not_taken_for_it(self, source):
+    def test_what_is_not_the_analysis_package_is_not_taken_for_it(self, source) -> None:
         assert _imports_analysis("threetears/evals/kernel/surface.py", source) == []
 
     def test_a_numbers_primitive_is_the_route_in_the_engine_and_a_site_above_it(self) -> None:
@@ -2339,7 +2342,7 @@ class TestTheWalkSeesEveryKitForm:
             ("function a(v){return kShort(v,1);}", ("a", "kShort", "kShort(v,1)")),
         ],
     )
-    def test_the_walk_sees_every_way_the_kit_spells_a_number(self, source, expected):
+    def test_the_walk_sees_every_way_the_kit_spells_a_number(self, source, expected) -> None:
         assert _forms(_js_sites(source)) == [expected]
 
     @pytest.mark.parametrize(
@@ -2355,7 +2358,7 @@ class TestTheWalkSeesEveryKitForm:
             ("function b(v){return `${`${v.toFixed(1)}`}` + `${{a:1}.a}`;}", "b"),
         ],
     )
-    def test_a_kit_site_is_keyed_by_its_top_level_statement(self, source, expected):
+    def test_a_kit_site_is_keyed_by_its_top_level_statement(self, source, expected) -> None:
         assert [site.qualname for site in _js_sites(source)] == [expected]
 
     @pytest.mark.parametrize(
@@ -2381,7 +2384,7 @@ class TestTheWalkSeesEveryKitForm:
             "function kTickLabels(spec,ticks){return ticks.map(t=>Math.round(t)+kTickFmt(spec)(t));}",
         ],
     )
-    def test_the_walk_leaves_what_the_kit_does_not_decide(self, source):
+    def test_the_walk_leaves_what_the_kit_does_not_decide(self, source) -> None:
         assert _js_sites(source) == []
 
     @pytest.mark.parametrize(
@@ -2394,7 +2397,7 @@ class TestTheWalkSeesEveryKitForm:
             "function a(d){return namedFmt(d.x_fmt)+namedFmt(d.latency_fmt);}",
         ],
     )
-    def test_a_pick_by_a_data_field_is_not_a_site(self, source):
+    def test_a_pick_by_a_data_field_is_not_a_site(self, source) -> None:
         """The data's format is decided in Python, which the walk reads; the kit only applies it."""
         assert _js_sites(source) == []
 
@@ -2410,7 +2413,7 @@ class TestTheWalkSeesEveryKitForm:
             ("function a(d){return namedFmt(d.label);}", "namedFmt(d.label)"),
         ],
     )
-    def test_a_pick_the_kit_decides_is_a_site(self, source, expected):
+    def test_a_pick_the_kit_decides_is_a_site(self, source, expected) -> None:
         """A literal, a default beside the data's field, or anything but the field itself is the kit's choice."""
         assert _forms(_js_sites(source)) == [("a", "namedFmt", expected)]
 

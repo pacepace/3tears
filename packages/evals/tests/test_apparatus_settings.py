@@ -26,10 +26,8 @@ from typing import Any
 
 import pytest
 from fastmcp import Client, FastMCP
-
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.kernel import IDENTITY_VERSION, EvalStorage, ValidationFailedError
-from threetears.evals.schema import EvalRun
 from threetears.evals.kernel.identity import derive_context_identity, derive_variant_identity
 from threetears.evals.ops import LaunchArguments, run_launch
 from threetears.evals.quick import run_cli
@@ -40,8 +38,10 @@ from threetears.evals.run import (
     settable_apparatus,
     start_run,
 )
+from threetears.evals.schema import EvalRun
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.transports.fastmcp import mount_fastmcp
+
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.courierhost import (
     COURIER_SCOPE,
@@ -50,13 +50,13 @@ from packages.evals.tests.fixtures.courierhost import (
     courier_launch_host,
 )
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
-from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.host import with_registry
+from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_REVIEWER_POOL, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
-from packages.evals.tests.ops_support import CALLER, launched_runs, ops_fixture
 from packages.evals.tests.mcp_wire import wire
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import CALLER, launched_runs, ops_fixture
 
 #: The toy host's one launch-settable apparatus dimension: who reviews the extractions.
 POOL = "reviewer_pool"
@@ -194,7 +194,9 @@ def test_the_component_hashes_the_values_and_their_types() -> None:
     ],
     ids=["another-apparatus", "the-engines-apparatus", "a-lever", "a-list", "none", "not-finite"],
 )
-async def test_a_setting_the_kind_does_not_read_or_cannot_be_stored_is_refused_before_its_launcher_runs(settings, said):
+async def test_a_setting_the_kind_does_not_read_or_cannot_be_stored_is_refused_before_its_launcher_runs(
+    settings, said
+) -> None:
     host, storage = off_loop(_launching)
     handed: list[LaunchRequest] = []
     (launchable,) = host.kinds.values()
@@ -224,7 +226,7 @@ async def test_a_setting_the_kind_does_not_read_or_cannot_be_stored_is_refused_b
     ],
     ids=["undeclared", "the-engines-own", "a-lever", "a-label"],
 )
-def test_a_kind_claiming_a_setting_the_host_does_not_declare_as_its_own_apparatus_is_refused(claimed, said):
+def test_a_kind_claiming_a_setting_the_host_does_not_declare_as_its_own_apparatus_is_refused(claimed, said) -> None:
     host, _storage = _launching()
     (launchable,) = host.kinds.values()
 
@@ -238,7 +240,7 @@ def test_a_kind_claiming_a_setting_the_host_does_not_declare_as_its_own_apparatu
 
 
 @pytest.mark.parametrize("default", [["pool-a"], None, float("nan")], ids=["a-list", "none", "not-finite"])
-def test_a_kind_defaulting_a_setting_to_a_value_no_run_could_record_is_refused(default):
+def test_a_kind_defaulting_a_setting_to_a_value_no_run_could_record_is_refused(default) -> None:
     async def launch(_request: LaunchRequest) -> EvalRun:
         raise AssertionError("never launched")
 

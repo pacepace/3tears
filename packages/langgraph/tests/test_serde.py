@@ -9,9 +9,10 @@ executed) and confirm legitimate langchain/langgraph types still revive.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import ormsgpack
 from langchain_core.messages import AIMessage, HumanMessage
-
 from threetears.langgraph.serde import UUIDSafeSerializer
 
 # langgraph ext type tag for a positional-args constructor ext
@@ -33,7 +34,7 @@ def test_langchain_messages_round_trip() -> None:
     assert revived[1].content == "hi there"
 
 
-def test_poisoned_ext_does_not_execute_code(tmp_path) -> None:
+def test_poisoned_ext_does_not_execute_code(tmp_path: Path) -> None:
     """a poisoned checkpoint ext (os.system) is refused, never invoked.
 
     an attacker who can write an L2 checkpoint blob crafts an ext that would

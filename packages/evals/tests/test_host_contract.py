@@ -26,7 +26,6 @@ from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
-
 from threetears.evals.kernel.host.bars import Bar, BarRegistrationError, BarRegistry
 from threetears.evals.kernel.host.measures import MeasureRegistrationError, MeasureRegistry
 from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
@@ -37,14 +36,15 @@ from threetears.evals.kernel.host.sweepables import (
     Sweepable,
     SweepableRegistry,
 )
-from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import LeverCoordinateError, derive_variant_identity
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
+from threetears.evals.schema.values import SweepableValue
+
 from packages.evals.tests.fixtures.toyhost.corpus import (
     clean_sweep,
     confounded_sweep,
-    unrecorded_apparatus,
     toyhost_observation,
+    unrecorded_apparatus,
 )
 from packages.evals.tests.fixtures.toyhost.profile import (
     TOYHOST_EXTRACTION_FAMILY,
@@ -52,7 +52,6 @@ from packages.evals.tests.fixtures.toyhost.profile import (
     TOYHOST_MEASURES,
     toyhost_profile,
 )
-
 
 #: One arbitrary lever level, for the tests that care which NAMES a map carries rather than what
 #: they resolved to.
@@ -912,7 +911,7 @@ def test_a_subject_component_no_lever_carries_is_refused() -> None:
 
 
 @pytest.mark.parametrize("engine_lever", [CANDIDATE_MODEL_LEVER, CANDIDATE_KIND_LEVER, "extractor.page_limit"])
-def test_a_reader_that_resolves_a_lever_the_engine_resolves_is_refused(engine_lever):
+def test_a_reader_that_resolves_a_lever_the_engine_resolves_is_refused(engine_lever) -> None:
     """Two writers of one coordinate are two places to disagree; the engine's is the only one."""
     toy = toyhost_profile()
     assert toy.variant_levers is not None
@@ -1147,7 +1146,7 @@ def _refusal_prefix(registry: MeasureRegistry) -> str:
     return message[: message.index("never_declared")]
 
 
-def test_rebinding_the_same_host_keeps_the_attribution(caplog) -> None:
+def test_rebinding_the_same_host_keeps_the_attribution(caplog: pytest.LogCaptureFixture) -> None:
     """One profile rebuilt over one module-level registry is the ordinary case, not a conflict.
 
     Regression: the first draft captured `self._host_ids and ...`, which evaluates to the SET
@@ -1172,7 +1171,7 @@ def test_rebinding_the_same_host_keeps_the_attribution(caplog) -> None:
     )
 
 
-def test_a_second_host_drops_the_attribution_and_says_so_once(caplog) -> None:
+def test_a_second_host_drops_the_attribution_and_says_so_once(caplog: pytest.LogCaptureFixture) -> None:
     """The drop is announced, because silence makes it indistinguishable from never-bound.
 
     Those two states want different responses — one is a construction that gave up attribution,

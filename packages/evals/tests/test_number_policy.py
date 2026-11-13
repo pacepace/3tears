@@ -28,7 +28,6 @@ from __future__ import annotations
 import math
 
 import pytest
-
 from threetears.evals.analysis.report.forms import (
     MeasureForm,
     policy_bounded_places,
@@ -68,15 +67,15 @@ class TestRuleTwoTheDigitsComeFromTheUncertainty:
             (37.0, 0),
         ],
     )
-    def test_a_half_width_reads_to_its_first_significant_digit(self, half_width, places):
+    def test_a_half_width_reads_to_its_first_significant_digit(self, half_width, places) -> None:
         assert policy_places([half_width]) == places
 
     @pytest.mark.parametrize(("half_width", "places"), [(0.16, 2), (0.25, 2), (1.9, 1), (0.0012, 4)])
-    def test_a_half_width_that_leads_with_a_one_or_a_two_reads_to_its_second(self, half_width, places):
+    def test_a_half_width_that_leads_with_a_one_or_a_two_reads_to_its_second(self, half_width, places) -> None:
         assert policy_places([half_width]) == places
 
     @pytest.mark.parametrize(("half_width", "places"), [(0.0996, 2), (0.296, 1), (0.996, 1)])
-    def test_the_leading_digit_is_read_at_two_significant_figures(self, half_width, places):
+    def test_the_leading_digit_is_read_at_two_significant_figures(self, half_width, places) -> None:
         """0.0996 leads with the 1 of 0.10, and 0.296 with the 3 of 0.30."""
         assert policy_places([half_width]) == places
 
@@ -211,11 +210,11 @@ class TestRuleFourFixedForms:
         ("p", "text"),
         [(1e-7, "< 0.001"), (0.00008342, "< 0.001"), (0.0034, "0.003"), (0.4996, "0.50"), (1.0, "1.00")],
     )
-    def test_a_p_value_reads_as_apa_writes_it(self, p, text):
+    def test_a_p_value_reads_as_apa_writes_it(self, p, text) -> None:
         assert policy_p(p) == text
 
     @pytest.mark.parametrize(("effect", "text"), [(0.08475, "0.08"), (0.1228, "0.12"), (-0.19, "-0.19")])
-    def test_an_effect_reads_at_two_decimals(self, effect, text):
+    def test_an_effect_reads_at_two_decimals(self, effect, text) -> None:
         assert policy_effect(effect) == text
 
     def test_a_declared_value_reads_as_declared(self) -> None:
@@ -224,7 +223,7 @@ class TestRuleFourFixedForms:
         assert policy_declared(None, "pts") == ABSENT
 
     @pytest.mark.parametrize(("value", "text"), [(1234.5, "1234.5"), (0.1, "0.1"), (1e-05, "0.00001"), (-0.0, "0")])
-    def test_a_declared_value_is_never_rounded_nor_written_in_an_exponent(self, value, text):
+    def test_a_declared_value_is_never_rounded_nor_written_in_an_exponent(self, value, text) -> None:
         assert policy_declared(value) == text
 
     def test_an_exact_zero_reads_whole(self) -> None:
@@ -240,7 +239,7 @@ class TestAnAbsentOrNegativeZeroFigure:
     """An absent or non-finite figure reads as the em dash, never a zero; ``-0.0`` is a zero, with no sign."""
 
     @pytest.mark.parametrize("value", [None, math.nan, math.inf])
-    def test_an_absent_figure_reads_as_an_em_dash(self, value):
+    def test_an_absent_figure_reads_as_an_em_dash(self, value) -> None:
         assert policy_figure(value, 1, signed=True, bounds=(0.0,)) == ABSENT
         assert policy_rate(value, 0) == ABSENT
         assert policy_percent(value, 0) == ABSENT
@@ -255,7 +254,7 @@ class TestHalfToEven:
     @pytest.mark.parametrize(
         ("value", "places", "text"), [(62.5, 0, "62%"), (63.5, 0, "64%"), (0.125, 2, "0.12%"), (-2.5, 0, "-2%")]
     )
-    def test_a_percent_rounds_half_to_even(self, value, places, text):
+    def test_a_percent_rounds_half_to_even(self, value, places, text) -> None:
         assert policy_percent(value, places) == text
 
     def test_an_exact_zero_percent_states_no_precision(self) -> None:

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
+from threetears.evals.schema.models import ConversationSpec
 
 from packages.evals.tests.scripted_table import DONE, ScriptedTable, actor
-from threetears.evals.schema.models import ConversationSpec
-from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
 
 
 def _driver(*, max_turns: int, sessions: int, actor_ids: tuple[str, ...] = ("a",)) -> TurnDriver:
@@ -33,7 +33,7 @@ async def _rounds(driver: TurnDriver, table: ScriptedTable) -> list[SimulatorTur
     [(6, 3, [2, 4]), (5, 2, [2]), (4, 4, [1, 2, 3]), (6, 1, [])],
     ids=["even", "uneven", "one-turn-sessions", "one-session"],
 )
-async def test_the_breaks_fall_where_sessions_places_them(max_turns, sessions, breaks_before_round):
+async def test_the_breaks_fall_where_sessions_places_them(max_turns, sessions, breaks_before_round) -> None:
     driver = _driver(max_turns=max_turns, sessions=sessions)
     table = ScriptedTable(lines={"a": [f"line {index}" for index in range(max_turns)]})
 

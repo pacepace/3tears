@@ -13,7 +13,6 @@ from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from threetears.scrape.llm_retry import StructuredCallExhaustedError
 from threetears.scrape.extraction import (
     NOTICE_DOCUMENT_CLASS,
     OCR_PAGE_IMAGE_CLASS,
@@ -40,6 +39,7 @@ from threetears.scrape.extraction import (
     validate_regex_row_candidate,
     validate_row_candidate,
 )
+from threetears.scrape.llm_retry import StructuredCallExhaustedError
 
 from packages.scrape.tests.structured_output_fakes import fake_structured_model
 
@@ -1396,7 +1396,7 @@ _ROW_SCHEMA = {"employer": str, "county": str, "affected_count": int, "effective
 
 class TestRegexCandidatesRunUnderATimeLimit:
     @pytest.mark.timeout(60)
-    def test_a_backtracking_row_candidate_is_rejected_not_left_running(self, monkeypatch):
+    def test_a_backtracking_row_candidate_is_rejected_not_left_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import time
 
         import threetears.scrape.extraction as extraction
@@ -1411,7 +1411,9 @@ class TestRegexCandidatesRunUnderATimeLimit:
         assert elapsed < 5, f"the candidate ran {elapsed:.1f}s despite a 0.5s limit"
 
     @pytest.mark.timeout(60)
-    def test_a_backtracking_single_match_candidate_is_rejected_not_left_running(self, monkeypatch):
+    def test_a_backtracking_single_match_candidate_is_rejected_not_left_running(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import time
 
         import threetears.scrape.extraction as extraction
@@ -1426,7 +1428,7 @@ class TestRegexCandidatesRunUnderATimeLimit:
         assert elapsed < 5, f"the candidate ran {elapsed:.1f}s despite a 0.5s limit"
 
     @pytest.mark.timeout(60)
-    def test_the_next_candidate_after_a_timeout_still_runs(self, monkeypatch):
+    def test_the_next_candidate_after_a_timeout_still_runs(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import threetears.scrape.extraction as extraction
 
         monkeypatch.setattr(extraction, "REGEX_TIMEOUT_SECONDS", 0.5)
@@ -1446,7 +1448,7 @@ class TestRegexCandidatesRunUnderATimeLimit:
         assert result.total_rows_matched == 20000
 
     @pytest.mark.parametrize("pattern", [r"(?V1)(?P<employer>\w+)", r"(?au)(?P<employer>\w+)"])
-    def test_syntax_stdlib_re_refuses_is_still_an_invalid_candidate(self, pattern):
+    def test_syntax_stdlib_re_refuses_is_still_an_invalid_candidate(self, pattern) -> None:
         result = validate_regex_row_candidate(_TEXT_ROWS_PAGE, pattern, {"employer": str})
         assert result.valid is False
         assert any("invalid regex" in e for e in result.errors)
@@ -1480,7 +1482,7 @@ _DIFFERENTIAL_ROW_PATTERNS = [
 
 
 @pytest.mark.parametrize("pattern", _DIFFERENTIAL_ROW_PATTERNS)
-def test_row_candidates_match_exactly_as_stdlib_re_in_process(pattern):
+def test_row_candidates_match_exactly_as_stdlib_re_in_process(pattern) -> None:
     import re
 
     compiled = re.compile(pattern, re.MULTILINE | re.DOTALL)
@@ -1560,7 +1562,7 @@ class TestBoundedRegexIsThreadAndForkSafe:
         assert bounded_matches(r"(?P<c>z)", re.MULTILINE, "z", mode="search", timeout=10.0) == [{"c": "z"}]
 
 
-def _child_matches(results):  # a forked child's body; module level so the fork context can run it
+def _child_matches(results) -> None:  # a forked child's body; module level so the fork context can run it
     from threetears.scrape.bounded_regex import bounded_matches
 
     results.put(bounded_matches(r"(?P<b>y)", 0, "y", mode="search", timeout=10.0))
@@ -1735,10 +1737,10 @@ class TestBoundedRegexSurvivesInterruptionAndFailure:
             os.kill(worker_pid, signal.SIGKILL)  # never leave a runaway behind a failed run
         assert not ran_on, "the orphaned worker ran on past its own CPU cap"
 
-    def test_a_worker_failure_rejects_that_candidate_not_the_round(self, monkeypatch):
+    def test_a_worker_failure_rejects_that_candidate_not_the_round(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import threetears.scrape.extraction as extraction
 
-        def _broken(*args, **kwargs):
+        def _broken(*args, **kwargs) -> None:
             raise RuntimeError("regex worker exited without answering")
 
         monkeypatch.setattr(extraction, "bounded_matches", _broken)

@@ -22,11 +22,11 @@ import json
 
 import httpx
 import pytest
-from packages.scrape.tests.driver_log_helpers import driver_warnings
-from packages.scrape.tests.egress_fakes import FakeEgress
-
 from threetears.scrape.driver import NavStep, RenderedPage
 from threetears.scrape.drivers.api import ApiDriver, ApiDriverError
+
+from packages.scrape.tests.driver_log_helpers import driver_warnings
+from packages.scrape.tests.egress_fakes import FakeEgress
 
 # ===========================================================================
 # results_path resolution, through render()
@@ -383,7 +383,7 @@ class TestApiDriverAnnouncesADroppedSolve:
     block deletable with the suite green. The call site is the thing that was untested.
     """
 
-    async def test_render_warns_when_it_drops_a_solve(self, caplog):
+    async def test_render_warns_when_it_drops_a_solve(self, caplog: pytest.LogCaptureFixture) -> None:
         client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler({"Results": []})))
         driver = ApiDriver(client=client)
 
@@ -400,7 +400,7 @@ class TestApiDriverAnnouncesADroppedSolve:
         mine = [r for r in driver_warnings(caplog, "api") if "cannot apply it" in r.getMessage()]
         assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
 
-    async def test_an_ordinary_render_stays_quiet(self, caplog):
+    async def test_an_ordinary_render_stays_quiet(self, caplog: pytest.LogCaptureFixture) -> None:
         """A warning on every render is noise that teaches the reader to skip it."""
         client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler({"Results": []})))
         driver = ApiDriver(client=client)

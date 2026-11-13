@@ -11,17 +11,17 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-
+from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.references import ResolvedReading, resolve_reading
+from threetears.evals.kernel.campaign import EvidenceRow, ReadingKind
+
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
+from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_cells import cell_at
 from packages.evals.tests.writer_host_support import doc_analysis_over
-from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from threetears.evals.analysis.cells import cell_ref
-from threetears.evals.analysis.references import ResolvedReading, resolve_reading
-from threetears.evals.kernel.campaign import EvidenceRow, ReadingKind
 
 
 class TestEvidenceRowsCarryTheirBasis:
@@ -56,7 +56,7 @@ class TestEvidenceRowsCarryTheirBasis:
             )
 
     @pytest.mark.parametrize("missing", ["n", "dispersion", "reading"])
-    def test_n_dispersion_and_the_reading_kind_are_required(self, missing):
+    def test_n_dispersion_and_the_reading_kind_are_required(self, missing) -> None:
         fields = {
             "cell_ref": "v:a",
             "measure_id": "cost_usd",

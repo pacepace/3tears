@@ -15,23 +15,9 @@ import re
 
 import pytest
 from pydantic import ValidationError
-
 from threetears.evals.analysis import reporting
-from threetears.evals.analysis.lenses import aggregation, history
-from threetears.evals.analysis.reporting import (
-    METRIC_COMPOSITE,
-    METRIC_COST_USD,
-    METRIC_GOAL_STATE,
-    METRIC_OUTCOME,
-    METRIC_SCORE,
-    METRIC_TOTAL_MS,
-    METRIC_TRANSCRIPT,
-    ScoreProjection,
-    ScoreRecord,
-    dim_judge_model,
-    place_results,
-    project_score_records,
-)
+from threetears.evals.analysis.cassette_mode import CASSETTE_SPAN_CLAUSE, cassette_mode_disclosure
+from threetears.evals.analysis.completeness import DEGRADED_RUN_CLAUSE, completeness_disclosure
 from threetears.evals.analysis.latency_partition import (
     PARTITION_TOLERANCE_MS,
     WITHHELD_PARTS_EXCEED_WHOLE,
@@ -39,7 +25,7 @@ from threetears.evals.analysis.latency_partition import (
     LatencyPartition,
     decompose_total_ms,
 )
-from threetears.evals.analysis.cassette_mode import CASSETTE_SPAN_CLAUSE, cassette_mode_disclosure
+from threetears.evals.analysis.lenses import aggregation, history
 from threetears.evals.analysis.lenses.aggregation import WEIGHTING_EQUAL_PER_SCENARIO, WEIGHTING_SAMPLE_WEIGHTED
 from threetears.evals.analysis.lenses.comparison_sets import (
     BADGE_CASE_SET_DIFFERS,
@@ -54,6 +40,10 @@ from threetears.evals.analysis.lenses.comparison_sets import (
     difference_was_declared_at_launch,
 )
 from threetears.evals.analysis.lenses.cost_estimate import CostEstimateError, PredictedValue, compute_estimate_cost
+from threetears.evals.analysis.lenses.export import ExportError, export_projection, export_records_csv, serialize_export
+from threetears.evals.analysis.lenses.frontier import FrontierError, compute_frontier
+from threetears.evals.analysis.lenses.history import HistoryError, compute_history
+from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
 from threetears.evals.analysis.lenses.pivot import (
     CELL_MEASURED,
     CELL_UNMEASURED,
@@ -61,18 +51,26 @@ from threetears.evals.analysis.lenses.pivot import (
     PivotError,
     compute_pivot,
 )
-from threetears.evals.analysis.lenses.frontier import FrontierError, compute_frontier
-from threetears.evals.analysis.lenses.history import HistoryError, compute_history
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
-from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
-from threetears.evals.analysis.lenses.export import ExportError, export_projection, export_records_csv, serialize_export
-from threetears.evals.analysis.completeness import DEGRADED_RUN_CLAUSE, completeness_disclosure
+from threetears.evals.analysis.reporting import (
+    METRIC_COMPOSITE,
+    METRIC_COST_USD,
+    METRIC_GOAL_STATE,
+    METRIC_OUTCOME,
+    METRIC_SCORE,
+    METRIC_TOTAL_MS,
+    METRIC_TRANSCRIPT,
+    ScoreProjection,
+    ScoreRecord,
+    dim_judge_model,
+    place_results,
+    project_score_records,
+)
 from threetears.evals.analysis.stats import UNIFORM_MOVE_NEEDS_RANGE, bounded_separation_p
 from threetears.evals.kernel.host import freeze
-from threetears.evals.ops import pivot_text
-from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key, derive_context_identity
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, describe_measure
+from threetears.evals.ops import pivot_text
 from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
@@ -84,16 +82,18 @@ from threetears.evals.schema.models import (
     RubricScore,
     RunCompleteness,
 )
+from threetears.evals.schema.values import SweepableValue
+
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_subject
+from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
+from packages.evals.tests.fixtures.toyhost.corpus import toyhost_batch, toyhost_measurements
 
 # The canary's own noun set, so the two "names no host" assertions below cover the whole
 # class rather than the one noun that happened to be wrong. `reporting.py` is DECLARED
 # shared contract, but its operator strings are built in function bodies, which that canary
 # deliberately does not scan — these assertions are the only thing standing there.
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
-from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.fixtures.toyhost.corpus import toyhost_batch, toyhost_measurements
 from packages.evals.tests.host_vocabulary import HOST_NOUNS
 
 #: Whole-word host nouns in PROSE. The list is imported, never retyped; only the matching
@@ -844,7 +844,9 @@ class TestPerDimensionRows:
             ),
         ],
     )
-    def test_the_pooled_caveat_names_the_dispersion_basis_the_weighting_actually_uses(self, weighting, expected):
+    def test_the_pooled_caveat_names_the_dispersion_basis_the_weighting_actually_uses(
+        self, weighting, expected
+    ) -> None:
         """`_aggregate` branches on weighting, so one sentence cannot cover both.
 
         Under `equal_per_scenario` — the DEFAULT — the SEM is over test-case
@@ -1226,7 +1228,7 @@ class TestPerDimensionJudgeAttribution:
 
         assert [r.rubric_dim for r in rows] == ["reply.grounding"]
 
-    def test_an_axis_stamped_with_an_unreserved_dim_is_dropped_loudly(self, caplog):
+    def test_an_axis_stamped_with_an_unreserved_dim_is_dropped_loudly(self, caplog: pytest.LogCaptureFixture) -> None:
         """The `metric` column is the one that comes off stored data, so it is guarded — and said.
 
         `RubricScore.dim` accepts any namespaced dim name as well as the reserved ids, so
@@ -1581,7 +1583,7 @@ class TestPlacementHelper:
             ),
         ],
     )
-    def test_a_caller_that_never_states_archival_is_refused(self, call):
+    def test_a_caller_that_never_states_archival_is_refused(self, call) -> None:
         """No default, so forgetting archival is a ``TypeError``, not a ``status`` filter blamed.
 
         With a ``None`` default, a caller that narrowed its cohort and omitted the
@@ -2801,7 +2803,7 @@ class TestNormalizeStatusFilter:
             ("budget_stopped", "budget_stopped"),
         ],
     )
-    def test_resolves_every_caller_spelling(self, raw, expected):
+    def test_resolves_every_caller_spelling(self, raw, expected) -> None:
         """Blank means unsupplied (not "all"); `all` lifts the filter at any casing.
 
         The two load-bearing defaults live here: an absent or blank filter means
@@ -2814,7 +2816,7 @@ class TestNormalizeStatusFilter:
         assert normalize_status_filter(raw) == expected
 
     @pytest.mark.parametrize("raw", ["banana", "Completed", "COMPLETED", "complete", "done", "everything", "any"])
-    def test_refuses_a_status_no_run_can_carry(self, raw):
+    def test_refuses_a_status_no_run_can_carry(self, raw) -> None:
         """A filter that can match nothing is refused, never answered with an empty result.
 
         This row set replaces the earlier `("Completed", "Completed")` pin, which
@@ -2849,8 +2851,8 @@ class TestNormalizeStatusFilter:
         written here: a second copy of the vocabulary in the test is the same
         drift the seam avoids by not writing one in the source.
         """
-        from threetears.evals.schema.models import RUN_STATUSES
         from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
+        from threetears.evals.schema.models import RUN_STATUSES
 
         with pytest.raises(StatusFilterError) as excinfo:
             normalize_status_filter("banana")
@@ -2871,8 +2873,8 @@ class TestNormalizeStatusFilter:
         behind refuses a real cohort, and refuses it loudly enough to look like a
         bug in the caller.
         """
-        from threetears.evals.schema.models import RUN_STATUSES
         from threetears.evals.kernel.status_filter import normalize_status_filter
+        from threetears.evals.schema.models import RUN_STATUSES
 
         assert {status: normalize_status_filter(status) for status in RUN_STATUSES} == {
             status: status for status in RUN_STATUSES
@@ -2907,7 +2909,7 @@ class TestValidateStatusFilter:
             ("cancelled", "cancelled"),
         ],
     )
-    def test_an_unspecified_filter_is_no_filter(self, raw, expected):
+    def test_an_unspecified_filter_is_no_filter(self, raw, expected) -> None:
         """Absent, blank and `all` all mean every run — the distinction from the sibling.
 
         The defect this pins: a scope of 9 runs
@@ -2922,7 +2924,7 @@ class TestValidateStatusFilter:
         assert validate_status_filter(raw) == expected
 
     @pytest.mark.parametrize("raw", ["banana", "Completed", "COMPLETED", "complete", "done", "everything", "any"])
-    def test_refuses_a_status_no_run_can_carry(self, raw):
+    def test_refuses_a_status_no_run_can_carry(self, raw) -> None:
         """The same refusal as the comparison surfaces, on the same rows.
 
         A filter that can match nothing must not be answered with an empty list,
@@ -2946,12 +2948,12 @@ class TestValidateStatusFilter:
         reads. Compared over every input EXCEPT the unspecified ones, where the two
         are supposed to disagree — those are pinned per-function above.
         """
-        from threetears.evals.schema.models import RUN_STATUSES
         from threetears.evals.kernel.status_filter import (
             StatusFilterError,
             normalize_status_filter,
             validate_status_filter,
         )
+        from threetears.evals.schema.models import RUN_STATUSES
 
         agreeing_inputs = [*sorted(RUN_STATUSES), "all", "ALL", "  all  "]
         assert [validate_status_filter(raw) for raw in agreeing_inputs] == [
@@ -4442,7 +4444,7 @@ class TestDifferenceWasDeclaredAtLaunch:
         assert difference_was_declared_at_launch(["chosen", "chosen"]) is True
 
     @pytest.mark.parametrize("origins", [["chosen", "inherited"], ["subject", "subject"], ["chosen", None]])
-    def test_one_arm_that_inherited_makes_the_whole_difference_undeclared(self, origins):
+    def test_one_arm_that_inherited_makes_the_whole_difference_undeclared(self, origins) -> None:
         """Conservative by construction.
 
         A comparison cannot claim to be sweeping an axis one of its arms was never
@@ -4590,7 +4592,9 @@ class TestComparisonSetsScope:
         assert compute_comparison_sets(runs, scope_run_ids=[], profile=_JUDGED_HOST).comparison_sets == []
         assert compute_comparison_sets(runs, scope_run_ids=None, profile=_JUDGED_HOST).comparison_sets != []
 
-    def test_a_scope_naming_runs_that_are_not_here_says_so_rather_than_answering_empty(self, caplog):
+    def test_a_scope_naming_runs_that_are_not_here_says_so_rather_than_answering_empty(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """A campaign whose members left the scope must not read as "not comparable".
 
         `campaign_get` reports exactly this state — "attached but absent from that
@@ -6236,7 +6240,7 @@ class TestFrontierBarValidation:
     """A bar outside [0, 1] is refused, not clamped."""
 
     @pytest.mark.parametrize("bad_bar", [-0.1, 1.5, 2.0])
-    def test_out_of_range_bar_raises(self, bad_bar):
+    def test_out_of_range_bar_raises(self, bad_bar) -> None:
         run = _fr_run()
         result = _fr_result(run, model="m", variant_key="vk", test_case_id="c1", roles={"candidate": 0.1})
 
@@ -6595,7 +6599,7 @@ class TestAMisStampedDualScoreAxisIsNotAnObservation:
     surfaces disagreeing about what an axis is.
     """
 
-    def test_a_dim_that_names_no_reserved_axis_is_excluded(self, caplog):
+    def test_a_dim_that_names_no_reserved_axis_is_excluded(self, caplog: pytest.LogCaptureFixture) -> None:
         run, results = _hist_run(cases=["c1", "c2"], transcript=5, created_at="2026-07-01T00:00:00Z")
         results[1].transcript_score = RubricScore(
             dim="conversation.tone", score=1, scale="ordinal", axis="capability", judge_temperature=0.0
@@ -7705,7 +7709,7 @@ class TestAggregatorsDiscloseShortRuns:
     """
 
     @pytest.mark.parametrize(("status", "completeness"), SHORT_RUN_SHAPES, ids=SHORT_RUN_IDS)
-    def test_the_projection_carries_the_sentence_for_a_short_run(self, status, completeness):
+    def test_the_projection_carries_the_sentence_for_a_short_run(self, status, completeness) -> None:
         run, results = _short_run(status, completeness)
 
         projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
@@ -7714,7 +7718,7 @@ class TestAggregatorsDiscloseShortRuns:
         assert DEGRADED_RUN_CLAUSE in projection.completeness_disclosures[run.id]
 
     @pytest.mark.parametrize(("status", "completeness"), SHORT_RUN_SHAPES, ids=SHORT_RUN_IDS)
-    def test_the_pivot_discloses_the_short_runs_behind_its_cells(self, status, completeness):
+    def test_the_pivot_discloses_the_short_runs_behind_its_cells(self, status, completeness) -> None:
         """Every cell pools the shorter denominator, so the table states it once."""
         short, short_results = _short_run(status, completeness)
         whole, whole_results = _short_run("completed", COMPLETE, model="opus")
@@ -7739,7 +7743,7 @@ class TestAggregatorsDiscloseShortRuns:
         assert table.n_degraded_observations == 2, "the weight of the caveat is how many rows came from the short run"
 
     @pytest.mark.parametrize(("status", "completeness"), SHORT_RUN_SHAPES, ids=SHORT_RUN_IDS)
-    def test_the_frontier_marks_the_contestant_it_ranked_on_a_short_run(self, status, completeness):
+    def test_the_frontier_marks_the_contestant_it_ranked_on_a_short_run(self, status, completeness) -> None:
         """The verdict surface: the pass^k and the cost a pick is named on pooled it."""
         short, short_results = _short_run(status, completeness)
         whole, whole_results = _short_run("completed", COMPLETE, model="opus")
@@ -7754,7 +7758,7 @@ class TestAggregatorsDiscloseShortRuns:
         assert points["opus"].completeness_disclosures == {}, "a caveat must not spread to a contestant it is not about"
 
     @pytest.mark.parametrize(("status", "completeness"), SHORT_RUN_SHAPES, ids=SHORT_RUN_IDS)
-    def test_the_history_point_carries_the_sentence_beside_its_regression_verdict(self, status, completeness):
+    def test_the_history_point_carries_the_sentence_beside_its_regression_verdict(self, status, completeness) -> None:
         """A point IS one run, and it is handed a verdict against a complete neighbour."""
         whole, whole_results = _short_run("completed", COMPLETE, created_at="2026-08-01T00:00:00Z")
         short, short_results = _short_run(status, completeness, created_at="2026-08-02T00:00:00Z")
@@ -7774,7 +7778,7 @@ class TestAggregatorsDiscloseShortRuns:
         )
 
     @pytest.mark.parametrize("surface", ["pivot", "frontier", "history"])
-    def test_a_corpus_of_whole_runs_discloses_nothing_on_any_surface(self, surface):
+    def test_a_corpus_of_whole_runs_discloses_nothing_on_any_surface(self, surface) -> None:
         """The note is a warning; a surface that always shows one has trained the reader to skip it."""
         run, results = _short_run("completed", COMPLETE)
         projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
@@ -7797,7 +7801,7 @@ class TestAggregatorsDiscloseShortRuns:
         assert answer.n_degraded_observations == 0
 
     @pytest.mark.parametrize("surface", ["pivot", "frontier", "history"])
-    def test_a_run_with_no_completeness_record_is_not_warned_about(self, surface):
+    def test_a_run_with_no_completeness_record_is_not_warned_about(self, surface) -> None:
         """Absence of a record is not evidence of a shortfall — the rule `completeness_disclosure` sets."""
         run, results = _short_run("completed", None)
         projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)

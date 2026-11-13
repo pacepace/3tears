@@ -24,10 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-from packages.evals.tests.report_kit_support import KIT, chromium_unavailable, rendered
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import (
     figure_key_grammar,
     format_figure,
@@ -37,7 +34,10 @@ from threetears.evals.analysis.report.figure_keys import (
     render,
     resolve,
 )
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import ReportInput
+
+from packages.evals.tests.report_kit_support import KIT, chromium_unavailable, rendered
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_inputs"
 R5_PLAN = Path(__file__).resolve().parent / "fixtures" / "plan_charts" / "r5-reference.json"
@@ -410,7 +410,7 @@ class TestFilters:
             ("judge.model", "pct", "takes no filter"),
         ],
     )
-    def test_a_filter_that_does_not_suit_the_figure_is_refused(self, path, filters, why):
+    def test_a_filter_that_does_not_suit_the_figure_is_refused(self, path, filters, why) -> None:
         with pytest.raises(UnresolvableReference, match=why):
             _figure(path, filters)
 
@@ -424,7 +424,7 @@ class TestFilters:
             ("|pct", "has no path"),
         ],
     )
-    def test_a_malformed_key_is_refused(self, inner, why):
+    def test_a_malformed_key_is_refused(self, inner, why) -> None:
         with pytest.raises(UnresolvableReference, match=why):
             parse_key(inner)
 

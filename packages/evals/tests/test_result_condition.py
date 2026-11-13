@@ -14,15 +14,7 @@ import pathlib
 from typing import get_args
 
 import pytest
-
-from threetears.evals.schema.models import (
-    OUTCOME_DIM_ID,
-    TRANSCRIPT_DIM_ID,
-    CellTermination,
-    EvalResult,
-    GoalStateOutcome,
-    RubricScore,
-)
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.result_condition import (
     JudgingState,
     ResultOutcome,
@@ -31,7 +23,15 @@ from threetears.evals.kernel.result_condition import (
     resolve_result_condition,
 )
 from threetears.evals.kernel.usage_capture import resolve_result_usage
-from threetears.evals.kernel.identity import IDENTITY_VERSION
+from threetears.evals.schema.models import (
+    OUTCOME_DIM_ID,
+    TRANSCRIPT_DIM_ID,
+    CellTermination,
+    EvalResult,
+    GoalStateOutcome,
+    RubricScore,
+)
+
 from packages.evals.tests.factories import result_capture_defaults
 
 
@@ -183,7 +183,7 @@ def test_a_candidate_failure_counts_every_check_as_failed() -> None:
 
 
 @pytest.mark.parametrize("fault", [{"infra_error": "slot did not start"}, {"judge_error": "judge timed out"}])
-def test_a_harness_faulted_result_is_in_no_rate(fault):
+def test_a_harness_faulted_result_is_in_no_rate(fault) -> None:
     assert counted_goal_verdicts(_result(goal_state_outcomes=_CHECKS, **fault)) is None
 
 
@@ -474,7 +474,7 @@ class TestTheOutputCapEndedATurn:
         assert candidate_failure_cause(result) == "model_failed"
 
     @pytest.mark.parametrize("covariates", [{}, {"truncated_rounds": 0.0}])
-    def test_no_count_or_a_zero_count_is_not_a_failure(self, covariates):
+    def test_no_count_or_a_zero_count_is_not_a_failure(self, covariates) -> None:
         assert candidate_failure_cause(_result(covariates=covariates)) is None
         assert resolve_result_condition(_result(covariates=covariates)).scoring is ResultOutcome.OK
 
@@ -508,7 +508,7 @@ class TestTheTurnBudgetEndedATurn:
         assert candidate_failure_cause(result) == "turn_budget"
 
     @pytest.mark.parametrize("covariates", [{}, {"turns_ended_by_budget": 0.0}])
-    def test_no_count_or_a_zero_count_is_not_a_failure(self, covariates):
+    def test_no_count_or_a_zero_count_is_not_a_failure(self, covariates) -> None:
         assert candidate_failure_cause(_result(covariates=covariates)) is None
         assert resolve_result_condition(_result(covariates=covariates)).scoring is ResultOutcome.OK
 

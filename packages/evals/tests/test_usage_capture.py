@@ -2,11 +2,8 @@
 
 from types import SimpleNamespace
 
-from threetears.evals.schema.external_spend import ExternalSpend
 import pytest
 from pydantic import ValidationError
-
-from threetears.evals.schema.models import AsyncDelivery, AsyncExternalSpend, RoleUsage
 from threetears.evals.kernel.spend import ExternalRateTable
 from threetears.evals.kernel.usage_capture import (
     RoleUsageLedger,
@@ -17,9 +14,10 @@ from threetears.evals.kernel.usage_capture import (
     program_cost,
     resolve_result_usage,
 )
-from packages.evals.tests.factories import make_eval_result
-from packages.evals.tests.factories import result_capture_defaults
+from threetears.evals.schema.external_spend import ExternalSpend
+from threetears.evals.schema.models import AsyncDelivery, AsyncExternalSpend, RoleUsage
 
+from packages.evals.tests.factories import make_eval_result, result_capture_defaults
 
 #: The price source the fake completions below report, as a host's client would name its own.
 _SOURCE = "provider:reported"
@@ -250,7 +248,7 @@ def test_work_that_reports_no_spend_contributes_no_row() -> None:
         {"external_spend": [AsyncExternalSpend(provider="search_api", calls=1)]},
     ],
 )
-def test_a_substituted_delivery_cannot_carry_spend(spend):
+def test_a_substituted_delivery_cannot_carry_spend(spend) -> None:
     """A replayed or seeded payload spent nothing, so no figure of spend can ride in on one."""
     with pytest.raises(ValidationError, match="spent nothing"):
         AsyncDelivery(tool="scout_ahead", status="delivered", substituted=True, **spend)
@@ -630,8 +628,8 @@ def test_the_program_cost_still_reports_what_the_eval_really_spent() -> None:
 
 def test_count_substituted_deliveries_of_an_unobserved_lifecycle_is_zero() -> None:
     """A result whose kind reports no delivery stream had no delivery the harness could substitute."""
-    from threetears.evals.schema.models import EvalResult
     from threetears.evals.kernel.usage_capture import count_substituted_deliveries
+    from threetears.evals.schema.models import EvalResult
 
     base = {
         **result_capture_defaults(),

@@ -20,13 +20,12 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.models import LlmPurpose
-
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.eval_loop import run_eval_loop, run_eval_loop_multi_row
 from threetears.scrape.llm_retry import StructuredCallExhaustedError, StructuredCallTimeoutError
-from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.config import DefaultCoreConfig
 
 from packages.scrape.tests.structured_output_fakes import fake_structured_model
 
@@ -1160,7 +1159,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         recipe_collection, extraction_collection = _collections()
         single_notice_html = '<html><body><div class="notice"><p>Acme Corp</p></div></body></html>'
 
-        async def hanging_judge(document, extracted, schema, *, api_key, judge_model_id):
+        async def hanging_judge(document, extracted, schema, *, api_key, judge_model_id) -> None:
             await asyncio.sleep(1)
             raise AssertionError("should have been cancelled by the outer deadline")
 
@@ -1298,7 +1297,7 @@ class TestRunEvalLoopMultiRowVisionRouting:
             "</div></body></html>"
         )
 
-        async def hanging_vision(images, schema, *, api_key):
+        async def hanging_vision(images, schema, *, api_key) -> None:
             await asyncio.sleep(1)
             raise AssertionError("should have been cancelled by the outer deadline")
 
@@ -1548,7 +1547,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         )
         await recipe_collection.save_entity(recipe)
 
-        async def hanging_extraction(images, schema, *, api_key):
+        async def hanging_extraction(images, schema, *, api_key) -> None:
             await asyncio.sleep(1)
             raise AssertionError("should have been cancelled by the outer deadline")
 
@@ -1582,7 +1581,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         recipe_collection, extraction_collection = _collections()
         records = [{"employer": "Acme Corp", "affected_count": 42}]
 
-        async def hanging_judge(images, records, schema, *, api_key):
+        async def hanging_judge(images, records, schema, *, api_key) -> None:
             await asyncio.sleep(1)
             raise AssertionError("should have been cancelled by the outer deadline")
 
@@ -1792,7 +1791,9 @@ class TestJudgeMultiRowExtraction:
 
 
 class TestRegexValidationRunsOffTheEventLoop:
-    async def test_a_backtracking_candidate_does_not_stall_the_event_loop(self, monkeypatch):
+    async def test_a_backtracking_candidate_does_not_stall_the_event_loop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A regex candidate may take up to REGEX_TIMEOUT_SECONDS to be rejected. The eval loop
         validates off the event loop, so other tasks keep running meanwhile: a heartbeat every 20ms
         must never see a gap anywhere near the candidate's 0.5s."""
@@ -2049,7 +2050,7 @@ class TestACancelledPollIsNotADeadlineFailure:
 
         recipe_collection, extraction_collection = _collections()
 
-        async def cancelled_extract(text, schema, *, model_id, api_key):
+        async def cancelled_extract(text, schema, *, model_id, api_key) -> None:
             raise asyncio.CancelledError()
 
         with (

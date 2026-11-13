@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import pytest
-
-from packages.evals.tests.scripted_table import DONE, FakeCellSink, Raw, ScriptedTable, actor
-from threetears.evals.schema.models import ROUND_DONE, ConversationSpec, ConversationStopCause
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.run import drive_conversation
 from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
+from threetears.evals.schema.models import ROUND_DONE, ConversationSpec, ConversationStopCause
+
+from packages.evals.tests.scripted_table import DONE, FakeCellSink, Raw, ScriptedTable, actor
 
 
 class _Kind:
@@ -244,7 +244,7 @@ async def _raising(*_args) -> None:
         ("candidate", ConversationStopCause.CANDIDATE_ERROR),
     ],
 )
-async def test_the_side_that_failed_is_recorded_and_its_exception_propagates(side, cause):
+async def test_the_side_that_failed_is_recorded_and_its_exception_propagates(side, cause) -> None:
     driver = _driver(actors=[actor("a")], max_turns=2)
     table = ScriptedTable(lines={"a": [Raw("not json") if side == "simulator" else "a1"]})
     kind = _Kind()

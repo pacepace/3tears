@@ -11,11 +11,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-
 import pytest
-
-from threetears.evals.kernel.result_reading import ReadingsRead, ResultReading
 from threetears.evals.analysis import measurement_windows
+from threetears.evals.analysis.lenses.comparison_sets import BADGE_MEASUREMENT_WINDOWS_DISJOINT, compute_comparison_sets
 from threetears.evals.analysis.measurement_windows import (
     DISJOINT_WINDOWS_CLAUSE,
     MAX_INLINE_MEASUREMENT_WINDOWS,
@@ -24,16 +22,16 @@ from threetears.evals.analysis.measurement_windows import (
     measurement_window,
     measurement_window_disclosure,
 )
-from threetears.evals.analysis.lenses.comparison_sets import BADGE_MEASUREMENT_WINDOWS_DISJOINT, compute_comparison_sets
 from threetears.evals.analysis.reads import comparison_sets
+from threetears.evals.kernel.identity import IDENTITY_VERSION
+from threetears.evals.kernel.result_reading import ReadingsRead, ResultReading
+from threetears.evals.run.reads import list_runs
 from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.schema.models import EvalResult, EvalRun
-from threetears.evals.run.reads import list_runs
-from threetears.evals.kernel.identity import IDENTITY_VERSION
+
 from packages.evals.tests.factories import as_listed
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-
 
 #: The host whose vocabulary every grouping here reads: the toy host. Nothing in this module is
 #: about any particular host's levers -- every run carries the same subject and an empty payload --
@@ -602,7 +600,7 @@ def test_a_naive_stamp_beside_an_aware_one_yields_no_duration_rather_than_a_wron
         ),
     ],
 )
-def test_an_uncomputable_gap_says_why_it_could_not_be_computed(first, second, why):
+def test_an_uncomputable_gap_says_why_it_could_not_be_computed(first, second, why) -> None:
     """The three failures read alike: the reason each stamp pair yielded no duration was swallowed."""
     windows = [
         _window("earlier", *first),
@@ -728,7 +726,7 @@ def test_a_run_set_too_small_to_pair_classifies_as_neither() -> None:
         (None, measurement_windows.UNCOMPUTABLE_GAP_CLAUSE),
     ],
 )
-def test_a_gap_renders_as_two_significant_units(seconds, rendered):
+def test_a_gap_renders_as_two_significant_units(seconds, rendered) -> None:
     """Compact and unit-word-free, so a list of pairs reads as numbers to weigh."""
     assert measurement_windows.format_window_gap(seconds) == rendered
 

@@ -8,17 +8,16 @@ compared against a literal, so a change to the method fails loudly instead of re
 from __future__ import annotations
 
 import pytest
-
 from threetears.evals.analysis import stats
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal, UnresolvableReference
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.references import (
     require_cell,
     resolve_reading,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, t_critical_two_sided
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.surface import (
     CellFacts,
     DecisionSurface,
@@ -26,7 +25,6 @@ from threetears.evals.kernel.surface import (
     JudgedReading,
     MeasureFacts,
 )
-
 
 _REF = cell_ref("v1", "rig")
 
@@ -228,7 +226,7 @@ class TestOneLevelComputesAndLabelsEveryInterval:
     kept its own copy of either would leave one of them behind, which is the mislabelled interval.
     """
 
-    def test_a_judged_interval_and_its_caption_follow_the_one_constant(self, monkeypatch):
+    def test_a_judged_interval_and_its_caption_follow_the_one_constant(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(stats, "INTERVAL_LEVEL", 0.8)
         reading = resolve_reading(_surface(), _REF, "reply.grounding", "judged")
 
@@ -236,7 +234,7 @@ class TestOneLevelComputesAndLabelsEveryInterval:
         assert (reading.ci_low, reading.ci_high) == (pytest.approx(4.0 - half), pytest.approx(4.0 + half))
         assert "; 80% CI [" in reading.dispersion
 
-    def test_a_measure_is_captioned_at_the_one_constant(self, monkeypatch):
+    def test_a_measure_is_captioned_at_the_one_constant(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(stats, "INTERVAL_LEVEL", 0.8)
         assert "; 80% CI [" in resolve_reading(_surface(), _REF, "total_ms").dispersion
 

@@ -5,15 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
-
 import threetears.evals.kernel.dsl as _dsl
 import threetears.evals.schema.goal_grammar as _grammar
-from threetears.evals.schema import Firings, Precondition, WorldEvent
+from pydantic import ValidationError
 from threetears.evals.kernel.dsl import NOT_ESTABLISHED, Missing, evaluate, evaluate_with_detail
-from threetears.evals.schema.goal_grammar import DSLError, extract_paths, parse
 from threetears.evals.kernel.host import Triggered, WorldDimension, WorldRegistry
+from threetears.evals.schema import Firings, Precondition, WorldEvent
 from threetears.evals.schema.call_ledger import CallLedger
+from threetears.evals.schema.goal_grammar import DSLError, extract_paths, parse
 
 
 def _state_with(**dimensions: dict[str, Any]) -> dict[str, Any]:
@@ -115,7 +114,7 @@ _SHOP = {"shelf": {"stock": 3}, "till": {"float": 20}}
     [(False, "state.stock", "state.float"), (True, "state.shelf.stock", "state.till.float")],
     ids=["flat names", "composed names"],
 )
-def test_a_path_names_the_dimension_however_the_host_names_it(composed, stock, till_float):
+def test_a_path_names_the_dimension_however_the_host_names_it(composed, stock, till_float) -> None:
     """``state.<dimension>`` reads the value the end state holds under that dimension's name."""
     world = _shop_world(composed=composed)
     end_state = world.named(_SHOP)
@@ -147,7 +146,7 @@ def test_a_path_inside_a_flat_dimension_s_value_resolves_below_it() -> None:
 
 
 @pytest.mark.parametrize("composed", [False, True], ids=["flat names", "composed names"])
-def test_a_dimension_the_world_does_not_declare_or_the_end_state_does_not_hold_is_missing(composed):
+def test_a_dimension_the_world_does_not_declare_or_the_end_state_does_not_hold_is_missing(composed) -> None:
     """Undeclared or absent — each is Missing, never another dimension's value."""
     world = _shop_world(composed=composed)
     stock = "state.shelf.stock" if composed else "state.stock"
@@ -183,7 +182,7 @@ def test_a_check_reading_only_calls_and_the_case_needs_no_world() -> None:
 
 
 @pytest.mark.parametrize("expression", ["length(state) == 0", 'state["shop"].length == 1', "not state"])
-def test_state_alone_is_not_a_value(expression):
+def test_state_alone_is_not_a_value(expression) -> None:
     """``state`` names no container of every dimension: a check reads one by name, as the gate resolves it."""
     with pytest.raises(DSLError, match="'state' is not a value"):
         evaluate(expression, **_state_with(shop={"cart": []}))
@@ -223,7 +222,7 @@ class TestNamingASeedShapedWorld:
         ],
         ids=["undeclared", "misplaced", "malformed"],
     )
-    def test_a_value_no_read_could_return_is_refused(self, namespaces, refusal):
+    def test_a_value_no_read_could_return_is_refused(self, namespaces, refusal) -> None:
         with pytest.raises(ValueError, match=refusal):
             _shop_world(composed=False).named(namespaces)
 
@@ -301,7 +300,7 @@ def test_comparison_type_mismatch_raises_rather_than_failing_the_check() -> None
         "any(it == 1 for it in state.shop.count)",
     ],
 )
-def test_a_builtin_over_a_value_of_the_wrong_type_raises(expression):
+def test_a_builtin_over_a_value_of_the_wrong_type_raises(expression) -> None:
     """contains / intersects / any over an int: the world or the template is wrong, not the candidate."""
     with pytest.raises(DSLError):
         evaluate(expression, **_state_with(shop={"count": 3}))
@@ -358,7 +357,7 @@ def test_a_case_parameter_is_looked_for_as_one_value() -> None:
         ('variation.categories[0] == "kitchen"', r"an index into variation.categories"),
     ],
 )
-def test_a_case_parameter_read_as_a_collection_is_refused_where_it_is_parsed(expression, said):
+def test_a_case_parameter_read_as_a_collection_is_refused_where_it_is_parsed(expression, said) -> None:
     """A case stores every parameter as one string (#665): read as a collection it never meant what it says.
 
     ``intersects`` took the string as ONE element, so a parameter spelling several categories never
@@ -528,8 +527,9 @@ def test_not_established_names_a_missing_variation_and_an_index_past_the_end() -
 
 def test_a_negated_presumption_over_a_value_the_seeded_world_lacks_does_not_hold() -> None:
     """A precondition goes through the same evaluator: an unknown is never a presumption the world satisfied."""
-    from packages.evals.tests.factories import make_template, make_test_case
     from threetears.evals.run import assert_preconditions
+
+    from packages.evals.tests.factories import make_template, make_test_case
 
     template = make_template(
         preconditions=[Precondition(expression='not state.chat.status == "open"', presumes="the chat is not open")]

@@ -7,14 +7,12 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-
 from threetears.agent.tools.builtin.analyze_media import (
     AnalyzerConfig,
     create_analyze_media_tool,
 )
 from threetears.agent.tools.protocols import MediaInfo
 from threetears.interfaces.media import MediaSizeLimitExceeded
-
 
 # ---------------------------------------------------------------------------
 # Fake protocol implementations
@@ -362,7 +360,7 @@ class TestResponseSuffix:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("markdown", "asked"), [(None, "markdown"), (False, "plain sentences")])
-    async def test_markdown_is_the_default_ask_and_a_host_can_turn_it_off(self, markdown, asked):
+    async def test_markdown_is_the_default_ask_and_a_host_can_turn_it_off(self, markdown, asked) -> None:
         storage = FakeMediaStorage()
         vision = FakeVisionProvider("result")
         mid = uuid4()
@@ -575,7 +573,7 @@ class TestDocumentSizeLimit:
         assert storage.download_limits == [MAX_DOCUMENT_BYTES]
 
     @pytest.mark.asyncio
-    async def test_a_read_that_passes_the_limit_answers_too_large(self, monkeypatch):
+    async def test_a_read_that_passes_the_limit_answers_too_large(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from threetears.agent.tools.builtin import analyze_media
 
         monkeypatch.setattr(analyze_media, "MAX_DOCUMENT_BYTES", 8)
@@ -596,7 +594,7 @@ class TestDocumentNotFullyRead:
     """a document whose parser could not read every part says so above the answer."""
 
     @pytest.mark.asyncio
-    async def test_a_part_the_parser_could_not_read_is_named(self, monkeypatch):
+    async def test_a_part_the_parser_could_not_read_is_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import docx
         import docx.document
 
@@ -665,7 +663,7 @@ class TestTranscriptionSizeLimit:
         assert storage.download_limits == [MAX_TRANSCRIPTION_BYTES]
 
     @pytest.mark.asyncio
-    async def test_a_read_that_passes_the_limit_answers_too_large(self, monkeypatch):
+    async def test_a_read_that_passes_the_limit_answers_too_large(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from threetears.agent.tools.builtin import analyze_media
 
         monkeypatch.setattr(analyze_media, "MAX_TRANSCRIPTION_BYTES", 8)
@@ -719,7 +717,9 @@ class TestVisionImageSizeLimit:
         assert storage.download_limits == [MAX_VISION_IMAGE_BYTES]
 
     @pytest.mark.asyncio
-    async def test_one_image_over_the_limit_refuses_the_analysis_rather_than_dropping_it(self, monkeypatch):
+    async def test_one_image_over_the_limit_refuses_the_analysis_rather_than_dropping_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from threetears.agent.tools.builtin import analyze_media
 
         small = _small_jpeg()

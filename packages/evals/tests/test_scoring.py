@@ -32,22 +32,14 @@ import dataclasses
 from typing import Any
 
 import pytest
-
 from threetears.evals.analysis import assemble_context_bundle, run_summary
+from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS
-from threetears.evals.schema.models import (
-    TRANSCRIPT_DIM_ID,
-    AsyncDelivery,
-    EvalResult,
-    LatencyMetrics,
-    RoleUsage,
-    RubricScore,
-)
 from threetears.evals.kernel.result_condition import ResultOutcome
 from threetears.evals.kernel.scoring import (
-    PassHatKCell,
     NO_PASS_CRITERION_REASON,
     CellSummary,
+    PassHatKCell,
     compute_async_delivery_summary,
     compute_composite_summary,
     compute_cost_summary,
@@ -64,12 +56,24 @@ from threetears.evals.kernel.scoring import (
     result_composite,
     summarize_completeness,
 )
-from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity
-from packages.evals.tests.factories import make_eval_result, make_eval_run, make_scored_result, make_campaign
+from threetears.evals.schema.models import (
+    TRANSCRIPT_DIM_ID,
+    AsyncDelivery,
+    EvalResult,
+    LatencyMetrics,
+    RoleUsage,
+    RubricScore,
+)
+
+from packages.evals.tests.factories import (
+    make_campaign,
+    make_eval_result,
+    make_eval_run,
+    make_scored_result,
+    result_capture_defaults,
+)
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.factories import result_capture_defaults
-
 
 # =============================================================================
 # percentile — the shared primitive, and the scale its neighbour does not share
@@ -82,7 +86,7 @@ class TestPercentileRefusesTheOtherScale:
     """The failure this guard exists for returns a number, which is why it must raise."""
 
     @pytest.mark.parametrize("pct", [0.05, 0.5, 0.95, 0.99, 1.0])
-    def test_a_zero_to_one_quantile_is_refused_by_name(self, pct):
+    def test_a_zero_to_one_quantile_is_refused_by_name(self, pct) -> None:
         with pytest.raises(ValueError, match=r"\[0, 1\] scale"):
             percentile(_SORTED, pct)
 
@@ -110,12 +114,12 @@ class TestPercentileRefusesTheOtherScale:
         assert "bundle" in str(excinfo.value), "the message must name where the [0, 1] one lives"
 
     @pytest.mark.parametrize("pct", [-1.0, 100.5, 1000.0])
-    def test_a_quantile_outside_the_scale_entirely_is_refused(self, pct):
+    def test_a_quantile_outside_the_scale_entirely_is_refused(self, pct) -> None:
         with pytest.raises(ValueError, match=r"\[0, 100\]"):
             percentile(_SORTED, pct)
 
     @pytest.mark.parametrize("pct", [0.0, 1.5, 50.0, 95.0, 100.0])
-    def test_the_legitimate_boundaries_are_not_swept_up_by_the_guard(self, pct):
+    def test_the_legitimate_boundaries_are_not_swept_up_by_the_guard(self, pct) -> None:
         """The refused band is ``(0, 1]``, so both ends of the real scale still answer.
 
         0.0 and 100.0 are the scale's own endpoints and a guard that swallowed either would be
@@ -552,7 +556,7 @@ def test_compute_pass_hat_k_all_infra_run_reported_with_zero_measured_cases() ->
 
 
 @pytest.mark.parametrize("judge_model", [None, "judge-model"])
-def test_compute_pass_hat_k_empty_score_lists_with_no_error_never_pass(judge_model):
+def test_compute_pass_hat_k_empty_score_lists_with_no_error_never_pass(judge_model) -> None:
     """A result with no scoreable outcomes cannot pass: unmeasured with no judge (#688), a fail under one.
 
     With no goal-state check and no judge there is nothing for pass^k to conjoin, so the attempt is left out

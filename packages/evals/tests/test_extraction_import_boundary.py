@@ -253,7 +253,7 @@ def _optional_roots() -> list[str]:
 
 
 @pytest.mark.parametrize("root", _optional_roots())
-def test_root_extras_lists_every_module_its_root_names_past_the_base_install(root):
+def test_root_extras_lists_every_module_its_root_names_past_the_base_install(root) -> None:
     """The modules a root's entry lists are exactly the ones its source names that the base install lacks, sorted:
     a gate that checks them checks everything the root may fail on, and nothing it does not import."""
     from threetears.evals import ROOT_EXTRAS
@@ -363,7 +363,7 @@ def test_on_the_base_install_exactly_the_listed_roots_fail_to_import() -> None:
 
 
 @pytest.mark.parametrize("extra", sorted(IMPORT_ROOTS_BY_EXTRA))
-def test_each_extra_alone_missing_fails_exactly_the_roots_listed_under_it(extra):
+def test_each_extra_alone_missing_fails_exactly_the_roots_listed_under_it(extra) -> None:
     """With one extra's dependencies unimportable and the rest installed, the roots that fail are the ones the map lists
     under that extra: each listed root needs the extra it is listed under, and no other."""
     from threetears.evals import ROOT_EXTRAS
@@ -389,7 +389,7 @@ def _listed_modules() -> list[tuple[str, str]]:
 
 
 @pytest.mark.parametrize(("root", "module"), _listed_modules())
-def test_each_module_root_extras_lists_is_one_its_root_cannot_import_without(root, module):
+def test_each_module_root_extras_lists_is_one_its_root_cannot_import_without(root, module) -> None:
     """With any one listed module unimportable and everything else installed, its root fails to import: every module
     a gate is told to check is one the root needs at import, not only somewhere in a call."""
     proc = subprocess.run(
@@ -462,7 +462,7 @@ def test_every_module_the_engine_names_is_declared() -> None:
         ("import fastapi\n", False),
     ],
 )
-def test_the_rule_admits_what_is_declared_and_refuses_the_rest(tmp_path, source, allowed):
+def test_the_rule_admits_what_is_declared_and_refuses_the_rest(tmp_path: Path, source, allowed) -> None:
     """Both directions on one fixture, so an inverted rule cannot pass."""
     planted = tmp_path / "threetears" / "evals" / "planted.py"
     planted.parent.mkdir(parents=True)
@@ -483,7 +483,7 @@ def test_the_rule_admits_what_is_declared_and_refuses_the_rest(tmp_path, source,
         ("threetears.evals", False),
     ],
 )
-def test_each_extra_is_admitted_only_inside_its_own_subpackage(importer, allowed):
+def test_each_extra_is_admitted_only_inside_its_own_subpackage(importer, allowed) -> None:
     """``fastmcp`` is the ``[fastmcp]`` extra's: its transport may name it; the core and the other extra may not."""
     assert _allowed("fastmcp.tools", importer=importer) is allowed
 
@@ -493,7 +493,7 @@ def test_an_extras_subpackage_may_not_name_an_undeclared_dependency() -> None:
     assert _allowed("threetears.models", importer="threetears.evals.transports.fastmcp") is False
 
 
-def test_a_relative_import_is_judged_where_it_lands(tmp_path):
+def test_a_relative_import_is_judged_where_it_lands(tmp_path: Path) -> None:
     """A relative import walking out of the package is a crossing, not an import that names nothing."""
     planted = tmp_path / "threetears" / "evals" / "planted.py"
     planted.parent.mkdir(parents=True)

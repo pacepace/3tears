@@ -27,11 +27,20 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-
+from threetears.evals.actions import Caller, eval_catalogue, standard_tools
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.kernel.identity import resolve_variant_identity
+from threetears.evals.kernel.provider import withhold_failure_detail
+from threetears.evals.ops import OpsHost
+from threetears.evals.run import regrade
+from threetears.evals.run.judge import CANNOT_TELL, JUDGE_REQUEST_SETTINGS
+from threetears.evals.run.judge_service import JudgeService, builtin_judge_config_ids
+from threetears.evals.run.launch import build_judge_service
+from threetears.evals.run.lifecycle import rejudge_result
+from threetears.evals.run.runner import RunnerOptions, run_one_result
 from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
@@ -39,9 +48,9 @@ from threetears.evals.schema.models import (
     EvalTemplate,
     EvalTestCase,
     EvalTrace,
+    JudgeConfig,
     JudgedArtifact,
     JudgeEvidence,
-    JudgeConfig,
     RubricDim,
     builtin_judge_config_id,
     eval_trace_doc_id,
@@ -49,16 +58,7 @@ from threetears.evals.schema.models import (
     judge_config_of,
     scored_dim_ids,
 )
-from threetears.evals.kernel.provider import withhold_failure_detail
-from threetears.evals.run.judge import CANNOT_TELL, JUDGE_REQUEST_SETTINGS
-from threetears.evals.run.judge_service import JudgeService, builtin_judge_config_ids
-from threetears.evals.actions import Caller, eval_catalogue, standard_tools
-from threetears.evals.ops import OpsHost
-from threetears.evals.run import regrade
-from threetears.evals.run.lifecycle import rejudge_result
-from threetears.evals.run.launch import build_judge_service
-from threetears.evals.run.runner import RunnerOptions, run_one_result
-from threetears.evals.kernel.identity import resolve_variant_identity
+
 from packages.evals.tests.factories import declared, make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.off_loop import off_loop
@@ -484,7 +484,7 @@ def _trace(**fields: Any) -> EvalTrace:
     ],
     ids=["evidence-without-its-declaration", "a-declaration-without-evidence", "evidence-for-an-unjudged-kind"],
 )
-def test_a_trace_refuses_evidence_a_rejudge_could_not_resend(fields):
+def test_a_trace_refuses_evidence_a_rejudge_could_not_resend(fields) -> None:
     with pytest.raises(ValueError, match="judge_evidence and judged_artifact|unjudged kind"):
         _trace(**fields)
 

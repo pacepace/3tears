@@ -14,7 +14,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
+from threetears.evals.kernel.provider import INCOMPLETE_STOP_REASONS, withhold_failure_detail
+from threetears.evals.run.judge import CANNOT_TELL, judge_reply_format, run_judge_llm
+from threetears.evals.run.judge_service import JudgeContext, JudgeOutcome, JudgeService, fold_judge_outcomes
 from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
     OUTCOME_DIM_ID,
@@ -27,9 +29,7 @@ from threetears.evals.schema.models import (
     is_builtin_judge_config_id,
     judge_config_of,
 )
-from threetears.evals.kernel.provider import INCOMPLETE_STOP_REASONS, withhold_failure_detail
-from threetears.evals.run.judge import CANNOT_TELL, judge_reply_format, run_judge_llm
-from threetears.evals.run.judge_service import JudgeContext, JudgeOutcome, JudgeService, fold_judge_outcomes
+
 from packages.evals.tests.llm_client_fakes import ReleasableClientMixin
 
 # =============================================================================
@@ -162,7 +162,7 @@ async def test_score_dimension_returns_single_rubric_score() -> None:
 
 
 @pytest.mark.parametrize("off_scale", [9, 0, -1, 3.5, "9", "0", "4.0", " 4", "four", None, True])
-async def test_an_off_scale_score_is_refused_not_clamped(off_scale):
+async def test_an_off_scale_score_is_refused_not_clamped(off_scale) -> None:
     """A score that is not one of "1" to "5", nor an integer on 1-5, fails the dim through the parse-failure path.
 
     Clamping 9 to 5, or rounding 3.5 up to 4, would store a score the judge never gave.
@@ -180,7 +180,7 @@ async def test_an_off_scale_score_is_refused_not_clamped(off_scale):
 
 
 @pytest.mark.parametrize("on_scale", ["1", "3", "5", 1, 3, 5, 4.0])
-async def test_an_on_scale_score_is_stored_as_given(on_scale):
+async def test_an_on_scale_score_is_stored_as_given(on_scale) -> None:
     """Every score on the scale lands unchanged, as the string the schema asks for or a bare integer — the positive
     case beside the refusal."""
     service = JudgeService(
@@ -200,7 +200,7 @@ async def test_an_on_scale_score_is_stored_as_given(on_scale):
 
 
 @pytest.mark.parametrize(("answer", "scored"), [(CANNOT_TELL, False), (4, True)])
-async def test_a_cannot_tell_answer_leaves_the_dim_unscored_and_a_score_scores(answer, scored):
+async def test_a_cannot_tell_answer_leaves_the_dim_unscored_and_a_score_scores(answer, scored) -> None:
     """One fixture, both answers: the judge's reply decides, not the harness."""
     client = _CapturingClient(score=answer, reasoning="the transcript never reaches the moment this dim is about")
     service = JudgeService(client_factory=lambda m, t: client, failure_describer=withhold_failure_detail)
@@ -373,7 +373,7 @@ def test_no_judge_context_is_built_for_an_unjudged_kind() -> None:
     ],
     ids=["empty-case-material", "empty-artifact", "no-artifact", "no-case-material", "an-undeclared-field"],
 )
-def test_judge_evidence_refuses_a_judge_nothing_to_read(fields):
+def test_judge_evidence_refuses_a_judge_nothing_to_read(fields) -> None:
     """Both texts a judge reads are required and non-empty; nothing else rides along."""
     with pytest.raises(ValueError):
         JudgeEvidence(**fields)
@@ -494,7 +494,9 @@ async def test_judge_failure_returns_error_and_no_score() -> None:
 
 @pytest.mark.parametrize("reasoning", [None, {"why": "it hedges"}, ["it", "hedges"], 3])
 @pytest.mark.parametrize("answer", [4, CANNOT_TELL], ids=["scored", "cannot-tell"])
-async def test_a_reply_whose_reasoning_is_not_a_string_is_a_parse_failure_that_keeps_its_spend(reasoning, answer):
+async def test_a_reply_whose_reasoning_is_not_a_string_is_a_parse_failure_that_keeps_its_spend(
+    reasoning, answer
+) -> None:
     """A malformed ``reasoning`` is the judge breaking its protocol, refused where every other break is.
 
     Refused later it did worse: a scored reply raised building the score, after the service had
@@ -742,7 +744,7 @@ class _StopReasonClient:
         ("max_tokens", 1, "cut short by the provider"),
     ],
 )
-async def test_a_finished_reply_is_retried_and_a_truncated_one_is_not(stop_reason, calls, names):
+async def test_a_finished_reply_is_retried_and_a_truncated_one_is_not(stop_reason, calls, names) -> None:
     client = _StopReasonClient(stop_reason=stop_reason)
     service = JudgeService(client_factory=lambda m, t: client, failure_describer=withhold_failure_detail)
     outcome = await service.score_dimension(
@@ -792,7 +794,7 @@ async def test_a_truncated_reply_is_refused_even_when_its_content_parses() -> No
 
 
 @pytest.mark.parametrize("stop_reason", sorted(INCOMPLETE_STOP_REASONS))
-async def test_every_cut_short_reason_the_port_names_is_refused_after_one_call(stop_reason):
+async def test_every_cut_short_reason_the_port_names_is_refused_after_one_call(stop_reason) -> None:
     """The refusal reads the port's vocabulary, not one member of it.
 
     A content filter refuses the same request the same way, and a reply with no choices

@@ -5,10 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from threetears.evals.kernel.host import schema_violations
 from threetears.evals.kernel.host.world_schema import UnsupportedSchemaError
-
 
 _JOB = {
     "type": "object",
@@ -53,7 +51,7 @@ def test_an_implausible_value_of_the_right_type_passes() -> None:
         ),
     ],
 )
-def test_each_violation_is_named_at_its_path(schema, value, says):
+def test_each_violation_is_named_at_its_path(schema, value, says) -> None:
     found = schema_violations(schema, value, at="q")
     assert any(says in sentence for sentence in found), found
 

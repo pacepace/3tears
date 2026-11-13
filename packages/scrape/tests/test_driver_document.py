@@ -27,10 +27,8 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from packages.scrape.tests.driver_log_helpers import driver_warnings
 from threetears.agent.tools.document import DocumentParseError, DocumentResult, DocumentSection, OcrConfig
 from threetears.core.http_client import TracedHttpClient
-
 from threetears.scrape.driver import RenderedPage
 from threetears.scrape.drivers.document import (
     OCR_PAGE_IMAGE_CLASS,
@@ -40,6 +38,8 @@ from threetears.scrape.drivers.document import (
     document_text_to_html,
     parse_document_bytes_to_html,
 )
+
+from packages.scrape.tests.driver_log_helpers import driver_warnings
 
 # ===========================================================================
 # document_text_to_html
@@ -705,7 +705,9 @@ class TestDocumentDriverAnnouncesADroppedSolve:
     this driver's own `if session_state:` block deletable with the suite green.
     """
 
-    async def test_render_warns_when_it_drops_a_solve(self, caplog, monkeypatch):
+    async def test_render_warns_when_it_drops_a_solve(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, headers={"content-type": "text/plain"}, content=b"fake-bytes")
 
@@ -726,7 +728,9 @@ class TestDocumentDriverAnnouncesADroppedSolve:
         mine = [r for r in driver_warnings(caplog, "document") if "cannot apply it" in r.getMessage()]
         assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
 
-    async def test_an_ordinary_render_stays_quiet(self, caplog, monkeypatch):
+    async def test_an_ordinary_render_stays_quiet(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, headers={"content-type": "text/plain"}, content=b"fake-bytes")
 
@@ -745,7 +749,7 @@ class TestDocumentDriverAnnouncesADroppedSolve:
         assert not [r for r in driver_warnings(caplog, "document") if "cannot apply it" in r.getMessage()]
 
 
-async def test_the_filter_does_not_confuse_a_wrapper_for_its_inner_driver(caplog) -> None:
+async def test_the_filter_does_not_confuse_a_wrapper_for_its_inner_driver(caplog: pytest.LogCaptureFixture) -> None:
     """Drives the shared filter, so loosening it fails HERE rather than silently everywhere.
 
     `MultiDocumentDriver` logs under `...drivers.multi_document`, which `endswith("document")`

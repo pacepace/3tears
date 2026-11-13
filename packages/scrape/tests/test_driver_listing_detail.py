@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from packages.scrape.tests.driver_log_helpers import driver_warnings
-
 from threetears.scrape.drivers.listing_detail import ListingDetailDriver, ListingDetailDriverError
+
+from packages.scrape.tests.driver_log_helpers import driver_warnings
 
 _LISTING_FIELD_COLUMNS = {0: "employer", 1: "city", 2: "notice_date"}
 _DETAIL_LINK_COLUMN = 0
@@ -453,7 +453,7 @@ class TestListingDetailDriver:
         with pytest.raises(ListingDetailDriverError):
             await driver.render("https://example.gov/warn")
 
-    async def test_default_pace_delay_is_nonzero(self, monkeypatch):
+    async def test_default_pace_delay_is_nonzero(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """This module's own docstring, 'Politeness, on by default' -- unlike
         MultiDocumentDriver, this brand-new driver defaults to NOT hammering an
         unprotected government server.
@@ -504,7 +504,7 @@ class TestListingDetailAnnouncesADroppedSolve:
             return httpx.Response(200, content=_detail_html(notice_date="Jun 2, 2026", affected_count="42").encode())
         return httpx.Response(200, content=listing.encode())
 
-    async def test_render_warns_when_it_drops_a_solve(self, caplog):
+    async def test_render_warns_when_it_drops_a_solve(self, caplog: pytest.LogCaptureFixture) -> None:
         driver = _driver(self._handler)
 
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.listing_detail"):
@@ -515,7 +515,7 @@ class TestListingDetailAnnouncesADroppedSolve:
         mine = [r for r in driver_warnings(caplog, "listing_detail") if "cannot apply it" in r.getMessage()]
         assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
 
-    async def test_an_ordinary_render_stays_quiet(self, caplog):
+    async def test_an_ordinary_render_stays_quiet(self, caplog: pytest.LogCaptureFixture) -> None:
         driver = _driver(self._handler)
 
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.listing_detail"):

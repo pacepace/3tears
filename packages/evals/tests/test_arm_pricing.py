@@ -30,13 +30,10 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
-
-from threetears.evals.kernel.numbers import format_number
-from threetears.evals.schema import EvalRun, JudgeDeclaration, JudgedArtifact, RubricDim
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
-from threetears.evals.schema.judge_attribution import judges_sharing_a_candidate_model
-from threetears.evals.schema.models import EvalTemplate
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.run import (
+    SIMULATOR_REQUEST_SETTINGS,
     ArmPlan,
     ArmPrice,
     ArmQuote,
@@ -46,7 +43,6 @@ from threetears.evals.run import (
     LaunchPricer,
     LaunchRequest,
     LaunchSettings,
-    SIMULATOR_REQUEST_SETTINGS,
     PlannedJudge,
     build_judge_service,
     launch_as_group,
@@ -58,12 +54,16 @@ from threetears.evals.run import (
     resolve_judge_pin,
     start_run,
 )
+from threetears.evals.schema import EvalRun, JudgedArtifact, JudgeDeclaration, RubricDim
+from threetears.evals.schema.judge_attribution import judges_sharing_a_candidate_model
+from threetears.evals.schema.models import EvalTemplate
 from threetears.evals.storage import InMemoryDocumentStore
+
 from packages.evals.tests.factories import make_judge_config
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_COST_CEILING_USD, TOYHOST_SCOPE, TOYHOST_SUBJECT
-from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.host import with_registry
+from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.launch import (
     TOYHOST_LAUNCH_SETTINGS,
     plan_toyhost_arm,
@@ -288,7 +288,7 @@ async def test_a_quote_naming_a_cap_above_the_hosts_is_refused() -> None:
 )
 async def test_an_unpriceable_stored_case_arm_is_refused_under_an_inherited_cap_and_runs_under_a_chosen_one(
     unpriceable, said
-):
+) -> None:
     launched = off_loop(_Launched, **unpriceable)
 
     with pytest.raises(
@@ -621,7 +621,7 @@ async def test_a_quote_reports_every_outcome_the_rule_can_reach_and_launches_not
         ({"predicted_usd": 2.0, "central_usd": 1.0, "band_high_usd": 0.5, "basis": "b"}, "band's own upper end"),
     ],
 )
-def test_an_arm_price_refuses_a_range_out_of_order(bad, said):
+def test_an_arm_price_refuses_a_range_out_of_order(bad, said) -> None:
     with pytest.raises(ValueError, match=said):
         ArmPrice(**bad)
     assert ArmPrice(predicted_usd=2.0, central_usd=1.0, low_usd=0.5, basis="b").central_usd == 1.0
@@ -740,7 +740,7 @@ async def test_an_inherited_judge_on_a_candidates_model_steps_to_the_alternate()
     ],
     ids=["default-not-a-candidate", "named-judge-on-a-candidate", "no-alternate", "alternate-is-a-candidate"],
 )
-async def test_the_judge_stays_where_no_usable_alternate_or_a_choice_applies(judged, arguments, judge, origin):
+async def test_the_judge_stays_where_no_usable_alternate_or_a_choice_applies(judged, arguments, judge, origin) -> None:
     run = await _judged_run(off_loop(_Judged, **judged), **arguments)
 
     assert run.judge_model == judge

@@ -10,7 +10,6 @@ plausible number that a marginal would then treat as an observation.
 from __future__ import annotations
 
 import pytest
-
 from threetears.evals.kernel.covariates import (
     count_dropped_tool_calls,
     count_refused_tool_attaches,
@@ -386,7 +385,7 @@ class TestFoldPhaseTimings:
         fold_phase_timings(acc, source_tool="lookup", timings=None)
         assert acc == {"lookup_synthesis_ms": 7.0}
 
-    def test_a_non_mapping_payload_is_refused_to_the_caller(self, caplog):
+    def test_a_non_mapping_payload_is_refused_to_the_caller(self, caplog: pytest.LogCaptureFixture) -> None:
         """Metadata crosses an untyped process-internal boundary; a malformed carrier
         must not wedge the cell, and it must not vanish into a log either: the kind is told."""
         acc: dict[str, float] = {}
@@ -396,7 +395,7 @@ class TestFoldPhaseTimings:
         assert refused == ["delivery from lookup carried phase timings that are not a mapping ([1, 2, 3])"]
         assert "not a mapping" in caplog.text
 
-    def test_an_unparseable_duration_is_refused_to_the_caller(self, caplog):
+    def test_an_unparseable_duration_is_refused_to_the_caller(self, caplog: pytest.LogCaptureFixture) -> None:
         """It was logged and left out, reading to every reader as a phase the tool never measured."""
         acc: dict[str, float] = {}
         with caplog.at_level("WARNING"):
@@ -406,7 +405,9 @@ class TestFoldPhaseTimings:
         assert sentence.startswith("phase timing lookup.synthesis is not a number ('fast'")
         assert "not a number" in caplog.text
 
-    def test_a_negative_duration_is_not_a_measurement_and_is_refused_to_the_caller(self, caplog):
+    def test_a_negative_duration_is_not_a_measurement_and_is_refused_to_the_caller(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """Nothing takes negative time; folding it would silently subtract from a real
         phase total on the next delivery."""
         acc: dict[str, float] = {}
@@ -431,7 +432,7 @@ class TestFoldPhaseTimings:
 
 class TestTurnsEndedByBudget:
     @pytest.mark.parametrize("count", [0, 2])
-    def test_a_watched_count_is_written_zero_included(self, count):
+    def test_a_watched_count_is_written_zero_included(self, count) -> None:
         covariates = derive_covariates(usage=[], concurrent_eval_jobs=None, turns_ended_by_budget=count)
         assert covariates["turns_ended_by_budget"] == count
 
