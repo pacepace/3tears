@@ -31,7 +31,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 __all__ = [
-    "HOST_TICK_SECONDS",
     "HostTicker",
     "Tick",
     "added_lateness",
@@ -45,7 +44,7 @@ __all__ = [
 Tick = tuple[float, float]
 
 #: what each of the host's idle ticks asks to sleep
-HOST_TICK_SECONDS = 0.001
+_HOST_TICK_SECONDS = 0.001
 
 #: the host's idle loop, run beside the test in a process of its own: a 1 ms ticker on an event loop with nothing else
 #: to do, recording every tick on the same clock, until its stdin closes
@@ -97,7 +96,7 @@ class HostTicker:
         self.ticks = list(zip(recorded[0::2], recorded[1::2], strict=True))
 
 
-async def ticks_while(work: Callable[[], Awaitable[Any]], *, every: float = HOST_TICK_SECONDS) -> list[Tick]:
+async def ticks_while(work: Callable[[], Awaitable[Any]], *, every: float = _HOST_TICK_SECONDS) -> list[Tick]:
     """every tick of a ticker on the running loop while ``work()`` ran.
 
     :param work: what to run on the loop (awaited once)
@@ -127,7 +126,7 @@ async def ticks_while(work: Callable[[], Awaitable[Any]], *, every: float = HOST
     return ticks
 
 
-def latest(ticks: list[Tick], *, every: float = HOST_TICK_SECONDS) -> float:
+def latest(ticks: list[Tick], *, every: float = _HOST_TICK_SECONDS) -> float:
     """the latest any of ``ticks`` woke past the ``every`` it asked for, in seconds (0 for none).
 
     :param ticks: a ticker's ticks
@@ -140,7 +139,7 @@ def latest(ticks: list[Tick], *, every: float = HOST_TICK_SECONDS) -> float:
     return max((woke - asked - every for asked, woke in ticks), default=0.0)
 
 
-def added_lateness(ticks: list[Tick], host: list[Tick], *, every: float = HOST_TICK_SECONDS) -> float:
+def added_lateness(ticks: list[Tick], host: list[Tick], *, every: float = _HOST_TICK_SECONDS) -> float:
     """the most any of ``ticks`` was late while the host's idle loop was not, in seconds.
 
     A tick is late from the ``every`` it asked for until it woke; the host's ticks are late over the same kind of
@@ -157,7 +156,7 @@ def added_lateness(ticks: list[Tick], host: list[Tick], *, every: float = HOST_T
     :rtype: float
     :raises AssertionError: when a tick falls outside the host loop's ticking (no baseline at that moment)
     """
-    late_spans = [(asked + HOST_TICK_SECONDS, woke) for asked, woke in host if woke - asked > HOST_TICK_SECONDS]
+    late_spans = [(asked + _HOST_TICK_SECONDS, woke) for asked, woke in host if woke - asked > _HOST_TICK_SECONDS]
     worst = 0.0
     for asked, woke in ticks:
         assert host and host[0][0] <= asked and woke <= host[-1][1], (
