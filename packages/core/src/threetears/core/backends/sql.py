@@ -55,6 +55,7 @@ from threetears.core.backends.protocol import (
     TruncatingStore,
     parse_rowcount,
 )
+from threetears.core.declared import whole_read
 from threetears.core.ddl.change_notes import NOTE_REACH_SETTING, NOTE_WHOLE_SETTING, WHOLE_COPY_ROWS, note_reach_text
 from threetears.core.ddl.ddl_lock import database_ddl_lock
 from threetears.core.ddl.session import ConnectionSession
@@ -1022,20 +1023,31 @@ class SqlL3Backend:
                 f"TRUNCATE of {table!r} runs alone, outside any transaction; a request's bound connection is open"
             )
         if isinstance(self._pool, TruncatingStore):
-            await self._pool.truncate(table, **({"reason": reason} if reason is not None else {}))
+            await whole_read(
+                self._pool.truncate(table, **({"reason": reason} if reason is not None else {})),
+                kind="operator_reset",
+                reason="an operator's reset empties the table with TRUNCATE; SchemaBackedCollection.reset is its one caller",
+                ruling="Pace 2026-11-12: operator_reset declared in code; coordinator 2026-11-12: plain truncate() retired, reset() the one caller",
+                proof="packages/core/tests/unit/collections/test_truncate.py::test_the_store_s_truncate_is_reached_only_from_an_operator_s_reset",
+            )
             return
-        statement = f"TRUNCATE TABLE {as_written(_plain_identifier(table))}"
+        name = as_written(_plain_identifier(table))
         reach = note_reach_text(reason=reason)
         with _unmask_asyncpg_release_race():
             async with self._pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn)):
-                if not reach:
-                    await conn.execute(statement)
-                else:
-                    # TRUNCATE runs alone, so its reach is the session's for the one statement, never left behind
+                # TRUNCATE runs alone, so its reach is the session's for the one statement, never left behind
+                if reach:
                     await conn.execute("SELECT set_config($1, $2, false)", NOTE_REACH_SETTING, reach)
-                    try:
-                        await conn.execute(statement)
-                    finally:
+                try:
+                    await whole_read(
+                        conn.execute(f"TRUNCATE TABLE {name}"),
+                        kind="operator_reset",
+                        reason="an operator's reset empties the table with TRUNCATE; SchemaBackedCollection.reset is its one caller",
+                        ruling="Pace 2026-11-12: operator_reset declared in code; coordinator 2026-11-12: plain truncate() retired, reset() the one caller",
+                        proof="packages/core/tests/unit/collections/test_truncate.py::test_the_store_s_truncate_is_reached_only_from_an_operator_s_reset",
+                    )
+                finally:
+                    if reach:
                         await conn.execute("SELECT set_config($1, $2, false)", NOTE_REACH_SETTING, "")
         _logger.info("table truncated", extra={"extra_data": {"table": table}})
 

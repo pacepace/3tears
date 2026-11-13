@@ -17,12 +17,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import ast
 import asyncio
+import inspect
 import uuid
+from pathlib import Path
 from typing import Any, ClassVar, Literal
 
 import pytest
 from sqlalchemy import MetaData
+
+import threetears.core
 
 from threetears.core.backends.protocol import DurableStore, TruncatingStore
 from threetears.core.cache.sqlite import SQLiteBackend
@@ -310,12 +315,12 @@ async def test_a_generation_that_cannot_advance_raises_after_the_table_is_emptie
     assert not pod.results.exists_in_cache_sync("a")
 
 
-async def test_an_undeclared_table_truncates_and_advances_nothing(
+async def test_an_undeclared_table_resets_and_advances_nothing(
     bus: FakeNatsClient, store: _TableStore, source: _CountingSource
 ) -> None:
     pod = _Pod(bus, store, cls=_Results, source=source)
     await _save(pod, "a", 1)
-    await pod.results.truncate()
+    await pod.results.reset()
     assert store.rows == {}
     assert source.counts == {}
     assert not pod.results.exists_in_cache_sync("a")
@@ -398,16 +403,62 @@ async def test_a_truncate_cancelled_after_the_broker_ran_it_drops_and_advances_t
     assert source.counts["lsf_results"] == 2  # the save's advance, then the cancelled truncate's
 
 
-async def test_a_recorded_tables_truncate_is_refused_before_anything_is_emptied(
+async def test_the_one_way_to_empty_a_table_whole_is_an_operator_s_reset(
     bus: FakeNatsClient, store: _TableStore, source: _CountingSource
 ) -> None:
+    """plain truncate() is retired (coordinator 2026-11-12): a load clears by key prefix or deletes rows by key; only an
+    operator's reset() empties a table whole, and its epoch says so."""
     pod = _Pod(bus, store, source=source)
     await _save(pod, "a", 1)
-    with pytest.raises(ValueError, match="clear_partition"):
-        await pod.results.truncate()
-    assert store.truncated == []
-    assert source.counts["lsf_results"] == 1  # the save's advance alone
-    assert pod.results.exists_in_cache_sync("a")
+    assert not hasattr(pod.results, "truncate")
+    await pod.results.reset()
+    assert store.truncated == ["lsf_results"]
+    assert store.reasons == ["reset"]
+
+
+async def test_the_store_s_truncate_is_reached_only_from_an_operator_s_reset(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    """the proof of the operator_reset declarations on SqlL3Backend.truncate's TRUNCATE and on
+    SchemaBackedCollection._truncate_l3's store.truncate: every write, read, delete and catch-up a pod makes leaves the
+    store's truncate untouched, and reset() reaches it once, through _truncate_l3, naming the reset; nothing in the
+    package source calls a store's truncate but _truncate_l3 (and SqlL3Backend.truncate handing a TRUNCATE to its
+    pool)."""
+    calls: list[list[str]] = []
+    truncate = store.truncate
+
+    async def recorded(table: str, *, reason: str | None = None) -> None:
+        calls.append([frame.function for frame in inspect.stack()[1:6]])
+        await truncate(table, reason=reason)
+
+    store.truncate = recorded  # type: ignore[method-assign]
+    writer = _Pod(bus, store, source=source)
+    follower = _Pod(bus, store, source=source)
+    await follower.follow(source)
+    for n in range(3):
+        await _save(writer, f"k{n}", n)
+    await writer.results.ensure("k1")
+    await writer.results.delete("k0")
+    await follower.registry.catch_up_generation("lsf_results", await source.current("lsf_results"), changes=source)
+    await follower.results.ensure("k2")
+    assert calls == []
+    await writer.results.reset()
+    assert len(calls) == 1 and calls[0][:2] == ["_truncate_l3", "reset"], calls
+    assert store.reasons == ["reset"]
+
+    callers = []
+    source_root = Path(threetears.core.__file__).parent
+    for path in sorted(source_root.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for inner in ast.walk(node):
+                    if (
+                        isinstance(inner, ast.Call)
+                        and isinstance(inner.func, ast.Attribute)
+                        and inner.func.attr == "truncate"
+                    ):
+                        callers.append(f"{path.name}:{node.name}")
+    assert sorted(set(callers)) == ["schema_backed.py:_truncate_l3", "sql.py:truncate"], callers
 
 
 async def test_a_resets_epoch_names_its_reason_and_the_store_is_told_it(

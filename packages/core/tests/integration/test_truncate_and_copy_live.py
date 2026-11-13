@@ -110,7 +110,7 @@ async def test_a_table_is_emptied_and_loaded_again_with_copy(pool: asyncpg.Pool)
     async with pool.acquire() as conn, CallerTransaction(conn):
         await collection.save_rows(_rows("old", 50), conn=conn)
 
-    await collection.truncate()
+    await collection.reset()
     assert await pool.fetchval("SELECT count(*) FROM lsf_rows") == 0
     # the DDL lock was released: no session still holds an advisory lock
     assert await pool.fetchval("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'") == 0
@@ -153,8 +153,8 @@ async def test_a_copy_naming_a_key_already_held_rolls_the_whole_transaction_back
     assert await pool.fetchval("SELECT count(*) FROM lsf_rows") == 1
 
 
-async def test_truncating_an_empty_table_twice_is_safe(pool: asyncpg.Pool) -> None:
+async def test_resetting_an_empty_table_twice_is_safe(pool: asyncpg.Pool) -> None:
     collection = _collection(pool)
-    await collection.truncate()
-    await collection.truncate()
+    await collection.reset()
+    await collection.reset()
     assert await pool.fetchval("SELECT count(*) FROM lsf_rows") == 0

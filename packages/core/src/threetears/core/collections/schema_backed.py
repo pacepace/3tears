@@ -2529,25 +2529,6 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         """
         return self._write_generation_on or self.keeps_write_generation_in_l2 or self._negative_cache_writes_advance
 
-    async def truncate(self) -> None:
-        """empty a table whose epochs are not recorded (:meth:`reset` without its reason); refused on one whose are.
-
-        A recorded table is never emptied whole by a load: its epoch would make every follower read the table again.
-        Clear a part by its key prefixes (:meth:`clear_partition`), delete rows by key (:meth:`delete_rows`), or, for
-        an operator's reset only, :meth:`reset`.
-
-        :return: nothing
-        :rtype: None
-        :raises ValueError: when the table's epochs are recorded, or as :meth:`reset`
-        """
-        if self._records_epochs:
-            raise ValueError(
-                f"{type(self).__name__}.truncate: {self.table_name}'s epochs are recorded, and a whole-table change "
-                f"would make every follower read it again: clear its key prefixes with clear_partition, delete rows "
-                f"by key, or reset() from an operator's reset"
-            )
-        await self._truncate_l3(reset=False)
-
     async def reset(self) -> None:
         """an operator's reset: empty the table in L3 with ``TRUNCATE``, then drop what every cache holds of it. The one
         whole-table change a writer makes; its epoch names ``reason="reset"``, and a follower reads the table again as
@@ -2581,13 +2562,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :raises GenerationUnavailableError: when the table's write generation had to advance and
             could not; the table is emptied and this process's caches dropped
         """
-        await self._truncate_l3(reset=True)
+        await self._truncate_l3()
 
-    async def _truncate_l3(self, *, reset: bool) -> None:
-        """``TRUNCATE`` the table in L3, then drop and advance (:meth:`reset`, :meth:`truncate`).
+    async def _truncate_l3(self) -> None:
+        """``TRUNCATE`` the table in L3 for an operator's reset, then drop and advance (:meth:`reset`, its one caller).
 
-        :param reset: whether it is an operator's reset, which its epoch names
-        :ptype reset: bool
         :return: nothing
         :rtype: None
         """
@@ -2601,14 +2580,20 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"{type(self).__name__}.truncate: {self.table_name} defers its L3 writes, and a buffered row "
                 f"would land after the table was emptied"
             )
-        reach = WholeReach(reason=RESET_REASON) if reset else None
+        reach = WholeReach(reason=RESET_REASON)
         try:
-            await store.truncate(self.table_name, **({"reason": RESET_REASON} if reset else {}))
+            await whole_read(
+                store.truncate(self.table_name, reason=RESET_REASON),
+                kind="operator_reset",
+                reason="an operator's reset empties the table in L3 with TRUNCATE; its epoch names the reset",
+                ruling="Pace 2026-11-12: operator_reset declared in code; coordinator 2026-11-12: plain truncate() retired, reset() the one caller",
+                proof="packages/core/tests/unit/collections/test_truncate.py::test_the_store_s_truncate_is_reached_only_from_an_operator_s_reset",
+            )
         except (Exception, asyncio.CancelledError) as exc:
             # a reply lost or timed out may still have emptied the table: drop as if it had
-            await self._drop_and_advance_after_failure("reset failed" if reset else "truncate failed", exc, reach=reach)
+            await self._drop_and_advance_after_failure("reset failed", exc, reach=reach)
             raise
-        await self._drop_and_advance("reset" if reset else "truncated", reach=reach)
+        await self._drop_and_advance("reset", reach=reach)
 
     async def load_files(
         self,
