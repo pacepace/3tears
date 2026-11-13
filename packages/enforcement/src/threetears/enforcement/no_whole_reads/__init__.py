@@ -734,6 +734,12 @@ class _Declared:
                     target = self._target(hit)
                     if target in undeclared or kinds_of.get(target) != {declared.kind}:
                         continue
+                if hit.kind == "whole-call" and any(
+                    target in undeclared or kinds_of.get(target) != {declared.kind} for target in hit.reaches
+                ):
+                    # a call into the repo's own functions: each must be declared there with the same kind (one the
+                    # walk cannot find in the repo has no declaration to check, and is the call's alone)
+                    continue
                 self.covered.add(hit)
                 used.add(index)
         bare = self._bare_functions(sound, hits)

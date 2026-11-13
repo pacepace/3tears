@@ -509,3 +509,103 @@ def test_a_warehouse_read_of_a_produced_relation_declared_whole_is_let_through(t
     findings = no_whole_reads_findings(config)
     assert not [finding for finding in findings if "moved" in finding], findings
     assert any("ours whole_read(kind='unbounded_by_warehouse'): covers no whole read" in f for f in findings), findings
+
+
+_SCHEMA_CHANGE = """
+    from threetears.core.declared import whole_read
+
+    async def held(conn, schema, table, column):
+        return await whole_read(
+            conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}" WHERE "{column}" IS NOT NULL'),
+            kind="SCHEMA_KIND",
+            reason="a resize clears every embedding the column holds, and says how many first",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_held_entry",
+            speed="tests/test_backup.py::test_held_speed",
+        )
+"""
+
+
+@pytest.mark.parametrize(("kind", "passes"), [("schema_change", True), ("cold_start", False)])
+def test_a_schema_change_admits_a_table_named_at_run_time(tmp_path: Path, kind: str, passes: bool) -> None:
+    """Flips if a schema change's count over a table it names at run time (the schema it runs in, as a migration's)
+    is still reported once declared, or if another kind lets that unknown table through."""
+    proofs = _PROOFS + textwrap.indent(
+        "\ndef test_held_entry():\n    assert held\n\ndef test_held_speed():\n    budget_problem(held)\n", "    "
+    )
+    findings = _findings(tmp_path, {"held.py": _SCHEMA_CHANGE.replace("SCHEMA_KIND", kind)}, proofs)
+    assert (findings == []) is passes, findings
+    if not passes:
+        assert any("in held: unknown-schema" in finding for finding in findings), findings
+
+
+def test_a_whole_call_into_a_declared_function_is_declared_there_with_the_same_kind(tmp_path: Path) -> None:
+    """Flips if a call named whole (a rebuild) into a function holding a declared schema change cannot be declared
+    there with the same kind, if an undeclared one passes, if one declared with another kind passes, or if a declared
+    call into a rebuild that never declared its own read passes."""
+    reason = "an index left unusable is built again; its unique keys are checked over the table first"
+    inner = f"""
+    from threetears.core.declared import whole_read
+
+    async def duplicates(conn, schema, table):
+        return await whole_read(
+            conn.fetch(f'SELECT k, count(*) AS n FROM "{{schema}}"."{{table}}" GROUP BY k HAVING count(*) > 1'),
+            kind="schema_change",
+            reason="{reason}",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_duplicates_entry",
+            speed="tests/test_backup.py::test_duplicates_speed",
+        )
+
+    async def rebuild_declared(conn, schema, table):
+        return await whole_read(
+            duplicates(conn, schema, table),
+            kind="schema_change",
+            reason="{reason}",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_rebuild_declared_entry",
+            speed="tests/test_backup.py::test_rebuild_declared_speed",
+        )
+
+    async def rebuild_bare(conn, schema, table):
+        return await duplicates(conn, schema, table)
+"""
+    caller = """
+    from threetears.core.declared import whole_read
+    from inner import rebuild_bare, rebuild_declared
+
+    async def plain(conn):
+        return await rebuild_declared(conn, "s", "t")
+""" + "".join(
+        f"""
+    async def {name}(conn):
+        return await whole_read(
+            {callee}(conn, "s", "t"),
+            kind="{kind}",
+            reason="{reason}",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_{name}_entry",
+            speed="tests/test_backup.py::test_{name}_speed",
+        )
+"""
+        for name, callee, kind in (
+            ("same", "rebuild_declared", "schema_change"),
+            ("other", "rebuild_declared", "cold_start"),
+            ("unchained", "rebuild_bare", "schema_change"),
+        )
+    )
+    names = ("duplicates", "rebuild_declared", "same", "other", "unchained")
+    proofs = _PROOFS + textwrap.indent(
+        "".join(
+            f"\ndef test_{name}_entry():\n    assert {name}\n\ndef test_{name}_speed():\n    budget_problem({name})\n"
+            for name in names
+        ),
+        "    ",
+    )
+    findings = _findings(tmp_path, {"inner.py": inner, "caller.py": caller}, proofs)
+    assert any("in plain: whole-call rebuild_declared" in finding for finding in findings), findings
+    assert any("in other: whole-call rebuild_declared" in finding for finding in findings), findings
+    assert any("in unchained: whole-call rebuild_bare" in finding for finding in findings), findings
+    assert any("in rebuild_bare: calls-whole-read duplicates" in finding for finding in findings), findings
+    assert not any("in same:" in finding or " same whole_read" in finding for finding in findings), findings
+    assert not any("in rebuild_declared:" in finding or "in duplicates:" in finding for finding in findings), findings

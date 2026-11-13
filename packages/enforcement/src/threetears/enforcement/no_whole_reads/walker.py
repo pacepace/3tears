@@ -470,9 +470,19 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
             "calls-whole-read",
         }
     ),
-    # a schema change rewriting the table
+    # a schema change rewriting the table (named at run time, as a migration names the schema it runs in, so read as
+    # unknown), and a call into a function declared the same (a rebuild's call into its duplicate check)
     "schema_change": frozenset(
-        {"whole-select", "whole-aggregate", "whole-maintenance", "whole-update", "unkeyed-pager", "calls-whole-read"}
+        {
+            "whole-select",
+            "whole-aggregate",
+            "whole-maintenance",
+            "whole-update",
+            "unkeyed-pager",
+            "unknown-schema",
+            "whole-call",
+            "calls-whole-read",
+        }
     ),
     # the drain of a process-local buffer (never an L3 table), and a call into a function declared the same
     "drain": frozenset({"whole-select", "whole-delete", "calls-whole-read"}),
@@ -581,6 +591,8 @@ class WholeReadHit:
     :ivar function: qualified name of the enclosing function or class, or ``<module>``
     :ivar symbol: ``<kind> <what>``, e.g. ``whole-aggregate {}`` or ``unkeyed-pager keyset_arrow_pages``
     :ivar statement: the statement or the call, one line, for the reader
+    :ivar reaches: for a ``whole-call``, the functions (path, qualified name) its call reaches when the walk found
+        them; empty otherwise. Not part of the hit's identity
     """
 
     path: str
@@ -588,6 +600,7 @@ class WholeReadHit:
     function: str
     symbol: str
     statement: str
+    reaches: tuple[tuple[str, str], ...] = field(default=(), compare=False)
 
     @property
     def kind(self) -> str:
@@ -5339,7 +5352,11 @@ def _resolve(
                 )
             )
         elif call.whole_named and (not targets or all(target in reaches for target in targets)):
-            found.append(WholeReadHit(call.path, call.line, call.function, f"whole-call {call.name}", call.spelled))
+            found.append(
+                WholeReadHit(
+                    call.path, call.line, call.function, f"whole-call {call.name}", call.spelled, tuple(sorted(targets))
+                )
+            )
         if call.whole_flags and (not targets or any(target in reaches for target in targets)):
             found.extend(
                 WholeReadHit(call.path, call.line, call.function, f"whole-flag {flag}=", call.spelled)
