@@ -77,7 +77,7 @@ dev-dependencies = [
     # an L1-SQLite-only consumer is not forced to build `nkeys`, which ships no
     # wheels. installed in dev so the nats + L2 test suites exercise the real
     # client rather than getting skipped.
-    "nats-py>=2.10",
+    "nats-py>=2.16,<2.17",
     "nkeys>=0.2",
     "simpleeval>=1.0.4",
     # 3tears-agent-tools' `ocr` extra, installed in dev so its imports resolve for the declared-imports

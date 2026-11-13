@@ -8,9 +8,12 @@ these attributes must fail here, by name, before anything ships against it.
 from __future__ import annotations
 
 import asyncio
+import re
 import importlib.metadata
 import string
+import tomllib
 from datetime import timedelta
+from pathlib import Path
 
 from nats.aio.client import Client
 
@@ -34,6 +37,33 @@ def test_the_installed_nats_py_has_every_private_attribute_the_wrapper_uses() ->
         f"threetears.nats._nats_py_internals depends on: {missing}. Read the module docstring "
         "before moving the nats-py cap."
     )
+
+
+def test_every_declared_nats_py_range_admits_only_the_minor_the_suites_run() -> None:
+    """Flips if a pyproject admits a nats-py the suites never run: a floor below the installed minor let a
+    consumer resolve 2.15.0, which lacks a private attribute the wrapper reads (every large reply failed there),
+    while this repo's lock ran 2.16 and hid it. Each declaration must be ``>=<installed minor>,<<next minor>``."""
+    major, minor = (int(part) for part in importlib.metadata.version("nats-py").split(".")[:2])
+    wanted = f">={major}.{minor},<{major}.{minor + 1}"
+    root = Path(__file__).resolve().parents[4]
+    found: dict[str, str] = {}
+    for path in sorted([root / "pyproject.toml", *root.glob("packages/**/pyproject.toml")]):
+        if ".venv" in path.parts:
+            continue
+        project = tomllib.loads(path.read_text(encoding="utf-8"))
+        declared = [
+            *project.get("project", {}).get("dependencies", []),
+            *(d for extra in project.get("project", {}).get("optional-dependencies", {}).values() for d in extra),
+            *(d for group in project.get("dependency-groups", {}).values() for d in group if isinstance(d, str)),
+            *project.get("tool", {}).get("uv", {}).get("dev-dependencies", []),
+        ]
+        for text in declared:
+            named = re.match(r"^\s*nats-py\s*(?P<specifier>[^;\[]*)", text)
+            if named is not None:
+                found[path.relative_to(root).as_posix()] = re.sub(r"\s", "", named.group("specifier"))
+    assert found, "no pyproject declares nats-py"
+    wrong = {where: specifier for where, specifier in found.items() if specifier != wanted}
+    assert not wrong, f"nats-py must be declared {wanted} (the minor the suites run): {wrong}"
 
 
 def test_the_check_reports_an_attribute_nats_py_does_not_have() -> None:

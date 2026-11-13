@@ -12,10 +12,10 @@ The module carries the workspace's per-file SLF001 ignore for nats-py, and every
 an entry with its reason in ``tests/enforcement/_underscore_exemptions.txt``; nothing else in the
 workspace reads or writes them on a nats-py object, and no access carries an inline pragma.
 
-**Verified against nats-py 2.15.0 and 2.16.0** (``nats/aio/client.py``,
-``nats/aio/subscription.py``, ``nats/js/client.py`` and ``nats/nuid.py`` read in both; every
-attribute below is unchanged between them). ``packages/nats/pyproject.toml`` caps nats-py below the first release
-not verified here. Moving the cap: read the same four files in the new release, and every other
+**Verified against nats-py 2.16.0** (``nats/aio/client.py``, ``nats/aio/subscription.py``,
+``nats/js/client.py`` and ``nats/nuid.py``). 2.15.0 lacks ``Client._skip_subject_validation``, so the floor is
+2.16: ``packages/nats/pyproject.toml`` admits the one minor verified here (floor and cap), the minor the lock installs
+and every suite runs, so no declared version goes unexercised. Moving the cap: read the same four files in the new release, and every other
 nats-py module that calls ``_nuid.next()`` (``js/object_store.py``, ``micro/service.py``), check every
 entry of :data:`PRIVATE_SURFACE` against them, run the unit and integration suites on it, and
 add the version to this paragraph.

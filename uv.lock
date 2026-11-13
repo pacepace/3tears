@@ -106,7 +106,7 @@ dev = [
     { name = "langchain-voyageai", specifier = ">=0.3" },
     { name = "moto", extras = ["server"], specifier = ">=5.0" },
     { name = "mypy", specifier = ">=1.8" },
-    { name = "nats-py", specifier = ">=2.10" },
+    { name = "nats-py", specifier = ">=2.16,<2.17" },
     { name = "nkeys", specifier = ">=0.2" },
     { name = "opentelemetry-api", specifier = ">=1.40,<2" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.40,<2" },
@@ -1049,7 +1049,7 @@ client = [
 [package.metadata]
 requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
-    { name = "nats-py", marker = "extra == 'client'", specifier = ">=2.15,<2.17" },
+    { name = "nats-py", marker = "extra == 'client'", specifier = ">=2.16,<2.17" },
     { name = "nkeys", marker = "extra == 'client'", specifier = ">=0.2" },
     { name = "pydantic", specifier = ">=2.10" },
 ]
@@ -1149,7 +1149,7 @@ requires-dist = [
     { name = "3tears-epoch", editable = "packages/epoch" },
     { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
-    { name = "nats-py", specifier = ">=2.0" },
+    { name = "nats-py", specifier = ">=2.16,<2.17" },
     { name = "prometheus-client", specifier = ">=0.20" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "sqlalchemy" },
