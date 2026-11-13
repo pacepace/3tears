@@ -1428,7 +1428,6 @@ __all__ = [
     "resume_launch",
     "resume_run",
     "start_take_up",
-    "TakenUp",
     "take_up_arms",
     "take_up_run",
     "write_taken_up",
