@@ -302,13 +302,14 @@ async def _read_pages(
                 else:
                     past, params = keyset_condition(key, after, earlier=">", last=">", first=2)
                     lower = f"({past})"
-                conditions = [f"{partition_by} = $1", lower]
+                upper = ""
                 if index + 1 < len(starts):
-                    upper, more = _bound(key, starts[index + 1], below=True, first=2 + len(params))
-                    conditions.append(upper)
+                    bound, more = _bound(key, starts[index + 1], below=True, first=2 + len(params))
+                    upper = f" AND {bound}"
                     params += more
+                # the part's pin written out, so the statement says it reads one part between two of its keys
                 sql = (
-                    f"SELECT {selected} FROM {relation} WHERE {' AND '.join(conditions)} "  # noqa: S608 - trusted identifiers
+                    f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND {lower}{upper} "  # noqa: S608 - trusted identifiers
                     f"ORDER BY {ordering} LIMIT {int(page_size) + 1}"
                 )
                 result = await client.query(datasource_name, sql, params=[part, *params])
