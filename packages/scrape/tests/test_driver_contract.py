@@ -75,7 +75,7 @@ class _ContractFakePage:
     async def content(self):
         return _PAGE_HTML
 
-    async def close(self):
+    async def close(self) -> None:
         pass
 
     def on(self, event, handler):
@@ -236,7 +236,7 @@ class TestScrapeDriverContract:
         assert isinstance(page, RenderedPage)
 
 
-def test_every_render_implementation_declares_session_state():
+def test_every_render_implementation_declares_session_state() -> None:
     """All nine ``render`` implementations, by signature rather than by construction.
 
     The parametrized contract tests above instantiate two representative backends. The other

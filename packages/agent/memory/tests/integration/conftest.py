@@ -161,7 +161,7 @@ async def _migrate_memory(conn: asyncpg.Connection, _schema: str) -> None:
     runner = MigrationRunner()
     register_conversations(runner)
     register_memory(runner)
-    await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+    await runner.apply_for_agent_schema(AsyncpgStore(conn))
 
 
 @pytest.fixture

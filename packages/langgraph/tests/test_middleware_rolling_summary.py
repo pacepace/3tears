@@ -315,7 +315,7 @@ async def test_a_store_can_be_resolved_per_call() -> None:
     stores = {"t1": _FakeSummaryStore(), "t2": _FakeSummaryStore()}
 
     def store_for(request: ModelRequest) -> SummaryStore | None:
-        return stores[request.state["thread"]]  # type: ignore[index]
+        return stores[request.state["thread"]]
 
     middleware = RollingSummaryMiddleware(_Summarizer(), store_for=store_for, token_budget=40, count_tokens=_chars)
     for thread in ("t1", "t2"):

@@ -59,14 +59,14 @@ def _make_png(width: int, height: int, *, rgba: bool = False) -> bytes:
 class TestPassthrough:
     """Small, web-safe images should pass through unchanged."""
 
-    def test_small_jpeg_passthrough(self):
+    def test_small_jpeg_passthrough(self) -> None:
         data = _make_jpeg(100, 100)
         assert len(data) < SIZE_THRESHOLD
         result, mime = prepare_image_for_vision(data, "image/jpeg")
         assert result is data  # exact same object
         assert mime == "image/jpeg"
 
-    def test_small_png_passthrough(self):
+    def test_small_png_passthrough(self) -> None:
         data = _make_png(100, 100)
         assert len(data) < SIZE_THRESHOLD
         result, mime = prepare_image_for_vision(data, "image/png")
@@ -77,7 +77,7 @@ class TestPassthrough:
 class TestResize:
     """Large images should be resized and re-encoded."""
 
-    def test_oversized_width_resized(self):
+    def test_oversized_width_resized(self) -> None:
         """A large JPEG (over SIZE_THRESHOLD) with oversized dimensions gets resized."""
         data = _make_jpeg(8000, 4000, quality=100)
         # Ensure it's over threshold — pad if needed
@@ -94,7 +94,7 @@ class TestResize:
         assert img.size[0] <= MAX_DIMENSION
         assert img.size[1] <= MAX_DIMENSION
 
-    def test_oversized_height_resized(self):
+    def test_oversized_height_resized(self) -> None:
         data = _make_noisy_jpeg(2000, 6000)
         assert len(data) > SIZE_THRESHOLD
         result, mime = prepare_image_for_vision(data, "image/jpeg")
@@ -104,7 +104,7 @@ class TestResize:
         img = Image.open(io.BytesIO(result))
         assert max(img.size) <= MAX_DIMENSION
 
-    def test_within_limits_but_large_bytes_reencoded(self):
+    def test_within_limits_but_large_bytes_reencoded(self) -> None:
         """Image within dimension limits but over SIZE_THRESHOLD gets re-encoded."""
         # Create a large-ish JPEG by using high quality on a moderately sized image
         data = _make_jpeg(2000, 2000, quality=100)
@@ -120,14 +120,14 @@ class TestResize:
 class TestFormatConversion:
     """Non-JPEG formats should be converted."""
 
-    def test_rgba_png_converted_to_jpeg(self):
+    def test_rgba_png_converted_to_jpeg(self) -> None:
         data = _make_png(100, 100, rgba=True)
         # Make it larger than threshold so it triggers processing
         big_data = data + b"\x00" * (SIZE_THRESHOLD + 1)
         result, mime = prepare_image_for_vision(big_data, "image/png")
         assert mime == "image/jpeg"
 
-    def test_unknown_mime_processed(self):
+    def test_unknown_mime_processed(self) -> None:
         """HEIC or other non-web-safe types always trigger processing."""
         data = _make_jpeg(100, 100)  # valid JPEG bytes but labeled as heic
         result, mime = prepare_image_for_vision(data, "image/heic")
@@ -137,13 +137,13 @@ class TestFormatConversion:
 class TestErrorHandling:
     """Small bytes labelled web-safe pass through unread, so even invalid ones come back as given."""
 
-    def test_corrupt_data_returns_original(self):
+    def test_corrupt_data_returns_original(self) -> None:
         data = b"not an image at all"
         result, mime = prepare_image_for_vision(data, "image/jpeg")
         assert result is data
         assert mime == "image/jpeg"
 
-    def test_empty_data_returns_original(self):
+    def test_empty_data_returns_original(self) -> None:
         data = b""
         result, mime = prepare_image_for_vision(data, "image/png")
         assert result is data
@@ -153,14 +153,14 @@ class TestErrorHandling:
 class TestAFailedResizeIsReported:
     """An image that needed processing and could not be processed is never handed back as prepared."""
 
-    def test_corrupt_bytes_that_need_processing_raise_rather_than_come_back_as_prepared(self):
+    def test_corrupt_bytes_that_need_processing_raise_rather_than_come_back_as_prepared(self) -> None:
         data = b"not an image at all"
         with pytest.raises(ImagePrepError, match=r"image/heic, 19 bytes\) could not be resized") as caught:
             prepare_image_for_vision(data, "image/heic")
         assert caught.value.mime_type == "image/heic"
         assert caught.value.size_bytes == len(data)
 
-    def test_a_missing_pillow_is_reported_rather_than_sending_the_original(self):
+    def test_a_missing_pillow_is_reported_rather_than_sending_the_original(self) -> None:
         """Pillow is imported at the module's top, so its absence is simulated in a fresh interpreter."""
         big = _make_jpeg(100, 100) + b"\x00" * (SIZE_THRESHOLD + 1)
         probe = textwrap.dedent(
@@ -200,7 +200,7 @@ class TestAFailedResizeIsReported:
         assert "PLANTED-1a9f" not in (result.error or "") + result.content
 
     @pytest.mark.asyncio
-    async def test_the_tool_reports_the_failure_and_that_the_original_is_unchanged(self):
+    async def test_the_tool_reports_the_failure_and_that_the_original_is_unchanged(self) -> None:
         result = await ImagePrepTool().execute(
             image_data_base64=base64.b64encode(b"not an image at all").decode(), mime_type="image/heic"
         )

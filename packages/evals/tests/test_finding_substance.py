@@ -25,13 +25,13 @@ from threetears.evals.kernel.campaign import EvidenceRow, ReadingKind
 
 
 class TestEvidenceRowsCarryTheirBasis:
-    def test_a_row_with_no_cell_is_refused(self):
+    def test_a_row_with_no_cell_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="cell_ref"):
             EvidenceRow(
                 aspect="conversation", measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1"
             )
 
-    def test_a_cell_keyed_row_is_legitimate(self):
+    def test_a_cell_keyed_row_is_legitimate(self) -> None:
         row = EvidenceRow(
             aspect="conversation",
             cell_ref="v:a",
@@ -43,7 +43,7 @@ class TestEvidenceRowsCarryTheirBasis:
         )
         assert row.cell_ref == "v:a"
 
-    def test_an_empty_cell_ref_is_refused_rather_than_passing_for_a_coordinate(self):
+    def test_an_empty_cell_ref_is_refused_rather_than_passing_for_a_coordinate(self) -> None:
         with pytest.raises(ValidationError):
             EvidenceRow(
                 aspect="conversation",
@@ -100,7 +100,7 @@ class TestEvidenceRowsAreCheckedAgainstTheCampaignThatReportedThem:
         (aspect,) = analysis.aspects
         return resolve_reading(aspect.decision_surface, cell_at(bundle, TOYHOST_NARROW), measure, reading)
 
-    def test_a_measure_the_campaign_reported_survives_with_its_number_filled(self):
+    def test_a_measure_the_campaign_reported_survives_with_its_number_filled(self) -> None:
         bundle = self._bundle()
         (reported,) = [m for m in self._cell(bundle).measures.measures if m.name == "total_ms"]
 
@@ -115,11 +115,11 @@ class TestEvidenceRowsAreCheckedAgainstTheCampaignThatReportedThem:
         )
         assert row.dispersion, "a resolved number carries its spread"
 
-    def test_a_measure_the_campaign_never_reported_is_refused(self):
+    def test_a_measure_the_campaign_never_reported_is_refused(self) -> None:
         with pytest.raises(UnresolvableReference, match="no such measure"):
             self._resolve("invented_metric")
 
-    def test_a_judged_dimension_the_campaign_scored_survives_as_evidence(self):
+    def test_a_judged_dimension_the_campaign_scored_survives_as_evidence(self) -> None:
         """Quality is reportable: a judged score is a measurement the bundle carries, off the ranking surface."""
         (scored,) = [j for j in self._cell(self._bundle()).judged if j.dimension == TOYHOST_JUDGED_DIMENSION]
 
@@ -127,6 +127,6 @@ class TestEvidenceRowsAreCheckedAgainstTheCampaignThatReportedThem:
 
         assert (row.mean, row.reading) == (scored.mean, "judged")
 
-    def test_a_judged_dimension_the_campaign_never_scored_is_refused(self):
+    def test_a_judged_dimension_the_campaign_never_scored_is_refused(self) -> None:
         with pytest.raises(UnresolvableReference, match="no such dimension"):
             self._resolve("tone", "judged")

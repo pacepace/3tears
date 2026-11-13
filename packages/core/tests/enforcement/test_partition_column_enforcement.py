@@ -47,7 +47,7 @@ import os
 
 import pytest
 
-from packages.core.tests.enforcement.partition_column_walker import (  # type: ignore[import-not-found]
+from packages.core.tests.enforcement.partition_column_walker import (
     PACKAGE_SRC_ROOTS,
     PARTITIONED_TABLES,
     violations_in_file,

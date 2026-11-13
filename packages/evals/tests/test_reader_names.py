@@ -94,7 +94,7 @@ def test_a_declared_level_name_labels_the_arm_on_every_surface_and_moves_no_key(
         f"{TOYHOST_AXIS}=proposed width",
     ]
     listed = writer_arms(bundle.variant_index)["arms"]
-    assert sorted(arm["levels"][TOYHOST_AXIS] for arm in listed) == ["current width", "proposed width"]  # type: ignore[index]
+    assert sorted(arm["levels"][TOYHOST_AXIS] for arm in listed) == ["current width", "proposed width"]
     report = build_code_only_report(bundle, assembled_at="2026-10-10T00:00:00Z")
     scoreboard = next(b for b in report.blocks if isinstance(b, TableBlock) and b.name == "scoreboard")
     # The page names an arm by its level's name alone, never as ``axis=level``.

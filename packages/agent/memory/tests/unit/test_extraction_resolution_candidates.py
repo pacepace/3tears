@@ -52,7 +52,7 @@ async def _prompt(candidates: list[dict[str, Any]]) -> str:
     extractor = MemoryExtractor(
         config=MemoryConfig(),
         embedding_provider=MagicMock(),
-        chat_model_factory=factory,  # type: ignore[arg-type]
+        chat_model_factory=factory,
         authorizer=MagicMock(),
         memories_collection=MagicMock(),
     )

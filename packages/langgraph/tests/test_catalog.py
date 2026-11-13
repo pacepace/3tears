@@ -188,7 +188,7 @@ async def test_catalog_fires_on_object_handle_artifact() -> None:
     ctx = _ctx()
     config = _config(tool, cataloger=cataloger, call_context=ctx)
     state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-    result = await _run_seam(state, config)  # type: ignore[arg-type]
+    result = await _run_seam(state, config)
     # the tool result still flows.
     assert result["messages"][0].content == "2 hosts, 5 open ports"
     # the cataloger received the reconstructed handle + the verified identity.
@@ -208,7 +208,7 @@ async def test_no_cataloger_is_noop() -> None:
     tool = _producing_tool("scan", {OBJECT_HANDLE_METADATA_KEY: _handle().to_metadata()})
     config = _config(tool, call_context=_ctx())
     state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-    result = await _run_seam(state, config)  # type: ignore[arg-type]
+    result = await _run_seam(state, config)
     assert result["messages"][0].content == "2 hosts, 5 open ports"
 
 
@@ -219,7 +219,7 @@ async def test_artifact_without_handle_is_not_cataloged() -> None:
     cataloger = _FakeCataloger()
     config = _config(tool, cataloger=cataloger, call_context=_ctx())
     state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-    await _run_seam(state, config)  # type: ignore[arg-type]
+    await _run_seam(state, config)
     assert cataloger.calls == []
 
 
@@ -230,7 +230,7 @@ async def test_missing_customer_skips_catalog() -> None:
     cataloger = _FakeCataloger()
     config = _config(tool, cataloger=cataloger, call_context=_ctx(customer_id=None))
     state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-    result = await _run_seam(state, config)  # type: ignore[arg-type]
+    result = await _run_seam(state, config)
     assert cataloger.calls == []
     # the tool result still flows.
     assert result["messages"][0].content == "2 hosts, 5 open ports"
@@ -243,7 +243,7 @@ async def test_malformed_handle_soft_fails() -> None:
     cataloger = _FakeCataloger()
     config = _config(tool, cataloger=cataloger, call_context=_ctx())
     state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-    result = await _run_seam(state, config)  # type: ignore[arg-type]
+    result = await _run_seam(state, config)
     assert cataloger.calls == []
     assert result["messages"][0].content == "2 hosts, 5 open ports"
 
@@ -255,6 +255,6 @@ async def test_catalog_failure_soft_fails() -> None:
     cataloger = _FakeCataloger(raises=RuntimeError("db down"))
     config = _config(tool, cataloger=cataloger, call_context=_ctx())
     state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-    result = await _run_seam(state, config)  # type: ignore[arg-type]
+    result = await _run_seam(state, config)
     assert len(cataloger.calls) == 1  # attempted
     assert result["messages"][0].content == "2 hosts, 5 open ports"  # but result survives

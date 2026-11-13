@@ -1,10 +1,10 @@
-def test_core_import():
+def test_core_import() -> None:
     from threetears.core import __version__
 
     assert __version__ == "0.95.0"
 
 
-def test_cross_package_imports():
+def test_cross_package_imports() -> None:
     from threetears.core import __version__ as core_version
     from threetears.agent.memory import __version__ as memory_version
     from threetears.agent.tools import __version__ as tools_version

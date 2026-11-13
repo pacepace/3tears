@@ -221,9 +221,9 @@ def test_the_report_states_the_boolean_s_contrast_in_points_of_a_share(bundle: A
 
     report = build_code_only_report(bundle, assembled_at="2026-10-31T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
-    (row,) = [row for row in table.values() if row["reading"] == "Top up never"]  # type: ignore[attr-defined]
+    (row,) = [row for row in table.values() if row["reading"] == "Top up never"]
     (folded,) = [block for block in report.blocks if getattr(block, "name", None) == "comparison_statistics"]
-    (stats,) = [row for row in folded.values() if row["reading"] == "Top up never"]  # type: ignore[attr-defined]
+    (stats,) = [row for row in folded.values() if row["reading"] == "Top up never"]
 
     assert isinstance(row["interval"], str) and row["interval"].endswith(" pts")
     assert stats["control_mean"] == pytest.approx(100 * sum(_CONTROL_TRUE) / (K * len(_CONTROL_TRUE)))

@@ -14,7 +14,7 @@ def _python_files():
 
 
 @pytest.mark.parametrize("path", _python_files(), ids=lambda p: p.name)
-def test_no_bare_except(path: Path):
+def test_no_bare_except(path: Path) -> None:
     """No bare except clauses (except Exception: pass is also banned)."""
     content = path.read_text()
     for i, line in enumerate(content.splitlines(), 1):
@@ -27,7 +27,7 @@ def test_no_bare_except(path: Path):
 
 
 @pytest.mark.parametrize("path", _python_files(), ids=lambda p: p.name)
-def test_no_print_statements(path: Path):
+def test_no_print_statements(path: Path) -> None:
     """Source files should use logging, not print()."""
     content = path.read_text()
     for i, line in enumerate(content.splitlines(), 1):

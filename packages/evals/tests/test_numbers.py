@@ -45,7 +45,7 @@ class TestTheLargeEnd:
     def test_a_large_value_is_rounded_to_the_integer(self, value, text):
         assert format_number(value) == text
 
-    def test_the_line_is_where_four_figures_reach_the_units_digit(self):
+    def test_the_line_is_where_four_figures_reach_the_units_digit(self) -> None:
         """Just under it, four significant figures; at it, the integer — the two agree on the digits."""
         assert format_number(WHOLE_FROM - 0.5) == "999.5"
         assert format_number(WHOLE_FROM + 0.25) == "1000"
@@ -70,7 +70,7 @@ class TestTheSmallEnd:
         assert format_number(value) == text
         assert WRITTEN_FROM == 1e-6
 
-    def test_it_is_four_significant_figures_in_the_middle(self):
+    def test_it_is_four_significant_figures_in_the_middle(self) -> None:
         assert format_number(0.0123456) == "0.01235"
         assert format_number(12.3456) == "12.35"
 
@@ -155,7 +155,7 @@ class TestTheSignedFormWithAUnit:
         said = quantities.signed_with_unit(value, "usd") if signed else quantities.with_unit(value, "usd")
         assert said == text and "usd" not in said
 
-    def test_no_signed_spelling_signs_a_bound(self):
+    def test_no_signed_spelling_signs_a_bound(self) -> None:
         """``+< 0.000001 ms`` is no spelling: a bound already says which side of zero it is on."""
         for value in (3.6e-7, -3.6e-7):
             for unit in ("ms", "%", ""):
@@ -216,7 +216,7 @@ class TestHalfToEven:
     def test_a_tie_rounds_to_the_even_digit(self, value, places, text):
         assert round_half_even(value, places) == text
 
-    def test_it_rounds_the_stored_value_not_its_shortest_spelling(self):
+    def test_it_rounds_the_stored_value_not_its_shortest_spelling(self) -> None:
         """2.675 is stored a hair under its spelling, so it rounds down, as every other figure on the page does."""
         assert round_half_even(2.675, 2) == "2.67"
 
@@ -224,10 +224,10 @@ class TestHalfToEven:
     def test_a_value_that_rounds_to_zero_carries_no_sign(self, value, text):
         assert round_half_even(value, 1) == text
 
-    def test_a_negative_value_keeps_its_sign(self):
+    def test_a_negative_value_keeps_its_sign(self) -> None:
         assert round_half_even(-1.25, 1) == "-1.2"
 
-    def test_no_places_reads_whole(self):
+    def test_no_places_reads_whole(self) -> None:
         assert round_half_even(84.6, 0) == "85"
 
 
@@ -272,7 +272,7 @@ class TestAnEffectSize:
 
 
 class TestThereIsOneImplementation:
-    def test_every_surface_that_spells_numbers_holds_the_same_function(self):
+    def test_every_surface_that_spells_numbers_holds_the_same_function(self) -> None:
         """The quantities and a page's forms, which spell every figure the report's builder states, spell their values
         with it; nothing holds a copy. The references spell none themselves: an evidence row's figures are a page's
         forms' (``PageForms.off_page``), so they hold no spelling function at all."""
@@ -281,7 +281,7 @@ class TestThereIsOneImplementation:
         assert not hasattr(references, "format_number")
         assert references.PageForms is report_forms.PageForms
 
-    def test_no_other_module_defines_a_number_formatter(self):
+    def test_no_other_module_defines_a_number_formatter(self) -> None:
         """A second ``def format_number`` anywhere in the engine or its surfaces is the defect itself.
 
         Walks every module of the package rather than a list of the ones that once had a copy,
@@ -303,12 +303,12 @@ class TestTheWidenedModulesRenderByTheRule:
     and a non-finite value, which ``.4g`` spells ``nan`` and the rule spells absent.
     """
 
-    def test_a_large_effect_size_is_written_whole(self):
+    def test_a_large_effect_size_is_written_whole(self) -> None:
         assert f"{12345.6:.4g}" == "1.235e+04"
         cell = significance.format_significance(significant=True, paired=True, p=3e-7, effect=12345.6, n=4)
         assert cell == f"{significance.SIGNIFICANT_LABEL} (p={format_number(3e-7)}, d_z=12346, n=4)"
 
-    def test_a_p_value_that_is_not_a_number_reads_as_absent(self):
+    def test_a_p_value_that_is_not_a_number_reads_as_absent(self) -> None:
         """The one input where ``.4g`` and the rule part on a p-value: ``.4g`` prints ``nan``.
 
         Every finite p lies in [0, 1], where the two spellings agree digit for digit, so this is the
@@ -318,7 +318,7 @@ class TestTheWidenedModulesRenderByTheRule:
         cell = significance.format_significance(significant=False, paired=True, p=math.nan, effect=0.5, n=4)
         assert f"p={ABSENT}, " in cell
 
-    def test_a_large_partition_overrun_is_written_whole(self):
+    def test_a_large_partition_overrun_is_written_whole(self) -> None:
         overrun = 1234467.5
         assert f"{overrun:g}" == "1.23447e+06"
         partition = latency_partition.decompose_total_ms(

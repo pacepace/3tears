@@ -22,68 +22,68 @@ class Color(Enum):
 
 
 class TestSerializeToJson:
-    def test_basic_types(self):
+    def test_basic_types(self) -> None:
         data = {"name": "test", "count": 42, "active": True}
         result = json.loads(serialize_to_json(data))
         assert result == data
 
-    def test_uuid(self):
+    def test_uuid(self) -> None:
         uid = uuid4()
         data = {"id": uid}
         result = json.loads(serialize_to_json(data))
         assert result["id"] == str(uid)
 
-    def test_datetime(self):
+    def test_datetime(self) -> None:
         """the one stored form every tier writes: ``T``, six fraction digits, UTC offset."""
         dt = datetime(2026, 1, 15, 12, 30, 0, tzinfo=timezone.utc)
         data = {"created": dt}
         result = json.loads(serialize_to_json(data))
         assert result["created"] == "2026-01-15T12:30:00.000000+00:00"
 
-    def test_decimal(self):
+    def test_decimal(self) -> None:
         data = {"price": Decimal("19.99")}
         result = json.loads(serialize_to_json(data))
         assert result["price"] == "19.99"
 
-    def test_bytes(self):
+    def test_bytes(self) -> None:
         data = {"payload": b"\xde\xad\xbe\xef"}
         result = json.loads(serialize_to_json(data))
         assert result["payload"] == "deadbeef"
 
-    def test_enum(self):
+    def test_enum(self) -> None:
         data = {"color": Color.RED}
         result = json.loads(serialize_to_json(data))
         assert result["color"] == "red"
 
-    def test_unsupported_type_raises(self):
+    def test_unsupported_type_raises(self) -> None:
         with pytest.raises(TypeError, match="not JSON serializable"):
             serialize_to_json({"bad": object()})
 
-    def test_returns_bytes(self):
+    def test_returns_bytes(self) -> None:
         result = serialize_to_json({"x": 1})
         assert isinstance(result, bytes)
 
-    def test_none_values(self):
+    def test_none_values(self) -> None:
         data = {"name": "test", "value": None}
         result = json.loads(serialize_to_json(data))
         assert result["value"] is None
 
 
 class TestDeserializeFromJson:
-    def test_uuid_restoration(self):
+    def test_uuid_restoration(self) -> None:
         uid = uuid4()
         raw = serialize_to_json({"id": uid})
         result = deserialize_from_json(raw, {"id": UUID})
         assert result["id"] == uid
         assert isinstance(result["id"], UUID)
 
-    def test_datetime_restoration(self):
+    def test_datetime_restoration(self) -> None:
         dt = datetime(2026, 1, 15, 12, 30, 0, tzinfo=timezone.utc)
         raw = serialize_to_json({"created": dt})
         result = deserialize_from_json(raw, {"created": datetime})
         assert result["created"] == dt
 
-    def test_decimal_restoration(self):
+    def test_decimal_restoration(self) -> None:
         raw = serialize_to_json({"price": Decimal("19.99")})
         result = deserialize_from_json(raw, {"price": Decimal})
         assert result["price"] == Decimal("19.99")
@@ -108,44 +108,44 @@ class TestDeserializeFromJson:
     def test_a_bool_in_a_decimal_field_is_left_as_written(self) -> None:
         assert deserialize_from_json(b'{"price": true}', {"price": Decimal})["price"] is True
 
-    def test_bytes_restoration(self):
+    def test_bytes_restoration(self) -> None:
         raw = serialize_to_json({"payload": b"\xde\xad"})
         result = deserialize_from_json(raw, {"payload": bytes})
         assert result["payload"] == b"\xde\xad"
 
-    def test_int_restoration(self):
+    def test_int_restoration(self) -> None:
         raw = serialize_to_json({"count": 42})
         result = deserialize_from_json(raw, {"count": int})
         assert result["count"] == 42
         assert isinstance(result["count"], int)
 
-    def test_bool_restoration(self):
+    def test_bool_restoration(self) -> None:
         raw = serialize_to_json({"active": True})
         result = deserialize_from_json(raw, {"active": bool})
         assert result["active"] is True
 
-    def test_list_passthrough(self):
+    def test_list_passthrough(self) -> None:
         raw = serialize_to_json({"tags": ["a", "b"]})
         result = deserialize_from_json(raw, {"tags": list[str]})
         assert result["tags"] == ["a", "b"]
 
-    def test_none_preserved(self):
+    def test_none_preserved(self) -> None:
         raw = serialize_to_json({"value": None})
         result = deserialize_from_json(raw, {"value": UUID})
         assert result["value"] is None
 
-    def test_optional_uuid(self):
+    def test_optional_uuid(self) -> None:
         uid = uuid4()
         raw = serialize_to_json({"id": uid})
         result = deserialize_from_json(raw, {"id": UUID | None})
         assert result["id"] == uid
 
-    def test_unknown_field_passthrough(self):
+    def test_unknown_field_passthrough(self) -> None:
         raw = serialize_to_json({"extra": "hello"})
         result = deserialize_from_json(raw, {})
         assert result["extra"] == "hello"
 
-    def test_round_trip_complex(self):
+    def test_round_trip_complex(self) -> None:
         uid = uuid4()
         dt = datetime(2026, 3, 12, tzinfo=timezone.utc)
         original = {

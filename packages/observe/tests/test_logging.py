@@ -56,40 +56,40 @@ def _restore_logging_levels():
 class TestContext:
     """Generic context get/set/clear."""
 
-    def test_set_and_read(self):
+    def test_set_and_read(self) -> None:
         set_context(cid="req-123", sid="sess-456")
         ctx = get_context()
         assert ctx["cid"] == "req-123"
         assert ctx["sid"] == "sess-456"
 
-    def test_arbitrary_keys(self):
+    def test_arbitrary_keys(self) -> None:
         set_context(tenant="acme", request="req-789", custom_field="value")
         ctx = get_context()
         assert ctx == {"tenant": "acme", "request": "req-789", "custom_field": "value"}
 
-    def test_clear_context(self):
+    def test_clear_context(self) -> None:
         set_context(cid="a", sid="b", conv="c")
         clear_context()
         assert get_context() == {}
 
-    def test_set_none_removes_key(self):
+    def test_set_none_removes_key(self) -> None:
         set_context(cid="a", sid="b")
         set_context(cid=None)
         ctx = get_context()
         assert "cid" not in ctx
         assert ctx["sid"] == "b"
 
-    def test_non_string_coerced(self):
+    def test_non_string_coerced(self) -> None:
         set_context(count=42)  # type: ignore[arg-type]
         assert get_context()["count"] == "42"
 
-    def test_get_context_returns_copy(self):
+    def test_get_context_returns_copy(self) -> None:
         set_context(cid="a")
         ctx = get_context()
         ctx["cid"] = "mutated"
         assert get_context()["cid"] == "a"
 
-    def test_set_context_merges(self):
+    def test_set_context_merges(self) -> None:
         set_context(cid="a")
         set_context(sid="b")
         ctx = get_context()
@@ -99,7 +99,7 @@ class TestContext:
 class TestContextFormatter:
     """ContextFormatter output format."""
 
-    def test_format_with_context(self):
+    def test_format_with_context(self) -> None:
         set_context(cid="cid-1", sid="sid-2", conv="conv-3")
         formatter = ContextFormatter(use_color=False)
         record = logging.LogRecord(
@@ -117,7 +117,7 @@ class TestContextFormatter:
         assert "[conv:conv-3]" in output
         assert "hello" in output
 
-    def test_format_says_which_process_wrote_the_line_when_asked(self):
+    def test_format_says_which_process_wrote_the_line_when_asked(self) -> None:
         import os
 
         set_context(cid="abc")
@@ -127,13 +127,13 @@ class TestContextFormatter:
         assert asked.split(" ")[2:4] == [f"[pid:{os.getpid()}]", "[cid:abc]"]
         assert "[pid:" not in ContextFormatter(use_color=False).format(record)
 
-    def test_format_reads_the_process_id_when_the_line_is_written(self):
+    def test_format_reads_the_process_id_when_the_line_is_written(self) -> None:
         record = logging.LogRecord("test", logging.INFO, "test.py", 42, "hello", None, None)
         formatter = ContextFormatter(use_color=False, process_id=True)
         with patch("threetears.observe.logging.os.getpid", return_value=4242):
             assert " [pid:4242] " in formatter.format(record)
 
-    def test_format_without_context(self):
+    def test_format_without_context(self) -> None:
         formatter = ContextFormatter(use_color=False)
         record = logging.LogRecord(
             name="test",
@@ -149,7 +149,7 @@ class TestContextFormatter:
         assert "[" not in output.split("Z]")[0] if "Z]" in output else True
         assert "hello" in output
 
-    def test_format_with_color(self):
+    def test_format_with_color(self) -> None:
         formatter = ContextFormatter(use_color=True)
         record = logging.LogRecord(
             name="test",
@@ -163,7 +163,7 @@ class TestContextFormatter:
         output = formatter.format(record)
         assert "\033[32m" in output  # green for INFO
 
-    def test_format_with_extra_data(self):
+    def test_format_with_extra_data(self) -> None:
         formatter = ContextFormatter(use_color=False)
         record = logging.LogRecord(
             name="test",
@@ -174,12 +174,12 @@ class TestContextFormatter:
             args=(),
             exc_info=None,
         )
-        record.extra_data = {"key": "value"}  # type: ignore[attr-defined]
+        record.extra_data = {"key": "value"}
         output = formatter.format(record)
         assert '"key"' in output
         assert '"value"' in output
 
-    def test_format_with_call_site_class(self):
+    def test_format_with_call_site_class(self) -> None:
         formatter = ContextFormatter(use_color=False)
         record = logging.LogRecord(
             name="test",
@@ -190,14 +190,14 @@ class TestContextFormatter:
             args=(),
             exc_info=None,
         )
-        record.call_site_file = "handler.py"  # type: ignore[attr-defined]
-        record.call_site_class = "MyHandler"  # type: ignore[attr-defined]
-        record.call_site_func = "handle"  # type: ignore[attr-defined]
-        record.call_site_line = 42  # type: ignore[attr-defined]
+        record.call_site_file = "handler.py"
+        record.call_site_class = "MyHandler"
+        record.call_site_func = "handle"
+        record.call_site_line = 42
         output = formatter.format(record)
         assert "handler.py/MyHandler.handle.42" in output
 
-    def test_format_with_exception(self):
+    def test_format_with_exception(self) -> None:
         formatter = ContextFormatter(use_color=False)
         try:
             raise ValueError("boom")
@@ -218,7 +218,7 @@ class TestContextFormatter:
         output = formatter.format(record)
         assert "ValueError: boom" in output
 
-    def test_format_renders_custom_keys(self):
+    def test_format_renders_custom_keys(self) -> None:
         set_context(tenant="acme", trace_id="t-123")
         formatter = ContextFormatter(use_color=False)
         record = logging.LogRecord(
@@ -238,11 +238,11 @@ class TestContextFormatter:
 class TestThreeTearsLogger:
     """ThreeTearsLogger call-site capture."""
 
-    def test_logger_is_correct_class(self):
+    def test_logger_is_correct_class(self) -> None:
         logger = get_logger("test.threetears_logger")
         assert isinstance(logger, ThreeTearsLogger)
 
-    def test_call_site_capture(self):
+    def test_call_site_capture(self) -> None:
         logger = get_logger("test.call_site")
         handler = logging.Handler()
         records: list[logging.LogRecord] = []
@@ -257,11 +257,11 @@ class TestThreeTearsLogger:
         assert hasattr(record, "call_site_file")
         assert hasattr(record, "call_site_func")
         assert hasattr(record, "call_site_line")
-        assert record.call_site_func == "test_call_site_capture"  # type: ignore[attr-defined]
+        assert record.call_site_func == "test_call_site_capture"
 
         logger.removeHandler(handler)
 
-    def test_extra_data_passthrough(self):
+    def test_extra_data_passthrough(self) -> None:
         logger = get_logger("test.extra_data")
         handler = logging.Handler()
         records: list[logging.LogRecord] = []
@@ -276,7 +276,7 @@ class TestThreeTearsLogger:
 
         logger.removeHandler(handler)
 
-    def test_class_detection(self):
+    def test_class_detection(self) -> None:
         logger = get_logger("test.class_detect")
         handler = logging.Handler()
         records: list[logging.LogRecord] = []
@@ -285,7 +285,7 @@ class TestThreeTearsLogger:
         logger.setLevel(logging.DEBUG)
 
         class MyClass:
-            def do_thing(self):
+            def do_thing(self) -> None:
                 logger.info("from method")
 
         MyClass().do_thing()
@@ -295,13 +295,13 @@ class TestThreeTearsLogger:
 
         logger.removeHandler(handler)
 
-    def test_each_record_names_the_class_of_the_instance_that_logged_it(self):
+    def test_each_record_names_the_class_of_the_instance_that_logged_it(self) -> None:
         """one logging line in a base class, run by instances of two subclasses: each record names its own."""
         logger = get_logger("test.class_per_record")
         records = _records_of(logger)
 
         class Base:
-            def report(self):
+            def report(self) -> None:
                 logger.info("from the base")
 
         class First(Base):
@@ -336,7 +336,7 @@ def _records_of(logger: logging.Logger) -> list[logging.LogRecord]:
 class TestPathShortening:
     """File path shortening, as the call-site file a ThreeTearsLogger record carries."""
 
-    def test_strips_configured_prefix(self):
+    def test_strips_configured_prefix(self) -> None:
         logger = get_logger("test.path_strip_prefix")
         records = _records_of(logger)
         path_strip_prefixes.append("packages/observe/")
@@ -347,7 +347,7 @@ class TestPathShortening:
 
         assert records[0].call_site_file == "tests/test_logging.py"  # type: ignore[attr-defined]
 
-    def test_falls_back_to_basename(self):
+    def test_falls_back_to_basename(self) -> None:
         logger = get_logger("test.path_basename")
         records = _records_of(logger)
 
@@ -359,7 +359,7 @@ class TestPathShortening:
 class TestConfigureLogging:
     """configure_logging() and configure_third_party_logging()."""
 
-    def test_configure_logging_creates_handler(self):
+    def test_configure_logging_creates_handler(self) -> None:
         py_root = logging.getLogger()
         tt_root = logging.getLogger("threetears")
         original_py_handlers = py_root.handlers[:]
@@ -376,7 +376,7 @@ class TestConfigureLogging:
             py_root.handlers = original_py_handlers
             tt_root.level = original_tt_level
 
-    def test_configure_logging_idempotent(self):
+    def test_configure_logging_idempotent(self) -> None:
         py_root = logging.getLogger()
         tt_root = logging.getLogger("threetears")
         original_py_handlers = py_root.handlers[:]
@@ -392,7 +392,7 @@ class TestConfigureLogging:
             py_root.handlers = original_py_handlers
             tt_root.level = original_tt_level
 
-    def test_configure_logging_puts_the_process_id_on_its_own_and_later_loggers(self):
+    def test_configure_logging_puts_the_process_id_on_its_own_and_later_loggers(self) -> None:
         import os
 
         py_root = logging.getLogger()
@@ -412,7 +412,7 @@ class TestConfigureLogging:
             py_root.handlers, py_root.level, late.handlers = original_py_handlers, original_level, original_late
             late.propagate = True
 
-    def test_configure_logging_with_strip_prefixes(self):
+    def test_configure_logging_with_strip_prefixes(self) -> None:
         original = path_strip_prefixes[:]
         try:
             configure_logging(strip_prefixes=["custom/prefix/"])
@@ -420,7 +420,7 @@ class TestConfigureLogging:
         finally:
             path_strip_prefixes[:] = original
 
-    def test_configure_third_party_logging(self):
+    def test_configure_third_party_logging(self) -> None:
         logger_name = "test.third_party_unique"
         logger = logging.getLogger(logger_name)
         original_handlers = logger.handlers[:]
@@ -434,7 +434,7 @@ class TestConfigureLogging:
             logger.handlers = original_handlers
 
     @patch.dict("os.environ", {"THREETEARS_LOG_LEVEL": "WARNING"})
-    def test_env_var_override(self):
+    def test_env_var_override(self) -> None:
         root = logging.getLogger("threetears")
         original_handlers = root.handlers[:]
         try:
@@ -448,21 +448,21 @@ class TestConfigureLogging:
 class TestRepresentativeException:
     """representative_exception unwraps a BaseExceptionGroup to its real fault."""
 
-    def test_plain_exception_passes_through(self):
+    def test_plain_exception_passes_through(self) -> None:
         boom = RuntimeError("real fault")
         assert representative_exception(boom) is boom
 
-    def test_single_leaf_group_is_unwrapped(self):
+    def test_single_leaf_group_is_unwrapped(self) -> None:
         boom = ValueError("real fault")
         group = BaseExceptionGroup("wrapped", [boom])
         assert representative_exception(group) is boom
 
-    def test_nested_group_is_descended_to_the_leaf(self):
+    def test_nested_group_is_descended_to_the_leaf(self) -> None:
         boom = KeyError("real fault")
         nested = BaseExceptionGroup("outer", [BaseExceptionGroup("inner", [boom])])
         assert representative_exception(nested) is boom
 
-    def test_first_branch_is_chosen_for_a_multi_leaf_group(self):
+    def test_first_branch_is_chosen_for_a_multi_leaf_group(self) -> None:
         first = RuntimeError("first")
         second = ValueError("second")
         group = BaseExceptionGroup("two", [first, second])

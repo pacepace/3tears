@@ -106,48 +106,48 @@ def _why(plan: dict[str, Any], path: str, data: dict[str, Any] | None = None) ->
 
 
 class TestCharts:
-    def test_a_kind_that_cannot_draw_its_source_is_refused(self):
+    def test_a_kind_that_cannot_draw_its_source_is_refused(self) -> None:
         assert "cannot draw 'measures'" in _why(_set(_plan(), "summary[1].kind", "forest"), "summary[1].kind")
         plan = _set(_plan(), "sections[1].chart.kind", "lattice")
         assert "sections[1].chart.kind" in _paths(plan, "sections[1].chart")
 
-    def test_a_forest_over_rows_without_intervals_is_refused(self):
+    def test_a_forest_over_rows_without_intervals_is_refused(self) -> None:
         data = _data()
         for contrast in data["contrasts"]:
             if contrast["measure"] == "passed":
                 contrast.update(interval=None, verdict="untested")
         assert "carries no interval" in _why(_plan(), "summary[0].kind", data)
 
-    def test_an_absent_measure_is_refused(self):
+    def test_an_absent_measure_is_refused(self) -> None:
         plan = _plan()
         plan["summary"][0]["query"]["measures"].append("persona.booth_stays_offstage")
         assert "persona.booth_stays_offstage" in _why(plan, "summary[0].query.measures")
 
-    def test_a_measure_on_a_source_that_names_none_is_refused(self):
+    def test_a_measure_on_a_source_that_names_none_is_refused(self) -> None:
         plan = _set(_plan(), "sections[0].chart.query.measures", ["passed"])
         assert "names none" in _why(plan, "sections[0].chart.query.measures")
 
-    def test_an_absent_arm_is_refused(self):
+    def test_an_absent_arm_is_refused(self) -> None:
         plan = _set(_plan(), "sections[2].chart.query.arms", ["qwen3.8-flash", "1018"])
         assert "1018" in _why(plan, "sections[2].chart.query.arms")
 
-    def test_an_absent_aspect_is_refused(self):
+    def test_an_absent_aspect_is_refused(self) -> None:
         plan = _set(_plan(), "sections[0].chart.query.aspect", "character adherence")
         assert "sections[0].chart.query.aspect" in _paths(plan, "sections[0].chart")
 
-    def test_an_absent_stratum_is_refused(self):
+    def test_an_absent_stratum_is_refused(self) -> None:
         plan = _set(_plan(), "sections[2].chart.query.strata", ["off_lane", "offlane"])
         assert "offlane" in _why(plan, "sections[2].chart.query.strata")
 
-    def test_a_query_selecting_nothing_is_refused(self):
+    def test_a_query_selecting_nothing_is_refused(self) -> None:
         plan = _set(_plan(), "sections[2].chart.query.arms", ["September"])
         assert "selects nothing" in _why(plan, "sections[2].chart.query")
 
-    def test_an_unresolvable_reference_key_is_refused(self):
+    def test_an_unresolvable_reference_key_is_refused(self) -> None:
         plan = _set(_plan(), "sections[0].chart.reference[0].key", "aspect.floor")
         assert "sections[0].chart.reference[0].key" in _paths(plan, "sections[0].chart")
 
-    def test_an_emphasis_on_nothing_present_is_refused(self):
+    def test_an_emphasis_on_nothing_present_is_refused(self) -> None:
         plan = _set(_plan(), "sections[0].chart.emphasis", "qwen")
         assert "sections[0].chart.emphasis" in _paths(plan, "sections[0].chart")
 
@@ -159,17 +159,17 @@ class TestCharts:
             ("r2", "sections[1].chart", "configs", "diverging_bars"),
         ],
     )
-    def test_a_kind_draws_each_source_its_resolver_reads(self, name: str, path: str, source: str, kind: str):
+    def test_a_kind_draws_each_source_its_resolver_reads(self, name: str, path: str, source: str, kind: str) -> None:
         plan = _anchor(name)
         assert _get(plan, f"{path}.query.source") == source
         assert f"{path}.kind" not in _paths(_set(plan, f"{path}.kind", kind), path, name)
 
-    def test_a_gate_matrix_draws_readings(self):
+    def test_a_gate_matrix_draws_readings(self) -> None:
         plan = _set(_plan(), "summary[0].kind", "gate_matrix")
         plan["summary"][0]["query"] |= {"source": "readings", "aspect": ASPECT, "measures": []}
         assert "summary[0].kind" not in _paths(plan, "summary[0]")
 
-    def test_range_bars_still_draw_no_strata(self):
+    def test_range_bars_still_draw_no_strata(self) -> None:
         plan = _set(_plan(), "sections[1].chart.kind", "range_bars")
         assert "cannot draw 'strata'" in _why(plan, "sections[1].chart.kind")
 
@@ -183,19 +183,19 @@ _UNPANELLED = {"gate_matrix", "lattice", "forest", "lines", "range_bars", "examp
 
 
 class TestSmallMultiples:
-    def test_small_multiples_of_a_forest_are_refused(self):
+    def test_small_multiples_of_a_forest_are_refused(self) -> None:
         plan = _set(_plan(), "summary[0].query.small_multiples_by", "arm")
         why = _why(plan, "summary[0].query.small_multiples_by")
         assert "no small multiples of a 'forest'" in why and "'none'" in why
 
     @pytest.mark.parametrize("kind", sorted(PANELLED | _UNPANELLED))
-    def test_only_a_kind_the_kit_panels_repeats_its_panel(self, kind: str):
+    def test_only_a_kind_the_kit_panels_repeats_its_panel(self, kind: str) -> None:
         plan = _set(_plan(), "summary[1].kind", kind)
         _set(plan, "summary[1].query.small_multiples_by", "arm")
         refused = "summary[1].query.small_multiples_by" in _paths(plan, "summary[1]")
         assert refused == (kind not in PANELLED), kind
 
-    def test_no_small_multiples_is_never_refused(self):
+    def test_no_small_multiples_is_never_refused(self) -> None:
         plan = _set(_plan(), "summary[0].query.small_multiples_by", "none")
         assert "summary[0].query.small_multiples_by" not in _paths(plan, "summary[0]")
 
@@ -254,64 +254,64 @@ def _chart_paths(plan: dict[str, Any]) -> list[str]:
 
 class TestReferenceLines:
     @pytest.mark.parametrize("name", ["r1", "r2", "r3", "r4", "r5"])
-    def test_each_anchor_completes_with_the_reference_lines_it_stores(self, name: str):
+    def test_each_anchor_completes_with_the_reference_lines_it_stores(self, name: str) -> None:
         plan = _anchor(name)
         for path in _chart_paths(plan):
             completed, faults = _completed(name, plan, path)
             assert not faults, (path, faults)
             assert completed.reference == ChartSpec.model_validate(_get(plan, path)).reference, path
 
-    def test_a_margin_line_sits_at_the_asked_aspects_margin(self):
+    def test_a_margin_line_sits_at_the_asked_aspects_margin(self) -> None:
         assert _key_at("r5", _anchor("r5"), "sections[0].chart") == "aspect.margin"
 
-    def test_a_floor_sits_at_the_one_criterion_reading_the_charts_measure(self):
+    def test_a_floor_sits_at_the_one_criterion_reading_the_charts_measure(self) -> None:
         assert _key_at("r2", _line("r2", "summary[0]", "floor"), "summary[0]") == "criteria.pass_rate.threshold"
 
-    def test_a_floor_on_a_task_reads_the_task_criterion_where_the_chart_keeps_that_task(self):
+    def test_a_floor_on_a_task_reads_the_task_criterion_where_the_chart_keeps_that_task(self) -> None:
         assert _get(_anchor("r1"), "sections[1].chart.query.strata") == ["specul"]
         key = _key_at("r1", _line("r1", "sections[1].chart", "floor"), "sections[1].chart")
         assert key == "criteria.specul.declines.threshold"
 
-    def test_a_task_criterion_reads_nothing_on_a_chart_keeping_every_task(self):
+    def test_a_task_criterion_reads_nothing_on_a_chart_keeping_every_task(self) -> None:
         plan = _line("r1", "sections[1].chart", "floor", strata=[])
         assert "no criterion reads 'declines'" in _line_fault("r1", plan, "sections[1].chart")
 
-    def test_a_budget_on_range_bars_sits_at_the_p95_criterion(self):
+    def test_a_budget_on_range_bars_sits_at_the_p95_criterion(self) -> None:
         plan = _line("r1", "sections[2].chart", "budget")
         _set(plan, "sections[2].chart.kind", "range_bars")
         _set(plan, "sections[2].chart.query.small_multiples_by", "none")
         assert _key_at("r1", plan, "sections[2].chart") == "criteria.p95.threshold"
 
-    def test_a_budget_on_bars_of_the_mean_reads_no_p95_criterion(self):
+    def test_a_budget_on_bars_of_the_mean_reads_no_p95_criterion(self) -> None:
         why = _line_fault("r1", _line("r1", "sections[2].chart", "budget"), "sections[2].chart")
         assert "no criterion reads 'latency_s'" in why and "['mean']" in why
 
-    def test_a_floor_never_sits_at_a_budget(self):
+    def test_a_floor_never_sits_at_a_budget(self) -> None:
         plan = _line("r1", "sections[2].chart", "floor")
         _set(plan, "sections[2].chart.kind", "range_bars")
         _set(plan, "sections[2].chart.query.small_multiples_by", "none")
         assert "higher is better" in _line_fault("r1", plan, "sections[2].chart")
 
-    def test_a_floor_on_a_chart_of_cells_sits_at_the_each_cell_criterion(self):
+    def test_a_floor_on_a_chart_of_cells_sits_at_the_each_cell_criterion(self) -> None:
         key = _key_at("r3", _line("r3", "sections[1].chart", "floor"), "sections[1].chart")
         assert key == "criteria.cell_floor.threshold"
 
-    def test_two_criteria_reading_the_charts_measure_are_refused_naming_both(self):
+    def test_two_criteria_reading_the_charts_measure_are_refused_naming_both(self) -> None:
         data = _data("r2")
         data["criteria"].append({**data["criteria"][0], "id": "pass_rate.again", "threshold": 95.0})
         why = _line_fault("r2", _line("r2", "summary[0]", "floor"), "summary[0]", data)
         assert "['pass_rate', 'pass_rate.again']" in why
 
-    def test_a_chart_reading_several_measures_takes_no_floor(self):
+    def test_a_chart_reading_several_measures_takes_no_floor(self) -> None:
         plan = _line("r2", "summary[0]", "floor", measures=["pass_rate", "outcome"])
         assert "the measures ['pass_rate', 'outcome']" in _line_fault("r2", plan, "summary[0]")
 
-    def test_a_chart_of_readings_reads_no_measure_for_a_floor(self):
+    def test_a_chart_of_readings_reads_no_measure_for_a_floor(self) -> None:
         plan = _anchor("r5")
         _set(plan, "sections[0].chart.reference", [{"kind": "floor", "key": "placeholder"}])
         assert "reads no measure" in _line_fault("r5", plan, "sections[0].chart")
 
-    def test_a_no_preference_line_is_refused(self):
+    def test_a_no_preference_line_is_refused(self) -> None:
         plan = _line("r2", "summary[0]", "no_preference")
         assert "a margin, floor or budget line is what it can draw" in _line_fault("r2", plan, "summary[0]")
 
@@ -323,7 +323,7 @@ def _level_at(name: str, plan: dict[str, Any], path: str, data: dict[str, Any] |
 
 
 class TestChartLevel:
-    def test_diverging_strata_with_standard_errors_and_no_interval_are_drawn_at_the_descriptive_level(self):
+    def test_diverging_strata_with_standard_errors_and_no_interval_are_drawn_at_the_descriptive_level(self) -> None:
         plan = _anchor("r5")
         assert (_get(plan, "sections[1].chart.kind"), _get(plan, "sections[1].chart.query.source")) == (
             "diverging_bars",
@@ -331,11 +331,11 @@ class TestChartLevel:
         )
         assert _level_at("r5", plan, "sections[1].chart") == "95% uncorrected"
 
-    def test_bars_over_the_same_strata_draw_no_level(self):
+    def test_bars_over_the_same_strata_draw_no_level(self) -> None:
         plan = _set(_anchor("r5"), "sections[1].chart.kind", "bars")
         assert _level_at("r5", plan, "sections[1].chart") == ""
 
-    def test_strata_figures_carrying_an_interval_are_not_drawn_at_the_descriptive_level(self):
+    def test_strata_figures_carrying_an_interval_are_not_drawn_at_the_descriptive_level(self) -> None:
         data = _data()
         for stratum in data["strata"]:
             for figures in stratum["per_arm"].values():

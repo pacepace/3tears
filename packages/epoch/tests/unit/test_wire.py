@@ -47,7 +47,7 @@ class TestEpochBumpMessageShape:
         """frozen=True forbids attribute assignment after construction."""
         msg = EpochBumpMessage(subject_path="x.y.z", epoch=1)
         with pytest.raises(ValidationError):
-            msg.epoch = 2  # type: ignore[misc]
+            msg.epoch = 2
 
     def test_unknown_fields_silently_dropped_for_forward_compat(self) -> None:
         """unknown fields are silently dropped per EPOCH-09 forward compatibility.

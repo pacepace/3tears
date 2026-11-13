@@ -59,7 +59,7 @@ async def test_verify_restores_asserts_and_runs_hook() -> None:
     async def hook(dsn: str) -> None:
         hook_seen.append(dsn)
 
-    verifier = RestoreVerifier(engine, _provisioner(lifecycle), assertions=assertions, post_restore_hook=hook)  # type: ignore[arg-type]
+    verifier = RestoreVerifier(engine, _provisioner(lifecycle), assertions=assertions, post_restore_hook=hook)
     result = await verifier.verify("backups/k.enc")
 
     assert result.ok is True
@@ -73,7 +73,7 @@ async def test_verify_restores_asserts_and_runs_hook() -> None:
 @pytest.mark.asyncio
 async def test_verify_without_assertions_or_hook() -> None:
     lifecycle: list[str] = []
-    verifier = RestoreVerifier(_FakeEngine(), _provisioner(lifecycle))  # type: ignore[arg-type]
+    verifier = RestoreVerifier(_FakeEngine(), _provisioner(lifecycle))
 
     result = await verifier.verify("backups/k.enc")
 
@@ -85,7 +85,7 @@ async def test_verify_without_assertions_or_hook() -> None:
 @pytest.mark.asyncio
 async def test_temp_db_is_torn_down_even_when_restore_fails() -> None:
     lifecycle: list[str] = []
-    verifier = RestoreVerifier(_FailingEngine(), _provisioner(lifecycle))  # type: ignore[arg-type]
+    verifier = RestoreVerifier(_FailingEngine(), _provisioner(lifecycle))
 
     with pytest.raises(RuntimeError, match="restore blew up"):
         await verifier.verify("backups/k.enc")

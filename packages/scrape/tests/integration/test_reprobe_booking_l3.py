@@ -72,7 +72,7 @@ async def jobs_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
         await setup.execute(f'SET search_path TO "{schema}", public')
         runner = MigrationRunner()
         register_scheduled_jobs(runner)
-        await runner.apply_for_platform_schema(AsyncpgMigrationStore(setup))  # type: ignore[arg-type]
+        await runner.apply_for_platform_schema(AsyncpgMigrationStore(setup))
     finally:
         await setup.close()
     pool = await asyncpg.create_pool(

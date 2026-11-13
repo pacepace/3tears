@@ -80,7 +80,7 @@ class TestTheHelperDecidesTheTraceback:
 
 
 class TestNoCallerDecidesTheTracebackItself:
-    def test_only_the_helper_module_reads_payload_withheld(self):
+    def test_only_the_helper_module_reads_payload_withheld(self) -> None:
         """A caller branching on the flag is a copy of the helper's rule, free to drift from it."""
         readers: list[str] = []
         assert _READER.is_file(), "the helper module moved; the walk below excuses a file that is not there"
@@ -99,7 +99,7 @@ class TestNoCallerDecidesTheTracebackItself:
             )
         assert readers == [], f"read ProviderFailure.payload_withheld through log_provider_failure instead: {readers}"
 
-    def test_the_canary_sees_a_read_when_there_is_one(self):
+    def test_the_canary_sees_a_read_when_there_is_one(self) -> None:
         """Positive control: the walk above finds the shape it is looking for."""
         tree = ast.parse("if failure.payload_withheld:\n    pass\n")
         assert any(isinstance(n, ast.Attribute) and n.attr == "payload_withheld" for n in ast.walk(tree))

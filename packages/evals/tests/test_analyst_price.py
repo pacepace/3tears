@@ -765,7 +765,7 @@ def _task_costs(held: ReportInput, task_id: str) -> dict[str, float]:
         arm: float(figures["cost_per_1k"].mean)
         for arm, figures in task.per_arm.items()
         if "cost_per_1k" in figures and figures["cost_per_1k"].mean is not None
-    }  # type: ignore[arg-type]
+    }
 
 
 def test_a_price_within_a_task_reads_the_tasks_own_cost_and_figures() -> None:

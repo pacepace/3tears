@@ -179,7 +179,7 @@ def _ddl_columns(table_name: str, statements: list[str]) -> set[str]:
     return columns
 
 
-def test_registered_versions_are_sequential_starting_at_one():
+def test_registered_versions_are_sequential_starting_at_one() -> None:
     runner = MigrationRunner()
     pkg = register(runner)
     versions = sorted(pkg.versions.keys())
@@ -187,7 +187,7 @@ def test_registered_versions_are_sequential_starting_at_one():
 
 
 @pytest.mark.parametrize(("entity_cls", "table"), _COLLECTION_PAIRINGS, ids=lambda p: getattr(p, "__name__", p))
-def test_entity_fields_covered_by_ddl(entity_cls: type[BaseEntity], table: str, captured_ddl: list[str]):
+def test_entity_fields_covered_by_ddl(entity_cls: type[BaseEntity], table: str, captured_ddl: list[str]) -> None:
     """Every field an entity exposes must have a matching column in its own table."""
     persisted_fields = _persisted_fields(entity_cls)
     columns = _ddl_columns(table, captured_ddl)
@@ -195,7 +195,7 @@ def test_entity_fields_covered_by_ddl(entity_cls: type[BaseEntity], table: str, 
     assert not missing, f"{entity_cls.__name__} fields with no matching {table} DDL column: {missing}"
 
 
-def test_introspection_actually_finds_each_entitys_fields():
+def test_introspection_actually_finds_each_entitys_fields() -> None:
     """The coverage tests above are only as good as :func:`_persisted_fields`.
 
     A silently-empty (or BaseEntity-polluted) derivation would make all three
@@ -218,7 +218,7 @@ def test_introspection_actually_finds_each_entitys_fields():
         assert not leaked, f"{entity_cls.__name__}: BaseEntity machinery leaked into persisted fields: {leaked}"
 
 
-def test_every_scrape_table_has_date_created_and_date_updated(captured_ddl: list[str]):
+def test_every_scrape_table_has_date_created_and_date_updated(captured_ddl: list[str]) -> None:
     """BaseCollection.save_entity() unconditionally stamps date_created/date_updated
     on every upsert regardless of what a collection's entity class exposes, so
     every scrape table must declare both from the start. Introspection cannot

@@ -38,7 +38,7 @@ _SPAN = re.compile(r"<tspan[^>]*>([^<]*)</tspan>")
 
 def _note_lines(drawn: list[list[str]]) -> list[list[str]]:
     """The drawn texts that are a note, by their lines."""
-    notes = {row["note"] for row in _NOTED_BARS["rows"]}  # type: ignore[index]
+    notes = {row["note"] for row in _NOTED_BARS["rows"]}
     return [lines for lines in drawn if " ".join(lines) in notes]
 
 

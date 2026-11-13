@@ -138,7 +138,7 @@ class InMemoryTodoStorage:
 
 
 class TestTodoStorageProtocol:
-    def test_in_memory_is_protocol_compliant(self):
+    def test_in_memory_is_protocol_compliant(self) -> None:
         assert isinstance(InMemoryTodoStorage(), TodoStorage)
 
 
@@ -146,16 +146,16 @@ class TestTodoStorageProtocol:
 
 
 class TestInputSchemas:
-    def test_add_todo_defaults(self):
+    def test_add_todo_defaults(self) -> None:
         inp = AddTodoInput(title="Buy milk")
         assert inp.list_name == "Todo List"
 
-    def test_a_todo_is_named_in_every_list_unless_one_is_given(self):
+    def test_a_todo_is_named_in_every_list_unless_one_is_given(self) -> None:
         for schema in (CompleteTodoInput, UpdateTodoInput, RemoveTodoInput):
             inp = schema(title="Buy milk")
             assert inp.list_name is None and inp.todo_id is None
 
-    def test_update_todo_optional_fields(self):
+    def test_update_todo_optional_fields(self) -> None:
         inp = UpdateTodoInput(title="Buy milk")
         assert inp.new_title is None
         assert inp.is_completed is None
@@ -209,32 +209,34 @@ def _titles(storage: InMemoryTodoStorage) -> list[str]:
 
 
 class TestLoadTodoTools:
-    def test_creates_five_tools(self, tools: list):
+    def test_creates_five_tools(self, tools: list) -> None:
         assert len(tools) == 5
         names = {t.name for t in tools}
         assert names == {"add_todo", "complete_todo", "update_todo", "remove_todo", "list_todos"}
 
-    async def test_add_todo_names_the_new_todo_and_the_list(self, tools: list, storage: InMemoryTodoStorage):
+    async def test_add_todo_names_the_new_todo_and_the_list(self, tools: list, storage: InMemoryTodoStorage) -> None:
         result = await _find_tool(tools, "add_todo").ainvoke({"title": "Buy groceries"})
         todo_id = storage.todos[0]["todo_id"]
         assert result == (
             f'Todo added: "Buy groceries" [todo:{todo_id}] to "Todo List". That list now has 1 todo, 1 open, 0 done.'
         )
 
-    async def test_add_todo_duplicate(self, tools: list):
+    async def test_add_todo_duplicate(self, tools: list) -> None:
         add = _find_tool(tools, "add_todo")
         await add.ainvoke({"title": "Buy milk"})
         result = await add.ainvoke({"title": "Buy milk"})
         assert result == '[NO CHANGE] add_todo: Todo "Buy milk" already exists in "Todo List".'
         assert tool_result_status(result) == "no_change", "a duplicate changed nothing and is not a failure"
 
-    async def test_an_add_after_a_duplicate_still_adds(self, tools: list):
+    async def test_an_add_after_a_duplicate_still_adds(self, tools: list) -> None:
         add = _find_tool(tools, "add_todo")
         await add.ainvoke({"title": "Buy milk"})
         await add.ainvoke({"title": "Buy milk"})
         assert tool_result_status(await add.ainvoke({"title": "Buy eggs"})) == "ok"
 
-    async def test_a_storage_failure_is_an_error_not_a_no_change(self, tools: list, storage: InMemoryTodoStorage):
+    async def test_a_storage_failure_is_an_error_not_a_no_change(
+        self, tools: list, storage: InMemoryTodoStorage
+    ) -> None:
         async def _down(*args: Any, **kwargs: Any) -> dict[str, Any]:
             raise RuntimeError("database is down")
 
@@ -242,17 +244,17 @@ class TestLoadTodoTools:
         result = await _find_tool(tools, "add_todo").ainvoke({"title": "Buy milk"})
         assert result == "[TOOL ERROR] add_todo: database is down" and tool_result_status(result) == "error"
 
-    async def test_add_todo_empty_title(self, tools: list):
+    async def test_add_todo_empty_title(self, tools: list) -> None:
         add = _find_tool(tools, "add_todo")
         result = await add.ainvoke({"title": "   "})
         assert result.startswith("[TOOL ERROR] add_todo:") and tool_result_status(result) == "error"
 
-    async def test_complete_todo_says_which_and_what_it_was(self, tools: list):
+    async def test_complete_todo_says_which_and_what_it_was(self, tools: list) -> None:
         todo_id = await _add(tools, "Task one")
         result = await _find_tool(tools, "complete_todo").ainvoke({"title": "Task one"})
         assert result == f'Completed [todo:{todo_id}] "Task one" in "Todo List"; it was open.'
 
-    async def test_completing_a_done_todo_changes_nothing(self, tools: list):
+    async def test_completing_a_done_todo_changes_nothing(self, tools: list) -> None:
         todo_id = await _add(tools, "Task one")
         complete = _find_tool(tools, "complete_todo")
         await complete.ainvoke({"todo_id": todo_id})
@@ -261,14 +263,14 @@ class TestLoadTodoTools:
             result == f'[NO CHANGE] complete_todo: [todo:{todo_id}] "Task one" in "Todo List" (done) was already done.'
         )
 
-    async def test_complete_nonexistent(self, tools: list):
+    async def test_complete_nonexistent(self, tools: list) -> None:
         complete = _find_tool(tools, "complete_todo")
         result = await complete.ainvoke({"title": "Does not exist"})
         assert result == '[NO CHANGE] complete_todo: no todo matching "Does not exist". This conversation has no todos.'
         assert tool_result_status(result) == "no_change"
 
     @pytest.mark.parametrize("tool_name", ["complete_todo", "update_todo", "remove_todo"])
-    async def test_a_miss_lists_what_the_list_does_hold(self, tools: list, tool_name: str):
+    async def test_a_miss_lists_what_the_list_does_hold(self, tools: list, tool_name: str) -> None:
         milk = await _add(tools, "Buy milk")
         bank = await _add(tools, "Call the bank")
         await _find_tool(tools, "complete_todo").ainvoke({"title": "Buy milk"})
@@ -280,7 +282,7 @@ class TestLoadTodoTools:
             f'That list has: "Buy milk" [todo:{milk}] (done), "Call the bank" [todo:{bank}].'
         )
 
-    async def test_a_miss_in_a_list_that_is_not_there_names_the_lists_that_are(self, tools: list):
+    async def test_a_miss_in_a_list_that_is_not_there_names_the_lists_that_are(self, tools: list) -> None:
         await _add(tools, "Deploy", "Release")
         await _add(tools, "Buy milk")
         result = await _find_tool(tools, "remove_todo").ainvoke({"title": "Ghost", "list_name": "Shipping"})
@@ -291,7 +293,7 @@ class TestLoadTodoTools:
 
     async def test_a_todo_on_another_list_is_named_where_it_is_and_nothing_changes(
         self, tools: list, storage: InMemoryTodoStorage
-    ):
+    ) -> None:
         deploy = await _add(tools, "Deploy", "Release")
         result = await _find_tool(tools, "remove_todo").ainvoke({"title": "Deploy", "list_name": "Todo List"})
         assert result == (
@@ -300,46 +302,48 @@ class TestLoadTodoTools:
         )
         assert _titles(storage) == ["Deploy"]
 
-    async def test_a_long_list_is_counted_and_its_first_titles_named(self, tools: list):
+    async def test_a_long_list_is_counted_and_its_first_titles_named(self, tools: list) -> None:
         for n in range(23):
             await _add(tools, f"Task {n:02d}")
         result = await _find_tool(tools, "complete_todo").ainvoke({"title": "Ghost"})
         assert 'This conversation has: 23 todos, the first 20: "Task 00" [todo:' in result
         assert '"Task 19" [todo:' in result and "Task 20" not in result
 
-    async def test_update_todo_says_old_and_new(self, tools: list):
+    async def test_update_todo_says_old_and_new(self, tools: list) -> None:
         todo_id = await _add(tools, "Old name")
         result = await _find_tool(tools, "update_todo").ainvoke(
             {"title": "Old name", "new_title": "New name", "is_completed": True}
         )
         assert result == f'Updated [todo:{todo_id}] in "Todo List": title "Old name" -> "New name"; open -> done.'
 
-    async def test_update_todo_moves_a_todo_to_another_list(self, tools: list, storage: InMemoryTodoStorage):
+    async def test_update_todo_moves_a_todo_to_another_list(self, tools: list, storage: InMemoryTodoStorage) -> None:
         todo_id = await _add(tools, "Deploy")
         await _add(tools, "Tag", "Release")
         result = await _find_tool(tools, "update_todo").ainvoke({"todo_id": todo_id, "new_list_name": "release"})
         assert result == f'Updated [todo:{todo_id}] in "Release": moved from "Todo List" to "Release".'
         assert next(t for t in storage.todos if t["title"] == "Deploy")["list_name"] == "Release"
 
-    async def test_update_nonexistent(self, tools: list):
+    async def test_update_nonexistent(self, tools: list) -> None:
         update = _find_tool(tools, "update_todo")
         result = await update.ainvoke({"title": "Nope", "new_title": "Yes"})
         assert result.startswith('[NO CHANGE] update_todo: no todo matching "Nope"')
 
-    async def test_an_update_that_names_no_change_is_an_error(self, tools: list):
+    async def test_an_update_that_names_no_change_is_an_error(self, tools: list) -> None:
         await _add(tools, "Old name")
         result = await _find_tool(tools, "update_todo").ainvoke({"title": "Old name"})
         assert result.startswith("[TOOL ERROR] update_todo: nothing to change was given")
 
     async def test_a_blank_new_title_is_refused_and_the_todo_keeps_its_title(
         self, tools: list, storage: InMemoryTodoStorage
-    ):
+    ) -> None:
         await _add(tools, "Old name")
         result = await _find_tool(tools, "update_todo").ainvoke({"title": "Old name", "new_title": "   "})
         assert result.startswith("[TOOL ERROR] update_todo: new_title is blank")
         assert _titles(storage) == ["Old name"]
 
-    async def test_a_rename_onto_another_todos_title_is_refused(self, tools: list, storage: InMemoryTodoStorage):
+    async def test_a_rename_onto_another_todos_title_is_refused(
+        self, tools: list, storage: InMemoryTodoStorage
+    ) -> None:
         await _add(tools, "Buy milk")
         eggs = await _add(tools, "Buy eggs")
         result = await _find_tool(tools, "update_todo").ainvoke({"title": "Buy milk", "new_title": "buy EGGS"})
@@ -349,21 +353,23 @@ class TestLoadTodoTools:
         )
         assert _titles(storage) == ["Buy eggs", "Buy milk"]
 
-    async def test_a_rename_that_only_changes_case_goes_through(self, tools: list, storage: InMemoryTodoStorage):
+    async def test_a_rename_that_only_changes_case_goes_through(
+        self, tools: list, storage: InMemoryTodoStorage
+    ) -> None:
         """Good traffic past the clash guard: a todo is not a clash with itself."""
         todo_id = await _add(tools, "buy milk")
         result = await _find_tool(tools, "update_todo").ainvoke({"todo_id": todo_id, "new_title": "Buy milk"})
         assert result == f'Updated [todo:{todo_id}] in "Todo List": title "buy milk" -> "Buy milk".'
         assert _titles(storage) == ["Buy milk"]
 
-    async def test_an_update_to_what_it_already_is_changes_nothing(self, tools: list):
+    async def test_an_update_to_what_it_already_is_changes_nothing(self, tools: list) -> None:
         todo_id = await _add(tools, "Same")
         result = await _find_tool(tools, "update_todo").ainvoke(
             {"todo_id": todo_id, "new_title": "Same", "is_completed": False}
         )
         assert result == f'[NO CHANGE] update_todo: [todo:{todo_id}] "Same" in "Todo List" (open) is already that.'
 
-    async def test_remove_todo_says_what_it_removed_and_that_it_is_gone(self, tools: list):
+    async def test_remove_todo_says_what_it_removed_and_that_it_is_gone(self, tools: list) -> None:
         todo_id = await _add(tools, "Temp item")
         await _add(tools, "Stays")
         result = await _find_tool(tools, "remove_todo").ainvoke({"title": "Temp item"})
@@ -372,17 +378,17 @@ class TestLoadTodoTools:
             "That list now has 1 todo, 1 open, 0 done."
         )
 
-    async def test_remove_nonexistent(self, tools: list):
+    async def test_remove_nonexistent(self, tools: list) -> None:
         remove = _find_tool(tools, "remove_todo")
         result = await remove.ainvoke({"title": "Ghost"})
         assert tool_result_status(result) == "no_change" and "This conversation has no todos." in result
 
-    async def test_list_todos_empty(self, tools: list):
+    async def test_list_todos_empty(self, tools: list) -> None:
         lst = _find_tool(tools, "list_todos")
         result = await lst.ainvoke({})
         assert "No todos" in result
 
-    async def test_list_todos_grouped_with_ids_counts_and_dates(self, tools: list):
+    async def test_list_todos_grouped_with_ids_counts_and_dates(self, tools: list) -> None:
         a = await _add(tools, "A", "Work")
         b = await _add(tools, "B", "Home")
         result = await _find_tool(tools, "list_todos").ainvoke({})
@@ -395,7 +401,7 @@ class TestLoadTodoTools:
             f"- [ ] A [todo:{a}] (added Oct 9, 2026 at 10:00 PM UTC)"
         )
 
-    async def test_list_shows_completion_and_when_it_changed(self, tools: list):
+    async def test_list_shows_completion_and_when_it_changed(self, tools: list) -> None:
         await _add(tools, "Done item")
         await _find_tool(tools, "complete_todo").ainvoke({"title": "Done item"})
         result = await _find_tool(tools, "list_todos").ainvoke({})
@@ -404,23 +410,25 @@ class TestLoadTodoTools:
 
     async def test_a_listing_says_its_times_in_the_persons_zone(
         self, storage: InMemoryTodoStorage, conv_id: UUID, user_id: UUID
-    ):
+    ) -> None:
         tools = load_todo_tools(storage=storage, conversation_id=conv_id, user_id=user_id, tz="America/Los_Angeles")
         await _add(tools, "A")
         assert "(added Oct 9, 2026 at 3:00 PM PDT)" in await _find_tool(tools, "list_todos").ainvoke({})
 
-    async def test_list_todos_shows_one_list_when_asked(self, tools: list):
+    async def test_list_todos_shows_one_list_when_asked(self, tools: list) -> None:
         await _add(tools, "A", "Work")
         await _add(tools, "B", "Home")
         result = await _find_tool(tools, "list_todos").ainvoke({"list_name": "work"})
         assert result.startswith("1 todo, 1 open, 0 done, in 1 list:\n### Work") and "B" not in result
 
-    async def test_list_todos_for_a_list_that_is_not_there_names_the_lists(self, tools: list):
+    async def test_list_todos_for_a_list_that_is_not_there_names_the_lists(self, tools: list) -> None:
         await _add(tools, "A", "Work")
         result = await _find_tool(tools, "list_todos").ainvoke({"list_name": "Garden"})
         assert result == '[NO CHANGE] list_todos: there is no list "Garden". The lists here: "Work".'
 
-    async def test_a_host_can_turn_markdown_off(self, storage: InMemoryTodoStorage, conv_id: UUID, user_id: UUID):
+    async def test_a_host_can_turn_markdown_off(
+        self, storage: InMemoryTodoStorage, conv_id: UUID, user_id: UUID
+    ) -> None:
         """Plain lines for a host whose model should not read markdown; the default stays markdown."""
         plain = load_todo_tools(storage=storage, conversation_id=conv_id, user_id=user_id, markdown=False)
         await _add(plain, "A", "Work")
@@ -434,7 +442,7 @@ class TestLoadTodoTools:
         )
         assert "#" not in result and "[ ]" not in result and "[x]" not in result
 
-    async def test_custom_list_name(self, tools: list):
+    async def test_custom_list_name(self, tools: list) -> None:
         await _add(tools, "Deploy v2", "Release Checklist")
         result = await _find_tool(tools, "list_todos").ainvoke({})
         assert "Release Checklist" in result
@@ -450,14 +458,16 @@ class TestATodoIsNamedOnce:
     that fits several, or an id of another conversation, changes nothing.
     """
 
-    async def test_an_exact_title_wins_over_a_longer_one_in_any_case(self, tools: list, storage: InMemoryTodoStorage):
+    async def test_an_exact_title_wins_over_a_longer_one_in_any_case(
+        self, tools: list, storage: InMemoryTodoStorage
+    ) -> None:
         await _add(tools, "Call mom")
         await _add(tools, "Call mom's doctor")
         result = await _find_tool(tools, "remove_todo").ainvoke({"title": "call MOM"})
         assert result.startswith("Removed [todo:") and '"Call mom" from' in result
         assert _titles(storage) == ["Call mom's doctor"]
 
-    async def test_a_part_that_fits_one_todo_names_it(self, tools: list, storage: InMemoryTodoStorage):
+    async def test_a_part_that_fits_one_todo_names_it(self, tools: list, storage: InMemoryTodoStorage) -> None:
         await _add(tools, "Call mom's doctor")
         await _add(tools, "Buy milk")
         result = await _find_tool(tools, "complete_todo").ainvoke({"title": "doctor"})
@@ -466,7 +476,7 @@ class TestATodoIsNamedOnce:
     @pytest.mark.parametrize("tool_name", ["complete_todo", "update_todo", "remove_todo"])
     async def test_a_part_that_fits_several_changes_nothing_and_lists_them(
         self, tools: list, storage: InMemoryTodoStorage, tool_name: str
-    ):
+    ) -> None:
         first = await _add(tools, "Call mom")
         second = await _add(tools, "Call the bank")
         before = [dict(t) for t in storage.todos]
@@ -479,7 +489,9 @@ class TestATodoIsNamedOnce:
         )
         assert storage.todos == before
 
-    async def test_the_same_title_on_two_lists_is_two_candidates(self, tools: list, storage: InMemoryTodoStorage):
+    async def test_the_same_title_on_two_lists_is_two_candidates(
+        self, tools: list, storage: InMemoryTodoStorage
+    ) -> None:
         await _add(tools, "Deploy", "Release")
         await _add(tools, "Deploy", "Staging")
         result = await _find_tool(tools, "remove_todo").ainvoke({"title": "Deploy"})
@@ -489,7 +501,7 @@ class TestATodoIsNamedOnce:
     @pytest.mark.parametrize("written", ["{id}", "todo:{id}", "[todo:{id}]", " [todo:{id}] "])
     async def test_an_id_names_its_todo_however_the_mark_is_written(
         self, tools: list, storage: InMemoryTodoStorage, written: str
-    ):
+    ) -> None:
         await _add(tools, "Call mom")
         target = await _add(tools, "Call mom's doctor")
         result = await _find_tool(tools, "remove_todo").ainvoke({"todo_id": written.format(id=target)})
@@ -498,7 +510,7 @@ class TestATodoIsNamedOnce:
 
     async def test_an_id_from_another_conversation_changes_nothing(
         self, tools: list, storage: InMemoryTodoStorage, user_id: UUID
-    ):
+    ) -> None:
         elsewhere = load_todo_tools(storage=storage, conversation_id=uuid4(), user_id=user_id)
         theirs = await _add(elsewhere, "Not yours")
         result = await _find_tool(tools, "remove_todo").ainvoke({"todo_id": theirs})
@@ -507,11 +519,11 @@ class TestATodoIsNamedOnce:
         )
         assert _titles(storage) == ["Not yours"]
 
-    async def test_a_text_that_is_not_an_id_is_refused(self, tools: list):
+    async def test_a_text_that_is_not_an_id_is_refused(self, tools: list) -> None:
         result = await _find_tool(tools, "remove_todo").ainvoke({"todo_id": "the first one"})
         assert result.startswith("[TOOL ERROR] remove_todo: 'the first one' is not a todo id")
 
-    async def test_a_call_that_names_nothing_is_refused(self, tools: list):
+    async def test_a_call_that_names_nothing_is_refused(self, tools: list) -> None:
         result = await _find_tool(tools, "complete_todo").ainvoke({})
         assert result == "[TOOL ERROR] complete_todo: say which todo: give todo_id or title."
 
@@ -520,7 +532,7 @@ class TestATodoIsNamedOnce:
 
 
 class TestSnapshotCallback:
-    async def test_callback_fires_on_add(self):
+    async def test_callback_fires_on_add(self) -> None:
         storage = InMemoryTodoStorage()
         snapshots: list[tuple] = []
 
@@ -541,7 +553,7 @@ class TestSnapshotCallback:
         assert len(snapshots[0][0]) == 1
         assert snapshots[0][1] == str(msg_id)
 
-    async def test_no_callback_when_none(self):
+    async def test_no_callback_when_none(self) -> None:
         storage = InMemoryTodoStorage()
         tools = load_todo_tools(
             storage=storage,

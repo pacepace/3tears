@@ -39,11 +39,11 @@ _CONFIGURED_CALLS = 250
 class TestTheCascadeAnswersInTheCurrencyItWasAsked:
     """One implementation over two currencies, without widening either caller's type."""
 
-    def test_dollars_resolve_to_dollars(self):
+    def test_dollars_resolve_to_dollars(self) -> None:
         assert ceilings.resolve_ceiling(_OVERRIDE_USD, configured=_CONFIGURED_USD) == _OVERRIDE_USD
         assert ceilings.resolve_ceiling(None, configured=_CONFIGURED_USD) == _CONFIGURED_USD
 
-    def test_calls_resolve_to_calls_and_stay_integers(self):
+    def test_calls_resolve_to_calls_and_stay_integers(self) -> None:
         """``int`` in, ``int`` out — a float ceiling would compare fine and then be unprintable
         as a call count in the ledger's refusal message.
         """
@@ -51,7 +51,7 @@ class TestTheCascadeAnswersInTheCurrencyItWasAsked:
         assert resolved == _CONFIGURED_CALLS
         assert type(resolved) is int
 
-    def test_enforcement_off_drops_the_ceiling_in_either_currency(self):
+    def test_enforcement_off_drops_the_ceiling_in_either_currency(self) -> None:
         assert (
             ceilings.resolve_effective_ceiling(_OVERRIDE_USD, configured=_CONFIGURED_USD, enforcement_enabled=False)
             is None
@@ -61,14 +61,14 @@ class TestTheCascadeAnswersInTheCurrencyItWasAsked:
             is None
         )
 
-    def test_the_origin_names_the_tier_without_being_told_the_currency(self):
+    def test_the_origin_names_the_tier_without_being_told_the_currency(self) -> None:
         assert ceilings.resolve_ceiling_origin(_OVERRIDE_USD, enforcement_enabled=True) == "chosen"
         assert ceilings.resolve_ceiling_origin(_OVERRIDE_CALLS, enforcement_enabled=True) == "chosen"
         assert ceilings.resolve_ceiling_origin(None, enforcement_enabled=True) == "inherited"
         assert ceilings.resolve_ceiling_origin(None, enforcement_enabled=False) == "uncapped"
 
 
-def test_the_override_and_the_default_cannot_be_transposed():
+def test_the_override_and_the_default_cannot_be_transposed() -> None:
     """The argument-swap detector, made structural rather than reviewed.
 
     ``float`` and ``int`` are mutually assignable and this repo runs no static type gate, so a
@@ -78,9 +78,9 @@ def test_the_override_and_the_default_cannot_be_transposed():
     a ``TypeError`` at the call site instead of a wrong ceiling in a stored run.
     """
     with pytest.raises(TypeError):
-        ceilings.resolve_ceiling(_OVERRIDE_USD, _CONFIGURED_USD)  # type: ignore[misc]
+        ceilings.resolve_ceiling(_OVERRIDE_USD, _CONFIGURED_USD)  # type: ignore[call-arg]
     with pytest.raises(TypeError):
-        ceilings.resolve_effective_ceiling(_OVERRIDE_CALLS, _CONFIGURED_CALLS, True)  # type: ignore[misc]
+        ceilings.resolve_effective_ceiling(_OVERRIDE_CALLS, _CONFIGURED_CALLS, True)  # type: ignore[call-arg]
 
 
 class TestAnOverrideMayOnlyLowerTheHostsCeiling:
@@ -111,7 +111,7 @@ class TestAnOverrideMayOnlyLowerTheHostsCeiling:
             _CONFIGURED_USD if override is None else override
         )
 
-    def test_the_refusal_names_the_argument_and_the_hosts_setting(self):
+    def test_the_refusal_names_the_argument_and_the_hosts_setting(self) -> None:
         with pytest.raises(ceilings.CeilingRaisedError) as refused:
             ceilings.refuse_raised_ceiling(
                 500.0, configured=_CONFIGURED_USD, name="max_cost_usd", configured_name="toy.cap"
@@ -181,29 +181,29 @@ class TestTheDelegationCarriesTheRightArgumentsInBothCurrencies:
     pair or a cross-currency leak lands on a figure no assertion here accepts.
     """
 
-    def test_the_cost_cap_bounds_the_run_at_its_override_not_its_default(self):
+    def test_the_cost_cap_bounds_the_run_at_its_override_not_its_default(self) -> None:
         cap = EvalRunCostCap.for_run(
             "run-1", _OVERRIDE_USD, configured_max_cost_usd=_CONFIGURED_USD, enforcement_enabled=True
         )
         assert cap.max_cost_usd == _OVERRIDE_USD
 
-    def test_the_cost_cap_inherits_the_default_when_the_launch_named_nothing(self):
+    def test_the_cost_cap_inherits_the_default_when_the_launch_named_nothing(self) -> None:
         cap = EvalRunCostCap.for_run("run-1", None, configured_max_cost_usd=_CONFIGURED_USD, enforcement_enabled=True)
         assert cap.max_cost_usd == _CONFIGURED_USD
 
-    def test_the_ledger_bounds_the_run_at_its_override_not_its_default(self):
+    def test_the_ledger_bounds_the_run_at_its_override_not_its_default(self) -> None:
         ledger = MeteredCallLedger.for_run(
             "run-1", _OVERRIDE_CALLS, configured_max_metered_calls=_CONFIGURED_CALLS, enforcement_enabled=True
         )
         assert ledger.ceiling == _OVERRIDE_CALLS
 
-    def test_the_ledger_inherits_the_default_when_the_launch_named_nothing(self):
+    def test_the_ledger_inherits_the_default_when_the_launch_named_nothing(self) -> None:
         ledger = MeteredCallLedger.for_run(
             "run-1", None, configured_max_metered_calls=_CONFIGURED_CALLS, enforcement_enabled=True
         )
         assert ledger.ceiling == _CONFIGURED_CALLS
 
-    def test_the_recorded_ceiling_is_the_one_that_bounds_each_class(self):
+    def test_the_recorded_ceiling_is_the_one_that_bounds_each_class(self) -> None:
         """Both directions of the pairing the cascade exists to keep, in both currencies."""
         assert (
             EvalRunCostCap.resolve_effective_ceiling(

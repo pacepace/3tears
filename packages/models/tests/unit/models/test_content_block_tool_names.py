@@ -135,4 +135,4 @@ class TestEveryToolCallBlockShape:
         reverse_translate_message(message, {"web_search": "web.search"})
 
         assert forward_translate_message(message) is message
-        assert message.content[0]["name"] == "web.search"  # type: ignore[index]
+        assert message.content[0]["name"] == "web.search"

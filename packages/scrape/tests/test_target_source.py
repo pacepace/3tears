@@ -43,7 +43,7 @@ def config() -> DefaultCoreConfig:
 
 
 class TestStaticTargetSource:
-    async def test_load_returns_the_wrapped_targets(self):
+    async def test_load_returns_the_wrapped_targets(self) -> None:
         targets = {"t1": _target("t1"), "t2": _target("t2")}
         source = StaticTargetSource(targets)
 
@@ -52,7 +52,7 @@ class TestStaticTargetSource:
         assert set(loaded) == {"t1", "t2"}
         assert loaded["t1"].url == "https://example.gov/warn"
 
-    async def test_ad_hoc_single_target_needs_no_file_or_database(self):
+    async def test_ad_hoc_single_target_needs_no_file_or_database(self) -> None:
         """The "ad-hoc, one-off scrape" case: a single ScrapeTarget constructed
         inline, no file or database involved at all."""
         source = StaticTargetSource({"once": _target("once", url="https://example.gov/one-off")})
@@ -86,7 +86,7 @@ warn_act_ny:
 """)
         return path
 
-    async def test_load_parses_every_target(self, tmp_path: Path):
+    async def test_load_parses_every_target(self, tmp_path: Path) -> None:
         source = YamlTargetSource(self._write_yaml(tmp_path))
 
         loaded = await source.load()
@@ -97,15 +97,15 @@ warn_act_ny:
         assert loaded["warn_act_md"].field_schema == {"employer": str, "affected_count": int}
         assert loaded["warn_act_ny"].field_schema == {"employer": str}
 
-    async def test_target_id_comes_from_the_yaml_key_not_a_field(self, tmp_path: Path):
+    async def test_target_id_comes_from_the_yaml_key_not_a_field(self, tmp_path: Path) -> None:
         loaded = await YamlTargetSource(self._write_yaml(tmp_path)).load()
         assert loaded["warn_act_md"].target_id == "warn_act_md"
 
-    async def test_timeout_seconds_defaults_to_thirty(self, tmp_path: Path):
+    async def test_timeout_seconds_defaults_to_thirty(self, tmp_path: Path) -> None:
         loaded = await YamlTargetSource(self._write_yaml(tmp_path)).load()
         assert loaded["warn_act_md"].timeout_seconds == 30.0
 
-    async def test_timeout_seconds_explicit_override(self, tmp_path: Path):
+    async def test_timeout_seconds_explicit_override(self, tmp_path: Path) -> None:
         path = tmp_path / "targets.yaml"
         path.write_text("""
 warn_act_ok:
@@ -120,18 +120,18 @@ warn_act_ok:
         loaded = await YamlTargetSource(path).load()
         assert loaded["warn_act_ok"].timeout_seconds == 60.0
 
-    def test_read_yaml_targets_is_plain_sync(self, tmp_path: Path):
+    def test_read_yaml_targets_is_plain_sync(self, tmp_path: Path) -> None:
         """No event loop needed -- safe to call at module import time."""
         targets = read_yaml_targets(self._write_yaml(tmp_path))
         assert set(targets) == {"warn_act_md", "warn_act_ny"}
 
-    def test_missing_file_raises_file_not_found(self, tmp_path: Path):
+    def test_missing_file_raises_file_not_found(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             read_yaml_targets(tmp_path / "does_not_exist.yaml")
 
 
 class TestCollectionTargetSource:
-    async def test_load_returns_every_target_in_the_collection(self, config: DefaultCoreConfig):
+    async def test_load_returns_every_target_in_the_collection(self, config: DefaultCoreConfig) -> None:
         registry = CollectionRegistry()
         collection = ScrapeTargetCollection(registry, config, nats_client=None)
         entity = collection.create(_target("t1").to_dict())
@@ -142,7 +142,7 @@ class TestCollectionTargetSource:
         assert set(loaded) == {"t1"}
         assert loaded["t1"].field_schema == {"employer": str, "affected_count": int}
 
-    async def test_load_reflects_writes_from_a_second_collection_instance(self, config: DefaultCoreConfig):
+    async def test_load_reflects_writes_from_a_second_collection_instance(self, config: DefaultCoreConfig) -> None:
         """A real L3 store is genuinely shared, so a second collection
         instance's write is visible. The in-memory fallback is deliberately
         NOT multi-instance-safe (each instance gets its own dict), which is
@@ -160,7 +160,7 @@ class TestCollectionTargetSource:
 
 
 class TestBootstrapTargets:
-    async def test_seeds_every_target_into_an_empty_collection(self, config: DefaultCoreConfig):
+    async def test_seeds_every_target_into_an_empty_collection(self, config: DefaultCoreConfig) -> None:
         registry = CollectionRegistry()
         collection = ScrapeTargetCollection(registry, config, nats_client=None)
         source = StaticTargetSource({"t1": _target("t1"), "t2": _target("t2")})
@@ -172,7 +172,7 @@ class TestBootstrapTargets:
         assert await collection.get("t1") is not None
         assert await collection.get("t2") is not None
 
-    async def test_never_overwrites_a_row_already_present(self, config: DefaultCoreConfig):
+    async def test_never_overwrites_a_row_already_present(self, config: DefaultCoreConfig) -> None:
         """A target edited directly through the database (not the seed
         source) must survive a bootstrap call untouched."""
         registry = CollectionRegistry()
@@ -188,7 +188,7 @@ class TestBootstrapTargets:
         assert current is not None
         assert current.url == "https://example.gov/live-edited-url"
 
-    async def test_safe_to_call_repeatedly(self, config: DefaultCoreConfig):
+    async def test_safe_to_call_repeatedly(self, config: DefaultCoreConfig) -> None:
         """Idempotent -- calling bootstrap again after the first seed adds nothing new."""
         registry = CollectionRegistry()
         collection = ScrapeTargetCollection(registry, config, nats_client=None)
@@ -200,7 +200,9 @@ class TestBootstrapTargets:
         assert first == 1
         assert second == 0
 
-    async def test_bootstrapped_targets_are_visible_via_collection_target_source(self, config: DefaultCoreConfig):
+    async def test_bootstrapped_targets_are_visible_via_collection_target_source(
+        self, config: DefaultCoreConfig
+    ) -> None:
         """The intended real-world composition: bootstrap from YAML, then read
         back via CollectionTargetSource -- the shape WarnActPlugin.connect() uses."""
         registry = CollectionRegistry()

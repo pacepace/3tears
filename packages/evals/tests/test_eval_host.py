@@ -62,7 +62,7 @@ async def _settled(host: LaunchHost, run_ids: list[str]) -> None:
 # --- a launch, end to end --------------------------------------------------------------------------
 
 
-async def test_a_launch_runs_through_the_host_it_was_handed():
+async def test_a_launch_runs_through_the_host_it_was_handed() -> None:
     """``start_run`` reads the template, dispatches the kind and stores the cells — all through the host.
 
     One run per model, each carrying the matrix the toy kind produces, stamped with the host's world
@@ -92,7 +92,7 @@ async def test_a_launch_runs_through_the_host_it_was_handed():
         assert run.variant_levers is not None, "the toy profile wires a lever reader"
 
 
-async def test_an_oversized_launch_is_refused_naming_the_hosts_setting():
+async def test_an_oversized_launch_is_refused_naming_the_hosts_setting() -> None:
     """The refusal names the knob an operator turns, in the host's own vocabulary."""
     host, _ = off_loop(_launching, max_launch_arms=1)
 
@@ -106,7 +106,7 @@ async def test_an_oversized_launch_is_refused_naming_the_hosts_setting():
         )
 
 
-async def test_admission_is_refused_against_the_hosts_ceiling_naming_its_setting():
+async def test_admission_is_refused_against_the_hosts_ceiling_naming_its_setting() -> None:
     """Admission reads the host's ceiling from the same settings, and names the host's knob."""
     host, _ = off_loop(_launching, max_admitted_runs=1)
 
@@ -122,7 +122,7 @@ async def test_admission_is_refused_against_the_hosts_ceiling_naming_its_setting
     assert "toyhost.launch.admitted" in refused.value.message
 
 
-async def test_a_kind_the_host_registers_no_launcher_for_is_refused():
+async def test_a_kind_the_host_registers_no_launcher_for_is_refused() -> None:
     """The launch registry is the host's: a host with no entry for the template's kind launches nothing."""
     host, _ = off_loop(_launching)
     bare = replace(host, eval_host=with_registry(host.eval_host, {}))
@@ -140,14 +140,14 @@ async def test_a_kind_the_host_registers_no_launcher_for_is_refused():
 # --- the host's construction refusals --------------------------------------------------------------
 
 
-def test_a_host_declaring_a_world_must_say_how_a_run_is_placed_in_it():
+def test_a_host_declaring_a_world_must_say_how_a_run_is_placed_in_it() -> None:
     host, _ = _launching()
 
     with pytest.raises(ValueError, match="declares a world"):
         replace(host, world_placements=None)
 
 
-def test_a_host_declaring_no_world_has_nothing_to_place_a_run_in():
+def test_a_host_declaring_no_world_has_nothing_to_place_a_run_in() -> None:
     host, _ = _launching()
     worldless = replace(toyhost_profile(), world=None)
 
@@ -158,7 +158,7 @@ def test_a_host_declaring_no_world_has_nothing_to_place_a_run_in():
     assert placed.place(toyhost_observation(chunk_tokens=256)) == {}, "a host with no world records it placed nothing"
 
 
-def test_a_registry_entry_that_cannot_launch_is_refused_naming_its_kind():
+def test_a_registry_entry_that_cannot_launch_is_refused_naming_its_kind() -> None:
     host, _ = _launching()
     checks = host.eval_host.template_checks
     assert checks is not None
@@ -172,7 +172,7 @@ def test_a_registry_entry_that_cannot_launch_is_refused_naming_its_kind():
         replace(host, eval_host=replace(host.eval_host, template_checks=unlaunchable))
 
 
-def test_settings_name_only_the_settings_a_launch_has():
+def test_settings_name_only_the_settings_a_launch_has() -> None:
     with pytest.raises(ValidationError, match="max_lanuch_arms"):
         LaunchSettings.model_validate(
             {**TOYHOST_LAUNCH_SETTINGS.model_dump(), "setting_names": {"max_lanuch_arms": "a typo is never read"}}
@@ -183,19 +183,19 @@ def test_settings_name_only_the_settings_a_launch_has():
 
 
 @pytest.mark.parametrize("field", ["max_launch_arms", "max_admitted_runs", "judge_concurrency", "max_metered_calls"])
-def test_a_launch_ceiling_of_zero_is_refused(field: str):
+def test_a_launch_ceiling_of_zero_is_refused(field: str) -> None:
     with pytest.raises(ValidationError, match=field):
         LaunchSettings.model_validate({**TOYHOST_LAUNCH_SETTINGS.model_dump(), field: 0})
 
 
-def test_a_host_with_no_clients_refuses_the_work_that_needs_one_by_name():
+def test_a_host_with_no_clients_refuses_the_work_that_needs_one_by_name() -> None:
     host: EvalHost = toyhost_host()
 
     with pytest.raises(ValueError, match="a re-judge calls a model"):
         host.completion_clients("a re-judge")
 
 
-def test_an_admission_refusal_reads_as_its_message_wherever_it_is_printed():
+def test_an_admission_refusal_reads_as_its_message_wherever_it_is_printed() -> None:
     """A log line or traceback prints ``str(error)``; a refusal built from keywords used to print nothing."""
     from threetears.evals.kernel.errors import NotFoundError
 
@@ -210,14 +210,14 @@ def test_an_admission_refusal_reads_as_its_message_wherever_it_is_printed():
 # --- the launch host composes the host, and the wiring is typed -----------------------------------
 
 
-def test_a_launch_host_holds_its_eval_host_whole_and_builds_its_jobs_over_that_hosts_store():
+def test_a_launch_host_holds_its_eval_host_whole_and_builds_its_jobs_over_that_hosts_store() -> None:
     """Composed, not copied: no field of the host can be dropped on the way, and there is one store.
 
     A launch host that restated the host's fields field by field is how the reference launcher came
     to drop ``clients``; and a job manager handed a store of its own could write a run's status
     somewhere its results are not. Neither shape is expressible now.
     """
-    eval_host = replace(toyhost_host(), clients=lambda role, model, *, temperature=None: None)  # type: ignore[arg-type,return-value]
+    eval_host = replace(toyhost_host(), clients=lambda role, model, *, temperature=None: None)  # type: ignore[arg-type]
     launch_host = LaunchHost(
         eval_host=eval_host,
         settings=lambda: TOYHOST_LAUNCH_SETTINGS,
@@ -309,7 +309,7 @@ async def _launch_one(host: LaunchHost, **arguments: object) -> list[EvalRun]:
     return await start_run(host, subject_id=TOYHOST_SUBJECT.subject_id, **{**launched, **arguments})  # type: ignore[arg-type]
 
 
-async def test_the_launch_stamps_the_requests_cassette_mode_and_corpus_with_no_launcher_restating_them():
+async def test_the_launch_stamps_the_requests_cassette_mode_and_corpus_with_no_launcher_restating_them() -> None:
     """A launcher that says nothing about cassettes still records the replay, and the corpus, it was asked for.
 
     It used to build the run from a dict the launcher filled, so a launcher that forgot the mode
@@ -349,7 +349,7 @@ async def test_a_replay_corpus_the_launch_cannot_serve_is_refused_before_anythin
     assert host.job_manager.admitted_count == 0
 
 
-async def test_a_replay_corpus_must_be_a_capture_of_this_template_in_this_scope():
+async def test_a_replay_corpus_must_be_a_capture_of_this_template_in_this_scope() -> None:
     """A run in another scope, a run that captured nothing, and another template's capture are all refused."""
     host, storage, handed = off_loop(_launching_with, _wired)
     (capture,) = await _launch_one(host, cassette_mode="capture")
@@ -372,7 +372,7 @@ async def test_a_replay_corpus_must_be_a_capture_of_this_template_in_this_scope(
     assert len(handed) == launched_so_far, "a refused corpus reached the launcher"
 
 
-async def test_a_launch_argument_the_kind_cannot_honour_is_refused_before_its_launcher_runs():
+async def test_a_launch_argument_the_kind_cannot_honour_is_refused_before_its_launcher_runs() -> None:
     """Refused at the dispatch, so a launcher that would have ignored it never gets the chance."""
     host, storage, handed = off_loop(_launching_with, _wired, unhonoured=frozenset({"cassette_mode"}))
 
@@ -383,7 +383,7 @@ async def test_a_launch_argument_the_kind_cannot_honour_is_refused_before_its_la
     assert host.job_manager.admitted_count == 0
 
 
-def test_a_kind_cannot_decline_an_argument_that_is_not_a_launch_argument():
+def test_a_kind_cannot_decline_an_argument_that_is_not_a_launch_argument() -> None:
     with pytest.raises(ValueError, match="cassete_mode"):
         LaunchableKind(
             launch=lambda _request: None,  # type: ignore[arg-type,return-value]
@@ -392,7 +392,7 @@ def test_a_kind_cannot_decline_an_argument_that_is_not_a_launch_argument():
         )
 
 
-async def test_the_reference_launcher_captures_the_subject_the_launch_names():
+async def test_the_reference_launcher_captures_the_subject_the_launch_names() -> None:
     """The toy launcher used to stamp one constant subject whatever the launch asked for."""
     host, storage = off_loop(_launching)
 
@@ -408,7 +408,7 @@ async def test_the_reference_launcher_captures_the_subject_the_launch_names():
     assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
 
 
-async def test_an_arm_naming_no_model_is_refused_for_a_kind_with_no_default():
+async def test_an_arm_naming_no_model_is_refused_for_a_kind_with_no_default() -> None:
     """The toy kind's plan refuses it, before the arm is priced or its launcher runs."""
     host, _storage = off_loop(_launching)
 
@@ -416,7 +416,7 @@ async def test_an_arm_naming_no_model_is_refused_for_a_kind_with_no_default():
         await _launch_one(host, models=[])
 
 
-async def test_an_unplanned_arm_naming_no_model_is_refused_at_the_tail_for_a_kind_with_no_default():
+async def test_an_unplanned_arm_naming_no_model_is_refused_at_the_tail_for_a_kind_with_no_default() -> None:
     """A kind that plans nothing reaches its launcher under a cap the launch named, and the tail refuses it there."""
     host, storage, handed = off_loop(_launching_with, _wired, unhonoured=frozenset({"n_variations"}))
 

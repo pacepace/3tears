@@ -111,12 +111,12 @@ def _make_collection(
 class TestMemoryAddInput:
     """Input validation for MemoryAddInput."""
 
-    def test_valid_input(self):
+    def test_valid_input(self) -> None:
         inp = MemoryAddInput(content="User likes Rust", memory_type="preference")
         assert inp.content == "User likes Rust"
         assert inp.memory_type == "preference"
 
-    def test_default_type(self):
+    def test_default_type(self) -> None:
         inp = MemoryAddInput(content="something")
         assert inp.memory_type == "fact"
 
@@ -127,7 +127,7 @@ class TestLoadAddMemoryTool:
     async def test_creates_tool(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
-    ):
+    ) -> None:
         pool = _make_pool()
         provider = _make_embedding_provider()
         memories = _make_collection(pool, permissive_memory_authorizer)
@@ -146,7 +146,7 @@ class TestLoadAddMemoryTool:
     async def test_stores_new_memory(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
-    ):
+    ) -> None:
         pool = _make_pool()
         provider = _make_embedding_provider()
         memories = _make_collection(pool, permissive_memory_authorizer)
@@ -173,7 +173,7 @@ class TestLoadAddMemoryTool:
     async def test_invalid_type_returns_error(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
-    ):
+    ) -> None:
         pool = _make_pool()
         provider = _make_embedding_provider()
         memories = _make_collection(pool, permissive_memory_authorizer)
@@ -195,7 +195,7 @@ class TestLoadAddMemoryTool:
     async def test_a_near_duplicate_without_edges_is_written_beside_not_over(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
-    ):
+    ) -> None:
         # seed an existing very-similar memory row so the Collection's
         # find_similar_for_dedup surfaces it. With no edges collection to link
         # a replacement through, the old one is kept and the new one stored.
@@ -265,7 +265,7 @@ class TestLoadAddMemoryTool:
     async def test_no_dedup_below_threshold(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
-    ):
+    ) -> None:
         pool = _make_pool()
 
         async def _fetch(query: str, *args):
@@ -302,7 +302,7 @@ class TestLoadAddMemoryTool:
     async def test_embedding_failure_returns_error(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
-    ):
+    ) -> None:
         pool = _make_pool()
         provider = _make_embedding_provider()
         provider.aembed_query.side_effect = RuntimeError("embedding service down")
@@ -325,7 +325,7 @@ class TestLoadAddMemoryTool:
     async def test_all_memory_types_accepted(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
-    ):
+    ) -> None:
         pool = _make_pool()
         provider = _make_embedding_provider()
         memories = _make_collection(pool, permissive_memory_authorizer)

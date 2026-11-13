@@ -64,7 +64,7 @@ class _FakeConversations:
 
 
 def _store(rows: _FakeConversations, conversation_id: UUID) -> ConversationSummaryStore:
-    return ConversationSummaryStore(rows, agent_id=_AGENT, conversation_id=conversation_id)  # type: ignore[arg-type]
+    return ConversationSummaryStore(rows, agent_id=_AGENT, conversation_id=conversation_id)
 
 
 async def test_a_conversation_never_summarized_loads_as_none() -> None:

@@ -786,7 +786,7 @@ class TestVanillaChatAnthropicBaseline:
         with wire.serve() as url:
             model = ChatAnthropic(
                 model=DEFAULT_CHAT_MODEL,  # type: ignore[call-arg]
-                anthropic_api_key="sk-test",  # type: ignore[arg-type]
+                anthropic_api_key="sk-test",
                 base_url=url,
                 max_retries=0,
             )

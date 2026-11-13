@@ -84,4 +84,4 @@ def test_the_root_declares_the_ladder_and_no_more_than_ten_names_of_it() -> None
 
 def test_a_name_the_root_does_not_serve_is_refused_as_any_module_refuses_it() -> None:
     with pytest.raises(AttributeError, match="has no attribute 'run_eval'"):
-        _ = threetears.evals.run_eval  # type: ignore[attr-defined]
+        _ = threetears.evals.run_eval

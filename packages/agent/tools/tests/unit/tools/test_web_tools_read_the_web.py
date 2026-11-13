@@ -41,7 +41,7 @@ def _search(**kwargs: Any) -> tuple[WebSearchTool, ScriptedTransport]:
 
 
 def _params(transport: ScriptedTransport) -> dict[str, str]:
-    return dict(transport.calls[0]["params"])  # type: ignore[arg-type]
+    return dict(transport.calls[0]["params"])
 
 
 # --- web_search -----------------------------------------------------------

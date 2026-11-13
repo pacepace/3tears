@@ -107,7 +107,7 @@ def _budget(ledger: _FakeLedger | None = None, *, cap_usd: float | None = 1.0) -
 # =============================================================================
 
 
-async def test_an_admitted_call_is_made_on_its_client_and_ledgered_once():
+async def test_an_admitted_call_is_made_on_its_client_and_ledgered_once() -> None:
     ledger = _FakeLedger()
     budget = _budget(ledger)
     writer = _FakeWriter()
@@ -123,7 +123,7 @@ async def test_an_admitted_call_is_made_on_its_client_and_ledgered_once():
     )
 
 
-async def test_a_call_already_made_is_refused():
+async def test_a_call_already_made_is_refused() -> None:
     budget = _budget()
     writer = _FakeWriter()
     [admitted] = budget.admit(writer, "variation", [_CALL])
@@ -134,7 +134,7 @@ async def test_a_call_already_made_is_refused():
     assert writer.calls == 1
 
 
-async def test_another_budgets_admission_is_refused():
+async def test_another_budgets_admission_is_refused() -> None:
     writer = _FakeWriter()
     [theirs] = _budget().admit(writer, "variation", [_CALL])
     ledger = _FakeLedger()
@@ -149,7 +149,7 @@ async def test_another_budgets_admission_is_refused():
     [{"call": PlannedCall(system="write values", user="axis: invoice id" + " and much more" * 500)}, {}],
     ids=["its-call-enlarged-after-pricing", "an-unaltered-copy"],
 )
-async def test_a_copy_of_an_admission_is_refused(altered: dict[str, Any]):
+async def test_a_copy_of_an_admission_is_refused(altered: dict[str, Any]) -> None:
     """``dataclasses.replace`` keeps the token, so a check on the token alone made an enlarged prompt look priced."""
     ledger = _FakeLedger()
     budget = _budget(ledger)
@@ -163,7 +163,7 @@ async def test_a_copy_of_an_admission_is_refused(altered: dict[str, Any]):
     assert writer.calls == 1, "the admission itself is still made"
 
 
-async def test_a_call_made_on_another_client_of_the_same_model_is_refused():
+async def test_a_call_made_on_another_client_of_the_same_model_is_refused() -> None:
     """Same model name, another client: its output cap — and so the price of the call — can differ."""
     budget = _budget()
     priced_on = _FakeWriter()
@@ -181,7 +181,7 @@ async def test_a_call_made_on_another_client_of_the_same_model_is_refused():
 
 
 @pytest.mark.parametrize("ceiling", [-0.01, math.nan, math.inf], ids=["negative", "nan", "infinite"])
-def test_a_client_pricing_a_call_at_no_amount_is_refused(ceiling: float):
+def test_a_client_pricing_a_call_at_no_amount_is_refused(ceiling: float) -> None:
     budget = _budget()
 
     with pytest.raises(ValueError, match="a ceiling is a finite amount, 0 or more"):
@@ -190,17 +190,17 @@ def test_a_client_pricing_a_call_at_no_amount_is_refused(ceiling: float):
 
 
 @pytest.mark.parametrize("cap", [0.0, -1.0, math.nan, math.inf], ids=["zero", "negative", "nan", "infinite"])
-def test_a_cap_that_is_not_a_positive_amount_is_refused(cap: float):
+def test_a_cap_that_is_not_a_positive_amount_is_refused(cap: float) -> None:
     with pytest.raises(ValueError, match="cap_usd must be a positive amount, or None"):
         _budget(cap_usd=cap)
 
 
-def test_no_cap_and_a_positive_cap_are_accepted():
+def test_no_cap_and_a_positive_cap_are_accepted() -> None:
     assert _budget(cap_usd=None).cap_usd is None
     assert _budget(cap_usd=0.5).cap_usd == 0.5
 
 
-def test_an_admission_past_what_is_left_of_the_cap_is_refused_and_commits_nothing():
+def test_an_admission_past_what_is_left_of_the_cap_is_refused_and_commits_nothing() -> None:
     budget = _budget(cap_usd=0.015)
     writer = _FakeWriter()
     budget.admit(writer, "variation", [_CALL])
@@ -215,7 +215,7 @@ def test_an_admission_past_what_is_left_of_the_cap_is_refused_and_commits_nothin
 # =============================================================================
 
 
-async def test_a_completed_call_reporting_what_the_ledger_cannot_hold_is_still_ledgered():
+async def test_a_completed_call_reporting_what_the_ledger_cannot_hold_is_still_ledgered() -> None:
     """A raw provider stop reason and a negative count used to fail the row's validation and drop the row."""
     ledger = _FakeLedger()
     budget = _budget(ledger)
@@ -231,12 +231,12 @@ async def test_a_completed_call_reporting_what_the_ledger_cannot_hold_is_still_l
     assert (row.cost_usd, row.completion_tokens, row.price_source) == (0.004, 5, "rate card"), "the rest as reported"
 
 
-def test_a_raised_call_carries_nothing_unreadable():
+def test_a_raised_call_carries_nothing_unreadable() -> None:
     with pytest.raises(ValueError, match="a raised call reported nothing"):
         OutOfRunSpend(scope_id="s", purpose="variation", model=_MODEL, outcome="raised", failure="E", unreadable=["x"])
 
 
-async def test_a_ledger_write_failing_while_the_call_raised_leaves_the_calls_own_failure():
+async def test_a_ledger_write_failing_while_the_call_raised_leaves_the_calls_own_failure() -> None:
     ledger = _FakeLedger(failing=True)
     budget = _budget(ledger)
     writer = _FakeWriter(raises=TimeoutError("the provider timed out"))
@@ -250,7 +250,7 @@ async def test_a_ledger_write_failing_while_the_call_raised_leaves_the_calls_own
     ], "the call is kept on the budget, so a report summing its calls still counts it"
 
 
-async def test_a_ledger_write_failing_for_a_completed_call_raises():
+async def test_a_ledger_write_failing_for_a_completed_call_raises() -> None:
     budget = _budget(_FakeLedger(failing=True))
     writer = _FakeWriter()
     [admitted] = budget.admit(writer, "variation", [_CALL])
@@ -267,7 +267,7 @@ async def test_a_ledger_write_failing_for_a_completed_call_raises():
 # =============================================================================
 
 
-async def test_the_served_model_is_the_one_the_response_named():
+async def test_the_served_model_is_the_one_the_response_named() -> None:
     ledger = _FakeLedger()
     budget = _budget(ledger)
     named = _FakeWriter(reported=_Reported(served_model="writer/model-2026-09"))
@@ -301,7 +301,9 @@ class _FakeThreadRecordingLedger(_FakeLedger):
 
 
 @pytest.mark.parametrize("raises", [None, RuntimeError("the provider refused")], ids=["completed", "raised"])
-async def test_the_ledger_row_is_written_on_the_budget_s_executor_and_never_on_the_loop(raises: BaseException | None):
+async def test_the_ledger_row_is_written_on_the_budget_s_executor_and_never_on_the_loop(
+    raises: BaseException | None,
+) -> None:
     """Both outcomes' rows — the completed call's and the raised one's — leave the loop for the named pool."""
     ledger = _FakeThreadRecordingLedger()
     with ThreadPoolExecutor(max_workers=1) as pool:

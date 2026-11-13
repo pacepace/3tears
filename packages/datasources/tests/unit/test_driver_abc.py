@@ -219,7 +219,7 @@ class TestObservedDecoratorCompiles:
             return 1
 
         with pytest.raises(TypeError, match="async"):
-            observed("fake")(sync_method)  # type: ignore[arg-type]
+            observed("fake")(sync_method)
 
     @pytest.mark.asyncio
     async def test_observed_decorator_wraps_async_method(self) -> None:

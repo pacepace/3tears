@@ -22,7 +22,7 @@ from threetears.scrape.drivers.nodriver_download import NodriverDownloadDriver, 
 
 
 class TestNodriverDownloadDriver:
-    def test_name(self):
+    def test_name(self) -> None:
         driver = NodriverDownloadDriver("http://localhost:8088")
         assert driver.name == "nodriver_download"
 
@@ -234,7 +234,7 @@ class TestNodriverDownloadDriver:
         assert exc_info.value.code == "parse_failed"
         await client.aclose()
 
-    async def test_render_raises_on_sidecar_error_body(self):
+    async def test_render_raises_on_sidecar_error_body(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 504, json={"error": {"code": "download_timeout", "message": "download timed out after 30.0s"}}
@@ -250,7 +250,7 @@ class TestNodriverDownloadDriver:
         assert exc_info.value.message == "download timed out after 30.0s"
         await client.aclose()
 
-    async def test_render_raises_on_driver_crash_error_body(self):
+    async def test_render_raises_on_driver_crash_error_body(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(502, json={"error": {"code": "driver_crash", "message": "boom"}})
 
@@ -264,7 +264,7 @@ class TestNodriverDownloadDriver:
         assert exc_info.value.message == "boom"
         await client.aclose()
 
-    async def test_render_raises_on_transport_failure(self):
+    async def test_render_raises_on_transport_failure(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
@@ -303,7 +303,7 @@ class TestNodriverDownloadDriver:
         assert isinstance(page, RenderedPage)
         assert page.timing_ms >= 0.0
 
-    async def test_a_non_json_error_body_still_raises_the_driver_error(self):
+    async def test_a_non_json_error_body_still_raises_the_driver_error(self) -> None:
         """A 5xx the sidecar did not write -- an ingress or proxy page -- has no JSON body.
 
         It must still surface as this driver's documented error, not as a bare decode error

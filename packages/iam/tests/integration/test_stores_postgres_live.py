@@ -101,8 +101,8 @@ async def test_a_purge_deletes_every_expired_row_page_after_page_and_no_live_one
 def _index_reads(node: dict[str, object]) -> list[str]:
     """every index a plan node (and its children) reads."""
     found = [str(node["Index Name"])] if "Index Name" in node else []
-    for child in node.get("Plans", []):  # type: ignore[union-attr]
-        found += _index_reads(child)  # type: ignore[arg-type]
+    for child in node.get("Plans", []):
+        found += _index_reads(child)
     return found
 
 

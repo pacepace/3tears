@@ -204,7 +204,7 @@ class TestRegistryClearAndReset:
         from typing import Literal as _Lit
 
         class TestOnlyEvent(FrameworkEvent):
-            type: _Lit["test_only_event"] = "test_only_event"  # type: ignore[assignment]
+            type: _Lit["test_only_event"] = "test_only_event"
 
         reg.register(TestOnlyEvent)
         assert "test_only_event" in reg.names()
@@ -254,7 +254,7 @@ class TestRegistryRegister:
         from typing import Literal
 
         class Imposter(FrameworkEvent):
-            type: Literal["prompt_built"] = "prompt_built"  # type: ignore[assignment]
+            type: Literal["prompt_built"] = "prompt_built"
 
         with pytest.raises(ValueError, match="already registered"):
             reg.register(Imposter)

@@ -52,13 +52,13 @@ def _in_an_interpreter_without(module: str, body: str) -> Any:
 
 
 class TestOcrConfig:
-    def test_defaults(self):
+    def test_defaults(self) -> None:
         cfg = OcrConfig()
         assert cfg.enabled is False
         assert cfg.language == "eng"
         assert cfg.psm == 4
 
-    def test_custom(self):
+    def test_custom(self) -> None:
         cfg = OcrConfig(enabled=True, language="deu", psm=3)
         assert cfg.enabled is True
         assert cfg.language == "deu"
@@ -191,7 +191,7 @@ class TestRenderPdfPagesToImages:
         with pytest.raises(DocumentParseError, match=r"could not be rendered \(RuntimeError\)"):
             render_pdf_pages_to_images(b"fake-pdf-bytes")
 
-    def test_a_missing_renderer_is_refused_by_name(self):
+    def test_a_missing_renderer_is_refused_by_name(self) -> None:
         """``pdf2image`` not installed is the same refusal, not an empty list."""
         refusal = _in_an_interpreter_without(
             "pdf2image",
@@ -259,14 +259,14 @@ class TestDetectMime:
             ("paper.latex", "application/x-latex"),
         ],
     )
-    def test_known_extensions(self, filename: str, expected: str):
+    def test_known_extensions(self, filename: str, expected: str) -> None:
         assert detect_mime_from_filename(filename) == expected
 
-    def test_no_extension(self):
+    def test_no_extension(self) -> None:
         result = detect_mime_from_filename("noextension")
         assert result is None
 
-    def test_unknown_extension(self):
+    def test_unknown_extension(self) -> None:
         # Falls back to mimetypes.guess_type
         result = detect_mime_from_filename("file.xyz123nope")
         # Should be None or whatever mimetypes guesses
@@ -277,7 +277,7 @@ class TestDetectMime:
 
 
 class TestParseText:
-    async def test_plain_text(self):
+    async def test_plain_text(self) -> None:
         data = b"Hello world, this is a test document."
         result = await parse_document(data, "text/plain", "test.txt")
         assert isinstance(result, DocumentResult)
@@ -287,12 +287,12 @@ class TestParseText:
         assert result.title == "test.txt"
         assert len(result.sections) == 1
 
-    async def test_plain_text_latin1_fallback(self):
+    async def test_plain_text_latin1_fallback(self) -> None:
         data = "café résumé".encode("latin-1")
         result = await parse_document(data, "text/plain")
         assert "café" in result.text
 
-    async def test_markdown_sections(self):
+    async def test_markdown_sections(self) -> None:
         md = b"# Title\n\nIntro text.\n\n## Section One\n\nBody here.\n"
         result = await parse_document(md, "text/markdown", "doc.md")
         assert result.title == "Title"
@@ -302,7 +302,7 @@ class TestParseText:
         assert result.sections[1].heading == "Section One"
         assert result.sections[1].level == 2
 
-    async def test_markdown_passthrough(self):
+    async def test_markdown_passthrough(self) -> None:
         md = b"**bold** and *italic*"
         result = await parse_document(md, "text/markdown")
         assert result.text == "**bold** and *italic*"
@@ -310,7 +310,7 @@ class TestParseText:
     @pytest.mark.parametrize("mime_type", ["text/plain", "text/markdown", "application/x-tex"])
     async def test_a_bug_in_a_text_parser_propagates_rather_than_reading_as_a_corrupt_document(
         self, mime_type: str, monkeypatch: pytest.MonkeyPatch
-    ):
+    ) -> None:
         """these parsers decode with a fallback that cannot fail, so anything they raise is a bug.
 
         It used to be wrapped as a parse failure, which the tool answered as an unreadable document.
@@ -326,7 +326,7 @@ class TestParseText:
 
 
 class TestParseCsv:
-    async def test_basic_table(self):
+    async def test_basic_table(self) -> None:
         data = b"Employer,County,Affected\nAcme Corp,Oakland,42\nWidgets Inc,Wayne,7\n"
         result = await parse_document(data, "text/csv", "warn.csv")
         assert isinstance(result, DocumentResult)
@@ -341,12 +341,12 @@ class TestParseCsv:
         assert result.word_count > 0
         assert len(result.sections) == 1
 
-    async def test_embedded_comma_in_quoted_field_is_not_split(self):
+    async def test_embedded_comma_in_quoted_field_is_not_split(self) -> None:
         data = b'Employer,City\n"Acme, Corp",Oakland\n'
         result = await parse_document(data, "text/csv")
         assert "| Acme, Corp | Oakland |" in result.text
 
-    async def test_embedded_newline_in_quoted_field_stays_one_row(self):
+    async def test_embedded_newline_in_quoted_field_stays_one_row(self) -> None:
         data = b'Employer,Notes\n"Acme Corp","line one\nline two"\n'
         result = await parse_document(data, "text/csv")
         assert "line one\nline two" in result.text
@@ -355,33 +355,33 @@ class TestParseCsv:
         assert result.text.count("| Acme Corp") == 1
         assert result.text.count("| --- | --- |") == 1
 
-    async def test_ragged_short_row_is_padded(self):
+    async def test_ragged_short_row_is_padded(self) -> None:
         data = b"A,B,C\n1,2,3\n4,5\n"
         result = await parse_document(data, "text/csv")
         assert "| 4 | 5 |  |" in result.text
 
-    async def test_ragged_long_row_is_trimmed(self):
+    async def test_ragged_long_row_is_trimmed(self) -> None:
         data = b"A,B\n1,2,3,4\n"
         result = await parse_document(data, "text/csv")
         assert "| 1 | 2 |" in result.text
         assert "3" not in result.text
 
-    async def test_blank_rows_are_skipped(self):
+    async def test_blank_rows_are_skipped(self) -> None:
         data = b"A,B\n1,2\n,\n3,4\n"
         result = await parse_document(data, "text/csv")
         assert result.text.count("\n") == 3  # header + sep + 2 real data rows
 
-    async def test_empty_file(self):
+    async def test_empty_file(self) -> None:
         result = await parse_document(b"", "text/csv", "empty.csv")
         assert result.text == "(empty file)"
         assert result.word_count == 0
 
-    async def test_latin1_fallback(self):
+    async def test_latin1_fallback(self) -> None:
         data = "Employer,City\ncafé résumé,Oakland\n".encode("latin-1")
         result = await parse_document(data, "text/csv")
         assert "café résumé" in result.text
 
-    async def test_a_field_past_the_csv_limit_is_a_parse_failure(self):
+    async def test_a_field_past_the_csv_limit_is_a_parse_failure(self) -> None:
         """the one thing the csv module refuses in decoded text: a field longer than its limit."""
         import csv
 
@@ -393,7 +393,7 @@ class TestParseCsv:
 
     async def test_a_bug_in_the_csv_read_propagates_rather_than_reading_as_a_corrupt_document(
         self, monkeypatch: pytest.MonkeyPatch
-    ):
+    ) -> None:
         """it used to be wrapped as a parse failure, which the tool answered as an unreadable document."""
         from threetears.agent.tools import document as document_module
 
@@ -404,7 +404,7 @@ class TestParseCsv:
         with pytest.raises(TypeError, match="a bug in the read"):
             await parse_document(b"A,B\n1,2\n", "text/csv")
 
-    async def test_no_filename_still_parses(self):
+    async def test_no_filename_still_parses(self) -> None:
         # Google Sheets' CSV export URL has no .csv extension -- content-type
         # alone (already resolved to "text/csv" by the caller) must be enough.
         data = b"A,B\n1,2\n"
@@ -414,7 +414,7 @@ class TestParseCsv:
 
 
 class TestParseLaTeX:
-    async def test_basic_latex(self):
+    async def test_basic_latex(self) -> None:
         tex = rb"""\documentclass{article}
 \title{My Paper}
 \begin{document}
@@ -429,7 +429,7 @@ Hello world.
         assert "*italic text*" in result.text
         assert result.was_ocr is False
 
-    async def test_latex_lists(self):
+    async def test_latex_lists(self) -> None:
         tex = rb"""\begin{document}
 \begin{itemize}
 \item First
@@ -445,14 +445,14 @@ Hello world.
 
 
 class TestUnsupported:
-    async def test_unsupported_mime_raises_instead_of_answering_with_text(self):
+    async def test_unsupported_mime_raises_instead_of_answering_with_text(self) -> None:
         """An unsupported type is a failure, never a result whose text says so."""
         with pytest.raises(DocumentParseError) as caught:
             await parse_document(b"data", "application/octet-stream")
         assert caught.value.reason == "unsupported_type"
         assert caught.value.__cause__ is None
 
-    async def test_unsupported_with_filename_fallback(self):
+    async def test_unsupported_with_filename_fallback(self) -> None:
         result = await parse_document(b"hello", "application/octet-stream", "test.txt")
         # Should fall back to filename detection and parse as text
         assert "hello" in result.text
@@ -470,7 +470,7 @@ class TestUnsupported:
     )
     async def test_can_parse_document_answers_as_parse_document_dispatches(
         self, mime_type: str, filename: str | None, readable: bool
-    ):
+    ) -> None:
         """the type-only answer a caller uses before fetching bytes agrees with the parse itself."""
         assert can_parse_document(mime_type, filename) is readable
         if not readable:
@@ -512,27 +512,27 @@ class TestParseDocumentTool:
     def _create(self, ocr: OcrConfig | None = None) -> Any:
         return create_parse_document_tool({}, "Parse documents", ocr_config=ocr)
 
-    async def test_parse_txt_via_tool(self):
+    async def test_parse_txt_via_tool(self) -> None:
         tool = self._create()
         content = base64.b64encode(b"Hello from tool test.").decode()
         result = await tool.ainvoke({"content_base64": content, "filename": "test.txt"})
         assert "Hello from tool test" in result
         assert "Words:" in result
 
-    async def test_parse_csv_via_tool(self):
+    async def test_parse_csv_via_tool(self) -> None:
         tool = self._create()
         content = base64.b64encode(b"Employer,Count\nAcme Corp,42\n").decode()
         result = await tool.ainvoke({"content_base64": content, "filename": "warn.csv"})
         assert "| Acme Corp | 42 |" in result
         assert "Words:" in result
 
-    async def test_invalid_base64(self):
+    async def test_invalid_base64(self) -> None:
         tool = self._create()
         result = await tool.ainvoke({"content_base64": "!!!invalid!!!", "filename": "test.txt"})
         assert "[TOOL ERROR]" in result
         assert "decode" in result
 
-    async def test_base64_with_non_ascii_characters_is_a_decode_error(self):
+    async def test_base64_with_non_ascii_characters_is_a_decode_error(self) -> None:
         tool = self._create()
         result = await tool.ainvoke({"content_base64": "ünïcode", "filename": "test.txt"})
         assert result.startswith("[TOOL ERROR]")
@@ -540,7 +540,7 @@ class TestParseDocumentTool:
 
     async def test_a_bug_in_the_decode_propagates_rather_than_reading_as_bad_base64(
         self, monkeypatch: pytest.MonkeyPatch
-    ):
+    ) -> None:
         """it used to be contained and answered as invalid base64, blaming the model."""
         from threetears.agent.tools import document as document_module
 
@@ -554,7 +554,7 @@ class TestParseDocumentTool:
 
     async def test_a_bug_while_parsing_propagates_rather_than_reading_as_a_corrupt_document(
         self, monkeypatch: pytest.MonkeyPatch
-    ):
+    ) -> None:
         """only a DocumentParseError is a document that could not be read; a TypeError is a bug."""
         from threetears.agent.tools import document as document_module
 
@@ -567,27 +567,27 @@ class TestParseDocumentTool:
         with pytest.raises(TypeError, match="a bug in the parse"):
             await tool.ainvoke({"content_base64": content, "filename": "test.txt"})
 
-    async def test_unknown_format(self):
+    async def test_unknown_format(self) -> None:
         tool = self._create()
         content = base64.b64encode(b"data").decode()
         result = await tool.ainvoke({"content_base64": content, "filename": "file.xyz123nope"})
         assert "[TOOL ERROR]" in result
         assert "format" in result.lower()
 
-    async def test_a_corrupt_document_is_a_tool_error_not_a_document(self):
+    async def test_a_corrupt_document_is_a_tool_error_not_a_document(self) -> None:
         tool = self._create()
         content = base64.b64encode(b"this is not a real document").decode()
         result = await tool.ainvoke({"content_base64": content, "filename": "warn.xlsx"})
         assert result.startswith("[TOOL ERROR]")
         assert "parse" in result
 
-    async def test_the_tears_tool_reports_a_corrupt_document_as_a_failure(self):
+    async def test_the_tears_tool_reports_a_corrupt_document_as_a_failure(self) -> None:
         content = base64.b64encode(b"this is not a real document").decode()
         result = await ParseDocumentTool().execute(content_base64=content, filename="warn.xlsx")
         assert result.success is False
         assert result.error is not None and result.error.startswith("[TOOL ERROR]")
 
-    async def test_a_document_past_the_bound_comes_back_as_a_part(self):
+    async def test_a_document_past_the_bound_comes_back_as_a_part(self) -> None:
         """Windowed, not cut: the note names the call that returns the next part."""
         tool = self._create()
         # 20K chars of text
@@ -596,7 +596,7 @@ class TestParseDocumentTool:
         result = await tool.ainvoke({"content_base64": content, "filename": "big.txt"})
         assert "call parse_document again with offset=15000" in result
 
-    async def test_the_part_note_is_the_first_line_before_the_documents_facts_and_text(self):
+    async def test_the_part_note_is_the_first_line_before_the_documents_facts_and_text(self) -> None:
         """A reader that keeps only the head of the result still reads that it is a part."""
         tool = self._create()
         content = base64.b64encode(("word " * 4000).encode()).decode()
@@ -623,7 +623,7 @@ class TestParseDocumentTool:
         assert lines[1] == "**Note:** OCR was used for some pages"
         assert lines.index("**Title:** Scan") > 1 and result.index("**Note:**") < result.index("scanned words")
 
-    async def test_the_next_part_carries_on_where_the_first_stopped(self):
+    async def test_the_next_part_carries_on_where_the_first_stopped(self) -> None:
         tool = self._create()
         big_text = ("word " * 4000).encode()
         content = base64.b64encode(big_text).decode()
@@ -660,7 +660,7 @@ class TestDocxProperties:
 
 
 class TestParseDocumentInput:
-    def test_schema(self):
+    def test_schema(self) -> None:
         inp = ParseDocumentInput(content_base64="abc", filename="test.pdf")
         assert inp.content_base64 == "abc"
         assert inp.filename == "test.pdf"
@@ -952,7 +952,7 @@ class TestPdfTables:
         result = await _parse_one_page(monkeypatch, _FakePdfPage([]))
         assert result.page_faults == []
 
-    def test_an_ocr_that_cannot_run_is_recorded_on_the_result(self):
+    def test_an_ocr_that_cannot_run_is_recorded_on_the_result(self) -> None:
         """OCR that could not run (pdf2image / poppler / tesseract absent) used to leave a scanned
         page reading as blank, with nothing on the result to say OCR never happened."""
         result = _in_an_interpreter_without(

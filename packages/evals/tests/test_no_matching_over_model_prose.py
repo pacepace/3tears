@@ -190,12 +190,12 @@ def _violations(prose: frozenset[str], root: Path = _EVAL_ROOT) -> list[str]:
 
 
 class TestThePopulationIsDerivedFromTypes:
-    def test_the_marked_fields_are_found(self):
+    def test_the_marked_fields_are_found(self) -> None:
         """Non-empty and containing a known marked field — an empty population passes every scan."""
         names = prose_field_names()
         assert {"statement", "lede", "invalidation_trigger"} <= names, sorted(names)
 
-    def test_a_newly_typed_field_joins_the_population_without_a_list_edit(self):
+    def test_a_newly_typed_field_joins_the_population_without_a_list_edit(self) -> None:
         from threetears.evals.schema.prose import ModelProse
 
         class _Planted(BaseModel):
@@ -205,11 +205,11 @@ class TestThePopulationIsDerivedFromTypes:
 
 
 class TestNoCodeMatchesOverModelProse:
-    def test_the_scan_reads_the_package(self):
+    def test_the_scan_reads_the_package(self) -> None:
         """Non-vacuity: a scan over a root holding no module finds no violation by reading nothing."""
         assert (_EVAL_ROOT / "analysis" / "service.py").is_file(), _EVAL_ROOT
 
-    def test_no_deterministic_string_matching_over_prose_in_the_eval_package(self):
+    def test_no_deterministic_string_matching_over_prose_in_the_eval_package(self) -> None:
         violations = _violations(prose_field_names())
         assert not violations, (
             "code must not match over model prose — whether prose is right is an eval's question, not a check's:\n"
@@ -270,7 +270,7 @@ class TestTheScannerFires:
         )
         assert _violations(prose_field_names(), root=tree) == []
 
-    def test_a_waiver_needs_a_reason(self):
+    def test_a_waiver_needs_a_reason(self) -> None:
         lines = ["x = 1  # prose-canary: allow", "y = 2  # prose-canary: allow — a response, not a field"]
         assert _waiver(lines, 1) == (True, "")
         assert _waiver(lines, 2)[1] == "a response, not a field"

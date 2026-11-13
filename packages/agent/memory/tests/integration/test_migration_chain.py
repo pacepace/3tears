@@ -243,7 +243,7 @@ class TestFullChainApplies:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            count = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            count = await runner.apply_for_agent_schema(store)
             assert count > 0
 
             # memories table reconciled — transcript-chunks-task-A
@@ -357,7 +357,7 @@ class TestFullChainApplies:
             )
 
             # re-apply is a no-op
-            count2 = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            count2 = await runner.apply_for_agent_schema(store)
             assert count2 == 0
         finally:
             await conn.close()
@@ -386,7 +386,7 @@ class TestUnifiedMemoryParentFks:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
 
             # confdeltype: 'a' = NO ACTION, 'r' = RESTRICT, 'c' = CASCADE,
             # 'n' = SET NULL, 'd' = SET DEFAULT.
@@ -416,7 +416,7 @@ class TestUnifiedMemoryParentFks:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
 
             row = await conn.fetchrow(
                 """
@@ -448,7 +448,7 @@ class TestUnifiedMemoryParentFks:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
 
             import uuid
             from datetime import UTC, datetime
@@ -526,7 +526,7 @@ class TestUnifiedMemoryParentFks:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
 
             import uuid
             from datetime import UTC, datetime
@@ -625,7 +625,7 @@ class TestUnifiedMemoryParentFks:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
 
             import uuid
             from datetime import UTC, datetime
@@ -681,7 +681,7 @@ class TestScopeRelaxationAndSalience:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
 
             import uuid
             from datetime import UTC, datetime
@@ -731,7 +731,7 @@ class TestScopeRelaxationAndSalience:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
 
             import uuid
             from datetime import UTC, datetime
@@ -788,12 +788,12 @@ class TestSearchVectorGinIndexesDropped:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store, target=26)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store, target=26)
             for index_name in _DROPPED_SEARCH_VECTOR_GIN_INDEXES:
                 assert await _index_exists(conn, schema, index_name), f"{index_name} missing at v026"
             assert await _index_exists(conn, schema, "idx_memories_tags")
 
-            applied = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            applied = await runner.apply_for_agent_schema(store)
             assert applied >= 1
 
             for index_name in _DROPPED_SEARCH_VECTOR_GIN_INDEXES:
@@ -814,7 +814,7 @@ class TestSearchVectorGinIndexesDropped:
 
             # replay is a no-op: nothing pending, and the DROP ... IF EXISTS
             # body itself tolerates indexes that are already gone.
-            assert await runner.apply_for_agent_schema(store) == 0  # type: ignore[arg-type]
+            assert await runner.apply_for_agent_schema(store) == 0
             await drop_search_vector_gin_indexes(store)  # type: ignore[arg-type]
             assert await _index_exists(conn, schema, "idx_memories_tags")
         finally:
@@ -841,7 +841,7 @@ class TestMemoryTags:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
 
             import json
             import uuid
@@ -930,7 +930,7 @@ class TestFtsTriggerPopulatesVector:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
 
             import uuid
             from datetime import UTC, datetime

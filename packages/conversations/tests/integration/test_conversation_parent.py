@@ -155,11 +155,11 @@ class TestOnThePackageSchema:
         conn = await _connect(url, schema)
         try:
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store, target=10)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store, target=10)
             before = await _columns(conn, schema)
             assert "parent_type" not in before and "parent_id" not in before
 
-            assert await runner.apply_for_agent_schema(store, target=11) == 1  # type: ignore[arg-type]
+            assert await runner.apply_for_agent_schema(store, target=11) == 1
             after = await _columns(conn, schema)
             assert after["parent_type"] == ("text", "YES")
             assert after["parent_id"] == ("uuid", "YES")
@@ -168,7 +168,7 @@ class TestOnThePackageSchema:
 
             constraints_once = await _constraints(conn, schema)
             indexes_once = await _indexes(conn, schema)
-            assert await runner.apply_for_agent_schema(store, target=11) == 0  # type: ignore[arg-type]
+            assert await runner.apply_for_agent_schema(store, target=11) == 0
             await add_conversation_parent(store)  # type: ignore[arg-type]
             assert await _columns(conn, schema) == after
             assert await _constraints(conn, schema) == constraints_once
@@ -271,7 +271,7 @@ async def collection(pg_schema: tuple[str, str]) -> AsyncIterator[ConversationsC
     try:
         runner = MigrationRunner()
         register_conversations(runner)
-        await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(AsyncpgStore(conn))
     finally:
         await conn.close()
     pool = await asyncpg.create_pool(

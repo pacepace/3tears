@@ -352,7 +352,7 @@ async def test_every_utterance_calls_floor_is_the_real_call_with_text_removed(
     )
     llm = _Recording()
 
-    await driver.next_user_turn(llm, actor)  # type: ignore[arg-type]
+    await driver.next_user_turn(llm, actor)
 
     [(system, user, response_format)] = llm.sent
     floor_system, floor_user = smallest_utterance_prompts(actor)

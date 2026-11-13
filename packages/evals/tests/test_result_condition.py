@@ -79,7 +79,7 @@ _SCORING_OUTCOMES: dict[ResultOutcome, dict[str, object]] = {
 }
 
 
-def test_every_termination_arm_has_a_disclosure():
+def test_every_termination_arm_has_a_disclosure() -> None:
     """A new termination arm must not resolve to "nothing to report" by omission.
 
     The resolver indexes its disclosure map rather than ``.get``-ing it, so a missing arm raises --
@@ -91,14 +91,14 @@ def test_every_termination_arm_has_a_disclosure():
         assert resolve_result_condition(_result(termination=arm)).termination == arm
 
 
-def test_every_judging_arm_has_a_disclosure():
+def test_every_judging_arm_has_a_disclosure() -> None:
     """Same contract on the judging axis, for the same reason."""
     assert set(_JUDGING_STATES) == set(get_args(JudgingState)), "a judging arm has no case driving it"
     for arm, fields in _JUDGING_STATES.items():
         assert resolve_result_condition(_result(**fields)).judging == arm
 
 
-def test_every_scoring_arm_has_a_disclosure():
+def test_every_scoring_arm_has_a_disclosure() -> None:
     """Same contract on the scoring axis -- the one an operator acts on.
 
     This axis decides whether a result counts toward the aggregates, so an arm that resolves to
@@ -114,7 +114,7 @@ def test_every_scoring_arm_has_a_disclosure():
 # =============================================================================
 
 
-def test_a_cancelled_cell_discloses_that_its_total_stops_short_of_the_call_in_flight():
+def test_a_cancelled_cell_discloses_that_its_total_stops_short_of_the_call_in_flight() -> None:
     """The run loop keeps what a cancelled cell spent, so its total is a floor, not a zero."""
     condition = resolve_result_condition(_result(termination="cell_timeout", usage=[], infra_error="cell timeout"))
 
@@ -123,7 +123,7 @@ def test_a_cancelled_cell_discloses_that_its_total_stops_short_of_the_call_in_fl
     assert "not the call in flight when the deadline struck" in (condition.disclosure or "")
 
 
-def test_an_excluded_result_discloses_the_exclusion_beside_its_scores():
+def test_an_excluded_result_discloses_the_exclusion_beside_its_scores() -> None:
     """The failure this closes: a real score rendered beside an error badge, unqualified.
 
     Judging is not skipped when a cell breaks — by then the transcript holds turns, so the
@@ -146,7 +146,7 @@ def test_an_excluded_result_discloses_the_exclusion_beside_its_scores():
     assert "EXCLUDED from the aggregates" in (condition.disclosure or "")
 
 
-def test_a_candidate_failure_discloses_that_the_score_is_not_about_content():
+def test_a_candidate_failure_discloses_that_the_score_is_not_about_content() -> None:
     condition = resolve_result_condition(
         _result(termination="completed", candidate_error="LLM returned no parseable action")
     )
@@ -155,7 +155,7 @@ def test_a_candidate_failure_discloses_that_the_score_is_not_about_content():
     assert "scored as a hard fail" in (condition.disclosure or "")
 
 
-def test_a_candidate_failure_discloses_that_its_checks_count_as_failed():
+def test_a_candidate_failure_discloses_that_its_checks_count_as_failed() -> None:
     condition = resolve_result_condition(
         _result(termination="completed", candidate_error="LLM returned no parseable action")
     )
@@ -169,13 +169,13 @@ _CHECKS = [
 ]
 
 
-def test_a_healthy_result_counts_each_check_as_it_evaluated():
+def test_a_healthy_result_counts_each_check_as_it_evaluated() -> None:
     counted = counted_goal_verdicts(_result(goal_state_outcomes=_CHECKS))
 
     assert counted == [(_CHECKS[0], True), (_CHECKS[1], False)]
 
 
-def test_a_candidate_failure_counts_every_check_as_failed():
+def test_a_candidate_failure_counts_every_check_as_failed() -> None:
     """The check that EVALUATED True is the one this exists for."""
     counted = counted_goal_verdicts(_result(candidate_error="candidate turn LLM error: x", goal_state_outcomes=_CHECKS))
 
@@ -187,7 +187,7 @@ def test_a_harness_faulted_result_is_in_no_rate(fault):
     assert counted_goal_verdicts(_result(goal_state_outcomes=_CHECKS, **fault)) is None
 
 
-def test_a_candidate_failure_outranks_an_infra_fault_on_the_same_result():
+def test_a_candidate_failure_outranks_an_infra_fault_on_the_same_result() -> None:
     """The precedence classify_result holds: a broken candidate cannot launder itself into an exclusion."""
     counted = counted_goal_verdicts(
         _result(candidate_error="candidate turn LLM error: x", infra_error="slot", goal_state_outcomes=_CHECKS)
@@ -196,7 +196,7 @@ def test_a_candidate_failure_outranks_an_infra_fault_on_the_same_result():
     assert counted == [(_CHECKS[0], False), (_CHECKS[1], False)]
 
 
-def test_a_healthy_scored_result_discloses_nothing():
+def test_a_healthy_scored_result_discloses_nothing() -> None:
     """A result in no notable condition gains no chrome — the disclosure is a warning, not a label."""
     condition = resolve_result_condition(
         _result(
@@ -218,7 +218,7 @@ def test_a_healthy_scored_result_discloses_nothing():
 # =============================================================================
 
 
-def test_a_pinned_judge_that_never_ran_is_not_evidence_of_judging():
+def test_a_pinned_judge_that_never_ran_is_not_evidence_of_judging() -> None:
     """The regression this axis exists for.
 
     ``judge_model`` is the RUN-level pin, resolved at launch and stamped onto degraded
@@ -254,7 +254,7 @@ def test_a_pinned_judge_that_never_ran_is_not_evidence_of_judging():
     ],
     ids=["reasoning-only", "rubric-only", "transcript-axis-only", "outcome-axis-only"],
 )
-def test_any_one_judge_output_counts_as_judged(evidence: dict[str, object]):
+def test_any_one_judge_output_counts_as_judged(evidence: dict[str, object]) -> None:
     """A judge can score without narrating, and a template can score without either reserved axis.
 
     Requiring one particular output would report a real judging pass as none — which is
@@ -263,7 +263,7 @@ def test_any_one_judge_output_counts_as_judged(evidence: dict[str, object]):
     assert resolve_result_condition(_result(**evidence)).judging == "scored"
 
 
-def test_a_judge_that_scored_some_dims_and_errored_on_others_is_partial():
+def test_a_judge_that_scored_some_dims_and_errored_on_others_is_partial() -> None:
     """Collapsing this into either neighbour loses whichever half the reader needed."""
     condition = resolve_result_condition(
         _result(
@@ -278,7 +278,7 @@ def test_a_judge_that_scored_some_dims_and_errored_on_others_is_partial():
     assert "some dimensions were scored and some were not" in (condition.disclosure or "")
 
 
-def test_a_judge_that_produced_nothing_and_errored_is_failed():
+def test_a_judge_that_produced_nothing_and_errored_is_failed() -> None:
     condition = resolve_result_condition(_result(judge_error="judge: connection reset"))
 
     assert condition.judging == "failed"
@@ -290,7 +290,7 @@ def test_a_judge_that_produced_nothing_and_errored_is_failed():
 # =============================================================================
 
 
-def test_a_cancelled_cells_usage_is_reported_lost_not_captured():
+def test_a_cancelled_cells_usage_is_reported_lost_not_captured() -> None:
     """A lost capture, refused at the resolver that once published it as complete.
 
     A timed-out cell stores ``usage=[]`` — byte-identical to a subject-factory failure's
@@ -309,7 +309,7 @@ def test_a_cancelled_cells_usage_is_reported_lost_not_captured():
     assert resolved.usage == []
 
 
-def test_a_factory_failure_still_reports_an_honest_empty_capture():
+def test_a_factory_failure_still_reports_an_honest_empty_capture() -> None:
     """The other side of the same distinction — this one really did attribute no roles.
 
     Paired with the test above deliberately: the two records differ ONLY in the stored
@@ -353,7 +353,7 @@ def _eval_result_constructions(module: pathlib.Path) -> list[ast.Call]:
     ]
 
 
-def test_the_runner_is_the_only_producer_of_eval_results():
+def test_the_runner_is_the_only_producer_of_eval_results() -> None:
     """Results come from the runner, whose every exit states what it captured.
 
     ``EvalResult`` requires the fields the runner writes at each exit — how the cell ended, the
@@ -380,7 +380,7 @@ def test_the_runner_is_the_only_producer_of_eval_results():
 class TestTheJudgeCouldNotTell:
     """A "can't tell" answer is judge output and is disclosed, and only a rubric dim reaches the aggregates."""
 
-    def test_a_result_answered_cannot_tell_on_every_dim_was_judged(self):
+    def test_a_result_answered_cannot_tell_on_every_dim_was_judged(self) -> None:
         result = EvalResult(
             scope_id="u",
             eval_run_id="r",
@@ -403,7 +403,7 @@ class TestTheJudgeCouldNotTell:
         assert condition.disclosure is not None and "reply.refusal" in condition.disclosure
         assert "left out of pass^k" in condition.disclosure
 
-    def test_a_reserved_axis_is_disclosed_without_claiming_an_exclusion(self):
+    def test_a_reserved_axis_is_disclosed_without_claiming_an_exclusion(self) -> None:
         result = EvalResult(
             scope_id="u",
             eval_run_id="r",
@@ -428,7 +428,7 @@ class TestTheJudgeCouldNotTell:
         assert disclosure is not None and "__transcript__" in disclosure
         assert "pass^k" not in disclosure
 
-    def test_nothing_is_said_when_the_judge_could_tell(self):
+    def test_nothing_is_said_when_the_judge_could_tell(self) -> None:
         result = EvalResult(
             scope_id="u",
             eval_run_id="r",
@@ -454,7 +454,7 @@ class TestTheJudgeCouldNotTell:
 class TestTheOutputCapEndedATurn:
     """A turn the cap cut off is a candidate failure, disclosed as the cap's — not as a failed model."""
 
-    def test_a_cut_off_result_is_a_candidate_failure_named_for_the_cap(self):
+    def test_a_cut_off_result_is_a_candidate_failure_named_for_the_cap(self) -> None:
         result = _result(covariates={"truncated_rounds": 1.0})
         assert candidate_failure_cause(result) == "output_cap"
         condition = resolve_result_condition(result)
@@ -462,14 +462,14 @@ class TestTheOutputCapEndedATurn:
         assert condition.disclosure is not None and "output cap" in condition.disclosure
         assert "A model this configuration runs" not in condition.disclosure
 
-    def test_its_checks_count_as_failed_like_any_candidate_failure(self):
+    def test_its_checks_count_as_failed_like_any_candidate_failure(self) -> None:
         result = _result(
             covariates={"truncated_rounds": 1.0},
             goal_state_outcomes=[GoalStateOutcome(expression='call_count("shop.add_item") <= 1', passed=True)],
         )
         assert counted_goal_verdicts(result) == [(result.goal_state_outcomes[0], False)]
 
-    def test_a_model_failure_is_named_first_when_both_are_recorded(self):
+    def test_a_model_failure_is_named_first_when_both_are_recorded(self) -> None:
         result = _result(candidate_error="candidate turn LLM error: 502", covariates={"truncated_rounds": 1.0})
         assert candidate_failure_cause(result) == "model_failed"
 
@@ -482,7 +482,7 @@ class TestTheOutputCapEndedATurn:
 class TestTheTurnBudgetEndedATurn:
     """A turn the host's turn budget ended is a candidate failure, disclosed as the budget's."""
 
-    def test_an_ended_turn_is_a_candidate_failure_named_for_the_budget(self):
+    def test_an_ended_turn_is_a_candidate_failure_named_for_the_budget(self) -> None:
         result = _result(covariates={"turns_ended_by_budget": 1.0})
         assert candidate_failure_cause(result) == "turn_budget"
         condition = resolve_result_condition(result)
@@ -491,18 +491,18 @@ class TestTheTurnBudgetEndedATurn:
         assert "A model this configuration runs" not in condition.disclosure
         assert "output cap" not in condition.disclosure
 
-    def test_its_checks_count_as_failed_like_any_candidate_failure(self):
+    def test_its_checks_count_as_failed_like_any_candidate_failure(self) -> None:
         result = _result(
             covariates={"turns_ended_by_budget": 1.0},
             goal_state_outcomes=[GoalStateOutcome(expression='call_count("shop.add_note") == 0', passed=True)],
         )
         assert counted_goal_verdicts(result) == [(result.goal_state_outcomes[0], False)]
 
-    def test_a_model_failure_is_named_before_it(self):
+    def test_a_model_failure_is_named_before_it(self) -> None:
         result = _result(candidate_error="candidate turn LLM error: 502", covariates={"turns_ended_by_budget": 1.0})
         assert candidate_failure_cause(result) == "model_failed"
 
-    def test_it_is_named_before_the_output_cap(self):
+    def test_it_is_named_before_the_output_cap(self) -> None:
         """An ended turn left no record of whether its rounds were cut, so the budget is the cause known to hold."""
         result = _result(covariates={"turns_ended_by_budget": 1.0, "truncated_rounds": 1.0})
         assert candidate_failure_cause(result) == "turn_budget"
@@ -513,7 +513,7 @@ class TestTheTurnBudgetEndedATurn:
         assert resolve_result_condition(_result(covariates=covariates)).scoring is ResultOutcome.OK
 
 
-def test_every_candidate_failure_cause_has_its_own_disclosure():
+def test_every_candidate_failure_cause_has_its_own_disclosure() -> None:
     """A cause added without a sentence would borrow another cause's remedy; each names its own lever.
 
     Driven through the resolver, one result per cause: a cause with no sentence raises there, and two
@@ -536,7 +536,7 @@ def test_every_candidate_failure_cause_has_its_own_disclosure():
     assert len(set(disclosures.values())) == len(disclosures), disclosures
 
 
-def test_a_cannot_tell_result_with_a_failed_check_is_not_said_to_be_left_out_of_pass_k():
+def test_a_cannot_tell_result_with_a_failed_check_is_not_said_to_be_left_out_of_pass_k() -> None:
     result = _result(
         judge_cannot_tell={"reply.thread_fit": "nothing was queued"},
         goal_state_outcomes=[GoalStateOutcome(expression='call_count("shop.add_item") >= 2', passed=False)],

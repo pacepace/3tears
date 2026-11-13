@@ -39,7 +39,7 @@ def _entry(prompt_type: str) -> SeedPrompt:
     return entry
 
 
-def test_the_catalogue_declares_each_of_the_packages_prompts_once():
+def test_the_catalogue_declares_each_of_the_packages_prompts_once() -> None:
     assert [entry.prompt_type for entry in SEED_PROMPTS] == [PROPOSER_PROMPT, BOUNDARY_GEN_PROMPT]
     assert len({entry.prompt_type for entry in SEED_PROMPTS}) == len(SEED_PROMPTS)
 
@@ -51,7 +51,7 @@ def test_the_catalogue_declares_each_of_the_packages_prompts_once():
         ("eval_analysis_gen", "ANALYSIS_GEN_PROMPT", "EVAL_ANALYSIS_GEN_DEFAULT"),
     ],
 )
-def test_a_retired_writers_slot_is_neither_seeded_nor_declared(slot: str, constant: str, seed: str):
+def test_a_retired_writers_slot_is_neither_seeded_nor_declared(slot: str, constant: str, seed: str) -> None:
     """The report planner and the memo writer are retired: no entry seeds their slots and the catalogue declares no id
     for either, so a fresh deployment never fills them, and the analysis root holds no constant to seed either from."""
     assert slot not in {entry.prompt_type for entry in SEED_PROMPTS}
@@ -61,7 +61,7 @@ def test_a_retired_writers_slot_is_neither_seeded_nor_declared(slot: str, consta
 
 
 @pytest.mark.parametrize("entry", SEED_PROMPTS, ids=lambda entry: entry.prompt_type)
-def test_every_entry_resolves_by_import_to_a_seed_of_its_own_id(entry: SeedPrompt):
+def test_every_entry_resolves_by_import_to_a_seed_of_its_own_id(entry: SeedPrompt) -> None:
     module, attribute = entry.seed_ref
     seed = getattr(importlib.import_module(module), attribute)
     if entry.kind == KIND_TEMPLATE:
@@ -77,14 +77,14 @@ def test_every_entry_resolves_by_import_to_a_seed_of_its_own_id(entry: SeedPromp
 class TestASeedPromptIsRefusedWhereItIsDeclared:
     """A host declares its own prompts through the type, so a malformed one is refused at construction."""
 
-    def test_a_kind_no_registry_seeds_is_refused(self):
+    def test_a_kind_no_registry_seeds_is_refused(self) -> None:
         with pytest.raises(ValueError, match="declares kind 'prompt'"):
             SeedPrompt(kind="prompt", prompt_type="host_x", seed_module="host.x", constant="X")
 
-    def test_a_blank_field_is_refused_by_name(self):
+    def test_a_blank_field_is_refused_by_name(self) -> None:
         with pytest.raises(ValueError, match="leaves seed_module, constant blank"):
             SeedPrompt(kind=KIND_TEXT, prompt_type="host_x", seed_module=" ", constant="")
 
-    def test_a_hosts_own_declaration_constructs(self):
+    def test_a_hosts_own_declaration_constructs(self) -> None:
         own = SeedPrompt(kind=KIND_TEXT, prompt_type="host_x", seed_module="host.prompts", constant="X")
         assert own.seed_ref == ("host.prompts", "X")

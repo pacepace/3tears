@@ -127,7 +127,7 @@ class FakeCamoufoxPage:
     async def content(self):
         return self._html
 
-    async def close(self):
+    async def close(self) -> None:
         self.closed = True
 
     def on(self, event, handler):

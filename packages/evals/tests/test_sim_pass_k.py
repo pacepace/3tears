@@ -70,7 +70,7 @@ def _all_pass_indicator(attempts: list[list[bool]]) -> float:
     return sum(all(case) for case in attempts) / len(attempts)
 
 
-def test_the_estimator_is_unbiased_at_the_issues_mixed_depths_and_the_old_one_was_not():
+def test_the_estimator_is_unbiased_at_the_issues_mixed_depths_and_the_old_one_was_not() -> None:
     """Every point of the curve lands within Monte-Carlo error of mean_i p_i^k; the old figure does not.
 
     Tolerance is four Monte-Carlo standard errors of the replicate mean, the SE taken from the
@@ -105,7 +105,7 @@ def test_the_estimator_is_unbiased_at_the_issues_mixed_depths_and_the_old_one_wa
     assert old_mean - _true_pass_hat_k(_DEEPEST) > old_tolerance, "the simulation must be able to see the old bias"
 
 
-def test_at_uniform_depth_the_estimator_is_the_all_pass_indicator():
+def test_at_uniform_depth_the_estimator_is_the_all_pass_indicator() -> None:
     """C(c, n) / C(n, n) is 1 exactly when every attempt passed, so the two agree draw for draw."""
     rng = random.Random(_SEED)
     for _ in range(200):
@@ -114,7 +114,7 @@ def test_at_uniform_depth_the_estimator_is_the_all_pass_indicator():
         assert entry["pass_hat_k"] == pytest.approx(_all_pass_indicator(attempts))
 
 
-def test_pooling_two_runs_of_one_cell_matches_one_run_of_the_combined_depth():
+def test_pooling_two_runs_of_one_cell_matches_one_run_of_the_combined_depth() -> None:
     """A repeat run is more attempts at the same cases: its pool reads as one run measured that deep."""
     rng = random.Random(_SEED)
     for _ in range(300):

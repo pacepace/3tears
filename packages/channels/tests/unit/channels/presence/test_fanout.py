@@ -345,7 +345,7 @@ class TestRoomFrameWire:
     async def test_frame_is_frozen(self) -> None:
         frame = RoomFrame(room_id=ROOM, payload="body", origin_pod="pod-a")
         with pytest.raises(Exception):  # pydantic ValidationError on frozen mutation
-            frame.payload = "mutated"  # type: ignore[misc]
+            frame.payload = "mutated"
 
 
 class TestNoOrderingState:

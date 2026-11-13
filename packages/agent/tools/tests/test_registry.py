@@ -24,27 +24,27 @@ def _error_factory(config: dict[str, Any], description: str) -> BaseTool:
     raise RuntimeError("factory boom")
 
 
-def test_register_and_create():
+def test_register_and_create() -> None:
     reg = ToolRegistry()
     reg.register("mock", _mock_factory)
     tool = reg.create("mock", {}, "A mock tool")
     assert tool.name == "mock_tool"
 
 
-def test_create_unknown_raises():
+def test_create_unknown_raises() -> None:
     reg = ToolRegistry()
     with pytest.raises(KeyError, match="Unknown tool type: nope"):
         reg.create("nope", {}, "desc")
 
 
-def test_list_types():
+def test_list_types() -> None:
     reg = ToolRegistry()
     reg.register("alpha", _mock_factory)
     reg.register("beta", _mock_factory)
     assert reg.list_types() == ["alpha", "beta"]
 
 
-def test_unregister():
+def test_unregister() -> None:
     reg = ToolRegistry()
     reg.register("temp", _mock_factory)
     assert reg.has("temp")
@@ -52,14 +52,14 @@ def test_unregister():
     assert not reg.has("temp")
 
 
-def test_has():
+def test_has() -> None:
     reg = ToolRegistry()
     assert not reg.has("x")
     reg.register("x", _mock_factory)
     assert reg.has("x")
 
 
-async def test_create_tools_skips_unknown():
+async def test_create_tools_skips_unknown() -> None:
     reg = ToolRegistry()
     reg.register("known", _mock_factory)
     tools = await reg.create_tools(
@@ -72,7 +72,7 @@ async def test_create_tools_skips_unknown():
     assert tools[0].name == "mock_tool"
 
 
-async def test_create_tools_skips_on_error():
+async def test_create_tools_skips_on_error() -> None:
     reg = ToolRegistry()
     reg.register("broken", _error_factory)
     reg.register("good", _mock_factory)

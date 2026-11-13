@@ -512,7 +512,7 @@ def _replica(
     client: FakeNatsClient, pod_id: str, body: Any, *, render_result: Any = None, ran: Any = None
 ) -> tuple[BackgroundOperation[Any], OperationStatusTool, SharedOutcome]:
     """one replica of a pod: its own lease factory over the shared bucket, its operation and status tool."""
-    lease = KVLease(client, pod_id=pod_id, key_scope="enr")  # type: ignore[arg-type]
+    lease = KVLease(client, pod_id=pod_id, key_scope="enr")
     shared = SharedOutcome(lease, "enr-load", render_result=render_result, ran=ran)
     operation: BackgroundOperation[Any] = BackgroundOperation("enr-load", body, shared=shared)
     status = OperationStatusTool(
@@ -1201,7 +1201,7 @@ async def test_a_run_that_did_nothing_does_not_replace_this_replicas_last_run_th
 async def test_an_operation_that_shares_no_progress_asks_no_lease_and_names_no_run_elsewhere() -> None:
     client = FakeNatsClient()
     operation, status, _ = _replica(client, "replica-a", _gate())
-    await KVLease(client, pod_id="replica-b", key_scope="enr").acquire("enr-load", ttl_seconds=30)  # type: ignore[arg-type]
+    await KVLease(client, pod_id="replica-b", key_scope="enr").acquire("enr-load", ttl_seconds=30)
 
     answer = await status.run()
 
@@ -1213,8 +1213,8 @@ async def test_an_operation_that_shares_no_progress_asks_no_lease_and_names_no_r
 
 async def test_clearing_progress_removes_this_replicas_entry_and_leaves_another_replicas() -> None:
     client = FakeNatsClient()
-    mine = SharedProgress(KVLease(client, pod_id="replica-a", key_scope="enr"), "enr-load")  # type: ignore[arg-type]
-    theirs = SharedProgress(KVLease(client, pod_id="replica-b", key_scope="enr"), "enr-load")  # type: ignore[arg-type]
+    mine = SharedProgress(KVLease(client, pod_id="replica-a", key_scope="enr"), "enr-load")
+    theirs = SharedProgress(KVLease(client, pod_id="replica-b", key_scope="enr"), "enr-load")
     bucket = await _bucket(client)
 
     assert not await mine.clear()
@@ -1276,8 +1276,8 @@ async def test_an_awaited_progress_that_fails_still_answers_the_last_runs_error(
 
 async def test_a_replica_that_holds_the_lease_itself_or_runs_here_reports_no_run_elsewhere() -> None:
     client = FakeNatsClient()
-    mine = KVLease(client, pod_id="replica-a", key_scope="enr")  # type: ignore[arg-type]
-    theirs = KVLease(client, pod_id="replica-b", key_scope="enr")  # type: ignore[arg-type]
+    mine = KVLease(client, pod_id="replica-a", key_scope="enr")
+    theirs = KVLease(client, pod_id="replica-b", key_scope="enr")
     progress = SharedProgress(mine, "enr-load")
     body = _gate()
     operation: BackgroundOperation[Any] = BackgroundOperation("enr-load", body, shared_progress=progress)
@@ -1303,7 +1303,7 @@ async def test_a_replica_that_holds_the_lease_itself_or_runs_here_reports_no_run
 
 async def test_progress_reported_with_no_run_in_progress_here_is_not_shown_as_a_run() -> None:
     client = FakeNatsClient()
-    progress = SharedProgress(KVLease(client, pod_id="replica-a", key_scope="enr"), "enr-load")  # type: ignore[arg-type]
+    progress = SharedProgress(KVLease(client, pod_id="replica-a", key_scope="enr"), "enr-load")
     body = _gate()
     operation: BackgroundOperation[Any] = BackgroundOperation("enr-load", body, shared_progress=progress)
     status = OperationStatusTool(name="enr.load_status", description="Report.", operation=lambda: operation)

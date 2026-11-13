@@ -375,7 +375,7 @@ class TestTheBundleReadsLabelsOfWhatItsJudgeScored:
             )
         )
 
-        bundle = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())  # type: ignore[arg-type]
+        bundle = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
 
         (row,) = bundle.judge_agreement.dimensions
         assert (row.rubric_dim, row.n, row.raters) == (TOYHOST_JUDGED_DIMENSION, 1, ["reviewer-1"])

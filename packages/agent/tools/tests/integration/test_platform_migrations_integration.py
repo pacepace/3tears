@@ -149,7 +149,7 @@ class TestPlatformMigrationAddsColumns:
             runner = MigrationRunner()
             register(runner)
             store = _AsyncpgStore(conn)
-            count = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
+            count = await runner.apply_for_platform_schema(store)
             assert count == 4, f"expected v001 through v004 to apply, applied {count}"
             assert await conn.fetchval(
                 "SELECT indexdef FROM pg_indexes WHERE schemaname = $1 AND indexname = 'idx_namespaces_tool_flags'",
@@ -182,13 +182,13 @@ class TestPlatformMigrationAddsColumns:
             runner = MigrationRunner()
             register(runner)
             store = _AsyncpgStore(conn)
-            first = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
+            first = await runner.apply_for_platform_schema(store)
             assert first == 4
             # second apply with a fresh runner: the bookkeeping table
             # remembers the prior apply so the runner does nothing.
             runner_two = MigrationRunner()
             register(runner_two)
-            second = await runner_two.apply_for_platform_schema(store)  # type: ignore[arg-type]
+            second = await runner_two.apply_for_platform_schema(store)
             assert second == 0
 
             # forcibly re-execute the raw SQL -- ``ADD COLUMN IF NOT
@@ -227,7 +227,7 @@ class TestPlatformMigrationAddsColumns:
             runner = MigrationRunner()
             register(runner)
             store = _AsyncpgStore(conn)
-            await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_platform_schema(store)
             cols = await conn.fetch(
                 "SELECT column_name, data_type, is_nullable, column_default "
                 "FROM information_schema.columns "
@@ -258,7 +258,7 @@ class TestPlatformMigrationAddsColumns:
             runner = MigrationRunner()
             register(runner)
             store = _AsyncpgStore(conn)
-            await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_platform_schema(store)
             cols = await conn.fetch(
                 "SELECT column_name, data_type, is_nullable, column_default "
                 "FROM information_schema.columns "
@@ -297,7 +297,7 @@ class TestPlatformMigrationAddsColumns:
             runner = MigrationRunner()
             register(runner)
             store = _AsyncpgStore(conn)
-            count = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
+            count = await runner.apply_for_platform_schema(store)
             assert count == 4
             row = await conn.fetchrow(
                 "SELECT tool_eligible, skill_eligible, face_platform_tool, face_api, face_mcp, "

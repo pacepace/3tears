@@ -159,7 +159,7 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
     try:
         runner = MigrationRunner()
         register_acl(runner)
-        await runner.apply_for_platform_schema(_ConnStore(conn))  # type: ignore[arg-type]
+        await runner.apply_for_platform_schema(_ConnStore(conn))
     finally:
         await conn.execute("RESET search_path")
     # seed the WorkspaceEditor role with the production-matching id +

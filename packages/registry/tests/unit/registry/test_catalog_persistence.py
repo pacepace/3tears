@@ -51,7 +51,7 @@ class _UnansweredClient(FakeNatsClient):
         self.unanswered = unanswered
         self.declarations: list[dict[str, Any]] = []
 
-    async def ensure_kv_bucket(self, **kwargs: Any) -> FakeKvBucket:  # type: ignore[override]
+    async def ensure_kv_bucket(self, **kwargs: Any) -> FakeKvBucket:
         self.declarations.append(kwargs)
         if self.unanswered > 0:
             self.unanswered -= 1

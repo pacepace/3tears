@@ -101,7 +101,7 @@ async def _build(url: str, schema: str) -> bool:
         register_workspace(agent)
         register_langgraph(agent)
         register_wake(agent)
-        await agent.apply_for_agent_schema(_Store(conn))  # type: ignore[arg-type]
+        await agent.apply_for_agent_schema(_Store(conn))
         platform = MigrationRunner()
         register_acl(platform)
         register_tools_platform(platform, depends_on=("agent_acl",))
@@ -109,7 +109,7 @@ async def _build(url: str, schema: str) -> bool:
         register_epoch(platform)
         register_mcp(platform)
         register_scheduled_jobs(platform)
-        await platform.apply_for_platform_schema(_Store(conn))  # type: ignore[arg-type]
+        await platform.apply_for_platform_schema(_Store(conn))
         metadata = MetaData()
         for declared in _DECLARED:
             table = declared.to_sqlalchemy_table(metadata)

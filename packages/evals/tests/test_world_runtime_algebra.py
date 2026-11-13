@@ -38,29 +38,29 @@ _CONSOLE = "console"
 class TestThePlacementAlgebra:
     """Seeded x perceived, asked of one run, over a registry that never sees a name."""
 
-    def test_a_seeded_and_perceived_dimension_is_representable(self):
+    def test_a_seeded_and_perceived_dimension_is_representable(self) -> None:
         world, _state = toyhost_world()
         placements = world.place(seeded={"document_language"}, carriers={_PAGE_READER, _CONSOLE})
         assert placements["document_language"] == "representable"
 
-    def test_a_seeded_dimension_no_surface_presents_is_judge_only(self):
+    def test_a_seeded_dimension_no_surface_presents_is_judge_only(self) -> None:
         """The legitimate quadrant: a goal check grades what the subject was never shown."""
         world, _state = toyhost_world()
         placements = world.place(seeded={"vendor_template"}, carriers={_PAGE_READER, _CONSOLE})
         assert placements["vendor_template"] == "judge_only"
 
-    def test_a_perceived_dimension_this_run_did_not_seed_is_witnessed(self):
+    def test_a_perceived_dimension_this_run_did_not_seed_is_witnessed(self) -> None:
         world, _state = toyhost_world()
         placements = world.place(seeded=set(), carriers={_PAGE_READER, _CONSOLE})
         assert placements["ingest_backlog"] == "witnessed"
 
-    def test_a_dimension_neither_seeded_nor_perceived_is_out_of_play(self):
+    def test_a_dimension_neither_seeded_nor_perceived_is_out_of_play(self) -> None:
         """Refused at registration, ordinary here — which is why the two vocabularies differ."""
         world, _state = toyhost_world()
         placements = world.place(seeded=set(), carriers={_PAGE_READER, _CONSOLE})
         assert placements["vendor_template"] == "out_of_play"
 
-    def test_the_same_dimension_lands_in_different_quadrants_across_two_runs_of_one_host(self):
+    def test_the_same_dimension_lands_in_different_quadrants_across_two_runs_of_one_host(self) -> None:
         """The case a declared mode cannot express, and the reason both bits are derived.
 
         A host that commissions one run and observes another places one dimension two ways, and
@@ -72,7 +72,7 @@ class TestThePlacementAlgebra:
         assert commissioned["document_language"] == "representable"
         assert observed["document_language"] == "witnessed"
 
-    def test_a_dimension_whose_carrier_is_absent_is_out_of_play_however_the_run_asked(self):
+    def test_a_dimension_whose_carrier_is_absent_is_out_of_play_however_the_run_asked(self) -> None:
         """The carrier gates seeding as well as perception, because the seed writes through it.
 
         Reporting a dimension ``judge_only`` because a template named it would record an
@@ -83,13 +83,13 @@ class TestThePlacementAlgebra:
         assert placements["ingest_backlog"] == "out_of_play"
         assert placements["operator_corrections"] == "out_of_play"
 
-    def test_every_declaration_appears_because_out_of_play_is_a_finding(self):
+    def test_every_declaration_appears_because_out_of_play_is_a_finding(self) -> None:
         world, _state = toyhost_world()
         placements = world.place(seeded=set(), carriers=set())
         assert sorted(placements) == sorted(world.names)
         assert set(placements.values()) == {"out_of_play"}
 
-    def test_a_dimension_no_run_can_seed_stays_witnessed_however_the_caller_asked(self):
+    def test_a_dimension_no_run_can_seed_stays_witnessed_however_the_caller_asked(self) -> None:
         """The two algebras must not be able to disagree about one dimension.
 
         A registration saying ``seed=None`` is what makes a dimension witnessed, and a name
@@ -103,13 +103,13 @@ class TestThePlacementAlgebra:
         assert world.capability("ingest_backlog") == "witnessed"
         assert placements["ingest_backlog"] == "witnessed"
 
-    def test_a_seeded_name_this_registry_never_declared_is_ignored_rather_than_refused(self):
+    def test_a_seeded_name_this_registry_never_declared_is_ignored_rather_than_refused(self) -> None:
         """One question, one answer. The seeding path already refuses an undeclared seed."""
         world, _state = toyhost_world()
         placements = world.place(seeded={"not_a_dimension"}, carriers={_PAGE_READER, _CONSOLE})
         assert "not_a_dimension" not in placements
 
-    def test_the_algebra_does_not_read_a_name(self):
+    def test_the_algebra_does_not_read_a_name(self) -> None:
         """Rename every dimension and every placement follows its registration, not its spelling."""
         world, _state = toyhost_world()
         renamed = WorldRegistry(
@@ -140,13 +140,13 @@ class TestThePlacementAlgebra:
 class TestSelectingByCapability:
     """The registration-time selector the disclosure surfaces read."""
 
-    def test_each_quadrant_selects_only_its_own(self):
+    def test_each_quadrant_selects_only_its_own(self) -> None:
         world, _state = toyhost_world()
         assert [d.name for d in world.of_capability("witnessed")] == ["ingest_backlog"]
         assert [d.name for d in world.of_capability("judge_only")] == ["vendor_template", "supervisor_signoff"]
         assert "document_language" in [d.name for d in world.of_capability("representable")]
 
-    def test_an_empty_answer_is_an_answer(self):
+    def test_an_empty_answer_is_an_answer(self) -> None:
         """A host every dimension of which a run can seed has no witnessed state to disclose."""
         world = WorldRegistry(
             [
@@ -167,7 +167,7 @@ class TestSelectingByCapability:
 class TestTheCarrierIsRequired:
     """A dimension that names no carrier cannot be placed for any subject."""
 
-    def test_a_blank_carrier_is_refused_at_registration(self):
+    def test_a_blank_carrier_is_refused_at_registration(self) -> None:
         with pytest.raises(WorldRegistrationError, match="names no carrier"):
             WorldRegistry(
                 [
@@ -231,20 +231,20 @@ def _sweepables_naming(dimension: str) -> SweepableRegistry:
 class TestTheOverlapRefusal:
     """One name in both registries is refused, unconditionally, checked where both are in hand."""
 
-    def test_an_undeclared_overlap_is_refused_naming_the_knob(self):
+    def test_an_undeclared_overlap_is_refused_naming_the_knob(self) -> None:
         with pytest.raises(ProfileRegistrationError, match="ingest_backlog"):
             _profile_with(sweepables=_sweepables_naming("ingest_backlog"))
 
-    def test_a_second_undeclared_overlap_is_refused_the_same_way(self):
+    def test_a_second_undeclared_overlap_is_refused_the_same_way(self) -> None:
         """Per forbidden shape, not once: a refusal proved on one name is proved on one name."""
         with pytest.raises(ProfileRegistrationError, match="document_language"):
             _profile_with(sweepables=_sweepables_naming("document_language"))
 
-    def test_registries_sharing_no_name_register(self):
+    def test_registries_sharing_no_name_register(self) -> None:
         """The acceptance case on the same fixture, so the refusal is shown to discriminate."""
         profile = _profile_with()
         assert profile.world is not None
         assert not set(profile.sweepables.names) & set(profile.world.names)
 
-    def test_a_host_with_no_world_has_no_overlap_to_refuse(self):
+    def test_a_host_with_no_world_has_no_overlap_to_refuse(self) -> None:
         assert toyhost_profile(with_world=False).world is None

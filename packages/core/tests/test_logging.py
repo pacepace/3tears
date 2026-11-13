@@ -33,19 +33,19 @@ def _capture_handler() -> tuple[logging.Handler, StringIO]:
     return handler, buf
 
 
-def test_get_logger_returns_logger():
+def test_get_logger_returns_logger() -> None:
     logger = get_logger("test.basic")
     assert isinstance(logger, logging.Logger)
     assert logger.name == "test.basic"
 
 
-def test_get_logger_has_null_handler():
+def test_get_logger_has_null_handler() -> None:
     logger = get_logger("test.null_handler")
     has_null = any(isinstance(h, logging.NullHandler) for h in logger.handlers)
     assert has_null, "get_logger should add a NullHandler"
 
 
-def test_get_logger_no_stream_handler():
+def test_get_logger_no_stream_handler() -> None:
     logger = get_logger("test.no_stream")
     has_stream = any(
         isinstance(h, logging.StreamHandler) and not isinstance(h, logging.NullHandler) for h in logger.handlers
@@ -53,7 +53,7 @@ def test_get_logger_no_stream_handler():
     assert not has_stream, "get_logger should NOT add a StreamHandler"
 
 
-def test_log_format_without_context():
+def test_log_format_without_context() -> None:
     logger = get_logger("test.no_ctx")
     handler, buf = _capture_handler()
     logger.addHandler(handler)
@@ -69,7 +69,7 @@ def test_log_format_without_context():
     assert "[" not in output.split("Z ")[1].split(":")[0] if "Z " in output else True
 
 
-def test_log_format_with_context():
+def test_log_format_with_context() -> None:
     set_context(cid="abc", sid="def", conv="ghi")
     logger = get_logger("test.with_ctx")
     handler, buf = _capture_handler()
@@ -86,7 +86,7 @@ def test_log_format_with_context():
     assert "[conv:ghi]" in output
 
 
-def test_clear_context():
+def test_clear_context() -> None:
     set_context(cid="req-123", sid="sess-456", conv="conv-789")
     clear_context()
 
@@ -106,7 +106,7 @@ def test_clear_context():
     assert "after clear" in output
 
 
-def test_extra_data_in_log():
+def test_extra_data_in_log() -> None:
     logger = get_logger("test.extra")
     handler, buf = _capture_handler()
     logger.addHandler(handler)
@@ -122,7 +122,7 @@ def test_extra_data_in_log():
     assert "42" in output
 
 
-def test_configure_logging_adds_handler():
+def test_configure_logging_adds_handler() -> None:
     py_root = logging.getLogger()
     original_handlers = list(py_root.handlers)
     try:
@@ -135,7 +135,7 @@ def test_configure_logging_adds_handler():
         py_root.handlers = original_handlers
 
 
-def test_configure_logging_idempotent():
+def test_configure_logging_idempotent() -> None:
     py_root = logging.getLogger()
     original_handlers = list(py_root.handlers)
     try:
@@ -148,7 +148,7 @@ def test_configure_logging_idempotent():
         py_root.handlers = original_handlers
 
 
-def test_context_shared_across_calls():
+def test_context_shared_across_calls() -> None:
     """Context set via set_context is visible in get_context."""
     set_context(cid="shared-123")
     assert get_context()["cid"] == "shared-123"

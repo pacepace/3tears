@@ -955,7 +955,7 @@ class TestPrefixCacheCapability:
         l1.get.return_value = None
         cache = _DeleteDown()
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=cache, scope=_UNSCOPED)
-        bundle = saver.serialize_checkpoint_tuple({"id": "erased", "channel_values": {}}, {}, None, [])  # type: ignore[arg-type]
+        bundle = saver.serialize_checkpoint_tuple({"id": "erased", "channel_values": {}}, {}, None, [])
         await saver.l2_put("t-1", "", bundle)
 
         with pytest.raises(

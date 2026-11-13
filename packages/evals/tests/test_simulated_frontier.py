@@ -141,7 +141,7 @@ def _second_flagged_share(seed: str, replicates: int, **truth: float) -> float:
     rng = random.Random(seed)
     flagged = 0
     for _ in range(replicates):
-        runs, results = _two_contestants(rng, n_cases=8, repeats=3, **truth)  # type: ignore[arg-type]
+        runs, results = _two_contestants(rng, n_cases=8, repeats=3, **truth)
         (subject,) = compute_frontier(runs, results, archived_run_ids=None).subjects
         second = next(point for point in subject.points if point.model == "model-two")
         flagged += second.dominated

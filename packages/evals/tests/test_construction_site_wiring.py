@@ -154,7 +154,7 @@ def test_every_host_names_the_wiring_whose_default_would_be_silent(name):
     )
 
 
-def test_every_non_test_eval_job_manager_site_wires_a_timeout_factory():
+def test_every_non_test_eval_job_manager_site_wires_a_timeout_factory() -> None:
     """The engine's default timeout is correct for a bare host and is not what a host with its own timeouts should run under.
 
     ``EvalJobManager``'s ``job_timeout_factory`` defaults to ``default_job_timeout`` —
@@ -187,7 +187,7 @@ def test_every_non_test_eval_job_manager_site_wires_a_timeout_factory():
     )
 
 
-def test_every_non_test_eval_job_manager_site_holds_its_jobs_under_leases():
+def test_every_non_test_eval_job_manager_site_holds_its_jobs_under_leases() -> None:
     """A manager built with no leases saves runs every reader of the job contract reads as lost.
 
     ``EvalJobManager``'s ``leases`` defaults to ``None``, which is right for a harness that reads its runs
@@ -311,7 +311,7 @@ def test_an_exempted_file_is_the_only_way_past_the_gate(tmp_path):
     )
 
 
-def test_the_walk_reaches_the_engines_own_construction_sites():
+def test_the_walk_reaches_the_engines_own_construction_sites() -> None:
     """Non-vacuity: the default root is the package's source, and the launch's sites are in it.
 
     Asking for a keyword no site passes turns every construction the walk reaches into a finding,

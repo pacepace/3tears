@@ -14,7 +14,7 @@ def _python_files():
 
 
 @pytest.mark.parametrize("path", _python_files(), ids=lambda p: p.name)
-def test_no_parent_product_imports(path: Path):
+def test_no_parent_product_imports(path: Path) -> None:
     """No source file in observe may import from the parent product."""
     content = path.read_text()
     for i, line in enumerate(content.splitlines(), 1):

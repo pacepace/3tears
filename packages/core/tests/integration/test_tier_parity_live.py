@@ -54,7 +54,7 @@ class _Narrow(SchemaBackedCollection[_Row]):
             Column("small", INT_TYPE, nullable=True),
         ],
     )
-    entity_class = _Row  # type: ignore[assignment]
+    entity_class = _Row
 
     @property
     def table_name(self) -> str:

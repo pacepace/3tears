@@ -23,24 +23,24 @@ from threetears.evals.analysis.significance import (
 )
 
 
-def test_p_or_d_z_is_the_test_ran_predicate():
+def test_p_or_d_z_is_the_test_ran_predicate() -> None:
     """`p is not None or <effect size> is not None` -- never `and`, never `n`."""
     assert significance_read(significant=True, p=0.01) != NOT_TESTED_LABEL
     assert significance_read(significant=True, effect=1.4) != NOT_TESTED_LABEL
     assert significance_read(significant=True) == NOT_TESTED_LABEL
 
 
-def test_a_sample_size_is_not_a_test():
+def test_a_sample_size_is_not_a_test() -> None:
     """`significance_read` takes no ``n``, so a sample size can never become evidence of a test."""
     assert "n" not in inspect.signature(significance_read).parameters
 
 
-def test_the_three_labels_are_three_distinct_words():
+def test_the_three_labels_are_three_distinct_words() -> None:
     """The vocabulary the kit spells word for word; three labels, never two that collide."""
     assert len({SIGNIFICANT_LABEL, NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL}) == 3
 
 
-def test_the_effect_size_is_named_for_the_test_that_ran():
+def test_the_effect_size_is_named_for_the_test_that_ran() -> None:
     """Unpaired is the weaker claim and the name a caller gets unless it states the pairing; a stated one earns d_z.
 
     Pinned both ways so a fix that hard-codes either label fails here.

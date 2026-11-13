@@ -110,7 +110,7 @@ class _RecordingClient(FakeNatsClient):
         super().__init__()
         self.create_flags: list[bool] = []
 
-    async def kv_bucket(self, **kwargs: Any) -> Any:  # type: ignore[override]
+    async def kv_bucket(self, **kwargs: Any) -> Any:
         """record ``create_if_missing`` and delegate to the in-memory open.
 
         :param kwargs: the open's keyword arguments
@@ -121,7 +121,7 @@ class _RecordingClient(FakeNatsClient):
         self.create_flags.append(kwargs.get("create_if_missing", True))
         return await super().kv_bucket(**kwargs)
 
-    async def ensure_kv_bucket(self, **kwargs: Any) -> Any:  # type: ignore[override]
+    async def ensure_kv_bucket(self, **kwargs: Any) -> Any:
         """record ``create_if_missing`` and delegate to the in-memory declaration.
 
         A primitive that owns its bucket declares it rather than opening it, and the flag it

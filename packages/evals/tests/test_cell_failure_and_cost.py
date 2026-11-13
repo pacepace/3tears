@@ -325,7 +325,7 @@ def _scored(dim: str, score: int = 4) -> dict[str, Any]:
 # =============================================================================
 
 
-async def test_a_cannot_tell_whose_reasoning_is_not_a_string_is_a_judge_defect_not_a_failed_run():
+async def test_a_cannot_tell_whose_reasoning_is_not_a_string_is_a_judge_defect_not_a_failed_run() -> None:
     judge = _ScriptedJudge(
         default={"reasoning": {"missing": "the totals"}, "criteria_scores": {FAITHFULNESS_DIM: CANNOT_TELL}}
     )
@@ -401,7 +401,7 @@ def _breaking_on(*documents: str) -> KindFor:
     )
 
 
-async def test_an_apparatus_fault_mid_cell_excludes_that_cell_with_its_spend_and_the_run_goes_on():
+async def test_an_apparatus_fault_mid_cell_excludes_that_cell_with_its_spend_and_the_run_goes_on() -> None:
     first = toyhost_test_cases(toyhost_template())[0]
 
     drive = await _driven(_breaking_on(first.variation_params[DOCUMENT_PARAM]), n_cases=3)
@@ -501,7 +501,7 @@ class _RigFailsToPrepareKind(ToyExtractorKind):
         )
 
 
-async def test_an_apparatus_fault_in_prepare_excludes_that_cell_and_the_run_goes_on():
+async def test_an_apparatus_fault_in_prepare_excludes_that_cell_and_the_run_goes_on() -> None:
     drive = await _driven(
         lambda world: _RigFailsToPrepareKind(client=ScriptedExtractionClient(), world=world, goal_checks=_TOY_CHECKS),
         n_cases=2,
@@ -514,7 +514,7 @@ async def test_an_apparatus_fault_in_prepare_excludes_that_cell_and_the_run_goes
     assert classify_result(faulted) is ResultOutcome.INFRA_EXCLUDE
 
 
-async def test_a_run_whose_every_cell_the_rig_excluded_fails_after_recording_them_all():
+async def test_a_run_whose_every_cell_the_rig_excluded_fails_after_recording_them_all() -> None:
     """Every cell is still recorded; then the run fails, because it measured nothing."""
     documents = [case.variation_params[DOCUMENT_PARAM] for case in toyhost_test_cases(toyhost_template())]
     drive, go = off_loop(_drive, _breaking_on(*documents), n_cases=2)
@@ -551,7 +551,7 @@ def _two_dim_template() -> EvalTemplate:
     )
 
 
-async def test_a_deadline_in_the_judge_phase_keeps_the_evidence_and_the_scores_that_came_back():
+async def test_a_deadline_in_the_judge_phase_keeps_the_evidence_and_the_scores_that_came_back() -> None:
     judge = _ScriptedJudge(replies={FAITHFULNESS_DIM: _scored(FAITHFULNESS_DIM, 5)}, hangs={_SECOND_DIM})
 
     drive = await _driven(judge=judge, template=_two_dim_template(), cell_timeout_s=0.3)
@@ -573,7 +573,7 @@ async def test_a_deadline_in_the_judge_phase_keeps_the_evidence_and_the_scores_t
     assert trace.judged_artifact is JudgedArtifact.DOCUMENT
 
 
-async def test_a_cell_whose_judging_the_deadline_cut_is_recovered_by_a_rejudge_of_the_unfinished_dim():
+async def test_a_cell_whose_judging_the_deadline_cut_is_recovered_by_a_rejudge_of_the_unfinished_dim() -> None:
     judge = _ScriptedJudge(replies={FAITHFULNESS_DIM: _scored(FAITHFULNESS_DIM, 5)}, hangs={_SECOND_DIM})
     drive = await _driven(judge=judge, template=_two_dim_template(), cell_timeout_s=0.3)
     (result,) = drive.results
@@ -594,7 +594,7 @@ async def test_a_cell_whose_judging_the_deadline_cut_is_recovered_by_a_rejudge_o
 # =============================================================================
 
 
-async def test_a_judge_completion_carrying_no_temperature_fails_the_run_naming_the_conformance_check():
+async def test_a_judge_completion_carrying_no_temperature_fails_the_run_naming_the_conformance_check() -> None:
     """Not an error on the dim: every call through the host's client returns the same type, so every cell would."""
     judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True)
     cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
@@ -619,7 +619,7 @@ async def test_a_judge_completion_carrying_no_temperature_fails_the_run_naming_t
     assert result.cost_usd is not None and cap.accumulated_usd == pytest.approx(result.cost_usd)
 
 
-async def test_a_running_cell_beside_the_defect_ends_as_a_run_stopping_cell_s_siblings_do():
+async def test_a_running_cell_beside_the_defect_ends_as_a_run_stopping_cell_s_siblings_do() -> None:
     judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True)
     drive, go = off_loop(_drive, judge=judge, n_cases=2, max_concurrent_cells=2, cell_timeout_s=30)
 
@@ -639,7 +639,7 @@ class _EvidencelessKind(ToyExtractorKind):
         return answered.model_copy(update={"judge_evidence": None})
 
 
-async def test_a_run_failed_by_a_kind_s_defect_still_counts_what_the_cell_was_billed():
+async def test_a_run_failed_by_a_kind_s_defect_still_counts_what_the_cell_was_billed() -> None:
     judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM))
     cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
     drive, go = off_loop(
@@ -667,7 +667,7 @@ async def test_a_run_failed_by_a_kind_s_defect_still_counts_what_the_cell_was_bi
     TypeError,
     why="the test drives a judge completion with no temperature: the job fails on CompletionProtocolDefect, a TypeError, which it asserts",
 )
-async def test_a_run_failed_by_a_judge_completion_s_defect_says_so_where_an_operator_reads_it():
+async def test_a_run_failed_by_a_judge_completion_s_defect_says_so_where_an_operator_reads_it() -> None:
     judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1)
     _, go = off_loop(_drive, judge=judge)
     storage = InMemoryRunStore()
@@ -686,7 +686,7 @@ async def test_a_run_failed_by_a_judge_completion_s_defect_says_so_where_an_oper
     await manager.shutdown()
 
 
-async def test_a_provider_error_on_a_judge_call_stays_that_dim_s_error_and_the_run_completes():
+async def test_a_provider_error_on_a_judge_call_stays_that_dim_s_error_and_the_run_completes() -> None:
     """The counterpart: a provider's failure is a judging outcome, recorded on the dim it struck.
 
     The run's one cell is excluded for it, and the run still completes: a judge call's error alone is recovered by a
@@ -735,7 +735,7 @@ class _StillWorkingKind(ToyExtractorKind):
         raise AssertionError("unreachable: the run is cancelled during this wait")
 
 
-async def test_a_cancel_mid_cell_records_the_cells_spend_before_ending_the_run():
+async def test_a_cancel_mid_cell_records_the_cells_spend_before_ending_the_run() -> None:
     kinds: list[_StillWorkingKind] = []
 
     def kind_for(world: WorldRegistry) -> ToyExtractorKind:
@@ -795,7 +795,7 @@ def _partly_unpriced(world: WorldRegistry) -> ToyExtractorKind:
     return _PartlyUnpricedKind(client=ScriptedExtractionClient(), world=world, goal_checks=_TOY_CHECKS)
 
 
-async def test_a_cell_whose_model_call_went_unpriced_costs_unknown_not_its_priced_part():
+async def test_a_cell_whose_model_call_went_unpriced_costs_unknown_not_its_priced_part() -> None:
     drive = await _driven(_partly_unpriced)
 
     (result,) = drive.results
@@ -805,7 +805,7 @@ async def test_a_cell_whose_model_call_went_unpriced_costs_unknown_not_its_price
     assert result.cost_usd is None
 
 
-async def test_an_unpriced_judge_makes_the_cells_cost_unknown_while_its_candidate_stays_priced():
+async def test_an_unpriced_judge_makes_the_cells_cost_unknown_while_its_candidate_stays_priced() -> None:
     drive = await _driven(judge=_ScriptedJudge(default=_scored(FAITHFULNESS_DIM), cost_usd=None))
 
     (result,) = drive.results
@@ -815,7 +815,7 @@ async def test_an_unpriced_judge_makes_the_cells_cost_unknown_while_its_candidat
     assert result.cost_usd is None
 
 
-async def test_a_priced_cell_still_sums_its_rows():
+async def test_a_priced_cell_still_sums_its_rows() -> None:
     """The accepting side: every call priced, the cell's cost is their sum."""
     drive = await _driven(judge=_ScriptedJudge(default=_scored(FAITHFULNESS_DIM)))
 
@@ -825,7 +825,7 @@ async def test_a_priced_cell_still_sums_its_rows():
     assert all(row.cost_usd is not None for row in result.usage)
 
 
-async def test_a_capped_run_stops_on_its_first_unpriced_cell_however_far_below_its_ceiling():
+async def test_a_capped_run_stops_on_its_first_unpriced_cell_however_far_below_its_ceiling() -> None:
     cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
     drive, go = off_loop(_drive, _partly_unpriced, n_cases=3, cap=cap)
 
@@ -837,7 +837,7 @@ async def test_a_capped_run_stops_on_its_first_unpriced_cell_however_far_below_i
     assert len(drive.results) == 1, "the cell that went unpriced is kept, and no further cell was launched"
 
 
-async def test_an_uncapped_run_carries_on_through_unpriced_cells_and_counts_them():
+async def test_an_uncapped_run_carries_on_through_unpriced_cells_and_counts_them() -> None:
     cap = EvalRunCostCap("toy-run", 100.0, enabled=False)
     drive = await _driven(_partly_unpriced, n_cases=3, cap=cap)
 
@@ -905,7 +905,7 @@ def _no_goal_checks() -> EvalTemplate:
     return toyhost_template().model_copy(update={"goal_state_checks": []})
 
 
-async def test_a_conversation_runs_whole_past_the_runs_cap_and_the_run_stops_before_its_next_cell():
+async def test_a_conversation_runs_whole_past_the_runs_cap_and_the_run_stops_before_its_next_cell() -> None:
     """Two and a half calls' worth of cap: the first cell crosses it and is not cut short; no second cell starts."""
     cap = EvalRunCostCap("toy-run", 2.5 * _SIMULATOR_CALL_USD, enabled=True)
     drive, go = off_loop(_drive, _conversing, n_cases=3, cap=cap, template=_no_goal_checks())
@@ -928,7 +928,7 @@ async def test_a_conversation_runs_whole_past_the_runs_cap_and_the_run_stops_bef
     assert row.cost_usd == pytest.approx(5 * _SIMULATOR_CALL_USD)
 
 
-async def test_the_cap_reached_in_the_last_cell_ends_the_run_completed():
+async def test_the_cap_reached_in_the_last_cell_ends_the_run_completed() -> None:
     """No cell is left to keep from starting, so nothing is stopped: the run is whole, past its cap."""
     cap = EvalRunCostCap("toy-run", 2.5 * _SIMULATOR_CALL_USD, enabled=True)
     drive = await _driven(_conversing, n_cases=1, cap=cap, template=_no_goal_checks())
@@ -937,7 +937,7 @@ async def test_the_cap_reached_in_the_last_cell_ends_the_run_completed():
     assert classify_result(result) is ResultOutcome.OK
 
 
-async def test_a_cell_under_a_perturbation_schedule_reaches_its_first_turn_whatever_the_cap_holds():
+async def test_a_cell_under_a_perturbation_schedule_reaches_its_first_turn_whatever_the_cap_holds() -> None:
     """Half a call's worth of cap: the first utterance crosses it, and the candidate still answers and is perturbed."""
     template = _no_goal_checks()
     template = template.model_copy(
@@ -960,7 +960,7 @@ async def test_a_cell_under_a_perturbation_schedule_reaches_its_first_turn_whate
     assert [event.turn for event in result.world_events or [] if event.kind == "ambient"] == [1]
 
 
-async def test_an_announcing_conversation_under_a_schedule_is_perturbed_before_its_first_answer():
+async def test_an_announcing_conversation_under_a_schedule_is_perturbed_before_its_first_answer() -> None:
     """The accepting side of the test above: uncapped, the same kind reaches turn 1 and the perturbation applies."""
     template = _no_goal_checks()
     template = template.model_copy(
@@ -977,7 +977,7 @@ async def test_an_announcing_conversation_under_a_schedule_is_perturbed_before_i
     assert [event.turn for event in result.world_events or [] if event.kind == "ambient"] == [1]
 
 
-async def test_an_unpriced_simulator_call_does_not_cut_a_capped_conversation_short_and_stops_the_run_after_it():
+async def test_an_unpriced_simulator_call_does_not_cut_a_capped_conversation_short_and_stops_the_run_after_it() -> None:
     kinds: list[_ConversingKind] = []
 
     def unpriced(world: WorldRegistry) -> ToyExtractorKind:
@@ -998,7 +998,7 @@ async def test_an_unpriced_simulator_call_does_not_cut_a_capped_conversation_sho
     assert (stop.unpriced_results, stop.cells_not_started) == (1, 1)
 
 
-async def test_an_uncapped_conversation_runs_to_its_turn_budget():
+async def test_an_uncapped_conversation_runs_to_its_turn_budget() -> None:
     """The accepting side: with enforcement off the same conversation is bounded by its structure alone."""
     cap = EvalRunCostCap("toy-run", 2.5 * _SIMULATOR_CALL_USD, enabled=False)
     drive = await _driven(_conversing, n_cases=1, cap=cap, template=_no_goal_checks())
@@ -1010,7 +1010,7 @@ async def test_an_uncapped_conversation_runs_to_its_turn_budget():
     assert row.call_count == 5
 
 
-def test_the_program_budget_leaves_unpriced_spend_out_of_its_dollars_and_counts_it():
+def test_the_program_budget_leaves_unpriced_spend_out_of_its_dollars_and_counts_it() -> None:
     run = make_eval_run(status="completed")
     results = [
         make_eval_result(eval_run_id=run.id, cost_usd=0.10),
@@ -1025,7 +1025,7 @@ def test_the_program_budget_leaves_unpriced_spend_out_of_its_dollars_and_counts_
     assert (row.cost_usd, row.n_results, row.n_unpriced) == (pytest.approx(0.10), 2, 1)
 
 
-def test_an_orphaned_runs_unpriced_spend_is_counted_beside_its_dollars():
+def test_an_orphaned_runs_unpriced_spend_is_counted_beside_its_dollars() -> None:
     run = make_eval_run(status="completed")
     results = [make_eval_result(eval_run_id=run.id, cost_usd=0.10), make_eval_result(eval_run_id=run.id, cost_usd=None)]
 
@@ -1036,7 +1036,7 @@ def test_an_orphaned_runs_unpriced_spend_is_counted_beside_its_dollars():
     assert orphans.orphaned_runs[0].n_unpriced == 1
 
 
-def test_a_cost_estimate_draws_on_priced_history_and_counts_what_it_left_out():
+def test_a_cost_estimate_draws_on_priced_history_and_counts_what_it_left_out() -> None:
     run = make_eval_run(status="completed", candidate_model="sonnet")
     results = [
         make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, model="sonnet", cost_usd=0.20),
@@ -1052,7 +1052,7 @@ def test_a_cost_estimate_draws_on_priced_history_and_counts_what_it_left_out():
     assert cell.n_unpriced_historical == 1
 
 
-def test_the_analysis_bundle_counts_unpriced_results_and_never_reads_their_rows_as_their_cost():
+def test_the_analysis_bundle_counts_unpriced_results_and_never_reads_their_rows_as_their_cost() -> None:
     """The rows decompose a cost; with the cost unknown, their priced part must not stand in for it."""
     from threetears.evals.schema.models import RoleUsage as Row
 
@@ -1086,7 +1086,7 @@ def test_the_analysis_bundle_counts_unpriced_results_and_never_reads_their_rows_
     assert "cost_usd" not in {measure.name for measure in bundle.telemetry.measures.measures}
 
 
-def test_a_judged_cell_states_what_the_arm_costs_apart_from_what_measuring_it_cost():
+def test_a_judged_cell_states_what_the_arm_costs_apart_from_what_measuring_it_cost() -> None:
     """$0.02 of candidate and $0.05 of judge a result: the arm costs $0.02 a reply, and the scoreboard says so."""
     from threetears.evals.analysis.bundle.surface import bundle_decision_surface
     from threetears.evals.schema.models import RoleUsage as Row
@@ -1129,7 +1129,7 @@ def test_a_judged_cell_states_what_the_arm_costs_apart_from_what_measuring_it_co
     assert board.test_cost_usd == pytest.approx(0.21), "what running the test cost, every role"
 
 
-def test_a_judge_kind_campaign_states_each_arms_cost_per_reply_from_the_judge_under_tests_spend():
+def test_a_judge_kind_campaign_states_each_arms_cost_per_reply_from_the_judge_under_tests_spend() -> None:
     """#828: a judge campaign's subject is the judge, metered under the judge role with no candidate row, so its
     spend is what the arm costs a reply. The scoreboard read it as apparatus and printed a dash on every arm while
     the bundle handed the writer the same spend as ``cost_usd``; it now prints each arm's cost per 1,000 replies."""

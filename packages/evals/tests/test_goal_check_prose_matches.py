@@ -95,7 +95,7 @@ class TestTheAuthoringRuleOverProse:
     def test_a_path_naming_no_dimension_is_left_to_the_vocabulary_gate(self, registry):
         assert world_prose_matches('contains(state.nowhere.at_all, "x")', registry) == ()
 
-    def test_a_host_declaring_no_world_refuses_nothing(self):
+    def test_a_host_declaring_no_world_refuses_nothing(self) -> None:
         assert world_prose_matches('contains(state.chat.messages[-1].content, "kitchen")', None) == ()
 
     def test_a_malformed_expression_raises(self, registry):
@@ -133,7 +133,7 @@ class TestAShapeListIsReadThroughEveryShape:
 
 
 class TestTheExtractor:
-    def test_every_documented_example_is_walkable(self):
+    def test_every_documented_example_is_walkable(self) -> None:
         """The whole taught surface runs through the text-match walker without raising."""
         assert _grammar.__doc__
         examples = [
@@ -150,24 +150,24 @@ class TestTheExtractor:
             walked += 1
         assert walked >= 10, walked
 
-    def test_a_count_comparison_is_not_a_text_match(self):
+    def test_a_count_comparison_is_not_a_text_match(self) -> None:
         assert extract_text_matches('call_count("shop.add_item") >= 2') == ()
         assert extract_text_matches("state.shop.cart.length == 2") == ()
 
-    def test_a_variation_comparand_is_a_text_match(self):
+    def test_a_variation_comparand_is_a_text_match(self) -> None:
         (match,) = extract_text_matches("state.shop.cart[0].title == variation.title")
         assert match.operand == ("shop", "cart", "[]", "title")
 
-    def test_intersects_reports_each_state_side(self):
+    def test_intersects_reports_each_state_side(self) -> None:
         matches = extract_text_matches("intersects(state.a.tags, state.b.tags)")
         assert [match.operand for match in matches] == [("a", "tags"), ("b", "tags")]
 
 
 class TestSchemaNodesAt:
-    def test_steps_through_items_and_properties(self):
+    def test_steps_through_items_and_properties(self) -> None:
         schema = {"type": "array", "items": _MESSAGE}
         assert schema_nodes_at(schema, ("[]", "content")) == (_MESSAGE["properties"]["content"],)
 
-    def test_an_undescribed_position_addresses_nothing(self):
+    def test_an_undescribed_position_addresses_nothing(self) -> None:
         assert schema_nodes_at({"type": "array", "items": _MESSAGE}, ("length",)) == ()
         assert schema_nodes_at({"type": "string"}, ("[]",)) == ()

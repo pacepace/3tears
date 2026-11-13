@@ -113,7 +113,7 @@ def _counter(
 
 def _counters(registry: CollectionRegistry) -> CoordinationCountersCollection:
     """the one counters collection on this registry, typed for the assertions below."""
-    return coordination_collection(registry, CoordinationCountersCollection)  # type: ignore[return-value]
+    return coordination_collection(registry, CoordinationCountersCollection)
 
 
 class _FailingNats(FakeNatsClient):

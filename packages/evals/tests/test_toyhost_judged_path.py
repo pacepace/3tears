@@ -24,7 +24,7 @@ from packages.evals.tests.fixtures.toyhost.kind import INVOICE_FIELDS, TOY_DOCUM
 from packages.evals.tests.fixtures.toyhost.run import execute_toyhost_run
 
 
-async def test_every_judged_toy_cell_is_scored_on_what_its_kind_rendered_and_keeps_that_evidence():
+async def test_every_judged_toy_cell_is_scored_on_what_its_kind_rendered_and_keeps_that_evidence() -> None:
     client = ScriptedJudgeClient()
     path = await execute_toyhost_run(
         host=toyhost_host(),

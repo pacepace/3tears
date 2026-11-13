@@ -71,7 +71,7 @@ def _raising(exc: Exception) -> Callable[[httpx.Request], httpx.Response]:
     return handler
 
 
-async def test_list_tools():
+async def test_list_tools() -> None:
     client = _client(
         _responding(
             {
@@ -92,7 +92,7 @@ async def test_list_tools():
     assert tools[1].input_schema == {}
 
 
-async def test_list_tools_targets_the_spec_path():
+async def test_list_tools_targets_the_spec_path() -> None:
     """The path is joined onto the traced client's base URL, not re-prefixed."""
     seen: list[str] = []
 
@@ -105,14 +105,14 @@ async def test_list_tools_targets_the_spec_path():
     assert seen == [f"{_BASE_URL}/mcp/v1/tools/list"]
 
 
-async def test_list_tools_error():
+async def test_list_tools_error() -> None:
     client = _client(_raising(httpx.ConnectError("connection refused")))
 
     tools = await client.list_tools()
     assert tools == []
 
 
-async def test_invoke_tool_success():
+async def test_invoke_tool_success() -> None:
     client = _client(
         _responding(
             {
@@ -134,7 +134,7 @@ async def test_invoke_tool_success():
     assert result.metadata is None
 
 
-async def test_invoke_tool_keeps_structured_content():
+async def test_invoke_tool_keeps_structured_content() -> None:
     """§4.8: ``structuredContent`` reaches the caller instead of being dropped.
 
     Before this field existed, a structured result arrived as prose in
@@ -156,7 +156,7 @@ async def test_invoke_tool_keeps_structured_content():
     assert result.content == '{"status": "ok"}'
 
 
-async def test_invoke_tool_ignores_a_non_object_structured_field():
+async def test_invoke_tool_ignores_a_non_object_structured_field() -> None:
     """A server sending a non-object there is refused the field, not trusted.
 
     ``structuredContent`` is an object per the spec; taking anything else
@@ -177,7 +177,7 @@ async def test_invoke_tool_ignores_a_non_object_structured_field():
     assert result.metadata is None
 
 
-async def test_invoke_tool_error_flag():
+async def test_invoke_tool_error_flag() -> None:
     client = _client(
         _responding(
             {
@@ -192,7 +192,7 @@ async def test_invoke_tool_error_flag():
     assert result.content == "something went wrong"
 
 
-async def test_invoke_tool_timeout():
+async def test_invoke_tool_timeout() -> None:
     """A timeout still reads as a timeout after the traced client normalises it.
 
     ``TracedHttpClient`` collapses every transport failure into a status-less
@@ -206,7 +206,7 @@ async def test_invoke_tool_timeout():
     assert result.error == "MCP tool invocation timed out"
 
 
-async def test_invoke_tool_connection_error():
+async def test_invoke_tool_connection_error() -> None:
     client = _client(_raising(httpx.ConnectError("refused")))
 
     result = await client.invoke_tool("unreachable", {})
@@ -215,7 +215,7 @@ async def test_invoke_tool_connection_error():
     assert "could not be reached" in result.error
 
 
-async def test_invoke_tool_upstream_5xx():
+async def test_invoke_tool_upstream_5xx() -> None:
     """An exhausted 5xx names the status; there is no transport cause to report."""
     client = _client(_responding({"detail": "boom"}, status_code=503))
 
@@ -225,7 +225,7 @@ async def test_invoke_tool_upstream_5xx():
     assert "503" in result.error
 
 
-async def test_invoke_tool_does_not_retry_a_side_effecting_call():
+async def test_invoke_tool_does_not_retry_a_side_effecting_call() -> None:
     """``tools/call`` is not idempotent, so the client must send it exactly once."""
     calls: list[int] = [0]
 
@@ -245,19 +245,19 @@ async def test_invoke_tool_does_not_retry_a_side_effecting_call():
     assert calls[0] == 1
 
 
-async def test_test_connection_success():
+async def test_test_connection_success() -> None:
     client = _client(_responding({"tools": []}))
 
     assert await client.test_connection() is True
 
 
-async def test_test_connection_failure():
+async def test_test_connection_failure() -> None:
     client = _client(_raising(httpx.ConnectError("refused")))
 
     assert await client.test_connection() is False
 
 
-async def test_close_closes_the_traced_client():
+async def test_close_closes_the_traced_client() -> None:
     client = _client(_responding({"tools": []}))
     await client.close()
     result = await client.list_tools()

@@ -82,7 +82,7 @@ class TestConstructor:
 
     def test_keyword_only_arguments(self, tmp_path: Path) -> None:
         with pytest.raises(TypeError):
-            PathSandbox({"templates": tmp_path}, [], [])  # type: ignore[misc]
+            PathSandbox({"templates": tmp_path}, [], [])  # type: ignore[call-arg]
 
 
 class TestCheckRelativeKey:

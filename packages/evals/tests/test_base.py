@@ -69,7 +69,7 @@ class _Payload(EvalBaseModel):
     blob: dict[str, Any] = {}
 
 
-def test_the_base_pins_its_configuration_values_literally():
+def test_the_base_pins_its_configuration_values_literally() -> None:
     """Eval's stance is asserted here, not inherited from the host's base.
 
     Each value carries a consequence, so a future edit has to argue with the
@@ -113,7 +113,7 @@ def test_the_base_pins_its_configuration_values_literally():
     assert Aliased(wire_name=3).wire_name == 3
 
 
-def test_the_document_base_derives_from_the_same_options_and_names_only_its_deltas():
+def test_the_document_base_derives_from_the_same_options_and_names_only_its_deltas() -> None:
     """The stance has one spelling, and this is what keeps it that way.
 
     ``EvalDocumentModel`` is the base of nearly every stored eval document — ``EvalRun``,
@@ -140,7 +140,7 @@ def test_the_document_base_derives_from_the_same_options_and_names_only_its_delt
     )
 
 
-def test_a_lone_surrogate_serialises_instead_of_raising():
+def test_a_lone_surrogate_serialises_instead_of_raising() -> None:
     """The serialisation fallback, and the reason it is not decoration.
 
     Externally-ingested data reaches these models — scraped strings, provider
@@ -165,7 +165,7 @@ def test_a_lone_surrogate_serialises_instead_of_raising():
     assert "\ud800" not in payload
 
 
-def test_the_dict_path_passes_a_lone_surrogate_through_unrepaired():
+def test_the_dict_path_passes_a_lone_surrogate_through_unrepaired() -> None:
     """``to_dict`` is the other entry point, and it deliberately does not sanitize.
 
     ``model_dump(mode="json")`` produces python objects and never encodes, so there
@@ -179,7 +179,7 @@ def test_the_dict_path_passes_a_lone_surrogate_through_unrepaired():
     assert model.to_dict()["blob"]["scraped"] == "before\ud800after"
 
 
-def test_an_unknown_field_is_refused():
+def test_an_unknown_field_is_refused() -> None:
     """The ``forbid`` stance still holds after the copy."""
     with pytest.raises(ValidationError, match="unexpected_keyword_argument|extra_forbidden"):
         _Sample(name="ok", unknown_field="value")
@@ -188,7 +188,7 @@ def test_an_unknown_field_is_refused():
         _Sample.from_dict({"name": "ok", "unknown_field": "value"})
 
 
-def test_assignment_is_validated():
+def test_assignment_is_validated() -> None:
     """``validate_assignment`` is the half of the stance a construction test misses."""
     model = _Sample(name="ok")
 
@@ -196,21 +196,21 @@ def test_assignment_is_validated():
         model.name = 123
 
 
-def test_the_json_pair_round_trips():
+def test_the_json_pair_round_trips() -> None:
     """``to_json``/``from_json`` compose, which is what callers actually rely on."""
     model = _Sample(name="ok", note="hello")
 
     assert _Sample.from_json(model.to_json()) == model
 
 
-def test_the_dict_pair_round_trips():
+def test_the_dict_pair_round_trips() -> None:
     """``to_dict``/``from_dict`` compose the same way."""
     model = _Sample(name="ok", note="hello")
 
     assert _Sample.from_dict(model.to_dict()) == model
 
 
-def test_the_engine_models_are_on_the_engine_base():
+def test_the_engine_models_are_on_the_engine_base() -> None:
     """The requirement's property, asserted on real models rather than on the base.
 
     Every test above would pass with nothing repointed. This one is what says the
@@ -284,14 +284,14 @@ def _tamper(store: InMemoryDocumentStore, result: EvalResult, **fields: object) 
     store.upsert({**document, **fields})
 
 
-def test_a_stored_result_reads_back_whole():
+def test_a_stored_result_reads_back_whole() -> None:
     """The control: an untampered document loads, so the refusals below are about the tampering."""
     result, storage, _ = _stored_result()
 
     assert storage.load_eval_result(result.id, result.scope_id) == result
 
 
-def test_a_stored_field_the_model_does_not_declare_is_refused():
+def test_a_stored_field_the_model_does_not_declare_is_refused() -> None:
     """No tolerant read: a document carrying a key this build does not declare does not load."""
     result, storage, store = _stored_result()
     _tamper(store, result, retired_lifecycle=[])
@@ -300,7 +300,7 @@ def test_a_stored_field_the_model_does_not_declare_is_refused():
         storage.load_eval_result(result.id, result.scope_id)
 
 
-def test_a_stored_nested_field_the_model_does_not_declare_is_refused():
+def test_a_stored_nested_field_the_model_does_not_declare_is_refused() -> None:
     """The refusal reaches every level, not only the top-level document."""
     result, storage, store = _stored_result()
     _tamper(store, result, usage=[{"role": "candidate", "model": "m", "credits": 3}])
@@ -313,7 +313,7 @@ def test_a_stored_nested_field_the_model_does_not_declare_is_refused():
     ("version", "why"),
     [(CORE_BASELINE_VERSION - 1, "before the first public release"), (CORE_SCHEMA_VERSION + 1, "by a newer build")],
 )
-def test_a_core_document_at_a_version_this_build_does_not_read_is_refused(version: int, why: str):
+def test_a_core_document_at_a_version_this_build_does_not_read_is_refused(version: int, why: str) -> None:
     """A shape-compatible core document from before the baseline or from a newer build does not load, saying which."""
     result, storage, store = _stored_result()
     _tamper(store, result, schema_version=version)
@@ -466,7 +466,7 @@ def test_every_core_model_refuses_a_document_at_a_version_it_does_not_read(
     [
         param
         for param in _versioned(lambda space: range(space.baseline, space.version + 1))
-        if param.values[1] >= ADDED_AT_MAJOR.get(doc_type_of(param.values[0]), 0)  # type: ignore[operator]
+        if param.values[1] >= ADDED_AT_MAJOR.get(doc_type_of(param.values[0]), 0)
     ],
 )
 def test_every_core_model_reads_a_document_at_every_version_from_the_baseline(

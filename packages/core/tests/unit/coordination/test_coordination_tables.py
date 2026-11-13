@@ -383,7 +383,7 @@ class TestTheSharedCollection:
     def test_a_foreign_collection_on_the_table_is_refused(self) -> None:
         registry = _registry()
         coordination_collection(registry, CoordinationCountersCollection, _config())
-        registry.register(_ForeignCollection("coordination_claims"))  # type: ignore[arg-type]
+        registry.register(_ForeignCollection("coordination_claims"))
         with pytest.raises(TypeError, match="already registered"):
             coordination_collection(registry, CoordinationClaimsCollection, _config())
 

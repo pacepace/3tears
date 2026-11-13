@@ -11,13 +11,13 @@ import threetears.evals.kernel as kernel
 from threetears.evals.kernel import dsl, identity, usage_capture
 
 
-def test_the_variant_derivation_and_the_substituted_delivery_count_are_on_the_kernel_root():
+def test_the_variant_derivation_and_the_substituted_delivery_count_are_on_the_kernel_root() -> None:
     assert kernel.derive_variant_identity is identity.derive_variant_identity
     assert kernel.count_substituted_deliveries is usage_capture.count_substituted_deliveries
     assert {"derive_variant_identity", "count_substituted_deliveries"} <= set(kernel.__all__)
 
 
-def test_the_substituted_delivery_count_reads_a_delivery_record_before_any_result_exists():
+def test_the_substituted_delivery_count_reads_a_delivery_record_before_any_result_exists() -> None:
     """A kind computes its measures from its cell's deliveries; it has no result to build just to ask."""
     from threetears.evals.schema import AsyncDelivery
 
@@ -40,7 +40,7 @@ def test_the_substituted_delivery_count_reads_a_delivery_record_before_any_resul
         assert kernel.count_substituted_deliveries(result) == kernel.count_substituted(record)
 
 
-def test_the_not_established_marker_is_on_the_kernel_root():
+def test_the_not_established_marker_is_on_the_kernel_root() -> None:
     """A host's own suite asserts that no keyless verdict came out "not established"; it reads the engine's marker."""
     assert kernel.NOT_ESTABLISHED is dsl.NOT_ESTABLISHED
     assert "NOT_ESTABLISHED" in kernel.__all__

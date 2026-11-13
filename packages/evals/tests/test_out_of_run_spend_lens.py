@@ -68,7 +68,7 @@ def _ledgered() -> tuple[object, list[OutOfRunSpend]]:
     return fixture, rows
 
 
-def test_the_lens_lists_a_scopes_calls_and_sums_them_with_the_unpriced_counted_beside():
+def test_the_lens_lists_a_scopes_calls_and_sums_them_with_the_unpriced_counted_beside() -> None:
     fixture, rows = _ledgered()
 
     report = scope_out_of_run_spend(fixture.host.eval_host, TOYHOST_SCOPE)
@@ -91,7 +91,7 @@ def test_the_lens_lists_a_scopes_calls_and_sums_them_with_the_unpriced_counted_b
     [({"purpose": "proposer"}, 1), ({"launch_group_id": _GROUP}, 3), ({"template_id": "tpl-a"}, 3)],
     ids=["purpose", "launch", "template"],
 )
-def test_the_lens_narrows_by_purpose_launch_or_template(narrowed: dict[str, str], expected: int):
+def test_the_lens_narrows_by_purpose_launch_or_template(narrowed: dict[str, str], expected: int) -> None:
     fixture, _rows = _ledgered()
 
     report = scope_out_of_run_spend(fixture.host.eval_host, TOYHOST_SCOPE, **narrowed)  # type: ignore[arg-type]
@@ -100,7 +100,7 @@ def test_the_lens_narrows_by_purpose_launch_or_template(narrowed: dict[str, str]
     assert next(iter(narrowed.values())) in out_of_run_spend_text(report)
 
 
-def test_an_empty_ledger_says_so():
+def test_an_empty_ledger_says_so() -> None:
     fixture = ops_fixture()
 
     report = scope_out_of_run_spend(fixture.host.eval_host, TOYHOST_SCOPE)
@@ -109,7 +109,7 @@ def test_an_empty_ledger_says_so():
     assert "no out-of-run call is ledgered here" in out_of_run_spend_text(report)
 
 
-async def test_the_action_reads_the_ledger_through_the_lens():
+async def test_the_action_reads_the_ledger_through_the_lens() -> None:
     fixture, _rows = off_loop(_ledgered)
     evals = eval_catalogue().mount_all(standard_tools())[0]
 
@@ -123,7 +123,7 @@ async def test_the_action_reads_the_ledger_through_the_lens():
     assert "unpriced (so at least)" in outcome.text
 
 
-def test_the_clis_spend_prints_the_ledger(capsys: pytest.CaptureFixture[str]):
+def test_the_clis_spend_prints_the_ledger(capsys: pytest.CaptureFixture[str]) -> None:
     fixture, _rows = _ledgered()
 
     code = run_cli(

@@ -294,7 +294,7 @@ async def test_robots_is_read_once_per_origin_not_once_per_target() -> None:
     for path in ("/a", "/b", "/c"):
         await gate.check(f"https://example.gov{path}", now=1000.0)
 
-    assert fetch.calls == ["https://example.gov/robots.txt"]  # type: ignore[attr-defined]
+    assert fetch.calls == ["https://example.gov/robots.txt"]
 
 
 async def test_both_behaviours_can_be_turned_off_independently() -> None:

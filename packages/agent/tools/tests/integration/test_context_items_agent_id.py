@@ -93,7 +93,7 @@ async def schema_conn(db_container: str) -> AsyncIterator[tuple[asyncpg.Connecti
     register_conversations(runner)
     register_tools(runner)
     register_memory(runner)
-    await runner.apply_for_agent_schema(_AsyncpgStore(conn))  # type: ignore[arg-type]
+    await runner.apply_for_agent_schema(_AsyncpgStore(conn))
     try:
         yield conn, db_container, schema
     finally:

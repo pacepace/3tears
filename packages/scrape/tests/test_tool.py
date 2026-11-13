@@ -195,30 +195,30 @@ async def _execute_with_a_stored_solve(driver, health, *, url: str, circuit=None
 class TestDeriveTargetId:
     """The recipe-reuse key an ad-hoc call is filed under, as the tool reports it."""
 
-    async def test_deterministic_for_the_same_url_and_schema(self):
+    async def test_deterministic_for_the_same_url_and_schema(self) -> None:
         assert await derived_target_id("https://x.gov", {"employer": "str"}) == await derived_target_id(
             "https://x.gov", {"employer": "str"}
         )
 
-    async def test_field_order_does_not_change_the_id(self):
+    async def test_field_order_does_not_change_the_id(self) -> None:
         assert await derived_target_id("https://x.gov", {"a": "str", "b": "int"}) == await derived_target_id(
             "https://x.gov", {"b": "int", "a": "str"}
         )
 
-    async def test_different_url_changes_the_id(self):
+    async def test_different_url_changes_the_id(self) -> None:
         assert await derived_target_id("https://x.gov", {"a": "str"}) != await derived_target_id(
             "https://y.gov", {"a": "str"}
         )
 
-    async def test_different_schema_changes_the_id(self):
+    async def test_different_schema_changes_the_id(self) -> None:
         assert await derived_target_id("https://x.gov", {"a": "str"}) != await derived_target_id(
             "https://x.gov", {"b": "str"}
         )
 
-    async def test_starts_with_adhoc_prefix(self):
+    async def test_starts_with_adhoc_prefix(self) -> None:
         assert (await derived_target_id("https://x.gov", {"a": "str"})).startswith("adhoc_")
 
-    async def test_a_caller_supplied_target_id_wins(self):
+    async def test_a_caller_supplied_target_id_wins(self) -> None:
         """The derivation is the fallback for an ad-hoc call, never an override of a named target."""
         recipe_collection, extraction_collection = _collections()
         await _seed_recipe(recipe_collection, "warn_named", {"selectors": _SINGLE_STRATEGY})
@@ -241,7 +241,7 @@ class TestDeriveTargetId:
 
 
 class TestScrapeToolSchema:
-    def test_mcp_name_and_version(self):
+    def test_mcp_name_and_version(self) -> None:
         recipe_collection, extraction_collection = _collections()
         tool = ScrapeTool(
             recipe_collection=recipe_collection,
@@ -253,7 +253,7 @@ class TestScrapeToolSchema:
         assert tool.mcp_name() == "3tears.scrape"
         assert tool.mcp_version()
 
-    def test_schema_requires_url_and_field_schema(self):
+    def test_schema_requires_url_and_field_schema(self) -> None:
         recipe_collection, extraction_collection = _collections()
         tool = ScrapeTool(
             recipe_collection=recipe_collection,
@@ -269,7 +269,7 @@ class TestScrapeToolSchema:
 
 
 class TestScrapeToolExecute:
-    async def test_what_the_document_could_not_read_reaches_the_eval_loop(self):
+    async def test_what_the_document_could_not_read_reaches_the_eval_loop(self) -> None:
         """The eval loop decides what a partly read document's miss means; it has to be told."""
         recipe_collection, extraction_collection = _collections()
         driver = _FakeDriver(
@@ -295,7 +295,7 @@ class TestScrapeToolExecute:
             "PDF page images could not be rendered (RuntimeError)",
         ]
 
-    async def test_missing_url_is_an_error(self):
+    async def test_missing_url_is_an_error(self) -> None:
         recipe_collection, extraction_collection = _collections()
         tool = ScrapeTool(
             recipe_collection=recipe_collection,
@@ -310,7 +310,7 @@ class TestScrapeToolExecute:
         assert result.success is False
         assert "url" in (result.error or "")
 
-    async def test_missing_field_schema_is_an_error(self):
+    async def test_missing_field_schema_is_an_error(self) -> None:
         recipe_collection, extraction_collection = _collections()
         tool = ScrapeTool(
             recipe_collection=recipe_collection,
@@ -325,7 +325,7 @@ class TestScrapeToolExecute:
         assert result.success is False
         assert "field_schema" in (result.error or "")
 
-    async def test_invalid_field_schema_type_name_is_an_error(self):
+    async def test_invalid_field_schema_type_name_is_an_error(self) -> None:
         recipe_collection, extraction_collection = _collections()
         tool = ScrapeTool(
             recipe_collection=recipe_collection,
@@ -340,7 +340,7 @@ class TestScrapeToolExecute:
         assert result.success is False
         assert "employer" in (result.error or "")
 
-    async def test_unsupported_driver_backend_is_an_error(self):
+    async def test_unsupported_driver_backend_is_an_error(self) -> None:
         recipe_collection, extraction_collection = _collections()
         tool = ScrapeTool(
             recipe_collection=recipe_collection,
@@ -357,7 +357,7 @@ class TestScrapeToolExecute:
         assert result.success is False
         assert "not_a_real_backend" in (result.error or "")
 
-    async def test_render_failure_is_reported_not_raised(self):
+    async def test_render_failure_is_reported_not_raised(self) -> None:
         recipe_collection, extraction_collection = _collections()
         driver = _FakeDriver(_SINGLE_HTML, raise_exc=RuntimeError("connection refused"))
         tool = ScrapeTool(
@@ -373,7 +373,7 @@ class TestScrapeToolExecute:
         assert result.success is False
         assert "connection refused" in (result.error or "")
 
-    async def test_invalid_nav_steps_is_an_error(self):
+    async def test_invalid_nav_steps_is_an_error(self) -> None:
         recipe_collection, extraction_collection = _collections()
         tool = ScrapeTool(
             recipe_collection=recipe_collection,
@@ -392,7 +392,7 @@ class TestScrapeToolExecute:
         assert result.success is False
         assert "nav_steps" in (result.error or "")
 
-    async def test_single_record_extraction_via_seeded_recipe(self):
+    async def test_single_record_extraction_via_seeded_recipe(self) -> None:
         recipe_collection, extraction_collection = _collections()
         target_id = await derived_target_id("https://example.gov/warn", {"employer": "str", "affected_count": "int"})
         # single-record recipes wrap their strategy in a {"selectors": ...}
@@ -419,7 +419,7 @@ class TestScrapeToolExecute:
         records = json.loads(result.content)["records"]
         assert records == [{"employer": "Acme Corp", "affected_count": 42}]
 
-    async def test_multi_row_extraction_via_seeded_recipe(self):
+    async def test_multi_row_extraction_via_seeded_recipe(self) -> None:
         recipe_collection, extraction_collection = _collections()
         target_id = await derived_target_id("https://example.gov/warn", {"employer": "str", "affected_count": "int"})
         await _seed_recipe(recipe_collection, target_id, _ROW_STRATEGY)
@@ -441,7 +441,7 @@ class TestScrapeToolExecute:
         assert result.success is True
         assert result.metadata["record_count"] == 2
 
-    async def test_wait_for_and_nav_steps_are_forwarded_to_the_driver(self):
+    async def test_wait_for_and_nav_steps_are_forwarded_to_the_driver(self) -> None:
         recipe_collection, extraction_collection = _collections()
         target_id = await derived_target_id("https://example.gov/warn", {"employer": "str", "affected_count": "int"})
         await _seed_recipe(recipe_collection, target_id, {"selectors": _SINGLE_STRATEGY})
@@ -464,7 +464,7 @@ class TestScrapeToolExecute:
         assert driver.wait_for_calls == [".content"]
         assert driver.nav_steps_calls == [[NavStep(action="click", selector="#search")]]
 
-    async def test_explicit_target_id_is_used_verbatim(self):
+    async def test_explicit_target_id_is_used_verbatim(self) -> None:
         recipe_collection, extraction_collection = _collections()
         await _seed_recipe(recipe_collection, "my_custom_id", {"selectors": _SINGLE_STRATEGY})
         driver = _FakeDriver(_SINGLE_HTML)
@@ -484,7 +484,7 @@ class TestScrapeToolExecute:
 
         assert result.metadata["target_id"] == "my_custom_id"
 
-    async def test_repeated_call_reuses_the_recipe_with_no_new_candidate_generation(self):
+    async def test_repeated_call_reuses_the_recipe_with_no_new_candidate_generation(self) -> None:
         """The self-healing recipe-reuse contract: a second identical call
         against a target with a healthy recipe never regenerates candidates
         -- proven here via the seeded-recipe path producing consistent
@@ -524,7 +524,7 @@ class TestScrapeToolFetchHealth:
     the eval loop directly.
     """
 
-    async def test_a_wall_keeps_the_recipe_when_a_health_collection_is_supplied(self):
+    async def test_a_wall_keeps_the_recipe_when_a_health_collection_is_supplied(self) -> None:
         recipe_collection, extraction_collection = _collections()
         health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
         target_id = await derived_target_id("https://example.gov/walled", {"employer": "str"})
@@ -570,7 +570,7 @@ class TestScrapeToolFetchHealth:
         assert seen, "the tool never reached the classifier"
         assert "HTTP status 503" in seen[0], "the tool held the status and did not pass it to the classifier"
 
-    async def test_without_a_health_collection_the_tool_behaves_exactly_as_before(self):
+    async def test_without_a_health_collection_the_tool_behaves_exactly_as_before(self) -> None:
         """The default, and every pre-existing caller. No classification, no model call at all."""
         recipe_collection, extraction_collection = _collections()
         target_id = await derived_target_id("https://example.gov/unwatched", {"employer": "str"})
@@ -654,7 +654,7 @@ class TestScrapeToolFetchCircuit:
             block_private_hosts=False,
         )
 
-    async def test_a_repeatedly_blocked_target_stops_being_fetched_and_stops_being_classified(self):
+    async def test_a_repeatedly_blocked_target_stops_being_fetched_and_stops_being_classified(self) -> None:
         recipe_collection, extraction_collection = _collections()
         health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
         url = "https://example.gov/decay"
@@ -705,7 +705,7 @@ class TestScrapeToolFetchCircuit:
         assert recipe is not None
         assert recipe.consecutive_validation_failures == 0, "a wall counted against the recipe"
 
-    async def test_a_suppressed_poll_persists_no_extraction(self):
+    async def test_a_suppressed_poll_persists_no_extraction(self) -> None:
         """Backing off harder must not write more rows than backing off less.
 
         A suppressed poll made no observation. Persisting one anyway would mean the emptier
@@ -734,7 +734,7 @@ class TestScrapeToolFetchCircuit:
         assert json.loads(result.content)["validation_status"] == "backoff"
         assert await extraction_collection.get(target_id) is None
 
-    async def test_a_target_that_comes_back_clears_its_circuit(self):
+    async def test_a_target_that_comes_back_clears_its_circuit(self) -> None:
         """One good fetch is enough. A recovered target must not stay half-suppressed."""
         recipe_collection, extraction_collection = _collections()
         health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
@@ -757,7 +757,7 @@ class TestScrapeToolFetchCircuit:
         assert row.consecutive_fetch_failures == 0
         assert row.blocked_until is None
 
-    async def test_a_render_that_never_returns_a_page_counts_as_a_fetch_failure(self):
+    async def test_a_render_that_never_returns_a_page_counts_as_a_fetch_failure(self) -> None:
         """A target that stops responding backs off too; it is just not recorded as walled."""
         recipe_collection, extraction_collection = _collections()
         health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
@@ -788,7 +788,7 @@ class TestScrapeToolFetchCircuit:
         )
         assert third.metadata["validation_status"] == "backoff"
 
-    async def test_an_eval_loop_that_raises_does_not_strand_the_targets_probe(self):
+    async def test_an_eval_loop_that_raises_does_not_strand_the_targets_probe(self) -> None:
         """The permitted path's version of the stranding the suppressed path already handles.
 
         A permitted decision can promote the in-process breaker to HALF_OPEN and mark its
@@ -834,7 +834,7 @@ class TestScrapeToolFetchCircuit:
             "caller is told to retry immediately into a circuit that cannot admit it"
         )
 
-    async def test_a_cancelled_render_does_not_strand_the_targets_probe(self):
+    async def test_a_cancelled_render_does_not_strand_the_targets_probe(self) -> None:
         """The same strand, in the longest await of the function, via the one exception class
         the driver's own handler does not catch.
 
@@ -876,7 +876,7 @@ class TestScrapeToolFetchCircuit:
         )
         assert row is None or row.circuit_state == "closed"
 
-    async def test_a_cancellation_while_recording_the_failure_still_releases_the_probe(self):
+    async def test_a_cancellation_while_recording_the_failure_still_releases_the_probe(self) -> None:
         """A cancellation inside the failure REPORT, and the third strand in this family.
 
         A render that fails with an ordinary exception is handled by reporting the fetch
@@ -908,7 +908,7 @@ class TestScrapeToolFetchCircuit:
             "a cancellation inside the failure report escaped the guard and left the in-process breaker holding a probe"
         )
 
-    async def test_a_refusal_before_the_driver_call_still_releases_the_probe(self):
+    async def test_a_refusal_before_the_driver_call_still_releases_the_probe(self) -> None:
         """The fifth strand, and the one the single guard structurally cannot catch.
 
         The four above are cancellations, which is why one `except BaseException` closed them:
@@ -939,7 +939,7 @@ class TestScrapeToolFetchCircuit:
             def name(self) -> str:
                 return "old"
 
-            async def render(self, url: str, *, timeout: float = 30.0, wait_for: str | None = None):
+            async def render(self, url: str, *, timeout: float = 30.0, wait_for: str | None = None) -> None:
                 raise AssertionError("the render must not be attempted once the mismatch is known")
 
         breaker = CircuitBreaker(target_id, failure_threshold=1, recovery_timeout_seconds=0.0)
@@ -978,7 +978,7 @@ class TestScrapeToolFetchCircuit:
 
         return _fetch
 
-    async def test_a_cancellation_during_the_crawl_delay_still_releases_the_probe(self):
+    async def test_a_cancellation_during_the_crawl_delay_still_releases_the_probe(self) -> None:
         """The fourth strand in this family, and the first one that is the EXPECTED case.
 
         The circuit admits a probe, then the crawl delay is waited before the render. That
@@ -1023,7 +1023,7 @@ class TestScrapeToolFetchCircuit:
             "a cancellation was persisted as a fetch failure for a target that did nothing wrong"
         )
 
-    async def test_without_a_circuit_nothing_is_suppressed(self):
+    async def test_without_a_circuit_nothing_is_suppressed(self) -> None:
         """The default, and every pre-existing caller: every call fetches, as it always did."""
         recipe_collection, extraction_collection = _collections()
         url = "https://example.gov/ungated"
@@ -1775,7 +1775,7 @@ class TestTheFleetAndTheSiteBothBind:
             await tool.execute(url=url, field_schema=schema)
         return slept
 
-    async def test_the_fleets_longer_wait_wins(self):
+    async def test_the_fleets_longer_wait_wins(self) -> None:
         """Deleting the `max` silently discards the fleet's answer."""
         slept = await self._slept_waiting_for(self._pacer(claimed=False, retry_after=25.0))
 
@@ -1784,7 +1784,7 @@ class TestTheFleetAndTheSiteBothBind:
             f"the fleet owed 25s and this pod owed ~10s; the tool waited {slept[0]}s"
         )
 
-    async def test_a_suppressed_poll_takes_no_turn_at_all(self):
+    async def test_a_suppressed_poll_takes_no_turn_at_all(self) -> None:
         """The `and fetch_will_happen` guard, asserted where it lives.
 
         The gate-level version of this drives `RobotsGate` directly, and its own docstring says
@@ -1841,7 +1841,7 @@ class TestTheFleetAndTheSiteBothBind:
             "a suppressed poll spent the origin's shared token, so one walled target delays every sibling on that site"
         )
 
-    async def test_the_sites_longer_wait_wins(self):
+    async def test_the_sites_longer_wait_wins(self) -> None:
         """And a granted fleet turn must not shorten what the site itself asked for."""
         slept = await self._slept_waiting_for(self._pacer(claimed=True))
 
@@ -1860,7 +1860,7 @@ class TestACancelledPollReturnsItsTurn:
     fetch that never happened.
     """
 
-    async def test_a_cancellation_after_the_claim_gives_the_turn_back(self):
+    async def test_a_cancellation_after_the_claim_gives_the_turn_back(self) -> None:
         from threetears.core.collections.registry import CollectionRegistry
         from threetears.core.config import DefaultCoreConfig
         from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
@@ -1901,7 +1901,7 @@ class TestACancelledPollReturnsItsTurn:
             "a cancelled poll kept the origin's shared turn, so a restart loop starves every other target on that site"
         )
 
-    async def test_a_refused_turn_is_not_given_back(self):
+    async def test_a_refused_turn_is_not_given_back(self) -> None:
         """A refusal consumed nothing, so refunding it credits the pod that DOES hold the turn.
 
         The sibling above covers a granted turn returned after a cancellation. This is the case
@@ -1948,7 +1948,7 @@ class TestACancelledPollReturnsItsTurn:
             "token another pod is currently holding"
         )
 
-    async def test_an_uncancelled_poll_keeps_its_turn(self):
+    async def test_an_uncancelled_poll_keeps_its_turn(self) -> None:
         """The turn is spent on a fetch that happened, so returning it would be wrong."""
         from threetears.core.collections.registry import CollectionRegistry
         from threetears.core.config import DefaultCoreConfig
@@ -2176,7 +2176,7 @@ class TestScrapeToolModelOutage:
     so in ``error``, under its own status rather than as ``"failed"``.
     """
 
-    async def test_an_outage_is_answered_as_model_unavailable_and_persists_nothing(self):
+    async def test_an_outage_is_answered_as_model_unavailable_and_persists_nothing(self) -> None:
         recipe_collection, extraction_collection = _collections()
         health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
         url = "https://example.gov/model-down"
@@ -2226,7 +2226,7 @@ class TestScrapeToolModelOutage:
         assert health.circuit_state == "closed", "a fetched page is a reachable target, whatever the model did"
         assert health.consecutive_fetch_failures == 0
 
-    async def test_a_call_that_outlived_the_loops_deadline_is_answered_the_same_way(self):
+    async def test_a_call_that_outlived_the_loops_deadline_is_answered_the_same_way(self) -> None:
         recipe_collection, extraction_collection = _collections()
         url = "https://example.gov/model-hung"
         schema = {"employer": "str", "affected_count": "int"}

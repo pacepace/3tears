@@ -42,7 +42,7 @@ async def _apply(conn: asyncpg.Connection, schema: str) -> None:
     register_conversations(runner)
     register_skills(runner)
     store = AsyncpgStore(conn)
-    await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+    await runner.apply_for_agent_schema(store)
 
 
 async def _insert_skill_minimal(

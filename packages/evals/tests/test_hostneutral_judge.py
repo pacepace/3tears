@@ -195,7 +195,7 @@ class TestTheKindContractCarriesTheNewFields:
     def test_the_evidence_is_one_immutable_object(self) -> None:
         evidence = _evidence()
         with pytest.raises(ValidationError):
-            evidence.artifact = "rewritten"  # type: ignore[misc]
+            evidence.artifact = "rewritten"
         with pytest.raises(ValidationError):
             JudgeEvidence(case_material="m", artifact="a", notes="x")  # type: ignore[call-arg]
         with pytest.raises(ValidationError):

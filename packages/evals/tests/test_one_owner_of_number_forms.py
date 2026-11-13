@@ -1574,16 +1574,16 @@ def _tally(sites: Iterable[_Site]) -> Counter[tuple[str, str, str]]:
 class TestTheRule:
     """Every site the walk finds is an owner's or named in :data:`_PERMANENT`, and every entry there names a site."""
 
-    def test_no_site_is_outside_the_owners_and_the_permanent_list(self):
+    def test_no_site_is_outside_the_owners_and_the_permanent_list(self) -> None:
         sites = _unnamed(_all_sites())
         shown = [site.shown() for site in sites]
         assert not sites, f"number-form sites outside the owners: {_REMEDY}.\n  " + "\n  ".join(shown)
 
-    def test_every_permanent_entry_still_names_its_count_of_sites(self):
+    def test_every_permanent_entry_still_names_its_count_of_sites(self) -> None:
         """An exemption a site walked out of, or holding more than it names, is one nobody decided: cut its count."""
         assert _outlived(_all_sites()) == {}
 
-    def test_every_permanent_reason_is_stated_and_cites_nothing_a_reader_cannot_open(self):
+    def test_every_permanent_reason_is_stated_and_cites_nothing_a_reader_cannot_open(self) -> None:
         uncounted = [key for key, (count, _reason) in _PERMANENT.items() if count < 1]
         unstated = [key for key, (_count, reason) in _PERMANENT.items() if not reason.strip()]
         citing = {key: found.group() for key, (_n, reason) in _PERMANENT.items() if (found := _CITES.search(reason))}
@@ -1591,16 +1591,16 @@ class TestTheRule:
         assert unstated == []
         assert citing == {}
 
-    def test_the_permanent_list_is_pinned_and_the_engine_has_a_ceiling(self):
+    def test_the_permanent_list_is_pinned_and_the_engine_has_a_ceiling(self) -> None:
         assert len(_PERMANENT) == _PERMANENT_CEILING
         assert len(_ENGINE_TREES) <= _ENGINE_TREES_CEILING
 
-    def test_a_reason_that_cites_a_plan_or_an_id_is_caught(self):
+    def test_a_reason_that_cites_a_plan_or_an_id_is_caught(self) -> None:
         for reason in ("named at C6", "owner ruling Q3", "see the plan", "rev-20261110T135620Z", "chunk 6", "C10b"):
             assert _CITES.search(reason), reason
         assert not _CITES.search("a CSS rem width, planned by the table's columns; Q-sort C-5")
 
-    def test_the_walk_reads_every_module_but_the_owners_and_the_kit(self):
+    def test_the_walk_reads_every_module_but_the_owners_and_the_kit(self) -> None:
         """Derived from the tree, so a module added anywhere in the package is walked the day it lands."""
         walked = {path.relative_to(_SOURCE_ROOT).as_posix() for path in _walked_modules()}
         every = {path.relative_to(_SOURCE_ROOT).as_posix() for path in (_SOURCE_ROOT / _PACKAGE).rglob("*.py")}
@@ -1633,7 +1633,7 @@ class TestTheReportTreesKeepTheStricterRule:
     outside these trees are not read as reports, so :data:`_PERMANENT` names them instead.
     """
 
-    def test_a_module_named_by_itself_is_walked(self):
+    def test_a_module_named_by_itself_is_walked(self) -> None:
         """A single-module entry is parsed, not skipped as a tree with nothing under it.
 
         Asked of the walk's module list rather than of the spellings it found: once a module routes
@@ -1649,7 +1649,7 @@ class TestTheReportTreesKeepTheStricterRule:
             m for m in walked if m in ("threetears/evals/kernel/numbers.py", "threetears/evals/analysis/report/svg.py")
         }
 
-    def test_every_spelling_goes_through_the_one_rule_or_is_named_as_permanent(self):
+    def test_every_spelling_goes_through_the_one_rule_or_is_named_as_permanent(self) -> None:
         report_modules = {path.relative_to(_SOURCE_ROOT).as_posix() for path in _modules_under(_SPELLING_TREES)}
         offenders = [
             site.shown()
@@ -1692,7 +1692,7 @@ class TestTheWalkSeesEveryPythonForm:
     def test_the_walk_sees_every_way_python_spells_a_number(self, source, expected):
         assert _specs(source) == [expected]
 
-    def test_a_t_string_field_is_its_own_form(self):
+    def test_a_t_string_field_is_its_own_form(self) -> None:
         assert [site.form for site in _python_sites('t"{value:.2f}"')] == ["t-string spec"]
 
     @pytest.mark.parametrize(
@@ -1729,11 +1729,11 @@ class TestTheWalkSeesEveryPythonForm:
     def test_the_walk_sees_rounding_and_every_primitive(self, source, expected):
         assert _forms(_python_sites(source)) == [expected]
 
-    def test_a_site_is_keyed_by_its_enclosing_definition(self):
+    def test_a_site_is_keyed_by_its_enclosing_definition(self) -> None:
         source = "class Look:\n    def text(self, v):\n        def inner():\n            return round(v)\n        return inner\n"
         assert _forms(_python_sites(source)) == [("Look.text.inner", "round()", "round(v)")]
 
-    def test_a_private_helper_is_a_site_only_in_the_module_that_decides_with_it(self):
+    def test_a_private_helper_is_a_site_only_in_the_module_that_decides_with_it(self) -> None:
         deciding = "threetears/evals/harness/writer_eval.py"
         assert _forms(_python_sites("_places(vs)", deciding)) == [("<module>", "_places()", "_places(vs)")]
         assert _python_sites("_places(vs)", "threetears/evals/analysis/report/build.py") == []
@@ -1764,7 +1764,7 @@ def _count(sites: Iterable[_Site]) -> int:
 class TestAWrapperIsAPrimitive:
     """A function that returns what a site produced is a primitive itself, so a call rerouted through it is a site."""
 
-    def test_a_helper_that_wraps_a_site_makes_its_callers_sites(self):
+    def test_a_helper_that_wraps_a_site_makes_its_callers_sites(self) -> None:
         source = (
             "def bare_at(v, p):\n    return spell_at(v, p)\n\n"
             "def label(v):\n    return f'{bare_at(v, 1)} pts'\n\n"
@@ -1776,7 +1776,7 @@ class TestAWrapperIsAPrimitive:
             ("row", "label()", "label(v)"),
         ]
 
-    def test_rerouting_a_call_through_a_wrapper_does_not_shrink_the_count(self):
+    def test_rerouting_a_call_through_a_wrapper_does_not_shrink_the_count(self) -> None:
         """``spell_at`` moved into ``bare_at``: every caller keeps its site, and the wrapper holds one more."""
         direct = "def a(v):\n    return spell_at(v, 1)\n\ndef b(v):\n    return spell_at(v, 2)\n"
         rerouted = (
@@ -1787,7 +1787,7 @@ class TestAWrapperIsAPrimitive:
         assert _count(_python_sites(rerouted)) == 3
         assert _tally(_python_sites(rerouted))[("sample.py", "a", "bare_at()")] == 1
 
-    def test_a_wrapper_in_another_module_is_reached_through_its_import(self):
+    def test_a_wrapper_in_another_module_is_reached_through_its_import(self) -> None:
         sources = {
             "threetears/evals/a.py": "def bare_at(v, p):\n    text = spell_at(v, p)\n    return text.strip()\n",
             "threetears/evals/b.py": "from threetears.evals.a import bare_at as at\n\ndef f(v):\n    return at(v, 1)\n",
@@ -1803,7 +1803,7 @@ class TestAWrapperIsAPrimitive:
             ("threetears/evals/d.py", "h", "bare_at()"),
         }
 
-    def test_a_wrapper_method_is_reached_through_self_and_by_a_name_no_other_method_holds(self):
+    def test_a_wrapper_method_is_reached_through_self_and_by_a_name_no_other_method_holds(self) -> None:
         source = (
             "class Ruler:\n"
             "    def figure(self, v):\n        return self.form.spell(v)\n"
@@ -1821,7 +1821,7 @@ class TestAWrapperIsAPrimitive:
             ("show", "figure()", "ruler.figure(v)"),
         ]
 
-    def test_a_builder_around_a_figure_or_a_document_of_lines_is_not_a_wrapper(self):
+    def test_a_builder_around_a_figure_or_a_document_of_lines_is_not_a_wrapper(self) -> None:
         """Were it one, so would every page builder and every caller of one be (most of this package)."""
         source = (
             "def cell(v):\n    return TableCell(text=spell_at(v, 1))\n\n"
@@ -1875,7 +1875,7 @@ class TestAWrapperIsAPrimitive:
         assert _python_sites("page.level(v)", primitives=primitives) == []
         assert _python_sites("_kept_inside(v)", primitives=primitives) == []
 
-    def test_a_page_s_forms_asked_by_measure_and_role_are_the_migrated_route(self):
+    def test_a_page_s_forms_asked_by_measure_and_role_are_the_migrated_route(self) -> None:
         """``PageForms``, its constructors, its methods and the values it hands out decide nothing at the call."""
         assert not _FORMS_CALLABLES & {"PageForms", "MeasureForm", "Printed", "of"}
         source = (
@@ -1944,7 +1944,7 @@ class TestASiteHandedThroughAHelperIsStillASite:
             ("row", "head()", "head(v)"),
         ]
 
-    def test_a_value_only_passed_through_decides_nothing(self):
+    def test_a_value_only_passed_through_decides_nothing(self) -> None:
         """The helper and every caller handing it a raw value or a name are no site; only the call that hands it a
         figure is one, beside them, so the helper itself is never taken for a primitive. Nor is a figure handed to a
         parameter the helper does not return."""
@@ -1964,7 +1964,7 @@ class TestASiteHandedThroughAHelperIsStillASite:
             ("head", "figure()", "figure(v)"),
         ]
 
-    def test_a_method_handing_a_figure_to_its_own_helper_is_a_wrapper(self):
+    def test_a_method_handing_a_figure_to_its_own_helper_is_a_wrapper(self) -> None:
         source = (
             "class Ruler:\n"
             "    def _joined(self, text, *, unit):\n        return f'{text} {unit}'\n"
@@ -1995,7 +1995,7 @@ class TestASiteHandedThroughAHelperIsStillASite:
             ("threetears/evals/caller.py", "level", "number_in()")
         ]
 
-    def test_the_package_s_own_with_unit_is_a_primitive(self):
+    def test_the_package_s_own_with_unit_is_a_primitive(self) -> None:
         """``with_unit`` hands ``number_in``'s figure to ``_joined``, so every call to it is a site, by its name and by
         derivation alike."""
         quantities = "threetears/evals/analysis/quantities.py"
@@ -2027,7 +2027,7 @@ class TestAPrimitiveHandedOnAsAValueIsASite:
     def test_a_table_or_a_name_of_a_primitive_is_a_site(self, source, expected):
         assert _forms(_python_sites(source)) == [expected]
 
-    def test_an_annotation_a_class_test_or_a_field_read_is_not(self):
+    def test_an_annotation_a_class_test_or_a_field_read_is_not(self) -> None:
         source = (
             "def f(form: MoneyForm, family, kind) -> MoneyForm:\n"
             "    assert isinstance(form, MoneyForm) and not issubclass(kind, (str, (MoneyForm, int)))\n"
@@ -2036,7 +2036,7 @@ class TestAPrimitiveHandedOnAsAValueIsASite:
         )
         assert _python_sites(source) == []
 
-    def test_a_local_named_like_a_primitive_or_a_field_read_of_one_is_not(self):
+    def test_a_local_named_like_a_primitive_or_a_field_read_of_one_is_not(self) -> None:
         """A parameter, an assignment or a loop's name is a value: handing it on, or a field read through it, hands
         on no primitive. The primitive by the same name, where nothing local shadows it, still is."""
         source = (
@@ -2056,7 +2056,7 @@ class TestAPrimitiveHandedOnAsAValueIsASite:
             ("m", "interval_level()", "interval_level"),
         ]
 
-    def test_a_class_test_still_sees_a_site_it_is_handed(self):
+    def test_a_class_test_still_sees_a_site_it_is_handed(self) -> None:
         """Only the class it names is read: a figure spelled inside the test, or a primitive handed to a call there,
         is a site as anywhere."""
         source = "ok = isinstance(format_number(v), str) and isinstance(apply(spell_at), (MoneyForm,))\n"
@@ -2081,16 +2081,16 @@ class TestAPrimitiveHandedOnAsAValueIsASite:
     def test_a_primitive_as_a_parameter_s_default_is_a_site(self, source, expected):
         assert _forms(_python_sites(source)) == [expected]
 
-    def test_a_primitive_returned_by_its_name_is_a_site_and_its_returner_is_a_factory(self):
+    def test_a_primitive_returned_by_its_name_is_a_site_and_its_returner_is_a_factory(self) -> None:
         """The returner hands the primitive on, so its own call decides nothing and is no site."""
         source = "def pick(kind):\n    return format_number\n\ndef use(v):\n    return pick('n')(v)\n"
         assert _forms(_python_sites(source)) == [("pick", "format_number()", "format_number")]
 
-    def test_a_default_or_a_return_of_anything_else_is_not(self):
+    def test_a_default_or_a_return_of_anything_else_is_not(self) -> None:
         source = "def f(v, places=PLACES, unit=config.unit):\n    return places\n"
         assert _python_sites(source) == []
 
-    def test_a_property_that_returns_a_form_is_a_site_where_self_reads_it(self):
+    def test_a_property_that_returns_a_form_is_a_site_where_self_reads_it(self) -> None:
         source = (
             "class Cell:\n"
             "    @property\n    def figure(self):\n        return spell_at(self.value, 1)\n"
@@ -2171,7 +2171,7 @@ class TestTheEngineRule:
     """In the trees whose imports never reach the analysis package a ``numbers`` primitive is the route; anything else
     that decides a form there is a site, as anywhere."""
 
-    def test_no_engine_module_reaches_the_analysis_package(self):
+    def test_no_engine_module_reaches_the_analysis_package(self) -> None:
         """The rule holds only while no page's forms are reachable there: an engine module whose imports, followed
         through the package to the fixed point, reach the analysis package is above the line, and its spellings
         route through ``PageForms`` like any other. A tree joins the engine whole or not at all."""
@@ -2181,7 +2181,7 @@ class TestTheEngineRule:
         routes = {module: route for module in engine if (route := _route_to_analysis(graph, module))}
         assert routes == {}, "\n".join(" -> ".join(route) for route in routes.values())
 
-    def test_a_route_to_the_analysis_package_is_followed_through_every_import(self):
+    def test_a_route_to_the_analysis_package_is_followed_through_every_import(self) -> None:
         graph = {
             "threetears.evals.run.launch": ["threetears.evals.testing"],
             "threetears.evals.testing": ["threetears.evals.testing.jobs"],
@@ -2223,7 +2223,7 @@ class TestTheEngineRule:
             "threetears.evals.analysis",
         ]
 
-    def test_the_engine_scope_only_narrows(self):
+    def test_the_engine_scope_only_narrows(self) -> None:
         """Six trees at most, each a top-level package of its own: a tree joins only by an owner's decision, which
         raises the ceiling in the same change."""
         assert len(_ENGINE_TREES) <= _ENGINE_TREES_CEILING == 6
@@ -2262,7 +2262,7 @@ class TestTheEngineRule:
     def test_what_is_not_the_analysis_package_is_not_taken_for_it(self, source):
         assert _imports_analysis("threetears/evals/kernel/surface.py", source) == []
 
-    def test_a_numbers_primitive_is_the_route_in_the_engine_and_a_site_above_it(self):
+    def test_a_numbers_primitive_is_the_route_in_the_engine_and_a_site_above_it(self) -> None:
         """Called, handed on, a default or a method of the rule's: none is a site in the engine, and a function
         returning one is no wrapper there. The same text above the line is a site at every one."""
         body = (
@@ -2284,7 +2284,7 @@ class TestTheEngineRule:
             ("ends", "spell()"),
         ]
 
-    def test_a_spec_round_quantize_and_log10_stay_sites_in_the_engine(self):
+    def test_a_spec_round_quantize_and_log10_stay_sites_in_the_engine(self) -> None:
         source = (
             "def waited(s):\n    return f'{s:.1f} s'\n\n"
             "def message(s):\n    return 'after ' + waited(s)\n\n"
@@ -2299,7 +2299,7 @@ class TestTheEngineRule:
             ("places", "round()", "round(v, 2)"),
         ]
 
-    def test_a_page_module_calling_an_engine_helper_is_a_site(self):
+    def test_a_page_module_calling_an_engine_helper_is_a_site(self) -> None:
         """``numbers`` is the route only for a call made in the engine: an engine helper that returns a primitive's
         text is a wrapper to a page module, so a page cannot borrow the engine's route to decide a figure. Inside the
         engine, its own callers stay no site."""
@@ -2414,11 +2414,11 @@ class TestTheWalkSeesEveryKitForm:
         """A literal, a default beside the data's field, or anything but the field itself is the kit's choice."""
         assert _forms(_js_sites(source)) == [("a", "namedFmt", expected)]
 
-    def test_a_call_to_an_owner_outside_the_owners_is_still_a_site(self):
+    def test_a_call_to_an_owner_outside_the_owners_is_still_a_site(self) -> None:
         source = "const kShort=(v,d)=>(+v).toFixed(d);\nfunction a(v){return kShort(v,1)+' ms';}\n"
         assert _forms(_js_sites(source)) == [("a", "kShort", "kShort(v,1)")]
 
-    def test_a_function_returning_a_kit_site_makes_its_callers_sites(self):
+    def test_a_function_returning_a_kit_site_makes_its_callers_sites(self) -> None:
         source = (
             "const kAt=v=>v.toFixed(1);\n"
             "function label(v){return kAt(v)+' ms';}\n"
@@ -2434,6 +2434,6 @@ class TestTheWalkSeesEveryKitForm:
             ("clean", "toFixed()", ".toFixed(10)"),
         ]
 
-    def test_a_division_is_not_read_as_a_regex(self):
+    def test_a_division_is_not_read_as_a_regex(self) -> None:
         source = "function a(v,w){return v/2+w/3+v.toFixed(1);}"
         assert _forms(_js_sites(source)) == [("a", "toFixed()", ".toFixed(1)")]

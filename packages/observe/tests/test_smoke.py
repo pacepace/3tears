@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-def test_package_imports():
+def test_package_imports() -> None:
     """All public symbols import without error."""
     from threetears.observe import (
         ContextFormatter,
@@ -28,7 +28,7 @@ def test_package_imports():
     assert ThreeTearsLogger is not None
 
 
-def test_setup_imports():
+def test_setup_imports() -> None:
     """Setup module imports without requiring OTel SDK."""
     from threetears.observe.setup import (
         TelemetryConfig,
@@ -43,7 +43,7 @@ def test_setup_imports():
     assert TelemetryConfig is not None
 
 
-def test_version():
+def test_version() -> None:
     """Package version is set."""
     from threetears.observe import __version__
 

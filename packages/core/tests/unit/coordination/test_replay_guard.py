@@ -61,7 +61,7 @@ def _guard(client: object, *, bucket_name: str = "pop_nonces", ttl_seconds: int 
     :return: the guard
     :rtype: ReplayGuard
     """
-    return ReplayGuard(client, bucket_name=bucket_name, ttl_seconds=ttl_seconds, verifier_future_tolerance=_SKEW)  # type: ignore[arg-type]
+    return ReplayGuard(client, bucket_name=bucket_name, ttl_seconds=ttl_seconds, verifier_future_tolerance=_SKEW)
 
 
 @pytest.fixture
@@ -425,7 +425,7 @@ class TestRefusingUntil:
             bucket_name="pop_nonces",
             ttl_seconds=120,
             verifier_future_tolerance=_SKEW,
-            anchor=_StubAnchor(created),  # type: ignore[arg-type]
+            anchor=_StubAnchor(created),
         )
         assert await guard.refusing_until() is None
         assert await guard.record_unique("first-run", issued_at=created) is True
@@ -440,7 +440,7 @@ class TestRefusingUntil:
             bucket_name="pop_nonces",
             ttl_seconds=120,
             verifier_future_tolerance=_SKEW,
-            anchor=_StubAnchor(created - timedelta(days=1)),  # type: ignore[arg-type]
+            anchor=_StubAnchor(created - timedelta(days=1)),
         )
         assert await guard.refusing_until() == created + _REACH
 
@@ -494,7 +494,7 @@ class TestReplayGuardWithAnAnchor:
         bucket.wipe(date_created=created)
         anchor = _StubAnchor()
         guard = ReplayGuard(
-            client,  # type: ignore[arg-type]
+            client,
             bucket_name="pop_nonces",
             ttl_seconds=120,
             verifier_future_tolerance=_SKEW,
@@ -510,7 +510,7 @@ class TestReplayGuardWithAnAnchor:
         bucket.wipe(date_created=created)
         anchor = _StubAnchor(created - timedelta(hours=3))
         guard = ReplayGuard(
-            client,  # type: ignore[arg-type]
+            client,
             bucket_name="pop_nonces",
             ttl_seconds=120,
             verifier_future_tolerance=_SKEW,
@@ -527,7 +527,7 @@ class TestReplayGuardWithAnAnchor:
         bucket.wipe(date_created=created)
         anchor = _StubAnchor(fails=KvError("anchor unreachable"))
         guard = ReplayGuard(
-            client,  # type: ignore[arg-type]
+            client,
             bucket_name="pop_nonces",
             ttl_seconds=120,
             verifier_future_tolerance=_SKEW,
@@ -543,7 +543,7 @@ class TestReplayGuardWithAnAnchor:
         created = datetime.now(UTC)
         bucket.wipe(date_created=created)
         guard = ReplayGuard(
-            client,  # type: ignore[arg-type]
+            client,
             bucket_name="pop_nonces",
             ttl_seconds=120,
             verifier_future_tolerance=_SKEW,
@@ -563,7 +563,7 @@ class TestReplayGuardWithAnAnchor:
         bucket.wipe(date_created=created)
         anchor = _StubAnchor()
         guard = ReplayGuard(
-            client,  # type: ignore[arg-type]
+            client,
             bucket_name="pop_nonces",
             ttl_seconds=120,
             verifier_future_tolerance=_SKEW,
@@ -619,7 +619,7 @@ def _anchored_after_a_wipe(client: FakeNatsClient, service_started: datetime) ->
     :rtype: ReplayGuard
     """
     return ReplayGuard(
-        client,  # type: ignore[arg-type]
+        client,
         bucket_name="login_nonces",
         ttl_seconds=120,
         verifier_future_tolerance=_SKEW,
@@ -775,11 +775,11 @@ def _anchored(client: FakeNatsClient, anchor: object) -> ReplayGuard:
     :rtype: ReplayGuard
     """
     return ReplayGuard(
-        client,  # type: ignore[arg-type]
+        client,
         bucket_name="login_nonces",
         ttl_seconds=120,
         verifier_future_tolerance=_SKEW,
-        anchor=anchor,  # type: ignore[arg-type]
+        anchor=anchor,
     )
 
 
@@ -1063,7 +1063,7 @@ class TestOwnerScopedKeys:
         import hashlib
 
         guard = ReplayGuard(
-            client,  # type: ignore[arg-type]
+            client,
             bucket_name="proxy_assertion_nonces",
             ttl_seconds=120,
             verifier_future_tolerance=_SKEW,
@@ -1078,7 +1078,7 @@ class TestOwnerScopedKeys:
     @pytest.mark.asyncio
     async def test_a_replay_is_still_refused_under_the_scope(self, client: FakeNatsClient) -> None:
         guard = ReplayGuard(
-            client,  # type: ignore[arg-type]
+            client,
             bucket_name="proxy_assertion_nonces",
             ttl_seconds=120,
             verifier_future_tolerance=_SKEW,
@@ -1090,14 +1090,14 @@ class TestOwnerScopedKeys:
     @pytest.mark.asyncio
     async def test_two_owners_keep_two_ledgers_in_one_bucket(self, client: FakeNatsClient) -> None:
         mine = ReplayGuard(
-            client,  # type: ignore[arg-type]
+            client,
             bucket_name="proxy_assertion_nonces",
             ttl_seconds=120,
             verifier_future_tolerance=_SKEW,
             key_scope=self._SCOPE,
         )
         theirs = ReplayGuard(
-            client,  # type: ignore[arg-type]
+            client,
             bucket_name="proxy_assertion_nonces",
             ttl_seconds=120,
             verifier_future_tolerance=_SKEW,
@@ -1110,7 +1110,7 @@ class TestOwnerScopedKeys:
     def test_a_scope_that_is_not_one_literal_token_is_refused(self, scope: str) -> None:
         with pytest.raises(ValueError, match="key_scope"):
             ReplayGuard(
-                FakeNatsClient(),  # type: ignore[arg-type]
+                FakeNatsClient(),
                 bucket_name="proxy_assertion_nonces",
                 ttl_seconds=120,
                 verifier_future_tolerance=_SKEW,
@@ -1132,7 +1132,7 @@ class TestABindOnlyGuardLeavesTheReconnectPathAlone:
         client = FakeNatsClient(declared_buckets=("proxy_assertion_nonces",))
         recorded = _RecordingHooks(client, monkeypatch)
         guard = ReplayGuard(
-            client,  # type: ignore[arg-type]
+            client,
             bucket_name="proxy_assertion_nonces",
             ttl_seconds=120,
             verifier_future_tolerance=_SKEW,
@@ -1199,7 +1199,7 @@ class TestTheGuardOwnsItsBucket:
             _guard(_OpensOnly())
         # a bind-only guard needs only the open
         ReplayGuard(
-            _OpensOnly(),  # type: ignore[arg-type]
+            _OpensOnly(),
             bucket_name="b",
             ttl_seconds=60,
             verifier_future_tolerance=_SKEW,

@@ -567,7 +567,7 @@ class TestAuthzWiringInvariant:
                 router=EchoRouter(),
                 auth_validator=valid_auth,
                 acl_cache=acl_cache,
-                ns_resolver=ns_resolver,  # type: ignore[arg-type]
+                ns_resolver=ns_resolver,
             )
 
     def test_both_absent_is_allowed_chat_config(self) -> None:
@@ -584,7 +584,7 @@ class TestAuthzWiringInvariant:
             router=EchoRouter(),
             auth_validator=valid_auth,
             acl_cache=object(),  # type: ignore[arg-type]
-            ns_resolver=_AllowAuthorizer(),  # type: ignore[arg-type]
+            ns_resolver=_AllowAuthorizer(),
         )
 
 
@@ -680,7 +680,7 @@ class TestResumeFrame:
         handler = WebSocketHandler(
             router=EchoRouter(),
             auth_validator=valid_auth,
-            replay_source=_replay,  # type: ignore[arg-type]
+            replay_source=_replay,
         )
         room = "cust:story:main:scene.md"
         resume = json.dumps({"type": "resume", "room": room, "seq": 7})
@@ -1057,7 +1057,7 @@ class TestReplaySendSurvivesDeadSocket:
         handler = WebSocketHandler(
             router=EchoRouter(),
             auth_validator=valid_auth,
-            replay_source=_replay,  # type: ignore[arg-type]
+            replay_source=_replay,
         )
         room = "cust:story:main:scene.md"
         resume = json.dumps({"type": "resume", "room": room, "seq": 7})

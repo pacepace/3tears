@@ -186,7 +186,7 @@ def _judge_host() -> LaunchHost:
         profile=dataclasses.replace(
             profile, kinds=(*profile.kinds, dataclasses.replace(JUDGE_KIND_CONTRACT, seats=None))
         ),
-        clients=lambda _role, _model, *, temperature=None: client,  # type: ignore[arg-type, return-value]
+        clients=lambda _role, _model, *, temperature=None: client,  # type: ignore[arg-type]
         settings=lambda: TOYHOST_LAUNCH_SETTINGS,
     )
     holder: list[LaunchHost] = []

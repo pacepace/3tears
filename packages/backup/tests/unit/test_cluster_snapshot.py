@@ -126,13 +126,13 @@ def dump_argv() -> Iterator[list[list[str]]]:
 
     original_drivers = drivers_module.stream_stdout
     original_cluster = cluster_module.stream_stdout
-    drivers_module.stream_stdout = fake_stream_stdout  # type: ignore[assignment]
-    cluster_module.stream_stdout = fake_stream_stdout  # type: ignore[assignment]
+    drivers_module.stream_stdout = fake_stream_stdout
+    cluster_module.stream_stdout = fake_stream_stdout
     try:
         yield captured
     finally:
-        drivers_module.stream_stdout = original_drivers  # type: ignore[assignment]
-        cluster_module.stream_stdout = original_cluster  # type: ignore[assignment]
+        drivers_module.stream_stdout = original_drivers
+        cluster_module.stream_stdout = original_cluster
 
 
 async def _run_backup(tmp_path: Any, connection: _RecordingConnection) -> BackupManifest:

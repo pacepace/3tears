@@ -419,7 +419,7 @@ async def test_saved_edits_survive_the_writer_and_the_next_one_commits_them(
     await tail_a.save(a, payload=line("first"), op_id="op-1")
     committed = await b.commit_intent("stories/one", "edit")  # forwarded to the writer
     assert committed.sha is not None and committed.pushed
-    assert committed_seq_from(a.git.last_commit()[2]) == 1  # type: ignore[index]
+    assert committed_seq_from(a.git.last_commit()[2]) == 1
 
     await tail_a.save(a, payload=line("second"), op_id="op-2")  # saved, never committed
     assert origin_head(origin) == committed.sha
@@ -432,7 +432,7 @@ async def test_saved_edits_survive_the_writer_and_the_next_one_commits_them(
 
     result = await b.commit_intent("stories/one", "edit")
     assert result.sha is not None and result.pushed and origin_head(origin) == result.sha
-    assert committed_seq_from(b.git.last_commit()[2]) == 2  # type: ignore[index]
+    assert committed_seq_from(b.git.last_commit()[2]) == 2
 
 
 async def test_a_products_own_operation_runs_on_the_writer_or_here_when_nobody_is(

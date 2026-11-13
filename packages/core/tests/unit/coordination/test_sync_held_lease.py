@@ -36,7 +36,7 @@ def _fresh_bridge() -> Iterator[None]:
 
 
 def _lease(client: FakeNatsClient, pod: str) -> KVLease:
-    return KVLease(nats_client=client, bucket_name=_BUCKET, pod_id=pod)  # type: ignore[arg-type]
+    return KVLease(nats_client=client, bucket_name=_BUCKET, pod_id=pod)
 
 
 def _entry(client: FakeNatsClient, key: str) -> bytes | None:

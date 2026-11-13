@@ -15,24 +15,24 @@ from threetears.evals.kernel.provider import extract_json
 
 
 class TestDirectParse:
-    def test_plain_json(self):
+    def test_plain_json(self) -> None:
         assert extract_json('{"a": 1}') == {"a": 1}
 
-    def test_leading_and_trailing_whitespace(self):
+    def test_leading_and_trailing_whitespace(self) -> None:
         assert extract_json('\n  {"a": 1}\t\n') == {"a": 1}
 
-    def test_nested_object(self):
+    def test_nested_object(self) -> None:
         assert extract_json('{"a": {"b": [1, 2]}}') == {"a": {"b": [1, 2]}}
 
 
 class TestFenceStripping:
-    def test_markdown_fence_with_lang(self):
+    def test_markdown_fence_with_lang(self) -> None:
         assert extract_json('```json\n{"a": 1}\n```') == {"a": 1}
 
-    def test_code_fence_no_lang(self):
+    def test_code_fence_no_lang(self) -> None:
         assert extract_json('```\n{"a": 1}\n```') == {"a": 1}
 
-    def test_fence_with_prose_around_it(self):
+    def test_fence_with_prose_around_it(self) -> None:
         text = 'Here you go:\n```json\n{"a": 1}\n```\nHope that helps!'
         assert extract_json(text) == {"a": 1}
 
@@ -46,19 +46,19 @@ class TestRawDecodeStrategy:
     fail — which is why that slice is subsumed rather than kept as a third tier.
     """
 
-    def test_prose_on_both_sides(self):
+    def test_prose_on_both_sides(self) -> None:
         assert extract_json('here is the result: {"a": 1} (trailing commentary)') == {"a": 1}
 
-    def test_object_followed_by_a_second_object(self):
+    def test_object_followed_by_a_second_object(self) -> None:
         assert extract_json('{"a": 1} and then {"b": 2}') == {"a": 1}
 
-    def test_object_followed_by_prose_containing_a_brace(self):
+    def test_object_followed_by_prose_containing_a_brace(self) -> None:
         assert extract_json('{"a": 1}\n\nNote: use {} for an empty dict.') == {"a": 1}
 
-    def test_trailing_unbalanced_brace(self):
+    def test_trailing_unbalanced_brace(self) -> None:
         assert extract_json('{"a": 1}}') == {"a": 1}
 
-    def test_object_nested_in_a_top_level_array(self):
+    def test_object_nested_in_a_top_level_array(self) -> None:
         # The document is an array, so the direct parse yields a non-dict and falls
         # through; ``raw_decode`` starts at the first brace and finds the object.
         # Both pre-reconciliation parsers behaved this way.
@@ -66,30 +66,30 @@ class TestRawDecodeStrategy:
 
 
 class TestRejections:
-    def test_no_object_raises(self):
+    def test_no_object_raises(self) -> None:
         with pytest.raises(ValueError, match="No valid JSON object"):
             extract_json("plain text, no JSON")
 
-    def test_top_level_array_raises(self):
+    def test_top_level_array_raises(self) -> None:
         # Top-level arrays are not dicts — callers require a JSON object.
         with pytest.raises(ValueError, match="No valid JSON object"):
             extract_json("[1, 2, 3]")
 
-    def test_top_level_scalar_raises(self):
+    def test_top_level_scalar_raises(self) -> None:
         with pytest.raises(ValueError, match="No valid JSON object"):
             extract_json("42")
 
-    def test_empty_string_raises(self):
+    def test_empty_string_raises(self) -> None:
         with pytest.raises(ValueError, match="No valid JSON object"):
             extract_json("")
 
-    def test_message_reports_the_original_length_not_the_stripped_one(self):
+    def test_message_reports_the_original_length_not_the_stripped_one(self) -> None:
         # The analysis generator propagates this message verbatim, so the number has
         # to describe what the model actually returned.
         with pytest.raises(ValueError, match=r"\(20 chars\)"):
             extract_json("   not json at all  ")
 
-    def test_message_names_no_component(self):
+    def test_message_names_no_component(self) -> None:
         # It used to say "judge response" and was raised from six non-judge callers,
         # which is how a prod analysis failure came back naming a component that had
         # not run. The noun has to fit every caller, so it names none.

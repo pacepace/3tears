@@ -70,7 +70,7 @@ def _terminations(storage: EvalStorage, run: EvalRun) -> set[str]:
     return {result.termination for result in storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)}
 
 
-async def test_a_launch_deadline_above_the_kinds_lets_a_slow_cell_finish_and_is_recorded():
+async def test_a_launch_deadline_above_the_kinds_lets_a_slow_cell_finish_and_is_recorded() -> None:
     host, storage = off_loop(_launching, max_cell_timeout_s=5.0)
 
     short = await _launch(host, storage)
@@ -82,13 +82,13 @@ async def test_a_launch_deadline_above_the_kinds_lets_a_slow_cell_finish_and_is_
     assert (longer.cell_timeout_s, longer.cell_timeout_s_origin) == (2.0, "launch")
 
 
-async def test_a_launch_without_a_deadline_on_a_kind_with_none_records_the_engine_default():
+async def test_a_launch_without_a_deadline_on_a_kind_with_none_records_the_engine_default() -> None:
     host, storage = off_loop(_launching, kind_deadline_s=None)
     run = await _launch(host, storage)
     assert (run.cell_timeout_s, run.cell_timeout_s_origin) == (DEFAULT_CELL_TIMEOUT_S, "default")
 
 
-async def test_a_deadline_above_the_hosts_ceiling_is_refused_before_anything_is_built():
+async def test_a_deadline_above_the_hosts_ceiling_is_refused_before_anything_is_built() -> None:
     host, storage = off_loop(_launching, max_cell_timeout_s=5.0)
 
     with pytest.raises(ValidationFailedError, match=r"cell_timeout_s=10 is above the host's ceiling of 5s"):
@@ -96,7 +96,7 @@ async def test_a_deadline_above_the_hosts_ceiling_is_refused_before_anything_is_
     assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
 
 
-async def test_a_host_declaring_no_ceiling_lets_a_launch_only_lower_its_kinds_deadline():
+async def test_a_host_declaring_no_ceiling_lets_a_launch_only_lower_its_kinds_deadline() -> None:
     host, storage = off_loop(_launching, max_cell_timeout_s=None)
 
     with pytest.raises(ValidationFailedError, match=r"above the kind's ceiling of 0.05s"):
@@ -106,13 +106,13 @@ async def test_a_host_declaring_no_ceiling_lets_a_launch_only_lower_its_kinds_de
 
 
 @pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
-async def test_a_deadline_no_cell_could_run_under_is_refused(bad: float):
+async def test_a_deadline_no_cell_could_run_under_is_refused(bad: float) -> None:
     host, storage = off_loop(_launching, max_cell_timeout_s=5.0)
     with pytest.raises(ValidationFailedError, match="cell_timeout_s must be a finite number"):
         await _launch(host, storage, cell_timeout_s=bad)
 
 
-async def test_the_operation_and_its_estimate_carry_the_deadline():
+async def test_the_operation_and_its_estimate_carry_the_deadline() -> None:
     host, storage = off_loop(_launching, max_cell_timeout_s=5.0)
     ops = OpsHost(launch=host)
     arguments = LaunchArguments(
@@ -133,7 +133,7 @@ async def test_the_operation_and_its_estimate_carry_the_deadline():
     assert stored is not None and (stored.cell_timeout_s, stored.cell_timeout_s_origin) == (2.0, "launch")
 
 
-def test_a_deadline_and_its_origin_are_recorded_together():
+def test_a_deadline_and_its_origin_are_recorded_together() -> None:
     with pytest.raises(ValueError, match="recorded together or not at all"):
         make_eval_run(cell_timeout_s=3.0)
     run = make_eval_run()

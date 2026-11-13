@@ -100,7 +100,7 @@ def _extract_class_level_input_schema(class_node: ast.ClassDef) -> dict | None:
             value_node = stmt.value
         if target_name == "_INPUT_SCHEMA" and value_node is not None:
             try:
-                return ast.literal_eval(value_node)  # type: ignore[arg-type]
+                return ast.literal_eval(value_node)
             except ValueError, SyntaxError:
                 return None
     return None
@@ -119,7 +119,7 @@ def _extract_module_level_input_schema(tree: ast.Module) -> dict | None:
             value_node = stmt.value
         if target_name == "_INPUT_SCHEMA" and value_node is not None:
             try:
-                return ast.literal_eval(value_node)  # type: ignore[arg-type]
+                return ast.literal_eval(value_node)
             except ValueError, SyntaxError:
                 return None
     return None

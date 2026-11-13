@@ -223,24 +223,24 @@ async def _verify(
 
 
 class TestVerifyCandidatePage:
-    async def test_real_table_verifies_as_nodriver(self):
+    async def test_real_table_verifies_as_nodriver(self) -> None:
         result = await _verify(_VERIFYING_PAGE)
         assert result.verified is True
         assert result.driver_backend == "nodriver"
         assert "table" in result.verification_note
 
-    async def test_single_row_table_does_not_verify(self):
+    async def test_single_row_table_does_not_verify(self) -> None:
         result = await _verify(b"<html><body><table><tr><td>only one row</td></tr></table></body></html>")
         assert result.verified is False
         assert result.driver_backend == "nodriver"
 
-    async def test_document_link_verifies_as_document(self):
+    async def test_document_link_verifies_as_document(self) -> None:
         result = await _verify(b'<html><body><a href="/notices/2026-warn.pdf">WARN notices</a></body></html>')
         assert result.verified is True
         assert result.driver_backend == "document"
         assert ".pdf" in result.verification_note
 
-    async def test_table_wins_over_an_incidental_document_link_on_the_same_page(self):
+    async def test_table_wins_over_an_incidental_document_link_on_the_same_page(self) -> None:
         # Live-discovered (Maryland's real WARN page): a page can carry both a real notices
         # table AND an unrelated PDF link elsewhere (e.g. federal WARN regulations reference).
         # The table is the actual data source and must win.
@@ -255,23 +255,23 @@ class TestVerifyCandidatePage:
         assert result.driver_backend == "nodriver"
         assert "table" in result.verification_note
 
-    async def test_json_list_response_verifies_as_api(self):
+    async def test_json_list_response_verifies_as_api(self) -> None:
         body = json.dumps({"records": [{"employer": "Acme"}, {"employer": "Beta"}]}).encode()
         result = await _verify(body, {"content-type": "application/json"})
         assert result.verified is True
         assert result.driver_backend == "api"
 
-    async def test_json_object_with_no_list_does_not_verify_as_api(self):
+    async def test_json_object_with_no_list_does_not_verify_as_api(self) -> None:
         result = await _verify(json.dumps({"status": "ok"}).encode(), {"content-type": "application/json"})
         assert result.verified is False
 
-    async def test_no_structure_found_does_not_verify(self):
+    async def test_no_structure_found_does_not_verify(self) -> None:
         result = await _verify(_UNSTRUCTURED_PAGE)
         assert result.verified is False
         assert result.driver_backend == "nodriver"
         assert "no table" in result.verification_note.lower()
 
-    async def test_fetch_failure_degrades_to_unverified_not_a_crash(self):
+    async def test_fetch_failure_degrades_to_unverified_not_a_crash(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
@@ -280,7 +280,7 @@ class TestVerifyCandidatePage:
         assert result.driver_backend == "nodriver"
         assert "could not fetch" in result.verification_note
 
-    async def test_a_url_httpx_cannot_parse_degrades_to_unverified(self):
+    async def test_a_url_httpx_cannot_parse_degrades_to_unverified(self) -> None:
         # a real URL httpx refuses while building the request
         result = await _find(found=_found("http://[::1/"), verify_client=_serving(_VERIFYING_PAGE))
         assert result.verified is False
@@ -289,13 +289,13 @@ class TestVerifyCandidatePage:
         assert "InvalidURL" in result.verification_note
         assert "Invalid port" not in result.verification_note
 
-    async def test_a_host_idna_refuses_degrades_to_unverified(self):
+    async def test_a_host_idna_refuses_degrades_to_unverified(self) -> None:
         result = await _find(found=_found("http://xn--ab/"), verify_client=_serving(_VERIFYING_PAGE))
         assert result.verified is False
         assert "could not fetch" in result.verification_note
         assert "InvalidCodepoint" in result.verification_note
 
-    async def test_a_redirect_to_a_host_idna_refuses_degrades_to_unverified(self):
+    async def test_a_redirect_to_a_host_idna_refuses_degrades_to_unverified(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(302, headers={"location": "http://xn--ab/"})
 
@@ -304,7 +304,7 @@ class TestVerifyCandidatePage:
         assert result.verified is False
         assert "InvalidCodepoint" in result.verification_note
 
-    async def test_a_port_past_65535_degrades_to_unverified(self):
+    async def test_a_port_past_65535_degrades_to_unverified(self) -> None:
         # the default transport's connect refuses the port before any socket opens, inside a task
         # group, so the failure is ExceptionGroup[OverflowError]
         async with httpx.AsyncClient() as client:
@@ -313,7 +313,7 @@ class TestVerifyCandidatePage:
         assert "could not fetch" in result.verification_note
         assert "ExceptionGroup" in result.verification_note
 
-    async def test_a_failure_group_carrying_a_bug_propagates_whole(self):
+    async def test_a_failure_group_carrying_a_bug_propagates_whole(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             raise ExceptionGroup("connect", [OverflowError("port"), TypeError("a bug beside it")])
 
@@ -321,7 +321,7 @@ class TestVerifyCandidatePage:
             await _find(verify_client=_client_for(handler))
         assert excinfo.group_contains(TypeError, match="a bug beside it")
 
-    async def test_a_tls_failure_while_reading_the_body_degrades_to_unverified(self):
+    async def test_a_tls_failure_while_reading_the_body_degrades_to_unverified(self) -> None:
         class _FailingBody(httpx.AsyncByteStream):
             async def __aiter__(self) -> AsyncIterator[bytes]:
                 yield b"<html>"
@@ -335,7 +335,7 @@ class TestVerifyCandidatePage:
         assert "SSLError" in result.verification_note
         assert "bad record mac" not in result.verification_note
 
-    async def test_a_bug_in_the_fetch_propagates_rather_than_reading_as_unverified(self):
+    async def test_a_bug_in_the_fetch_propagates_rather_than_reading_as_unverified(self) -> None:
         # only httpx's own failures are an unfetchable page; a TypeError is a bug, and used to be
         # reported as "could not fetch candidate page".
         def handler(request: httpx.Request) -> httpx.Response:
@@ -344,7 +344,7 @@ class TestVerifyCandidatePage:
         with pytest.raises(TypeError, match="a bug in the transport"):
             await _find(verify_client=_client_for(handler))
 
-    async def test_no_injected_client_constructs_and_closes_its_own(self):
+    async def test_no_injected_client_constructs_and_closes_its_own(self) -> None:
         owned_client = _serving(b"<html><body><p>none</p></body></html>")
         with patch("threetears.scrape.page_finder.httpx.AsyncClient", return_value=owned_client) as ctor:
             result = await _find(verify_client=None)
@@ -353,7 +353,7 @@ class TestVerifyCandidatePage:
         assert owned_client.is_closed
         assert result.verified is False
 
-    async def test_an_injected_client_is_left_open_for_its_owner(self):
+    async def test_an_injected_client_is_left_open_for_its_owner(self) -> None:
         client = _serving(_VERIFYING_PAGE)
         result = await _find(verify_client=client)
         assert result.verified is True
@@ -366,7 +366,7 @@ class TestVerifyCandidatePage:
 
 
 class TestExtractSearchQueries:
-    async def test_pulls_query_args_from_web_search_calls_only(self):
+    async def test_pulls_query_args_from_web_search_calls_only(self) -> None:
         # "threetears.web_search" is the ACTUAL name ToolExecutor records (WebSearchTool.mcp_name()),
         # not the bare "web_search" -- using the real name here is the regression test for the bug
         # Critic caught: the original filter hardcoded the bare string and never matched in production.
@@ -378,13 +378,13 @@ class TestExtractSearchQueries:
         result = await _find(tool_calls_made=calls)
         assert result.search_queries_tried == ["Ohio WARN notices", "Ohio layoff notices"]
 
-    async def test_bare_web_search_name_does_not_match_the_real_bound_name(self):
+    async def test_bare_web_search_name_does_not_match_the_real_bound_name(self) -> None:
         # Regression test: a call recorded under the bare "web_search" string (what the original
         # bug hardcoded) must NOT match when the real bound name is "threetears.web_search".
         result = await _find(tool_calls_made=[{"name": "web_search", "args": {"query": "should not match"}}])
         assert result.search_queries_tried == []
 
-    async def test_no_search_calls_returns_empty(self):
+    async def test_no_search_calls_returns_empty(self) -> None:
         result = await _find(tool_calls_made=[{"name": "threetears.web_fetch", "args": {"url": "x"}}])
         assert result.search_queries_tried == []
 
@@ -407,7 +407,7 @@ def _text_response(text: str) -> SimpleNamespace:
 
 
 class TestFindTargetPage:
-    async def test_converged_and_verified_candidate(self):
+    async def test_converged_and_verified_candidate(self) -> None:
         loop_model, _ = _fake_tool_chat_model(_text_response("https://example.gov/warn is the page."))
         found = _found(guess="nodriver", summary="the real WARN page")
         with (
@@ -427,7 +427,7 @@ class TestFindTargetPage:
         assert result.verified is True
         assert result.turns_used == 1
 
-    async def test_verification_fails_falls_back_to_agents_verifiable_guess(self):
+    async def test_verification_fails_falls_back_to_agents_verifiable_guess(self) -> None:
         loop_model, _ = _fake_tool_chat_model(_text_response("https://example.gov/notices.pdf is the page."))
         found = _found("https://example.gov/notices.pdf", guess="document", summary="a PDF")
         with (
@@ -444,7 +444,7 @@ class TestFindTargetPage:
         assert result.verified is False
         assert result.driver_backend == "document"  # agent's own guess is a verifiable backend, so it's used
 
-    async def test_verification_fails_and_guess_unverifiable_defaults_to_nodriver(self):
+    async def test_verification_fails_and_guess_unverifiable_defaults_to_nodriver(self) -> None:
         loop_model, _ = _fake_tool_chat_model(_text_response("https://example.gov/dashboard is the page."))
         found = _found("https://example.gov/dashboard", guess="camoufox", summary="a JS dashboard")
         with (
@@ -461,7 +461,7 @@ class TestFindTargetPage:
         assert result.verified is False
         assert result.driver_backend == "nodriver"  # camoufox is never guessable -- falls back
 
-    async def test_coercion_failure_degrades_without_crashing(self):
+    async def test_coercion_failure_degrades_without_crashing(self) -> None:
         loop_model, _ = _fake_tool_chat_model(_text_response("I couldn't find a clear answer."))
         with (
             patch("threetears.scrape.page_finder.create_chat_model", return_value=loop_model),
@@ -476,7 +476,7 @@ class TestFindTargetPage:
         # The note names the failure, so it is not read as "the agent named no page".
         assert "RuntimeError: boom" in result.verification_note
 
-    async def test_turn_exhaustion_with_no_usable_output_returns_honest_result(self):
+    async def test_turn_exhaustion_with_no_usable_output_returns_honest_result(self) -> None:
         # ToolExecutor sets error="max rounds exhausted" only when at least one tool call was
         # made; simulate that shape directly rather than re-driving the real round loop (already
         # covered by packages/agent/tools/tests/test_executor.py -- not this module's job to retest).
@@ -508,14 +508,14 @@ class TestFindTargetPage:
 
 
 class TestReadSearchStructure:
-    async def test_reads_the_typed_projection_off_a_tool_message_artifact(self):
+    async def test_reads_the_typed_projection_off_a_tool_message_artifact(self) -> None:
         result = await _find(
             HumanMessage(content="find it"), _search_tool_message(_candidate("https://example.gov/warn"))
         )
 
         assert [c.identity for c in result.candidates_seen] == ["https://example.gov/warn"]
 
-    async def test_web_fetch_structure_is_not_read_as_a_search_result(self):
+    async def test_web_fetch_structure_is_not_read_as_a_search_result(self) -> None:
         # web_fetch writes its own projection under the SAME metadata key, so an
         # unfiltered scan would report a fetched page as a candidate the search
         # returned. The bound-name filter is the whole defence.
@@ -523,19 +523,19 @@ class TestReadSearchStructure:
 
         assert result.candidates_seen == ()
 
-    async def test_bare_tool_name_does_not_match_the_real_bound_name(self):
+    async def test_bare_tool_name_does_not_match_the_real_bound_name(self) -> None:
         # The same name-grain bug the search-query extraction documents, one layer up: the
         # bound name is "threetears.web_search", so a message under the bare name is not it.
         result = await _find(_search_tool_message(_candidate("https://example.gov/a"), name="web_search"))
 
         assert result.candidates_seen == ()
 
-    async def test_a_message_with_no_artifact_is_skipped(self):
+    async def test_a_message_with_no_artifact_is_skipped(self) -> None:
         result = await _find(ToolMessage(content="plain prose", tool_call_id="tc-1", name=_SEARCH_TOOL))
 
         assert result.candidates_seen == ()
 
-    async def test_a_schema_version_newer_than_this_reader_degrades_instead_of_raising(self):
+    async def test_a_schema_version_newer_than_this_reader_degrades_instead_of_raising(self) -> None:
         # from_metadata refuses a newer schema loudly (D13). find_target_page
         # promises never to raise, so here that refusal must become a skip.
         payload = SearchResultsMetadata.from_candidate_set(
@@ -549,7 +549,7 @@ class TestReadSearchStructure:
 
 
 class TestDedupeCandidates:
-    async def test_identity_dedupes_across_turns_and_keeps_first_order(self):
+    async def test_identity_dedupes_across_turns_and_keeps_first_order(self) -> None:
         result = await _find(
             _search_tool_message(_candidate("https://a.gov"), _candidate("https://b.gov")),
             _search_tool_message(_candidate("https://b.gov"), _candidate("https://c.gov")),
@@ -559,12 +559,12 @@ class TestDedupeCandidates:
 
 
 class TestFirstFailure:
-    async def test_a_typed_failure_is_rendered_class_first(self):
+    async def test_a_typed_failure_is_rendered_class_first(self) -> None:
         result = await _find(_refused("rate-limited", "slow down"))
 
         assert result.search_failure == "rate-limited: slow down"
 
-    async def test_zero_results_is_not_a_failure(self):
+    async def test_zero_results_is_not_a_failure(self) -> None:
         # SR-J2: an empty candidate set is a success value.
         result = await _find(_search_tool_message())
 
@@ -577,7 +577,7 @@ class TestFirstFailure:
 
 
 class TestFindTargetPageReadsStructure:
-    async def test_typed_candidates_reach_the_result_and_the_url_is_recognised(self):
+    async def test_typed_candidates_reach_the_result_and_the_url_is_recognised(self) -> None:
         result = await _find(
             _search_tool_message(_candidate("https://example.gov/warn"), _candidate("https://other.gov/x")),
             found=_found(guess="nodriver", summary="the real WARN page"),
@@ -587,7 +587,7 @@ class TestFindTargetPageReadsStructure:
         assert result.url_was_a_search_result is True
         assert result.verified is True
 
-    async def test_a_url_no_search_returned_is_marked_as_such(self):
+    async def test_a_url_no_search_returned_is_marked_as_such(self) -> None:
         # The coercion step can name a page the loop reached by following a
         # fetched link -- or one it invented. Either way it was not *found*,
         # and before structure crossed the border the two were indistinguishable.
@@ -601,7 +601,7 @@ class TestFindTargetPageReadsStructure:
         assert result.url == "https://invented.gov/nope"
         assert result.url_was_a_search_result is False
 
-    async def test_provider_notices_survive_to_the_result(self):
+    async def test_provider_notices_survive_to_the_result(self) -> None:
         result = await _find(
             _search_tool_message(_candidate("https://example.gov/warn"), notices=("two engines did not answer",))
         )
@@ -609,7 +609,7 @@ class TestFindTargetPageReadsStructure:
         assert result.search_notices == ("two engines did not answer",)
         assert result.verified is True  # a degraded search still yields a real finding
 
-    async def test_a_refused_search_is_named_rather_than_blamed_on_turn_exhaustion(self):
+    async def test_a_refused_search_is_named_rather_than_blamed_on_turn_exhaustion(self) -> None:
         # The behaviour change structure buys: before, every empty run reported
         # "exhausted its turn budget" regardless of why it actually came up dry.
         result = await _find(_refused(), output="", error="max rounds exhausted")
@@ -618,7 +618,7 @@ class TestFindTargetPageReadsStructure:
         assert "every search turn was refused" in result.verification_note
         assert result.url == ""
 
-    async def test_no_structure_at_all_leaves_the_new_fields_at_their_defaults(self):
+    async def test_no_structure_at_all_leaves_the_new_fields_at_their_defaults(self) -> None:
         # A loop that never called search (or an older tool that carried no
         # metadata) must still produce exactly the result it did before.
         result = await _find()
@@ -709,7 +709,7 @@ class TestTheStructureSeamAgainstARealSocket:
     real socket instead: a candidate reaches the result only if both hold.
     """
 
-    async def test_a_real_search_turn_lands_readable_structure_in_the_result(self):
+    async def test_a_real_search_turn_lands_readable_structure_in_the_result(self) -> None:
         from threetears.search.testing import LocalHttpServer, Reply
 
         async with LocalHttpServer(
@@ -728,13 +728,13 @@ class TestTheStructureSeamAgainstARealSocket:
 
 
 class TestCandidateUrls:
-    async def test_identity_counts_as_a_reachable_url(self):
+    async def test_identity_counts_as_a_reachable_url(self) -> None:
         result = await _find(
             _search_tool_message(_candidate("https://a.gov")), output="https://a.gov", found=_found("https://a.gov")
         )
         assert result.url_was_a_search_result is True
 
-    async def test_a_non_canonical_locator_counts_too(self):
+    async def test_a_non_canonical_locator_counts_too(self) -> None:
         # identity is the canonical URL *by convention*, not by guarantee, and the
         # URL an LLM names is whichever one the prose rendering showed it -- so a
         # direct-file locator must count as "the search returned this".
@@ -746,20 +746,20 @@ class TestCandidateUrls:
 
         assert result.url_was_a_search_result is True
 
-    async def test_no_candidates_is_not_a_search_result_and_not_a_crash(self):
+    async def test_no_candidates_is_not_a_search_result_and_not_a_crash(self) -> None:
         result = await _find()
         assert result.url_was_a_search_result is False
 
 
 class TestDedupeCandidatesEdges:
-    async def test_no_projections_yields_nothing(self):
+    async def test_no_projections_yields_nothing(self) -> None:
         assert (await _find()).candidates_seen == ()
 
-    async def test_a_zero_result_turn_contributes_nothing(self):
+    async def test_a_zero_result_turn_contributes_nothing(self) -> None:
         # SR-J2: zero results is a success, and must not become a phantom candidate.
         assert (await _find(_search_tool_message())).candidates_seen == ()
 
-    async def test_first_occurrence_wins_so_the_earlier_turns_locators_survive(self):
+    async def test_first_occurrence_wins_so_the_earlier_turns_locators_survive(self) -> None:
         result = await _find(
             _search_tool_message(_candidate_with_locators("same-id", "https://first.gov")),
             _search_tool_message(_candidate_with_locators("same-id", "https://second.gov")),
@@ -770,20 +770,20 @@ class TestDedupeCandidatesEdges:
 
 
 class TestFirstFailureEdges:
-    async def test_the_first_failure_wins_when_several_turns_failed(self):
+    async def test_the_first_failure_wins_when_several_turns_failed(self) -> None:
         result = await _find(_refused("rate-limited", "first"), _refused("timeout", "second"))
         assert result.search_failure == "rate-limited: first"
 
-    async def test_a_failure_after_a_successful_turn_is_still_reported(self):
+    async def test_a_failure_after_a_successful_turn_is_still_reported(self) -> None:
         result = await _find(_search_tool_message(_candidate("https://a.gov")), _refused("timeout", "too slow"))
         assert result.search_failure == "timeout: too slow"
 
-    async def test_no_projections_is_no_failure(self):
+    async def test_no_projections_is_no_failure(self) -> None:
         assert (await _find()).search_failure is None
 
 
 class TestReadSearchStructureEdges:
-    async def test_several_search_turns_each_yield_a_projection(self):
+    async def test_several_search_turns_each_yield_a_projection(self) -> None:
         result = await _find(
             _search_tool_message(_candidate("https://a.gov")),
             HumanMessage(content="keep looking"),
@@ -792,16 +792,16 @@ class TestReadSearchStructureEdges:
 
         assert [c.identity for c in result.candidates_seen] == ["https://a.gov", "https://b.gov"]
 
-    async def test_an_artifact_that_is_not_a_dict_is_skipped(self):
+    async def test_an_artifact_that_is_not_a_dict_is_skipped(self) -> None:
         assert (await _find(_artifact_message("not a dict"))).candidates_seen == ()
 
-    async def test_an_artifact_without_the_named_key_is_skipped(self):
+    async def test_an_artifact_without_the_named_key_is_skipped(self) -> None:
         assert (await _find(_artifact_message({"something_else": {}}))).candidates_seen == ()
 
-    async def test_a_payload_that_is_not_a_dict_is_skipped(self):
+    async def test_a_payload_that_is_not_a_dict_is_skipped(self) -> None:
         assert (await _find(_artifact_message({SEARCH_RESULTS_METADATA_KEY: "nope"}))).candidates_seen == ()
 
-    async def test_the_current_schema_version_is_accepted(self):
+    async def test_the_current_schema_version_is_accepted(self) -> None:
         # The boundary the refusal test above does not pin: equal-to-current must
         # read, or the reader would refuse every payload the family actually emits.
         payload = SearchResultsMetadata.from_candidate_set(
@@ -812,13 +812,13 @@ class TestReadSearchStructureEdges:
 
         assert [c.identity for c in result.candidates_seen] == ["https://a.gov"]
 
-    async def test_messages_that_are_not_tool_messages_are_ignored(self):
+    async def test_messages_that_are_not_tool_messages_are_ignored(self) -> None:
         result = await _find(HumanMessage(content="hi"), SimpleNamespace(name=_SEARCH_TOOL))
         assert result.candidates_seen == ()
 
 
 class TestAllNotices:
-    async def test_notices_dedupe_across_turns_and_keep_first_order(self):
+    async def test_notices_dedupe_across_turns_and_keep_first_order(self) -> None:
         result = await _find(
             _search_tool_message(notices=("engine A down", "unranked")),
             _search_tool_message(notices=("unranked", "engine B down")),
@@ -826,7 +826,7 @@ class TestAllNotices:
 
         assert result.search_notices == ("engine A down", "unranked", "engine B down")
 
-    async def test_no_notices_is_an_empty_tuple(self):
+    async def test_no_notices_is_an_empty_tuple(self) -> None:
         assert (await _find()).search_notices == ()
 
 
@@ -836,7 +836,7 @@ class TestAllNotices:
 
 
 class TestExistingCallersAreUnaffected:
-    def test_the_result_still_constructs_from_only_its_original_fields(self):
+    def test_the_result_still_constructs_from_only_its_original_fields(self) -> None:
         # This IS success check 4's second clause, as an assertion rather than a
         # claim in a PR body: every field structure added carries a default, so
         # code written before the metadata border existed still builds a result.
@@ -858,7 +858,7 @@ class TestExistingCallersAreUnaffected:
 
 
 class TestFindTargetPageStructureEdges:
-    async def test_a_url_matching_only_a_locator_still_counts_as_found(self):
+    async def test_a_url_matching_only_a_locator_still_counts_as_found(self) -> None:
         # The PDF a provider lists as a direct-file locator is a page the search
         # genuinely returned, even though identity names the containing page.
         result = await _find(
@@ -873,7 +873,7 @@ class TestFindTargetPageStructureEdges:
         assert result.url_was_a_search_result is True
         assert result.driver_backend == "document"
 
-    async def test_the_coercion_failure_path_still_reports_what_the_search_found(self):
+    async def test_the_coercion_failure_path_still_reports_what_the_search_found(self) -> None:
         # A run that could not turn prose into a URL has still learned real
         # things about the web, and dropping them would waste the spend.
         result = await _find(
@@ -887,7 +887,7 @@ class TestFindTargetPageStructureEdges:
         assert [c.identity for c in result.candidates_seen] == ["https://example.gov/warn"]
         assert result.search_notices == ("one engine did not answer",)
 
-    async def test_notices_from_several_turns_are_gathered_and_deduplicated(self):
+    async def test_notices_from_several_turns_are_gathered_and_deduplicated(self) -> None:
         result = await _find(
             _search_tool_message(_candidate("https://a.gov"), notices=("unranked", "engine A down")),
             _search_tool_message(_candidate("https://example.gov/warn"), notices=("unranked", "engine B down")),
@@ -896,7 +896,7 @@ class TestFindTargetPageStructureEdges:
         assert result.search_notices == ("unranked", "engine A down", "engine B down")
         assert [c.identity for c in result.candidates_seen] == ["https://a.gov", "https://example.gov/warn"]
 
-    async def test_a_failed_turn_is_reported_even_when_a_later_turn_saved_the_run(self):
+    async def test_a_failed_turn_is_reported_even_when_a_later_turn_saved_the_run(self) -> None:
         # search_failure is a record of what happened, not a verdict on the run:
         # the loop recovered and found a page, and both facts are true at once.
         result = await _find(_refused(), _search_tool_message(_candidate("https://example.gov/warn")))
@@ -905,7 +905,7 @@ class TestFindTargetPageStructureEdges:
         assert result.verified is True
         assert result.url_was_a_search_result is True
 
-    async def test_web_fetch_structure_never_becomes_a_search_candidate_end_to_end(self):
+    async def test_web_fetch_structure_never_becomes_a_search_candidate_end_to_end(self) -> None:
         # The filter's real consequence: a page the loop FETCHED must not be
         # reported as one the search RETURNED, or url_was_a_search_result lies.
         result = await _find(
@@ -918,7 +918,7 @@ class TestFindTargetPageStructureEdges:
         assert result.url_was_a_search_result is False
         assert result.verified is True
 
-    async def test_zero_results_over_a_real_socket_is_a_success_with_no_candidates(self):
+    async def test_zero_results_over_a_real_socket_is_a_success_with_no_candidates(self) -> None:
         # SR-J2: an empty answer is a success value. It must reach the reader as a
         # projection carrying nothing -- never as a failure, never as no projection.
         from threetears.search.testing import LocalHttpServer, Reply
@@ -931,7 +931,7 @@ class TestFindTargetPageStructureEdges:
         assert result.candidates_seen == ()
         assert result.search_failure is None
 
-    async def test_a_provider_error_over_a_real_socket_arrives_as_a_typed_failure(self):
+    async def test_a_provider_error_over_a_real_socket_arrives_as_a_typed_failure(self) -> None:
         # D10: nothing raises across the border. The failure must reach the reader
         # as a named class -- which is what lets page_finder tell "refused" from
         # "found nothing" without matching on an error prefix in prose.
@@ -948,7 +948,7 @@ class TestFindTargetPageStructureEdges:
         assert result.search_failure.startswith("transport-failed: ")
         assert result.candidates_seen == ()
 
-    async def test_a_structurally_invalid_payload_degrades_the_same_way(self):
+    async def test_a_structurally_invalid_payload_degrades_the_same_way(self) -> None:
         # from_metadata validates as well as version-checks, and pydantic's
         # ValidationError is a ValueError -- so a malformed payload takes the same
         # degrade-to-prose path as a too-new one rather than escaping as a crash.
@@ -968,7 +968,7 @@ _SMALL_CAP = 1024
 
 
 class TestVerificationSizeCap:
-    async def test_the_production_cap_is_two_mebibytes(self):
+    async def test_the_production_cap_is_two_mebibytes(self) -> None:
         # The fetch used to be unbounded: client.get buffered the whole body and
         # BeautifulSoup built a parse tree from it, measured at 77x the served
         # size. find_target_page fetches a URL an LLM picked out of search
@@ -981,7 +981,7 @@ class TestVerificationSizeCap:
         assert result.verified is False
         assert f"first {_PRODUCTION_VERIFY_CAP} bytes" in result.verification_note
 
-    async def test_a_body_over_the_cap_is_truncated_and_says_so(self):
+    async def test_a_body_over_the_cap_is_truncated_and_says_so(self) -> None:
         oversized = b"<html><body>" + b"<p>pad</p>" * 300 + b"</body></html>"
         assert len(oversized) > _SMALL_CAP
 
@@ -993,7 +993,7 @@ class TestVerificationSizeCap:
         assert str(_SMALL_CAP) in result.verification_note
         assert "longer than the verification cap" in result.verification_note
 
-    async def test_structure_inside_the_cap_still_verifies_on_an_oversized_page(self):
+    async def test_structure_inside_the_cap_still_verifies_on_an_oversized_page(self) -> None:
         # The cap must not cost a real finding: a table inside the cap is found
         # regardless of how much padding follows it.
         body = b"<html><body>" + _TABLE.format("Acme Corp").encode() + b"<p>pad</p>" * 300 + b"</body></html>"
@@ -1005,7 +1005,7 @@ class TestVerificationSizeCap:
         assert result.driver_backend == "nodriver"
         assert "table" in result.verification_note
 
-    async def test_a_body_exactly_at_the_cap_is_not_reported_as_truncated(self):
+    async def test_a_body_exactly_at_the_cap_is_not_reported_as_truncated(self) -> None:
         # Boundary: read > cap is truncation, read == cap is a whole document.
         filler = b"x" * (_SMALL_CAP - len(b"<html><body></body></html>"))
         body = (b"<html><body>" + filler + b"</body></html>")[:_SMALL_CAP]
@@ -1016,7 +1016,7 @@ class TestVerificationSizeCap:
         assert result.verified is False
         assert "verification cap" not in result.verification_note
 
-    async def test_a_truncated_json_body_is_not_called_an_api(self):
+    async def test_a_truncated_json_body_is_not_called_an_api(self) -> None:
         # A cut-off document is not parseable JSON, and guessing at the missing
         # half would verify a page nobody has seen the end of.
         head = b'{"records": [' + b'{"employer": "Acme"},' * 200
@@ -1029,7 +1029,7 @@ class TestVerificationSizeCap:
 
 
 class TestVerificationEncodings:
-    async def test_declared_shift_jis_is_decoded_and_structure_found(self):
+    async def test_declared_shift_jis_is_decoded_and_structure_found(self) -> None:
         body = ("<html><body>" + _TABLE.format("日本語のデータ") + "</body></html>").encode("shift_jis")
 
         result = await _verify(body, {"content-type": "text/html; charset=shift_jis"})
@@ -1037,7 +1037,7 @@ class TestVerificationEncodings:
         assert result.verified is True
         assert result.driver_backend == "nodriver"
 
-    async def test_declared_windows_1256_arabic_is_decoded_and_structure_found(self):
+    async def test_declared_windows_1256_arabic_is_decoded_and_structure_found(self) -> None:
         body = ("<html><body>" + _TABLE.format("بيانات التسريح") + "</body></html>").encode("cp1256")
 
         result = await _verify(body, {"content-type": "text/html; charset=windows-1256"})
@@ -1045,14 +1045,14 @@ class TestVerificationEncodings:
         assert result.verified is True
         assert result.driver_backend == "nodriver"
 
-    async def test_declared_utf_16_is_decoded_and_structure_found(self):
+    async def test_declared_utf_16_is_decoded_and_structure_found(self) -> None:
         body = ("<html><body>" + _TABLE.format("data") + "</body></html>").encode("utf-16")
 
         result = await _verify(body, {"content-type": "text/html; charset=utf-16"})
 
         assert result.verified is True
 
-    async def test_undeclared_non_utf8_still_finds_structure(self):
+    async def test_undeclared_non_utf8_still_finds_structure(self) -> None:
         # No charset header, bytes that are not UTF-8. The text mis-decodes and
         # that is fine: every marker this function looks for -- <table>, <tr>,
         # href -- is ASCII, so structure detection does not depend on getting
@@ -1063,7 +1063,7 @@ class TestVerificationEncodings:
 
         assert result.verified is True
 
-    async def test_invalid_byte_sequences_do_not_raise(self):
+    async def test_invalid_byte_sequences_do_not_raise(self) -> None:
         # errors="replace", never strict: a page whose bytes contradict its
         # declared charset must still be inspectable rather than crash a run
         # that promises never to raise.
@@ -1073,7 +1073,7 @@ class TestVerificationEncodings:
 
         assert result.verified is True
 
-    async def test_a_body_cut_mid_multibyte_character_does_not_raise(self):
+    async def test_a_body_cut_mid_multibyte_character_does_not_raise(self) -> None:
         # The cap can slice a UTF-8 sequence in half. That must degrade to a
         # replacement character, not an exception. 1024 is not a multiple of 3,
         # so the cap lands inside a three-byte character.
@@ -1087,7 +1087,7 @@ class TestVerificationEncodings:
 
 
 class TestVerificationLookalikeLinks:
-    async def test_a_bidi_override_link_that_merely_looks_like_a_pdf_is_not_one(self):
+    async def test_a_bidi_override_link_that_merely_looks_like_a_pdf_is_not_one(self) -> None:
         # U+202E renders "/annexgnp.fdp" as if it ended in .pdf. The extension
         # check reads the real characters, so the spoof does not verify -- and
         # this pins that it stays that way.
@@ -1098,7 +1098,7 @@ class TestVerificationLookalikeLinks:
         assert result.verified is False
         assert result.driver_backend == "nodriver"
 
-    async def test_a_genuine_rtl_named_pdf_still_verifies(self):
+    async def test_a_genuine_rtl_named_pdf_still_verifies(self) -> None:
         # The converse: an Arabic-named PDF is a real document link and must not
         # be collateral damage of the check above.
         body = '<html><body><a href="/إشعارات.pdf">PDF</a></body></html>'.encode()
@@ -1116,7 +1116,7 @@ class TestVerificationLookalikeLinks:
 
 
 class TestStructureCarriesExoticText:
-    async def test_rtl_cjk_and_emoji_survive_the_metadata_round_trip(self):
+    async def test_rtl_cjk_and_emoji_survive_the_metadata_round_trip(self) -> None:
         # to_metadata is model_dump(mode="json") and from_metadata revalidates,
         # so this crosses the same projection a NATS hop would. JSON is unicode
         # end to end; nothing here should need escaping to survive.
@@ -1126,7 +1126,7 @@ class TestStructureCarriesExoticText:
 
         assert result.candidates_seen[0].title == title
 
-    async def test_a_bidi_override_in_a_title_is_carried_verbatim_not_stripped(self):
+    async def test_a_bidi_override_in_a_title_is_carried_verbatim_not_stripped(self) -> None:
         # The border's job is to carry what the provider said, exactly. Deciding
         # what to do about a title that renders deceptively is a rendering
         # concern, and silently mutating it here would hide the fact from
@@ -1137,7 +1137,7 @@ class TestStructureCarriesExoticText:
 
         assert result.candidates_seen[0].title == title
 
-    async def test_a_non_ascii_url_matches_itself_when_checking_membership(self):
+    async def test_a_non_ascii_url_matches_itself_when_checking_membership(self) -> None:
         # url_was_a_search_result is a string comparison, so an IDN or a
         # percent-encoded path must match the form the candidate carries.
         url = "https://例え.jp/通知/warn%20notices.html"
@@ -1146,7 +1146,7 @@ class TestStructureCarriesExoticText:
 
         assert result.url_was_a_search_result is True
 
-    async def test_percent_encoded_and_decoded_forms_are_not_treated_as_the_same_url(self):
+    async def test_percent_encoded_and_decoded_forms_are_not_treated_as_the_same_url(self) -> None:
         # Deliberately NOT normalised: this module does not own URL canonicalisation,
         # and quietly equating the two forms would report "the search returned this"
         # about a URL the search did not return. Recorded as a pin so the choice is
@@ -1160,7 +1160,7 @@ class TestStructureCarriesExoticText:
 
         assert result.url_was_a_search_result is False
 
-    async def test_a_lone_surrogate_in_a_payload_degrades_rather_than_crashing(self):
+    async def test_a_lone_surrogate_in_a_payload_degrades_rather_than_crashing(self) -> None:
         # A surrogate is unencodable to UTF-8 and can reach a reader via a
         # provider that emitted it. Whatever pydantic makes of it, this must not
         # be how find_target_page learns to raise.
@@ -1173,7 +1173,7 @@ class TestStructureCarriesExoticText:
 
 
 class TestUnknownDeclaredCharset:
-    async def test_a_charset_python_does_not_know_falls_back_instead_of_raising(self):
+    async def test_a_charset_python_does_not_know_falls_back_instead_of_raising(self) -> None:
         # httpx hands back the charset= parameter verbatim without checking it
         # against the codec registry, so bytes.decode raises LookupError -- which
         # is NOT a ValueError and so escaped the fetch's own guard, out of a
@@ -1186,7 +1186,7 @@ class TestUnknownDeclaredCharset:
         assert result.verified is True
         assert result.driver_backend == "nodriver"
 
-    async def test_find_target_page_survives_an_unknown_charset_end_to_end(self):
+    async def test_find_target_page_survives_an_unknown_charset_end_to_end(self) -> None:
         # The contract that was actually at risk: find_target_page never raises.
         result = await _verify(
             b"<html><body><p>nothing structural</p></body></html>", {"content-type": "text/html; charset=unknown-8bit"}
@@ -1195,7 +1195,7 @@ class TestUnknownDeclaredCharset:
         assert result.verified is False
         assert result.url == "https://example.gov/warn"
 
-    async def test_an_empty_charset_parameter_falls_back_too(self):
+    async def test_an_empty_charset_parameter_falls_back_too(self) -> None:
         body = ("<html><body>" + _TABLE.format("data") + "</body></html>").encode()
 
         result = await _verify(body, {"content-type": "text/html; charset="})
@@ -1206,18 +1206,18 @@ class TestUnknownDeclaredCharset:
 class TestEverySearchFailed:
     """Whether an empty run is blamed on the provider, as the verification note reports it."""
 
-    async def test_all_failed_is_named_as_refused(self):
+    async def test_all_failed_is_named_as_refused(self) -> None:
         result = await _find(_refused(), _refused("timeout", "m"), output="", error="max rounds exhausted")
 
         assert "every search turn was refused" in result.verification_note
 
-    async def test_no_turns_is_not_blamed_on_the_provider(self):
+    async def test_no_turns_is_not_blamed_on_the_provider(self) -> None:
         result = await _find(output="", error="max rounds exhausted")
 
         assert "exhausted its turn budget" in result.verification_note
         assert "refused" not in result.verification_note
 
-    async def test_a_recovered_search_does_not_get_blamed_on_the_provider(self):
+    async def test_a_recovered_search_does_not_get_blamed_on_the_provider(self) -> None:
         # The run did not fail for want of searching; it failed to converge.
         # Blaming the provider would send an operator after a cleared quota.
         result = await _find(
@@ -1251,7 +1251,7 @@ class TestTheCorpusKeepsWhatTheFlatTupleDropped:
             SearchResultsMetadata.from_candidate_set(query=query, candidate_set=CandidateSet(candidates=(candidate,)))
         )
 
-    async def test_two_queries_finding_one_url_keep_both_provenances(self):
+    async def test_two_queries_finding_one_url_keep_both_provenances(self) -> None:
         result = await _find(
             self._turn("Ohio WARN notices", "https://example.gov/warn"),
             self._turn("Ohio layoff filings", "https://example.gov/warn"),
@@ -1264,7 +1264,7 @@ class TestTheCorpusKeepsWhatTheFlatTupleDropped:
         assert len(entry.contributions) == 2
         assert [p.query for p in entry.provenances] == ["Ohio WARN notices", "Ohio layoff filings"]
 
-    async def test_the_flat_projection_still_shows_one_candidate_per_identity(self):
+    async def test_the_flat_projection_still_shows_one_candidate_per_identity(self) -> None:
         result = await _find(
             self._turn("Ohio WARN notices", "https://example.gov/warn"),
             self._turn("Ohio layoff filings", "https://example.gov/warn"),
@@ -1273,7 +1273,7 @@ class TestTheCorpusKeepsWhatTheFlatTupleDropped:
         assert [c.identity for c in result.candidates_seen] == ["https://example.gov/warn"]
         assert result.candidates_seen[0].provenance.query == "Ohio WARN notices", "first turn wins, as it always has"
 
-    async def test_a_failed_turn_contributes_no_corpus_notice(self):
+    async def test_a_failed_turn_contributes_no_corpus_notice(self) -> None:
         """`search_failure` already reports it; the corpus must not double-report."""
         failed = SearchResultsMetadata(
             query="Ohio WARN notices",
@@ -1286,7 +1286,7 @@ class TestTheCorpusKeepsWhatTheFlatTupleDropped:
         assert result.candidate_corpus.notices == ()
         assert len(result.candidate_corpus.entries) == 1
 
-    async def test_spend_rolls_up_across_turns(self):
+    async def test_spend_rolls_up_across_turns(self) -> None:
         """A loop that searched six times now has one number for what that cost."""
         result = await _find(
             _projection_message(

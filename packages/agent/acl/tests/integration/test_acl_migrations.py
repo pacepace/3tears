@@ -57,7 +57,7 @@ async def acl_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
         await conn.execute(f'CREATE SCHEMA "{schema}"')
         await conn.execute(f'SET search_path TO "{schema}"')
         # acl v001-v005 and agent-tools platform v001-v004
-        assert await _runner().apply_for_platform_schema(_Store(conn)) == 9  # type: ignore[arg-type]
+        assert await _runner().apply_for_platform_schema(_Store(conn)) == 9
     finally:
         await conn.close()
     pool: asyncpg.Pool = await asyncpg.create_pool(
@@ -120,7 +120,7 @@ async def _namespace(pool: asyncpg.Pool, name: str, **over: Any) -> uuid.UUID:
 
 async def test_a_second_build_applies_nothing(acl_pool: asyncpg.Pool) -> None:
     async with acl_pool.acquire() as conn:
-        assert await _runner().apply_for_platform_schema(_Store(conn)) == 0  # type: ignore[arg-type]
+        assert await _runner().apply_for_platform_schema(_Store(conn)) == 0
         columns = {
             r["column_name"]
             for r in await conn.fetch(

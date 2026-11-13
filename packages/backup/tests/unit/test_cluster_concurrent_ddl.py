@@ -87,13 +87,13 @@ def scripted() -> Iterator[_ScriptedDumps]:
     dumps = _ScriptedDumps([])
     original_drivers = drivers_module.stream_stdout
     original_cluster = cluster_module.stream_stdout
-    drivers_module.stream_stdout = dumps.stream_stdout  # type: ignore[assignment]
-    cluster_module.stream_stdout = dumps.stream_stdout  # type: ignore[assignment]
+    drivers_module.stream_stdout = dumps.stream_stdout
+    cluster_module.stream_stdout = dumps.stream_stdout
     try:
         yield dumps
     finally:
-        drivers_module.stream_stdout = original_drivers  # type: ignore[assignment]
-        cluster_module.stream_stdout = original_cluster  # type: ignore[assignment]
+        drivers_module.stream_stdout = original_drivers
+        cluster_module.stream_stdout = original_cluster
 
 
 async def _run(tmp_path: Any, connection: _Connection, *, retries: int = 3) -> BackupManifest:

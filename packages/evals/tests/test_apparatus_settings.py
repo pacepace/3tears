@@ -93,7 +93,7 @@ async def _launch(host: LaunchHost, **arguments: Any) -> list[EvalRun]:
 # =============================================================================
 
 
-async def test_a_launchs_apparatus_setting_reaches_its_launcher_and_its_run():
+async def test_a_launchs_apparatus_setting_reaches_its_launcher_and_its_run() -> None:
     host, storage = off_loop(_launching)
 
     (run,) = await _launch(host, apparatus_settings={POOL: "pool-b"})
@@ -105,7 +105,7 @@ async def test_a_launchs_apparatus_setting_reaches_its_launcher_and_its_run():
     assert host.eval_host.profile.sweepables.read_all(stored)[POOL] == "pool-b", "the host's reader reads the rig"
 
 
-async def test_a_launch_setting_none_records_the_kinds_standing_pool_it_was_reviewed_by():
+async def test_a_launch_setting_none_records_the_kinds_standing_pool_it_was_reviewed_by() -> None:
     """The run records the rig as set up, so it says who reviewed it rather than that nobody chose."""
     host, storage = off_loop(_launching)
 
@@ -117,7 +117,7 @@ async def test_a_launch_setting_none_records_the_kinds_standing_pool_it_was_revi
     assert host.eval_host.profile.sweepables.read_all(stored)[POOL] == stored.apparatus_settings[POOL]
 
 
-async def test_two_values_of_one_template_are_two_conditions_of_one_candidate():
+async def test_two_values_of_one_template_are_two_conditions_of_one_candidate() -> None:
     """One template, two reviewer pools: never pooled as repeats, and still the same arm.
 
     ``pool-a`` is the kind's standing pool, so the launch naming it and the launch naming nothing set up
@@ -146,7 +146,7 @@ async def test_two_values_of_one_template_are_two_conditions_of_one_candidate():
     assert len(variant) == 1, "an apparatus value is the rig, not the candidate"
 
 
-async def test_a_launch_setting_some_of_a_kinds_settings_records_the_rest_at_their_defaults():
+async def test_a_launch_setting_some_of_a_kinds_settings_records_the_rest_at_their_defaults() -> None:
     host, storage = off_loop(_launching)
     (launchable,) = host.kinds.values()
     two = replace(
@@ -164,7 +164,7 @@ async def test_a_launch_setting_some_of_a_kinds_settings_records_the_rest_at_the
     assert stored is not None and stored.apparatus_settings == run.apparatus_settings
 
 
-def test_the_component_hashes_the_values_and_their_types():
+def test_the_component_hashes_the_values_and_their_types() -> None:
     """``"1"`` and ``1`` are two levels; the component is composed for a run that set none."""
     from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
@@ -246,7 +246,7 @@ def test_a_kind_defaulting_a_setting_to_a_value_no_run_could_record_is_refused(d
         LaunchableKind(launch=launch, resolve_subject=lambda _subject, _scope: None, apparatus_settings={POOL: default})
 
 
-def test_the_settable_apparatus_is_the_hosts_own_and_none_of_the_engines():
+def test_the_settable_apparatus_is_the_hosts_own_and_none_of_the_engines() -> None:
     host, _storage = _launching()
     settable = settable_apparatus(host.eval_host.profile.sweepables)
     assert {"reviewer_pool", "ocr_engine_version", "grader_version"} <= settable
@@ -259,7 +259,7 @@ def test_the_settable_apparatus_is_the_hosts_own_and_none_of_the_engines():
 # =============================================================================
 
 
-async def test_run_launch_hands_the_launch_its_apparatus_settings():
+async def test_run_launch_hands_the_launch_its_apparatus_settings() -> None:
     fixture = off_loop(ops_fixture)
     launched = LaunchArguments(
         template_id=toyhost_template().id,
@@ -275,7 +275,7 @@ async def test_run_launch_hands_the_launch_its_apparatus_settings():
     assert stored is not None and stored.apparatus_settings == {POOL: "pool-d"}
 
 
-async def test_the_run_launch_action_hands_the_launch_its_apparatus_settings():
+async def test_the_run_launch_action_hands_the_launch_its_apparatus_settings() -> None:
     fixture = off_loop(ops_fixture)
     evals = eval_catalogue().mount_all(standard_tools())[0]
     call = {
@@ -291,7 +291,7 @@ async def test_the_run_launch_action_hands_the_launch_its_apparatus_settings():
     assert outcome.is_error and "no apparatus setting named 'grader_version'" in outcome.text, outcome.text
 
 
-async def test_the_fastmcp_tool_hands_the_launch_its_apparatus_settings():
+async def test_the_fastmcp_tool_hands_the_launch_its_apparatus_settings() -> None:
     fixture = off_loop(ops_fixture)
     server = FastMCP("toyhost")
     mount_fastmcp(server, eval_catalogue(), host=fixture.host, caller=lambda: CALLER)
@@ -328,7 +328,7 @@ def test_the_clis_apparatus_settings_must_be_a_json_object(given: str) -> None:
         run_cli([*args, "--apparatus-settings", given], host_factory=courier_launch_host)
 
 
-def test_a_kind_reads_nothing_unless_it_says_so():
+def test_a_kind_reads_nothing_unless_it_says_so() -> None:
     async def launch(_request: LaunchRequest) -> EvalRun:
         raise AssertionError("never launched")
 

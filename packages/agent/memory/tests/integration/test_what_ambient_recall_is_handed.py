@@ -569,7 +569,7 @@ class TestOneEventIsStoredOnce:
         assert skipped.memory_id is None and skipped.standing is not None
         assert skipped.standing["memory_id"] == kept.memory_id
         assert beside.memory_id is not None and beside.replaced == ()
-        assert (await world.row(kept.memory_id))["superseded_by"] is None  # type: ignore[arg-type]
+        assert (await world.row(kept.memory_id))["superseded_by"] is None
         assert await world.live() == ["kept", "again"]
 
     async def test_with_no_threshold_every_write_is_its_own_memory(self, world: _World) -> None:

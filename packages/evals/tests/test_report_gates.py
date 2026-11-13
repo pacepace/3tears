@@ -147,14 +147,16 @@ def _failing_places(report_input: ReportInput, arm: str) -> list[tuple[str, str]
 
 class TestSurvivorsAreUnchanged:
     @pytest.mark.parametrize(("case", "make", "survivors", "modes"), BEFORE, ids=[row[0] for row in BEFORE])
-    def test_survivors_and_modes_are_as_before(self, case: str, make: Any, survivors: list[str], modes: set[str]):
+    def test_survivors_and_modes_are_as_before(
+        self, case: str, make: Any, survivors: list[str], modes: set[str]
+    ) -> None:
         report_input = _input(make())
         assert (surviving_options(report_input), decision_at(report_input).modes) == (survivors, modes)
 
     @pytest.mark.parametrize(("case", "make", "survivors", "modes"), BEFORE, ids=[row[0] for row in BEFORE])
     def test_an_arm_survives_exactly_when_no_place_fails_it_and_no_guardrail_is_breached(
         self, case: str, make: Any, survivors: list[str], modes: set[str]
-    ):
+    ) -> None:
         """Both ways, from checks narrowed to each place the gates read: a survivor fails nowhere, and an arm that
         fails nowhere (and is not breached) survives."""
         report_input = _input(make())
@@ -165,7 +167,7 @@ class TestSurvivorsAreUnchanged:
             fails_nowhere = not failing[arm.id] and arm.id not in breached
             assert (arm.id in kept) == fails_nowhere, (arm.id, failing[arm.id])
 
-    def test_the_narrowed_survival_check_reaches_a_failure_in_a_task_a_cell_and_overall_alone(self):
+    def test_the_narrowed_survival_check_reaches_a_failure_in_a_task_a_cell_and_overall_alone(self) -> None:
         """The cases above hold an arm out by one place each, so the both-ways check is not passing on survivors
         alone: a task (r1, Atlas-M without billing quality), a cell (r3, a cell floor at 95), and the criteria read
         overall (r2, no p95 for the pick)."""
@@ -176,14 +178,14 @@ class TestSurvivorsAreUnchanged:
         assert {kind for kind, _ in _failing_places(_input(_r2_no_p95()), "brisk-s.low.r1")} == {"overall"}
 
     @pytest.mark.parametrize("name", ["r1", "r2", "r3", "r4", "r5"])
-    def test_no_task_or_cell_fails_a_reference_survivor(self, name: str):
+    def test_no_task_or_cell_fails_a_reference_survivor(self, name: str) -> None:
         report_input = _input(_data(name))
         for arm in surviving_options(report_input):
             places = [gate_check(report_input, arm, task=task.id) for task in report_input.tasks]
             places += [gate_check(report_input, arm, cell=cell) for cell in report_input.cells]
             assert [check.status for check in places if check.status == "fail"] == []
 
-    def test_a_borderline_arm_survives(self):
+    def test_a_borderline_arm_survives(self) -> None:
         """r1: Atlas-M resolves the issue in 90% of troubleshooting, ±4.4, against a floor of 90."""
         report_input = _input(_data("r1"))
         assert gate_check(report_input, "atlas-m").status == "borderline"
@@ -191,21 +193,21 @@ class TestSurvivorsAreUnchanged:
 
 
 class TestTheCheck:
-    def test_a_borderline_figure_gives_its_half_width(self):
+    def test_a_borderline_figure_gives_its_half_width(self) -> None:
         assert gate_check(_input(_data("r1")), "atlas-m", task="trouble") == GateCheck(
             arm="atlas-m", status="borderline", fails=(), borders=("Resolves the issue 90% ±4.4",)
         )
 
-    def test_an_unnarrowed_check_says_where_each_figure_sits(self):
+    def test_an_unnarrowed_check_says_where_each_figure_sits(self) -> None:
         assert gate_check(_input(_data("r1")), "atlas-m").borders == (
             "Resolves the issue 90% ±4.4 in Troubleshooting (multi-turn)",
         )
 
-    def test_a_p95_over_its_budget_fails_and_names_its_statistic(self):
+    def test_a_p95_over_its_budget_fails_and_names_its_statistic(self) -> None:
         check = gate_check(_input(_data("r1")), "atlas-l", task="billing")
         assert (check.status, check.fails, check.borders) == ("fail", ("p95 3.6 s > 3 s",), ())
 
-    def test_every_failing_figure_is_one_reason(self):
+    def test_every_failing_figure_is_one_reason(self) -> None:
         check = gate_check(_input(_data("r1")), "brisk-s", task="trouble")
         assert check.fails == (
             "Overall quality floor 79 < 85",
@@ -215,17 +217,17 @@ class TestTheCheck:
         )
         assert check.borders == ("Gives clear steps 90% ±4.4",)
 
-    def test_a_task_check_reads_only_the_gates_in_that_task(self):
+    def test_a_task_check_reads_only_the_gates_in_that_task(self) -> None:
         """The speculation gate is read in its own task, so a billing check never fails Brisk-S on it."""
         check = gate_check(_input(_data("r1")), "brisk-s", task="billing")
         assert check == GateCheck(arm="brisk-s", status="pass", fails=(), borders=())
 
-    def test_a_p95_carries_no_interval_so_is_never_borderline(self):
+    def test_a_p95_carries_no_interval_so_is_never_borderline(self) -> None:
         """Atlas-M's 2.84 s p95 in research sits 0.16 s under the budget, and the input states no interval on it."""
         check = gate_check(_input(_data("r1")), "atlas-m", task="research")
         assert check.status == "pass"
 
-    def test_an_interval_stated_as_its_ends_is_read_on_them(self):
+    def test_an_interval_stated_as_its_ends_is_read_on_them(self) -> None:
         data = _data("r5")
         data["criteria"] = [
             {"id": "spend", "kind": "gate", "measure": "cost_usd", "direction": "lower_is_better",
@@ -239,36 +241,36 @@ class TestTheCheck:
             ("Cost per 1,000 replies $5.41, interval $5.21–$5.59",),
         )
 
-    def test_a_cell_check_reads_the_cell_floor_in_that_cell(self):
+    def test_a_cell_check_reads_the_cell_floor_in_that_cell(self) -> None:
         data = _r3_cell_floor_95()
         report_input = _input(data)
         assert gate_check(report_input, "brisk-s.few", cell="simple|science").borders == ("Cell floor 95.1% ±0.8",)
         assert gate_check(report_input, "brisk-s.few", cell="complex|news").fails == ("Cell floor 82.9% < 95%",)
 
-    def test_an_unnarrowed_cell_figure_names_its_cell(self):
+    def test_an_unnarrowed_cell_figure_names_its_cell(self) -> None:
         fails = gate_check(_input(_r3_cell_floor_95()), "brisk-s.few").fails
         assert "Cell floor 82.9% < 95% in Complex × News" in fails
 
-    def test_a_guardrail_is_a_gate(self):
+    def test_a_guardrail_is_a_gate(self) -> None:
         """r4: f16's music facts sit under the standing guardrail."""
         assert gate_check(_input(_data("r4")), "f16").fails == ("Music facts correct 89.4% < 90%",)
 
-    def test_a_figure_at_the_line_passes(self):
+    def test_a_figure_at_the_line_passes(self) -> None:
         assert gate_check(_input(_r4_facts_at_prods_figure()), "prod").status == "pass"
 
-    def test_a_gate_with_no_figure_for_the_arm_fails(self):
+    def test_a_gate_with_no_figure_for_the_arm_fails(self) -> None:
         check = gate_check(_input(_r2_no_p95()), "brisk-s.low.r1")
         assert (check.status, check.fails) == ("fail", ("Latency budget (p95): no figure",))
 
-    def test_a_task_lacking_the_figure_fails_there(self):
+    def test_a_task_lacking_the_figure_fails_there(self) -> None:
         check = gate_check(_input(_r1_atlas_m_without_billing_quality()), "atlas-m", task="billing")
         assert check.fails == ("Overall quality floor: no figure",)
 
-    def test_an_unnarrowed_check_fails_a_task_lacking_the_figure_and_names_it(self):
+    def test_an_unnarrowed_check_fails_a_task_lacking_the_figure_and_names_it(self) -> None:
         check = gate_check(_input(_r1_atlas_m_without_billing_quality()), "atlas-m")
         assert (check.status, check.fails) == ("fail", ("Overall quality floor: no figure in Billing & account Q&A",))
 
-    def test_an_unnarrowed_check_fails_a_cell_lacking_the_figure_and_names_it(self):
+    def test_an_unnarrowed_check_fails_a_cell_lacking_the_figure_and_names_it(self) -> None:
         data = _data("r3")
         del data["cells"]["complex|news"]["per_arm"]["brisk-s.few"]
         report_input = _input(data)
@@ -276,26 +278,26 @@ class TestTheCheck:
         assert gate_check(report_input, "brisk-s.few", cell="complex|news").fails == ("Cell floor: no figure",)
         assert "brisk-s.few" not in surviving_options(report_input)
 
-    def test_the_weakest_margin_reads_the_same_survivors(self):
+    def test_the_weakest_margin_reads_the_same_survivors(self) -> None:
         """With Atlas-M out for a missing figure, no arm survives and none is one figure from returning."""
         assert weakest_margin(_input(_r1_atlas_m_without_billing_quality())) is None
 
-    def test_an_input_with_no_gate_passes_every_arm(self):
+    def test_an_input_with_no_gate_passes_every_arm(self) -> None:
         assert gate_check(_input(_data("r5")), "1017") == GateCheck(arm="1017", status="pass", fails=(), borders=())
 
-    def test_a_check_narrows_to_one_place_at_most(self):
+    def test_a_check_narrows_to_one_place_at_most(self) -> None:
         with pytest.raises(ValueError, match="one place"):
             gate_check(_input(_data("r3")), "brisk-s.few", task="billing", cell="simple|science")
 
     @pytest.mark.parametrize(("place", "value"), [("task", "nowhere"), ("cell", "nowhere|nothing")])
-    def test_a_place_the_input_does_not_hold_is_refused(self, place: str, value: str):
+    def test_a_place_the_input_does_not_hold_is_refused(self, place: str, value: str) -> None:
         with pytest.raises(ValueError, match="nowhere"):
             gate_check(_input(_data("r1")), "atlas-m", **{place: value})
 
 
 class TestAFigureThatIsNotANumber:
     @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
-    def test_a_gate_figure_that_is_not_finite_fails_as_no_figure(self, value: float):
+    def test_a_gate_figure_that_is_not_finite_fails_as_no_figure(self, value: float) -> None:
         """r1 Atlas-M resolves the issue in troubleshooting at 90%: read as NaN or infinite, it does not pass."""
         data = _data("r1")
         trouble = next(task for task in data["tasks"] if task["id"] == "trouble")
@@ -306,7 +308,7 @@ class TestAFigureThatIsNotANumber:
         assert check.status == "fail" and f"{name}: no figure" in check.fails
         assert "atlas-m" not in surviving_options(report_input)
 
-    def test_an_interval_end_that_is_not_a_number_does_not_pass_clear(self):
+    def test_an_interval_end_that_is_not_a_number_does_not_pass_clear(self) -> None:
         """r4 prod's music facts sit clear of the guardrail; an interval end that is NaN cannot show them clear."""
         data = _data("r4")
         facts = data["judged"]["facts"]["per_arm"]["prod"]
@@ -317,7 +319,7 @@ class TestAFigureThatIsNotANumber:
 
 class TestOneCriterion:
     @pytest.mark.parametrize("name", ["r1", "r2", "r3", "r4"])
-    def test_an_arm_fails_the_whole_check_exactly_when_it_fails_one_criterion_checked_alone(self, name: str):
+    def test_an_arm_fails_the_whole_check_exactly_when_it_fails_one_criterion_checked_alone(self, name: str) -> None:
         report_input = _input(_data(name))
         gating = [criterion.id for criterion in report_input.criteria if criterion.kind in ("gate", "guardrail")]
         assert gating
@@ -327,20 +329,20 @@ class TestOneCriterion:
             assert sorted(reason for check in alone for reason in check.fails) == sorted(whole.fails)
             assert sorted(reason for check in alone for reason in check.borders) == sorted(whole.borders)
 
-    def test_a_criterion_checked_alone_reads_only_that_criterion(self):
+    def test_a_criterion_checked_alone_reads_only_that_criterion(self) -> None:
         report_input = _input(_data("r1"))
         check = gate_check(report_input, "brisk-s", task="trouble", criterion="trouble.resolves")
         label = next(criterion.label for criterion in report_input.criteria if criterion.id == "trouble.resolves")
         assert check.status == "fail" and len(check.fails) == 1 and check.fails[0].startswith(f"{label} ")
         assert check.borders == ()
 
-    def test_a_criterion_the_input_does_not_gate_on_is_refused(self):
+    def test_a_criterion_the_input_does_not_gate_on_is_refused(self) -> None:
         with pytest.raises(ValueError, match="nowhere"):
             gate_check(_input(_data("r1")), "atlas-m", criterion="nowhere")
 
 
 class TestRouting:
-    def test_each_routable_task_picks_the_cheapest_arm_passing_there_and_in_every_cross_cutting_task(self):
+    def test_each_routable_task_picks_the_cheapest_arm_passing_there_and_in_every_cross_cutting_task(self) -> None:
         report_input = _input(_data("r1"))
         arms = [arm.id for arm in report_input.arms]
         cross_cutting = [task.id for task in report_input.tasks if task.cross_cutting]
@@ -363,7 +365,7 @@ class TestRouting:
             assert picks[task.id] in eligible
             assert costs[picks[task.id]] == min(costs[arm] for arm in eligible)
 
-    def test_a_cross_cutting_failure_keeps_a_cheaper_task_passer_from_being_picked(self):
+    def test_a_cross_cutting_failure_keeps_a_cheaper_task_passer_from_being_picked(self) -> None:
         """The guard the rule exists for: in some routable task the cheapest arm passing there fails a cross-cutting
         task, and is not the pick."""
         report_input = _input(_data("r1"))
@@ -382,13 +384,13 @@ class TestRouting:
                 assert picks.get(task.id) != cheapest
         assert kept_out
 
-    def test_a_task_cost_is_the_tasks_own_figure_per_1000_replies(self):
+    def test_a_task_cost_is_the_tasks_own_figure_per_1000_replies(self) -> None:
         report_input = _input(_data("r1"))
         task = report_input.tasks[0]
         key = next(key for key, measure in report_input.measures.items() if measure.unit == "usd_per_1k")
         expected = {arm: float(figures[key].mean or 0) for arm, figures in task.per_arm.items()}
         assert task_costs(report_input, task.id) == expected
 
-    def test_a_task_the_input_does_not_hold_is_refused(self):
+    def test_a_task_the_input_does_not_hold_is_refused(self) -> None:
         with pytest.raises(ValueError, match="nowhere"):
             task_costs(_input(_data("r1")), "nowhere")

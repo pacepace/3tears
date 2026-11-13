@@ -178,4 +178,4 @@ class TestAllowlistRationaleValidation:
             rationale=_VALID_RATIONALE,
         )
         with pytest.raises(dataclasses.FrozenInstanceError):
-            entry.line = 20  # type: ignore[misc]
+            entry.line = 20

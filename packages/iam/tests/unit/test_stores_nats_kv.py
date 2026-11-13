@@ -327,7 +327,7 @@ class _RecordingClient(FakeNatsClient):
         self.create_flags: list[bool] = []
         self.storage_by_bucket: list[tuple[str, str]] = []
 
-    async def kv_bucket(self, **kwargs: Any) -> Any:  # type: ignore[override]
+    async def kv_bucket(self, **kwargs: Any) -> Any:
         self.create_flags.append(kwargs.get("create_if_missing", True))
         bucket = await super().kv_bucket(**kwargs)
         self.storage_by_bucket.append((kwargs["name"], bucket.storage))

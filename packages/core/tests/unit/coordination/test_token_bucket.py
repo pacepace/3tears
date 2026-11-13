@@ -453,7 +453,7 @@ class TestOwnerScopedTokenBucketKeys:
     async def test_a_claim_and_a_refund_land_under_the_scope(self) -> None:
         client = FakeNatsClient()
         bucket = TokenBucket(
-            client,  # type: ignore[arg-type]
+            client,
             bucket_name="ratelimits",
             refill_rate=1.0,
             capacity=2.0,
@@ -470,7 +470,7 @@ class TestOwnerScopedTokenBucketKeys:
     def test_a_scope_that_is_not_one_literal_token_is_refused(self, scope: str) -> None:
         with pytest.raises(ValueError, match="key_scope"):
             TokenBucket(
-                FakeNatsClient(),  # type: ignore[arg-type]
+                FakeNatsClient(),
                 bucket_name="ratelimits",
                 refill_rate=1.0,
                 capacity=2.0,
@@ -495,7 +495,7 @@ class TestStoredForm:
     @pytest.mark.asyncio
     async def test_a_naive_clock_is_refused_naming_the_field(self, client: FakeNatsClient) -> None:
         naive = TokenBucket(
-            client,  # type: ignore[arg-type]
+            client,
             bucket_name="b",
             refill_rate=1.0,
             capacity=5.0,

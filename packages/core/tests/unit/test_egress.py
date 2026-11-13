@@ -166,7 +166,7 @@ async def test_a_driver_that_cannot_report_health_is_unknown_not_healthy() -> No
 class TestEgressHealth:
     """A dead exit and a fleet-wide outage produce identical evidence until something asks."""
 
-    async def test_a_reachable_proxy_reports_the_address_it_presents(self):
+    async def test_a_reachable_proxy_reports_the_address_it_presents(self) -> None:
         """The address, not just reachability. A proxy that is listening but forwarding
         directly passes a connectivity check while providing none of the property it exists
         for, which is precisely the misconfiguration worth catching."""
@@ -182,7 +182,7 @@ class TestEgressHealth:
         assert health.reachable is True
         assert health.observed_address == "185.220.101.5"
 
-    async def test_a_dead_daemon_reports_unreachable_rather_than_raising(self):
+    async def test_a_dead_daemon_reports_unreachable_rather_than_raising(self) -> None:
         """The check runs to describe an outage; raising would make it a second one.
 
         This is the whole point of the method: without it a dead tor daemon fails every render
@@ -201,12 +201,12 @@ class TestEgressHealth:
         assert health.reachable is False
         assert "ConnectError" in (health.reason or "")
 
-    async def test_direct_is_not_probed(self):
+    async def test_direct_is_not_probed(self) -> None:
         """Probing the default route tests the internet, not the exit."""
         health = await DirectEgress().health()
         assert health.reachable is True
 
-    async def test_the_registry_answers_for_every_exit_at_once(self):
+    async def test_the_registry_answers_for_every_exit_at_once(self) -> None:
         """One place to ask, because the alternative is inferring it from a symptom that
         looks identical to its opposite."""
         import httpx

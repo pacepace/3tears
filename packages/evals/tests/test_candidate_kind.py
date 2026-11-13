@@ -264,7 +264,7 @@ async def _run(kind: Any, template: EvalTemplate, *, sink: TraceSink | None = No
 # =============================================================================
 
 
-async def test_a_single_shot_kind_produces_a_result_with_no_subject_and_no_judge():
+async def test_a_single_shot_kind_produces_a_result_with_no_subject_and_no_judge() -> None:
     """The shape every non-conversational kind builds on, end to end through the real runner."""
     kind = _FakeSingleShotKind(
         CandidateOutput(
@@ -296,7 +296,7 @@ async def test_a_single_shot_kind_produces_a_result_with_no_subject_and_no_judge
     assert result.candidate_instance_id == "sandbox-42"
 
 
-async def test_the_kind_receives_the_engines_half_of_the_subject_and_nothing_of_the_hosts():
+async def test_the_kind_receives_the_engines_half_of_the_subject_and_nothing_of_the_hosts() -> None:
     """The subject split, asserted at the call: ``prepare`` is handed the engine's snapshot alone.
 
     The host's rich half never passes through the engine — a kind that needs it has it bound into
@@ -321,7 +321,7 @@ async def test_the_kind_receives_the_engines_half_of_the_subject_and_nothing_of_
     assert kind.invoked_case is not None and kind.invoked_case.template_id == template.id
 
 
-async def test_every_result_of_a_run_names_the_model_the_run_was_launched_for():
+async def test_every_result_of_a_run_names_the_model_the_run_was_launched_for() -> None:
     """``EvalResult.model`` is the run's ``candidate_model``, as the runner writes it.
 
     Driven through :func:`execute_run`, the entrypoint that reads the model off the run —
@@ -397,7 +397,7 @@ class _ApparatusFaultOnInvokeKind(_FakeSingleShotKind):
 )
 async def test_a_cell_that_did_not_complete_still_names_the_model_the_run_was_launched_for(
     make_kind: Any, raised: AbstractContextManager[Any]
-):
+) -> None:
     """Every arm that writes a result writes the run's ``candidate_model`` — not only the one that completes.
 
     The runner builds an :class:`EvalResult` on each exit separately, so the completed arm above says
@@ -431,7 +431,7 @@ async def test_a_cell_that_did_not_complete_still_names_the_model_the_run_was_la
     assert result.model == run.candidate_model
 
 
-async def test_the_candidates_errors_reach_the_result_split_the_way_scoring_reads_them():
+async def test_the_candidates_errors_reach_the_result_split_the_way_scoring_reads_them() -> None:
     """A candidate error FAILS a cell and an infra error EXCLUDES it, so they stay apart."""
     kind = _FakeSingleShotKind(
         CandidateOutput(
@@ -448,7 +448,7 @@ async def test_the_candidates_errors_reach_the_result_split_the_way_scoring_read
     assert result.runner_error == "candidate turn LLM error: boom; harness: nope"
 
 
-async def test_telemetry_the_kind_reports_lands_on_the_result():
+async def test_telemetry_the_kind_reports_lands_on_the_result() -> None:
     """Everything below the dispatch reads telemetry, and never the kind that made it."""
     kind = _FakeSingleShotKind(
         CandidateOutput(
@@ -474,7 +474,7 @@ async def test_telemetry_the_kind_reports_lands_on_the_result():
     assert result.latency.total_ms is None
 
 
-async def test_a_kinds_own_refusals_are_added_to_the_runs_and_neither_is_dropped():
+async def test_a_kinds_own_refusals_are_added_to_the_runs_and_neither_is_dropped() -> None:
     """The case ``CandidateTelemetry.metered_calls_refused`` now exists for, driven end to end.
 
     The count on the result is the RUNNER's, taken against the run's ledger around the whole
@@ -532,7 +532,7 @@ async def test_a_kinds_own_refusals_are_added_to_the_runs_and_neither_is_dropped
     )
 
 
-async def test_a_kind_that_reports_no_async_deliveries_observed_nothing():
+async def test_a_kind_that_reports_no_async_deliveries_observed_nothing() -> None:
     """The record's absence is unobserved — not a crash, and not an empty that claims a watch.
 
     ``[]`` would say the kind watched for background work and none was started; a kind that
@@ -548,7 +548,7 @@ async def test_a_kind_that_reports_no_async_deliveries_observed_nothing():
     assert result.stop_cause is None
 
 
-async def test_a_kinds_async_deliveries_land_on_the_result_verbatim():
+async def test_a_kinds_async_deliveries_land_on_the_result_verbatim() -> None:
     """A scout acknowledged on one turn and delivered two turns later is stored as the kind reported it."""
     scouted = AsyncDelivery(
         tool="scout_ahead",
@@ -628,7 +628,7 @@ async def test_background_work_that_honestly_spent_nothing_measurable_is_not_log
     assert not any(_SILENT_CARRIER in r.getMessage() for r in caplog.records), caplog.text
 
 
-async def test_a_conversing_kind_reports_its_stop_cause_onto_the_result():
+async def test_a_conversing_kind_reports_its_stop_cause_onto_the_result() -> None:
     """The stop cause a kind reports is the one the stored result carries."""
     kind = _FakeSingleShotKind(CandidateOutput(output=[{"content": "x"}], stop_cause=ConversationStopCause.USER_DONE))
 
@@ -795,7 +795,7 @@ class _WindowOpeningKind(_FakeSingleShotKind):
             return await super().invoke(instance, test_case, sink)
 
 
-async def test_a_kind_built_outside_this_module_times_its_own_cell_through_the_window():
+async def test_a_kind_built_outside_this_module_times_its_own_cell_through_the_window() -> None:
     """The port: a kind the runner could not have built opens the cell's window and is timed.
 
     This is the case that could not be written before the window was an argument, and it is
@@ -847,7 +847,7 @@ async def test_a_window_that_closed_on_no_turn_root_span_is_disclosed_as_that(ca
     assert not any("opened no span collection window" in message for message in warnings), warnings
 
 
-async def test_a_kind_payload_is_stored_verbatim_and_never_unpacked_by_the_runner():
+async def test_a_kind_payload_is_stored_verbatim_and_never_unpacked_by_the_runner() -> None:
     """``kind_payload`` is opaque: the engine stores it as the kind wrote it and reads nothing off it.
 
     The record the runner does read arrives on its own declared field, ``async_deliveries``. A
@@ -868,7 +868,7 @@ async def test_a_kind_payload_is_stored_verbatim_and_never_unpacked_by_the_runne
     assert result.async_deliveries is None
 
 
-async def test_a_kind_payload_round_trips_through_storage():
+async def test_a_kind_payload_round_trips_through_storage() -> None:
     """What a kind reported is what a later reader gets back from the store, field for field."""
     payload = {"router": {"label": "attack", "confidence": 0.82, "runner_up": None}, "turns": [1, 2]}
     delivery = AsyncDelivery(
@@ -905,7 +905,7 @@ _WHITESPACE_PAYLOAD = {
 }
 
 
-async def test_a_kind_payload_keeps_its_whitespace_from_the_kind_to_the_store():
+async def test_a_kind_payload_keeps_its_whitespace_from_the_kind_to_the_store() -> None:
     """Verbatim means the kind's own bytes: no key trimmed, no two keys collapsed, no value trimmed."""
     kind = _FakeSingleShotKind(CandidateOutput(output=[{"content": "x"}], kind_payload=_WHITESPACE_PAYLOAD))
     result, trace = await _run(kind, _template())
@@ -918,7 +918,7 @@ async def test_a_kind_payload_keeps_its_whitespace_from_the_kind_to_the_store():
     assert loaded is not None and loaded.kind_payload == _WHITESPACE_PAYLOAD
 
 
-def test_a_host_payload_keeps_its_keys_verbatim_on_a_run_and_a_case():
+def test_a_host_payload_keeps_its_keys_verbatim_on_a_run_and_a_case() -> None:
     """The host's own opaque payloads are stored as the host wrote them, top-level keys included."""
     payload = {" ns ": {" key ": " value "}, "ns": {"key": "value"}}
     run = make_eval_run(host_payload=payload)
@@ -955,7 +955,7 @@ def test_a_kind_payload_that_storage_cannot_encode_is_refused_at_construction(ca
         ("seed_failed", "apparatus: malformed seed"),
     ],
 )
-async def test_a_refused_preparation_records_one_cleanly_excluded_cell(termination: str, error: str):
+async def test_a_refused_preparation_records_one_cleanly_excluded_cell(termination: str, error: str) -> None:
     """The termination the kind names is the arm the record carries — it is how an operator navigates."""
     kind = _FailingPrepareKind(CandidatePreparationFailed(error, termination=termination))
 
@@ -973,7 +973,7 @@ async def test_a_refused_preparation_records_one_cleanly_excluded_cell(terminati
     assert result.kind_payload is None
 
 
-async def test_a_refused_precondition_carries_its_outcomes_onto_the_record():
+async def test_a_refused_precondition_carries_its_outcomes_onto_the_record() -> None:
     """The arm that HAS outcomes keeps them: an exclusion is read by asking what was presumed."""
     outcome = PreconditionOutcome(expression="call_count('x') == 0", presumes="a clean world", held=False, detail="1")
     kind = _FailingPrepareKind(
@@ -986,7 +986,7 @@ async def test_a_refused_precondition_carries_its_outcomes_onto_the_record():
     assert [o.expression for o in result.precondition_outcomes] == ["call_count('x') == 0"]
 
 
-async def test_an_unwired_kind_fails_the_run_rather_than_the_cell():
+async def test_an_unwired_kind_fails_the_run_rather_than_the_cell() -> None:
     """Every cell would fail identically, so this is a misconfigured run, not a partial one."""
     with pytest.raises(UnknownCandidateKind) as caught:
         await _run(_FakeSingleShotKind(CandidateOutput()), _template(candidate_kind="artifact-generator"))
@@ -1002,7 +1002,7 @@ async def test_an_unwired_kind_fails_the_run_rather_than_the_cell():
 # =============================================================================
 
 
-def test_a_template_that_names_no_kind_is_refused():
+def test_a_template_that_names_no_kind_is_refused() -> None:
     """A template states its kind: no host's kind name is assumed for one that does not.
 
     The default was one host's word, which every other host would have inherited without choosing
@@ -1013,7 +1013,7 @@ def test_a_template_that_names_no_kind_is_refused():
     assert EvalTemplate(scope_id="uni-1", name="t", intent="i", candidate_kind="any-kind").candidate_kind == "any-kind"
 
 
-async def test_every_kind_can_open_its_windows_without_asking_whether_anyone_is_watching():
+async def test_every_kind_can_open_its_windows_without_asking_whether_anyone_is_watching() -> None:
     """The engine side of the port, and the one promise it makes to a kind.
 
     The object every kind is handed as ``prepare``'s ``span_window`` must, per
@@ -1046,7 +1046,7 @@ def _eval_modules() -> list[Path]:
     return sorted(_EVAL_ROOT.rglob("*.py"))
 
 
-def test_the_runner_tier_reads_a_templates_candidate_kind_exactly_once():
+def test_the_runner_tier_reads_a_templates_candidate_kind_exactly_once() -> None:
     """The RUN tier dispatches once, at the top of a cell, and nowhere else.
 
     A second reader within a tier is how a kind acquires a second meaning — one branch
@@ -1078,7 +1078,7 @@ def test_the_runner_tier_reads_a_templates_candidate_kind_exactly_once():
     )
 
 
-def test_no_engine_module_names_the_conversational_kinds_implementation():
+def test_no_engine_module_names_the_conversational_kinds_implementation() -> None:
     """The conversational kind is a host's adapter; no module of the engine may name it.
 
     The protocol module is the opposite and is imported freely — that is what a declaration is
@@ -1110,7 +1110,7 @@ def test_no_engine_module_names_the_conversational_kinds_implementation():
     )
 
 
-def test_the_protocol_module_reaches_no_host_package():
+def test_the_protocol_module_reaches_no_host_package() -> None:
     """The seam's declaration travels with the engine, so it imports nothing host-side.
 
     The repo-wide form of this is ``test_extraction_import_boundary.py``; the point of
@@ -1134,7 +1134,7 @@ def test_the_protocol_module_reaches_no_host_package():
     assert not host, f"threetears/evals/kernel/candidate_kind.py reaches host packages: {host}"
 
 
-def test_the_seam_declares_no_trace_field():
+def test_the_seam_declares_no_trace_field() -> None:
     """The no-trace disposition, as a test rather than a paragraph.
 
     The objection to this boundary is that ``CandidateOutput.trace`` would leak a host's
@@ -1152,7 +1152,7 @@ def test_the_seam_declares_no_trace_field():
 # =============================================================================
 
 
-def test_the_candidate_kind_is_a_coordinate_of_every_variant():
+def test_the_candidate_kind_is_a_coordinate_of_every_variant() -> None:
     """A kind is what the candidate IS, so two kinds at one model are two variants.
 
     This used to assert the opposite — that the kind was a property of the template and never
@@ -1183,7 +1183,7 @@ def test_the_candidate_kind_is_a_coordinate_of_every_variant():
 # =============================================================================
 
 
-async def test_a_kind_that_samples_no_conditions_does_not_erase_the_runners_own_reading():
+async def test_a_kind_that_samples_no_conditions_does_not_erase_the_runners_own_reading() -> None:
     """The measurement-condition covariate is a high-water mark across the cell, and the seam must not be a hole.
 
     The runner samples around the kind and a conversational turn keeps sampling through its
@@ -1205,7 +1205,7 @@ async def test_a_kind_that_samples_no_conditions_does_not_erase_the_runners_own_
     assert result.covariates.get("execution_mode") == "concurrent"
 
 
-async def test_a_kind_that_samples_busier_conditions_wins_over_the_runners_reading():
+async def test_a_kind_that_samples_busier_conditions_wins_over_the_runners_reading() -> None:
     """The other direction of the same rule: a busier observation replaces a quieter one."""
     kind = _FakeSingleShotKind(
         CandidateOutput(output=[{"content": "x"}], telemetry=CandidateTelemetry(concurrent_eval_jobs=3))
@@ -1264,7 +1264,7 @@ class _RecordingJudgeLLM:
         )
 
 
-async def test_a_document_candidate_is_judged_on_its_rubric_against_the_material_it_was_given():
+async def test_a_document_candidate_is_judged_on_its_rubric_against_the_material_it_was_given() -> None:
     """The seam a report, an extraction or a summary needs, end to end through the real runner.
 
     Such a candidate's output is one document, which the transcript renderer cannot show, and
@@ -1310,7 +1310,7 @@ async def test_a_document_candidate_is_judged_on_its_rubric_against_the_material
     assert "passages of the output and of the case material" in system and "transcript" not in system
 
 
-async def test_a_conversational_candidate_gets_both_axes_and_the_transcript_its_kind_rendered():
+async def test_a_conversational_candidate_gets_both_axes_and_the_transcript_its_kind_rendered() -> None:
     """The other side of the switch, on the same fixture: a transcript declaration, all three axes.
 
     The transcript is the KIND's rendering — the engine never reads the turns in ``output`` — so
@@ -1430,7 +1430,7 @@ async def test_a_judged_kind_that_produced_nothing_owes_no_evidence(declared):
     assert judge.calls == []
 
 
-async def test_a_judge_wired_to_an_unjudged_kind_is_refused_before_the_candidate_is_built():
+async def test_a_judge_wired_to_an_unjudged_kind_is_refused_before_the_candidate_is_built() -> None:
     """Nothing a judge could read, so nothing is spent finding that out: ``prepare`` is never reached."""
     from threetears.evals.run.judge_service import JudgeService
 
@@ -1465,7 +1465,7 @@ async def test_a_kind_without_a_declaration_is_refused_by_name_before_it_is_buil
     assert kind.prepared is None
 
 
-def test_every_shipped_kind_declares_what_a_judge_reads_of_it():
+def test_every_shipped_kind_declares_what_a_judge_reads_of_it() -> None:
     """The declaration is what picks the axes, so each kind this package ships is pinned.
 
     The engine ships the judge kind and the report writer's; a host's own kinds (a conversational turn, a
@@ -1478,7 +1478,7 @@ def test_every_shipped_kind_declares_what_a_judge_reads_of_it():
     assert JudgeKind.judged_artifact is JudgedArtifact.UNJUDGED
 
 
-def test_an_account_refusal_must_record_the_apparatus_fault_it_is():
+def test_an_account_refusal_must_record_the_apparatus_fault_it_is() -> None:
     """``account_refused`` without an ``infra_errors`` entry is refused at construction.
 
     Without the entry nothing excludes the refused cell — it would be scored — and the run would

@@ -482,7 +482,7 @@ def test_a_uniform_shift_on_a_measure_with_no_range_is_not_separated_and_says_wh
 
     report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
-    (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+    (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]
     assert row["verdict"].startswith("cannot tell apart (") and "declare value_range" in row["verdict"]
 
 
@@ -507,7 +507,7 @@ def test_the_report_and_the_bundle_hold_an_immaterial_verdict_labelled() -> None
     bundle = _bundle([], accuracy=_ACCURACY, profile=profile)
     report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
-    (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+    (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]
 
     # A margin on a share is stated in points, as the change it bounds is.
     assert (
@@ -533,7 +533,7 @@ def test_an_equivalent_row_does_not_carry_the_caveat_that_contradicts_it() -> No
 
     report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
-    (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+    (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]
 
     assert " equivalent, within the measure's margin (margin ±25 pts)" in row["verdict"]
     assert "does not show" not in row["verdict"]
@@ -638,15 +638,15 @@ def test_the_report_states_each_contrast_s_means_cases_interval_and_effect_size(
     bundle = _bundle([], accuracy=accuracy, contrast_cases=range(9), profile=profile)
     report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
-    (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+    (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]
     (folded,) = [block for block in report.blocks if getattr(block, "name", None) == "comparison_statistics"]
-    (stats,) = [row for row in folded.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+    (stats,) = [row for row in folded.values() if row["reading"] == "Field accuracy"]
 
     assert row["cases"] == "9 paired; 3 of the control's left out, not run by the other side"
     # A share's mean is on the percent ruler, its interval in points; the level sits once in the column's header.
     assert stats["control_mean"] == pytest.approx(50.0)
     assert isinstance(row["interval"], str) and row["interval"].endswith(" pts")
-    assert next(column.header for column in table.columns if column.key == "interval") == "95% interval"  # type: ignore[attr-defined]
+    assert next(column.header for column in table.columns if column.key == "interval") == "95% interval"
     assert stats["hedges_g"] is not None and stats["hedges_g"] > 0
 
 
@@ -721,9 +721,9 @@ class TestWhatPairingBought:
         bundle = _bundle([], accuracy=accuracy, profile=profile)
         report = build_code_only_report(bundle, assembled_at="2026-10-11T00:00:00Z")
         (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparison_statistics"]
-        (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+        (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]
 
-        assert "Pairing r" in [column.header for column in table.columns]  # type: ignore[attr-defined]
+        assert "Pairing r" in [column.header for column in table.columns]
         assert row["pairing_r"] == pytest.approx(pairing_correlation(*accuracy))
 
 

@@ -255,7 +255,7 @@ class TestOffloadMiddlewareSeam:
             user_id=user,
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-        result = await _run_seam(state, config)  # type: ignore[arg-type]
+        result = await _run_seam(state, config)
         message = result["messages"][0]
         assert message.content == "scan stored\n\n[ctx:abc123]"
         # the offloader received the FULL content + verified identity.
@@ -283,7 +283,7 @@ class TestOffloadMiddlewareSeam:
         # content (offloaded), so the summary is preferred, not guard-dropped.
         config = _config(tool, offloader=offloader, threshold=50, conversation_id=conv, user_id=user)
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-        result = await _run_seam(state, config)  # type: ignore[arg-type]
+        result = await _run_seam(state, config)
         message = result["messages"][0]
         assert offloader.calls[0]["tool_summary"] == "3 open ports"
         assert offloader.calls[0]["content"] == big
@@ -304,7 +304,7 @@ class TestOffloadMiddlewareSeam:
             user_id=uuid4(),
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-        result = await _run_seam(state, config)  # type: ignore[arg-type]
+        result = await _run_seam(state, config)
         message = result["messages"][0]
         assert message.content == "tiny"
         assert offloader.calls == []
@@ -328,7 +328,7 @@ class TestOffloadMiddlewareSeam:
             user_id=uuid4(),
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-        result = await _run_seam(state, config)  # type: ignore[arg-type]
+        result = await _run_seam(state, config)
         message = result["messages"][0]
         assert message.artifact is None
         assert offloader.calls[0]["tool_summary"] is None
@@ -347,7 +347,7 @@ class TestOffloadMiddlewareSeam:
             user_id=uuid4(),
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-        await _run_seam(state, config)  # type: ignore[arg-type]
+        await _run_seam(state, config)
         assert offloader.calls[0]["tool_summary"] is None
 
     @pytest.mark.asyncio
@@ -363,7 +363,7 @@ class TestOffloadMiddlewareSeam:
             user_id=uuid4(),
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-        await _run_seam(state, config)  # type: ignore[arg-type]
+        await _run_seam(state, config)
         assert offloader.calls[0]["tool_summary"] is None
 
     @pytest.mark.asyncio
@@ -386,7 +386,7 @@ class TestOffloadMiddlewareSeam:
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
         with pytest.raises(GraphBubbleUp):
-            await _run_seam(state, config)  # type: ignore[arg-type]
+            await _run_seam(state, config)
 
     @pytest.mark.asyncio
     async def test_no_offload_below_threshold(self) -> None:
@@ -402,7 +402,7 @@ class TestOffloadMiddlewareSeam:
             user_id=uuid4(),
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-        result = await _run_seam(state, config)  # type: ignore[arg-type]
+        result = await _run_seam(state, config)
         assert result["messages"][0].content == small
         assert offloader.calls == []
 
@@ -413,7 +413,7 @@ class TestOffloadMiddlewareSeam:
         tool = _StubTool("scan", big)
         config = _config(tool, conversation_id=uuid4(), user_id=uuid4())
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-        result = await _run_seam(state, config)  # type: ignore[arg-type]
+        result = await _run_seam(state, config)
         assert result["messages"][0].content == big
 
     @pytest.mark.asyncio
@@ -430,7 +430,7 @@ class TestOffloadMiddlewareSeam:
             user_id=uuid4(),
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-        result = await _run_seam(state, config)  # type: ignore[arg-type]
+        result = await _run_seam(state, config)
         assert result["messages"][0].content == big
         assert len(offloader.calls) == 1
 
@@ -448,7 +448,7 @@ class TestOffloadMiddlewareSeam:
             user_id=uuid4(),
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-        result = await _run_seam(state, config)  # type: ignore[arg-type]
+        result = await _run_seam(state, config)
         assert result["messages"][0].content == big
 
     @pytest.mark.asyncio
@@ -470,7 +470,7 @@ class TestOffloadMiddlewareSeam:
             user_id=uuid4(),
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-        result = await _run_seam(state, config)  # type: ignore[arg-type]
+        result = await _run_seam(state, config)
         # error text rode inline; offloader was never consulted.
         assert "Tool error" in result["messages"][0].content
         assert offloader.calls == []
@@ -483,7 +483,7 @@ class TestOffloadMiddlewareSeam:
         offloader = _FakeOffloader()
         config = _config(tool, offloader=offloader, threshold=10, user_id=uuid4())
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-        result = await _run_seam(state, config)  # type: ignore[arg-type]
+        result = await _run_seam(state, config)
         assert result["messages"][0].content == big
         assert offloader.calls == []
 
@@ -500,7 +500,7 @@ class TestOffloadMiddlewareSeam:
             user_id=uuid4(),
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
-        result = await _run_seam(state, config)  # type: ignore[arg-type]
+        result = await _run_seam(state, config)
         # one char under the default -> stays inline.
         assert result["messages"][0].content == under
         assert offloader.calls == []
@@ -526,7 +526,7 @@ class TestOffloadMiddlewareSeam:
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
         with pytest.raises(GraphBubbleUp):
-            await _run_seam(state, config)  # type: ignore[arg-type]
+            await _run_seam(state, config)
 
     def test_protocol_is_importable(self) -> None:
         """the ToolResultOffloader Protocol is part of the public surface."""
@@ -555,7 +555,7 @@ class TestOffloadMiddlewareSeam:
             user_id=uuid4(),
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("threetears.context_recall")]}
-        result = await _run_seam(state, config)  # type: ignore[arg-type]
+        result = await _run_seam(state, config)
         assert result["messages"][0].content == recalled
         assert "[ctx:" not in result["messages"][0].content
         assert offloader.calls == []
@@ -574,7 +574,7 @@ class TestOffloadMiddlewareSeam:
             user_id=uuid4(),
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("threetears_context_recall")]}
-        result = await _run_seam(state, config)  # type: ignore[arg-type]
+        result = await _run_seam(state, config)
         assert result["messages"][0].content == recalled
         assert offloader.calls == []
 
@@ -595,7 +595,7 @@ class TestOffloadMiddlewareSeam:
         )
         state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
         with pytest.raises(GraphBubbleUp):
-            await _run_seam(state, config)  # type: ignore[arg-type]
+            await _run_seam(state, config)
 
 
 class TestOffloadHelpers:

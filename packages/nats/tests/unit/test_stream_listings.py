@@ -100,9 +100,7 @@ class TestAnObjectListing:
         latest.append((f"$O.{_STORE}.C.orphan", b"chunk", None))
         latest.extend((_meta_subject(f"o/{n}"), _record(f"o/{n}", f"n{n}"), None) for n in range(_DEV_OBJECTS))
         stream = ListedStream(_OBJ_STREAM, latest)
-        store = NatsObjectStore(  # type: ignore[arg-type]
-            client=ListedClient(stream), full_name=_STORE, op_timeout=timedelta(seconds=5)
-        )
+        store = NatsObjectStore(client=ListedClient(stream), full_name=_STORE, op_timeout=timedelta(seconds=5))
 
         class _NoClaims:
             async def list_keys(self) -> list[str]:

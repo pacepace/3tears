@@ -86,7 +86,7 @@ async def pool(pg_schema: tuple[str, str]) -> Any:
     conn = await asyncpg.connect(url)
     try:
         await conn.execute(f'SET search_path TO "{schema}", public')
-        await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(AsyncpgStore(conn))
     finally:
         await conn.close()
     created = await asyncpg.create_pool(

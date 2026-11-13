@@ -166,7 +166,7 @@ def _closure_breaches(members: Iterable[str], reaches: Callable[[str], Iterable[
 
 
 @pytest.mark.parametrize("packages", PACKAGE_SETS, ids="+".join)
-def test_the_package_set_is_closed_under_import(packages: tuple[str, ...]):
+def test_the_package_set_is_closed_under_import(packages: tuple[str, ...]) -> None:
     """No member of the set imports an eval module outside it.
 
     The property that decides whether the set can be consumed alone. A member importing a
@@ -189,7 +189,7 @@ def test_the_package_set_is_closed_under_import(packages: tuple[str, ...]):
     )
 
 
-def test_the_closure_assertion_names_the_pair_that_breaks_it():
+def test_the_closure_assertion_names_the_pair_that_breaks_it() -> None:
     """A member reaching a non-member is caught, and reported as that exact pair.
 
     The negative half, and it is a test rather than a note because the positive one above is

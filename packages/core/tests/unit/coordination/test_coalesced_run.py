@@ -40,7 +40,7 @@ class _Body:
 
 
 def _replica(client: FakeNatsClient, holder: str, body: _Body) -> CoalescedRun:
-    lease = KVLease(client, pod_id=holder)  # type: ignore[arg-type]
+    lease = KVLease(client, pod_id=holder)
     return CoalescedRun(lease, _KEY, body, ttl=_TTL, renew_every=_RENEW)
 
 
@@ -144,7 +144,7 @@ async def test_a_failed_run_is_raised_and_not_retried() -> None:
     async def fails() -> None:
         raise ConnectionError("the warehouse went away")
 
-    run = CoalescedRun(KVLease(client, pod_id="pod-a"), _KEY, fails, ttl=_TTL, renew_every=_RENEW)  # type: ignore[arg-type]
+    run = CoalescedRun(KVLease(client, pod_id="pod-a"), _KEY, fails, ttl=_TTL, renew_every=_RENEW)
     await run.request()
     with pytest.raises(ConnectionError, match="went away"):
         await run.drain()
@@ -155,7 +155,7 @@ async def test_a_failed_run_is_raised_and_not_retried() -> None:
 async def test_a_run_whose_lease_is_lost_is_cancelled_and_asked_for_again() -> None:
     client = FakeNatsClient()
     body = _Body()
-    lease = KVLease(client, pod_id="pod-a")  # type: ignore[arg-type]
+    lease = KVLease(client, pod_id="pod-a")
     run = CoalescedRun(lease, _KEY, body, ttl=timedelta(seconds=1), renew_every=timedelta(seconds=0.05))
     await run.request()
     body.hold_open()
@@ -176,13 +176,13 @@ async def test_a_run_whose_lease_is_lost_is_cancelled_and_asked_for_again() -> N
 
 def test_the_renewal_must_be_shorter_than_the_lease() -> None:
     with pytest.raises(ValueError, match="renew_every"):
-        CoalescedRun(KVLease(FakeNatsClient()), _KEY, _Body(), ttl=_TTL, renew_every=_TTL)  # type: ignore[arg-type]
+        CoalescedRun(KVLease(FakeNatsClient()), _KEY, _Body(), ttl=_TTL, renew_every=_TTL)
 
 
 async def _second_replica_cannot_hold(client: FakeNatsClient) -> bool:
     """whether another replica is refused the lease right now (asked directly, recording no request)."""
     try:
-        held = await KVLease(client, pod_id="pod-b").hold(_KEY, ttl=_TTL, renew_every=_RENEW)  # type: ignore[arg-type]
+        held = await KVLease(client, pod_id="pod-b").hold(_KEY, ttl=_TTL, renew_every=_RENEW)
     except LeaseUnavailable:
         return True
     await held.release()
@@ -207,7 +207,7 @@ def _cancellable_run(
             refused_meanwhile.append(await _second_replica_cannot_hold(client))
             raise
 
-    run = CoalescedRun(KVLease(client, pod_id="pod-a"), _KEY, writes_until_stopped, ttl=_TTL, renew_every=_RENEW)  # type: ignore[arg-type]
+    run = CoalescedRun(KVLease(client, pod_id="pod-a"), _KEY, writes_until_stopped, ttl=_TTL, renew_every=_RENEW)
     return run, started, cleaning, finish_cleanup, refused_meanwhile
 
 
@@ -263,7 +263,7 @@ async def test_a_drain_answers_what_each_run_returned_in_order_and_none_when_ano
         await release.wait()
         return f"run {number}"
 
-    lease = KVLease(client, pod_id="pod-a")  # type: ignore[arg-type]
+    lease = KVLease(client, pod_id="pod-a")
     run = CoalescedRun(lease, _KEY, body, ttl=_TTL, renew_every=_RENEW)
     waiting = _replica(client, "pod-b", _Body())
     await run.request()

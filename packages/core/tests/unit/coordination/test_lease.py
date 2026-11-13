@@ -43,7 +43,7 @@ async def _make_lease(
     :rtype: tuple[KVLease, FakeNatsClient]
     """
     client = FakeNatsClient()
-    lease = KVLease(nats_client=client, bucket_name=bucket_name, pod_id=pod_id)  # type: ignore[arg-type]
+    lease = KVLease(nats_client=client, bucket_name=bucket_name, pod_id=pod_id)
     return lease, client
 
 
@@ -107,7 +107,7 @@ class TestAcquireFailFast:
         holder_lease, client = await _make_lease(pod_id="pod-first")
         await holder_lease.acquire("lock/a", ttl_seconds=60)
 
-        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")  # type: ignore[arg-type]
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
         with pytest.raises(LeaseUnavailable):
             await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=0)
 
@@ -123,7 +123,7 @@ class TestAcquireFailFast:
             await original_sleep(0)
 
         monkeypatch.setattr("threetears.core.coordination.lease.asyncio.sleep", _spy_sleep)
-        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")  # type: ignore[arg-type]
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
         with pytest.raises(LeaseUnavailable):
             await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=0)
         assert sleeps == []
@@ -142,7 +142,7 @@ class TestAcquireWaitThenSucceeds:
             await asyncio.sleep(0.1)
             await handle.release()
 
-        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")  # type: ignore[arg-type]
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
         release_task = asyncio.create_task(_release_after_delay())
         try:
             second_handle = await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=5)
@@ -158,7 +158,7 @@ class TestAcquireTimeout:
         holder_lease, client = await _make_lease(pod_id="pod-first")
         await holder_lease.acquire("lock/a", ttl_seconds=60)
 
-        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")  # type: ignore[arg-type]
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
         with pytest.raises(LeaseTimeout):
             await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=1)
 
@@ -314,7 +314,7 @@ class TestStaleLease:
         new_revision = await bucket.update(key="lock/a", value=expired, revision=first_handle.revision)
         assert new_revision is not None
 
-        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")  # type: ignore[arg-type]
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
         handle = await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=0)
         assert handle.holder == "pod-second"
         value = await bucket.get(key="lock/a")
@@ -342,19 +342,19 @@ class TestBucketDefaults:
         """
         client = FakeNatsClient()
         monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "prod14")
-        lease = KVLease(nats_client=client, pod_id="pod-alpha")  # type: ignore[arg-type]
+        lease = KVLease(nats_client=client, pod_id="pod-alpha")
         await lease.acquire("lock/a", ttl_seconds=30)
         bucket = await _bucket_for(client, "leases")
         assert await bucket.get(key="lock/a") is not None
         assert "prod14" not in lease.bucket_name
 
         monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
-        assert KVLease(nats_client=FakeNatsClient(), pod_id="p").bucket_name == lease.bucket_name  # type: ignore[arg-type]
+        assert KVLease(nats_client=FakeNatsClient(), pod_id="p").bucket_name == lease.bucket_name
 
     async def test_default_bucket_is_the_leases_suffix(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
         client = FakeNatsClient()
-        lease = KVLease(nats_client=client, pod_id="pod-alpha")  # type: ignore[arg-type]
+        lease = KVLease(nats_client=client, pod_id="pod-alpha")
         await lease.acquire("lock/a", ttl_seconds=30)
         bucket = await _bucket_for(client, "leases")
         value = await bucket.get(key="lock/a")
@@ -364,7 +364,7 @@ class TestBucketDefaults:
 
     async def test_default_pod_id_is_generated_when_omitted(self) -> None:
         client = FakeNatsClient()
-        lease = KVLease(nats_client=client, bucket_name="test_leases")  # type: ignore[arg-type]
+        lease = KVLease(nats_client=client, bucket_name="test_leases")
         handle = await lease.acquire("lock/a", ttl_seconds=30)
         assert handle.holder.startswith("pod-")
         assert len(handle.holder) == len("pod-") + 32
@@ -384,8 +384,8 @@ class TestBucketDefaults:
         monkeypatch.setattr(lease_module, "uuid7", lambda: next(same_millisecond))
         client = FakeNatsClient()
 
-        first = KVLease(nats_client=client, bucket_name="test_leases")  # type: ignore[arg-type]
-        second = KVLease(nats_client=client, bucket_name="test_leases")  # type: ignore[arg-type]
+        first = KVLease(nats_client=client, bucket_name="test_leases")
+        second = KVLease(nats_client=client, bucket_name="test_leases")
 
         assert first.pod_id != second.pod_id
 
@@ -403,7 +403,7 @@ class TestOwnerScopedLeaseKeys:
     @pytest.mark.asyncio
     async def test_a_claim_is_written_under_the_owners_scope(self) -> None:
         client = FakeNatsClient()
-        lease = KVLease(client, bucket_name="leases", pod_id="replica-1", key_scope=self._SCOPE)  # type: ignore[arg-type]
+        lease = KVLease(client, bucket_name="leases", pod_id="replica-1", key_scope=self._SCOPE)
         handle = await lease.acquire("session-digest", ttl_seconds=30, max_wait_seconds=0)
         assert handle.key == f"{self._SCOPE}.session-digest"
         bucket = await client.kv_bucket(name="leases")
@@ -415,8 +415,8 @@ class TestOwnerScopedLeaseKeys:
     @pytest.mark.asyncio
     async def test_replicas_of_one_owner_contend_for_one_key(self) -> None:
         client = FakeNatsClient()
-        first = KVLease(client, bucket_name="leases", pod_id="replica-1", key_scope=self._SCOPE)  # type: ignore[arg-type]
-        second = KVLease(client, bucket_name="leases", pod_id="replica-2", key_scope=self._SCOPE)  # type: ignore[arg-type]
+        first = KVLease(client, bucket_name="leases", pod_id="replica-1", key_scope=self._SCOPE)
+        second = KVLease(client, bucket_name="leases", pod_id="replica-2", key_scope=self._SCOPE)
         held = await first.acquire("s", ttl_seconds=30, max_wait_seconds=0)
         with pytest.raises(LeaseUnavailable):
             await second.acquire("s", ttl_seconds=30, max_wait_seconds=0)
@@ -425,7 +425,7 @@ class TestOwnerScopedLeaseKeys:
     @pytest.mark.parametrize("scope", ["", "a.b", "a*", ">"])
     def test_a_scope_that_is_not_one_literal_token_is_refused(self, scope: str) -> None:
         with pytest.raises(ValueError, match="key_scope"):
-            KVLease(FakeNatsClient(), bucket_name="leases", key_scope=scope)  # type: ignore[arg-type]
+            KVLease(FakeNatsClient(), bucket_name="leases", key_scope=scope)
 
 
 class TestAnEntryInAnotherFormatIsAnotherHolders:
@@ -592,8 +592,8 @@ class TestHolder:
 
     async def test_a_held_lease_names_its_holder_to_every_factory_and_none_once_released(self) -> None:
         client = FakeNatsClient()
-        holding = KVLease(nats_client=client, pod_id="pod-alpha", key_scope="pod1")  # type: ignore[arg-type]
-        reading = KVLease(nats_client=client, pod_id="pod-beta", key_scope="pod1")  # type: ignore[arg-type]
+        holding = KVLease(nats_client=client, pod_id="pod-alpha", key_scope="pod1")
+        reading = KVLease(nats_client=client, pod_id="pod-beta", key_scope="pod1")
 
         handle = await holding.acquire("load", ttl_seconds=30)
 
@@ -606,9 +606,9 @@ class TestHolder:
 
     async def test_a_lease_under_another_owners_scope_is_not_this_ones(self) -> None:
         client = FakeNatsClient()
-        await KVLease(nats_client=client, pod_id="pod-alpha", key_scope="pod1").acquire("load", ttl_seconds=30)  # type: ignore[arg-type]
+        await KVLease(nats_client=client, pod_id="pod-alpha", key_scope="pod1").acquire("load", ttl_seconds=30)
 
-        assert await KVLease(nats_client=client, pod_id="pod-beta", key_scope="pod2").holder("load") is None  # type: ignore[arg-type]
+        assert await KVLease(nats_client=client, pod_id="pod-beta", key_scope="pod2").holder("load") is None
 
     async def test_a_holder_that_died_is_named_until_its_entry_expires_and_not_after(self) -> None:
         lease, client = await _make_lease(pod_id="pod-reader")

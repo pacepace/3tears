@@ -39,7 +39,7 @@ def _pass_threshold(**overrides: Any) -> dict[str, Any]:
     return {**declared, **overrides}
 
 
-def test_a_declaration_loads_into_the_registry_code_would_build():
+def test_a_declaration_loads_into_the_registry_code_would_build() -> None:
     registry = load_bar_registry({"bars": [_bar()], "pass_thresholds": [_pass_threshold()]})
     assert registry.bars == (
         Bar(
@@ -56,22 +56,22 @@ def test_a_declaration_loads_into_the_registry_code_would_build():
     assert registry.pass_threshold("extract") == 4
 
 
-def test_an_empty_declaration_is_an_empty_registry():
+def test_an_empty_declaration_is_an_empty_registry() -> None:
     registry = load_bar_registry({})
     assert registry.bars == ()
     assert registry.pass_threshold("anything") == DEFAULT_PASS_THRESHOLD
 
 
-def test_a_declaration_of_pass_thresholds_alone_loads():
+def test_a_declaration_of_pass_thresholds_alone_loads() -> None:
     assert load_bar_registry({"pass_thresholds": [_pass_threshold()]}).bars == ()
 
 
-def test_an_adopted_proposal_keeps_its_vacuous_flag():
+def test_an_adopted_proposal_keeps_its_vacuous_flag() -> None:
     (bar,) = load_bar_registry({"bars": [_bar(vacuous_seed=True)]}).bars
     assert bar.vacuous_seed is True
 
 
-def test_an_integer_threshold_reads_as_the_number_it_is():
+def test_an_integer_threshold_reads_as_the_number_it_is() -> None:
     (bar,) = load_bar_registry({"bars": [_bar(threshold=1)]}).bars
     assert bar.threshold == 1.0
 
@@ -79,11 +79,11 @@ def test_an_integer_threshold_reads_as_the_number_it_is():
 class TestTheShapeIsReadStrictly:
     """Each defect is named by its place in the declaration, and every one at once."""
 
-    def test_an_unknown_top_level_field_is_refused(self):
+    def test_an_unknown_top_level_field_is_refused(self) -> None:
         with pytest.raises(BarRegistrationError, match="thresholds: is not a field a bar declaration has"):
             load_bar_registry({"bars": [], "thresholds": []})
 
-    def test_a_misspelt_field_on_a_bar_is_refused_rather_than_dropped(self):
+    def test_a_misspelt_field_on_a_bar_is_refused_rather_than_dropped(self) -> None:
         declared = _bar()
         declared["rationle"] = declared.pop("rationale")
         with pytest.raises(BarRegistrationError) as refused:
@@ -91,7 +91,7 @@ class TestTheShapeIsReadStrictly:
         assert "bars.0.rationale: is required" in str(refused.value)
         assert "bars.0.rationle: is not a field a bar declaration has" in str(refused.value)
 
-    def test_an_unknown_field_on_a_pass_threshold_is_refused(self):
+    def test_an_unknown_field_on_a_pass_threshold_is_refused(self) -> None:
         with pytest.raises(BarRegistrationError, match="pass_thresholds.0.scale: is not a field"):
             load_bar_registry({"pass_thresholds": [_pass_threshold(scale=5)]})
 
@@ -99,26 +99,26 @@ class TestTheShapeIsReadStrictly:
         ("field", "value"),
         [("threshold", "0.92"), ("threshold", True), ("higher_is_better", "yes"), ("behavior", 7)],
     )
-    def test_a_bar_value_of_the_wrong_type_is_refused_not_coerced(self, field: str, value: object):
+    def test_a_bar_value_of_the_wrong_type_is_refused_not_coerced(self, field: str, value: object) -> None:
         with pytest.raises(BarRegistrationError, match=rf"bars\.0\.{field}: .*got {value!r}"):
             load_bar_registry({"bars": [_bar(**{field: value})]})
 
-    def test_a_threshold_that_is_not_finite_is_refused(self):
+    def test_a_threshold_that_is_not_finite_is_refused(self) -> None:
         with pytest.raises(BarRegistrationError, match=r"bars\.0\.threshold: input should be a finite number"):
             load_bar_registry({"bars": [_bar(threshold=float("inf"))]})
 
     @pytest.mark.parametrize("value", [4.0, True, "4"])
-    def test_a_pass_threshold_that_is_not_a_whole_level_is_refused(self, value: object):
+    def test_a_pass_threshold_that_is_not_a_whole_level_is_refused(self, value: object) -> None:
         with pytest.raises(
             BarRegistrationError, match=r"pass_thresholds\.0\.threshold: input should be a valid integer"
         ):
             load_bar_registry({"pass_thresholds": [_pass_threshold(threshold=value)]})
 
-    def test_a_list_that_is_not_a_list_is_refused(self):
+    def test_a_list_that_is_not_a_list_is_refused(self) -> None:
         with pytest.raises(BarRegistrationError, match="bars: input should be a valid list"):
             load_bar_registry({"bars": _bar()})
 
-    def test_every_defect_is_named_at_once(self):
+    def test_every_defect_is_named_at_once(self) -> None:
         with pytest.raises(BarRegistrationError) as refused:
             load_bar_registry({"bars": [_bar(threshold="x"), _bar(extra=1)], "pass_thresholds": [{}]})
         message = str(refused.value)
@@ -127,20 +127,20 @@ class TestTheShapeIsReadStrictly:
 
 
 class TestTheRegistrysOwnRefusalsStillHold:
-    def test_a_pair_declared_twice_is_refused(self):
+    def test_a_pair_declared_twice_is_refused(self) -> None:
         with pytest.raises(BarRegistrationError, match="extract/field_accuracy is declared twice"):
             load_bar_registry({"bars": [_bar(), _bar(threshold=0.95)]})
 
-    def test_a_blank_rationale_is_refused(self):
+    def test_a_blank_rationale_is_refused(self) -> None:
         with pytest.raises(BarRegistrationError, match="states no rationale"):
             load_bar_registry({"bars": [_bar(rationale="  ")]})
 
-    def test_a_pass_threshold_of_one_is_refused(self):
+    def test_a_pass_threshold_of_one_is_refused(self) -> None:
         with pytest.raises(BarRegistrationError, match="outside 2-5"):
             load_bar_registry({"pass_thresholds": [_pass_threshold(threshold=1)]})
 
 
-def test_a_loaded_registry_is_held_to_the_hosts_measures_like_one_built_in_code():
+def test_a_loaded_registry_is_held_to_the_hosts_measures_like_one_built_in_code() -> None:
     """The profile checks a loaded registry against its measures exactly as it checks one built in code."""
     toy = toyhost_profile()
     (registered, *_rest) = toy.bars.bars

@@ -63,10 +63,10 @@ class TestSearchVectorGinIndexDropped:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store, target=9)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store, target=9)
             assert await _index_exists(conn, schema, _DROPPED_INDEX)
 
-            assert await runner.apply_for_agent_schema(store, target=10) == 1  # type: ignore[arg-type]
+            assert await runner.apply_for_agent_schema(store, target=10) == 1
             assert not await _index_exists(conn, schema, _DROPPED_INDEX)
             # the btree scope indexes the filter narrows through are untouched.
             assert await _index_exists(conn, schema, "idx_conv_user")
@@ -94,7 +94,7 @@ class TestSearchVectorGinIndexDropped:
             assert count == 1
 
             # replay is a no-op, and the body tolerates an index already gone.
-            assert await runner.apply_for_agent_schema(store, target=10) == 0  # type: ignore[arg-type]
+            assert await runner.apply_for_agent_schema(store, target=10) == 0
             await drop_search_vector_gin_index(store)  # type: ignore[arg-type]
         finally:
             await conn.close()

@@ -51,7 +51,7 @@ def _unique(stem: str) -> str:
 class TestPrometheusCheck:
     """prometheus_client availability detection, observed through what an accessor records."""
 
-    def test_prometheus_available_when_installed(self):
+    def test_prometheus_available_when_installed(self) -> None:
         from prometheus_client import REGISTRY
 
         # prometheus-client is a dev dependency, so an accessor records into the registry
@@ -60,7 +60,7 @@ class TestPrometheusCheck:
 
         assert REGISTRY.get_sample_value(f"{name.replace('.', '_')}_total") == 1.0
 
-    def test_prometheus_cached_after_first_check(self, monkeypatch: pytest.MonkeyPatch):
+    def test_prometheus_cached_after_first_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """the first check decides for the process: prometheus_client arriving later does not change it."""
         from prometheus_client import REGISTRY
 
@@ -97,15 +97,15 @@ def _registered_as(name: str) -> str:
 class TestSanitizeMetricName:
     """metric name sanitization, observed as the name the registry records under."""
 
-    def test_dots_replaced(self):
+    def test_dots_replaced(self) -> None:
         suffix = uuid.uuid4().hex[:8]
         assert _registered_as(f"my.module.func{suffix}") == f"my_module_func{suffix}"
 
-    def test_angle_brackets_replaced(self):
+    def test_angle_brackets_replaced(self) -> None:
         suffix = uuid.uuid4().hex[:8]
         assert _registered_as(f"my.module.<locals>.func{suffix}") == f"my_module__locals__func{suffix}"
 
-    def test_already_clean_name_unchanged(self):
+    def test_already_clean_name_unchanged(self) -> None:
         name = f"already_clean_{uuid.uuid4().hex[:8]}"
         assert _registered_as(name) == name
 
@@ -113,7 +113,7 @@ class TestSanitizeMetricName:
 class TestAccessors:
     """counter/histogram/gauge get-or-create accessors."""
 
-    def test_counter_records_arbitrary_value(self):
+    def test_counter_records_arbitrary_value(self) -> None:
         from prometheus_client import REGISTRY
 
         c = counter("test.accessor.counter")
@@ -122,7 +122,7 @@ class TestAccessors:
 
         assert REGISTRY.get_sample_value("test_accessor_counter_total") == 3.0
 
-    def test_counter_with_labels(self):
+    def test_counter_with_labels(self) -> None:
         from prometheus_client import REGISTRY
 
         c = counter("test.accessor.labelled.counter", label_names=("outcome",))
@@ -133,7 +133,7 @@ class TestAccessors:
         assert REGISTRY.get_sample_value("test_accessor_labelled_counter_total", {"outcome": "win"}) == 1.0
         assert REGISTRY.get_sample_value("test_accessor_labelled_counter_total", {"outcome": "loss"}) == 2.0
 
-    def test_histogram_records_result_derived_value(self):
+    def test_histogram_records_result_derived_value(self) -> None:
         """the whole point: a value only known after a function returns."""
         from prometheus_client import REGISTRY
 
@@ -145,7 +145,7 @@ class TestAccessors:
 
         assert REGISTRY.get_sample_value("test_accessor_completion_rate_sum") == 0.75
 
-    def test_gauge_set_and_inc_dec(self):
+    def test_gauge_set_and_inc_dec(self) -> None:
         from prometheus_client import REGISTRY
 
         g = gauge("test.accessor.gauge")
@@ -158,7 +158,7 @@ class TestAccessors:
         g.dec(2)
         assert REGISTRY.get_sample_value("test_accessor_gauge") == 4.0
 
-    def test_accessor_cached_across_calls(self):
+    def test_accessor_cached_across_calls(self) -> None:
         """a second accessor call under the same name reuses the instrument.
 
         prometheus_client raises ValueError on duplicate registration, so
@@ -219,7 +219,7 @@ class TestAccessors:
         assert len({id(instrument) for instrument in results}) == 1
         assert len(registrations) == 1
 
-    def test_different_kinds_under_the_same_name_raise(self):
+    def test_different_kinds_under_the_same_name_raise(self) -> None:
         """counter/histogram/gauge each register under the exact name given;
 
         prometheus's registry conflicts purely on metric name regardless of
@@ -233,7 +233,7 @@ class TestAccessors:
         with pytest.raises(ValueError, match="Duplicated timeseries"):
             histogram("test.accessor.shared_name_conflict")
 
-    def test_accessor_passthrough_without_prometheus(self, monkeypatch: pytest.MonkeyPatch):
+    def test_accessor_passthrough_without_prometheus(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with _metrics_without_prometheus(monkeypatch) as metrics:
             c = metrics.counter("test.accessor.passthrough")
             h = metrics.histogram("test.accessor.passthrough.histogram")
@@ -251,58 +251,58 @@ class TestAccessors:
 class TestMeteredDecorator:
     """@metered decorator behavior."""
 
-    def test_metered_bare_sync(self):
+    def test_metered_bare_sync(self) -> None:
         @metered
         def add(a, b):
             return a + b
 
         assert add(1, 2) == 3
 
-    def test_metered_parameterised_sync(self):
+    def test_metered_parameterised_sync(self) -> None:
         @metered(name="test.custom.metric")
         def add(a, b):
             return a + b
 
         assert add(1, 2) == 3
 
-    async def test_metered_bare_async(self):
+    async def test_metered_bare_async(self) -> None:
         @metered
         async def add(a, b):
             return a + b
 
         assert await add(1, 2) == 3
 
-    async def test_metered_parameterised_async(self):
+    async def test_metered_parameterised_async(self) -> None:
         @metered(name="test.custom.async.metric")
         async def add(a, b):
             return a + b
 
         assert await add(1, 2) == 3
 
-    def test_metered_preserves_function_name(self):
+    def test_metered_preserves_function_name(self) -> None:
         @metered
-        def my_function():
+        def my_function() -> None:
             pass
 
         assert my_function.__name__ == "my_function"
 
-    def test_metered_sync_exception_propagates(self):
+    def test_metered_sync_exception_propagates(self) -> None:
         @metered(name="test.explode.sync")
-        def explode():
+        def explode() -> None:
             raise ValueError("boom")
 
         with pytest.raises(ValueError, match="boom"):
             explode()
 
-    async def test_metered_async_exception_propagates(self):
+    async def test_metered_async_exception_propagates(self) -> None:
         @metered(name="test.explode.async")
-        async def explode():
+        async def explode() -> None:
             raise ValueError("boom")
 
         with pytest.raises(ValueError, match="boom"):
             await explode()
 
-    def test_metered_passthrough_without_prometheus(self, monkeypatch: pytest.MonkeyPatch):
+    def test_metered_passthrough_without_prometheus(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with _metrics_without_prometheus(monkeypatch) as metrics:
 
             @metrics.metered(name="test.passthrough")
@@ -311,7 +311,7 @@ class TestMeteredDecorator:
 
             assert add(1, 2) == 3
 
-    async def test_metered_async_passthrough_without_prometheus(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_metered_async_passthrough_without_prometheus(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with _metrics_without_prometheus(monkeypatch) as metrics:
 
             @metrics.metered(name="test.async.passthrough")
@@ -330,7 +330,7 @@ class TestMeteredRecording:
     private module or instrument state.
     """
 
-    def test_success_increments_success_counter(self):
+    def test_success_increments_success_counter(self) -> None:
         from prometheus_client import REGISTRY
 
         @metered(name="test.recording.success")
@@ -343,11 +343,11 @@ class TestMeteredRecording:
         assert REGISTRY.get_sample_value("test_recording_success_calls_total", {"status": "success"}) == 2.0
         assert REGISTRY.get_sample_value("test_recording_success_calls_total", {"status": "error"}) is None
 
-    def test_error_increments_error_counter_not_success(self):
+    def test_error_increments_error_counter_not_success(self) -> None:
         from prometheus_client import REGISTRY
 
         @metered(name="test.recording.error")
-        def explode():
+        def explode() -> None:
             raise RuntimeError("boom")
 
         for _ in range(3):
@@ -357,7 +357,7 @@ class TestMeteredRecording:
         assert REGISTRY.get_sample_value("test_recording_error_calls_total", {"status": "error"}) == 3.0
         assert REGISTRY.get_sample_value("test_recording_error_calls_total", {"status": "success"}) is None
 
-    def test_duration_histogram_records_observations(self):
+    def test_duration_histogram_records_observations(self) -> None:
         from prometheus_client import REGISTRY
 
         @metered(name="test.recording.duration")
@@ -369,7 +369,7 @@ class TestMeteredRecording:
 
         assert REGISTRY.get_sample_value("test_recording_duration_duration_seconds_count") == 2.0
 
-    def test_instruments_created_once_and_reused(self):
+    def test_instruments_created_once_and_reused(self) -> None:
         """
         a second call under the same metric name must not re-register the
         instrument pair -- prometheus_client raises ValueError on duplicate
@@ -388,7 +388,7 @@ class TestMeteredRecording:
 
         assert REGISTRY.get_sample_value("test_recording_reuse_calls_total", {"status": "success"}) == 2.0
 
-    async def test_async_success_increments_success_counter(self):
+    async def test_async_success_increments_success_counter(self) -> None:
         from prometheus_client import REGISTRY
 
         @metered(name="test.recording.async.success")

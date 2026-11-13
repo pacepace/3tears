@@ -93,7 +93,7 @@ async def _courier(host: EvalHost, timeline: list[str]) -> BundleInspection:
     return inspection
 
 
-async def test_two_hosts_run_and_analyse_concurrently_and_each_bundle_speaks_only_its_own_vocabulary():
+async def test_two_hosts_run_and_analyse_concurrently_and_each_bundle_speaks_only_its_own_vocabulary() -> None:
     toy, courier = toyhost_host(), courier_host()
     timeline: list[str] = []
 
@@ -117,7 +117,7 @@ async def test_two_hosts_run_and_analyse_concurrently_and_each_bundle_speaks_onl
     assert TOY_FIELD_ACCURACY.description not in courier_text, "the toy's meaning reached the courier bundle"
 
 
-async def test_each_host_measures_with_its_own_registry():
+async def test_each_host_measures_with_its_own_registry() -> None:
     """The measure catalogue — the surface a paid generator reads — is each host's own, described by it.
 
     Key presence cannot show this: a bundle names its measures whichever registry described them. So

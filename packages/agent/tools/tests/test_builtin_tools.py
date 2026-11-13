@@ -14,7 +14,7 @@ import pytest
 
 class TestCalculator:
     @pytest.fixture(autouse=True)
-    def _require_simpleeval(self):
+    def _require_simpleeval(self) -> None:
         pytest.importorskip("simpleeval")
 
     def _create(self, config: dict[str, Any] | None = None) -> Any:
@@ -22,57 +22,57 @@ class TestCalculator:
 
         return create_calculator_tool(config or {}, "Calculate math expressions")
 
-    def test_basic(self):
+    def test_basic(self) -> None:
         tool = self._create()
         assert tool.invoke({"expression": "2 + 3"}) == "2 + 3 = 5"
 
-    def test_functions(self):
+    def test_functions(self) -> None:
         tool = self._create()
         assert tool.invoke({"expression": "sqrt(144)"}) == "sqrt(144) = 12"
 
-    def test_error(self):
+    def test_error(self) -> None:
         tool = self._create()
         result = tool.invoke({"expression": "invalid!!!"})
         assert "[TOOL ERROR]" in result
 
-    def test_constants(self):
+    def test_constants(self) -> None:
         tool = self._create()
         result = tool.invoke({"expression": "pi"})
         assert result.startswith("pi = 3.14")
 
-    def test_float_formatting(self):
+    def test_float_formatting(self) -> None:
         tool = self._create()
         # 2.0 + 3.0 should show "5", not "5.0"
         assert tool.invoke({"expression": "2.0 + 3.0"}) == "2.0 + 3.0 = 5"
 
-    def test_postfix_factorial_literal(self):
+    def test_postfix_factorial_literal(self) -> None:
         """``n!`` postfix syntax is rewritten into ``factorial(n)``."""
         tool = self._create()
         assert tool.invoke({"expression": "10!"}) == "10! = 3628800"
 
-    def test_postfix_factorial_in_compound_expression(self):
+    def test_postfix_factorial_in_compound_expression(self) -> None:
         """``n!`` inside a compound expression rewrites correctly."""
         tool = self._create()
         # 5! + 1 == 121
         assert tool.invoke({"expression": "5! + 1"}) == "5! + 1 = 121"
 
-    def test_postfix_factorial_paren_subexpression(self):
+    def test_postfix_factorial_paren_subexpression(self) -> None:
         """``(expr)!`` rewrites to ``factorial((expr))``."""
         tool = self._create()
         # (2+3)! == 5! == 120
         assert tool.invoke({"expression": "(2+3)!"}) == "(2+3)! = 120"
 
-    def test_explicit_factorial_call_still_works(self):
+    def test_explicit_factorial_call_still_works(self) -> None:
         """``factorial(n)`` form still works alongside the postfix sugar."""
         tool = self._create()
         assert tool.invoke({"expression": "factorial(7)"}) == "factorial(7) = 5040"
 
-    def test_caret_translates_to_power(self):
+    def test_caret_translates_to_power(self) -> None:
         """``^`` is rewritten to ``**`` so callers can write ``2^10``."""
         tool = self._create()
         assert tool.invoke({"expression": "2^10"}) == "2^10 = 1024"
 
-    def test_caret_combined_with_factorial(self):
+    def test_caret_combined_with_factorial(self) -> None:
         """notation conveniences compose: ``2^3 + 4!`` -> 32."""
         tool = self._create()
         assert tool.invoke({"expression": "2^3 + 4!"}) == "2^3 + 4! = 32"
@@ -85,7 +85,7 @@ class TestCalculator:
 
 class TestUnitConverter:
     @pytest.fixture(autouse=True)
-    def _require_pint(self):
+    def _require_pint(self) -> None:
         pytest.importorskip("pint")
 
     def _create(self) -> Any:
@@ -93,13 +93,13 @@ class TestUnitConverter:
 
         return create_unit_converter_tool({}, "Convert units")
 
-    def test_basic(self):
+    def test_basic(self) -> None:
         tool = self._create()
         result = tool.invoke({"value": 1.0, "from_unit": "mile", "to_unit": "kilometer"})
         assert "kilometer" in result
         assert "1.60934" in result
 
-    def test_incompatible(self):
+    def test_incompatible(self) -> None:
         tool = self._create()
         result = tool.invoke({"value": 1.0, "from_unit": "meter", "to_unit": "second"})
         assert "[TOOL ERROR]" in result
@@ -117,7 +117,7 @@ class TestTimezoneConverter:
 
         return create_timezone_converter_tool({}, "Convert timezones")
 
-    def test_convert(self):
+    def test_convert(self) -> None:
         tool = self._create()
         result = tool.invoke(
             {
@@ -129,7 +129,7 @@ class TestTimezoneConverter:
         assert "=" in result
         assert "EST" in result or "New_York" in result or "PM" in result
 
-    def test_bad_timezone(self):
+    def test_bad_timezone(self) -> None:
         tool = self._create()
         result = tool.invoke(
             {
@@ -141,7 +141,7 @@ class TestTimezoneConverter:
         assert "[TOOL ERROR]" in result
         assert "unknown timezone" in result
 
-    def test_time_only_format(self):
+    def test_time_only_format(self) -> None:
         tool = self._create()
         result = tool.invoke(
             {
@@ -166,12 +166,12 @@ class TestCurrentDate:
 
         return create_current_date_tool(config or {}, "Get current date")
 
-    def test_utc(self):
+    def test_utc(self) -> None:
         tool = self._create()
         result = tool.invoke({})
         assert "UTC" in result
 
-    def test_with_timezone(self):
+    def test_with_timezone(self) -> None:
         tool = self._create({"timezone": "America/New_York"})
         result = tool.invoke({})
         assert "UTC" in result
@@ -360,7 +360,7 @@ class TestDictionary:
 
 
 class TestRegisterBuiltins:
-    def test_register_builtins(self):
+    def test_register_builtins(self) -> None:
         from threetears.agent.tools.registry import ToolRegistry
         from threetears.agent.tools.builtin import register_builtins
 

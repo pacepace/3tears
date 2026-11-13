@@ -19,7 +19,7 @@ from threetears.agent.tools.protocols import (
 
 
 class TestGeneratedImage:
-    def test_required_fields(self):
+    def test_required_fields(self) -> None:
         img = GeneratedImage(data=b"png-bytes", mime_type="image/png")
         assert img.data == b"png-bytes"
         assert img.mime_type == "image/png"
@@ -27,7 +27,7 @@ class TestGeneratedImage:
         assert img.height is None
         assert img.metadata is None
 
-    def test_all_fields(self):
+    def test_all_fields(self) -> None:
         img = GeneratedImage(
             data=b"data",
             mime_type="image/jpeg",
@@ -103,24 +103,24 @@ class FakeTranscriptionProvider:
 
 
 class TestProtocolCompliance:
-    def test_image_generation_backend(self):
+    def test_image_generation_backend(self) -> None:
         assert isinstance(FakeImageBackend(), ImageGenerationBackend)
 
-    def test_media_storage(self):
+    def test_media_storage(self) -> None:
         assert isinstance(FakeMediaStorage(), MediaStorage)
 
-    def test_vision_provider(self):
+    def test_vision_provider(self) -> None:
         assert isinstance(FakeVisionProvider(), VisionProvider)
 
-    def test_text_provider(self):
+    def test_text_provider(self) -> None:
         assert isinstance(FakeTextProvider(), TextProvider)
 
-    def test_transcription_provider(self):
+    def test_transcription_provider(self) -> None:
         assert isinstance(FakeTranscriptionProvider(), TranscriptionProvider)
 
 
 class TestProtocolRejection:
-    def test_non_compliant_rejected(self):
+    def test_non_compliant_rejected(self) -> None:
         assert not isinstance("a string", ImageGenerationBackend)
         assert not isinstance(42, MediaStorage)
         assert not isinstance(object(), VisionProvider)

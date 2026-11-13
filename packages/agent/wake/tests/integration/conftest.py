@@ -101,7 +101,7 @@ async def _migrate_wake(conn: asyncpg.Connection, _schema: str) -> None:
     register_conversations(runner)
     register_skills(runner)
     register_wake(runner)
-    await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+    await runner.apply_for_agent_schema(AsyncpgStore(conn))
 
 
 @pytest.fixture

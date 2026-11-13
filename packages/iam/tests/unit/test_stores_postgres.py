@@ -64,13 +64,13 @@ class _FakePool:
         if '"expires_at" < $1' in collapsed and "LIMIT" in collapsed:
             # the purge's page: the expired rows' keys, at most the page, deleted and returned
             cutoff, page = args[0], int(collapsed.rsplit("LIMIT ", 1)[1].split(")", 1)[0])
-            expired = [k for k, v in self.rows.items() if v["expires_at"] < cutoff][:page]  # type: ignore[operator]
+            expired = [k for k, v in self.rows.items() if v["expires_at"] < cutoff][:page]
             for k in expired:
                 del self.rows[k]
             return [{"key": k} for k in expired]
         key, now = str(args[0]), args[1]
         row = self.rows.get(key)
-        if row is None or row["expires_at"] <= now:  # type: ignore[operator]
+        if row is None or row["expires_at"] <= now:
             return []
         if collapsed.startswith("DELETE"):
             del self.rows[key]
