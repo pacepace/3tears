@@ -36,7 +36,6 @@ from threetears.evals.providers.failures import error_from_response
 from threetears.evals.run import ModelUnservedError, RunnerOptions, execute_run, resumable_jobs, resume_run
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.launch import build_judge_service
-from threetears.evals.run.runner import UNSERVED_CIRCUIT_CELLS
 from threetears.evals.schema import EvalResult, EvalRun
 from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
@@ -66,6 +65,9 @@ RETIRED, SERVED = RUN_MODELS[0], RUN_MODELS[1]
 
 #: What OpenRouter answers for a retired model, as Discodon's production run met it.
 NO_LONGER_AVAILABLE = f"{RETIRED} is no longer available on OpenRouter"
+
+#: How many cells in a row the circuit waits for before it stops a run, as ``execute_run`` documents it.
+CIRCUIT = 3
 
 #: Repeats per case in a launched arm: three cases, nine cells, more than the circuit's run.
 K = 3
@@ -296,9 +298,8 @@ async def test_a_server_error_is_still_charged_to_the_arm_and_the_run_completes(
 async def test_a_served_cell_between_unserved_ones_starts_the_circuits_count_again(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert UNSERVED_CIRCUIT_CELLS == 3, "the pattern below serves every third cell"
     host, run, template, cases, wired, judge = off_loop(
-        _judged_run, monkeypatch, _conversing_invoke(_retired, served_every=3), n_cases=3, k=2
+        _judged_run, monkeypatch, _conversing_invoke(_retired, served_every=CIRCUIT), n_cases=3, k=2
     )
 
     await _execute(host, run, template, cases, wired)
@@ -391,7 +392,7 @@ async def test_the_circuit_stops_the_unserved_arm_naming_the_model_and_the_other
     assert (stopped.status, stopped.exhausted_because) == ("exhausted", "model_unserved")
     assert RETIRED in stopped.error_details[-1] and NO_LONGER_AVAILABLE in stopped.error_details[-1]
     lost = _rows(host, stopped.id)
-    assert UNSERVED_CIRCUIT_CELLS <= len(lost) < 3 * K, "the arm stopped before the rest of its matrix"
+    assert CIRCUIT <= len(lost) < 3 * K, "the arm stopped before the rest of its matrix"
     assert all(row.model_unserved and trial_exclusion(row) == "model_unserved" for row in lost)
     assert (served.status, served.exhausted_because) == ("completed", None)
     assert len(_rows(host, served.id)) == 3 * K

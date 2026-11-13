@@ -377,7 +377,7 @@ class EveryCellApparatusFailedError(RuntimeError):
 #: so a few in a row prove it, and three keep one stray routing answer from stopping an arm a served model would have
 #: measured. Waiting for them costs next to nothing: the provider refuses each call before serving it, and no cell
 #: that meets it is judged. A run of fewer cells than this whose every cell meets it stops all the same.
-UNSERVED_CIRCUIT_CELLS: Final = 3
+_UNSERVED_CIRCUIT_CELLS: Final = 3
 
 #: How many distinct exclusion errors a :class:`NothingMeasuredError` quotes, and how much of each.
 _QUOTED_ERRORS = 3
@@ -3984,7 +3984,7 @@ async def execute_run(
 
     A model not served: when the provider answers that it does not serve the model the run's candidate names (a
     retired model, a model id it does not know: ``CandidateOutput.model_unserved``), the cell is lost to the test setup
-    and never judged. Once :data:`UNSERVED_CIRCUIT_CELLS` cells in a row have met that answer, or every cell of a
+    and never judged. Once three cells in a row (``_UNSERVED_CIRCUIT_CELLS``) have met that answer, or every cell of a
     shorter run has, the loop stops as it does for the account, raising
     :class:`~threetears.evals.run.budget.ModelUnservedError` once the cells still running have ended; the job manager
     files it ``exhausted``, naming the model and the provider's words, and a take-up once the model is served runs
@@ -4519,7 +4519,7 @@ async def execute_run(
             return
         # The provider does not serve the run's model, and the cells say so in a row: every later cell names the same
         # model and would be lost the same way, so none is launched. The run's other arms are runs of their own.
-        if last_unserved is not None and unserved_in_a_row >= UNSERVED_CIRCUIT_CELLS:
+        if last_unserved is not None and unserved_in_a_row >= _UNSERVED_CIRCUIT_CELLS:
             log.warning(
                 "Eval run %s stopping: the provider does not serve model %s, %d cell(s) in a row, after %d/%d results",
                 run.id,
@@ -4621,7 +4621,6 @@ __all__ = [
     "GoalCheckUnevaluable",
     "NOTHING_MEASURED_FAULT",
     "NothingMeasuredError",
-    "UNSERVED_CIRCUIT_CELLS",
     "template_as_graded",
     "KindFactory",
     "RunCallbacks",

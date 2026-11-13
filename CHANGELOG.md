@@ -232,7 +232,7 @@ empty transcript and scored as a fail. One production arm paid for 180 judge cal
   trip the circuit. The cell is excluded with its own cause, `model_unserved`, and its error quotes the provider. The runner
   never judges it, whatever the kind's output holds, so a conversing kind that recorded turns with no reply is not
   judged either. Reports word the cause and its remedy.
-- A circuit: when `UNSERVED_CIRCUIT_CELLS` (3) cells in a row find the model not served, or every cell of a shorter
+- A circuit: when three cells in a row find the model not served, or every cell of a shorter
   run does, the run stops with `ModelUnservedError`. The job manager files it `exhausted` with the new
   `EvalRun.exhausted_because` set to `model_unserved` (`account_refused` for the account's stop). Its
   `error_details` entry names the model and quotes the provider. The launch's other arms run on. Taken up once the

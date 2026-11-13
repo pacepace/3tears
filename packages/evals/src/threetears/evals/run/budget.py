@@ -225,7 +225,7 @@ class ModelUnservedError(Exception):
     The model-side sibling of :class:`AccountExhaustedError`. A provider answering that it does not serve the model a
     call named (a retired model's 404, a model id it does not know) gives every call naming that model the same answer,
     so each such cell is lost to the test setup and never judged, and once the circuit's run of them
-    (:data:`~threetears.evals.run.runner.UNSERVED_CIRCUIT_CELLS`) is reached, the run stops after the cells running
+    (three cells in a row) is reached, the run stops after the cells running
     then have ended instead of launching the rest of its matrix to be lost one by one. The run's other arms are
     their own runs, and go on.
 
