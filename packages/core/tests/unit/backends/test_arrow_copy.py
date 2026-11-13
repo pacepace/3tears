@@ -210,6 +210,24 @@ async def test_the_rows_are_laid_out_on_a_thread_never_the_loop(monkeypatch: pyt
     assert threads and threads[0] is not threading.main_thread()
 
 
+async def test_a_copy_starts_no_thread_on_the_callers_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flips if a copy (a process's first, or the first on a new loop) starts a thread from the caller's loop: a
+    thread's start waits for it to run (1-2 ms on a loaded host), so its build and framing run on the copy thread
+    started at import."""
+    started: list[str] = []
+    start = threading.Thread.start
+
+    def recorded(thread: threading.Thread) -> None:
+        if threading.current_thread() is threading.main_thread():
+            started.append(thread.name)
+        start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", recorded)
+    await _copied({COPY_ARROW_FIELD: True}, _RECORDS)
+    await _copied({}, _RECORDS)
+    assert started == []
+
+
 def test_a_request_that_is_not_one_is_not_split() -> None:
     assert split_copy_request(b'{"rows": []}') is None
     with pytest.raises(ValueError, match="past its end"):

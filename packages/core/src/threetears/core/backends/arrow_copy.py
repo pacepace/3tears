@@ -44,6 +44,12 @@ try:
 except ImportError:  # NOSILENT: the snapshot extra is optional; without it a copy is sent as JSON, as before
     _PYARROW = False
 
+if _PYARROW:
+    # pyarrow looks for pandas at its first conversion of Python values: an import searched along sys.path, holding
+    # the interpreter lock 1-4 ms with no turn. Done here, at import, never in a process's first copy's build beside
+    # the caller's event loop
+    pa.array((), pa.int64())
+
 __all__ = [
     "COPY_ARROW_FIELD",
     "JSON_COLUMNS_FIELD",

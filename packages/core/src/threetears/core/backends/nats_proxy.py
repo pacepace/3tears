@@ -22,11 +22,13 @@ none changes nothing.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import json
 import os
 from datetime import UTC, datetime, timedelta
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn
 from uuid import UUID, uuid7
 
@@ -108,6 +110,28 @@ __all__ = [
 ]
 
 _logger = get_logger(__name__)
+
+#: the thread a copy's rows are laid out on (Arrow or JSON), started here, at import: a thread's start waits for the
+#: thread to run (``Thread.start``), 1-2 ms on a loaded host, which on the caller's event loop held a process's first
+#: copy that much longer than every later one. One thread: a build holds the interpreter lock but for its turns, so two
+#: at once would only share it
+_COPY_BUILDS: Final = ThreadPoolExecutor(max_workers=1, thread_name_prefix="l3-copy-build")
+_COPY_BUILDS.submit(int).result()
+
+
+async def _on_copy_thread(build: Callable[..., Any], *args: Any) -> Any:
+    """``build(*args)`` on the copy build thread, in the caller's context (as ``asyncio.to_thread`` runs it).
+
+    :param build: the build
+    :ptype build: Callable[..., Any]
+    :param args: its arguments
+    :ptype args: Any
+    :return: what it returns
+    :rtype: Any
+    """
+    context = contextvars.copy_context()
+    return await asyncio.get_running_loop().run_in_executor(_COPY_BUILDS, functools.partial(context.run, build, *args))
+
 
 #: the most bytes one ``l3.tx.copy`` request carries, whatever cap the hub announces: well under the
 #: platform's 16 MiB NATS ``max_payload``, so a request never meets the broker's refusal
@@ -1646,7 +1670,7 @@ class NatsProxyL3Backend:
         payload: dict[str, Any],
         *,
         timeout_s: float | None = None,
-        offload_encode: bool = False,
+        offload_encode: bool | Literal["copy"] = False,
         idempotent: bool = False,
         rows_ipc: bytes | None = None,
     ) -> dict[str, Any]:
@@ -1672,7 +1696,7 @@ class NatsProxyL3Backend:
         :ptype timeout_s: float | None
         :param offload_encode: encode the request on a thread, for a large one (a page of rows); see
             :meth:`nats_request_bytes`
-        :ptype offload_encode: bool
+        :ptype offload_encode: bool | Literal["copy"]
         :param idempotent: whether the request may be sent again when it goes unanswered; see
             :meth:`nats_request_bytes`
         :ptype idempotent: bool
@@ -1704,7 +1728,7 @@ class NatsProxyL3Backend:
         payload: dict[str, Any],
         *,
         timeout_s: float | None = None,
-        offload_encode: bool = False,
+        offload_encode: bool | Literal["copy"] = False,
         idempotent: bool = False,
         rows_ipc: bytes | None = None,
     ) -> bytes:
@@ -1725,8 +1749,9 @@ class NatsProxyL3Backend:
         :ptype timeout_s: float | None
         :param offload_encode: encode the request on a thread rather than the event loop: a page of a
             thousand rows is several JSON passes and a proof (:meth:`encode_request`), which on the loop
-            held every call the process answers for tens of milliseconds a page
-        :ptype offload_encode: bool
+            held every call the process answers for tens of milliseconds a page; ``"copy"`` on the copy build thread
+            (an ``l3.tx.copy`` request, as its rows were laid out)
+        :ptype offload_encode: bool | Literal["copy"]
         :param idempotent: whether running the request twice is the same as running it once (a read), so
             it may be sent again when it goes unanswered
         :ptype idempotent: bool
@@ -1767,7 +1792,13 @@ class NatsProxyL3Backend:
             attempt += 1
 
     async def _encoded(
-        self, subject: str, payload: dict[str, Any], *, offload: bool, within: float, rows_ipc: bytes | None = None
+        self,
+        subject: str,
+        payload: dict[str, Any],
+        *,
+        offload: bool | Literal["copy"],
+        within: float,
+        rows_ipc: bytes | None = None,
     ) -> bytes:
         """one attempt's request bytes (:meth:`encode_request`), on a thread when ``offload``, within ``within`` seconds.
 
@@ -1779,8 +1810,8 @@ class NatsProxyL3Backend:
         :ptype subject: str
         :param payload: request payload dict
         :ptype payload: dict[str, Any]
-        :param offload: whether to encode on a thread
-        :ptype offload: bool
+        :param offload: whether to encode on a thread; ``"copy"`` on the copy build thread (a copy's request)
+        :ptype offload: bool | Literal["copy"]
         :param within: the bound, in seconds
         :ptype within: float
         :param rows_ipc: the rows' Arrow IPC stream of an Arrow copy request, ``payload`` its envelope; None for a
@@ -1795,7 +1826,8 @@ class NatsProxyL3Backend:
             return encode()
         try:
             async with asyncio.timeout(within):
-                return await asyncio.to_thread(encode)
+                # a copy is encoded on the thread its rows were laid out on (started at import)
+                return await (_on_copy_thread(encode) if offload == "copy" else asyncio.to_thread(encode))
         except TimeoutError as exc:
             raise RequestTimeoutError(
                 f"request not sent: encoding it on a thread took past {within:.1f}s: subject={subject}"
@@ -2471,17 +2503,17 @@ class _ProxyConnection:
         # a page of rows: its values converted and the request encoded on a thread, never the loop; as Arrow to a
         # hub that reads it (laid out by Arrow, its rows never JSON), else as JSON
         rows = (
-            await asyncio.to_thread(self._copy_arrow_rows, columns, records)
+            await _on_copy_thread(self._copy_arrow_rows, columns, records)
             if self.copy_arrow and arrow_copy_available()
             else None
         )
         subject = Subjects.l3_tx("copy", namespace=self._backend.ns).path
         if rows is None:
-            payload = await asyncio.to_thread(self._copy_payload, table_name, columns, records)
-            response = await self._backend.nats_request(subject, payload, offload_encode=True)
+            payload = await _on_copy_thread(self._copy_payload, table_name, columns, records)
+            response = await self._backend.nats_request(subject, payload, offload_encode="copy")
         else:
             envelope = self._copy_envelope(table_name, columns, rows)
-            response = await self._backend.nats_request(subject, envelope, offload_encode=True, rows_ipc=rows.ipc)
+            response = await self._backend.nats_request(subject, envelope, offload_encode="copy", rows_ipc=rows.ipc)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.copy")
         row_count = response.get("row_count")
