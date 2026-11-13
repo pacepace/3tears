@@ -10,6 +10,7 @@ import pytest
 
 import re
 
+from threetears.core.declared import sentinel_templates
 from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, no_whole_reads_findings, use_the_helper_findings
 from threetears.enforcement.no_whole_reads.schema import collect_schema, index_findings
 
@@ -5522,3 +5523,160 @@ def test_a_trim_on_a_sqlite_connection_is_asked_no_range_sharding(tmp_path: Path
     found = no_whole_reads_findings(_config(tmp_path, {"turns.py": module}))
     assert any("index-hashed-range" in finding for finding in found) is hashed, found
     assert not [finding for finding in found if "turns" in finding and "index-hashed-range" not in finding], found
+
+
+@pytest.mark.parametrize(
+    ("binding", "hashed"),
+    [
+        ("db = InlineSQLite(l1)", False),
+        ("db = InlineDuckDB(l1)", False),
+        ("db = conn", True),
+        ("db = InlineSQLite(l1)\n        if over > 9:\n            db = conn", True),
+    ],
+    ids=["sqlite", "duckdb", "l3", "rebound-l3"],
+)
+def test_a_trim_on_a_local_connection_bound_to_a_name_is_asked_no_range_sharding(
+    tmp_path: Path, binding: str, hashed: bool
+) -> None:
+    """Flips if a trim handed a name the function binds to a connection over a database in this process (the SDK's
+    ``db = InlineSQLite(l1)`` then ``delete_oldest(db, ...)``) is asked to declare its age index range-sharded for
+    YugabyteDB, or if the name bound to an L3 connection (anywhere in the function) is not."""
+    _plans(tmp_path, "def test_updated(plan):\n    assert plan_uses_index(plan, 'turns_by_updated')\n")
+    module = (
+        _TRIMMED.replace(', asc="date_updated"', "")
+        .replace("ORDER", '"date_updated"')
+        .replace(
+            "    async def enforce_cap(conn, over):\n        return await delete_oldest(conn,",
+            f"    async def enforce_cap(conn, l1, over):\n        {binding}\n        return await delete_oldest(db,",
+        )
+        .replace(
+            "from threetears.core.keyed import delete_oldest",
+            "from threetears.core.keyed import InlineDuckDB, InlineSQLite, delete_oldest",
+        )
+    )
+    assert "delete_oldest(db," in module
+    found = no_whole_reads_findings(_config(tmp_path, {"turns.py": module}))
+    assert any("index-hashed-range" in finding for finding in found) is hashed, found
+    assert not [finding for finding in found if "turns" in finding and "index-hashed-range" not in finding], found
+
+
+_SCOPED_TABLES = """
+    from threetears.core.collections.schema_backed import TableSchema
+
+    SOURCES = TableSchema(name="sources", primary_key=("owner_id", "id"), columns=[])
+    DOCS = TableSchema(name="docs", primary_key=("source_id", "id"), columns=[])
+    NOTES = TableSchema(name="notes", primary_key=("owner_id", "id"), columns=[])
+    BARE = TableSchema(name="bare", primary_key="id", columns=[])
+    BOTH = TableSchema(name="both", primary_key=("source_id", "id"), columns=[])
+"""
+
+_SCOPED_MAP = """
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class Scoped:
+        owner_column: str | None
+        anchor_column: str | None
+
+    SCOPED = {
+        "docs": Scoped(owner_column=None, anchor_column="source_id"),
+        "notes": Scoped(owner_column="owner_id", anchor_column=None),
+        "bare": Scoped(owner_column="owner_id", anchor_column=None),
+        "both": Scoped(owner_column="owner_id", anchor_column="source_id"),
+    }
+"""
+
+_SCOPE_INJECTION = """
+    from threetears.core.declared import sentinel_templates
+
+    _SCHEMA = "__schema__"
+    _TABLE = "__table__"
+    _OWNER = "__owner_column__"
+    _ANCHOR = "__anchor_column__"
+    _CLAMP = f"({_OWNER} IS NULL OR {_OWNER} = $9001)"
+    _THROUGH = f"{_ANCHOR} IN (SELECT id FROM {_SCHEMA}.sources WHERE owner_id IS NULL OR owner_id = $9001)"
+
+    def parse(sql):
+        return sql
+
+    OWNER_ONLY = parse(f"SELECT * FROM {_SCHEMA}.{_TABLE} WHERE {_CLAMP}")
+    OWNER_AND_ANCHOR = parse(f"SELECT * FROM {_SCHEMA}.{_TABLE} WHERE {_CLAMP} AND {_ANCHOR} = ANY($9002)")
+    ANCHOR_ONLY = parse(f"SELECT * FROM {_SCHEMA}.{_TABLE} WHERE {_THROUGH} AND {_ANCHOR} = ANY($9002)")
+    UNDECLARED = parse(f"SELECT * FROM {_SCHEMA}.{_TABLE} WHERE {_ANCHOR} = ANY($9002)")
+
+    sentinel_templates(
+        templates=("OWNER_ONLY", "OWNER_AND_ANCHOR", "ANCHOR_ONLY"),
+        table=_TABLE,
+        tables="scoping.maps.SCOPED",
+        columns={_OWNER: "owner_column", _ANCHOR: "anchor_column"},
+    )
+"""
+
+
+def test_a_template_over_a_declared_closed_map_is_judged_once_per_entry_it_fills(tmp_path: Path) -> None:
+    """Flips if a template whose table is a sentinel filled from a declared closed map (hub #44 spec 6) is not judged
+    once per entry with the entry's table and columns: a keyed instance found unknown, an unkeyed one (``bare`` and
+    ``both`` have no key the owner clamp leads) not named against its table, an instance made for an entry that
+    leaves one of the template's sentinels empty, or a template the declaration does not name judged as one."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {
+                "scoping/__init__.py": "",
+                "scoping/tables.py": _SCOPED_TABLES,
+                "scoping/maps.py": _SCOPED_MAP,
+                "scoping/injection.py": _SCOPE_INJECTION,
+            },
+        )
+    )
+    named = {symbol for _, symbol in found}
+    assert named == {
+        "non-key-where __schema__.bare",
+        "non-key-where __schema__.both",
+        "unknown-schema __schema__.__table__",
+    }, found
+
+
+def test_a_template_over_a_map_the_walk_cannot_read_is_judged_as_written(tmp_path: Path) -> None:
+    """Flips if a declared template whose map the walk cannot read (a wrong path, or entries that are not literal
+    calls) passes unjudged instead of standing as ``unknown-schema``."""
+    unread = _SCOPED_MAP.replace('Scoped(owner_column=None, anchor_column="source_id")', "Scoped(**DOCS_COLUMNS)")
+    for maps, injection in (
+        (_SCOPED_MAP, _SCOPE_INJECTION.replace("scoping.maps.SCOPED", "scoping.elsewhere.SCOPED")),
+        (unread, _SCOPE_INJECTION),
+    ):
+        found = _symbols(
+            _config(
+                tmp_path,
+                {
+                    "scoping/__init__.py": "",
+                    "scoping/tables.py": _SCOPED_TABLES,
+                    "scoping/maps.py": maps,
+                    "scoping/injection.py": injection,
+                },
+            )
+        )
+        assert {symbol for _, symbol in found} == {"unknown-schema __schema__.__table__"}, found
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"templates": ()}, "at least one template"),
+        ({"table": "table"}, "spelled __name__"),
+        ({"columns": {"owner": "owner_column"}}, "spelled __name__"),
+        ({"tables": "SCOPED"}, "dotted path"),
+    ],
+)
+def test_a_sentinel_templates_declaration_is_checked_where_it_runs(change: dict[str, object], message: str) -> None:
+    """Flips if the run-time declaration accepts no template, a sentinel not spelled ``__name__``, or a map that is
+    not a dotted path the walk can find."""
+    given: dict[str, object] = {
+        "templates": ("OWNER_ONLY",),
+        "table": "__table__",
+        "tables": "scoping.maps.SCOPED",
+        "columns": {"__owner_column__": "owner_column"},
+    }
+    sentinel_templates(**given)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=message):
+        sentinel_templates(**{**given, **change})  # type: ignore[arg-type]

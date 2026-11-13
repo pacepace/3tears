@@ -75,6 +75,7 @@ from threetears.enforcement.no_whole_reads.helpers import (
     narrows,
     templated,
 )
+from threetears.enforcement.no_whole_reads.sentinels import SentinelTemplates, declared_templates
 from threetears.enforcement.no_whole_reads.schema import (
     COPY_PREFIX,
     PRODUCED_PREFIX,
@@ -1058,6 +1059,34 @@ def _on_a_local_database(call: ast.Call) -> bool:
     return bool(call.args) and isinstance(call.args[0], ast.Call) and _final(call.args[0]) in _IN_PROCESS_CONNECTIONS
 
 
+def _target_binds(target: ast.expr, name: str) -> bool:
+    """whether an assignment target binds ``name`` (itself, or within a tuple or list it unpacks).
+
+    :param target: the target
+    :ptype target: ast.expr
+    :param name: the name
+    :ptype name: str
+    :return: whether it does
+    :rtype: bool
+    """
+    return any(isinstance(node, ast.Name) and node.id == name for node in ast.walk(target))
+
+
+def _binds_in(node: ast.For | ast.AsyncFor | ast.With | ast.AsyncWith, name: str) -> bool:
+    """whether a loop's target or a ``with``'s ``as`` binds ``name``.
+
+    :param node: the statement
+    :ptype node: ast.For | ast.AsyncFor | ast.With | ast.AsyncWith
+    :param name: the name
+    :ptype name: str
+    :return: whether it does
+    :rtype: bool
+    """
+    if isinstance(node, ast.For | ast.AsyncFor):
+        return _target_binds(node.target, name)
+    return any(item.optional_vars is not None and _target_binds(item.optional_vars, name) for item in node.items)
+
+
 #: how many bindings deep a family name is followed through a function's own names (``_declared_calls``)
 _INLINE_DEPTH: Final[int] = 3
 
@@ -1585,6 +1614,7 @@ class _ModuleWalk(ast.NodeVisitor):
         never_none: frozenset[tuple[str, str]] = frozenset(),
         declared: Mapping[str, tuple[str, ...]] | None = None,
         bounded: Bounded | None = None,
+        sentinels: SentinelTemplates | None = None,
     ) -> None:
         """prepare a walk of one module.
 
@@ -1703,6 +1733,8 @@ class _ModuleWalk(ast.NodeVisitor):
         #: the module's transient producers' returns as written (:meth:`_producer_spellings`), read once
         self._spellings: frozenset[str] | None = None
         self._tree = tree
+        #: the module's templates over a declared closed map, judged once per entry (:mod:`.sentinels`)
+        self._sentinels = sentinels
         self._verify = verify
         self._exec_calls = _EXEC_CALLS | exec_calls
         self._cte_arguments = cte_arguments or {}
@@ -2221,7 +2253,32 @@ class _ModuleWalk(ast.NodeVisitor):
         for scope in self._branch_scopes[-1] or [self._envs[-1]]:
             env = {**scope, **{name: f"__cte_{name}" for name in cte_params}} if cte_params else scope
             text = _string_text(node, env, self._produced_by) if self._maximal_string(node) else None
-            self._judge_text(node, text, judged)
+            for each in self._instances(node, text):
+                self._judge_text(node, each, judged)
+
+    def _instances(self, node: ast.expr, text: str | None) -> list[str | None]:
+        """``text`` as it is judged: once per entry of the closed map a declared template ranges over
+        (:mod:`.sentinels`), else as written.
+
+        :param node: the string expression
+        :ptype node: ast.expr
+        :param text: its text in the scope judged, or None
+        :ptype text: str | None
+        :return: each text to judge
+        :rtype: list[str | None]
+        """
+        if self._sentinels is None or text is None or self._sentinels.table not in text:
+            return [text]
+        child: ast.AST = node
+        parent = self._parents.get(child)
+        while parent is not None and not isinstance(parent, ast.Module):
+            child, parent = parent, self._parents.get(parent)
+        target = child.targets[0] if isinstance(child, ast.Assign) and len(child.targets) == 1 else None
+        target = child.target if isinstance(child, ast.AnnAssign) else target
+        if not (isinstance(target, ast.Name) and target.id in self._sentinels.templates):
+            return [text]
+        made = self._sentinels.instances(text)
+        return [text] if made is None else list(made)
 
     def _record_statement(self, node: ast.expr) -> None:
         """record the SQL statement a maximal string expression writes, as the function's own scope reads it (the
@@ -3262,7 +3319,7 @@ class _ModuleWalk(ast.NodeVisitor):
                     hits.setdefault(f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(site))
                     continue
                 reader = self._reader(site)
-                if _on_a_local_database(call):
+                if _on_a_local_database(call) or self._bound_to_a_local_database(call):
                     reader = replace(reader, local=True)
                 for finding in judge_sql(statement.sql, reader):
                     if finding.kind in {HEAD, KEYED_COUNT} or self._transient_table(finding.table):
@@ -3278,6 +3335,36 @@ class _ModuleWalk(ast.NodeVisitor):
             self.hits.append(
                 WholeReadHit(path, line, function, symbol, _one_line(f"{statement_text} (passed to {self._function})"))
             )
+
+    def _bound_to_a_local_database(self, call: ast.Call) -> bool:
+        """whether a helper call's connection is a name the enclosing function binds only to a connection over a
+        database in this process (``db = InlineSQLite(conn)`` then ``delete_oldest(db, ...)``): never a parameter of
+        it, and every assignment to it in the function's own statements such a connection.
+
+        :param call: the helper call
+        :ptype call: ast.Call
+        :return: whether it is
+        :rtype: bool
+        """
+        function = self._function_node
+        if function is None or not call.args or not isinstance(call.args[0], ast.Name):
+            return False
+        name = call.args[0].id
+        arguments = function.args
+        given = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs, arguments.vararg, arguments.kwarg]
+        if any(argument is not None and argument.arg == name for argument in given):
+            return False
+        bound: list[ast.expr | None] = []
+        for node in _own_nodes(function.body):
+            if isinstance(node, ast.Assign) and any(_target_binds(target, name) for target in node.targets):
+                bound.append(node.value if all(isinstance(t, ast.Name) for t in node.targets) else None)
+            elif isinstance(node, ast.AnnAssign | ast.AugAssign | ast.NamedExpr) and _target_binds(node.target, name):
+                bound.append(node.value if not isinstance(node, ast.AugAssign) else None)
+            elif isinstance(node, ast.For | ast.AsyncFor | ast.With | ast.AsyncWith) and _binds_in(node, name):
+                bound.append(None)
+        return bool(bound) and all(
+            isinstance(value, ast.Call) and _final(value) in _IN_PROCESS_CONNECTIONS for value in bound
+        )
 
     def _helper_statements(self, call: ast.Call) -> list[HelperStatement]:
         """the statements a keyed helper call sends; a read of a table its caller names at run time
@@ -6691,6 +6778,9 @@ def scan_whole_reads(
     )
     match_builders = _match_builders([(relative, parse_python_path(path)) for relative, path in modules], strings)
     never_none = _never_none_parameters([(relative, parse_python_path(path)) for relative, path in modules])
+    sentinel_templates = declared_templates(
+        [(relative, parse_python_path(path)) for relative, path in modules], strings
+    )
     walked: list[tuple[str, Path]] = []
     for relative, path in modules:
         excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
@@ -6735,6 +6825,7 @@ def scan_whole_reads(
             never_none=never_none,
             declared=declared_parameters,
             bounded=bounded,
+            sentinels=sentinel_templates.get(relative),
         )
 
     # the repo's step builders, by name across every walked module: a call of one is a step judged where it is

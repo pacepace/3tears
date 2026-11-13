@@ -27,9 +27,10 @@ prints every declaration it accepts.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Final, Literal, TypeVar
 
-__all__ = ["whole_read"]
+__all__ = ["sentinel_templates", "whole_read"]
 
 _T = TypeVar("_T")
 
@@ -105,3 +106,49 @@ def whole_read(
             "<test file>::<test function>"
         )
     return value
+
+
+#: a sentinel: a name a template holds in place of a table or column it is filled with at run time (``__table__``)
+_SENTINEL_SHAPE: Final = ("__", "__")
+
+
+def sentinel_templates(*, templates: tuple[str, ...], table: str, tables: str, columns: Mapping[str, str]) -> None:
+    """declare, at module level, that SQL templates of this module read a table chosen from a closed map: each holds
+    ``table`` (a sentinel, ``"__table__"``) where the table goes and each of ``columns``' sentinels where that
+    entry's column goes, filled at run time only from the map named by ``tables``.
+
+    The no-whole-reads rule judges each named template once per entry of the map, with the entry's table and
+    columns in place of the sentinels, and only for the entries that fill every column sentinel the template holds
+    (an entry whose column is None is written another template by the code). A template the declaration does not
+    name is judged as written (its table unknown). Nothing happens at run time; the arguments are checked::
+
+        sentinel_templates(
+            templates=("_CUSTOMER_ONLY_SHADOW", "_ANCHOR_ONLY_SHADOW"),
+            table="__table__",
+            tables="aibots.hub.broker.acl.PLATFORM_CUSTOMER_SCOPED_TABLES",
+            columns={"__customer_column__": "customer_column", "__anchor_column__": "anchor_column"},
+        )
+
+    :param templates: the module-level names the templates are bound to
+    :ptype templates: tuple[str, ...]
+    :param table: the table's sentinel
+    :ptype table: str
+    :param tables: the map's dotted path (``package.module.NAME``): a module-level dict literal of table name onto
+        a call whose keyword arguments are the columns (a string or None each)
+    :ptype tables: str
+    :param columns: each column sentinel onto the keyword of the map's entries that fills it
+    :ptype columns: Mapping[str, str]
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when no template is named, a sentinel is not ``__name__``-shaped, or ``tables`` is not a
+        dotted path to a name
+    """
+    if not templates or not all(isinstance(name, str) and name for name in templates):
+        raise ValueError("sentinel_templates names at least one template, each a module-level name")
+    for sentinel in (table, *columns):
+        if not (
+            sentinel.startswith(_SENTINEL_SHAPE[0]) and sentinel.endswith(_SENTINEL_SHAPE[1]) and len(sentinel) > 4
+        ):
+            raise ValueError(f"a sentinel is spelled __name__, got {sentinel!r}")
+    if tables.count(".") < 1 or not all(part.isidentifier() for part in tables.split(".")):
+        raise ValueError(f"tables is the map's dotted path (package.module.NAME), got {tables!r}")

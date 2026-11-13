@@ -227,6 +227,29 @@ def test_an_or_whose_every_branch_keys_the_read_is_keyed_and_credits_each_index(
     assert _kinds(keyed, schema, "src/hub/other.py::elsewhere") == [("non-key-where", "datasources")]
 
 
+def test_a_column_null_or_bound_is_a_pin_of_two_keys(schema: SchemaCatalog) -> None:
+    """Flips if ``col IS NULL OR col = $n`` (a tenant clamp: the platform's rows and one customer's) is not read as
+    the column pinned to two values (two index seeks), keyed where the column leads the key; or if it passes where the
+    column leads nothing (or only as a tenant), where its branches name two columns, or where neither branch binds a
+    value."""
+    clamp = "SELECT id FROM singles WHERE customer_id IS NULL OR customer_id = $1"
+    assert _kinds(clamp, schema) == []
+    assert _kinds("SELECT id FROM singles WHERE (customer_id = $1 OR customer_id IS NULL) AND n > 0", schema) == []
+    # a tenant pinned alone is still every row of the tenant, as ``customer_id = $1`` alone is
+    assert _kinds("SELECT a FROM api_keys WHERE customer_id IS NULL OR customer_id = $1", schema) == [
+        ("non-key-where", "api_keys")
+    ]
+    assert _kinds("SELECT id FROM datasources WHERE customer_id IS NULL OR customer_id = $1", schema) == [
+        ("non-key-where", "datasources")
+    ]
+    assert _kinds("SELECT id FROM singles WHERE customer_id IS NULL OR n = $1", schema) == [
+        ("non-key-where", "singles")
+    ]
+    assert _kinds("SELECT id FROM singles WHERE customer_id IS NULL OR customer_id IS NULL", schema) == [
+        ("unbound-where", "singles")
+    ]
+
+
 def test_without_a_schema_every_predicate_on_a_table_is_unknown() -> None:
     """Flips if a statement judged against no declarations passes on the strength of any bound value."""
     assert _kinds("SELECT a FROM t WHERE k = $1", SchemaCatalog()) == [("unknown-schema", "t")]

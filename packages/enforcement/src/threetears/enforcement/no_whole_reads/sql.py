@@ -576,6 +576,17 @@ class _Atom:
     side: str = ""
 
 
+def _is_null(atom: _Atom) -> bool:
+    """whether ``atom`` is a column's ``IS NULL`` (read as an equality to NULL, never a bound value).
+
+    :param atom: the atom
+    :ptype atom: _Atom
+    :return: whether it is
+    :rtype: bool
+    """
+    return atom.kind == "contains" and not atom.bound
+
+
 def _row_expression(text: str) -> bool:
     """whether ``text`` is an expression of the row's columns an expression index can hold: a function of them
     (``lower(name)``) or a json field of one (``metadata->>'pod'``), with no bound value of its own.
@@ -614,6 +625,11 @@ def _atoms(predicate: str) -> list[_Atom]:
         each = [[atom for part in _conjuncts(branch) for atom in _atoms(part)] for branch in branches]
         columns = {atoms[0].column for atoms in each if len(atoms) == 1 and atoms[0].kind == "eq"}
         if len(columns) == 1 and all(len(atoms) == 1 and atoms[0].kind == "eq" for atoms in each):
+            return [_Atom("eq", columns.pop(), bound=True)]
+        clamp = all(len(atoms) == 1 and (atoms[0].kind == "eq" or _is_null(atoms[0])) for atoms in each)
+        if clamp and len(columns) == 1 and {atoms[0].column for atoms in each} == columns:
+            # ``col IS NULL OR col = $1`` (a tenant clamp: the platform's rows and one customer's): the column pinned
+            # to two values, two seeks of an index it leads
             return [_Atom("eq", columns.pop(), bound=True)]
         if all(atoms and all(atom.kind in {"eq", "range", "join"} for atom in atoms) for atoms in each):
             # ``a = ANY($1) OR b = ANY($1)``: keyed when every branch keys the read by its own index or key; a branch
