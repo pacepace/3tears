@@ -88,9 +88,10 @@ class RowBudget:
     """the cut a byte-capped read makes: rows kept while their JSON array fits, encoded a page at a time.
 
     The caller's encoder turns rows into a JSON array, as its reply carries them. A page is encoded whole, once; a
-    page that fits what is left of ``max_bytes`` is kept whole. Only the page that crosses the cap is encoded again
-    a row at a time, to find the last row that fits, so a read encodes its rows about once: never a second pass
-    over every row. The first row is kept whatever its size, so a page always moves its reader on; ``size`` then
+    page that fits what is left of ``max_bytes`` is kept whole. The page :meth:`wanted` sized to cross the cap is
+    encoded a row at a time only, to find the last row that fits (its whole encode would be thrown away); a page that
+    crosses unannounced is encoded whole, then again a row at a time. So a read encodes its rows about once: never a
+    second pass over every row. The first row is kept whatever its size, so a page always moves its reader on; ``size`` then
     says it is over the cap. ``max_rows`` bounds the kept rows as :meth:`Driver.fetch_at_most` does: a row reached
     past it ends the read, truncated.
 
@@ -102,7 +103,17 @@ class RowBudget:
     :ptype max_rows: int | None
     """
 
-    __slots__ = ("_encode", "_encoded", "_max_bytes", "_max_rows", "_page_mean", "_rows", "_size", "_truncated")
+    __slots__ = (
+        "_crossing",
+        "_encode",
+        "_encoded",
+        "_max_bytes",
+        "_max_rows",
+        "_page_mean",
+        "_rows",
+        "_size",
+        "_truncated",
+    )
 
     def __init__(self, max_bytes: int, encode: Callable[[list[dict[str, Any]]], bytes], max_rows: int | None) -> None:
         self._max_bytes = max_bytes
@@ -114,6 +125,8 @@ class RowBudget:
         self._truncated = False
         # the mean encoded row of the last page kept (its comma included): the rows next are most like these
         self._page_mean = 0.0
+        # whether the page asked for last was sized to cross the cap (one row past the expected cut)
+        self._crossing = False
 
     def wanted(self, page_rows: int) -> int:
         """how many rows the next page should read, sized from the bytes the rows read so far took.
@@ -132,6 +145,7 @@ class RowBudget:
         :rtype: int
         """
         wanted = page_rows
+        self._crossing = False
         if self._rows:
             expected = int(max(0, self._max_bytes - self._size) / self._page_mean)
             if expected > page_rows:
@@ -139,6 +153,7 @@ class RowBudget:
                 wanted = int(expected * _FIT_SHARE) - page_rows // 2
             else:
                 wanted = expected + 1
+                self._crossing = True
         if self._max_rows is not None:
             wanted = min(wanted, self._max_rows + 1 - len(self._rows))
         return max(1, wanted)
@@ -157,7 +172,13 @@ class RowBudget:
         elif self._max_rows is not None and len(self._rows) + len(rows) > self._max_rows:
             rows = rows[: self._max_rows - len(self._rows)]
             self._truncated = True
-        if rows:
+        if rows and self._crossing:
+            # sized to cross: its whole encode would be thrown away, so its rows are measured one at a time from the
+            # start; a page that fits after all (narrower rows than expected) lets the read go on
+            self._crossing = False
+            if self._keep_what_fits(rows) < len(rows):
+                self._truncated = True
+        elif rows:
             inner = self._encode(rows)[1:-1]
             grown = self._size + len(inner) + (1 if self._rows else 0)
             if grown <= self._max_bytes or (not self._rows and len(rows) == 1):
@@ -184,20 +205,27 @@ class RowBudget:
         self._page_mean = (grown - self._size) / len(rows)
         self._size = grown
 
-    def _keep_what_fits(self, rows: list[dict[str, Any]]) -> None:
+    def _keep_what_fits(self, rows: list[dict[str, Any]]) -> int:
         """the page that crosses the cap: its rows a row at a time, to the last that fits (the first row always).
 
         :param rows: the page's rows
         :ptype rows: list[dict[str, Any]]
-        :return: nothing
-        :rtype: None
+        :return: how many of them were kept
+        :rtype: int
         """
+        before = self._size
+        kept = 0
         for row in rows:
             inner = self._encode([row])[1:-1]
             grown = self._size + len(inner) + (1 if self._rows else 0)
             if self._rows and grown > self._max_bytes:
                 break
             self._keep([row], inner, grown)
+            kept += 1
+        if kept:
+            # the next page is sized from these rows as a whole, never from the last one alone
+            self._page_mean = (self._size - before) / kept
+        return kept
 
     def result(self) -> BoundedRows:
         """the rows kept so far.

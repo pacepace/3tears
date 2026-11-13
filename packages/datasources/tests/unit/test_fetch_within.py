@@ -91,6 +91,49 @@ def test_after_the_first_page_a_page_is_sized_from_the_bytes_left() -> None:
     assert capped.wanted(100) == 51, "the row bound still caps a sized page"
 
 
+def test_the_page_sized_to_cross_the_cap_is_measured_a_row_at_a_time_and_never_encoded_whole() -> None:
+    """a page wanted() sized to cross the cap (one row past the expected cut) is encoded a row at a time only: the
+    whole-page encode a crossing page would throw away is never made. A page sized to fit whole is encoded whole."""
+    encoded: list[int] = []
+
+    def counting(rows: list[dict[str, Any]]) -> bytes:
+        encoded.append(len(rows))
+        return _encode(rows)
+
+    rows = [{"n": index, "pad": "x" * 20} for index in range(10_000)]
+    budget = RowBudget(_array_size(rows[:4_000]), counting, None)
+    first = budget.wanted(100)
+    assert budget.take(rows[:first]) is True
+    second = budget.wanted(100)
+    assert budget.take(rows[first : first + second]) is True
+    assert encoded == [first, second], "pages sized to fit are encoded whole, once"
+    third = budget.wanted(100)
+    assert budget.take(rows[first + second : first + second + third]) is False
+    assert budget.result().rows == rows[:4_000]
+    assert budget.result().json_array() == _encode(rows[:4_000])
+    # the crossing page: one encode per row up to the first that did not fit, and no whole-page encode
+    crossing = encoded[2:]
+    assert crossing == [1] * len(crossing), crossing
+    assert len(crossing) == 4_000 - first - second + 1
+
+
+def test_a_page_sized_to_cross_that_fits_after_all_lets_the_read_go_on() -> None:
+    """rows narrower than the estimate: the page sized to cross fits whole, every row is kept, the read goes on, and
+    the next page is sized from those rows."""
+    wide = [{"n": index, "pad": "x" * 40} for index in range(100)]
+    narrow = [{"n": index, "pad": ""} for index in range(100, 10_000)]
+    rows = wide + narrow
+    budget = RowBudget(_array_size(wide) + 30 * 60, _encode, None)
+    assert budget.take(rows[: budget.wanted(100)]) is True
+    third = budget.wanted(100)
+    assert third <= 101, third
+    assert budget.take(rows[100 : 100 + third]) is True
+    assert budget.result().rows == rows[: 100 + third]
+    assert budget.result().truncated is False
+    assert budget.wanted(100) >= 1
+    assert budget.result().json_array() == _encode(rows[: 100 + third])
+
+
 def test_a_result_that_fits_is_whole_and_not_truncated() -> None:
     rows = [{"n": index} for index in range(5)]
     budget = RowBudget(10_000, _encode, None)
