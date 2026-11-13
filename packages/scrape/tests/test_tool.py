@@ -129,7 +129,7 @@ class _FakeDriver:
         )
 
 
-def _collections():
+def _collections() -> tuple[ScrapeRecipeCollection, ScrapeExtractionCollection]:
     return (
         ScrapeRecipeCollection(get_registry(), get_config(), nats_client=None),
         ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None),

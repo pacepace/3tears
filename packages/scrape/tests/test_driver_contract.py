@@ -20,6 +20,8 @@ assertion doesn't apply to it the same way).
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 import pytest
@@ -69,31 +71,33 @@ class _ContractFakePage:
     def __init__(self) -> None:
         self.url = _PAGE_FINAL_URL
 
-    async def goto(self, url, *, timeout=None, wait_until=None):
+    async def goto(
+        self, url: str, *, timeout: float | None = None, wait_until: str | None = None
+    ) -> _ContractFakeResponse:
         return _ContractFakeResponse()
 
-    async def content(self):
+    async def content(self) -> str:
         return _PAGE_HTML
 
     async def close(self) -> None:
         pass
 
-    def on(self, event, handler) -> None:
+    def on(self, event: str, handler: Callable[[Any], object]) -> None:
         pass  # no response events ever fire in this minimal contract stub
 
-    async def click(self, selector, *, timeout=None) -> None:
+    async def click(self, selector: str, *, timeout: float | None = None) -> None:
         pass
 
-    async def fill(self, selector, value, *, timeout=None) -> None:
+    async def fill(self, selector: str, value: str, *, timeout: float | None = None) -> None:
         pass
 
-    async def wait_for_selector(self, selector, *, timeout=None) -> None:
+    async def wait_for_selector(self, selector: str, *, timeout: float | None = None) -> None:
         pass
 
-    async def wait_for_timeout(self, ms) -> None:
+    async def wait_for_timeout(self, ms: int) -> None:
         pass
 
-    async def evaluate(self, expression):
+    async def evaluate(self, expression: str) -> Any:
         return _CONTRACT_EVAL_RESULT
 
 
@@ -104,7 +108,7 @@ class _ContractFakeResponse:
 
 # parity-exempt: hand-rolled subset stub of Playwright's third-party Browser (only new_page(), the only method CamoufoxDriver calls)
 class _ContractFakeBrowser:
-    async def new_page(self):
+    async def new_page(self) -> _ContractFakePage:
         return _ContractFakePage()
 
 
@@ -122,13 +126,15 @@ class TestScrapeDriverContract:
     """Every ``ScrapeDriver`` backend must satisfy this identical contract."""
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    def test_name_is_a_stable_nonempty_string(self, make_driver) -> None:
+    def test_name_is_a_stable_nonempty_string(self, make_driver: Callable[[], ScrapeDriver]) -> None:
         driver = make_driver()
         assert isinstance(driver.name, str)
         assert driver.name
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_render_returns_a_rendered_page_with_correct_field_types(self, make_driver) -> None:
+    async def test_render_returns_a_rendered_page_with_correct_field_types(
+        self, make_driver: Callable[[], ScrapeDriver]
+    ) -> None:
         driver = make_driver()
 
         page = await driver.render("https://example.gov/contract-page")
@@ -142,7 +148,7 @@ class TestScrapeDriverContract:
         assert isinstance(page.eval_results, list)
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_render_returns_the_backend_supplied_content(self, make_driver) -> None:
+    async def test_render_returns_the_backend_supplied_content(self, make_driver: Callable[[], ScrapeDriver]) -> None:
         driver = make_driver()
 
         page = await driver.render("https://example.gov/contract-page")
@@ -152,7 +158,9 @@ class TestScrapeDriverContract:
         assert page.final_url == _PAGE_FINAL_URL
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_render_accepts_default_and_explicit_timeout_and_wait_for(self, make_driver) -> None:
+    async def test_render_accepts_default_and_explicit_timeout_and_wait_for(
+        self, make_driver: Callable[[], ScrapeDriver]
+    ) -> None:
         """Every backend's render() must accept the full ScrapeDriver signature,
         even if a given backend ignores wait_for internally -- the caller-facing
         contract is what's pinned here, not each backend's internal handling."""
@@ -164,7 +172,7 @@ class TestScrapeDriverContract:
         assert page_default.html == page_explicit.html
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_render_accepts_capture_network(self, make_driver) -> None:
+    async def test_render_accepts_capture_network(self, make_driver: Callable[[], ScrapeDriver]) -> None:
         """Every backend's render() must accept capture_network -- real
         capture behavior (what gets filtered in/out) is each backend's own
         test file's responsibility, per this file's own docstring."""
@@ -175,7 +183,7 @@ class TestScrapeDriverContract:
         assert isinstance(page.network_calls, list)
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_render_accepts_nav_steps(self, make_driver) -> None:
+    async def test_render_accepts_nav_steps(self, make_driver: Callable[[], ScrapeDriver]) -> None:
         """Every backend's render() must accept nav_steps -- real step
         execution (click/fill/wait_for/wait_ms semantics, failure modes) is
         each backend's own test file's responsibility, per this file's own
@@ -190,7 +198,9 @@ class TestScrapeDriverContract:
         assert page.html == _PAGE_HTML
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_evaluate_step_is_a_general_capability_not_google_specific(self, make_driver) -> None:
+    async def test_evaluate_step_is_a_general_capability_not_google_specific(
+        self, make_driver: Callable[[], ScrapeDriver]
+    ) -> None:
         """Gaming test: runs a plain JS expression against a synthetic
         contract-test page (https://example.gov/contract-page) wholly
         unrelated to Google/Trends. If ``evaluate`` only worked there, it
@@ -206,7 +216,9 @@ class TestScrapeDriverContract:
         assert page.eval_results == [_CONTRACT_EVAL_RESULT]
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_a_parametrized_backend_accepts_and_ignores_session_state(self, make_driver) -> None:
+    async def test_a_parametrized_backend_accepts_and_ignores_session_state(
+        self, make_driver: Callable[[], ScrapeDriver]
+    ) -> None:
         """The "accept the full signature, use what you need" rule, applied to a new parameter.
 
         A backend that cannot restore a browser session has nothing to do with one, but it
@@ -229,7 +241,7 @@ class TestScrapeDriverContract:
         assert isinstance(page, RenderedPage)
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
-    async def test_session_state_defaults_to_absent(self, make_driver) -> None:
+    async def test_session_state_defaults_to_absent(self, make_driver: Callable[[], ScrapeDriver]) -> None:
         """Every pre-existing caller keeps working without knowing this parameter exists."""
         driver = make_driver()
         page = await driver.render("https://example.gov/contract-page")

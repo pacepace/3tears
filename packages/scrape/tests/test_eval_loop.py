@@ -90,7 +90,7 @@ def _dispatch_by_purpose(extraction_model, judge_model):
     return _dispatch
 
 
-def _collections():
+def _collections() -> tuple[ScrapeRecipeCollection, ScrapeExtractionCollection]:
     recipe_collection = ScrapeRecipeCollection(get_registry(), get_config(), nats_client=None)
     extraction_collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
     return recipe_collection, extraction_collection
