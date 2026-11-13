@@ -17,6 +17,8 @@ names the reset. The store's `TRUNCATE` is declared `whole_read(kind="operator_r
 **Changed:** `copy_rows_arrow(columns, records, *, loop=None)`: given the caller's loop, the build schedules each turn
 on it and waits until the loop ran it (50 ms ceiling), instead of offering a 0.2 ms sleep the loop's thread could miss
 on a loaded host. `NatsProxyL3Backend` passes its loop; without one the turn is the sleep, as before.
+The build now holds the interpreter lock under 1 ms of its own CPU between turns (0.5 ms, then one slice of 128
+values or 64 KiB), where it held 1 ms and more.
 
 ### nats: a large publish or request no longer copies its payload on the event loop
 

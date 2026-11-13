@@ -121,8 +121,11 @@ def rows_digest(ipc: Any) -> str:
 
 #: the longest the build holds the interpreter lock before it lets the caller's event loop run: measured, a 12 MB copy's
 #: build held the caller's loop 31 ms behind on a thread that never blocked (a waiting thread is not handed the lock
-#: while the holder keeps releasing and taking it back in pyarrow's calls)
-_HOLD_SECONDS: Final = 0.001
+#: while the holder keeps releasing and taking it back in pyarrow's calls). With one slice past it (:data:`_SLICE_VALUES`)
+#: a stretch stays under 1 ms: on a loaded host the OS can stop the build while it holds the lock, and the caller's
+#: loop is late by that stop only when its tick falls inside a stretch, so the shorter the stretches the rarer that is
+#: (1 ms stretches: 47.5 ms worst, p99 4.7 ms of added lateness on a Linux container with every CPU busy)
+_HOLD_SECONDS: Final = 0.0005
 
 #: how long the build blocks when it lets the loop run and has no loop to hand the turn to
 _TURN_SECONDS: Final = 0.0002
@@ -132,12 +135,15 @@ _TURN_SECONDS: Final = 0.0002
 _TURN_WAIT_SECONDS: Final = 0.05
 
 #: the values read or converted in Python between two of the build's turns: few enough that no stretch nears
-#: :data:`_HOLD_SECONDS` (4096 held the caller's loop a whole switch interval, 5 ms, on a loaded host)
-_SLICE_VALUES: Final = 256
+#: :data:`_HOLD_SECONDS` (4096 held the caller's loop a whole switch interval, 5 ms, on a loaded host; 256 still ran
+#: 0.6 ms a slice on an oversubscribed test host)
+_SLICE_VALUES: Final = 128
 
 #: the stream's bytes copied out of Arrow's buffer at a time, with the build's turns between: one copy of a 12 MB stream
-#: into bytes held the interpreter lock for its length (3.6 ms on a Linux container)
-_PIECE_BYTES: Final = 1 << 20
+#: into bytes held the interpreter lock for its length (3.6 ms on a Linux container). Under the C allocator's 128 KiB
+#: threshold for mapping fresh pages: a 1 MiB piece was a fresh mapping each time, 256 page faults taken with the lock
+#: held (up to 4 ms of the kernel's time on a loaded host)
+_PIECE_BYTES: Final = 1 << 16
 
 
 class _Turns:
@@ -164,8 +170,15 @@ class _Turns:
         :return: nothing
         :rtype: None
         """
-        if time.monotonic() - self._since < _HOLD_SECONDS:
-            return
+        if time.monotonic() - self._since >= _HOLD_SECONDS:
+            self.hand()
+
+    def hand(self) -> None:
+        """let the caller's loop run now.
+
+        :return: nothing
+        :rtype: None
+        """
         loop = self._loop
         if loop is None or loop.is_closed():
             time.sleep(_TURN_SECONDS)
@@ -353,12 +366,27 @@ def copy_rows_arrow(
         if as_json:
             json_columns.append(position)
     table = pa.Table.from_arrays(arrays, names=list(columns))
+    turns.take()
+    ipc = _stream_bytes(_ipc_stream(table, turns), turns)
+    return ArrowCopyRows(ipc, rows_digest(ipc), json_columns)
+
+
+def _ipc_stream(table: Any, turns: _Turns) -> Any:
+    """the rows' IPC stream, written by Arrow with the interpreter lock released, then a turn: the build's hold counts
+    from there.
+
+    :param table: the rows
+    :ptype table: pyarrow.Table
+    :param turns: the build's turns
+    :ptype turns: _Turns
+    :return: the stream's buffer
+    :rtype: pyarrow.Buffer
+    """
     sink = pa.BufferOutputStream()
     with pa_ipc.new_stream(sink, table.schema) as writer:
         writer.write_table(table)
-    turns.take()
-    ipc = _stream_bytes(sink.getvalue(), turns)
-    return ArrowCopyRows(ipc, rows_digest(ipc), json_columns)
+    turns.hand()
+    return sink.getvalue()
 
 
 def _stream_bytes(stream: Any, turns: _Turns) -> bytes:

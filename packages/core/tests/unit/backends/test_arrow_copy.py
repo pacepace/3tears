@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -275,6 +276,51 @@ async def test_a_build_hands_its_turns_to_the_callers_loop_and_waits_for_each() 
     assert rows.ipc
     assert loop.handed > 0 and loop.ran == loop.handed
     assert max(loop.waited) >= 0.02, loop.waited
+
+
+class _TimedLoop:
+    """the caller's loop as a build sees it: each handed turn runs after the lock is let go for a moment (the loop's
+    turn), and the stretch the build ran before handing it is timed on the build thread's own CPU clock, with the
+    build's step that handed it."""
+
+    def __init__(self) -> None:
+        self.stretches: list[tuple[float, str]] = []
+        self._since = time.thread_time()
+
+    def is_closed(self) -> bool:
+        return False
+
+    def call_soon_threadsafe(self, callback: Any) -> None:
+        held = time.thread_time() - self._since
+        step = next(
+            frame.name for frame in reversed(traceback.extract_stack(limit=6)) if frame.name not in _TURN_FRAMES
+        )
+        self.stretches.append((held, step))
+        time.sleep(0.0002)  # the loop's turn: the lock let go, as a real loop's turn lets it go
+        callback()
+        self._since = time.thread_time()
+
+
+#: the frames of the turn itself and of the fake loop, not the build's step that took it
+_TURN_FRAMES = frozenset({"call_soon_threadsafe", "hand", "take"})
+
+
+@pytest.mark.loop_timing
+def test_the_build_holds_the_lock_under_1_ms_between_turns() -> None:
+    """every stretch the build runs holding the interpreter lock, between two of its turns, costs its thread under
+    1 ms of CPU over a 12 MB copy. On a loaded host the OS can stop the build mid-stretch, and the caller's loop is late
+    by that stop only when its tick falls inside a stretch: 1 ms stretches left it 47.5 ms late at worst on a Linux
+    container with every CPU busy. The build thread's own CPU time is counted, never the wall clock, so a host's load
+    cannot stretch a stretch past its work. The one stretch ending in the IPC write is Arrow's, with the lock
+    released (it hands a turn the moment it returns), and is not a hold."""
+    records = _wide_records(16_000)
+    loop = _TimedLoop()
+    rows = copy_rows_arrow([f"c{n}" for n in range(42)], records, loop=loop)  # type: ignore[arg-type]
+    assert len(rows.ipc) > 10_000_000
+    written = [held for held, step in loop.stretches if step == "_ipc_stream"]
+    holds = sorted((held, step) for held, step in loop.stretches if step != "_ipc_stream")
+    assert len(written) == 1 and len(holds) > 20
+    assert holds[-1][0] < 0.001, holds[-5:]
 
 
 def test_a_request_that_is_not_one_is_not_split() -> None:
