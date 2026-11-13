@@ -1204,7 +1204,7 @@ class FakeChangeLog:
         self._bytes = 0
 
 
-# parity-with: threetears.nats.kv.KvCapable
+# parity-with: threetears.nats.capabilities.SubscriptionHandle
 class FakeSubscription:
     """the handle :meth:`FakeNatsClient.subscribe_typed` hands back: a
     :class:`threetears.nats.SubscriptionHandle`, as the real client's ``Subscription`` is.
@@ -1258,6 +1258,7 @@ class FakeSubscription:
         self._closed = True
 
 
+# parity-with: threetears.nats.kv.KvCapable
 class FakeNatsClient:
     """fake NATS wrapper exposing :meth:`kv_bucket` returning :class:`FakeKvBucket`.
 
