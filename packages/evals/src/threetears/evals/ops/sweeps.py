@@ -272,7 +272,7 @@ async def _refuse_what_any_arm_would_refuse(
     shared: SweepLaunchArguments,
     arms: list[SweepArmRecord],
     scope_id: str,
-) -> None:
+) -> list[str]:
     """Quote every arm by the launch's own rule before anything is created, and refuse the sweep on any refusal.
 
     :param host: The launching host.
@@ -285,6 +285,9 @@ async def _refuse_what_any_arm_would_refuse(
     :ptype arms: list[SweepArmRecord]
     :param scope_id: The scope it runs in.
     :ptype scope_id: str
+    :return: What quoting the arms told the caller beside refusing nothing: each served-model check that could not
+        be made, once, in arm order.
+    :rtype: list[str]
     :raises ValidationFailedError: An arm's launch would be refused, named with its arm; the schedule is one latency
         cannot be read under; or it runs more arms at once than the host admits, or than one launch may start.
     :raises NotFoundError: The template, or the case set, is not in the scope.
@@ -304,8 +307,9 @@ async def _refuse_what_any_arm_would_refuse(
             f"({settings.name_of('max_launch_arms')}={settings.max_launch_arms})",
             remedy=f"pass arm_schedule='sequential', or sweep at most {settings.max_launch_arms} arms",
         )
+    notices: list[str] = []
     for arm in arms:
-        await _refuse_what_an_arm_would_refuse(
+        notices += await _refuse_what_an_arm_would_refuse(
             host,
             template_id=arguments.template_id,
             subject_id=arguments.subject_id,
@@ -313,6 +317,7 @@ async def _refuse_what_any_arm_would_refuse(
             arm=arm,
             scope_id=scope_id,
         )
+    return list(dict.fromkeys(notices))
 
 
 async def _refuse_what_an_arm_would_refuse(
@@ -323,10 +328,11 @@ async def _refuse_what_an_arm_would_refuse(
     shared: SweepLaunchArguments,
     arm: SweepArmRecord,
     scope_id: str,
-) -> None:
+) -> list[str]:
     """Quote one arm by the launch's own rule, from what the sweep records it launches with, and refuse it on any
     refusal, naming the arm.
 
+    :return: Each served-model check of the arm that could not be made, as its caller is told it.
     :raises ValidationFailedError: The arm's launch would be refused.
     :raises NotFoundError: The template, or the case set, is not in the scope.
     """
@@ -356,6 +362,13 @@ async def _refuse_what_an_arm_would_refuse(
             f"arm {arm.label!r} would be refused: " + "; ".join(str(verdict.refusal) for verdict in refused_arms),
             remedy="; ".join(dict.fromkeys(str(verdict.remedy) for verdict in refused_arms)),
         )
+    return [
+        notice
+        for verdict in quote.arms
+        if verdict.plan is not None
+        for check in verdict.plan.served_checks
+        if (notice := check.skipped_notice()) is not None
+    ]
 
 
 async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, *, created_by: str) -> JobsStarted:
@@ -374,14 +387,14 @@ async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, 
     :param created_by: Who is starting it, recorded on the campaign.
     :ptype created_by: str
     :return: The sweep's one job (``sweep:<sweep id>``), whose target is the campaign its runs join; polling it reports
-        the arms launched and finished.
+        the arms launched and finished. Its ``notices`` say each served-model check an arm's quote could not make.
     :rtype: JobsStarted
     :raises ValidationFailedError: An arm's launch would be refused, a schedule latency cannot be read under, arms at
         once above the host's admission ceiling or its launch ceiling, or the campaign definition is refused.
     :raises NotFoundError: The template or the case set is not in the scope.
     """
     shared, arms = _what_it_launches(arguments)
-    await _refuse_what_any_arm_would_refuse(host, arguments, shared, arms, scope_id)
+    notices = await _refuse_what_any_arm_would_refuse(host, arguments, shared, arms, scope_id)
     eval_host, manager = host.eval_host, host.launch.job_manager
     campaign = await run_blocking(
         eval_host.blocking_executor,
@@ -431,7 +444,8 @@ async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, 
     # would reach the sweep as a cancel.
     manager.start_task(sweep.id, work, budget_s=None, key=sweep_key(sweep.id, scope_id), record=(SWEEP_JOB, scope_id))
     return JobsStarted(
-        jobs=[JobHandle(job_id=sweep_job_id(sweep.id), kind="sweep", target_id=campaign.id, label=campaign.name)]
+        jobs=[JobHandle(job_id=sweep_job_id(sweep.id), kind="sweep", target_id=campaign.id, label=campaign.name)],
+        notices=notices,
     )
 
 
@@ -553,7 +567,8 @@ async def sweep_resume(
     :param max_cost_usd: The cost cap every arm is taken up or launched under; ``None`` keeps each arm's own. Not
         part of the measurement: the sweep records it, and each holding records the cap it ran under.
     :ptype max_cost_usd: float | None
-    :return: The sweep's one job (``sweep:<sweep id>``), whose target is its campaign.
+    :return: The sweep's one job (``sweep:<sweep id>``), whose target is its campaign. Its ``notices`` say each
+        served-model check an arm's take-up or quote could not make.
     :rtype: JobsStarted
     :raises NotFoundError: There is no such sweep, or an arm's template is gone.
     :raises ValidationFailedError: The sweep cannot be taken up, it has no arm left to take up or launch, or an arm
@@ -607,10 +622,11 @@ async def sweep_resume(
             unfinished.append((arm.label, run.id))
     planned, refused = await take_up_arms(launch, unfinished, scope_id, max_cost_usd=max_cost_usd)
     refusals += refused
+    notices = [notice for resuming in planned.values() for notice in resuming.notices]
     for arm in never_launched:
         assert shared is not None  # an arm the sweep holds no arguments for was refused above
         try:
-            await _refuse_what_an_arm_would_refuse(
+            notices += await _refuse_what_an_arm_would_refuse(
                 host,
                 template_id=sweep.template_id,
                 subject_id=sweep.subject_id,
@@ -687,7 +703,8 @@ async def sweep_resume(
                 target_id=sweep.campaign_id,
                 label=campaign.name if campaign is not None else sweep.campaign_id,
             )
-        ]
+        ],
+        notices=list(dict.fromkeys(notices)),
     )
 
 
@@ -984,7 +1001,8 @@ class _SweepRun:
             try:
                 match arm:
                     case _ArmTakenUp(resumption=resuming):
-                        run = await start_take_up(self.host.launch, resuming)
+                        # The notices its admission makes were told the caller when the sweep was taken up.
+                        run = (await start_take_up(self.host.launch, resuming)).record
                     case _ArmLaunched():
                         (run,) = await start_run(
                             self.host.launch,

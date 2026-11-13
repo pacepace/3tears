@@ -50,8 +50,9 @@ the ones it sets today:
 
 The judge's floor is one call with no page in it, $0.0101: its 2,048-token output cap and 2,048 prompt tokens at
 OpenRouter's rates. The run is refused before any arm launches when an arm's reports and judging, or the pass, could
-pass its part at that floor. The pages a call reads are priced only once they are written, and the cap is checked
-between cells, so the cells in flight when an arm's part runs out can finish past it.
+pass its part at that floor. The pages a call reads are priced only once they are written: a case's judging is then
+priced in full and admitted against what its run has left, and a case it does not fit is set aside unjudged, so an
+arm's judging stays within its part wherever the judge's price ceiling bounds what it is billed.
 
 ## When a recording run is cut short
 

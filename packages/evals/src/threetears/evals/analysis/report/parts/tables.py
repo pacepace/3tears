@@ -40,7 +40,6 @@ from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
 from threetears.evals.analysis.report.cost_unit import (
     PRICED_SHARE_TEMPLATE,
-    REPLIES,
     MoneyRuler,
     money_ruler,
     per_one,
@@ -72,6 +71,7 @@ from threetears.evals.analysis.report.parts.words import (
     PASSES_TEMPLATE,
     PRICED_HEADER,
     RECOMMENDED_MARK,
+    SERVED_BY_IN_PART_TEMPLATE,
     SERVED_BY_TEMPLATE,
     TOOL_SPEND_TEMPLATE,
     UPLIFT_NOT_COMPARABLE,
@@ -236,27 +236,20 @@ def _costs(
     times as many (and again), which the header says, so the cells are written without the mark. A partly priced arm
     is left out of the choice and states its priced share in place of a cost.
     """
-    noun = cost_basis(report_input).noun
     costs: dict[tuple[str | None, str], float] = {}
     for aspect in aspects:
-        board = aspect_board(report_input, aspect)
         held = aspect_costs_per_thousand(report_input, aspect)
         for arm in (arm.id for arm in report_input.arms):
-            row = board.get(arm)
             if priced_in_part(report_input, arm, aspect) is not None:
                 continue
             if arm in held:
                 costs[aspect, arm] = held[arm] * per / 1000
-            elif noun == REPLIES and row is not None and row.reply_cost_usd is not None:
-                # The cost source the page reads may lack an arm another source holds: the scoreboard's cost per reply
-                # is the same cost over the same count, so an arm it states is not left blank beside arms that carry a
-                # dollar figure.
-                costs[aspect, arm] = row.reply_cost_usd * per
     # The one owner of money's scale states the column: per ``per``, or per 1,000 (1,000,000) times as many where a
     # cost is under a cent there.
     ruler = money_ruler(
         costs.values(), per=per, start=per, reconciles=report_input.meta.volume_per_month is not None
     )
+    noun = cost_basis(report_input).noun
     return COST_HEADER.format(per=per_one(noun) if ruler.counted == 1 else ruler.words(noun)), costs, ruler
 
 
@@ -317,18 +310,22 @@ def _priced_share(pricing: Pricing | None) -> str | None:
 
 
 def _priced_by(pricing: Pricing | None) -> TableCell:
-    """What priced an arm's cost: its price sources, and beside them who served its model calls, then the tools it
-    spent on as tool spend (never as the model's providers); empty where unsaid."""
+    """What priced an arm's cost: its price sources, and beside them who served its model calls (and that the rest
+    were not recorded where only some replies named one, never guessed), then the tools it spent on as tool spend
+    (never as the model's providers); empty where unsaid.
+
+    Where no reply named a provider the cell names none, as it did before any was recorded: every page built over
+    calls recorded before then reads byte for byte as it did, and a judge comparing such pages is asked what it was
+    asked when its replies were recorded."""
     if pricing is None:
         return TableCell(value=None)
-    said = [
-        template.format(providers=", ".join(providers))
-        for template, providers in (
-            (SERVED_BY_TEMPLATE, pricing.providers),
-            (TOOL_SPEND_TEMPLATE, pricing.tool_providers),
-        )
-        if providers
-    ]
+    served = ", ".join(pricing.providers)
+    said: list[str] = []
+    if served:
+        template = SERVED_BY_IN_PART_TEMPLATE if pricing.providers_in_part else SERVED_BY_TEMPLATE
+        said.append(template.format(providers=served))
+    if pricing.tool_providers:
+        said.append(TOOL_SPEND_TEMPLATE.format(providers=", ".join(pricing.tool_providers)))
     return TableCell(value=", ".join(pricing.sources) or None, flag="; ".join(said) or None)
 
 

@@ -535,6 +535,8 @@ def apply_rejudge(
                 | {dim for dim in folded.cannot_tell if dim in boundary_dim_names(template.rubric)}
             ),
             "judge_rescores": [*result.judge_rescores, rescore],
+            # Every dim the cost cap kept from being asked has been asked now; any it left unscored is this call's.
+            "judging_set_aside": False,
         }
     )
 

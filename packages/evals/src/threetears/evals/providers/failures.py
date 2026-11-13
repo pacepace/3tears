@@ -40,6 +40,24 @@ _CREDIT_NOTICE: Final = "credit balance"
 #: A 500 or a 502 is an error rather than a refusal, so it stays the candidate's.
 _DECLINED: Final = frozenset({429, 503, 529})
 
+#: What OpenRouter's 404 for a model it has retired says ("inception/mercury-3 is no longer available on OpenRouter").
+#: Its other 404s say no endpoint takes the request: none supports tool use, none matches the account's data policy,
+#: none takes the parameters under ``require_parameters``, no allowed provider is left. Those are the request's or the
+#: account's setup, which a resume would meet again with the model still served. The body carries no code that tells
+#: the two apart (its ``code`` is the status), so this one model-not-served answer is read off the message, narrowly,
+#: the way Anthropic's credit notice is.
+_ROUTER_RETIRED_MODEL: Final = "is no longer available"
+
+#: How OpenRouter's 400 for a model id it does not know ends, read off the message for the same reason.
+_ROUTER_INVALID_MODEL: Final = "is not a valid model id"
+
+#: The error code OpenAI, and the OpenAI-compatible servers that copy its envelope, answer for a model it does not
+#: serve (``error.code``), whatever the status.
+_OPENAI_MODEL_NOT_FOUND: Final = "model_not_found"
+
+#: Anthropic's error type for a resource it does not have (``error.type``); on the Messages API that is the model.
+_ANTHROPIC_NOT_FOUND: Final = "not_found_error"
+
 
 def _parsed(body: object) -> object:
     """``body`` as JSON when it is text, else as given; ``None`` when it is text that is not JSON."""
@@ -60,6 +78,36 @@ def _error_object(body: object) -> Mapping[str, object]:
     return inner if isinstance(inner, Mapping) else outer
 
 
+def _model_unserved(provider: Provider, status: int, error: Mapping[str, object], message: str | None) -> bool:
+    """Whether the provider's answer says it does not serve the model the request named.
+
+    Read off each provider's structured signal: Anthropic's 404 ``not_found_error`` and OpenAI's ``model_not_found``
+    code. OpenRouter's answers carry no code of their own, so its two are read off the message: the 404 for a model it
+    has retired, and the 400 for a model id it does not know. Its other 404s (no endpoint takes the request: tool use,
+    data policy, parameters, allowed providers) are not this: the model is still served, so they stay the candidate's.
+
+    :param provider: The provider that answered.
+    :ptype provider: Provider
+    :param status: The HTTP status, or an in-body error's code.
+    :ptype status: int
+    :param error: The body's error object.
+    :ptype error: Mapping[str, object]
+    :param message: The provider's own message, or ``None``.
+    :ptype message: str | None
+    :return: True when every call naming that model would meet the same answer.
+    :rtype: bool
+    """
+    if provider == "anthropic":
+        return status == 404 and error.get("type") == _ANTHROPIC_NOT_FOUND
+    if provider == "openai":
+        return error.get("code") == _OPENAI_MODEL_NOT_FOUND
+    # The router, the one provider left.
+    said = (message or "").lower()
+    if status == 404:
+        return _ROUTER_RETIRED_MODEL in said
+    return status == 400 and said.rstrip(" .").endswith(_ROUTER_INVALID_MODEL)
+
+
 class ProviderError(Exception):
     """A request the provider refused or failed: who, the HTTP status, and the provider's own message.
 
@@ -68,8 +116,10 @@ class ProviderError(Exception):
     where one status means two things: the calling ``account`` when every model behind the key would get the same
     answer (a key it refuses, credit spent, a quota exhausted), so a run stops instead of charging the candidate; the
     ``provider`` when it declined the call (any other 429 rate limit, or a 529 overloaded or 503 unavailable), which
-    says nothing about the model, so the cell is excluded and the run goes on; otherwise the ``candidate``, as any
-    failure is charged. An in-body code OpenRouter answers with a 200 is read the same way.
+    says nothing about the model, so the cell is excluded and the run goes on; ``unserved`` when it does not serve the
+    model the request named, so every call naming it meets the same answer and the cell is lost to the test setup;
+    otherwise the ``candidate``, as any failure is charged. An in-body code OpenRouter answers with a 200 is read the
+    same way.
 
     :ivar provider: The provider that answered.
     :ivar status: The HTTP status, or the code an in-body error named (OpenRouter answers some failures with a 200).
@@ -78,7 +128,9 @@ class ProviderError(Exception):
         declined it and the client sent it again (:class:`~threetears.evals.providers.DeclinedRetry`).
     :ivar owner: Whose failure it was. ``account``: a 401 or 403 (OpenRouter's 403 is moderation, so not there), a
         402, Anthropic's 400 credit-balance notice, or OpenAI's 429 ``insufficient_quota``. ``provider``: any other
-        429, a 529 or a 503. ``candidate``: everything else, a 500 and a 502 among it.
+        429, a 529 or a 503. ``unserved``: OpenRouter's 404 for a model it has retired ("is no longer available"; its
+        other 404s, no endpoint taking the request, stay the candidate's) and its 400 for a model id it does not know, Anthropic's 404 ``not_found_error``, or OpenAI's
+        ``model_not_found``. ``candidate``: everything else, a 500 and a 502 among it.
     :ivar credit_spent: Whether the answer says the key's prepaid credit is spent: Anthropic's 400 credit-balance
         notice, or a 402 (OpenRouter's insufficient credits). An ``account`` failure that another key may not meet,
         so it is the one answer a model fails over to a fallback key on (``<VARIABLE>_FALLBACKS``).
@@ -105,7 +157,8 @@ class ProviderError(Exception):
         self.message = message[:_MESSAGE_LIMIT] if message else None
         self.attempts = attempts
         self._body = body
-        code = _error_object(_parsed(body)).get("code")
+        error = _error_object(_parsed(body))
+        code = error.get("code")
         credit = status == 400 and provider == "anthropic" and _CREDIT_NOTICE in (message or "").lower()
         account = (
             status == 401
@@ -114,7 +167,15 @@ class ProviderError(Exception):
             or credit
             or (status == 429 and code == "insufficient_quota")
         )
-        self.owner: FailureOwner = "account" if account else "provider" if status in _DECLINED else "candidate"
+        self.owner: FailureOwner = (
+            "account"
+            if account
+            else "provider"
+            if status in _DECLINED
+            else "unserved"
+            if _model_unserved(provider, status, error, message)
+            else "candidate"
+        )
         self.credit_spent = credit or status == 402
         said = f": {self.message}" if self.message else " (the response carried no message)"
         tried = f" (after {attempts} attempts)" if attempts > 1 else ""

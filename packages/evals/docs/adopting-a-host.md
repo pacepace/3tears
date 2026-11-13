@@ -142,9 +142,18 @@ pass it to every entrypoint. It holds:
 - your `failure_describer` — how a raised provider call reads. It is the only thing that can say whose failure a
   call was (`ProviderFailure.owner`): the calling `account`'s (a refused key, spent credit), which stops a run
   rather than excluding its cells; the `provider`'s (it declined the call: a 429 rate limit, or a 529 overloaded or
-  503 unavailable), which excludes the cell and lets the run go on; or the `candidate`'s, charged as any failure.
-  `withhold_failure_detail` is the honest one for an app with no error types of its own, and says `candidate` for
-  every failure;
+  503 unavailable), which excludes the cell and lets the run go on; `unserved` (the provider does not serve the model
+  the call named: a retired model, or a model id it does not know), which loses the cell to the test setup; or the
+  `candidate`'s, charged as any failure. Returning `unserved` is optional: a describer that never does keeps working,
+  and a retired model's calls are then charged to the candidate. `withhold_failure_detail` is the honest one for an
+  app with no error types of its own, and says `candidate` for every failure.
+  Your own candidate kind routes a model call that raised through `failed_call_output` (from
+  `threetears.evals.kernel`), passing the owner your describer read, as the package's own kinds do. That is what
+  acts on the owner: an `account` refusal stops the run, a `provider` decline excludes the cell, and `unserved` sets
+  `CandidateOutput.model_unserved`, so the cell is never judged, even when your kind went on to record a transcript
+  of turns with no reply, and three such cells in a row, or any left when the run's cells run out, stop the run
+  `exhausted`, resumable once the model is served.
+  A kind that builds its own `CandidateOutput` for a failed call skips all three;
 - your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
   where the host is built;
 - your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the questions
@@ -302,7 +311,7 @@ from threetears.evals.providers import Clients, describe_failure
 
 async def build_host() -> EvalHost:
     clients = Clients(default="deepseek/deepseek-v4-flash", judge="google/gemini-3.5-flash-lite")
-    unpriced = await clients.load_prices()  # once, at boot: {model: why} for any model left unpriced
+    unpriced = await clients.load_prices()  # the boot step: {model: why} for any model left unpriced
     return EvalHost(..., clients=clients, failure_describer=describe_failure)
 ```
 
@@ -332,7 +341,10 @@ billed; a resend cut at the time bound may already have been, and its spend is n
 back to carry it.
 `describe_failure` reads the client's one error type, `ProviderError` (the provider, the status and its own message,
 never the body, `after 3 attempts` when it was sent again, and its `owner`: `account` for a refused key or spent
-credit, which stops a run), and an `httpx` transport error by the host it was sending to.
+credit, which stops a run, and `unserved` for a model the provider does not serve: OpenRouter's 404 for a model it
+has retired and its 400 for a model id it does not know, Anthropic's 404 `not_found_error`, OpenAI's
+`model_not_found`; OpenRouter's other 404s, no endpoint taking the request, stay the candidate's), and an `httpx`
+transport error by the host it was sending to.
 
 **A model that lacks a setting still answers, sent the closest one it takes.** The choosing, the refusal reading and
 the resending are `threetears.evals.negotiation`'s, the same a client of your own uses (below), and each completion's
@@ -369,9 +381,39 @@ when a cache share was priced at a rate the row does not list for it. The `price
 (the BYOK sum, `openrouter:reported+upstream`) and `OPENROUTER_CATALOGUE`, the prefix of
 `openrouter-catalogue:<id>`. Compare a stored `price_source` with them rather than spelling the words.
 A
-model's `price_ceiling` answers once its catalogue is loaded. The engine awaits the model's `refresh_prices()`
-before it prices a call, which loads it; `await clients.load_prices()` at boot reads it early and says which models
-it cannot price. A long-lived process is not priced from its first
+model's `price_ceiling` answers once its catalogue is loaded. **The boot step: await `clients.load_prices()` before
+your host offers any launch or resume.** It reads the catalogue and answers which of the models your factory names
+it cannot price, so an operator hears that at boot. Admission does not depend on it: a launch, an estimate and a
+resume each await every client's `refresh_prices()` before they price an arm's largest call, which loads the
+catalogue in a process that has not read it yet; and under a cost cap an arm whose largest call still cannot be
+priced is refused, naming the call and why, never admitted unchecked.
+
+**Admission also checks the models are still served.** `Clients.model_listing(model, role=...)` answers what
+OpenRouter's model list (the same catalogue, so the same read) says of a model that goes to OpenRouter, and admission
+asks it of each arm's candidate, judge and simulator models: a model the list does not name is refused, naming it,
+and a list that cannot be read lets the launch, the sweep or the resume go ahead saying the check was skipped
+(`JobsStarted.notices`, `ArmEstimate.served_check_skipped`). A model going to Anthropic or OpenAI directly is not
+checked. A candidate your kind calls through your own route, not a role of the factory, is asked with `role=None`:
+`Clients` does not route it and answers nothing, so its check is reported skipped, and the notice names the fix.
+
+**Declaring your candidate's route takes one line.** When your kind calls its candidate through a client of your
+factory, name that role on its launch entry, and the candidate is checked against that role's provider list:
+
+```python
+LaunchableKind(
+    launch=your_persona_launcher,
+    resolve_subject=your_persona_subject,
+    plan_arm=plan_persona_arm,
+    candidate_role="analyst",  # the factory role your launcher builds the candidate's client in
+)
+```
+
+The report writer's entry takes the same as an argument (`launchable_report_writer_kind(..., candidate_role="analyst")`)
+when your `models` factory builds the writer on your factory's analyst client; the judge kind declares its own. When
+your candidate goes somewhere your factory does not build, answer for it instead: a factory of your own may offer
+`async model_listing(model, *, role) -> ModelListing | None` (`ModelListing` from `threetears.evals.schema`),
+answering for `role=None` with the list of the provider your candidates go to, and `None` for a model whose provider
+keeps no list it reads. A factory without `model_listing` is not checked. A long-lived process is not priced from its first
 fetch forever: the catalogue refreshes on the first live call after `refresh_after` (`Catalogue(refresh_after=...)`,
 six hours by default). A refresh that fails keeps the last rates rather than failing the call, logs it, and marks the
 completions they price: `Completion.pricing_stale_since` is when those rates expired (`None` while fresh, and on an
@@ -1001,7 +1043,7 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.11), durable documents (v16.9), regenerable documents
+**Each version space moves on its own.** Core documents (`CORE_SCHEMA_VERSION`.`CORE_SCHEMA_MINOR`), durable documents (v16.9), regenerable documents
 (v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`), the cell model
 (`CELL_MODEL_VERSION`) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The code-only page has none: it is rendered from the bundle, which is the versioned machine
 form. Report documents and their sessions carry a version of their own, as cassettes do: a change to the report document's shape moves that version alone, the shared regenerable version stays where it is, and a report from before it reads as the code-only page with a line to regenerate it.
@@ -1343,8 +1385,9 @@ anything is spent.
 
 **Your kind's paid calls are counted by the run's cost cap when its cell lands, and never refused.** The cell's
 sink keeps the cell's spend by source, and the cap is read between cells, against the cells already recorded: a
-cell running when the cap is reached finishes whole, and a run may land past it by up to the width's worth of cells
-([Cost and budgets: caps](cost-and-budgets.md#caps)). Report each paid call's cost as it lands: wrap the client in
+cell running when the cap is reached finishes its candidate, and a run may land past the cap by what the running
+cells' candidates spend. The engine's own judging is admitted against the cap on its price ceiling before it is paid
+for, so it stays within the cap wherever that ceiling bounds the bill ([Cost and budgets: caps](cost-and-budgets.md#caps)). Report each paid call's cost as it lands: wrap the client in
 `CappedCompletion(client, sink=sink, source="candidate")`, which does it for every call, or call
 `sink.add_spend(source, cost)` once a call returns; a call that raises counts nothing. Each call adds, and never
 replaces what another source reported. Return the cell's spend on its output; that is what the cap counts.
@@ -1390,9 +1433,13 @@ bound to make, with the transcript and evidence left out, on the clients your ce
 and the launch then refuse an arm whose cap cannot afford even that, before anything is spent. That catches a
 judge or simulator client whose output cap and retries alone put one call above the cap. Pass the `eval_host`
 your launcher builds the judge on and the `judged_artifact` it hands `build_judge_service`. The figure is a
-floor, not the largest call (`CallCeiling.lower_bound`): a cap above it is admitted, and a call its transcript
-makes larger is still held to the cap as the run reserves it. A kind with no judge and no simulated user has
-nothing to price here, and returns `None`.
+floor, not the largest call (`CallCeiling.lower_bound`): a cap above it is admitted, and the run's cap counts the
+spend of a call its transcript makes larger once its cell is recorded. Each client's prices are brought up to date
+before it is priced; a call whose client still cannot price it comes back as an `UnpricedCall` naming the call and
+why, and under a cap the arm is refused. A pricer of your own does the same: await `refresh_prices` on each client
+first, and answer an `UnpricedCall` rather than `None` for a call it cannot price (`unpriced_because` from
+`threetears.evals.kernel` words the client's reason). A kind with no judge and no simulated user
+has nothing to price here, and returns `None`.
 
 **A transport launches in two halves.** `run_launch` admits the launch in its call (`admit_launch`: every refusal
 above, every arm planned and priced, the runs' room reserved) and runs the rest as one job
@@ -1402,14 +1449,17 @@ in the call and must not. A script awaits both halves in a row through `start_ru
 
 ### At boot: settle, then offer resumes
 
-A process that dies leaves its runs to read `lost` once their leases lapse. At boot, settle them, then offer what
-can be taken up again:
+A process that dies leaves its runs to read `lost` once their leases lapse. At boot, read the prices, settle the
+runs, then offer what can be taken up again:
 
-1. `sweep_abandoned_runs(storage, scopes)` writes lost every run your last process left running.
-2. The `jobs_resumable` action (or the function behind it, `resumable_jobs(storage, scopes)`) lists the runs, sweeps
+1. `await clients.load_prices()` (the boot step under [Bringing a provider](#bringing-a-provider)): the resume an
+   operator asks for next is priced fresh by its admission either way, and this says at boot which models are left
+   unpriced.
+2. `sweep_abandoned_runs(storage, scopes)` writes lost every run your last process left running.
+3. The `jobs_resumable` action (or the function behind it, `resumable_jobs(storage, scopes)`) lists the runs, sweeps
    and launches `job_resume` would take up. Each comes with how it ended and why, its cells done and expected, what
    it spent and its cap, and, for a run its cost cap or its metered-call ceiling stopped, what it needs to resume.
-3. Offer each one to an operator. **Nothing resumes on its own**: a resume spends money, so it is always asked for
+4. Offer each one to an operator. **Nothing resumes on its own**: a resume spends money, so it is always asked for
    (`job_resume`). An operator declines a run by archiving it (`EvalStorage.set_eval_run_archived`): an archived
    run is never listed again, nor a sweep or launch whose every run is archived.
 

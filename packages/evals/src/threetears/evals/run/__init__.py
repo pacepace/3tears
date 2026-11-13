@@ -75,8 +75,11 @@ from threetears.evals.run.launch import (
     LaunchHost,
     TEMPLATE_FIELDS,
     TemplateField,
+    ServedCheck,
+    ServedRole,
     SubjectResolver,
     UnknownSubject,
+    UnpricedCall,
     LaunchPricer,
     LaunchQuote,
     LaunchRequest,
@@ -199,7 +202,13 @@ from threetears.evals.run.simulator import (
     TurnDriver,
 )
 from threetears.evals.run.witnessed import WitnessedJudging, record_witnessed_cell, stamp_witnessed_judge
-from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, CapBreach, EvalRunCostCap
+from threetears.evals.run.budget import (
+    AccountExhaustedError,
+    BudgetStoppedError,
+    CapBreach,
+    EvalRunCostCap,
+    ModelUnservedError,
+)
 from threetears.evals.run.case_sets import mint_case_set, resolve_case_set
 from threetears.evals.run.ceilings import (
     CeilingRaisedError,
@@ -296,8 +305,11 @@ __all__ = [
     "LaunchHost",
     "TEMPLATE_FIELDS",
     "TemplateField",
+    "ServedCheck",
+    "ServedRole",
     "SubjectResolver",
     "UnknownSubject",
+    "UnpricedCall",
     "LaunchPricer",
     "LaunchQuote",
     "LaunchRequest",
@@ -305,6 +317,7 @@ __all__ = [
     "LaunchableKind",
     "MeteredCallLedger",
     "MeteredCallTally",
+    "ModelUnservedError",
     "RatingStore",
     "Regrade",
     "RegradedDim",

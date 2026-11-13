@@ -95,6 +95,25 @@ LOSS_CAUSE_WORDS: Final[dict[str, CauseWords]] = {
         ),
         short="setup fault",
     ),
+    "model_unserved": CauseWords(
+        words="the provider does not serve the candidate's model (retired, or not a model id it knows)",
+        remedy=(
+            "read the lost trials' errors below, which name the model and quote the provider: choose a model it"
+            " serves, or wait until it serves this one again, then resume the arm's run"
+        ),
+        short="model not served",
+    ),
+    "cost_cap": CauseWords(
+        words=(
+            "the run's cost cap had too little left to judge it: it ran whole, and its other readings count it, but"
+            " nothing scored it, so the judged readings leave it out"
+        ),
+        remedy=(
+            "re-judge each lost trial (result_regrade with apply), which reads the answer it stored and pays for no candidate"
+            " call again; or give the next launch a higher cost cap (max_cost_usd), with room for the judging"
+        ),
+        short="cost cap",
+    ),
     "judge_cannot_tell": CauseWords(
         words="the judge said the transcript did not let it score a dimension the trial needs",
         remedy="give the judge the evidence it asked for, or narrow the dimension, then rerun every arm",
@@ -261,7 +280,13 @@ def loss_words(
     every = "both arms" if arms == 2 else "every arm"
     statuses = frozenset(run_statuses)
     remedy = worded.remedy
-    if cause == "infra" and statuses == {"exhausted"}:
+    # An ``exhausted`` run stopped for the account or for its model; a run its model stopped lost trials to
+    # ``model_unserved``, so the account's remedy is only for an arm whose run lost none.
+    if (
+        cause == "infra"
+        and statuses == {"exhausted"}
+        and not any(cell.by_cause.get("model_unserved") for cell in cells)
+    ):
         remedy = ACCOUNT_REFUSED_REMEDY
     elif cause == "infra" and measured_nothing(cells, statuses):
         remedy = NOTHING_MEASURED_REMEDY

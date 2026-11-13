@@ -604,6 +604,22 @@ class Catalogue:
             return None, False, f"{model_id!r} cannot be priced: {unpriced}"
         return cost, approximate, None
 
+    def lists(self, model_id: str) -> bool | None:
+        """Whether the catalogue names the model OpenRouter is asked for, or ``None`` before it has been read.
+
+        The catalogue is OpenRouter's list of the models it serves, so a model it does not name is one an OpenRouter
+        call to would fail. A routing suffix OpenRouter takes on any model (``:nitro``, ``:floor``) is not a row of
+        its own, so an id carrying one is listed when the id before it is.
+
+        :param model_id: The model's OpenRouter id.
+        :ptype model_id: str
+        :return: Whether a row names it, or ``None`` while no rows are held.
+        :rtype: bool | None
+        """
+        if self._rows is None:
+            return None
+        return model_id in self._rows or model_id.split(":", 1)[0] in self._rows
+
     def supported_parameters(self, model_id: str) -> frozenset[str] | None:
         """The parameters some endpoint of the model takes, or ``None`` when the catalogue does not say.
 

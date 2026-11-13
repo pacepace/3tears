@@ -632,6 +632,7 @@ class ReportWriterKind:
             refused="report_writer: a turn was refused for the calling account",
             declined="report_writer: a turn was declined by the provider",
             failed="report_writer: a turn failed",
+            unserved="report_writer: a turn named a model the provider does not serve",
             log=lambda what, level: log_provider_failure(log, described, failure, "%s", what, level=level),
             telemetry=telemetry,
             host_measures=measures,

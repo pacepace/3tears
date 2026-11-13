@@ -544,6 +544,10 @@ class ArmEstimate(EvalBaseModel):
     :ivar call_ceiling_estimate: Whether ``call_ceiling_usd`` is built on rates the host's pricer does not guarantee
         (:attr:`~threetears.evals.run.CallCeiling.estimate`): the arm's cap is checked against an estimate. Left out
         of the JSON while false.
+    :ivar served_check_skipped: Each served-model check of the arm's candidate, judge or simulator model that could
+        not be made, and why (its provider's model list could not be read now): the launch would go ahead without
+        knowing whether the provider still serves that model. A model the list does not name refuses the arm instead.
+        Left out of the JSON while empty.
     """
 
     described: str
@@ -563,6 +567,7 @@ class ArmEstimate(EvalBaseModel):
     call_ceiling_usd: float | None = None
     call_ceiling_lower_bound: bool = False
     call_ceiling_estimate: bool = Field(default=False, exclude_if=lambda value: value is False)
+    served_check_skipped: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class DetectableEffect(EvalBaseModel):
@@ -1066,6 +1071,9 @@ def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimat
         call_ceiling_usd=plan.call_ceiling.usd if plan is not None and plan.call_ceiling is not None else None,
         call_ceiling_lower_bound=plan is not None and plan.call_ceiling is not None and plan.call_ceiling.lower_bound,
         call_ceiling_estimate=plan is not None and plan.call_ceiling is not None and plan.call_ceiling.estimate,
+        served_check_skipped=[
+            notice for check in (plan.served_checks if plan is not None else ()) if (notice := check.skipped_notice())
+        ],
     )
 
 
@@ -1578,6 +1586,7 @@ def estimate_text(estimate: LaunchEstimate) -> str:
                 "  its cap is checked against estimated rates: its largest call is bounded on rates the host's "
                 "pricer does not guarantee"
             )
+        lines += [f"  {notice}" for notice in arm.served_check_skipped]
         if arm.refusal is not None:
             lines.append(f"  refused: {arm.refusal}")
             lines.append(f"  remedy: {arm.remedy}")

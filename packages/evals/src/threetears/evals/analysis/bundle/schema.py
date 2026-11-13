@@ -109,6 +109,10 @@ UNDECIDED_CONFOUND_PREFIX = "not recorded on every run in this campaign, so whet
 #: measure moved; only ``equivalent`` says the move is small, and only against a declared margin.
 MovementDirection = Literal["improved", "regressed", "equivalent", "not_separated", "untested"]
 
+#: How many result ids a :class:`NegativeValues` names (and its log line): the count is whole, the ids a sample, so a
+#: host bug on every result cannot flood a log or a bundle.
+NEGATIVE_VALUE_IDS_SHOWN: Final[int] = 10
+
 
 class MeasureMovement(EvalDocumentModel):
     """How one measure moved between two levels of a lever, and whether that movement separates from noise.
@@ -2673,6 +2677,42 @@ class RoleUnanswered(EvalDocumentModel):
         return None if reasons is None else dict(sorted(reasons.items(), key=lambda item: (-item[1], item[0])))
 
 
+class NegativeValues(EvalDocumentModel):
+    """Results of one arm that recorded a negative value on one measure declared non-negative.
+
+    A measure declared ``nonnegative`` draws its intervals no lower than zero, so a value below zero can only come
+    from a host bug and the clamp would hide it. The count says how many results did, so a page can name the bug and
+    say what the clamp did, and the ids say which results to look at.
+    """
+
+    measure: str = Field(min_length=1, description="The measure's key.")
+    variant_key: str = Field(min_length=1, description="The arm.")
+    n_results: int = Field(ge=1, description="Results of the arm with a value below zero on the measure.")
+    result_ids: list[str] = Field(
+        description=f"The first of them, by id, at most {NEGATIVE_VALUE_IDS_SHOWN}; `n_results` is the whole count."
+    )
+
+    def sentence(self, measure_name: str, arm_name: str) -> str:
+        """The one line a page and a report input state it in.
+
+        :param measure_name: What the page calls the measure.
+        :ptype measure_name: str
+        :param arm_name: What the page calls the arm.
+        :ptype arm_name: str
+        :return: The line, naming the measure and the arm, how many results and what the page did with them.
+        :rtype: str
+        """
+        what = (
+            "1 result recorded a negative value"
+            if self.n_results == 1
+            else (f"{self.n_results} results recorded a negative value")
+        )
+        return (
+            f"{measure_name}, {arm_name}: {what} on a measure declared non-negative (a host bug); "
+            f"{'it is' if self.n_results == 1 else 'they are'} drawn at 0."
+        )
+
+
 class ArmPricing(EvalDocumentModel):
     """How one arm's cost was priced, read off the usage rows of the roles its production cost counts.
 
@@ -2683,13 +2723,24 @@ class ArmPricing(EvalDocumentModel):
     **A model's providers are its model rows' alone.** ``providers`` reads the token-metered rows (every role but
     ``external``), so it names who served the model and never a tool the model called: a web-search API metered as an
     ``external`` row is in ``tool_providers``, and its spend stays in the cost, its calls in ``calls``, as before.
+
+    **A provider is what a reply named, never a guess.** A model row names the upstream its replies named
+    (``RoleUsage.served_provider``); a row that named none is not recorded. Empty ``providers`` is every model row not
+    recorded, and ``providers_in_part`` is some of them not recorded beside rows that named one.
     """
 
     sources: list[str] = Field(default_factory=list, description="Each price source a priced row names, sorted.")
     providers: list[str] = Field(
         default_factory=list,
-        description="Each provider a model row (every role but external) names as serving its calls, sorted; empty "
-        "where none does.",
+        description="Each provider a model row (every role but external) names as serving its calls (the upstream its "
+        "replies named, else the provider its host named), sorted; empty where none does: not recorded.",
+    )
+    # Left out of the document while False, so an arm whose rows all named a provider, or none did, reads as before.
+    providers_in_part: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Some model row named no provider beside rows that named one: `providers` names who served part "
+        "of the calls, and the rest are not recorded.",
     )
     # Left out of the document while empty, so an arm whose rows named no tool provider reads as it did before.
     tool_providers: list[str] = Field(
@@ -3357,6 +3408,17 @@ class AnalysisContextBundle(EvalDocumentModel):
             "Each arm's census, in the order of `variant_index`: trials ran, lost to the test setup by cause, usable, "
             "passed and failed by cause, the cases run and the cases with a usable trial, and what the arm cost. A "
             "count, never a score: `usable` is how many trials could be read, not how good they were."
+        ),
+    )
+    # Left out of the document while empty, so a bundle over results with no negative value on a non-negative measure
+    # is this shape byte for byte; one with such a result holds the evidence, and its fingerprint moves with it.
+    negative_values: list[NegativeValues] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "Per measure declared non-negative and per arm, the results that recorded a value below zero on it: a "
+            "host bug, which the measure's intervals (clamped at zero) would otherwise hide. Sorted by measure, then "
+            "arm. Empty when no result did."
         ),
     )
     trials: list[TrialRow] = Field(
@@ -4292,6 +4354,8 @@ __all__ = [
     "AnalysisContextBundle",
     "ArmMechanismReading",
     "ArmPricing",
+    "NEGATIVE_VALUE_IDS_SHOWN",
+    "NegativeValues",
     "ArmServedModel",
     "BundleInspection",
     "CANDIDATE_SERVED_MODEL_CONFOUND",

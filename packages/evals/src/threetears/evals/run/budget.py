@@ -13,14 +13,23 @@ ONE run:
   the spend of the cells already recorded, and stops GRACEFULLY when it trips: no new cell starts, the
   cells already running finish, their results stay persisted and the run is marked ``budget_stopped`` (a
   distinct, honest terminal status, not an infra ``failed``) by raising :class:`BudgetStoppedError`, which the
-  job manager translates. The run may land past the cap by up to the width's worth of cells.
-- Never inside a cell. The cap refuses no call a cell is making (a cell only counts its spend, through
-  :meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`): a refusal inside a cell contaminates
-  whichever cell happened to ask once the cap was spent, so a looping cell is bounded by the cell timeout,
-  not by the cap.
+  job manager translates.
+- Never against a candidate's call. The cap refuses no call a cell's candidate is making (a cell only counts
+  its spend, through :meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`): a refusal there
+  contaminates whichever cell happened to ask once the cap was spent, so a looping cell is bounded by the cell
+  timeout, not by the cap, and a run may land past the cap by what its running cells' candidates go on to spend.
+- Before each cell's judging. Judging is the engine's own spend, so the engine asks the cap before paying for
+  any of a cell's judge calls: the phase's price ceiling must fit what the run has spent, landed and running,
+  beside what the phases already admitted hold. A cell it cannot admit is set aside unjudged (left out of the
+  judged readings, never scored low; a re-judge takes it up) and the run stops there. Judging is admitted on its
+  price ceiling, so it stays within the cap wherever the ceiling bounds what the calls are billed, and passes it by
+  one call at most when the judge cannot price its calls.
 - :class:`AccountExhaustedError` is the account-side twin: the provider account behind the
   run refused a candidate call (out of credit, or the key refused), so the run stops after
   that cell and is marked ``exhausted``. Nothing configures it; a cell observes it.
+- :class:`ModelUnservedError` is its sibling for the candidate's model: the provider does not serve
+  the model the run's candidate names (retired, unknown, not a valid id), so the run stops once its
+  cells keep meeting that, and is marked ``exhausted`` with the model as the cause.
 
 The cap is pure per-run arithmetic: no shared budget pool, no periods, no
 BudgetService, no database I/O. One run can never exhaust another, raising the
@@ -70,8 +79,8 @@ class BudgetStoppedError(Exception):
     """Raised by :func:`~threetears.evals.run.runner.execute_run` when a per-run ceiling stops the run.
 
     Signals that a ceiling (the cost cap, the metered-call ceiling, or both) was reached by what the
-    recorded cells landed, so no new cell started, and that the run stopped gracefully once the cells
-    already running had finished. Already-delivered results are persisted *before*
+    recorded cells landed, or that the cost cap had too little left for a running cell's judging, so no new cell
+    started, and that the run stopped gracefully once the cells already running had finished. Already-delivered results are persisted *before*
     this is raised (each cell saves its result as it completes), so nothing
     produced is lost. The job manager catches it, marks the run
     ``budget_stopped`` — a distinct, honest terminal status, never an infra
@@ -81,10 +90,18 @@ class BudgetStoppedError(Exception):
     :ivar total: Results the run's matrix would have produced.
     :ivar breach: The cost cap's numbers when the cap stopped the run, else ``None``.
     :ivar stops: One typed record per ceiling that stopped the run, each from the counters.
+    :ivar unserved: ``(model, cells, detail)`` for cells the provider did not serve the model for beside the stop, or
+        ``None``.
     """
 
     def __init__(
-        self, completed: int, total: int, breach: CapBreach | None = None, *, stops: Sequence[BudgetStop] = ()
+        self,
+        completed: int,
+        total: int,
+        breach: CapBreach | None = None,
+        *,
+        stops: Sequence[BudgetStop] = (),
+        unserved: tuple[str, int, str] | None = None,
     ):
         """Record how far the run got before a ceiling stopped it, and on what numbers.
 
@@ -100,6 +117,10 @@ class BudgetStoppedError(Exception):
         :ptype breach: CapBreach | None
         :param stops: The typed record of each ceiling that stopped the run.
         :ptype stops: Sequence[BudgetStop]
+        :param unserved: ``(model, cells, detail)`` when some of the run's cells found the provider did not serve its
+            model, short of stopping it: named beside the stop, since a take-up once the model is served runs them
+            again; ``None`` when none did.
+        :ptype unserved: tuple[str, int, str] | None
         :raises ValueError: Neither ``breach`` nor ``stops`` is given.
         """
         if breach is None and not stops:
@@ -123,7 +144,15 @@ class BudgetStoppedError(Exception):
                     f"eval run cost cap exceeded — ${round_half_even(breach.accumulated_usd, 4)} spent against a "
                     f"${round_half_even(breach.max_cost_usd, 4)} cap"
                 )
-        super().__init__(f"{reason} after {completed}/{total} results — run stopped gracefully")
+        self.unserved = unserved
+        beside = ""
+        if unserved is not None:
+            model, cells, detail = unserved
+            beside = (
+                f"; beside it, the provider did not serve model {model!r} for {cells} cell(s), which a take-up once it "
+                f"is served runs again ({detail})"
+            )
+        super().__init__(f"{reason} after {completed}/{total} results — run stopped gracefully{beside}")
 
 
 def _stop_reason(stops: Sequence[BudgetStop]) -> str:
@@ -152,6 +181,8 @@ def _stop_reason(stops: Sequence[BudgetStop]) -> str:
             segments.append(f"its cost cap: {figures}")
         else:
             segments.append(f"its metered-call ceiling: {stop.landed_at_stop} of {stop.ceiling} at the stop")
+    # The cells it set aside unjudged are settled only once the running cells end; the stop line, written from the
+    # records, states them.
     return f"stopped by {'; by '.join(segments)}"
 
 
@@ -204,6 +235,62 @@ class AccountExhaustedError(Exception):
         super().__init__(
             f"eval run stopped: the provider account refused a candidate call after {completed}/{total} results "
             f"(${round_half_even(accumulated_usd, 4)} spent{unpriced}) — {detail}"
+        )
+
+
+class ModelUnservedError(Exception):
+    """Raised by :func:`~threetears.evals.run.runner.execute_run` when the provider does not serve the run's model.
+
+    The model-side sibling of :class:`AccountExhaustedError`. A provider answering that it does not serve the model a
+    call named (a retired model's 404, a model id it does not know) gives every call naming that model the same answer,
+    so each such cell is lost to the test setup and never judged, and once the circuit's run of them
+    (three cells in a row) is reached, the run stops after the cells running
+    then have ended instead of launching the rest of its matrix to be lost one by one. The run's other arms are
+    their own runs, and go on.
+
+    Already-delivered results are persisted before this is raised. The job manager marks the run ``exhausted`` with
+    ``exhausted_because`` ``model_unserved``, and files this message, which names the model and quotes the provider,
+    under ``error_details``: an operator has to act (pick a model the provider serves, or wait for it to be served
+    again) before the run can measure anything more. The run is resumable: taken up once the model is served, it runs
+    the cells the model was not served for again.
+
+    :ivar completed: Results delivered (and persisted) before the stop, the unserved cells included.
+    :ivar total: Results the run's matrix would have produced.
+    :ivar model: The candidate model the provider does not serve.
+    :ivar accumulated_usd: What the delivered priced results cost, summed from what the loop recorded.
+    :ivar unpriced_results: Delivered results whose spend could not be priced, and so is not in ``accumulated_usd``.
+    :ivar detail: The last unserved cell's own apparatus message: which call, and the provider's words.
+    """
+
+    def __init__(
+        self, completed: int, total: int, *, model: str, accumulated_usd: float, unpriced_results: int, detail: str
+    ):
+        """Record how far the run got, what it had spent, the model and the provider's answer that stopped it.
+
+        :param completed: Results delivered (and persisted) before the stop.
+        :ptype completed: int
+        :param total: Results the run's matrix would have produced.
+        :ptype total: int
+        :param model: The candidate model the provider does not serve.
+        :ptype model: str
+        :param accumulated_usd: The delivered priced results' summed cost.
+        :ptype accumulated_usd: float
+        :param unpriced_results: Delivered results whose spend could not be priced.
+        :ptype unpriced_results: int
+        :param detail: The last unserved cell's apparatus message.
+        :ptype detail: str
+        """
+        self.completed = completed
+        self.total = total
+        self.model = model
+        self.accumulated_usd = accumulated_usd
+        self.unpriced_results = unpriced_results
+        self.detail = detail
+        unpriced = f", and {unpriced_results} result(s) whose spend could not be priced" if unpriced_results else ""
+        super().__init__(
+            f"eval run stopped: the provider does not serve the candidate model {model} "
+            f"({completed}/{total} results, ${round_half_even(accumulated_usd, 4)} spent{unpriced}); resume the run "
+            f"once the model is served — {detail}"
         )
 
 
@@ -365,15 +452,16 @@ class EvalRunCostCap:
         """Report whether the run may proceed, and on what numbers if it may not.
 
         The gate :func:`~threetears.evals.run.runner.execute_run` calls before each cell, with nothing
-        pending: it reads what has LANDED, the spend of the cells already recorded, and never the spend of the
-        cells still running. Nothing is recorded here: a cell's whole spend is recorded once, by
+        pending: it reads what has LANDED, the spend of the cells already recorded. Before a cell's judging it is
+        asked again with the running cells' spend and the judge phases' price ceilings pending, so judging is paid
+        for only while it fits. Nothing is recorded here: a cell's whole spend is recorded once, by
         :meth:`record`, when its result lands.
         It returns the observation rather than a bare boolean because the run loop is where the stop is
         raised and the cap is the only thing that knows the ceiling and the spend — a ``False`` there
         reaches the operator as an unattributed assertion.
 
-        :param pending_usd: Spend to count beside what is recorded. The engine passes none (``0.0``): the cap is
-            read against landed spend. ``None`` is spend that could not be priced, which breaches an enforcing
+        :param pending_usd: Spend to count beside what is recorded: none (``0.0``) between cells, which reads the
+            cap against landed spend; the running cells' spend and the judging to admit, before a judge phase. ``None`` is spend that could not be priced, which breaches an enforcing
             cap as an unpriced result does.
         :ptype pending_usd: float | None
         :return: ``None`` while the run is within its cap counting that spend (including when enforcement
@@ -416,4 +504,5 @@ __all__ = [
     "BudgetStoppedError",
     "CapBreach",
     "EvalRunCostCap",
+    "ModelUnservedError",
 ]

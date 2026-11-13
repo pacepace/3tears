@@ -61,8 +61,8 @@ already hold:
 - ``cost_served_by``: the document's prose compares costs: a field cites figure keys reading the costs of two arms or
   more (:func:`~threetears.evals.analysis.report.figure_keys.cost_arms`: a money figure's arms, a ratio of costs' with
   the control it is on, every arm for a range over them). The fact states, for each arm compared, the providers its
-  pricing names as serving its model calls (``ScoreboardRow.pricing.providers``), or that it names none, or that the
-  input states no pricing for it, and the tools its cost spent on apart from them (``tool_providers``). A cost is the
+  pricing names as serving its model calls (``ScoreboardRow.pricing.providers``), and that the rest were not recorded
+  where only part were (``providers_in_part``), or that none was recorded, or that the input states no pricing for it, and the tools its cost spent on apart from them (``tool_providers``). A cost is the
   provider routing's, not the model's alone (owner, 2026-10-25, restated 2026-10-29), so a cost compared between models
   names who served each; whether the text does is the editor's, never this fact's. One fact for the document, naming
   the fields that compare costs and each arm they compare once, in the input's order: the routing is an arm's, not a
@@ -680,12 +680,14 @@ def _served_said(report_input: ReportInput, arm: str) -> list[_Part]:
     pricing = row.pricing if row is not None else None
     if pricing is None:
         return [_arm(arm), ", whose pricing the input does not state"]
-    said: list[_Part] = [
-        _arm(arm),
-        f", its model calls served by {', '.join(pricing.providers)}"
-        if pricing.providers
-        else ", whose pricing names no provider of its model calls",
-    ]
+    served = ", ".join(pricing.providers)
+    if not served:
+        routing = ", the provider of its model calls not recorded"
+    elif pricing.providers_in_part:
+        routing = f", its model calls served by {served} in part, the rest not recorded"
+    else:
+        routing = f", its model calls served by {served}"
+    said: list[_Part] = [_arm(arm), routing]
     if pricing.tool_providers:
         said.append(f", with tool spend at {', '.join(pricing.tool_providers)}")
     return said

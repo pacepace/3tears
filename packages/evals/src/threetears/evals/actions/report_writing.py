@@ -31,6 +31,7 @@ from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.ops.report_writer.write import ReportNotStored as ReportNotStored
 from threetears.evals.ops.report_writer.write import ReportWritten as ReportWritten
 from threetears.evals.ops.report_writer.write import AnalystSkill, report_write
+from threetears.evals.kernel.host.eval_host import CompletionRole
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops.report_writer.writer_contract import (
     WRITER_KIND,
@@ -246,6 +247,7 @@ def launchable_report_writer_kind(
     model_family: ModelFamily,
     skills: Mapping[str, AnalystSkill] = MappingProxyType({}),
     prefix: str = DEFAULT_PREFIX,
+    candidate_role: CompletionRole | None = None,
 ) -> LaunchableKind:
     """The report writer's entry in a host's launch registry: each arm one writer over frozen writer cases.
 
@@ -276,6 +278,11 @@ def launchable_report_writer_kind(
     :ptype skills: Mapping[str, AnalystSkill]
     :param prefix: The host's prefix for its eval tools.
     :ptype prefix: str
+    :param candidate_role: The role of the host's client factory that ``models`` builds the writer on (``analyst``,
+        when the host's writer is its factory's analyst client), so the launch checks the writer's model against that
+        provider's model list (:attr:`~threetears.evals.run.LaunchableKind.candidate_role`); ``None`` when ``models``
+        builds it elsewhere, and the check is then reported skipped.
+    :ptype candidate_role: CompletionRole | None
     :return: The registry entry.
     :rtype: LaunchableKind
     """
@@ -346,6 +353,9 @@ def launchable_report_writer_kind(
         resolve_subject=_writer_subject,
         unhonoured_launch_arguments=WRITER_UNHONOURED_LAUNCH_ARGUMENTS,
         plan_arm=plan,
+        # The writer is built by the host's model factory, not by the engine's client factory, so only the host
+        # can say which factory role (if any) its route is.
+        candidate_role=candidate_role,
     )
 
 

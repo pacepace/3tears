@@ -196,6 +196,7 @@ class CompletionProtocolDefect(TypeError):
         self.calls = 0
         self.model: str | None = None
         self.served_model: str | None = None
+        self.served_provider: str | None = None
         self.input_tokens: int | None = None
         self.output_tokens: int | None = None
         self.reasoning_tokens: int | None = None
@@ -477,9 +478,13 @@ class VariationLLM(SimulatorLLM, Protocol):
 #: Whose failure a raised completion call was, as the host's describer reads it
 #: (:attr:`ProviderFailure.owner`): the calling ``account`` (refused for every model behind
 #: the key), the ``provider`` (it declined to serve the call at that moment: a rate limit, 429, or
-#: the provider overloaded or unavailable, 529 or 503), or the ``candidate`` (anything else,
-#: charged to whoever made the call).
-FailureOwner = Literal["account", "provider", "candidate"]
+#: the provider overloaded or unavailable, 529 or 503), ``unserved`` (the provider does not serve the
+#: model the call named: retired, unknown, or not a valid model id, so every call naming it gets the
+#: same answer), or the ``candidate`` (anything else, charged to whoever made the call).
+#:
+#: ``unserved`` is an option a host's own describer may return, never one it must: a describer that
+#: never returns it keeps working, and a retired model's calls are then charged as the candidate's.
+FailureOwner = Literal["account", "provider", "unserved", "candidate"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -514,7 +519,10 @@ class ProviderFailure:
     answer, and a caller excludes the cell and stops the run (``CandidateOutput.account_refused``).
     ``"provider"``: the provider declined to serve the call at that moment — a rate limit (429), or
     the provider overloaded or unavailable (529, 503) — which says nothing about the model and would
-    meet any request, so a caller excludes the cell and the run goes on. ``"candidate"``:
+    meet any request, so a caller excludes the cell and the run goes on. ``"unserved"``: the provider
+    does not serve the model the call named (retired, unknown, not a valid model id), so every call
+    naming that model meets the same answer: the cell is lost to the test setup, never judged, and a
+    run whose cells keep meeting it stops (``CandidateOutput.model_unserved``). ``"candidate"``:
     anything else, charged to whoever made the call. It is a field of the port rather than a
     type eval matches on because only the host knows its client's error types; a describer that
     cannot tell says ``"candidate"``, and the failure is then charged as any other. An owner
@@ -532,6 +540,37 @@ class ProviderFailure:
             raise ValueError(
                 f"ProviderFailure.owner is {self.owner!r}; it is one of {', '.join(get_args(FailureOwner))}"
             )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ModelListing:
+    """What a provider's own list of the models it serves said of one model, read as a launch was admitted.
+
+    The answer a host's client factory gives when it offers ``async model_listing(model, *, role)``: the engine asks
+    it of every model an arm names before the arm is priced, and refuses an arm naming a model its provider no longer
+    lists, since every call to it would fail. ``listed`` is ``None`` when the list could not be read now: the launch
+    goes ahead and says the check was skipped, and why. A factory answers ``None`` instead of a listing for a model
+    whose provider it reads no list of, and a factory without the method answers nothing: there is no check to make.
+    A price taken from past runs never stands in for a listing.
+
+    :ivar provider: The provider whose list was read, as the factory names it.
+    :ivar listed: Whether the list names the model; ``None`` when no current list could be read.
+    :ivar detail: The list and when it was read, or why no current one could be.
+    """
+
+    provider: str
+    listed: bool | None
+    detail: str
+
+    def __post_init__(self) -> None:
+        """Refuse a listing that names no provider or says nothing.
+
+        :raises ValueError: ``provider`` or ``detail`` is blank.
+        """
+        if not self.provider.strip():
+            raise ValueError("a model listing names the provider whose list was read; provider is blank")
+        if not self.detail.strip():
+            raise ValueError("a model listing says which list it read, or why none could be; detail is blank")
 
 
 class ProviderFailureDescriber(Protocol):
@@ -566,6 +605,7 @@ __all__ = [
     "CompletionResult",
     "FailureOwner",
     "JSON_OBJECT_RESPONSE_FORMAT",
+    "ModelListing",
     "OPTIONAL_COMPLETION_ATTRIBUTES",
     "PricedCompletion",
     "ProviderFailure",

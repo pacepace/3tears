@@ -2445,22 +2445,28 @@ calls (``max_metered_calls``). Closed: a new currency changes how an older build
 
 
 class BudgetStop(EvalBaseModel, CoreShapeModel):
-    """One per-run ceiling that stopped a run between cells: the numbers it was stopped on, from the counters.
+    """One per-run ceiling that stopped a run: the numbers it was stopped on, from the counters.
 
-    A ceiling never refuses a call inside a cell. It is read between cells, against what has LANDED — the
-    cells already recorded — and once landed amount reaches it no new cell starts. The cells already running
-    finish, so the run ends past the ceiling by up to the width's worth of cells; that overshoot is
+    A ceiling never refuses a candidate's call inside a cell. It is read between cells, against what has LANDED —
+    the cells already recorded — and once landed amount reaches it no new cell starts. The cells already running
+    finish, so the run can end past the ceiling by what their candidates go on to spend; that overshoot is
     ``landed_final - ceiling``, derived (:attr:`overshoot`) and never stored, and every figure here is a
-    counter's reading, never parsed from prose. A run stopped by both ceilings at one boundary carries one
-    record for each (``EvalRun.budget_stops``).
+    counter's reading, never parsed from prose. The cost cap also admits each cell's judge phase before any of its
+    calls is paid for, so judging stays within it wherever its price ceiling bounds the bill; a cell whose judging
+    it could not admit is set
+    aside unjudged, and the first such cell stops the run as a crossing does. A run stopped by both ceilings at
+    one boundary carries one record for each (``EvalRun.budget_stops``).
 
     :ivar currency: What the ceiling counts.
     :ivar ceiling: The ceiling, in the currency.
-    :ivar landed_at_stop: The landed amount when the stop was decided, which is when the next cell would have
-        started. Dollars are the priced spend of the recorded cells.
+    :ivar landed_at_stop: The landed amount when the stop was decided: when the next cell would have started, or
+        when the cost cap first set a cell's judging aside. Dollars are the priced spend of the recorded cells.
     :ivar landed_final: The landed amount once the cells in flight at the stop had finished and been recorded.
     :ivar cells_in_flight: Cells running when the stop was decided.
     :ivar cells_not_started: Cells of the matrix that never started because of the stop.
+    :ivar cells_not_judged: ``cost_usd`` only: cells that ran but whose judging the cap had too little left for, so
+        nothing judged them. Each is marked (``EvalResult.judging_set_aside``) and left out of the judged readings
+        under its own cause (``cost_cap``), never failed; its other readings count it, and a re-judge takes it up. Zero for ``metered_calls``, and on a record stored before the field existed.
     :ivar unpriced_results: ``cost_usd`` only: recorded results whose spend could not be priced. An enforcing
         cap cannot count against what it cannot price, so any of these stops the run on their own, whatever
         ``landed_at_stop`` says. Zero for ``metered_calls``.
@@ -2474,6 +2480,11 @@ class BudgetStop(EvalBaseModel, CoreShapeModel):
     landed_final: int | float = Field(ge=0, description="The landed amount once the in-flight cells finished.")
     cells_in_flight: int = Field(ge=0, description="Cells running when the stop was decided.")
     cells_not_started: int = Field(ge=0, description="Cells that never started because of the stop.")
+    cells_not_judged: int = Field(
+        default=0,
+        ge=0,
+        description="Cost stops only: cells that ran but whose judging the cap had too little left for.",
+    )
     unpriced_results: int = Field(
         default=0, ge=0, description="Cost stops only: recorded results whose spend could not be priced."
     )
@@ -2892,10 +2903,12 @@ class ContextComponents(EvalDocumentModel, CoreShapeModel):
 #: budget, ``EvalRun.budget_stop_reason`` says which: a designed stop that keeps what the run delivered,
 #: never ``failed``.
 #:
-#: ``exhausted`` is the account-side twin of ``budget_stopped``: the provider account paying for the
-#: run refused a candidate call (out of credit, or the key refused), so every later cell would be
-#: refused the same way. The run stops, keeps what it delivered, and names the account — not the
-#: harness and not the candidate — as the reason it is short.
+#: ``exhausted`` is the account-side twin of ``budget_stopped``: something every later cell would meet
+#: gave out, outside both the harness and the candidate — the provider account paying for the run
+#: refused a call (out of credit, or the key refused), or the provider does not serve the model the
+#: run's candidate names (retired, or a model id it does not know). ``EvalRun.exhausted_because``
+#: says which. The run stops, keeps what it delivered, names the cause as the reason it is short, and
+#: is resumable once the account is funded or the model served.
 EvalRunStatus = Literal["pending", "running", "completed", "failed", "cancelled", "budget_stopped", "exhausted"]
 
 #: How the arms of one comparison shared time and provider capacity, recorded on each arm's run.
@@ -3110,6 +3123,28 @@ FAILED_BECAUSE: Final[tuple[str, ...]] = get_args(KnownFailedBecause)
 #: The type of the stored field: one of :data:`FAILED_BECAUSE`, or, on the stored read of a newer minor's document, a
 #: value that minor added.
 StoredFailedBecause = Annotated[FailedBecause, known_unless_newer_minor("failed-because reason", FAILED_BECAUSE)]
+
+#: Why a run the job manager filed ``exhausted`` stopped (:attr:`EvalRun.exhausted_because`): ``account_refused`` —
+#: the provider refused the account paying for the run (:class:`~threetears.evals.run.AccountExhaustedError`);
+#: ``model_unserved`` — the provider does not serve the model the run's candidate names
+#: (:class:`~threetears.evals.run.ModelUnservedError`). Either is resumable once its cause is cleared.
+#:
+#: An open vocabulary, its values this build knows registered in :data:`EXHAUSTED_BECAUSE`, read as
+#: :data:`FailedBecause` is: a reader that branches on it names a value a newer minor added rather than folding it
+#: into one it knows.
+ExhaustedBecause = str
+
+#: A value of :data:`ExhaustedBecause` this build knows, as a type: what this build writes.
+KnownExhaustedBecause = Literal["account_refused", "model_unserved"]
+
+#: The values of :data:`ExhaustedBecause` this build knows.
+EXHAUSTED_BECAUSE: Final[tuple[str, ...]] = get_args(KnownExhaustedBecause)
+
+#: The type of the stored field: one of :data:`EXHAUSTED_BECAUSE`, or, on the stored read of a newer minor's document,
+#: a value that minor added.
+StoredExhaustedBecause = Annotated[
+    ExhaustedBecause, known_unless_newer_minor("exhausted-because reason", EXHAUSTED_BECAUSE)
+]
 
 
 def scored_dim_ids(rubric_dim_names: list[str], judged_artifact: JudgedArtifact) -> list[str]:
@@ -4233,7 +4268,8 @@ class EvalRun(CoreDocumentModel):
             "ceiling (origin None); a run the ceiling stopped is visible either way through the budget_stopped "
             "status and budget_stops. The cap is read between cells against the spend of the cells already "
             "recorded: once that reaches it no new cell starts, and cells already running finish, so a run may "
-            "land past it by up to the width's worth of cells."
+            "land past it by what their candidates spend. Each cell's judging is admitted against it before any "
+            "judge call is paid for, so judging stays within it wherever its price ceiling bounds the bill."
         ),
     )
     max_cost_usd_origin: StoredCostCapOrigin | None = Field(
@@ -4479,10 +4515,12 @@ class EvalRun(CoreDocumentModel):
         description=(
             "The per-run ceilings that stopped this run between cells, one record per ceiling, each with the "
             "counters' numbers: the ceiling, what had landed when the stop was decided and once the cells in "
-            "flight finished, how many were running and how many never started. Both the cost cap and the "
-            "metered-call ceiling are read between cells against what has landed; neither refuses a call inside a "
-            "cell, so the cells running at the stop finish whole and the run may land past a ceiling by up to the "
-            "width's worth of cells. Both are recorded when both tripped at the same boundary. Written with the "
+            "flight finished, how many were running, how many never started and how many ran but were not judged. "
+            "Both the cost cap and the metered-call ceiling are read between cells against what has landed; neither "
+            "refuses a candidate's call inside a cell, so the cells running at the stop finish and the run may land "
+            "past a ceiling by what they add. The cost cap also admits each cell's judging before it is paid for, "
+            "and stops the run at the first cell whose judging it sets aside. Both are recorded when both tripped at "
+            "the same boundary. Written with the "
             "``budget_stopped`` status. None on a run no ceiling stopped, including a run stopped by its wall-clock "
             "budget (``budget_stop_reason``) and one whose writer predates the field."
         ),
@@ -4495,6 +4533,16 @@ class EvalRun(CoreDocumentModel):
             "sweep goes on past such an arm). Written once, by the job manager, with the ``failed`` status. None on "
             "every other run: one that did not fail, one that failed for any other reason, and one stored before "
             "the field existed."
+        ),
+    )
+    exhausted_because: StoredExhaustedBecause | None = Field(
+        default=None,
+        description=(
+            "Why the run stopped `exhausted`, beside its `error_details` entry: `account_refused` when the provider "
+            "refused the account paying for it, `model_unserved` when the provider does not serve the model its "
+            "candidate names (the entry names the model and quotes the provider). Written once, by the job manager, "
+            "with the `exhausted` status; cleared when the run is taken up again. None on every other run, and on an "
+            "exhausted run stored before the field existed, which only the account could stop."
         ),
     )
     error_details: list[str] = Field(
@@ -5190,13 +5238,15 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
     carries ``None`` reasoning — coercing it to 0 would fabricate an observation.
     A genuine zero (a non-reasoning model reporting 0 reasoning tokens) stays 0.
 
-    Rows are keyed by **(role, model, served model, price source)**, not role alone: a role that spent
-    tokens on more than one model — a run whose per-dim judge configs pin different
+    Rows are keyed by **(role, model, served model, served provider, price source)**, not role alone: a role that
+    spent tokens on more than one model — a run whose per-dim judge configs pin different
     models, say — contributes one row per model, because blending them would have
     to drop ``model`` and with it the ability to re-derive the dollars. Dollars priced
     two ways stay in two rows for the same reason, and so do calls one requested alias had
     answered by two different models: ``served_model`` is the evidence of which model produced
-    the numbers, and a blended row could name neither.
+    the numbers, and a blended row could name neither. Calls a router sent to two upstream providers are two rows
+    too (``served_provider``): one model's cost differs by who served it, so a row naming one provider never holds
+    another's calls.
 
     The ``external`` role (paid non-LLM APIs, e.g. web search) has no token
     concept at all: it reports ``call_count`` and — where the caller could count
@@ -5232,6 +5282,18 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
             "The model the provider's RESPONSE named as having answered this row's calls, never the id requested. "
             "None = not recorded: the responses named no model. "
             "Never read the alias in `model` in its place."
+        ),
+    )
+    # Left out of the document when unset, so a row whose replies named no upstream is stored as it was before the
+    # field existed, and an older build reading one that names it keeps it unread.
+    served_provider: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The upstream provider the RESPONSE named as having served this row's token-metered calls (OpenRouter's "
+            "reply names the provider it routed to). None = not recorded: the replies named none, a direct "
+            "provider's never do, or the row was stored before the field existed; never a guess. A different field "
+            "from provider, which names who was called for an external contribution."
         ),
     )
     prompt_tokens: int | None = Field(default=None, ge=0)
@@ -6187,6 +6249,26 @@ class EvalResult(CoreDocumentModel):
             "the field existed."
         ),
     )
+    model_unserved: bool = Field(
+        default=False,
+        description=(
+            "Whether the provider answered this cell's candidate call that it does not serve the model the call named "
+            "(retired, or a model id it does not know). The trial is lost to the test setup, never judged, and its "
+            "`infra_error` quotes the provider; cells that keep meeting it end the run exhausted, and a run taken up "
+            "again once the model is served runs this cell again, written over this row. False on a row stored "
+            "before the field existed."
+        ),
+    )
+    judging_set_aside: bool = Field(
+        default=False,
+        description=(
+            "Whether the run's cost cap had too little left for this cell's judging, so the dims it had not asked were "
+            "not asked: each names the cap in `judge_error`. The trial ran whole and is never scored low: its judged "
+            "readings leave it out under the `cost_cap` exclusion cause, while its measures, checks and cost count as "
+            "measured, and a re-judge, which reads the evidence the cell stored, takes it up and clears this. A run taken up again counts the cell done. False on a row "
+            "stored before the field existed."
+        ),
+    )
 
     candidate_kind: str | None = Field(
         default=None,
@@ -6805,6 +6887,7 @@ __all__ = [
     "FailedBecause",
     "FAILED_BECAUSE",
     "StoredFailedBecause",
+    "KnownExhaustedBecause",
     "KnownReasoningEffort",
     "KnownUsageRole",
     "KnownSimulatorPurpose",

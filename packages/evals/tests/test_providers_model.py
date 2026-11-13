@@ -996,9 +996,9 @@ def test_a_failure_that_is_not_a_providers_answer_is_the_candidates(exc: BaseExc
     assert describe_failure(exc).owner == "candidate"
 
 
-def test_an_owner_outside_the_three_is_refused_at_construction() -> None:
+def test_an_owner_outside_the_four_is_refused_at_construction() -> None:
     with pytest.raises(
-        ValueError, match="ProviderFailure.owner is 'Provider'; it is one of account, provider, candidate"
+        ValueError, match="ProviderFailure.owner is 'Provider'; it is one of account, provider, unserved, candidate"
     ):
         ProviderFailure("openrouter 429: slow down", payload_withheld=False, owner="Provider")  # type: ignore[arg-type]
 

@@ -134,9 +134,10 @@ def read_trial(result: ResultView, *, rubric_threshold: int, catalog: Mapping[st
     below = [score for score in capability_scores(result) if not score.clears(rubric_threshold)]
     decided: FailCause | None = "check" if checks else "judged" if below else None
     exclusion = trial_exclusion(result)
-    if exclusion is not None and not (exclusion == "judge_cannot_tell" and decided is not None):
-        # A judge that could not tell on one dimension cannot rescue a trial a failed check or a sub-bar
-        # dimension has already decided; every other cause loses the trial, whatever its scores say.
+    if exclusion is not None and not (exclusion in ("judge_cannot_tell", "cost_cap") and decided is not None):
+        # A judge that could not tell on one dimension, or was kept from being asked by the cost cap, cannot rescue a
+        # trial a failed check or a sub-bar dimension has already decided; every other cause loses the trial,
+        # whatever its scores say.
         return TrialReading(state="lost", cause=exclusion)
     if (cause := candidate_failure_cause(result)) is not None:
         return TrialReading(state="failed", cause=cause, failed_checks=tuple(checks))
@@ -331,12 +332,33 @@ def _pricing(results: Sequence[ResultView]) -> ArmPricing | None:
     if not rows:
         return None
     counted = all(row.call_count is not None for row in rows)
+    model_rows = [row for row in rows if row.role != _TOOL_ROLE and _answered(row)]
+    providers = sorted({name for row in model_rows if (name := _served_by(row))})
     return ArmPricing(
         sources=sorted({row.price_source for row in rows if row.cost_usd is not None and row.price_source}),
-        providers=sorted({row.provider for row in rows if row.provider and row.role != _TOOL_ROLE}),
+        providers=providers,
+        providers_in_part=bool(providers) and any(_served_by(row) is None for row in model_rows),
         tool_providers=sorted({row.provider for row in rows if row.provider and row.role == _TOOL_ROLE}),
         calls=sum(row.call_count or 0 for row in rows) if counted else None,
         priced_calls=sum(row.call_count or 0 for row in rows if row.cost_usd is not None) if counted else None,
+    )
+
+
+def _served_by(row: UsageView) -> str | None:
+    """Who served a model row's calls: the upstream its replies named (``served_provider``), else the provider a host
+    named on the row; ``None`` = not recorded, never a guess."""
+    return row.served_provider or row.provider or None
+
+
+def _answered(row: UsageView) -> bool:
+    """Whether a row counts answered calls or spend: a row holding only unanswered calls was served by nobody, so it
+    leaves the providers unread (``RoleUsage.answers_nothing``)."""
+    return not (
+        row.call_count is None
+        and row.cost_usd is None
+        and row.prompt_tokens is None
+        and row.completion_tokens is None
+        and row.reasoning_tokens is None
     )
 
 

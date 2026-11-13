@@ -77,6 +77,7 @@ JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
 _FAILED_BECAUSE: dict[FailureOwner, str] = {
     "account": "was refused for the calling account",
     "provider": "was declined by the provider",
+    "unserved": "named a model the provider does not serve",
     "candidate": "failed",
 }
 
@@ -498,6 +499,8 @@ async def run_judge_llm(
     # usage record names a served model only when every attempt named the same one: one record
     # folding attempts answered by different models cannot name either.
     attempt_served: set[str | None] = set()
+    # The upstream provider each attempt's reply named, by the same rule: named only when every attempt named one.
+    attempt_upstream: set[str | None] = set()
     # What each attempt's request was sent with, as its completion reported it (``None`` = unverified). The usage
     # record names one value only when every attempt reported the same one: a fold of unlike or unreported sends
     # reads as unverified, never as one of them.
@@ -517,6 +520,7 @@ async def run_judge_llm(
         return CallUsage(
             model=judge_model,
             served_model=next(iter(attempt_served)) if len(attempt_served) == 1 else None,
+            served_provider=next(iter(attempt_upstream)) if len(attempt_upstream) == 1 else None,
             input_tokens=total_input,
             output_tokens=total_output,
             reasoning_tokens=total_reasoning,
@@ -539,6 +543,7 @@ async def run_judge_llm(
             defect.calls = spent.calls
             defect.model = spent.model
             defect.served_model = spent.served_model
+            defect.served_provider = spent.served_provider
             defect.input_tokens = spent.input_tokens
             defect.output_tokens = spent.output_tokens
             defect.reasoning_tokens = spent.reasoning_tokens
@@ -601,6 +606,7 @@ async def run_judge_llm(
         judge_model = getattr(result, "model", "") or judge_model
         judge_price_source = getattr(result, "price_source", None) or judge_price_source
         attempt_served.add(getattr(result, "served_model", None) or None)
+        attempt_upstream.add(CallUsage.billed(result).served_provider)
         # What this attempt's request carried, as its client reports it. Absent is unverified and recorded so; a value
         # of the wrong type is the host's defect, raised like a missing temperature, with the spend threaded on. Read
         # here, before the reply is judged usable, so a cut-short or unparsable attempt's spend row says it too.
@@ -713,6 +719,7 @@ def defect_usage(defect: CompletionProtocolDefect) -> CallUsage | None:
     return CallUsage(
         model=defect.model,
         served_model=defect.served_model,
+        served_provider=defect.served_provider,
         input_tokens=defect.input_tokens,
         output_tokens=defect.output_tokens,
         reasoning_tokens=defect.reasoning_tokens,

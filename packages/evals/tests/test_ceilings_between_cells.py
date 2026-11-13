@@ -1,10 +1,11 @@
-"""Both per-run ceilings stop a run between cells; neither refuses a call inside one.
+"""Both per-run ceilings stop a run between cells; neither refuses a candidate's call inside one.
 
 The metered-call ceiling and the cost cap are read against what has LANDED, the recorded cells', before each cell
 starts. Once either is reached no new cell begins, the cells already running finish whole, and the run ends
 ``budget_stopped`` with a typed record of each ceiling that stopped it. A run may land past a ceiling by up to the
-width's worth of cells; what it may not do is refuse a call inside a cell, because at width above 1 that
-contaminates whichever cell happened to ask after the ceiling was spent.
+width's worth of cells; what it may not do is refuse a candidate's call inside a cell, because at width above 1 that
+contaminates whichever cell happened to ask after the ceiling was spent. (The runs here are unjudged; a cell's
+judging, which the cost cap admits before paying for it, is held in ``test_cell_width_and_spend.py``.)
 
 The one refusal that remains is a host that declared no metered tools: a wrong declaration, not a budget.
 """

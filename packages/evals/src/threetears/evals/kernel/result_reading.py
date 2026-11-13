@@ -146,6 +146,8 @@ class UsageView(Protocol):
     @property
     def served_model(self) -> str | None: ...
     @property
+    def served_provider(self) -> str | None: ...
+    @property
     def prompt_tokens(self) -> int | None: ...
     @property
     def completion_tokens(self) -> int | None: ...
@@ -308,6 +310,10 @@ class ResultView(Protocol):
     def metered_calls(self) -> int | None: ...
     @property
     def metered_calls_refused(self) -> int | None: ...
+    @property
+    def model_unserved(self) -> bool: ...
+    @property
+    def judging_set_aside(self) -> bool: ...
     @property
     def candidate_kind(self) -> str | None: ...
     @property
@@ -535,6 +541,7 @@ class UsageReading:
     role: str
     model: str | None
     served_model: str | None
+    served_provider: str | None
     prompt_tokens: int | None
     completion_tokens: int | None
     reasoning_tokens: int | None
@@ -559,6 +566,7 @@ class UsageReading:
             role=shared.text(row.role),
             model=shared.text(row.model),
             served_model=shared.text(row.served_model),
+            served_provider=shared.text(row.served_provider),
             prompt_tokens=row.prompt_tokens,
             completion_tokens=row.completion_tokens,
             reasoning_tokens=row.reasoning_tokens,
@@ -749,6 +757,8 @@ class ResultReading:
     superseded_spend_usd: float | None
     metered_calls: int | None
     metered_calls_refused: int | None
+    model_unserved: bool
+    judging_set_aside: bool
     candidate_kind: str | None
     candidate_instance_id: str | None
     subject_id: str | None
@@ -817,6 +827,8 @@ class ResultReading:
             superseded_spend_usd=result.superseded_spend_usd,
             metered_calls=result.metered_calls,
             metered_calls_refused=result.metered_calls_refused,
+            model_unserved=result.model_unserved,
+            judging_set_aside=result.judging_set_aside,
             candidate_kind=text(result.candidate_kind),
             candidate_instance_id=text(result.candidate_instance_id),
             subject_id=text(result.subject_id),

@@ -8,7 +8,7 @@ maps, keeps the measures the registry describes as reportable, and summarises ea
 from __future__ import annotations
 
 from array import array
-from collections.abc import Collection, Iterable, Iterator, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from itertools import chain
@@ -81,7 +81,7 @@ from threetears.evals.kernel.usage_capture import (
     production_replicating_cost,
     spend_observed,
 )
-from threetears.evals.analysis.bundle.schema import GoalCheckProofReading
+from threetears.evals.analysis.bundle.schema import NEGATIVE_VALUE_IDS_SHOWN, GoalCheckProofReading, NegativeValues
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.host.measures import MeasureRegistry
@@ -1410,8 +1410,52 @@ def _measure_summary(
     )
 
 
+def negative_values_of(
+    results_by_arm: Mapping[str, Sequence[ResultView]], *, profile: HostProfile
+) -> list[NegativeValues]:
+    """The results that recorded a value below zero on a measure declared non-negative, per measure and per arm.
+
+    A cell reads each measure over its own population, so a result counts only where the measure counts it (a faulted
+    result is no observation of a ``scored`` measure). A result is counted once per measure however many of its
+    records carry the value.
+
+    :param results_by_arm: Each arm's results, by variant key, over every rig the arm ran.
+    :ptype results_by_arm: Mapping[str, Sequence[ResultView]]
+    :param profile: The host whose registry describes each measure.
+    :ptype profile: HostProfile
+    :return: One entry per measure and arm with at least one such result, sorted by measure then arm.
+    :rtype: list[NegativeValues]
+    """
+    found: dict[tuple[str, str], set[str]] = {}
+    for variant_key, results in results_by_arm.items():
+        for memo, walk in _result_walks(results, profile.measures):
+            bits = memo.population_bits("scored")
+            values = iter(walk.values)
+            for slot_id in walk.slots:
+                slot = memo.slots[slot_id]
+                value = next(values) if slot.verdict == "pooled" else None
+                if (
+                    slot.descriptor.nonnegative
+                    and walk.members & bits[slot_id]
+                    and isinstance(value, int | float)
+                    and not isinstance(value, bool)
+                    and value < 0
+                ):
+                    found.setdefault((slot.name, variant_key), set()).add(walk.result.id)
+    return [
+        NegativeValues(
+            measure=measure,
+            variant_key=variant_key,
+            n_results=len(ids),
+            result_ids=sorted(ids)[:NEGATIVE_VALUE_IDS_SHOWN],
+        )
+        for (measure, variant_key), ids in sorted(found.items())
+    ]
+
+
 __all__ = [
     "goal_check_proofs_of",
     "in_population",
+    "negative_values_of",
     "RECORD_CARRIERS",
 ]

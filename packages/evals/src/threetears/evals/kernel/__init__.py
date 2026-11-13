@@ -77,6 +77,7 @@ from threetears.evals.kernel.capped_completion import (
     ceiling_is_estimate,
     prompt_token_bound,
     turn_prompt_token_bound,
+    unpriced_because,
 )
 from threetears.evals.kernel.cassettes import (
     ActionSeam,
@@ -163,6 +164,7 @@ from threetears.evals.kernel.job_leases import (
     settle_job_record,
     write_held_record,
 )
+from threetears.evals.kernel.failed_call import failed_call_output
 from threetears.evals.kernel.evidence_tiers import (
     CALIBRATION_MIN_AGREEMENT,
     CALIBRATION_MIN_RESULTS,
@@ -788,6 +790,7 @@ __all__ = [
     "WorldSessionError",
     "call_ceiling",
     "ceiling_is_estimate",
+    "unpriced_because",
     "candidate_failure_cause",
     "classify_result",
     "counted_goal_verdicts",
@@ -824,6 +827,7 @@ __all__ = [
     "save_document",
     "summarize_completeness",
     "withhold_failure_detail",
+    "failed_call_output",
     "CALIBRATION_MIN_AGREEMENT",
     "CALIBRATION_MIN_RESULTS",
     "JUDGED_TIER_RULE",

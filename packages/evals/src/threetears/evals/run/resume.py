@@ -7,8 +7,10 @@ it measures every repeat of each case it covers, so a case the first reached par
 the first stays short on its own record. :func:`resume_run` continues the run itself:
 
 - **Only what is missing runs.** A cell with no stored row runs, and so does a cell whose row was cut short by a
-  cancel (termination ``cancelled``: the attempt a shutdown or a cancel abandoned) or refused by the provider
-  account paying for the run (``EvalResult.account_refused``: the call a funded account would have served). Every
+  cancel (termination ``cancelled``: the attempt a shutdown or a cancel abandoned), refused by the provider
+  account paying for the run (``EvalResult.account_refused``: the call a funded account would have served), or
+  answered that its model is not served (``EvalResult.model_unserved``: the call a served model would have
+  answered). Every
   other row is what the run would have stored uninterrupted, so its cell is done (:func:`_planned_cells`). The cells
   run in the run's own order, its done ones left out, and a re-run cell is written over its row.
 - **The same measurement, or none.** The run is launched again from what it recorded, through its kind's launcher,
@@ -48,8 +50,8 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any, Literal
+from dataclasses import dataclass, replace
+from typing import Any, Literal, NamedTuple
 
 from pydantic import Field
 
@@ -174,6 +176,7 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
         "budget_stop_reason",
         "budget_stops",
         "failed_because",
+        "exhausted_because",
         "error_details",
         "completed_at",
         "archived",
@@ -194,8 +197,9 @@ _PINNED_FIELDS: tuple[str, ...] = tuple(name for name in EvalRun.model_fields if
 
 
 def _run_again(row: EvalResult) -> bool:
-    """Whether a stored row's cell runs again when its run is taken up: an attempt the run abandoned."""
-    return row.termination == "cancelled" or row.account_refused
+    """Whether a stored row's cell runs again when its run is taken up: an attempt the run abandoned, or one whose call
+    the account or the model's provider turned away, which a funded account or a served model would have answered."""
+    return row.termination == "cancelled" or row.account_refused or row.model_unserved
 
 
 @dataclass(frozen=True)
@@ -212,11 +216,17 @@ def _stored_rows(storage: EvalStorage, run: EvalRun) -> _StoredRows:
     """Read a run's stored rows a page at a time (:data:`~threetears.evals.kernel.run_pages.RUN_RESULTS_PAGE`), keeping
     each as a :class:`StoredCell`, so a take-up of a large run never holds its rows' reasoning, payloads or events.
 
-    A row whose cell was cut short by a cancel (``cancelled``) is an attempt a shutdown or a cancel abandoned, and one
+    A row whose cell was cut short by a cancel (``cancelled``) is an attempt a shutdown or a cancel abandoned, one
     the provider account paying for the run refused (``account_refused``) is a call a funded account would have
-    served: an uninterrupted run on a funded account stores neither, so each cell runs again, written over its row.
+    served, and one whose model the provider did not serve (``model_unserved``) is a call a served model would have
+    answered: an uninterrupted run on a funded account and a served model stores none of them, so each cell runs
+    again, written over its row.
     Every other row — a timeout, a rig fault, a call the provider itself declined, a failed seed included — is what
-    the uninterrupted run would also have stored, so its cell is done. A cell with no row is neither, and runs.
+    the uninterrupted run would also have stored, so its cell is done. So is a row whose judging the cost cap set
+    aside (``judging_set_aside``): its candidate's answer is measured and stored, and running the cell again would pay
+    for it twice and measure another answer, so a re-judge (``regrade`` with ``apply``, through
+    :func:`~threetears.evals.run.lifecycle.rejudge_result`) takes its judging up instead. A cell
+    with no row is neither, and runs.
 
     :param storage: The run's store.
     :ptype storage: EvalStorage
@@ -431,6 +441,8 @@ class RunResumption:
         one run cannot both win.
     :ivar max_cost_usd: The cost cap it is taken up under: a raised one, or the one it recorded; ``None`` inherits
         the host's.
+    :ivar notices: What checking its take-up told the caller beside admitting it (a served-model check that could
+        not be made), set by :func:`take_up_arms`; empty until checked, and when there was nothing to tell.
     """
 
     run: EvalRun
@@ -442,6 +454,7 @@ class RunResumption:
     cell_order_seed: str | None
     etag: str | None
     max_cost_usd: float | None
+    notices: tuple[str, ...] = ()
 
     def take_up(
         self, fresh: EvalRun, template: EvalTemplate, profile: HostProfile
@@ -523,6 +536,7 @@ class RunResumption:
                 "budget_stop_reason": None,
                 "budget_stops": None,
                 "failed_because": None,
+                "exhausted_because": None,
                 "completeness": None,
                 # The cap it was stopped under is replayed as named, so a cap it inherited keeps saying so unless the
                 # take-up raised it.
@@ -778,15 +792,28 @@ async def _run_resumption(
     )
 
 
-async def start_take_up(host: LaunchHost, resuming: RunResumption) -> EvalRun:
+class TakenUp[R](NamedTuple):
+    """A take-up started, and what admitting it told its caller beside starting it.
+
+    :ivar record: The run, or the launch, as its take-up started it.
+    :ivar notices: Each sentence admission told the caller and did not refuse for, such as a served-model check
+        that could not be made because the provider's model list could not be read; empty when there was none.
+    """
+
+    record: R
+    notices: tuple[str, ...]
+
+
+async def start_take_up(host: LaunchHost, resuming: RunResumption) -> TakenUp[EvalRun]:
     """Take a planned run up again in a group of its own: its launch replayed and compared, the run reopened, started.
 
     :param host: The host, whose launcher wires the run and whose job manager holds it.
     :ptype host: LaunchHost
     :param resuming: The run, as :func:`_run_resumption` planned it.
     :ptype resuming: RunResumption
-    :return: The run, reopened and started.
-    :rtype: EvalRun
+    :return: The run, reopened and started, and what its admission told the caller (:attr:`AdmittedLaunch.notices
+        <threetears.evals.run.launch.AdmittedLaunch.notices>`).
+    :rtype: TakenUp[EvalRun]
     :raises ValidationFailedError: It would measure otherwise now (every difference named), or a launch of it would be
         refused now.
     :raises NotFoundError: Its template is gone.
@@ -807,7 +834,7 @@ async def start_take_up(host: LaunchHost, resuming: RunResumption) -> EvalRun:
         len(resuming.stored.done),
         len(resuming.stored.replaced),
     )
-    return started
+    return TakenUp(started, admitted.notices)
 
 
 async def resume_run(host: LaunchHost, run_id: str, scope_id: str, *, max_cost_usd: float | None = None) -> EvalRun:
@@ -815,7 +842,8 @@ async def resume_run(host: LaunchHost, run_id: str, scope_id: str, *, max_cost_u
 
     Resumable: a run that was lost (its holder gone, or shut down), one an operator cancelled, one its budget stopped
     — under a cap above what its stored rows spent, so a cost-capped stop needs a raised ``max_cost_usd`` — and one
-    its provider account stopped (``exhausted``), which, like a budget, is resumable once the account is topped up.
+    its provider account or its model's provider stopped (``exhausted``), which, like a budget, is resumable once the
+    account is topped up or the model is served.
     A run that completed or failed is not, nor one still live.
 
     In order: the run is settled as every reader settles it (written lost when its lease lapsed); refused when it
@@ -845,10 +873,36 @@ async def resume_run(host: LaunchHost, run_id: str, scope_id: str, *, max_cost_u
         started.
     :raises AdmissionRefusedError: The host has no room for another run.
     """
+    return (await take_up_run(host, run_id, scope_id, max_cost_usd=max_cost_usd)).record
+
+
+async def take_up_run(
+    host: LaunchHost, run_id: str, scope_id: str, *, max_cost_usd: float | None = None
+) -> TakenUp[EvalRun]:
+    """:func:`resume_run`, answering what its admission told the caller beside the run it started.
+
+    What a transport's resume returns to its caller (``job_resume``): a served-model check skipped because the
+    provider's model list could not be read is said there, not only logged.
+
+    :param host: As :func:`resume_run` takes it.
+    :ptype host: LaunchHost
+    :param run_id: As :func:`resume_run` takes it.
+    :ptype run_id: str
+    :param scope_id: As :func:`resume_run` takes it.
+    :ptype scope_id: str
+    :param max_cost_usd: As :func:`resume_run` takes it.
+    :ptype max_cost_usd: float | None
+    :return: The run, reopened and started, and the notices.
+    :rtype: TakenUp[EvalRun]
+    :raises NotFoundError: As :func:`resume_run` raises it.
+    :raises ValidationFailedError: As :func:`resume_run` raises it.
+    :raises ConflictError: As :func:`resume_run` raises it.
+    :raises AdmissionRefusedError: As :func:`resume_run` raises it.
+    """
     return await start_take_up(host, await _run_resumption(host, run_id, scope_id, max_cost_usd=max_cost_usd))
 
 
-async def _check_take_up(host: LaunchHost, resuming: RunResumption) -> None:
+async def _check_take_up(host: LaunchHost, resuming: RunResumption) -> tuple[str, ...]:
     """Replay a planned run's launch and compare it, as its take-up will, then release what the launch built.
 
     For a take-up of several runs that must refuse before any of them is started: each run's launch is replayed
@@ -859,6 +913,9 @@ async def _check_take_up(host: LaunchHost, resuming: RunResumption) -> None:
     :ptype host: LaunchHost
     :param resuming: The run, as :func:`_run_resumption` planned it.
     :ptype resuming: RunResumption
+    :return: What its admission told the caller beside admitting it (:attr:`LaunchGroup.notices
+        <threetears.evals.run.launch.LaunchGroup.notices>`).
+    :rtype: tuple[str, ...]
     :raises ValidationFailedError: It would measure otherwise now (every difference named), or a launch of it would be
         refused now.
     :raises NotFoundError: Its template is gone.
@@ -866,6 +923,7 @@ async def _check_take_up(host: LaunchHost, resuming: RunResumption) -> None:
     group = LaunchGroup(candidate_models=[resuming.run.candidate_model])
     try:
         await (await admit_resumed_run(host, resuming, launch_group=group)).start()
+        return tuple(group.notices)
     finally:
         await group.abandon()
 
@@ -886,7 +944,8 @@ async def take_up_arms(
     :ptype scope_id: str
     :param max_cost_usd: The cost cap each run is taken up under; ``None`` keeps each run's own.
     :ptype max_cost_usd: float | None
-    :return: Each arm's planned take-up by label, and each arm's refusal, its message naming the arm.
+    :return: Each arm's planned take-up by label, carrying what checking it told the caller
+        (:attr:`RunResumption.notices`), and each arm's refusal, its message naming the arm.
     :rtype: tuple[dict[str, RunResumption], list[ValidationFailedError]]
     :raises NotFoundError: A run is gone, or its template is.
     """
@@ -895,11 +954,11 @@ async def take_up_arms(
     for label, run_id in arms:
         try:
             resuming = await _run_resumption(host, run_id, scope_id, max_cost_usd=max_cost_usd)
-            await _check_take_up(host, resuming)
+            notices = await _check_take_up(host, resuming)
         except ValidationFailedError as refused:
             refusals.append(ValidationFailedError(f"arm {label!r}: {refused.message}", remedy=refused.remedy))
             continue
-        planned[label] = resuming
+        planned[label] = replace(resuming, notices=notices)
     return planned, refusals
 
 
@@ -991,7 +1050,7 @@ def refuse_a_job_not_taken_up(
 
 async def resume_launch(
     host: LaunchHost, launch_id: str, scope_id: str, *, max_cost_usd: float | None = None
-) -> EvalLaunch:
+) -> TakenUp[EvalLaunch]:
     """Take a launch up again as the same launch: its unfinished runs taken up together, as one group under its id.
 
     A launch's job that was lost, cancelled, or ran out of its preparation's budget after its runs started is taken up
@@ -1012,8 +1071,9 @@ async def resume_launch(
     :param max_cost_usd: The cost cap every run is taken up under; ``None`` keeps each run's own (see
         :func:`resume_run`). Each run's holding records the cap it ran under.
     :ptype max_cost_usd: float | None
-    :return: The launch's record as its job started.
-    :rtype: EvalLaunch
+    :return: The launch's record as its job started, and what checking its runs' take-up told the caller beside
+        admitting them (a served-model check that could not be made), each once.
+    :rtype: TakenUp[EvalLaunch]
     :raises NotFoundError: There is no such launch, or a run's template is gone.
     :raises ValidationFailedError: The launch cannot be taken up (still running, completed, failed, or it started no
         run), every run it started has ended, or a run cannot be taken up — every run's refusal named.
@@ -1099,7 +1159,7 @@ async def resume_launch(
         epoch,
         len(taking_up),
     )
-    return started
+    return TakenUp(started, tuple(dict.fromkeys(notice for resuming in taking_up for notice in resuming.notices)))
 
 
 #: The statuses a run :func:`resume_run` takes up has ended with: ``cancelled`` (lost, or cancelled by an operator),
@@ -1107,7 +1167,7 @@ async def resume_launch(
 _RESUMABLE_RUN_STATUSES: frozenset[EvalRunStatus] = frozenset({"cancelled", "budget_stopped", "exhausted"})
 
 #: How a resumable run's last holding ended: lost (its process went away), cancelled by an operator, stopped by its
-#: budget, or stopped by its provider account.
+#: budget, or stopped by its provider account or by its model not being served (``EvalRun.exhausted_because``).
 ResumableEnding = Literal["lost", "cancelled", "budget_stopped", "exhausted"]
 
 
@@ -1124,7 +1184,7 @@ class ResumableJob(EvalBaseModel):
     )
     ended: ResumableEnding = Field(
         description="How its last holding ended: lost (its process went away), cancelled by an operator, stopped by "
-        "its budget, or stopped by its provider account (exhausted)."
+        "its budget, or stopped by its provider account or its model not being served (exhausted)."
     )
     reason: str | None = Field(
         default=None,
@@ -1301,7 +1361,7 @@ def resumable_jobs(storage: EvalStorage, scopes: Iterable[str]) -> ResumableJobs
     resumed here.
 
     A run lost (its holder gone, or shut down), one an operator cancelled, one its budget stopped and one its provider
-    account stopped (``exhausted``); never one that completed or failed, one still live, an ad hoc run, which has no
+    account or its model's provider stopped (``exhausted``); never one that completed or failed, one still live, an ad hoc run, which has no
     template to launch it from again, nor an archived run, which an operator declined by archiving it. A sweep or a
     launch whose every run is archived is left out with them. A sweep or a launch lost, cancelled or timed out, with an
     arm left to take up or to launch, is listed once, as a whole (``groups``), with each arm's state and each run it
@@ -1381,5 +1441,6 @@ __all__ = [
     "resume_run",
     "start_take_up",
     "take_up_arms",
+    "take_up_run",
     "write_taken_up",
 ]
