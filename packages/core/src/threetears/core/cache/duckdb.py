@@ -1815,9 +1815,9 @@ class DuckDBBackend:
         if len(pk_cols) == 1:
             matched = f"{quote_identifier(pk_cols[0])} = ANY(?)"
         else:
-            names = ", ".join(quote_identifier(c) for c in pk_cols)
+            pk_names = ", ".join(quote_identifier(c) for c in pk_cols)
             unnested = ", ".join("unnest(?)" for _ in pk_cols)
-            matched = f"({names}) IN (SELECT {unnested})"
+            matched = f"({pk_names}) IN (SELECT {unnested})"
         sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {matched}"  # noqa: S608
         with self._db_lock:
             result_columns, rows = run_bound(self._db, sql, lists, _described_rows)
