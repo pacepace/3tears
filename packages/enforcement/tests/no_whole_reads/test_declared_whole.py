@@ -4,6 +4,7 @@ does."""
 
 from __future__ import annotations
 
+import dataclasses
 import textwrap
 from pathlib import Path
 
@@ -451,3 +452,60 @@ def test_until_is_a_rolling_upgrade_s_alone(tmp_path: Path) -> None:
     assert (
         whole_read(1, kind="rolling_upgrade", reason="r", ruling="Pace 2026-11-12", proof="a::b", until="0.96.0") == 1
     )
+
+
+_WAREHOUSE = """
+    from dataclasses import dataclass
+
+    from threetears.core import keyed
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.declared import whole_read
+
+    ITEMS = TableSchema(name="items", primary_key="id", columns=[])
+
+
+    @dataclass
+    class SourceTable:
+        relation: str
+        key: tuple[str, ...] = ()
+
+
+    async def moved(reader, source: SourceTable, state, held):
+        return await whole_read(
+            keyed.read_changed(
+                reader, source.relation, key=list(source.key), columns=["a"], held=held, hash_columns=["a"],
+                by={"state": state},
+            ),
+            kind="unbounded_by_warehouse",
+            reason="the warehouse relation holds no sort key: the state bound here binds no key",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_moved_entry",
+        )
+
+
+    async def ours(reader, state, held):
+        return await whole_read(
+            keyed.read_changed(
+                reader, "items", key=["id"], columns=["a"], held=held, hash_columns=["a"], by={"state": state}
+            ),
+            kind="unbounded_by_warehouse",
+            reason="the warehouse relation holds no sort key: the state bound here binds no key",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_ours_entry",
+        )
+"""
+
+
+def test_a_warehouse_read_of_a_produced_relation_declared_whole_is_let_through(tmp_path: Path) -> None:
+    """Flips if a read of a run-time relation a declared producer yields read whole (``SourceTable.relation: ()``, a
+    warehouse relation: no 3tears table) is refused under ``unbounded_by_warehouse`` as if it were a declared L3
+    table, or if the same declaration lets a read of a declared L3 table through."""
+    proofs = _PROOFS + textwrap.indent(
+        "\ndef test_moved_entry():\n    assert moved\n\ndef test_ours_entry():\n    assert ours\n", "    "
+    )
+    config = dataclasses.replace(
+        _config(tmp_path, {"loader.py": _WAREHOUSE}, proofs), relation_producers={"SourceTable.relation": ()}
+    )
+    findings = no_whole_reads_findings(config)
+    assert not [finding for finding in findings if "moved" in finding], findings
+    assert any("ours whole_read(kind='unbounded_by_warehouse'): covers no whole read" in f for f in findings), findings

@@ -97,7 +97,13 @@ import threetears
 from threetears.enforcement.common import dotted
 from threetears.enforcement.no_whole_reads.bounded import BoundBy
 from threetears.enforcement.no_whole_reads.declarations import DECLARATIONS_NAME, apply_index_declarations
-from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, SchemaCatalog, collect_schema, index_findings
+from threetears.enforcement.no_whole_reads.schema import (
+    COPY_PREFIX,
+    PRODUCED_PREFIX,
+    SchemaCatalog,
+    collect_schema,
+    index_findings,
+)
 from threetears.enforcement.no_whole_reads.use_the_helper import statement_counts, statement_findings
 from threetears.enforcement.no_whole_reads.walker import (
     DECLARED_KINDS,
@@ -576,7 +582,9 @@ _REACHED: Final[re.Pattern[str]] = re.compile(r" -> (?P<path>[^ :]+):\d+ ")
 
 
 def _declared_relation_outside(hit: WholeReadHit, schema: SchemaCatalog) -> bool:
-    """whether a hit's relation is no declared L3 table (a process-local buffer, a warehouse relation).
+    """whether a hit's relation is no declared L3 table (a process-local buffer, a warehouse relation). A run-time
+    relation a declared producer yields (``produced.<entry>``, the repo's ``relation_producers``) is none: the config
+    declares only the key it is read by (a warehouse relation's ``()``), never a table of the data layer.
 
     :param hit: the hit
     :ptype hit: WholeReadHit
@@ -587,7 +595,7 @@ def _declared_relation_outside(hit: WholeReadHit, schema: SchemaCatalog) -> bool
     """
     relation = hit.symbol.split(" ", 1)[1] if " " in hit.symbol else ""
     found = schema.table(relation) if relation else None
-    return found is None or not found.threetears
+    return found is None or not found.threetears or relation.startswith(PRODUCED_PREFIX)
 
 
 #: a release as ``until=`` names it
