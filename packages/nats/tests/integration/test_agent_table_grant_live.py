@@ -18,7 +18,8 @@ As in ``test_data_version_key_grant_live``, the minted allow-lists are applied a
 ``authorization`` permissions rather than through a live auth-callout responder: the grant strings are
 what is under test, and this is the credential the server would enforce.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -30,7 +31,6 @@ from uuid import UUID
 import nats.js.errors
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats.subject_permissions import (
     AgentTableGrant,
     Principal,
@@ -109,9 +109,6 @@ def _server_config(pub_allow: list[str], sub_allow: list[str]) -> str:
 
 async def test_a_tool_pod_reaches_exactly_the_agent_tables_it_was_granted() -> None:
     """both halves against a real broker: the granted table works, every other route is refused."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
-
     previous_ns = get_default_namespace()
     set_default_namespace(_NS)
     try:

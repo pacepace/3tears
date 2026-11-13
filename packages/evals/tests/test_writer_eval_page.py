@@ -15,7 +15,7 @@ shares miss 100 or a share just off even reads as even; a share drawn with no in
 
 from __future__ import annotations
 
-import socket
+from collections.abc import Iterator
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -23,6 +23,7 @@ from typing import Any, Final
 
 import pytest
 
+from packages.evals.tests.offline_support import refuse_connects
 from packages.evals.tests.writer_eval_support import FakeScoringJudge, kairo_case, kairo_report, lay_recording
 from threetears.evals.analysis.stats import PROJECTION_CASE_CAP
 from threetears.evals.kernel.numbers import spell_count
@@ -42,14 +43,13 @@ QUESTION: Final = "Does a blank line in SKILL.md change the reports?"
 
 
 @pytest.fixture
-def offline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No key in the environment, and every socket connect refused."""
+def offline(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """No key in the environment, and every socket connect refused; the test fails on any the run tried, even one it
+    caught."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-
-    def connect(_self: socket.socket, address: object) -> None:
-        raise AssertionError(f"a replay-only run connected to {address}")
-
-    monkeypatch.setattr(socket.socket, "connect", connect)
+    attempts = refuse_connects(monkeypatch)
+    yield
+    assert attempts == []
 
 
 async def _replayed(tmp_path: Path) -> WriterResult:

@@ -935,7 +935,7 @@ def _seed_template_cases(
     fill_failed: dict[str, str] = {}
     fill_contended: list[str] = []
     skipped = failed = 0
-    held: dict[str, set[str]] = {}
+    revisions: dict[str, _StoredRevision] = {}
     for case in cases:
         key = f"{case.template}/{case.name}"
         template = storage.load_template_by_name(case.template, scope_id)
@@ -952,22 +952,21 @@ def _seed_template_cases(
             # The store is master, and its template of that name is a judge's, whose cases are judge cases.
             conflicted.append(key)
             continue
-        match _fill_empty_name(storage, scope_id, template, case):
+        if template.id not in revisions:
+            # Read once per revision, before this pass writes into it: what it held when the boot began.
+            revisions[template.id] = _StoredRevision.read(storage, scope_id, template.id)
+        revision = revisions[template.id]
+        match _fill_empty_name(storage, scope_id, revision, case):
             case _NameFilled():
                 named.append(key)
             case _NameFillRefused(reason=reason):
                 fill_failed[key] = reason
             case _NameFillContended():
                 fill_contended.append(key)
-        if template.id not in held:
-            # Read once per revision, before this pass writes into it: what it held when the boot began.
-            held[template.id] = {
-                stored_template_case_digest(c) for c in storage.query_test_cases(scope_id, template_id=template.id)
-            }
-        if case.digest() in held[template.id]:
+        if case.digest() in revision.held:
             skipped += 1
             continue
-        if held[template.id]:
+        if revision.held:
             withheld.append(key)
             continue
         try:
@@ -975,6 +974,7 @@ def _seed_template_cases(
         except StorageError:
             failed += 1
             continue
+        revision.carried.add(case.name)
         created_keys.append(key)
     outcome.created["template_case"] = len(created_keys)
     outcome.created_keys["template_case"] = created_keys
@@ -992,6 +992,51 @@ def _seed_template_cases(
         outcome.name_fill_failed["template_case"] = fill_failed
     if fill_contended:
         outcome.name_fill_contended["template_case"] = fill_contended
+
+
+@dataclass
+class _StoredRevision:
+    """What one template revision held when the seed first read it, indexed for the pass, and kept current by it.
+
+    The seed reads each revision's cases once (:meth:`read`), not once per corpus case: a template of ``n`` corpus
+    cases over ``m`` stored ones would otherwise hydrate ``n`` times ``m`` cases at every boot. The pass
+    updates the index after each write it makes, so a later corpus case of the revision sees what the store would now
+    say: a name filled or a case created is carried, and a case filled is nameless no longer.
+    """
+
+    held: frozenset[str]
+    """The digests of every case the revision held (archived too): a corpus case among them is already present, and
+    a revision holding any case takes no new one."""
+    carried: set[str]
+    """The names the revision's live cases carry."""
+    nameless: dict[str, list[EvalTestCase]]
+    """The revision's live nameless cases, by their content digest (:func:`template_case_content_digest`), in the
+    store's order."""
+
+    @classmethod
+    def read(cls, storage: EvalStorage, scope_id: str, template_id: str) -> _StoredRevision:
+        """Read the revision's cases once and index them.
+
+        :param storage: The store.
+        :ptype storage: EvalStorage
+        :param scope_id: The scope.
+        :ptype scope_id: str
+        :param template_id: The template revision's id.
+        :ptype template_id: str
+        :return: The revision's index.
+        :rtype: _StoredRevision
+        """
+        stored = storage.query_test_cases(scope_id, template_id=template_id)
+        live = [c for c in stored if not c.archived]
+        nameless: dict[str, list[EvalTestCase]] = {}
+        for c in live:
+            if not c.name:
+                nameless.setdefault(template_case_content_digest(c), []).append(c)
+        return cls(
+            held=frozenset(stored_template_case_digest(c) for c in stored),
+            carried={c.name for c in live if c.name},
+            nameless=nameless,
+        )
 
 
 @dataclass(frozen=True)
@@ -1012,21 +1057,22 @@ class _NameFillContended:
 
 
 def _fill_empty_name(
-    storage: EvalStorage, scope_id: str, template: EvalTemplate, case: SeedTemplateCase
+    storage: EvalStorage, scope_id: str, revision: _StoredRevision, case: SeedTemplateCase
 ) -> _NameFilled | _NameFillRefused | _NameFillContended | None:
-    """Name the stored, live, nameless case of ``template`` whose content is ``case``'s, after it; what came of it.
+    """Name the stored, live, nameless case of ``revision`` whose content is ``case``'s, after it; what came of it.
 
     Fill-only: a stored case holding any name keeps it, and a name another live case of the revision already carries
     is not given twice. Content is compared as the case's id and ``content_hash`` are derived (stratum left out), so
     the write changes neither identity nor digest: only ``name`` is written, and conditionally on the token read with
-    the case, so a write landing in between is never undone.
+    the case, so a write landing in between is never undone. The candidates come from ``revision``'s index, read once
+    for the pass; each is read again with its token before the write, and the index is updated with what came of it.
 
     :param storage: The store.
     :ptype storage: EvalStorage
     :param scope_id: The scope.
     :ptype scope_id: str
-    :param template: The template revision the case belongs to.
-    :ptype template: EvalTemplate
+    :param revision: The index of the template revision the case belongs to.
+    :ptype revision: _StoredRevision
     :param case: The corpus case.
     :ptype case: SeedTemplateCase
     :return: Whether a case was named, the store refused the write (logged at WARNING with its reason), or the write
@@ -1034,15 +1080,19 @@ def _fill_empty_name(
         nameless with ``case``'s content, or its name is already carried.
     :rtype: _NameFilled | _NameFillRefused | _NameFillContended | None
     """
-    stored = [c for c in storage.query_test_cases(scope_id, template_id=template.id) if not c.archived]
-    if any(c.name == case.name for c in stored):
+    if case.name in revision.carried:
         return None
-    content = template_case_content_digest(case)
-    for candidate in stored:
-        if candidate.name or template_case_content_digest(candidate) != content:
-            continue
+    candidates = revision.nameless.get(template_case_content_digest(case), [])
+    for candidate in list(candidates):
         current, etag = storage.load_test_case_with_etag(candidate.id, scope_id)
-        if current is None or current.name:
+        if current is None or current.archived or current.name:
+            # Gone, archived or named since the read: the store now says so, and so does the index. A name another
+            # writer gave it is carried now, so it is not given twice.
+            candidates.remove(candidate)
+            if current is not None and not current.archived and current.name:
+                revision.carried.add(current.name)
+                if current.name == case.name:
+                    return None
             continue
         try:
             storage.save_test_case(current.model_copy(update={"name": case.name}), if_match=etag)
@@ -1068,6 +1118,8 @@ def _fill_empty_name(
                 refused,
             )
             return _NameFillRefused(reason=refused.message)
+        candidates.remove(candidate)
+        revision.carried.add(case.name)
         return _NameFilled()
     return None
 

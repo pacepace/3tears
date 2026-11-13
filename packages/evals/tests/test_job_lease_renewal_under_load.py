@@ -92,10 +92,11 @@ async def test_leases_renew_though_every_worker_of_the_hosts_pool_is_busy_for_lo
     host_pool = ThreadPoolExecutor(max_workers=2)
     asyncio.get_running_loop().set_default_executor(host_pool)
     leases = JobLeases(storage, lease_s=LEASE_S)
+    cells_done = threading.Event()
     try:
-        # the host's cells: every worker occupied for well over two leases
+        # the host's cells: every worker occupied for well over two leases, until the test has looked
         for _ in range(2):
-            host_pool.submit(time.sleep, 5.2)
+            host_pool.submit(cells_done.wait, 30.0)
         ids = [f"run-{n}" for n in range(9)]
         stopped = _held(leases, storage, ids)
 
@@ -104,22 +105,25 @@ async def test_leases_renew_though_every_worker_of_the_hosts_pool_is_busy_for_lo
         assert all(_live(storage, run_id) for run_id in ids), "every lease was renewed while the host's pool was busy"
         assert not any(_expired(leases, storage, stopped, run_id) for run_id in ids), "no holder expired its lease"
     finally:
+        cells_done.set()
         await leases.shut_down()
         host_pool.shutdown(wait=True)
 
 
 class _SlowRecordStore(InMemoryDocumentStore):
-    """A store whose writes of one record take a long time, as a stalled round-trip does."""
+    """A store whose writes of one record take a long time, as a stalled round-trip does, until :attr:`recovered`:
+    a test sets it once it has looked, so its teardown does not sit out the stalls still under way."""
 
     def __init__(self, slow_id: str, delay_s: float) -> None:
         super().__init__()
         self.slow_id = slow_id
         self.delay_s = delay_s
+        self.recovered = threading.Event()
 
     def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         """Write, after the delay when the record is the slow one and the write is not its creation."""
         if document.get("id") == self.slow_id and not create_only:
-            time.sleep(self.delay_s)
+            self.recovered.wait(self.delay_s)
         super().upsert(document, if_match=if_match, create_only=create_only)
 
 
@@ -135,6 +139,7 @@ async def test_one_slow_record_delays_no_other_records_renewal() -> None:
         assert _live(storage, "run-b") and _live(storage, "run-c")
         assert not _expired(leases, storage, stopped, "run-b") and not _expired(leases, storage, stopped, "run-c")
     finally:
+        store.recovered.set()
         await leases.shut_down()
 
 
@@ -283,4 +288,5 @@ async def test_a_renewal_that_lands_late_says_how_late_and_why(caplog: pytest.Lo
         loop_wait, pool_wait, store_wait = (float(value) for value in waits.groups())
         assert store_wait > max(loop_wait, pool_wait), f"the store call is the slow one: {late[0]}"
     finally:
+        store.recovered.set()
         await leases.shut_down()

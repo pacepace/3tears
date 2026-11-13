@@ -224,9 +224,23 @@ async def test_start_ensures_a_memory_stream_by_default_with_the_dead_letter_and
         assert sub["durable"] == "app-audit-persist"
         assert sub["dead_letter_subject"] == Subjects.audit_deadletter()
         assert sub["stream"] == "ns-audit", "the ensured stream is named, sparing a stream-names lookup"
+        assert sub["fetch_timeout_seconds"] == 5.0, "an idle fetch waits five seconds unless told otherwise"
     finally:
         await handle.stop()
     assert nats.consumer.stopped
+
+
+async def test_the_fetch_timeout_reaches_the_consumer() -> None:
+    from threetears.nats import set_default_namespace
+
+    set_default_namespace("unitaudit")
+    nats = _Nats()
+    handle = await start_audit_persister(nats, _Db(), durable="app-audit-persist", fetch_timeout_seconds=0.5)
+    try:
+        [sub] = nats.subscriptions
+        assert sub["fetch_timeout_seconds"] == 0.5
+    finally:
+        await handle.stop()
 
 
 async def test_the_age_limit_reaches_the_stream_declaration() -> None:

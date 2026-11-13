@@ -113,6 +113,46 @@ def test_the_unit_matrix_runs_every_shard(workflow: str) -> None:
 
 
 @pytest.mark.parametrize("workflow", ["ci.yml", "release.yml"])
+def test_the_evals_shards_install_chromium_and_require_it(workflow: str) -> None:
+    """the evals render tests (the ``browser`` marker) run in the evals shards: each installs headless Chromium
+    before its test step, and that step sets THREETEARS_REQUIRE_CHROMIUM, so a failed install fails the tests rather
+    than skipping them. tests/enforcement/test_browser_marker.py keeps every browser test in packages/evals.
+
+    :param workflow: the file name under .github/workflows
+    :ptype workflow: str
+    :return: nothing
+    :rtype: None
+    """
+    steps = _jobs(workflow)["unit"]["steps"]
+    assert isinstance(steps, list)
+    runs = [str(step.get("run", "")) for step in steps]
+    install = [i for i, run in enumerate(runs) if "playwright install --with-deps --only-shell chromium" in run]
+    test = [i for i, run in enumerate(runs) if "./scripts/ci-unit-tests.sh --shard" in run]
+    assert install and test and install[0] < test[0], (
+        f"{workflow}'s unit job does not install Chromium before its tests"
+    )
+    assert "startsWith(matrix.shard, 'evals-')" in str(steps[install[0]].get("if", "")), (
+        f"{workflow}: the Chromium install should run on the evals shards, where the browser tests are"
+    )
+    env = steps[test[0]].get("env") or {}
+    assert env.get("THREETEARS_REQUIRE_CHROMIUM") == "${{ startsWith(matrix.shard, 'evals-') && '1' || '' }}", (
+        f"{workflow}: the evals shards' test step must require Chromium"
+    )
+    fonts = [i for i, run in enumerate(runs) if run.strip() == "./scripts/check-fallback-fonts.sh"]
+    assert fonts and install[0] < fonts[0] < test[0], (
+        f"{workflow}'s unit job must check the fallback fonts are DejaVu after installing them and before its tests"
+    )
+    assert "startsWith(matrix.shard, 'evals-')" in str(steps[fonts[0]].get("if", "")), workflow
+    # the cache key's version: assigned before it is written, so a failed read fails the step rather than caching
+    # under an empty version
+    version = [step for step in steps if step.get("id") == "playwright"]
+    assert len(version) == 1, f"{workflow}: one step reads the locked playwright version"
+    read = str(version[0].get("run", ""))
+    assert re.search(r'^version="\$\(uv run python .*\)"$', read, re.M) and 'test -n "$version"' in read, read
+    assert read.index('test -n "$version"') < read.index('echo "version=${version}"'), read
+
+
+@pytest.mark.parametrize("workflow", ["ci.yml", "release.yml"])
 def test_check_waits_for_the_shards_and_fails_unless_all_passed(workflow: str) -> None:
     """``check`` needs ``unit``, always reports, and its first step refuses anything but success.
 
@@ -249,7 +289,8 @@ def test_loop_timing_runs_once_serially_and_only_where_it_should(
     uv.chmod(0o755)
     result = subprocess.run(
         ["bash", str(_SCRIPT), *args],
-        env={"PATH": f"{uv.parent}:/usr/bin:/bin"},
+        # as GitHub Actions runs it: CI is always set there (outside CI the script wants a stated reason)
+        env={"PATH": f"{uv.parent}:/usr/bin:/bin", "CI": "true"},
         capture_output=True,
         text=True,
         timeout=60,

@@ -254,17 +254,24 @@ class _Warehouse:
         #: connections the server has finished accepting, ever (the kill list is emptied by each kill)
         self._accepted_total = 0
         self._accepted_more = threading.Condition(self._lock)
+        #: set by :meth:`stop`; the accept that wakes after it ends the serving thread
+        self._stopping = False
         self.connections: list[_TlsConnection] = []
         self._thread = threading.Thread(target=self._serve, name="fake-warehouse", daemon=True)
         self._thread.start()
 
     def _serve(self) -> None:
-        """accept and handshake until the listener closes."""
+        """accept and handshake until :meth:`stop` wakes this thread, or the listener closes."""
         while True:
             try:
                 raw, _ = self._listener.accept()
             except OSError:
                 # NOSILENT: the listener closing is how this thread is told to stop.
+                return
+            with self._lock:
+                stopping = self._stopping
+            if stopping:
+                raw.close()
                 return
             accepted = self._server_context.wrap_socket(raw, server_side=True)
             with self._lock:
@@ -304,8 +311,14 @@ class _Warehouse:
 
     def stop(self) -> None:
         """stop accepting and release what is still open."""
-        self._listener.close()
+        # closing a listener does not wake a thread blocked in its accept() on Linux, so the
+        # serving thread is woken by one last connection, which it reads as the stop
+        with self._lock:
+            self._stopping = True
+        socket.create_connection(self._listener.getsockname(), timeout=_WAIT_S).close()
         self._thread.join(_WAIT_S)
+        assert not self._thread.is_alive(), "the fake warehouse's serving thread never stopped"
+        self._listener.close()
         for conn in self.connections:
             conn.release_statements.set()
             with contextlib.suppress(OSError, ValueError):

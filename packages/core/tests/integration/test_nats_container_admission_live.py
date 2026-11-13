@@ -56,7 +56,9 @@ async def _admits(url: str, token: str | None) -> bool:
             nats_subject_namespace=_NAMESPACE,
             client_name="admission-probe",
             auth_token=(lambda: token) if token is not None else None,
-            startup_timeout=timedelta(seconds=5),
+            # a refused client retries until this bound and then fails; the server answers each attempt
+            # with its refusal, so a shorter bound still sees several of them (an admitted one takes ~30ms)
+            startup_timeout=timedelta(seconds=2),
         )
     except NatsClientError:
         admitted = False

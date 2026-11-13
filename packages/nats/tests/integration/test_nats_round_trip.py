@@ -1,21 +1,22 @@
 """integration test: NatsClient round-trip against a NATS testcontainer.
 
-requires docker; mark integration. covers connect / publish_typed /
+needs a NATS server (the pool's child process, or a testcontainer); mark integration. covers connect / publish_typed /
 subscribe_typed / request / kv_bucket round-trips against a real
 JetStream-enabled NATS server.
 
 uses the canonical session-scoped ``nats_container`` fixture from
 :mod:`threetears.core.testing.fixtures` (registered at the workspace
-root conftest). ``check_docker_available`` inside that fixture gates
-the suite on the docker daemon -- a fresh checkout without docker
-skips cleanly rather than erroring on ``DockerException`` from a raw
-``DockerContainer.start()``.
+root conftest): a child process on the testament pool, a testcontainer
+elsewhere. ``require_services`` inside that fixture skips a fresh
+checkout without docker cleanly rather than erroring on
+``DockerException`` from a raw ``DockerContainer.start()``, and fails
+the pool's integration suite instead.
 
 run with:
 
 ::
 
-    uv run pytest -m integration packages/nats/tests/integration/
+    ./scripts/test-integration.sh nats
 """
 
 from __future__ import annotations
@@ -28,8 +29,13 @@ from pydantic import BaseModel
 
 from threetears.nats import IncomingMessage, NatsClient, Subjects, set_default_namespace
 
+from .nats_support import until
+
 
 pytestmark = pytest.mark.integration
+
+#: a failure-only bound on a delivery arriving
+_DELIVERY_WITHIN_SECONDS = 10.0
 
 
 class _Echo(BaseModel):
@@ -52,17 +58,17 @@ async def test_publish_subscribe_round_trip(nats_container: str) -> None:
         async def on_msg(msg: _Echo) -> None:
             received.append(msg)
 
+        # subscribe returns once the server holds the SUB
         sub = await nc.subscribe_typed(
             subject=Subjects.tools_call(),
             cb=on_msg,
             message_type=_Echo,
         )
-        await asyncio.sleep(0.1)  # let subscription register
         await nc.publish(
             subject=Subjects.tools_call(),
             message=_Echo(text="hello", n=1),
         )
-        await asyncio.sleep(0.5)  # let dispatch fire
+        await until(lambda: bool(received), within=_DELIVERY_WITHIN_SECONDS, what="the delivery")
         await nc.unsubscribe(sub)
         assert received == [_Echo(text="hello", n=1)]
 
@@ -85,7 +91,6 @@ async def test_request_response_round_trip(nats_container: str) -> None:
 
         sub = await nc.subscribe(subject=Subjects.tools_call(), cb=responder)
         try:
-            await asyncio.sleep(0.1)
             response = await nc.request(
                 subject=Subjects.tools_call(),
                 message=_Echo(text="ping", n=1),
@@ -130,11 +135,10 @@ async def test_reconnect_preserves_connection_and_subscription(nats_container: s
             cb=on_msg,
             message_type=_Echo,
         )
-        await asyncio.sleep(0.1)  # let subscription register
 
         # pre-reconnect delivery
         await nc.publish(subject=Subjects.tools_call(), message=_Echo(text="before", n=1))
-        await asyncio.sleep(0.3)
+        await until(lambda: bool(received), within=_DELIVERY_WITHIN_SECONDS, what="the delivery before the reconnect")
         assert received == [_Echo(text="before", n=1)]
 
         # force a clean reconnect while connected (the proactive re-auth trigger).
@@ -155,7 +159,11 @@ async def test_reconnect_preserves_connection_and_subscription(nats_container: s
         # post-reconnect delivery: nats-py replayed the SUB under its original sid, so the SAME
         # subscription still delivers without any re-subscribe.
         await nc.publish(subject=Subjects.tools_call(), message=_Echo(text="after", n=2))
-        await asyncio.sleep(0.3)
+        await until(
+            lambda: _Echo(text="after", n=2) in received,
+            within=_DELIVERY_WITHIN_SECONDS,
+            what="the delivery after the reconnect",
+        )
         assert _Echo(text="after", n=2) in received
 
         await nc.unsubscribe(sub)

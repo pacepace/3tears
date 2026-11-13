@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError, create_model
 
+from threetears.core.config import DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS, DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
 from threetears.datasources.config import (
     BorrowedPoolConnectionConfig,
     BigQueryConnectionConfig,
@@ -884,3 +885,62 @@ class TestStoredForm:
         stored = _stored(_validate(_SENT_REDSHIFT))
 
         assert stored["connection_cache_size"] == 3
+
+
+class TestPoolStartTimeouts:
+    """``connect_timeout_seconds`` and ``pool_startup_timeout_seconds`` on the configs whose driver owns its pool."""
+
+    @pytest.mark.parametrize(
+        "datasource_type",
+        [pytest.param(DataSourceType.POSTGRES, id="postgres"), pytest.param(DataSourceType.YUGABYTE, id="yugabyte")],
+    )
+    def test_they_default_to_the_platform_s_bounds(self, datasource_type: DataSourceType) -> None:
+        """a config that names neither keeps the platform's 10 s per login and 30 s start floor.
+
+        :param datasource_type: postgres or yugabyte
+        :ptype datasource_type: DataSourceType
+        :return: nothing
+        :rtype: None
+        """
+        config = _pool_owning_config(datasource_type)
+        assert config.connect_timeout_seconds == DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS
+        assert config.pool_startup_timeout_seconds == DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
+
+    @pytest.mark.parametrize(
+        "datasource_type",
+        [pytest.param(DataSourceType.POSTGRES, id="postgres"), pytest.param(DataSourceType.YUGABYTE, id="yugabyte")],
+    )
+    @pytest.mark.parametrize("field", ["connect_timeout_seconds", "pool_startup_timeout_seconds"])
+    @pytest.mark.parametrize("value", [0, -1.0])
+    def test_a_bound_that_is_not_positive_is_refused(
+        self, datasource_type: DataSourceType, field: str, value: float
+    ) -> None:
+        """a zero or negative bound would fail every start at once: the config refuses it.
+
+        :param datasource_type: postgres or yugabyte
+        :ptype datasource_type: DataSourceType
+        :param field: the bound
+        :ptype field: str
+        :param value: a value that is not positive
+        :ptype value: float
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValidationError, match=field):
+            _pool_owning_config(datasource_type, **{field: value})
+
+
+def _pool_owning_config(
+    datasource_type: DataSourceType, **fields: Any
+) -> PostgresConnectionConfig | YugabyteConnectionConfig:
+    """a postgres or yugabyte config with the fields given and nothing else but what it requires.
+
+    :param datasource_type: postgres or yugabyte
+    :ptype datasource_type: DataSourceType
+    :param fields: further fields
+    :ptype fields: Any
+    :return: the validated config
+    :rtype: PostgresConnectionConfig | YugabyteConnectionConfig
+    """
+    cls = PostgresConnectionConfig if datasource_type is DataSourceType.POSTGRES else YugabyteConnectionConfig
+    return cls.model_validate({"datasource_type": datasource_type, "host": "localhost", "database": "x", **fields})

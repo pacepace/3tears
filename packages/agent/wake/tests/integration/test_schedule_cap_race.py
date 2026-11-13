@@ -31,21 +31,14 @@ import asyncpg
 import pytest
 from uuid_utils import uuid7
 
-from threetears.agent.skills.migrations import register as register_skills
 from threetears.agent.wake.collections import WakeScheduleCollection
 from threetears.agent.wake.rate_limit import (
     ScheduleCapExceeded,
     create_schedule_serialized,
 )
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.asyncpg_init import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
-
-from threetears.agent.wake.migrations import register as register_wake
-
-from .conftest import AsyncpgStore
 
 
 pytestmark = pytest.mark.integration
@@ -58,25 +51,14 @@ def _new_uuid() -> UUID:
     return UUID(str(uuid7()))
 
 
-async def _apply_schema(url: str, schema: str, *, max_size: int) -> asyncpg.Pool:
-    """Apply the conversations + skills + wake migrations, return a pool.
+async def _schema_pool(url: str, schema: str, *, max_size: int) -> asyncpg.Pool:
+    """A pool over the migrated schema (the conftest's ``applied_schema``).
 
     ``max_size`` is bumped well past the cap so N concurrent
     ``create_schedule_serialized`` calls each get their own connection --
     otherwise the test would measure pool-connection contention instead
     of the advisory-lock serialization under test.
     """
-    setup_conn = await asyncpg.connect(url)
-    try:
-        await setup_conn.execute(f'SET search_path TO "{schema}", public')
-        runner = MigrationRunner()
-        register_conversations(runner)
-        register_skills(runner)
-        register_wake(runner)
-        store = AsyncpgStore(setup_conn)
-        await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
-    finally:
-        await setup_conn.close()
     pool = await asyncpg.create_pool(
         url,
         min_size=2,
@@ -128,9 +110,9 @@ async def _count_active(pool: asyncpg.Pool, agent_id: UUID) -> int:
 class TestActiveScheduleCapRace:
     """N concurrent creates by one agent, each in its own conversation, land exactly cap."""
 
-    async def test_twelve_concurrent_creates_yield_exactly_cap(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema, max_size=20)
+    async def test_twelve_concurrent_creates_yield_exactly_cap(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema, max_size=20)
         try:
             user_id = _new_uuid()
             agent_id = _new_uuid()
@@ -168,10 +150,10 @@ class TestActiveScheduleCapRace:
         finally:
             await pool.close()
 
-    async def test_eleventh_create_rejects_when_full(self, pg_schema: tuple[str, str]) -> None:
+    async def test_eleventh_create_rejects_when_full(self, applied_schema: tuple[str, str]) -> None:
         """Serially: cap creates succeed, the (cap+1)th raises."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema, max_size=6)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema, max_size=6)
         try:
             conversation_id = _new_uuid()
             user_id = _new_uuid()
@@ -209,15 +191,15 @@ class TestActiveScheduleCapRace:
         finally:
             await pool.close()
 
-    async def test_distinct_agents_do_not_contend(self, pg_schema: tuple[str, str]) -> None:
+    async def test_distinct_agents_do_not_contend(self, applied_schema: tuple[str, str]) -> None:
         """Two full agents each accept their own cap independently.
 
         The advisory-lock key is per agent, so a busy agent never starves
         an unrelated one: 12 concurrent creates for each of TWO agents
         (cap 10 each) land 10 + 10 = 20, with the excess per agent rejected.
         """
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema, max_size=20)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema, max_size=20)
         try:
             agent_a = _new_uuid()
             agent_b = _new_uuid()

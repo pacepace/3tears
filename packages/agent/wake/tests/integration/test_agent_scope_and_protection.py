@@ -28,14 +28,12 @@ import asyncpg
 import pytest
 from uuid_utils import uuid7
 
-from threetears.agent.skills.migrations import register as register_skills
 from threetears.agent.wake.collections import (
     WakeFireCollection,
     WakeScheduleCollection,
     WebhookSubscriptionCollection,
 )
 from threetears.agent.wake.dispatch import dispatch_wake, is_tool_only
-from threetears.agent.wake.migrations import register as register_wake
 from threetears.agent.wake.protected import ProtectedWakeError, delete_protected, update_protected
 from threetears.agent.wake.rate_limit import ScheduleCapExceeded, create_schedule_serialized
 from threetears.agent.wake.tick import wake_tick_job
@@ -48,15 +46,12 @@ from threetears.agent.wake.types import (
     WakeDispatchResult,
     WakeTrigger,
 )
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections import CallerTransaction
 from threetears.core.collections.asyncpg_init import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
 from threetears.scheduled_jobs.collections import REAPED_DISPATCH_ERROR
 
-from .conftest import AsyncpgStore
 
 pytestmark = pytest.mark.integration
 
@@ -65,15 +60,10 @@ def _new_uuid() -> UUID:
     return UUID(str(uuid7()))
 
 
-async def _apply_schema(url: str, schema: str) -> asyncpg.Pool:
+async def _schema_pool(url: str, schema: str) -> asyncpg.Pool:
     setup_conn = await asyncpg.connect(url)
     try:
         await setup_conn.execute(f'SET search_path TO "{schema}", public')
-        runner = MigrationRunner()
-        register_conversations(runner)
-        register_skills(runner)
-        register_wake(runner)
-        await runner.apply_for_agent_schema(AsyncpgStore(setup_conn))  # type: ignore[arg-type]
         # the consumer's conversations, as far as these tests need them
         await setup_conn.execute("CREATE TABLE fire_conversations (conversation_id UUID PRIMARY KEY, fire_id UUID)")
     finally:
@@ -167,10 +157,10 @@ class TestProtectedTrigger:
     """The table refuses what a protected wake may never do."""
 
     async def test_protected_wake_refuses_delete_pause_expire_retype_and_unprotect(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, _fires = _collections(pool)
             conv, sid = await _seed_schedule(pool, agent_id=_new_uuid(), protected=True)
@@ -204,9 +194,9 @@ class TestProtectedTrigger:
         finally:
             await pool.close()
 
-    async def test_an_unprotected_wake_is_untouched_by_the_trigger(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_an_unprotected_wake_is_untouched_by_the_trigger(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, _fires = _collections(pool)
             conv, sid = await _seed_schedule(pool, agent_id=_new_uuid())
@@ -216,9 +206,9 @@ class TestProtectedTrigger:
         finally:
             await pool.close()
 
-    async def test_a_protected_wake_cannot_be_a_one_shot(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_a_protected_wake_cannot_be_a_one_shot(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             with pytest.raises(asyncpg.CheckViolationError, match="protected_type_check"):
                 await _seed_schedule(
@@ -231,9 +221,9 @@ class TestProtectedTrigger:
         finally:
             await pool.close()
 
-    async def test_the_tick_still_fires_a_protected_wake(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_the_tick_still_fires_a_protected_wake(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _conv, sid = await _seed_schedule(
                 pool, agent_id=_new_uuid(), protected=True, next_fire_at=datetime.now(UTC) - timedelta(seconds=5)
@@ -261,9 +251,9 @@ class TestProtectedTrigger:
 class TestProtectedDoors:
     """``update_protected`` and ``delete_protected`` open the gate for one transaction."""
 
-    async def test_update_protected_changes_the_interval_and_next_fire(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_update_protected_changes_the_interval_and_next_fire(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, _fires = _collections(pool)
             agent = _new_uuid()
@@ -290,9 +280,11 @@ class TestProtectedDoors:
         finally:
             await pool.close()
 
-    async def test_update_protected_refuses_a_bad_config_and_changes_nothing(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_update_protected_refuses_a_bad_config_and_changes_nothing(
+        self, applied_schema: tuple[str, str]
+    ) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, _fires = _collections(pool)
             agent = _new_uuid()
@@ -308,10 +300,10 @@ class TestProtectedDoors:
             await pool.close()
 
     async def test_update_protected_refuses_another_agent_and_an_unprotected_wake(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, _fires = _collections(pool)
             agent = _new_uuid()
@@ -332,10 +324,10 @@ class TestProtectedDoors:
             await pool.close()
 
     async def test_delete_protected_deletes_inside_the_callers_transaction_only(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, _fires = _collections(pool)
             agent = _new_uuid()
@@ -356,9 +348,9 @@ class TestProtectedDoors:
 class TestAgentScope:
     """Lookups span the agent's conversations and stop at the agent."""
 
-    async def test_find_and_list_for_agent(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_find_and_list_for_agent(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, _fires = _collections(pool)
             agent, stranger = _new_uuid(), _new_uuid()
@@ -376,10 +368,10 @@ class TestAgentScope:
             await pool.close()
 
     async def test_the_active_cap_counts_across_conversations_and_skips_protected(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             schedules, _fires = _collections(pool)
             agent = _new_uuid()
@@ -415,9 +407,9 @@ class TestAgentScope:
         finally:
             await pool.close()
 
-    async def test_webhook_subscriptions_find_and_list_for_agent(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_webhook_subscriptions_find_and_list_for_agent(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             registry = CollectionRegistry()
             registry.configure(l3_pool=pool)
@@ -446,9 +438,11 @@ class TestAgentScope:
 
 
 class TestContextFromAcrossConversations:
-    async def test_downstream_reads_the_upstream_wake_in_another_conversation(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_downstream_reads_the_upstream_wake_in_another_conversation(
+        self, applied_schema: tuple[str, str]
+    ) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _schedules, fires = _collections(pool)
             agent = _new_uuid()
@@ -493,9 +487,9 @@ class TestContextFromAcrossConversations:
 
 
 class TestPermitAndLimits:
-    async def test_not_now_writes_skipped_life_off_and_runs_nothing(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_not_now_writes_skipped_life_off_and_runs_nothing(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _conv, sid = await _seed_schedule(
                 pool, agent_id=_new_uuid(), protected=True, next_fire_at=datetime.now(UTC) - timedelta(seconds=5)
@@ -526,9 +520,11 @@ class TestPermitAndLimits:
         finally:
             await pool.close()
 
-    async def test_the_per_wake_limit_counts_silent_fires_and_skips_protected(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_the_per_wake_limit_counts_silent_fires_and_skips_protected(
+        self, applied_schema: tuple[str, str]
+    ) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _schedules, fires = _collections(pool)
             agent = _new_uuid()
@@ -582,9 +578,11 @@ class TestPermitAndLimits:
 class TestAQuietCheck:
     """A consumer's check that found nothing: recorded as ``checked_quiet``, never counted as a fire."""
 
-    async def test_a_quiet_check_from_the_handler_is_written_as_checked_quiet(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_a_quiet_check_from_the_handler_is_written_as_checked_quiet(
+        self, applied_schema: tuple[str, str]
+    ) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _conv, sid = await _seed_schedule(
                 pool, agent_id=_new_uuid(), next_fire_at=datetime.now(UTC) - timedelta(seconds=5)
@@ -618,9 +616,9 @@ class TestAQuietCheck:
         finally:
             await pool.close()
 
-    async def test_quiet_checks_are_not_counted_by_the_fire_limits(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_quiet_checks_are_not_counted_by_the_fire_limits(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _schedules, fires = _collections(pool)
             agent = _new_uuid()
@@ -670,10 +668,10 @@ class TestAQuietCheckBeforeTheFire:
     """A consumer whose check must start nothing runs it in the dispatch callback, before ``dispatch_wake``."""
 
     async def test_the_callback_returns_checked_quiet_and_no_conversation_is_started(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _conv, sid = await _seed_schedule(
                 pool, agent_id=_new_uuid(), next_fire_at=datetime.now(UTC) - timedelta(seconds=5)
@@ -698,10 +696,10 @@ class TestAQuietCheckBeforeTheFire:
 
 class TestContextFromSkipsQuietChecks:
     async def test_a_downstream_wake_reads_the_last_real_fire_past_later_quiet_checks(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _schedules, fires = _collections(pool)
             agent = _new_uuid()
@@ -747,11 +745,11 @@ class TestContextFromSkipsQuietChecks:
             await pool.close()
 
     async def test_a_failed_latest_fire_behind_quiet_checks_still_gives_the_downstream_nothing(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
         """Only a quiet check run is skipped: a failed latest fire makes the older output stale."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _schedules, fires = _collections(pool)
             agent = _new_uuid()
@@ -801,9 +799,9 @@ class TestContextFromSkipsQuietChecks:
 
 
 class TestFireConversationLink:
-    async def test_the_hook_links_the_fire_before_the_handler_runs(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_the_hook_links_the_fire_before_the_handler_runs(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _conv, sid = await _seed_schedule(
                 pool, agent_id=_new_uuid(), next_fire_at=datetime.now(UTC) - timedelta(seconds=5)
@@ -849,11 +847,11 @@ class TestFireConversationLink:
 
     @pytest.mark.parametrize(("skill", "converses"), [("tool", False), ("prose", True)])
     async def test_a_tool_only_skill_fires_with_no_conversation_and_a_prose_one_with_one(
-        self, pg_schema: tuple[str, str], skill: str, converses: bool
+        self, applied_schema: tuple[str, str], skill: str, converses: bool
     ) -> None:
         """A skill that only calls a tool has no model to converse with, so its fire starts no conversation."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             agent_id = _new_uuid()
             skill_id = _new_uuid()
@@ -902,10 +900,10 @@ class TestFireConversationLink:
             await pool.close()
 
     async def test_a_fire_that_fails_after_starting_its_conversation_stays_linked(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _conv, sid = await _seed_schedule(
                 pool, agent_id=_new_uuid(), next_fire_at=datetime.now(UTC) - timedelta(seconds=5)
@@ -939,9 +937,9 @@ class TestFireConversationLink:
         finally:
             await pool.close()
 
-    async def test_a_hook_that_raises_leaves_no_link_and_no_conversation(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_a_hook_that_raises_leaves_no_link_and_no_conversation(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _conv, sid = await _seed_schedule(
                 pool, agent_id=_new_uuid(), next_fire_at=datetime.now(UTC) - timedelta(seconds=5)
@@ -994,10 +992,10 @@ class TestReaper:
         return conv, fire_id
 
     async def test_the_reaper_hands_each_fires_started_conversation_to_the_hook(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             started = _new_uuid()
             conv, lost = await self._dispatching_fire(pool, started=started, age=timedelta(hours=2))
@@ -1020,9 +1018,9 @@ class TestReaper:
         finally:
             await pool.close()
 
-    async def test_a_hook_that_raises_does_not_undo_the_reap(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_a_hook_that_raises_does_not_undo_the_reap(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _conv, lost = await self._dispatching_fire(pool, started=_new_uuid(), age=timedelta(hours=2))
 
@@ -1038,11 +1036,11 @@ class TestReaper:
             await pool.close()
 
     async def test_named_fires_are_reaped_whatever_their_age_and_others_are_left(
-        self, pg_schema: tuple[str, str]
+        self, applied_schema: tuple[str, str]
     ) -> None:
         """A consumer that knows a fire's dispatcher is gone does not wait out the reap age."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _schedules, fires = _collections(pool)
             started = _new_uuid()
@@ -1063,9 +1061,9 @@ class TestReaper:
         finally:
             await pool.close()
 
-    async def test_a_late_finish_cannot_flip_a_reaped_fire(self, pg_schema: tuple[str, str]) -> None:
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+    async def test_a_late_finish_cannot_flip_a_reaped_fire(self, applied_schema: tuple[str, str]) -> None:
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             _schedules, fires = _collections(pool)
             conv, lost = await self._dispatching_fire(pool, started=_new_uuid(), age=timedelta(hours=2))

@@ -28,13 +28,8 @@ from threetears.agent.skills.entities import (
     AgentSkillEntity,
     AgentSkillInvocationEntity,
 )
-from threetears.agent.skills.migrations import register as register_skills
-from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
-
-from .conftest import AsyncpgStore
 
 
 pytestmark = pytest.mark.integration
@@ -45,19 +40,8 @@ def _new_uuid() -> UUID:
     return UUID(str(uuid7()))
 
 
-async def _apply_schema(url: str, schema: str) -> asyncpg.Pool:
-    """Apply migrations and return a pool bound to the schema."""
-    setup_conn = await asyncpg.connect(url)
-    try:
-        await setup_conn.execute(f'SET search_path TO "{schema}", public')
-        runner = MigrationRunner()
-        register_conversations(runner)
-        register_skills(runner)
-        store = AsyncpgStore(setup_conn)
-        await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
-    finally:
-        await setup_conn.close()
-
+async def _schema_pool(url: str, schema: str) -> asyncpg.Pool:
+    """A pool bound to the migrated schema (the conftest's ``applied_schema``)."""
     pool = await asyncpg.create_pool(
         url,
         min_size=1,
@@ -94,11 +78,11 @@ class TestSkillRoundTrip:
 
     async def test_round_trip_through_collection(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """Save a skill, read it back via composite pk, fields match."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             coll = _build_skill_collection(pool)
             agent_id = _new_uuid()
@@ -149,11 +133,11 @@ class TestSkillRoundTrip:
 
     async def test_find_by_name_for_user_round_trip(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``find_by_name_for_user`` returns the freshly-saved entity."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             coll = _build_skill_collection(pool)
             agent_id = _new_uuid()
@@ -186,11 +170,11 @@ class TestSkillRoundTrip:
 
     async def test_list_for_user_orders_by_recency(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``list_for_user`` without query orders by ``last_used_at`` DESC NULLS LAST."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             coll = _build_skill_collection(pool)
             agent_id = _new_uuid()
@@ -241,7 +225,7 @@ class TestSkillRoundTrip:
 
     async def test_count_for_user_honours_tag_and_query_filters(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``count_for_user`` filtered counts match ``list_for_user`` lengths.
 
@@ -250,8 +234,8 @@ class TestSkillRoundTrip:
         ``list_for_user`` returns under the same predicates so a
         paginated ``total_count`` never overstates.
         """
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             coll = _build_skill_collection(pool)
             agent_id = _new_uuid()
@@ -323,11 +307,11 @@ class TestInvocationRoundTrip:
 
     async def test_record_and_get_round_trip(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``record`` persists an invocation; ``get`` reads it back via tuple pk."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             skill_coll = _build_skill_collection(pool)
             inv_coll = _build_invocation_collection(pool)
@@ -379,11 +363,11 @@ class TestInvocationRoundTrip:
 
     async def test_set_outcome_is_idempotent(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """Calling ``set_outcome`` twice with the same args leaves the same state."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             skill_coll = _build_skill_collection(pool)
             inv_coll = _build_invocation_collection(pool)
@@ -446,11 +430,11 @@ class TestInvocationRoundTrip:
 
     async def test_list_for_skill_orders_newest_first(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``list_for_skill`` returns rows ordered by ``invoked_at`` DESC."""
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             skill_coll = _build_skill_collection(pool)
             inv_coll = _build_invocation_collection(pool)
@@ -508,7 +492,7 @@ class TestInvocationRoundTrip:
 
     async def test_count_for_skill_honours_outcome_filter(
         self,
-        pg_schema: tuple[str, str],
+        applied_schema: tuple[str, str],
     ) -> None:
         """``count_for_skill`` counts the full set independent of page limit.
 
@@ -516,8 +500,8 @@ class TestInvocationRoundTrip:
         count equals the total (not the page size), and that the
         ``outcome_filter`` predicate matches ``list_for_skill``.
         """
-        url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
         try:
             skill_coll = _build_skill_collection(pool)
             inv_coll = _build_invocation_collection(pool)

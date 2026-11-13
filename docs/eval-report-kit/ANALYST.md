@@ -77,7 +77,7 @@ Reports can mix forms: for example, a decision on cost with a diagnosis on the j
    - What would settle an open question?
 3. **Outline.** The headline, then the claims in reading order, each with the evidence it needs. Decide what to omit and why.
 4. **Draft.** Write the report document (§5) with figure keys, never typed numbers.
-5. **Render and check.** Draw each claim's block with `block_render` and read its values table. Then send the whole draft to `report_check`: it returns every mechanical verdict the store would refuse it for, then the page as a reader and the editor will read it, as text. Fix every verdict, reread the page as a reader and fix what's unclear, crowded or misleading, and check again. No browser runs at storage time; `check.py` holds the rendered pages in the integration tests.
+5. **Render and check.** Draw each claim's block with `block_render` and read its values table. Then send the whole draft to `report_check`: it returns every mechanical verdict the store would refuse it for, then the page as a reader and the editor will read it, as text. Fix every verdict, reread the page as a reader and fix what's unclear, crowded or misleading, and check again. No browser runs at storage time; `check.py` holds the rendered pages in the package's browser tests.
 6. **Submit.** A submission that fails a mechanical check comes straight back with each fault and its remedy (a bounce), and costs no review. One that passes goes to the editor. If the editor returns findings, address them and resubmit, at most two revisions. Unresolved findings are stored with the report and shown in Method.
 
 ## 5. The report document
@@ -155,7 +155,7 @@ One domain tool, `evals_analyst`, with one action per capability (owner, 2026-10
 | | `confound_check` | Not built, until a run shows the analyst needing it |
 | Rendering | `block_render` | Values table and warnings for a block; no pixels |
 | | `report_check(doc)` | Every invariant's verdict on a draft, then the whole page as text, as the editor reads it; stores nothing. Analyst only |
-| | `render_report(doc)` | Not built: no browser runs at storage time, and `check.py` runs in the integration tests |
+| | `render_report(doc)` | Not built: no browser runs at storage time, and `check.py` runs in the package's browser tests |
 | Reference | `block_catalog` | The block kinds, their sources and usage notes |
 | Gaps | `capability_gap` | Records a gap: `missing`, a capability the analyst worked around, or `suspect`, a result that looks wrong, with the figure keys and tool calls that reproduce it (analyst and editor) |
 
@@ -173,7 +173,7 @@ This list is fixed. It doesn't grow with new eval types.
 4. The confidence form matches: no plain `high` while caveats are open.
 5. No internal id, hash or measure key appears above the appendix.
 6. The full-results appendix and Method are present.
-7. `check.py` passes at 1200, 1104, 688 and 390 px, in light and dark. Held by the integration tests, not at storage: no browser runs when a report is stored.
+7. `check.py` passes at 1200, 1104, 688 and 390 px, in light and dark. Held by the package's browser tests, not at storage: no browser runs when a report is stored.
 
 ### Editor rubric (each item scored 0–2 with a reason)
 

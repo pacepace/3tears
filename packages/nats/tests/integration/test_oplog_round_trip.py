@@ -20,7 +20,7 @@ a checkout without docker skips cleanly.
 
 run with::
 
-    uv run pytest -m integration packages/nats/tests/integration/test_oplog_round_trip.py
+    ./scripts/test-integration.sh nats packages/nats/tests/integration/test_oplog_round_trip.py
 """
 
 from __future__ import annotations

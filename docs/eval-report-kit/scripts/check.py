@@ -1,7 +1,15 @@
 """Render a built page at desktop, host-frame and phone widths, light and dark, and report what breaks.
 
-Usage: python3 scripts/check.py <page.html> [--out DIR]
+Usage: python3 scripts/check.py <page.html> [--out DIR] [--fonts DIR]
 Needs: pip install playwright && playwright install chromium
+
+--fonts DIR answers the page's Google Fonts requests from a local copy instead of the network: the stylesheet request
+(fonts.googleapis.com/css2) gets DIR/fonts.css, and any other file it names, by its name, from DIR. Every other http or
+https request fails the render, named on a "blocked:" line, so a run with --fonts needs no network and says what it
+would have fetched. The package's tests run with it, over the IBM Plex faces the reference memos link.
+
+Each render waits for the page to draw: its web fonts loaded, then two frames. A page still loading a font after
+SETTLE_S seconds fails that render, naming the fonts it was waiting on.
 
 Checks (GENERATOR.md §8, items 1-3): console and page errors; horizontal overflow (scrollWidth > viewport);
 elements that extend past the right edge outside a scrolling table; SVG text boxes that overlap each other inside
@@ -23,8 +31,31 @@ with its table's caption, heading or name. 1104 px and 688 px are the frames a h
 and a 1024 px window). Writes a full-page PNG per run. Exit code 1 when any check fails.
 """
 
-import asyncio, pathlib, sys
+import asyncio, pathlib, re, sys, urllib.parse
 from playwright.async_api import async_playwright
+
+# The page drawn: its web fonts loaded (the kit redraws its charts once they are), then two frames, so each chart the
+# kit sized to its box has redrawn at the width it was given; a font a redraw asks for is waited on as well. Called
+# with a limit in ms: null once drawn, else the fonts still loading when the limit passed.
+SETTLED = r"""async (limit) => {
+  const frame = () => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)));
+  const drawn = async () => {
+    do { await document.fonts.ready; await frame(); } while (document.fonts.status !== 'loaded');
+    return null;
+  };
+  const loading = () => [...document.fonts].filter(f => f.status === 'loading').map(f => `${f.family} ${f.weight} ${f.style}`);
+  return Promise.race([drawn(), new Promise(done => setTimeout(() => done(loading()), limit))]);
+}"""
+SETTLE_S = 15
+
+
+async def settle(page):
+    """Wait for `page` to draw (SETTLED); a list of errors, empty unless it was still loading fonts after SETTLE_S."""
+    late = await page.evaluate(SETTLED, SETTLE_S * 1000)
+    if late is None:
+        return []
+    return [f"the page had not finished drawing after {SETTLE_S} s; fonts still loading: {', '.join(late) or 'none'}"]
+
 
 PROBE = r"""async () => {
   const vw = innerWidth, out = [];
@@ -263,18 +294,48 @@ PROBE = r"""async () => {
 }"""
 
 
-async def run(page_path, out_dir):
+FONT_HOSTS = ("https://fonts.googleapis.com/", "https://fonts.gstatic.com/")
+FONT_TYPES = {".css": "text/css", ".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf"}
+
+
+def offline(fonts, blocked):
+    """--fonts: a route answering Google Fonts from the copy in `fonts` and failing every other request, whose URL it
+    adds to `blocked`."""
+
+    async def answer(route):
+        url = route.request.url
+        if url.startswith(FONT_HOSTS):
+            path = urllib.parse.urlsplit(url).path
+            name = "fonts.css" if path == "/css2" else pathlib.PurePosixPath(path).name
+            file = fonts / name
+            if name and file.is_file():
+                kind = FONT_TYPES.get(file.suffix, "application/octet-stream")
+                # the page is a file, so its fonts are cross-origin: they load only under CORS
+                await route.fulfill(path=file, content_type=kind, headers={"Access-Control-Allow-Origin": "*"})
+                return
+        blocked.append(url)
+        await route.abort()
+
+    return answer
+
+
+async def run(page_path, out_dir, fonts=None):
     failed = False
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
+        # Chromium's shared memory goes to /tmp: in a container /dev/shm is 64 MB, too small for a full-page render
+        browser = await p.chromium.launch(args=["--disable-dev-shm-usage"])
         for width in (1200, 1104, 688, 390):
             for scheme in ("light", "dark"):
                 pg = await browser.new_page(viewport={"width": width, "height": 900}, color_scheme=scheme)
                 errors = []
                 pg.on("pageerror", lambda e: errors.append(str(e)))
                 pg.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+                blocked = []
+                if fonts is not None:
+                    await pg.route(re.compile(r"^https?://"), offline(fonts, blocked))
                 await pg.goto(page_path.resolve().as_uri())
-                await pg.wait_for_timeout(1200)
+                errors += await settle(pg)
+                errors += [f"blocked: {url} (--fonts serves Google Fonts only)" for url in blocked]
                 res = await pg.evaluate(PROBE)
                 shot = out_dir / f"{page_path.stem}-{width}-{scheme}.png"
                 await pg.screenshot(path=str(shot), full_page=True)
@@ -325,5 +386,6 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     page = pathlib.Path(args[0])
     out = pathlib.Path(args[args.index("--out") + 1]) if "--out" in args else page.parent / "screenshots"
+    fonts = pathlib.Path(args[args.index("--fonts") + 1]) if "--fonts" in args else None
     out.mkdir(parents=True, exist_ok=True)
-    sys.exit(1 if asyncio.run(run(page, out)) else 0)
+    sys.exit(1 if asyncio.run(run(page, out, fonts)) else 0)

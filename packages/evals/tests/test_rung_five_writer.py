@@ -17,9 +17,9 @@ import asyncio
 import json
 import re
 import shutil
-import socket
 import sqlite3
 from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Final
 
@@ -28,6 +28,7 @@ import pytest
 from packages.evals.tests.example_loader import EXAMPLES
 from packages.evals.tests.report_writer_support import reply
 from packages.evals.tests.ladder_support import offline_copy
+from packages.evals.tests.offline_support import refuse_connects
 from packages.evals.tests.rung_support import program_lines
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 from packages.evals.tests.writer_eval_support import ScoredReply
@@ -74,15 +75,13 @@ SILENT_TURNS: Final = 4
 
 
 @pytest.fixture
-def writer_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A copy of ``examples/5-writer/`` as the working directory, with no key, and every socket connect refused."""
+def writer_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """A copy of ``examples/5-writer/`` as the working directory, with no key, and every socket connect refused; the
+    test fails on any the run tried, even one it caught."""
     copy = offline_copy("5-writer", tmp_path, monkeypatch)
-
-    def connect(_self: socket.socket, address: object) -> None:
-        raise AssertionError(f"a replay-only run connected to {address}")
-
-    monkeypatch.setattr(socket.socket, "connect", connect)
-    return copy
+    attempts = refuse_connects(monkeypatch)
+    yield copy
+    assert attempts == []
 
 
 @pytest.fixture

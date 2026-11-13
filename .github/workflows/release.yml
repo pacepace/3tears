@@ -141,9 +141,42 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra vision
 
+      # the evals render tests (the `browser` marker), as ci.yml's shards run them: headless Chromium
+      # from the locked playwright, and a failed install fails them rather than skipping them
+      - name: Read the locked playwright version (browser tests)
+        id: playwright
+        if: startsWith(matrix.shard, 'evals-')
+        # assigned first, so a failed read fails the step instead of caching under an empty version
+        run: |
+          version="$(uv run python -c 'import importlib.metadata as m; print(m.version("playwright"))')"
+          test -n "$version"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v6
+        if: startsWith(matrix.shard, 'evals-')
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}
+
+      - name: Install headless Chromium and its system libraries (browser tests)
+        if: startsWith(matrix.shard, 'evals-')
+        # DejaVu as the pool's image has it: the package's pages set a local font stack, so they draw in the
+        # machine's faces, and the dev box's and the pool's are DejaVu (docker/testament.Dockerfile says why)
+        run: |
+          uv run playwright install --with-deps --only-shell chromium
+          sudo apt-get install -y --no-install-recommends fonts-dejavu-core fontconfig
+
+      # the faces the package's pages draw in (a local font stack, so the machine's): DejaVu, as on the dev box and
+      # the pool, or the render checks measure another face and fail or pass for the wrong reason
+      - name: Check the fallback fonts are DejaVu (browser tests)
+        if: startsWith(matrix.shard, 'evals-')
+        run: ./scripts/check-fallback-fonts.sh
+
       # integration is excluded because it is its own suite (./scripts/test-integration.sh), not because
       # the runner lacks docker: ubuntu-latest has a daemon, so a docker-gated unit test here runs.
       - name: Test (unit + enforcement; the integration suite runs separately)
+        env:
+          THREETEARS_REQUIRE_CHROMIUM: ${{ startsWith(matrix.shard, 'evals-') && '1' || '' }}
         # the same sessions CI runs (see the script's header): one session over the whole suite
         # outgrew the runner's memory under xdist
         run: ./scripts/ci-unit-tests.sh --shard ${{ matrix.shard }} -v

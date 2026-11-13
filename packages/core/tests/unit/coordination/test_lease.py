@@ -26,6 +26,8 @@ from threetears.core.serialization import deserialize_from_json, json_datetime, 
 
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 
+from .virtual_time import in_virtual_time
+
 
 async def _make_lease(
     pod_id: str = "pod-alpha",
@@ -130,7 +132,9 @@ class TestAcquireFailFast:
 class TestAcquireWaitThenSucceeds:
     """acquire waits while held then succeeds once prior holder releases."""
 
+    @in_virtual_time
     async def test_waits_and_acquires_after_release(self) -> None:
+        """the waiter's retry comes at acquire's one-second poll; virtual time skips the idle second."""
         first_lease, client = await _make_lease(pod_id="pod-first")
         handle = await first_lease.acquire("lock/a", ttl_seconds=60)
 

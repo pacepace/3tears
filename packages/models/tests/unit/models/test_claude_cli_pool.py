@@ -1162,12 +1162,29 @@ class TestTheOrphanSweep:
             assert children, "the test's own child never started"
             kill_process_tree(parent.pid, grace_seconds=1.0)
             parent.wait(timeout=5)
-            time.sleep(0.2)
+            deadline = time.monotonic() + 5  # a child is gone once whoever inherited it has collected it
+            while any(os.path.exists(f"/proc/{pid}") for pid in children) and time.monotonic() < deadline:
+                time.sleep(0.01)
             assert all(not os.path.exists(f"/proc/{pid}") for pid in children), "a CLI's child outlived the CLI"
         finally:
             if parent.poll() is None:
                 parent.kill()
                 parent.wait(timeout=5)
+
+    def test_a_cli_that_exits_at_its_sigterm_is_not_waited_on_for_its_grace(self) -> None:
+        """Its parent has not collected it yet, so it lingers as a zombie: exited, nothing left to stop."""
+        if not os.path.isdir("/proc"):
+            pytest.skip("telling an exited process from a running one needs /proc")
+        cli = subprocess.Popen(["sleep", "60"])
+        try:
+            started = time.monotonic()
+            assert kill_process_tree(cli.pid, grace_seconds=30.0) == 1
+            took = time.monotonic() - started
+            assert took < 10.0, f"the kill waited {took:.1f}s of its 30s grace on a CLI that had already exited"
+        finally:
+            if cli.poll() is None:
+                cli.kill()
+            cli.wait(timeout=5)
 
 
 class TestIdleCapacityIsNotHoarded:

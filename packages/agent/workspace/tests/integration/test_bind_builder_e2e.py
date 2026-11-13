@@ -38,7 +38,7 @@ from threetears.agent.workspace.materialize import bind
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
 
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+pytestmark = pytest.mark.asyncio
 
 
 async def test_bind_captures_back_stub_builder_edit(
