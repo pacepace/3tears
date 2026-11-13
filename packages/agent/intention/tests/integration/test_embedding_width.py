@@ -26,6 +26,7 @@ from threetears.agent.intention.embedding_width import (
 )
 from threetears.agent.intention.migrations import register as register_intention
 from threetears.conversations.migrations import register as register_conversations
+from threetears.core.backends.dialect import l3_on_yugabyte
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationFailedError, MigrationRunner
@@ -145,7 +146,22 @@ class TestAConfiguredWidth:
             await pool.close()
 
     async def test_postgres_refuses_a_width_above_two_thousand_before_any_ddl(self, pg_schema: tuple[str, str]) -> None:
+        # YugabyteDB's ybhnsw indexes up to 16,000 dimensions, so there the same width is taken and indexed
         url, schema = pg_schema
+        conn = await _connect(url, schema)
+        try:
+            on_yugabyte = await l3_on_yugabyte(conn)
+        finally:
+            await conn.close()
+        if on_yugabyte:
+            await _migrate(url, schema, embedding_dim=2001)
+            conn = await _connect(url, schema)
+            try:
+                assert await _column_type(conn, schema) == "vector(2001)"
+                assert await _embedding_index_definitions(conn, schema), "the 2,001-wide column was not indexed"
+            finally:
+                await conn.close()
+            return
         with pytest.raises(MigrationFailedError) as raised:
             await _migrate(url, schema, embedding_dim=2001)
         cause = raised.value.__cause__
