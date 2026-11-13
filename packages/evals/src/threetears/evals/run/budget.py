@@ -90,10 +90,18 @@ class BudgetStoppedError(Exception):
     :ivar total: Results the run's matrix would have produced.
     :ivar breach: The cost cap's numbers when the cap stopped the run, else ``None``.
     :ivar stops: One typed record per ceiling that stopped the run, each from the counters.
+    :ivar unserved: ``(model, cells, detail)`` for cells the provider did not serve the model for beside the stop, or
+        ``None``.
     """
 
     def __init__(
-        self, completed: int, total: int, breach: CapBreach | None = None, *, stops: Sequence[BudgetStop] = ()
+        self,
+        completed: int,
+        total: int,
+        breach: CapBreach | None = None,
+        *,
+        stops: Sequence[BudgetStop] = (),
+        unserved: tuple[str, int, str] | None = None,
     ):
         """Record how far the run got before a ceiling stopped it, and on what numbers.
 
@@ -109,6 +117,10 @@ class BudgetStoppedError(Exception):
         :ptype breach: CapBreach | None
         :param stops: The typed record of each ceiling that stopped the run.
         :ptype stops: Sequence[BudgetStop]
+        :param unserved: ``(model, cells, detail)`` when some of the run's cells found the provider did not serve its
+            model, short of stopping it: named beside the stop, since a take-up once the model is served runs them
+            again; ``None`` when none did.
+        :ptype unserved: tuple[str, int, str] | None
         :raises ValueError: Neither ``breach`` nor ``stops`` is given.
         """
         if breach is None and not stops:
@@ -132,7 +144,15 @@ class BudgetStoppedError(Exception):
                     f"eval run cost cap exceeded — ${round_half_even(breach.accumulated_usd, 4)} spent against a "
                     f"${round_half_even(breach.max_cost_usd, 4)} cap"
                 )
-        super().__init__(f"{reason} after {completed}/{total} results — run stopped gracefully")
+        self.unserved = unserved
+        beside = ""
+        if unserved is not None:
+            model, cells, detail = unserved
+            beside = (
+                f"; beside it, the provider did not serve model {model!r} for {cells} cell(s), which a take-up once it "
+                f"is served runs again ({detail})"
+            )
+        super().__init__(f"{reason} after {completed}/{total} results — run stopped gracefully{beside}")
 
 
 def _stop_reason(stops: Sequence[BudgetStop]) -> str:

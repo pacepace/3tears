@@ -726,10 +726,26 @@ class _JudgeHold:
     each only while the run is within its cap (:meth:`may_send`), so it can pass the cap by its last call alone.
     """
 
-    def __init__(self, gate: _JudgingGate, usd: float | None) -> None:
+    def __init__(self, gate: _JudgingGate, usd: float | None, billed: Callable[[], float] | None = None) -> None:
         self.gate = gate
         self.usd = usd
         self.released = False
+        # What the phase's cell had been billed for judging when it was admitted, so the hold counts only what its
+        # calls have not billed yet: a call's bill lands in the running spend as it returns, and counting the whole
+        # ceiling beside it would count that call twice.
+        self._billed = billed
+        self._billed_at_admission = billed() if billed is not None else 0.0
+
+    def outstanding(self) -> float:
+        """What the hold still holds: its ceiling less what its calls have billed so far, never below nothing.
+
+        :return: The dollars held; 0 for a phase holding the judging alone, which holds no amount.
+        :rtype: float
+        """
+        if self.usd is None:
+            return 0.0
+        billed = self._billed() - self._billed_at_admission if self._billed is not None else 0.0
+        return max(self.usd - billed, 0.0)
 
     def may_send(self) -> bool:
         """Whether the next call of a phase holding the judging alone may be sent: the run is within its cap.
@@ -796,12 +812,15 @@ class _JudgingGate:
         # waiter at once and none can miss it.
         self._released = asyncio.Event()
 
-    async def admit(self, ceiling_usd: float | None) -> _JudgeHold | None:
+    async def admit(self, ceiling_usd: float | None, billed: Callable[[], float] | None = None) -> _JudgeHold | None:
         """Admit a judge phase whose calls cost at most ``ceiling_usd``, waiting while another phase holds.
 
         :param ceiling_usd: The phase's summed price ceiling, every attempt included; ``None`` when a call of it
             cannot be priced.
         :ptype ceiling_usd: float | None
+        :param billed: What the phase's cell has been billed for judging so far, which its hold counts its calls'
+            bills against; ``None`` holds the whole ceiling until the phase ends.
+        :ptype billed: Callable[[], float] | None
         :return: The hold to release once the phase ends, or ``None``: the cell is set aside.
         :rtype: _JudgeHold | None
         """
@@ -812,15 +831,15 @@ class _JudgingGate:
                 if not self._holds:
                     breach = self.budget_gate(running)
                     if breach is None:
-                        return self._hold(None)
+                        return self._hold(None, billed)
                     self.set_aside(breach, running)
                     return None
             elif not any(hold.usd is None for hold in self._holds):
-                held = math.fsum(hold.usd for hold in self._holds if hold.usd is not None)
+                held = math.fsum(hold.outstanding() for hold in self._holds)
                 pending = None if running is None else running + held + ceiling_usd
                 breach = self.budget_gate(pending)
                 if breach is None:
-                    return self._hold(ceiling_usd)
+                    return self._hold(ceiling_usd, billed)
                 if not self._holds:
                     self.set_aside(breach, pending)
                     return None
@@ -838,7 +857,7 @@ class _JudgingGate:
         :rtype: tuple[CapBreach, float | None] | None
         """
         running = self.running()
-        pending = None if running is None else running + math.fsum(h.usd for h in self._holds if h.usd is not None)
+        pending = None if running is None else running + math.fsum(hold.outstanding() for hold in self._holds)
         if (breach := self.budget_gate(pending)) is not None:
             return breach, pending
         assert pending is not None
@@ -851,8 +870,8 @@ class _JudgingGate:
             return None
         return replace(past, accumulated_usd=spent), pending
 
-    def _hold(self, usd: float | None) -> _JudgeHold:
-        hold = _JudgeHold(self, usd)
+    def _hold(self, usd: float | None, billed: Callable[[], float] | None) -> _JudgeHold:
+        hold = _JudgeHold(self, usd, billed)
         self._holds.append(hold)
         return hold
 
@@ -1027,6 +1046,15 @@ class _CellSink:
         _refuse_an_unusable_amount(cost_usd, what=f"{source} spend")
         total = self.spent.get(source, 0.0)
         self.spent[source] = None if total is None or cost_usd is None else total + cost_usd
+
+    def judge_billed(self) -> float:
+        """What the cell's judge calls have billed so far; an unpriced bill counts nothing here, since an unpriced
+        running spend already keeps the cap from admitting anything.
+
+        :return: The dollars.
+        :rtype: float
+        """
+        return self.spent.get("judge") or 0.0
 
     def wait_for_room(self, waiting: bool) -> None:
         """Say whether the judge phase is waiting for the cost cap to have room for it (:attr:`awaiting_room`).
@@ -1877,6 +1905,7 @@ async def _run_one_result(
             sink=sink,
             gate=sink.judging_gate,
             awaiting_room=sink.wait_for_room,
+            judge_billed=sink.judge_billed,
         )
 
     # Second (and final) conditions sample — see sample_concurrent_eval_jobs. Taken after
@@ -1928,6 +1957,7 @@ async def _run_judge_phase(
     sink: CellSink | None,
     gate: _JudgingGate | None = None,
     awaiting_room: Callable[[bool], None] | None = None,
+    judge_billed: Callable[[], float] | None = None,
 ) -> tuple[_JudgeRecord, float]:
     """Run one cell's judge phase and fold what it left, however it ended: the one judge phase a completed cell takes.
 
@@ -1961,6 +1991,9 @@ async def _run_judge_phase(
     :param awaiting_room: Told ``True`` as the phase starts waiting for the gate and ``False`` once admitted or set
         aside, so a deadline striking during the wait is read as the cap's, not the judge's.
     :ptype awaiting_room: Callable[[bool], None] | None
+    :param judge_billed: What the cell has been billed for judging so far, which the phase's hold counts its calls'
+        bills against.
+    :ptype judge_billed: Callable[[], float] | None
     :return: What the phase leaves on the result, and its wall clock in milliseconds.
     :rtype: tuple[_JudgeRecord, float]
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol. Every other failure of the phase
@@ -1980,7 +2013,7 @@ async def _run_judge_phase(
             ceiling = await _judging_ceiling(template, judge_service, context)
             if awaiting_room is not None:
                 awaiting_room(True)
-            hold = await gate.admit(ceiling)
+            hold = await gate.admit(ceiling, judge_billed)
             # Not in a ``finally``: a cancel during the wait leaves it set, for the deadline's arm to read.
             if awaiting_room is not None:
                 awaiting_room(False)
@@ -4099,6 +4132,8 @@ async def execute_run(
     # done cell is one.
     unserved_in_a_row = 0
     last_unserved: str | None = None
+    # How many of this holding's cells found the model not served, which a cap stop names beside its record.
+    unserved_cells = 0
     # The caller's list when it supplied one, so what it can read mid-flight is
     # the identical object this returns — never a copy that could disagree.
     summaries: list[CellSummary] = cell_sink if cell_sink is not None else []
@@ -4338,7 +4373,7 @@ async def execute_run(
                 in_flight.remove(sink)
 
     async def run_and_record(k: int, tc: EvalTestCase, sink: _CellSink) -> None:
-        nonlocal done, unserved_in_a_row, last_unserved
+        nonlocal done, unserved_in_a_row, unserved_cells, last_unserved
         cancelled_in_cell = False
         run_defect: CandidateKindDefect | CompletionProtocolDefect | None = None
         try:
@@ -4585,6 +4620,7 @@ async def execute_run(
             infra_exclusions.append(result.infra_error)
         if (unserved := sink.errors.unserved_model) is not None:
             unserved_in_a_row += 1
+            unserved_cells += 1
             last_unserved = unserved
         else:
             unserved_in_a_row = 0
@@ -4640,7 +4676,10 @@ async def execute_run(
     # Stopped by the circuit, or the matrix ran out holding a cell its model was not served for: either way the run
     # stops resumable, naming the model, so a take-up once the model is served runs those cells, rather than ending
     # completed with them, or failing as a run that measured nothing.
-    unserved_detail = stop.unserved or last_unserved
+    # A ceiling that stopped the run keeps its record whatever else the run met: its stop line, what landed and the
+    # cells it kept from starting or from being judged. Cells the model was not served for beside it are named on the
+    # budget stop, and a take-up runs them again as it runs any such cell, the run being resumable either way.
+    unserved_detail = stop.unserved or (last_unserved if not stop.ceilings else None)
     if unserved_detail is not None:
         raise ModelUnservedError(
             done,
@@ -4682,7 +4721,11 @@ async def execute_run(
                 )
             )
         error = BudgetStoppedError(
-            done, total, cost_now if any(r.currency == "cost_usd" for r in records) else None, stops=records
+            done,
+            total,
+            cost_now if any(r.currency == "cost_usd" for r in records) else None,
+            stops=records,
+            unserved=(model, unserved_cells, last_unserved) if last_unserved is not None else None,
         )
         log.warning("Eval run %s stopped by its ceiling: %s", run.id, error)
         raise error

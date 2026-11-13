@@ -43,6 +43,7 @@ from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterR
 from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.errors import StorageError, ValidationFailedError
+from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
 from threetears.evals.ops import OpsHost, job_poll
 from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.ops.report_writer.writer_contract import (
@@ -655,6 +656,9 @@ async def _finished_reads_every_case(result: WriterResult, *, judged_per_arm: in
         assert finished.rate == pytest.approx(sum(did) / len(did))
         set_aside = [row for row in ran if row.judging_set_aside]
         assert all(row.host_measures.get(FINISHED_MEASURE) is True for row in set_aside), "each wrote its report"
+        failed = sum(1 for row in ran if classify_result(row) is ResultOutcome.CANDIDATE_FAIL)
+        assert cell.n_candidate_failed == failed, "no case set aside counts as a candidate failure"
+        assert not any(classify_result(row) is ResultOutcome.CANDIDATE_FAIL for row in set_aside)
         assert trials[cell.variant_key].by_cause == ({"cost_cap": len(set_aside)} if set_aside else {})
         if judged_per_arm is not None:
             assert trials[cell.variant_key].n_usable == judged_per_arm
