@@ -4,15 +4,18 @@ A replay-only run makes no connection, and a test proves it by replacing ``socke
 ``connect_ex``) and asserting no connect was tried. The replacement is the process's, so it also sees a connect the
 run never made, from a thread an earlier test left running. It cannot tell the two apart by thread: work the run
 submits may run on a pool worker, or a loop thread, that was started before the guard went in. So every connect
-counts against the test, and each is recorded with what is needed to find its maker: the thread's name, where that
-thread came from, and the whole stack that asked for it. The record is also written to stderr as the connect is
-refused, in full: pytest shows a failed test's captured stderr whole, where it shortens a failed assertion's values.
+counts against the test, and each is recorded with what is needed to find its maker: the host it was resolved from,
+the thread's name, where that thread came from, and the whole stack that asked for it. The record is also written to
+stderr as the connect is refused, in full. A pool run keeps neither the stderr nor more than the head and tail of a
+failed assertion's values, so a record's ``repr`` leads with the host and the frames that made the connect, innermost
+first and past the socket and HTTP client's own: what survives the shortening names the maker.
 """
 
 from __future__ import annotations
 
 import socket
 import sys
+import sysconfig
 import threading
 import traceback
 from dataclasses import dataclass
@@ -38,19 +41,36 @@ class Connect:
     """One refused connect: where it went, the thread that made it, and the frames that made it.
 
     :ivar address: The address the socket was asked to connect to, ``(host, port)`` for an IP socket.
+    :ivar host: The name the thread last resolved before the connect (``socket.getaddrinfo``), or ``None``.
     :ivar thread: The name of the thread that made it.
     :ivar origin: Where that thread came from: :data:`GUARD_THREAD`, :data:`EARLIER_THREAD` or :data:`LATER_THREAD`.
     :ivar stack: Every frame that led to the connect, outermost first, each ``path:line in function``.
     """
 
     address: object
+    host: str | None
     thread: str
     origin: str
     stack: tuple[str, ...]
 
     def __str__(self) -> str:
         frames = "\n".join(f"    {frame}" for frame in self.stack)
-        return f"a connect to {self.address} from thread {self.thread!r} ({self.origin}), made at:\n{frames}"
+        return (
+            f"a connect to {self.host or '?'} {self.address} from thread {self.thread!r} ({self.origin}), made at:\n"
+            f"{frames}"
+        )
+
+    def __repr__(self) -> str:
+        makers = [frame for frame in reversed(self.stack) if not frame.startswith(_TRANSPORT)]
+        return f"Connect({self.host or '?'} {self.address} on {self.thread!r}, made by {makers!r}, {self.origin})"
+
+
+#: Frames of the socket and HTTP client libraries a connect goes through, skipped where a record names its maker.
+_TRANSPORT: Final = tuple(
+    f"{root}/{name}"
+    for root in {sysconfig.get_paths()["purelib"], sysconfig.get_paths()["stdlib"]}
+    for name in ("socket.py", "ssl.py", "httpcore/", "httpx/", "urllib3/", "requests/", "http/client.py")
+)
 
 
 def _stack() -> tuple[str, ...]:
@@ -75,11 +95,19 @@ def refuse_connects(monkeypatch: pytest.MonkeyPatch, *, run: str = "a replay-onl
     here = threading.current_thread()
     before = frozenset(thread for thread in threading.enumerate() if thread is not here)
     attempts: list[Connect] = []
+    resolved = threading.local()
+    getaddrinfo = socket.getaddrinfo
+
+    def resolve(host: object, *args: object, **kwargs: object) -> object:
+        resolved.host = host if isinstance(host, str) else repr(host)
+        return getaddrinfo(host, *args, **kwargs)  # type: ignore[arg-type]
 
     def refuse(address: object) -> NoReturn:
         thread = threading.current_thread()
         origin = GUARD_THREAD if thread is here else EARLIER_THREAD if thread in before else LATER_THREAD
-        made = Connect(address=address, thread=thread.name, origin=origin, stack=_stack())
+        made = Connect(
+            address=address, host=getattr(resolved, "host", None), thread=thread.name, origin=origin, stack=_stack()
+        )
         attempts.append(made)
         sys.stderr.write(f"refused: {run} tried {made}\n")
         raise AssertionError(f"{run} tried {made}")
@@ -90,6 +118,7 @@ def refuse_connects(monkeypatch: pytest.MonkeyPatch, *, run: str = "a replay-onl
     def connect_ex(_self: socket.socket, address: object) -> NoReturn:
         refuse(address)
 
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
     monkeypatch.setattr(socket.socket, "connect", connect)
     monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
     return attempts
