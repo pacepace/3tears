@@ -31,7 +31,7 @@ import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Annotated, Any, Final, TypeVar
 
-from threetears.core.keyed import DeclaredKey
+from threetears.core.keyed import DeclaredKey, KeyColumn
 from threetears.core.keyed import Selected
 from threetears.observe import get_logger
 
@@ -232,7 +232,7 @@ async def _boundaries(
     *,
     relation: str,
     key: Annotated[Sequence[str], DeclaredKey],
-    partition_by: str,
+    partition_by: KeyColumn,
     parts: Sequence[str],
     page_size: int,
 ) -> dict[str, list[tuple[Any, ...]]]:
@@ -242,8 +242,6 @@ async def _boundaries(
     :rtype: dict[str, list[tuple[Any, ...]]]
     """
     keys = ", ".join(key)
-    # the part column leads the read's key: every row read is one of the named parts'
-    part_key = partition_by
     placeholders = ", ".join(f"${index + 1}" for index in range(len(parts)))
     starts: dict[str, list[tuple[Any, ...]]] = {part: [] for part in parts}
     # a reply the hub cut (its row cap or its bytes) holds the first starts: the read goes on past the last one it
@@ -256,9 +254,9 @@ async def _boundaries(
             else keyset_condition(["part__", *key], after, earlier=">", last=">", first=len(parts) + 1)
         )
         sql = (
-            f"SELECT part__, {keys} FROM (SELECT {part_key} AS part__, {keys}, "  # noqa: S608 - trusted identifiers
-            f"ROW_NUMBER() OVER (PARTITION BY {part_key} ORDER BY {keys}) AS row__ "
-            f"FROM {relation} WHERE {part_key} IN ({placeholders})) AS paged "
+            f"SELECT part__, {keys} FROM (SELECT {partition_by} AS part__, {keys}, "  # noqa: S608 - trusted identifiers
+            f"ROW_NUMBER() OVER (PARTITION BY {partition_by} ORDER BY {keys}) AS row__ "
+            f"FROM {relation} WHERE {partition_by} IN ({placeholders})) AS paged "
             f"WHERE MOD(row__ - 1, {int(page_size)}) = 0{f' AND ({past})' if past else ''} ORDER BY part__, {keys}"
         )
         result = await client.query(datasource_name, sql, params=[*parts, *more])
@@ -279,7 +277,7 @@ async def _read_pages(
     columns: Sequence[str | Selected],
     relation: str,
     key: Annotated[Sequence[str], DeclaredKey],
-    partition_by: str,
+    partition_by: KeyColumn,
     part: str,
     starts: Sequence[tuple[Any, ...]],
     page_size: int,
@@ -377,7 +375,7 @@ async def read_partitions(
     columns: Sequence[str | Selected],
     relation: str,
     key: Annotated[Sequence[str], DeclaredKey],
-    partition_by: str,
+    partition_by: KeyColumn,
     parts: Sequence[str] | None = None,
     concurrency: int = DEFAULT_PART_CONCURRENCY,
     page_size: int = _PARTITION_PAGE_ROWS,
@@ -426,8 +424,9 @@ async def read_partitions(
     :ptype relation: str
     :param key: the key each part's rows are unique by and ordered by
     :ptype key: Sequence[str]
-    :param partition_by: the column whose values are the parts, never NULL
-    :ptype partition_by: str
+    :param partition_by: the column whose values are the parts, never NULL: the leading column of the relation's key
+        (``partition_by`` then ``key`` name a row), so every read here is a read of named parts by its key
+    :ptype partition_by: KeyColumn
     :param parts: the parts to read; every part the relation holds when None
     :ptype parts: Sequence[str] | None
     :param concurrency: pages read at once: at or under the datasource's cap
@@ -626,7 +625,7 @@ async def _read_named_partitions(
     columns: Sequence[str | Selected],
     relation: str,
     key: Annotated[Sequence[str], DeclaredKey],
-    partition_by: str,
+    partition_by: KeyColumn,
     parts: Sequence[str],
     concurrency: int,
     page_size: int,
