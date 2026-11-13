@@ -13,11 +13,16 @@ What the pod sends is the contract the hub's broker implements (its ``test_copy_
 
 from __future__ import annotations
 
+import array
 import asyncio
+import itertools
 import json
 import math
+import subprocess
+import sys
 import threading
 import time
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -248,24 +253,116 @@ def _wide_records(count: int) -> list[tuple[Any, ...]]:
     ]
 
 
-async def _worst_lag(work: Any) -> float:
-    """the latest a 1 ms ticker on this loop woke while ``work`` ran, in seconds."""
-    late: list[float] = []
+#: one tick of a 1 ms ticker: when it asked to sleep and when it woke, on ``time.perf_counter`` (the host's monotonic
+#: clock, one clock for every process on the host)
+_Tick = tuple[float, float]
+
+#: what each tick asks to sleep
+_TICK_SECONDS = 0.001
+
+
+async def _ticks(work: Any) -> list[_Tick]:
+    """every tick of a 1 ms ticker on this loop while ``work`` ran."""
+    ticks: list[_Tick] = []
     stop = asyncio.Event()
 
     async def ticker() -> None:
         while not stop.is_set():
             asked = time.perf_counter()
-            await asyncio.sleep(0.001)
-            late.append(time.perf_counter() - asked - 0.001)
+            await asyncio.sleep(_TICK_SECONDS)
+            ticks.append((asked, time.perf_counter()))
 
     ticking = asyncio.create_task(ticker())
     await asyncio.sleep(0.02)
-    late.clear()
+    ticks.clear()
     await work()
     stop.set()
     await ticking
-    return max(late)
+    return ticks
+
+
+def _latest(ticks: list[_Tick]) -> float:
+    """the latest any of ``ticks`` woke past the 1 ms it asked for, in seconds."""
+    return max(woke - asked - _TICK_SECONDS for asked, woke in ticks)
+
+
+#: the host's idle loop, run beside the test in a process of its own for the whole measurement: a 1 ms ticker on an
+#: event loop with nothing else to do, recording every tick on the same clock, until its stdin closes. Whatever makes
+#: it late (the host's scheduler, load from other processes) makes any loop on the host late at the same moment; what
+#: makes only the test's loop late is the test's own process.
+_HOST_TICKER = """
+import array, asyncio, sys, time
+
+async def main():
+    ticks = array.array("d")
+    stop = asyncio.Event()
+    asyncio.get_running_loop().add_reader(sys.stdin.fileno(), stop.set)
+    sys.stdout.write("ticking\\n")
+    sys.stdout.flush()
+    while not stop.is_set():
+        asked = time.perf_counter()
+        await asyncio.sleep(0.001)
+        ticks.append(asked)
+        ticks.append(time.perf_counter())
+    sys.stdout.buffer.write(ticks.tobytes())
+    sys.stdout.flush()
+
+asyncio.run(main())
+"""
+
+
+class _HostTicker:
+    """the host's idle loop (:data:`_HOST_TICKER`) ticking in its own process while the block runs."""
+
+    def __init__(self) -> None:
+        self.ticks: list[_Tick] = []
+        self._process: subprocess.Popen[bytes] | None = None
+
+    def __enter__(self) -> _HostTicker:
+        process = subprocess.Popen([sys.executable, "-c", _HOST_TICKER], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self._process = process
+        assert process.stdout is not None
+        assert process.stdout.readline() == b"ticking\n"
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        process = self._process
+        assert process is not None and process.stdin is not None and process.stdout is not None
+        process.stdin.close()
+        recorded = array.array("d")
+        recorded.frombytes(process.stdout.read())
+        process.wait(timeout=10)
+        self.ticks = list(zip(recorded[0::2], recorded[1::2], strict=True))
+
+
+def _added_lateness(ticks: list[_Tick], host: list[_Tick]) -> float:
+    """the most any of ``ticks`` was late while the host's idle loop was not, in seconds.
+
+    A tick is late from the 1 ms it asked for until it woke; the host's ticks are late over the same kind of span.
+    Only the part of a tick's lateness that no host tick was late for at the same moment counts: a load spike credits
+    exactly the time it overlapped, never a stall before or after it.
+
+    :param ticks: the test loop's ticks while the copy ran
+    :ptype ticks: list[_Tick]
+    :param host: the host loop's ticks over the whole run, in order
+    :ptype host: list[_Tick]
+    :return: the worst lateness the host loop does not share
+    :rtype: float
+    :raises AssertionError: when a tick falls outside the host loop's ticking (no baseline at that moment)
+    """
+    late_spans = [(asked + _TICK_SECONDS, woke) for asked, woke in host if woke - asked > _TICK_SECONDS]
+    worst = 0.0
+    for asked, woke in ticks:
+        assert host and host[0][0] <= asked and woke <= host[-1][1], (
+            f"no host baseline at {asked:.4f}-{woke:.4f}: the host loop ticked "
+            f"{host[0][0] if host else None}-{host[-1][1] if host else None}"
+        )
+        start = asked + _TICK_SECONDS
+        if woke <= start:
+            continue
+        shared = sum(max(0.0, min(woke, end) - max(start, begin)) for begin, end in late_spans)
+        worst = max(worst, woke - start - shared)
+    return worst
 
 
 #: rounds of idle, copy, idle each run: the copy judged against the idle windows either side of it, so load arriving or
@@ -276,54 +373,118 @@ _ROUNDS = 4
 _IDLE_SECONDS = 0.1
 
 
-def _held_too_long(rounds: list[tuple[float, float, float]]) -> str | None:
+@dataclass
+class _Round:
+    """one round's measurements: the test loop's worst idle lateness either side, and its ticks during the copy."""
+
+    before: float
+    during: list[_Tick]
+    after: float
+
+
+def _held_too_long(rounds: list[_Round], host: list[_Tick]) -> str | None:
     """the first round whose copy held the caller's loop past its own idle jitter and a turn: 5 ms (CPython's switch
     interval, the most a thread waiting for the lock waits once the holder yields it) plus twice the worse of the idle
-    windows either side of it.
+    windows either side of it -- counting only lateness the host's idle loop, ticking in its own process at the same
+    moments, did not share.
 
-    :param rounds: each round's worst tick lag before, during and after the copy, in seconds
-    :ptype rounds: list[tuple[float, float, float]]
+    :param rounds: each round's idle lateness before and after, and its ticks during the copy
+    :ptype rounds: list[_Round]
+    :param host: the host loop's ticks over the whole run
+    :ptype host: list[_Tick]
     :return: what held too long, or None
     :rtype: str | None
     """
-    for index, (before, during, after) in enumerate(rounds):
-        idle = max(before, after)
-        if during >= 0.005 + 2 * idle:
+    for index, measured in enumerate(rounds):
+        idle = max(measured.before, measured.after)
+        added = _added_lateness(measured.during, host)
+        if added >= 0.005 + 2 * idle:
             return (
-                f"round {index + 1}: a 12 MB copy's build held the caller's loop {during * 1000:.1f} ms "
-                f"(idle {before * 1000:.1f} ms before, {after * 1000:.1f} ms after)"
+                f"round {index + 1}: a 12 MB copy's build held the caller's loop {added * 1000:.1f} ms past the "
+                f"host's own idle loop ({_latest(measured.during) * 1000:.1f} ms late in all; idle "
+                f"{measured.before * 1000:.1f} ms before, {measured.after * 1000:.1f} ms after)"
             )
     return None
 
 
-async def _copy_rounds(records: list[tuple[Any, ...]]) -> list[tuple[float, float, float]]:
-    """each round's worst tick lag in an idle window, a copy of ``records`` (sent as Arrow), and another idle window."""
-    rounds: list[tuple[float, float, float]] = []
-    after = await _worst_lag(lambda: asyncio.sleep(_IDLE_SECONDS))
-    for _ in range(_ROUNDS):
-        hub = _Hub({"success": True, "tx_id": _TX_ID, COPY_ARROW_FIELD: True})
-        proxy = hub.proxy()
+async def _copy_rounds(records: list[tuple[Any, ...]], *, during_copy: Any = None) -> tuple[list[_Round], list[_Tick]]:
+    """each round's idle lateness, the ticks during a copy of ``records`` (sent as Arrow), and the idle lateness
+    after; with the host's idle loop ticking beside the whole run.
 
-        async def copy(proxy: Any = proxy) -> None:
-            async with proxy.acquire() as conn, conn.transaction():
-                await conn.copy_records_to_table("rows", records=records, columns=[f"c{n}" for n in range(42)])
+    :param during_copy: called on the loop as each copy starts (a red case plants its blocking here)
+    """
+    rounds: list[_Round] = []
+    with _HostTicker() as host:
+        after = _latest(await _ticks(lambda: asyncio.sleep(_IDLE_SECONDS)))
+        for _ in range(_ROUNDS):
+            hub = _Hub({"success": True, "tx_id": _TX_ID, COPY_ARROW_FIELD: True})
+            proxy = hub.proxy()
 
-        before = after
-        during = await _worst_lag(copy)
-        after = await _worst_lag(lambda: asyncio.sleep(_IDLE_SECONDS))
-        assert split_copy_request(hub.copy()) is not None
-        rounds.append((before, during, after))
-    return rounds
+            async def copy(proxy: Any = proxy) -> None:
+                if during_copy is not None:
+                    asyncio.get_running_loop().call_soon(during_copy)
+                async with proxy.acquire() as conn, conn.transaction():
+                    await conn.copy_records_to_table("rows", records=records, columns=[f"c{n}" for n in range(42)])
+
+            before = after
+            during = await _ticks(copy)
+            after = _latest(await _ticks(lambda: asyncio.sleep(_IDLE_SECONDS)))
+            assert split_copy_request(hub.copy()) is not None
+            rounds.append(_Round(before, during, after))
+    return rounds, host.ticks
+
+
+def _hold_the_loop(seconds: float) -> None:
+    """hold the loop (and the interpreter lock) for ``seconds`` without a turn."""
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        pass
+
+
+def test_lateness_the_host_shared_at_the_same_moment_is_not_the_copys() -> None:
+    """a tick 20 ms late while the host loop was late over the same span adds nothing."""
+    host = [(0.0, 0.001), (0.001, 0.0231), (0.0231, 0.0242)]
+    assert _added_lateness([(0.002, 0.023)], host) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_load_spike_at_another_moment_hides_no_stall() -> None:
+    """the host loop 30 ms late before the copy credits none of a 20 ms stall after it: the round is held too long."""
+    host = [(0.0, 0.031), *((0.031 + n * 0.001, 0.032 + n * 0.001) for n in range(100))]
+    stall = [(0.050, 0.071)]
+    assert _added_lateness(stall, host) == pytest.approx(0.020, abs=1e-9)
+    assert _held_too_long([_Round(0.0005, stall, 0.0005)], host) is not None
+
+
+def test_a_spike_overlapping_part_of_a_stall_credits_only_the_overlap() -> None:
+    """the host late for 5 ms of a 20 ms stall: 15 ms is the copy's."""
+    host = [(n * 0.001, (n + 1) * 0.001) for n in range(4)]
+    host += [(0.004, 0.010), *((0.010 + n * 0.001, 0.011 + n * 0.001) for n in range(30))]
+    assert _added_lateness([(0.004, 0.025)], host) == pytest.approx(0.015, abs=1e-9)
+
+
+def test_a_tick_with_no_host_baseline_at_its_moment_is_refused() -> None:
+    """the baseline is taken at the same moments as the copy, or the judgement refuses to run."""
+    with pytest.raises(AssertionError, match="no host baseline"):
+        _added_lateness([(1.0, 1.002)], [(0.0, 0.001), (0.001, 0.002)])
 
 
 @pytest.mark.loop_timing
 class TestTheCallersLoopRunsWhileACopyIsBuilt:
     async def test_a_12_mb_copy_holds_the_callers_loop_no_longer_than_a_ticker_idles(self) -> None:
         """the build reads the caller's rows (Python objects) on a thread and takes turns with the loop: each 12 MB
-        copy holds the loop no longer than its own idle jitter and a turn, the idle measured either side of it."""
-        rounds = await _copy_rounds(_wide_records(16_000))
-        problem = _held_too_long(rounds)
+        copy holds the loop no longer than its own idle jitter and a turn, the idle measured either side of it, past
+        what the host's own idle loop was late at the same moments."""
+        rounds, host = await _copy_rounds(_wide_records(16_000))
+        problem = _held_too_long(rounds, host)
         assert problem is None, problem
+
+    async def test_the_host_baseline_ticks_through_every_copy(self) -> None:
+        """the host loop's ticks span each copy with no gap past its own lateness: the baseline is taken at the
+        copy's moments, never minutes away."""
+        rounds, host = await _copy_rounds(_wide_records(16_000))
+        for measured in rounds:
+            assert host[0][0] <= measured.during[0][0] and measured.during[-1][1] <= host[-1][1]
+        assert all(later[0] - earlier[1] < 0.001 for earlier, later in itertools.pairwise(host))
 
     async def test_a_build_holding_the_lock_without_turns_is_caught(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """the measurement's red case: a build stretch holding the interpreter lock with no turn (one C call) fails
@@ -338,6 +499,12 @@ class TestTheCallersLoopRunsWhileACopyIsBuilt:
             return original(ipc)
 
         monkeypatch.setattr(arrow_copy, "rows_digest", holding)
-        rounds = await _copy_rounds(_wide_records(16_000))
+        rounds, host = await _copy_rounds(_wide_records(16_000))
         assert len(held) == _ROUNDS
-        assert _held_too_long(rounds) is not None, rounds
+        assert _held_too_long(rounds, host) is not None, rounds
+
+    async def test_blocking_planted_on_the_loop_is_caught(self) -> None:
+        """the second red case: 30 ms of blocking on the caller's loop itself during each copy fails the judgement;
+        the host loop, in its own process, is not late for it, so it credits none of it."""
+        rounds, host = await _copy_rounds(_wide_records(16_000), during_copy=lambda: _hold_the_loop(0.03))
+        assert _held_too_long(rounds, host) is not None, rounds
