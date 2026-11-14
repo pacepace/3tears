@@ -36,12 +36,14 @@ from typing import Any
 from threetears.evals.schema.store_port import (
     GroupMeasure,
     StoreConflict,
+    check_after,
     copy_json,
     field_in_values,
     fold_groups,
     keep_fields,
     narrow_items,
     omit_paths,
+    order_and_page,
 )
 
 __all__ = ["InMemoryDocumentStore"]
@@ -154,6 +156,7 @@ class InMemoryDocumentStore:
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = None,
+        after: tuple[Any, str] | None = None,
         exclude: Sequence[str] = (),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
@@ -164,7 +167,8 @@ class InMemoryDocumentStore:
         number never matches its text. A ``None`` predicate matches a field that is absent or null. A membership
         predicate (``field_in``) matches a field equal, by the same comparison, to any of its values, and one with no
         values matches nothing. Under ``order_by``, documents without the field (or with it null) sort as lower than
-        every document that has it.
+        every document that has it, and ties sort by ``id`` in the same direction; ``after`` starts past a place in
+        that order (:func:`~threetears.evals.schema.store_port.order_and_page`).
 
         :param doc_type: The discriminator to select on.
         :ptype doc_type: str
@@ -176,6 +180,9 @@ class InMemoryDocumentStore:
         :ptype descending: bool
         :param limit: Maximum documents to return; ``None`` is unbounded.
         :ptype limit: int | None
+        :param after: The last document of the page before, as ``(its order_by value, its id)``; ``None`` reads from
+            the start. Only with ``order_by``.
+        :ptype after: tuple[Any, str] | None
         :param exclude: Dotted paths left out of every returned document.
         :ptype exclude: Sequence[str]
         :param field_in: Field-membership predicates: field → the values it may equal.
@@ -184,18 +191,17 @@ class InMemoryDocumentStore:
         :ptype field_eq: Any
         :return: The matching documents.
         :rtype: list[dict[str, Any]]
-        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``, or ``after`` is given without
+            ``order_by``.
         :raises TypeError: A ``field_in`` entry is a string rather than a sequence of values, or holds a value that is
-            not a scalar.
+            not a scalar; or ``after`` is not a pair of a scalar and a string id.
         """
+        check_after(after, order_by)
         with self._lock:
             rows = self._matching(doc_type, scope_id, field_in, field_eq)
             if order_by is not None:
-                rows.sort(
-                    key=lambda d: (d.get(order_by) is not None, d.get(order_by)),
-                    reverse=descending,
-                )
-            if limit is not None:
+                rows = order_and_page(rows, order_by=order_by, descending=descending, after=after, limit=limit)
+            elif limit is not None:
                 rows = rows[:limit]
             return [copy_json(omit_paths(d, exclude)) for d in rows]
 

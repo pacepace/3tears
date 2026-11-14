@@ -35,6 +35,13 @@ from threetears.evals.analysis.campaigns import (
     update_campaign,
 )
 from threetears.evals.kernel.phase_log import charged, phase_logged
+from threetears.evals.kernel.list_pages import (
+    LIST_PAGE_SIZE,
+    NEXT_DESCRIPTION,
+    check_page_limit,
+    decode_list_cursor,
+    encode_list_cursor,
+)
 from threetears.evals.analysis.report import ReportBasis, TrialDetail
 from threetears.evals.analysis.report.build import AnalysisLead, analysis_campaign_bundle, analysis_lead
 from threetears.evals.analysis.report.forms import PageForms
@@ -307,9 +314,10 @@ class CampaignLine(EvalBaseModel):
 
 
 class CampaignListing(EvalBaseModel):
-    """A scope's campaigns, newest first."""
+    """One page of a scope's campaigns, newest first by created_at and id."""
 
     campaigns: list[CampaignLine]
+    next: str | None = Field(description=NEXT_DESCRIPTION)
 
 
 #: How long a start waits for an in-process generation whose attempt has already ended to finish unwinding (releasing
@@ -1012,15 +1020,15 @@ def _line_title(host: EvalHost, campaign: EvalCampaign, frozen: CampaignBundle |
     )
 
 
-def _listed(host: EvalHost, campaign: EvalCampaign, every: list[EvalCampaign] | None = None) -> CampaignLine:
-    """A campaign's whole line: its title, declared fields, report, and what it feeds among ``every`` campaign of its
-    scope.
+def _listed(host: EvalHost, campaign: EvalCampaign, holders: list[EvalCampaign] | None = None) -> CampaignLine:
+    """A campaign's whole line: its title, declared fields, report, and the declared campaigns it feeds.
 
     Its reported analysis is read once, and its frozen bundle put back together once, for the verdict, the title, the
     short verdict, the outcome and the report's state alike. Its runs are read only for a campaign that declares no
-    arm, whose title names their candidate models or counts its judges. ``every`` is read here only where the
-    campaign is exploratory, the one kind that feeds another: a declared campaign feeds none, so a write of one lists
-    nothing else."""
+    arm, whose title names their candidate models or counts its judges. ``holders`` are declared campaigns of the
+    scope holding a run of it (:meth:`~threetears.evals.kernel.EvalStorage.declared_campaigns_holding`), read once
+    for a whole page by a listing; they are read here only where the campaign is exploratory, the one kind that feeds
+    another, and none is given: a declared campaign feeds none, so a write of one reads nothing else."""
     line = _campaign_line(campaign)
     analysis = host.storage.load_reported_analysis(campaign.id, campaign.scope_id)
     read = _frozen(analysis) if analysis is not None else _Frozen(None, None)
@@ -1028,9 +1036,9 @@ def _listed(host: EvalHost, campaign: EvalCampaign, every: list[EvalCampaign] | 
         line = line.model_copy(update={"verdict_short": _decided(campaign.call, campaign, read.bundle, host.profile)})
     if analysis is not None:
         line = _with_report(host, line, analysis, campaign, read)
-    if campaign.exploratory and every is None:
-        every = list_campaigns(host.storage, campaign.scope_id, archived=None)
-    feeds = _feeds(campaign, every) if campaign.exploratory and every is not None else []
+    if campaign.exploratory and holders is None:
+        holders = host.storage.declared_campaigns_holding(campaign.run_ids, campaign.scope_id)
+    feeds = _feeds(campaign, holders) if campaign.exploratory and holders is not None else []
     return line.model_copy(update={"feeds": feeds, "title": _line_title(host, campaign, read.bundle)})
 
 
@@ -1043,27 +1051,51 @@ def _feeds(campaign: EvalCampaign, campaigns: list[EvalCampaign]) -> list[str]:
     return [other.id for other in sorted(held, key=lambda other: (other.created_at, other.id))]
 
 
-def campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing:
-    """The scope's campaigns.
+def campaigns_list(
+    host: EvalHost,
+    scope_id: str,
+    *,
+    archived: bool | None = None,
+    cursor: str | None = None,
+    limit: int = LIST_PAGE_SIZE,
+) -> CampaignListing:
+    """One page of the scope's campaigns, newest first, and the next page's cursor.
 
     :param host: The host whose store is read.
     :ptype host: EvalHost
     :param scope_id: The scope.
     :ptype scope_id: str
-    :param archived: Only archived (``True``) or only active (``False``) campaigns; ``None`` for both.
+    :param archived: Only archived (``True``) or only active (``False``) campaigns; ``None`` for both. A predicate of
+        the store's read, so every page is full but the last.
     :ptype archived: bool | None
-    :return: The listing: each campaign with its question, declared arms, recorded call, its report's state, headline
+    :param cursor: The ``next`` of the page before; ``None`` reads the first page.
+    :ptype cursor: str | None
+    :param limit: The campaigns a page reads, 1 to :data:`~threetears.evals.kernel.list_pages.LIST_PAGE_MAX`.
+    :ptype limit: int
+    :return: The page: each campaign with its question, declared arms, recorded call, its report's state, headline
         and cost, and the declared campaigns an exploratory one feeds, read among every campaign of the scope,
-        archived or not. The scope's campaigns are read once. Per campaign: one read of its reported analysis, whose
-        frozen bundle is put back together once for everything the line reads off it, and one of its analysis
-        attempts where it has a report; for a campaign declaring no arm, one read of its runs, which its title names.
-        An analysis that does not read back (a bundle of another shape, a corrupt record) lists its report as
-        needing regeneration, with why, and fails nothing else.
+        archived or not, on any page. One read of the page's campaigns, and where the page holds an exploratory
+        campaign, one of the declared campaigns holding its runs
+        (:meth:`~threetears.evals.kernel.EvalStorage.declared_campaigns_holding`), whatever page they are on. Per
+        campaign: one read of its reported analysis, whose frozen bundle is put back together once for everything the
+        line reads off it, and one of its analysis attempts where it has a report; for a campaign declaring no arm,
+        one read of its runs, which its title names. An analysis that does not read back (a bundle of another shape,
+        a corrupt record) lists its report as needing regeneration, with why, and fails nothing else.
     :rtype: CampaignListing
+    :raises ValidationFailedError: ``cursor`` is not one ``campaigns_list`` returned, or ``limit`` is out of range.
     """
-    every = list_campaigns(host.storage, scope_id, archived=None)
-    listed = [c for c in every if archived is None or c.archived == archived]
-    return CampaignListing(campaigns=[_listed(host, campaign, every) for campaign in listed])
+    page = host.storage.list_campaigns_page(
+        scope_id,
+        limit=check_page_limit(limit),
+        after=None if cursor is None else decode_list_cursor("campaigns_list", {"archived": archived}, cursor),
+        archived=archived,
+    )
+    explored = [run_id for campaign in page.campaigns if campaign.exploratory for run_id in campaign.run_ids]
+    holders = host.storage.declared_campaigns_holding(explored, scope_id)
+    return CampaignListing(
+        campaigns=[_listed(host, campaign, holders) for campaign in page.campaigns],
+        next=None if page.after is None else encode_list_cursor("campaigns_list", {"archived": archived}, *page.after),
+    )
 
 
 def campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine:

@@ -739,7 +739,7 @@ because every stored model reads strictly.
 
 **Prove your store with the conformance kit.** `threetears.evals.testing.STORE_CONFORMANCE_CASES`
 states every rule of the port — scoping, the strip on read, `exclude`/`keep` projection, `by_doc_type`'s
-equality and membership (`field_in`) predicates, ordering, etag conflicts and the re-read that recovers one, create-only writes, merge and delete — as a case you
+equality and membership (`field_in`) predicates, ordering, paging (`after`), etag conflicts and the re-read that recovers one, create-only writes, merge and delete — as a case you
 hand a fresh, empty store. Every case is mandatory: in particular a store must implement both write
 preconditions — `if_match` (the stored document still carries this etag), because several writers share a
 run document as it finishes, and `create_only` (nothing is stored under this scope and id, of any type),
@@ -757,6 +757,48 @@ drops repeated values. Parametrise your test runner over it:
 def test_my_store_conforms(case: StoreConformanceCase, tmp_path: Path) -> None:
     case.run(MyDocumentStore(tmp_path / "evals.sqlite"))
 ```
+
+**`by_doc_type` pages with `after`.** The run and campaign listings (`runs_list`, `campaigns_list`) read a page at a
+time, newest first by `(created_at, id)`: `by_doc_type(..., order_by="created_at", limit=101, after=(created_at,
+id))`, where `after` is the last document of the page before and the read returns only documents strictly past it.
+Your store need not do anything to keep working. A `by_doc_type` that does not declare `after` by name is never handed
+one: the engine reads it with `page_by_doc_type`, the port's default (provisional), which asks your store for
+the whole match and orders and slices it in Python, so every listing call reads the scope's whole match until you
+declare it. To page in your backend:
+
+- **Declare `after` by name**, keyword-only, as `exclude_in_items` is declared (`takes_after` is the probe;
+  `**field_eq` does not count, because an old store reads `after=` as an equality predicate and answers nothing).
+  Call `check_after(after, order_by)` first: it refuses what the port refuses (`after` without `order_by`, a pair
+  that is not a scalar and a string id).
+- **Break every ordered read's ties by `id`**, in the sort direction, the first page's included: a page cut where
+  several documents share a `created_at` must end where the next one starts. On Postgres, descending:
+  `ORDER BY data->>'created_at' DESC NULLS LAST, id DESC` (Postgres puts nulls first descending unless told; the
+  port puts a missing or null value lowest), and the keyset condition `(data->>'created_at' < $1 OR
+  (data->>'created_at' = $1 AND id < $2) OR data->>'created_at' IS NULL)`; a null `after` value names a place among
+  the documents without the field (`data->>'created_at' IS NULL AND id < $2`). Compare under one collation in the
+  `ORDER BY` and the condition (`COLLATE "C"` on both is the port's code-point order). `order_and_page` is the port's
+  meaning in Python, to compare against.
+- **The status filter stays index-friendly.** A single-status listing reads by equality (`status=...`); only the
+  `cancelled` listing, which a lapsed `pending` or `running` run joins, reads by `field_in` over the three.
+
+**Declaring `after` means honouring it.** A strictly typed adapter must declare it to match the port, but one that
+declares it and drops it hands back the first page again, and a caller reading until `next` is `None` would never
+stop; `page_by_doc_type` refuses such a page with `PageNotPastAfter`, naming your adapter. If your backend cannot page
+yet, declare `after`, call `check_after`, and return `order_and_page(rows, order_by=..., descending=..., after=after,
+limit=limit)` over your own unlimited read: correct, and no dearer than the default.
+
+The kit's `page.walk_reads_each_once`, `page.holds_predicates_and_projection`, `page.after_is_honoured` and
+`page.after_refusals` read your store through `page_by_doc_type`, or ask only a store that declares `after`, so a store
+that does not declare it passes them through the default, and one that does is held to what it declares. The async bridge and the routed store declare `after`, and do the same for the
+stores beneath them: a store beneath one that does not declare it has every ordered read made whole and ordered
+above it, an ordered read with a `limit` included.
+
+**Reading every page of a listing.** `runs_list` and `campaigns_list` (and their actions) return `next`, the cursor
+for the page after, and take it back as `cursor`: call again with `cursor=next` until `next` is `None`. The page is
+100 rows unless `limit` names another (1 to 1000 from Python, 1 to 200 through an action). The cursor is the
+package's own opaque string, bound to the filters it was read with; hand it through unchanged, beside the same
+filters. A `runs_list` page read with a `label` can list fewer runs than `limit` while `next` is set: the label filter
+runs after the read (the status and archive filters are in it), and `filtered` counts the runs it left out.
 
 **Narrowed and grouped reads are optional** (`ResultReadings`, provisional; `RESULT_READINGS_CONFORMANCE_CASES`
 proves a store that offers them). Three of their rules are newer than the capability:

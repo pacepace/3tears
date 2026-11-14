@@ -12,7 +12,8 @@ kit (``threetears.evals.testing``) proves it case by case:
   the document, never in it, so a read has nothing to strip.
 - **Predicates and ordering run in SQLite**, on the stored JSON type: ``json_type`` tells ``true`` from
   ``1`` and a number from its text, as the port requires, and a document without the order field (or
-  with it null) sorts below every document that has it. A projection (``exclude``, ``keep``) is applied
+  with it null) sorts below every document that has it, ties by ``id``. A page past ``after`` is a keyset
+  condition in the same statement. A projection (``exclude``, ``keep``) is applied
   on the way out with the port's own :func:`~threetears.evals.schema.store_port.omit_paths` and
   :func:`~threetears.evals.schema.store_port.keep_fields`.
 - **Optimistic concurrency** is one statement: a conditional write is an ``UPDATE ... WHERE etag = ?``
@@ -57,6 +58,7 @@ from typing import Any
 from threetears.evals.schema.store_port import (
     GroupMeasure,
     StoreConflict,
+    check_after,
     check_grouping,
     field_in_values,
     keep_fields,
@@ -167,6 +169,28 @@ def _where(
     if any(not listed for listed in members.values()):
         return None
     return " AND ".join(clauses), params
+
+
+def _past(order_by: str, descending: bool, after: tuple[Any, str]) -> tuple[str, list[Any]]:
+    """The clause keeping the documents strictly past ``after`` in ``(order_by, id)`` order, and its parameters.
+
+    The order is the one :meth:`SqliteDocumentStore.by_doc_type` sorts by: the field's ``json_extract`` value, NULL
+    (absent or JSON null) lowest, then ``id``, both in the direction read.
+    """
+    value, doc_id = after
+    field = "json_extract(body, ?)"
+    path = _path(order_by)
+    if value is None:
+        if descending:
+            return f"({field} IS NULL AND id < ?)", [path, doc_id]
+        return f"(({field} IS NULL AND id > ?) OR {field} IS NOT NULL)", [path, doc_id, path]
+    past = "<" if descending else ">"
+    clause = f"({field} {past} ? OR ({field} = ? AND id {past} ?)"
+    params: list[Any] = [path, value, path, value, doc_id]
+    if descending:
+        clause += f" OR {field} IS NULL"
+        params.append(path)
+    return clause + ")", params
 
 
 def _dotted(path: str) -> str:
@@ -441,6 +465,7 @@ class SqliteDocumentStore:
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = None,
+        after: tuple[Any, str] | None = None,
         exclude: Sequence[str] = (),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
@@ -451,7 +476,8 @@ class SqliteDocumentStore:
         never matches its text. A ``None`` predicate matches a field that is absent or null. A membership predicate
         (``field_in``) matches a field equal, by the same comparison, to any of its values; one with no values matches
         nothing, and SQLite is not asked. Under ``order_by``, documents without the field (or with it null) sort as
-        lower than every document that has it.
+        lower than every document that has it, and ties sort by ``id`` in the same direction. ``after`` is a keyset
+        condition in the same statement, so a page past it is read as the first page is, never by skipping rows.
 
         :param doc_type: The discriminator to select on.
         :ptype doc_type: str
@@ -463,6 +489,9 @@ class SqliteDocumentStore:
         :ptype descending: bool
         :param limit: Maximum documents to return; ``None`` is unbounded.
         :ptype limit: int | None
+        :param after: The last document of the page before, as ``(its order_by value, its id)``; ``None`` reads from
+            the start. Only with ``order_by``.
+        :ptype after: tuple[Any, str] | None
         :param exclude: Dotted paths left out of every returned document.
         :ptype exclude: Sequence[str]
         :param field_in: Field-membership predicates: field → the values it may equal.
@@ -471,19 +500,26 @@ class SqliteDocumentStore:
         :ptype field_eq: Any
         :return: The matching documents.
         :rtype: list[dict[str, Any]]
-        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``, or ``after`` is given without
+            ``order_by``.
         :raises TypeError: A predicate's value is not a scalar, or a ``field_in`` entry is a string rather than a
-            sequence of values.
+            sequence of values; or ``after`` is not a pair of a scalar and a string id.
         """
+        place = check_after(after, order_by)
         where = _where(doc_type, scope_id, field_in, field_eq)
         if where is None:
             return []
         clause, params = where
+        if place is not None and order_by is not None:
+            past, past_params = _past(order_by, descending, place)
+            clause += f" AND {past}"
+            params += past_params
         sql = f"SELECT body FROM documents WHERE {clause}"  # noqa: S608
         if order_by is not None:
             # SQLite sorts NULL lowest: first ascending, last descending, which is the port's rule for a
-            # missing or null order field. Ties keep insertion order.
-            sql += f" ORDER BY json_extract(body, ?) {'DESC' if descending else 'ASC'}, seq"
+            # missing or null order field. Ties sort by id in the same direction, the order ``after`` pages.
+            direction = "DESC" if descending else "ASC"
+            sql += f" ORDER BY json_extract(body, ?) {direction}, id {direction}"
             params.append(_path(order_by))
         else:
             sql += " ORDER BY seq"

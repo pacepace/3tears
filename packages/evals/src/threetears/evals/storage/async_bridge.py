@@ -55,8 +55,11 @@ from threetears.evals.schema.store_port import (
     AsyncResultReadings,
     AsyncStoreClock,
     GroupMeasure,
+    check_after,
     narrow_groups,
+    order_and_page,
     refuse_on_event_loop,
+    takes_after,
     takes_exclude_in_items,
 )
 
@@ -154,11 +157,28 @@ class AsyncStoreBridge:
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = None,
+        after: tuple[Any, str] | None = None,
         exclude: Sequence[str] = (),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
-        """See :meth:`~threetears.evals.schema.DocumentStore.by_doc_type`."""
+        """See :meth:`~threetears.evals.schema.DocumentStore.by_doc_type`.
+
+        ``after`` is passed on to a store whose ``by_doc_type`` declares it
+        (:func:`~threetears.evals.schema.store_port.takes_after`). A store written before it is asked an ordered read
+        as the whole match, which is ordered and paged here
+        (:func:`~threetears.evals.schema.store_port.order_and_page`), ties by ``id``, as the port promises of a store
+        that declares ``after``, which the bridge does.
+        """
+        if takes_after(self.store.by_doc_type):
+            field_eq = {**field_eq, "after": after}
+        else:
+            check_after(after, order_by)
+            if order_by is not None:
+                rows = self._call(
+                    partial(self.store.by_doc_type, doc_type, scope_id, exclude=exclude, field_in=field_in, **field_eq)
+                )
+                return order_and_page(rows, order_by=order_by, descending=descending, after=after, limit=limit)
         return self._call(
             partial(
                 self.store.by_doc_type,
