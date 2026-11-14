@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, lru_cache
 
 from threetears.evals.analysis.analyst.skill import load_skill
 
@@ -27,6 +27,11 @@ from threetears.evals.analysis.analyst.skill import load_skill
 #: :func:`editor_rubric`, and the writer template's scoring rubric reads the shipped one through :func:`shipped_rubric`;
 #: the editor names the rubric's type, which the scoring rubric does not.
 __all__ = ["EditorRubric", "editor_rubric", "shipped_rubric"]
+
+#: How many editor texts :func:`editor_rubric` keeps read, the most recently asked first. A launch reviews every arm
+#: against one text, so the reading is kept; a long-running host reads a new text for every candidate skill a search
+#: generates, so what is kept is bounded.
+_EDITOR_TEXTS_HELD = 64
 
 #: The rubric's section, from its heading to the next heading of its level.
 _SECTION = re.compile(r"^## The rubric\n(?P<body>.*?)(?=^## )", re.DOTALL | re.MULTILINE)
@@ -68,11 +73,12 @@ class EditorRubric:
     bottom: str
 
 
-@cache
+@lru_cache(maxsize=_EDITOR_TEXTS_HELD)
 def editor_rubric(text: str) -> EditorRubric:
     """The rubric an editor's system text states, refusing one whose section, items or scale sentence do not read.
 
-    Read once per text: every review of a launch's arm reads the same text.
+    Read once per text while it is among the most recent :data:`_EDITOR_TEXTS_HELD`: every review of a launch's arm
+    reads the same text.
 
     :param text: The editor's system text (:meth:`AnalystSkill.editor
         <threetears.evals.analysis.analyst.skill.AnalystSkill.editor>`), or ``editor.md`` itself.
