@@ -326,9 +326,17 @@ def _by(node: ast.expr | None, argument: str = "by") -> list[tuple[str, str]]:
             pinned.append((column, "any"))
         elif isinstance(value, ast.Constant) and value.value is None:
             pinned.append((column, "null"))
+        elif argument == "by" and isinstance(value, ast.Constant) and isinstance(value.value, str):
+            # a literal pin (``by={"status": "proposed"}``) is the literal the statement compares: a partial index
+            # whose predicate names it (``WHERE status = 'proposed'``) holds the rows asked for
+            pinned.append((column, _LITERAL + "'" + value.value.replace("'", "''") + "'"))
         else:
             pinned.append((column, "eq"))
     return pinned
+
+
+#: what marks a pin bound to a literal: the rest of its ``how`` is the literal as SQL spells it
+_LITERAL: str = "lit:"
 
 
 def _zipped_columns(node: ast.expr) -> ast.expr | None:
@@ -377,6 +385,9 @@ def _conditions(pinned: Sequence[tuple[str, str]], *, first: int = 1, alias: str
         spelled = column.removeprefix(_EXPRESSION) if column.startswith(_EXPRESSION) else f"{prefix}{_pinned(column)}"
         if how == "null":
             conditions.append(f"{spelled} IS NULL")
+            continue
+        if how.startswith(_LITERAL):
+            conditions.append(f"{spelled} = {how.removeprefix(_LITERAL)}")
             continue
         conditions.append(f"{spelled} = ANY(${place})" if how == "any" else f"{spelled} = ${place}")
         place += 1
@@ -1282,7 +1293,7 @@ def pager_order(call: ast.Call) -> PagerOrder | None:
         return None
     if any(column.startswith(("{", _EXPRESSION)) for column, _ in pins):
         return None
-    fixed = frozenset(column for column, how in pins if how in {"eq", "null"})
+    fixed = frozenset(column for column, how in pins if how in {"eq", "null"} or how.startswith(_LITERAL))
     nulls = frozenset(column for column, how in pins if how == "null")
     return PagerOrder(helper=helper, relation=relation, fixed=fixed, order=tuple(order), nulls=nulls)
 

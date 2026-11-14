@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Final
 
 from threetears.enforcement.no_whole_reads.schema import (
@@ -227,6 +227,8 @@ class Reader:
         declared view producer (``NoWholeReadsConfig.view_producers``): a ``CREATE VIEW`` there is judged by them
     :ivar ctes: the CTE names the code the statement is written in defines in its other statements (a fragment
         ``FROM stage0{}`` reads a CTE the function writes as ``WITH stage0 AS``), never a table the catalog knows
+    :ivar stated: the statement judged, its literals kept (:func:`_stated`): what a partial index's literal predicate
+        (``WHERE status = 'open'``) is matched against, the judged text holding every literal as ``'_'``
     """
 
     schema: SchemaCatalog = field(default_factory=SchemaCatalog)
@@ -239,6 +241,7 @@ class Reader:
     source_unit: bool = False
     view_keys: tuple[tuple[str, ...], ...] = ()
     local: bool = False
+    stated: str = ""
 
 
 def _interpolation(match: re.Match[str]) -> str:
@@ -1247,7 +1250,6 @@ def _key_hit(
     :return: whether it is keyed
     :rtype: bool
     """
-    nearest = _nearest_hit(purposed, level, index, reader, relation)
     eq, ranged, contained, tenants, bounded = bound
     table = bare_table(relation.name)
     declared = None if table is None or table.startswith(COPY_PREFIX) else reader.schema.table(relation.name)
@@ -1257,6 +1259,16 @@ def _key_hit(
         # on a local copy (``copy.<name>``, or the local database's own ``main.<name>`` judged by the copy's declared
         # keys), a declared key column IS NULL is that key's NULL bucket: keyed
         eq = eq | {column for key in primary for column in key if column in contained}
+    # a partial index holds only the rows its predicate admits: a read whose WHERE does not state that predicate may
+    # ask rows it does not hold, so the planner never reads it for that read and it keys nothing there (the
+    # discovering walk credited idx_intentions_open_ranked, WHERE status = 'open', to a read of every status, 3tears
+    # #86)
+    fits = {
+        name: _partial_fit(reader, relation, name, level.where, eq | ranged | contained | bounded)
+        for name, _ in purposed
+    }
+    purposed = [(name, columns) for name, columns in purposed if fits[name] is not False]
+    nearest = _nearest_hit(purposed, level, index, reader, relation)
     covering = [key for key in primary if _covers(key, eq, tenants)]
     if covering:
         # the key keys the read; a purposed index serving it still records its use: a unique index that is the key,
@@ -1282,7 +1294,6 @@ def _key_hit(
     # a partial index whose predicate the read states (``WHERE key_text IS NULL AND table_name = ANY(...)`` over one
     # ``WHERE key_text IS NULL``) holds only the rows asked for: of the indexes serving the read it is the one read,
     # before one the bound columns cover longer (``(key_text, table_name)``, holding every note)
-    fits = {name: _partial_fit(reader, relation, name, level.where) for name, _ in purposed}
     for name, columns in purposed:
         prefix = 0
         while prefix < len(columns) and columns[prefix] in eq | contained:
@@ -1374,14 +1385,44 @@ def _predicate_terms(text: str) -> set[str]:
     :rtype: set[str]
     """
     return {
-        re.sub(r"\s+", " ", re.sub(r"\b[a-z_]\w*\.(?=[a-z_\"])", "", term.strip().strip("()").strip().lower()))
+        _unquoted(
+            re.sub(r"\s+", " ", re.sub(r"\b[a-z_]\w*\.(?=[a-z_\"])", "", term.strip().strip("()").strip().lower()))
+        )
         for term in _conjuncts(text)
     }
 
 
-def _partial_fit(reader: Reader, relation: _Relation, name: str, where: str | None) -> bool | None:
+def _unquoted(text: str) -> str:
+    """``text`` with each quoted identifier bare (``"kind"`` as ``kind``): a helper quotes every column it writes, a
+    partial index's DDL seldom does.
+
+    :param text: a predicate or statement
+    :ptype text: str
+    :return: it with its identifiers bare
+    :rtype: str
+    """
+    return re.sub(r'"([a-z_]\w*)"', r"\1", text)
+
+
+def _stated(sql: str) -> str:
+    """a statement as a partial index's predicate terms are compared with it, its literals kept: comments dropped,
+    lower-cased, spaces collapsed, column qualifiers dropped (:func:`_predicate_terms`' spelling).
+
+    :param sql: the statement
+    :ptype sql: str
+    :return: the text
+    :rtype: str
+    """
+    text = _LINE_COMMENT.sub(" ", _BLOCK_COMMENT.sub(" ", sql)).lower()
+    return _unquoted(" ".join(re.sub(r"\b[a-z_]\w*\.(?=[a-z_\"])", "", text).split()))
+
+
+def _partial_fit(
+    reader: Reader, relation: _Relation, name: str, where: str | None, held: set[str] | frozenset[str] = frozenset()
+) -> bool | None:
     """whether a read's ``WHERE`` states every predicate of a partial index's (so the index holds every row it asks
-    for); None for an index that is not partial.
+    for); None for an index that is not partial. A predicate that a column is not NULL (``WHERE parent_id IS NOT
+    NULL``) is stated by any comparison of the column to a value (``parent_id = $1``), which no NULL satisfies.
 
     :param reader: the judgement's context
     :ptype reader: Reader
@@ -1391,6 +1432,8 @@ def _partial_fit(reader: Reader, relation: _Relation, name: str, where: str | No
     :ptype name: str
     :param where: the read's ``WHERE``, None when it has none
     :ptype where: str | None
+    :param held: the columns the read compares to a value (by equality, a range or containment)
+    :ptype held: set[str] | frozenset[str]
     :return: whether it states them, or None
     :rtype: bool | None
     """
@@ -1398,7 +1441,51 @@ def _partial_fit(reader: Reader, relation: _Relation, name: str, where: str | No
     index = declared.indexes.get(name) if declared is not None else None
     if index is None or not index.partial or not index.where:
         return None
-    return where is not None and _predicate_terms(index.where) <= _predicate_terms(where)
+    stated = _predicate_terms(where) if where is not None else set()
+    return all(_predicate_held(term, stated, held, reader.stated) for term in _predicate_terms(index.where))
+
+
+#: a boolean column compared to TRUE (``hot = TRUE``, ``hot IS TRUE``): the column alone, as a predicate spells it
+_TRUE_COLUMN: Final[re.Pattern[str]] = re.compile(r"([a-z_]\w*)(?: = true| is true)?")
+
+
+def _predicate_held(term: str, stated: set[str], held: set[str] | frozenset[str], written: str) -> bool:
+    """whether a read states one ANDed predicate of a partial index's (:func:`_partial_fit`): the same predicate, a
+    column's ``IS NOT NULL`` by a comparison of it to a value, a boolean column by ``= TRUE`` (or the other way), or
+    an ``OR`` by any of its arms. A predicate naming a literal (``status = 'open'``) is stated only where the
+    statement as written says it, that literal and no other: the judged ``WHERE`` holds every literal as ``'_'``.
+
+    :param term: the index's predicate, as :func:`_predicate_terms` spells it, its literals kept
+    :ptype term: str
+    :param stated: the read's predicates, likewise, its literals ``'_'``
+    :ptype stated: set[str]
+    :param held: the columns the read compares to a value
+    :ptype held: set[str] | frozenset[str]
+    :param written: the statement as written (:func:`_stated`)
+    :ptype written: str
+    :return: whether it is stated
+    :rtype: bool
+    """
+    arms = _OR_SPLIT.split(term)
+    if len(arms) > 1:
+        return any(_predicate_held(arm.strip().strip("()").strip(), stated, held, written) for arm in arms)
+    masked = _QUOTED.sub("'_'", term)
+    not_null = re.fullmatch(r"([a-z_]\w*) is not null", masked)
+    boolean = _TRUE_COLUMN.fullmatch(masked)
+    found = (
+        masked in stated
+        or (not_null is not None and not_null.group(1) in held)
+        or (boolean is not None and bool({boolean.group(1), f"{boolean.group(1)} = true"} & stated))
+    )
+    return found and (
+        _QUOTED.search(term) is None
+        or re.search(r"(?<![\w.])" + r"\s*".join(map(re.escape, term.replace(" ", ""))) + r"(?!\w)", written)
+        is not None
+    )
+
+
+#: a predicate's top-level ``OR``
+_OR_SPLIT: Final[re.Pattern[str]] = re.compile(r"\s+or\s+")
 
 
 def _partial_proven(reader: Reader, relation: _Relation, name: str) -> bool:
@@ -1971,6 +2058,7 @@ def _judged(sql: str, reader: Reader) -> list[_SqlFinding]:
     :return: the findings in text order
     :rtype: list[_SqlFinding]
     """
+    reader = replace(reader, stated=_stated(sql))
     text = _clean(sql)
     depths = _depths(text)
     ctes = {match.group(1).strip('"') for match in _CTE.finditer(text) if depths[match.start()] == 0}

@@ -53,6 +53,7 @@ from threetears.enforcement.no_whole_reads.schema import (
     SchemaCatalog,
     _DeclaredIndex,
     _DeclaredTable,
+    _not_null_of,
     purposes,
 )
 
@@ -305,7 +306,11 @@ def decide(catalog: SchemaCatalog, module: str = _MODULE) -> Decisions:
                 decision.reason = _reason(site, chosen, bound, ordered, "")
             decisions.written.append(decision)
             continue
+        # a partial index holds only the rows its WHERE admits: the lookup of every referencing row only when it says
+        # no more than that they are not NULL
         fk = _foreign_key(table, site.columns)
+        if fk is not None and site.partial and not _not_null_of(site.where, fk[1]):
+            fk = None
         if fk is not None:
             constraint, columns = fk
             decision = IndexDecision(

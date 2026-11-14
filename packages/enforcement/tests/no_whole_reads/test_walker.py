@@ -2020,6 +2020,27 @@ def test_an_index_may_serve_a_declared_foreign_key_led_by_its_referencing_column
         assert any(message in finding for finding in findings), findings
 
 
+def test_a_partial_index_serves_no_foreign_key(tmp_path: Path) -> None:
+    """Flips if a partial index is accepted as serving a foreign key (``fk:<constraint>``): it holds only the rows its
+    ``WHERE`` admits, and the database's lookup of a deleted parent's referencing rows asks every one of them."""
+    _plans(
+        tmp_path,
+        "def test_a_deleted_parent_finds_its_children(plan):\n"
+        "    assert plan_uses_index(plan, 'idx_schedules_context_from')\n",
+    )
+    module = (
+        _FK_ALTER.replace("PURPOSE", "fk:schedules_context_from_fk")
+        .replace("COLUMNS", "context_from_schedule_id")
+        .replace(
+            'ON schedules (context_from_schedule_id)"',
+            'ON schedules (context_from_schedule_id) WHERE conversation_id IS NOT NULL"',
+        )
+    )
+    assert "WHERE conversation_id IS NOT NULL" in module
+    findings = [f for f in no_whole_reads_findings(_config(tmp_path, {"schedules.py": module})) if ": index-" in f]
+    assert any("index-fk-partial" in finding for finding in findings), findings
+
+
 _TIE_PARENT = (
     "CREATE TABLE parents (conversation_id UUID, parent_id UUID, PRIMARY KEY (conversation_id, parent_id),"
     " UNIQUE (parent_id))"

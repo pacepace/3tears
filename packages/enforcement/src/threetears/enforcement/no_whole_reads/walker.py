@@ -3140,7 +3140,17 @@ class _ModuleWalk(ast.NodeVisitor):
                     key if key is None else literal(key) if _constant_text(key, self._envs[-1]) is not None else key
                     for key in value.keys
                 ]
-                return ast.Dict(keys=keys, values=value.values)
+                # ... and each value a known string pins (``"scope_type": ScopeType.TYPE_CUSTOMER.value``) the
+                # literal: a partial index whose predicate names it (``WHERE scope_type = 'type_customer'``) holds
+                # the rows asked for
+                values = [
+                    ast.Constant(text)
+                    if isinstance(item, ast.Name | ast.Attribute)
+                    and (text := _constant_text(item, self._envs[-1])) is not None
+                    else item
+                    for item in value.values
+                ]
+                return ast.Dict(keys=keys, values=values)
             # a sequence of constants (``order=(STATE_COLUMN,)``): each element the string it names
             if isinstance(value, (ast.Tuple, ast.List)):
                 elements = [literal(element) for element in value.elts]

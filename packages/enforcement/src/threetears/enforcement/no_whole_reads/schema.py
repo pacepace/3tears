@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -2322,6 +2322,25 @@ def _template_index_findings(catalog: SchemaCatalog, definitions: set[str]) -> l
     return findings
 
 
+def _not_null_of(where: str, columns: Sequence[str]) -> bool:
+    """whether a partial index's ``WHERE`` only says some of ``columns`` are not NULL (``WHERE parent_id IS NOT
+    NULL``): a lookup comparing them to a value asks only rows it holds.
+
+    :param where: the index's predicate
+    :ptype where: str
+    :param columns: the columns
+    :ptype columns: Sequence[str]
+    :return: whether it does
+    :rtype: bool
+    """
+    terms = [term.strip().strip("()").strip() for term in re.split(r"\bAND\b", where, flags=re.IGNORECASE)]
+    return bool(terms) and all(
+        (found := re.fullmatch(r'"?(\w+)"?\s+IS\s+NOT\s+NULL', term, re.IGNORECASE)) is not None
+        and found.group(1).lower() in columns
+        for term in terms
+    )
+
+
 def _fk_purpose_findings(where: str, table: _DeclaredTable | None, site: _DeclaredIndex, constraint: str) -> list[str]:
     """what is wrong with an index's ``fk:<constraint>`` purpose: the constraint must be a foreign key its table
     declares, and the index must lead with exactly that key's referencing columns (the lookup the database makes of the
@@ -2344,6 +2363,11 @@ def _fk_purpose_findings(where: str, table: _DeclaredTable | None, site: _Declar
             f"{where}: index-fk-unknown -- purpose fk:{constraint} names no foreign key "
             f"{site.table or 'its table'} declares: name the constraint (``fk:<constraint name>``) whose referencing "
             "rows the index finds"
+        ]
+    if site.partial and not _not_null_of(site.where, referencing):
+        return [
+            f"{where}: index-fk-partial -- a partial index holds only the rows its WHERE admits; the database's lookup "
+            f"of a parent's referencing rows ({constraint}) asks every one of them, so it never uses this index"
         ]
     lead = tuple(column.lower() for column in site.columns[: len(referencing)])
     if len(lead) < len(referencing) or set(lead) != set(referencing):
