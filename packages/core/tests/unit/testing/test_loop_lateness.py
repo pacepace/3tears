@@ -393,11 +393,15 @@ def _hogged(threads: int) -> Callable[[], None]:
 def test_a_spin_planted_on_the_path_s_threads_makes_the_window_untrusted_and_a_quiet_one_is_trusted() -> None:
     """Red first: a spin on the path's threads beside the measurement makes it untrusted ("could not measure"); the
     same measurement on a quiet host is trusted -- on a host of fast and slow cores too, asked for more threads than
-    it has fast cores (the efficiency cores alone must not trip it)."""
-    threads = loop_lateness._spin_threads(64)  # noqa: SLF001 - the probe itself
+    it has fast cores (the efficiency cores alone must not trip it). The planted spin takes every core the path's
+    threads can run on, not only the fast ones its probe spins on: hogs on the fast cores alone leave a host of fast
+    and slow cores' slow ones free, and the probe's threads only move there (about 1.5x on an Apple 4 + 6, the limit
+    itself), which says nothing about a planted crowd."""
+    path = 64
+    threads = loop_lateness._spin_threads(path)  # noqa: SLF001 - the probe itself
 
-    assert quietly(lambda: 1, host_may_be_late=0.020, threads=64) == 1
-    stop = _hogged(threads)
+    assert quietly(lambda: 1, host_may_be_late=0.020, threads=path) == 1
+    stop = _hogged(min(path, loop_lateness._usable_cores()))  # noqa: SLF001 - the probe itself
     try:
         with pytest.raises(CouldNotMeasure, match="waited for cores"):
             quietly(lambda: None, host_may_be_late=1.0, threads=threads)
