@@ -704,13 +704,14 @@ async def _assert_read_case(
     """one case of a read entry: every row its key names (``read_by``), then the one row or value it read; answers
     the old statement's row count in each seed case."""
     table, old_sql, params, where = entry["table"], case.old_sql, case.params, case.where
+    proof_sql, proof_columns = _widened(old_sql, columns, entry.get("order", ()))
     answered = await assert_same_results(
         conn,
         table=table,
         row=row,
-        old_sql=old_sql,
+        old_sql=proof_sql,
         params=params,
-        helper=lambda c: read_by(c, table, by=by, columns=columns, records=True, order=order, where=where),
+        helper=lambda c: read_by(c, table, by=by, columns=proof_columns, records=True, order=order, where=where),
         order_by=[term["column"] for term in entry.get("order", ())] or None,
         ordered=bool(order),
         related=case.related,
@@ -813,13 +814,16 @@ async def _assert_first_same(
         rows = int(limit["literal"])
     own = entry["order"][: entry["key_from"]]
     for case in _clause_cases(entry["old_sql"], params, where, entry):
+        proof_sql, proof_columns = _widened(case.old_sql, _selected(entry["columns"]), own)
 
-        async def first_page(c: Any, guards: list[Fragment] = case.where) -> list[Any]:
+        async def first_page(
+            c: Any, guards: list[Fragment] = case.where, selected: tuple[Any, ...] | None = proof_columns
+        ) -> list[Any]:
             return (
                 await keyset_page(
                     c,
                     table,
-                    columns=_selected(entry["columns"]),
+                    columns=selected,
                     by=by,
                     where=guards,
                     order=order,
@@ -832,7 +836,7 @@ async def _assert_first_same(
             conn,
             table=table,
             row=row,
-            old_sql=case.old_sql,
+            old_sql=proof_sql,
             params=case.params,
             helper=first_page,
             order_by=[term["column"] for term in own],
@@ -1072,6 +1076,39 @@ def _selected(columns: Sequence[Any] | None) -> tuple[Any, ...] | None:
     if columns is None:
         return None
     return tuple(column if isinstance(column, str) else Selected(column["expr"], column["alias"]) for column in columns)
+
+
+def _widened(old_sql: str, columns: tuple[Any, ...] | None, order: Sequence[Mapping[str, Any]]) -> tuple[str, Any]:
+    """the old statement and the helper's columns, each with every ``ORDER BY`` column the statement does not select
+    added to its select list: what the proof compares, so the rows' order is checked by their sort values. The call the
+    codemod writes reads the statement's own columns; only the proof reads these. Unchanged when it selects them all.
+
+    :raises AssertionError: when the statement's top-level ``FROM`` is not found
+    """
+    if columns is None:
+        return old_sql, columns
+    names = {column if isinstance(column, str) else column.alias for column in columns}
+    missing = [term["column"] for term in order if term["column"] not in names]
+    if not missing:
+        return old_sql, columns
+    depth, quoted = 0, False
+    for at, char in enumerate(old_sql):
+        if char == "'":
+            quoted = not quoted
+        elif not quoted and char == "(":
+            depth += 1
+        elif not quoted and char == ")":
+            depth -= 1
+        elif (
+            not quoted
+            and depth == 0
+            and old_sql[at : at + 4].upper() == "FROM"
+            and old_sql[at - 1 : at].isspace()
+            and old_sql[at + 4 : at + 5].isspace()
+        ):
+            head = old_sql[:at].rstrip()
+            return f"{head}, {', '.join(missing)} {old_sql[at:]}", (*columns, *missing)
+    raise AssertionError(f"no top-level FROM in {old_sql[:80]!r}")
 
 
 def _written_columns(columns: ast.expr | None, tree: ast.Module) -> list[Any] | None:
