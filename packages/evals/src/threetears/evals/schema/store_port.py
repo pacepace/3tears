@@ -713,6 +713,108 @@ def fold_groups(
     return answers
 
 
+def narrow_groups(
+    groups: list[dict[str, Any]],
+    measures: Mapping[str, GroupMeasure],
+    exclude_in_items: Mapping[str, Sequence[str]],
+) -> list[dict[str, Any]]:
+    """``groups`` with each ``values`` measure's values narrowed inside their list items — the meaning of ``grouped``'s
+    ``exclude_in_items`` on values already read.
+
+    A value is narrowed as :func:`narrow_items` narrows the row holding it: a list field ``exclude_in_items`` names at
+    the value's path, or under it, has the named paths dropped from each object item. Every other measure reads a
+    scalar or counts, so ``exclude_in_items`` changes no other answer. For a store whose backend cannot narrow inside a
+    value it extracts (it narrows here, after the read), and for the engine reading a store whose ``grouped`` does not
+    take ``exclude_in_items`` (:func:`grouped_narrowed`).
+
+    :param groups: The groups, as :meth:`ResultReadings.grouped` answered them. Not mutated.
+    :ptype groups: list[dict[str, Any]]
+    :param measures: The measures they were read with.
+    :ptype measures: Mapping[str, GroupMeasure]
+    :param exclude_in_items: List-field path → the dotted paths dropped from each object item of that list.
+    :ptype exclude_in_items: Mapping[str, Sequence[str]]
+    :return: The groups, each ``values`` measure narrowed; the same list when there is nothing to narrow.
+    :rtype: list[dict[str, Any]]
+    """
+    listed = {name: path for name, (kind, path) in measures.items() if kind == "values" and path is not None}
+    if not exclude_in_items or not listed:
+        return groups
+    narrowed: list[dict[str, Any]] = []
+    for group in groups:
+        group = dict(group)
+        for name, path in listed.items():
+            group[name] = [[row_id, _narrowed_value(value, path, exclude_in_items)] for row_id, value in group[name]]
+        narrowed.append(group)
+    return narrowed
+
+
+def _narrowed_value(value: Any, path: str, exclude_in_items: Mapping[str, Sequence[str]]) -> Any:
+    """The value at ``path`` narrowed as :func:`narrow_items` narrows the row holding it."""
+    if not isinstance(value, dict | list):
+        return value
+    *owners, leaf = path.split(".")
+    row: dict[str, Any] = {}
+    node = row
+    for owner in owners:
+        node = node.setdefault(owner, {})
+    node[leaf] = value
+    return _read_path(narrow_items(row, exclude_in_items), path)
+
+
+def _takes_exclude_in_items(grouped: Any) -> bool:
+    """Whether a ``grouped`` declares ``exclude_in_items`` by name (``**kwargs`` does not count)."""
+    try:
+        declared = inspect.signature(grouped).parameters.get("exclude_in_items")
+    except TypeError, ValueError:
+        # NOSILENT: the answer, not a failure: a callable with no signature to read is read as not taking it, and the
+        # values are narrowed after it answers, which gives the same groups.
+        return False
+    return declared is not None and declared.kind in (
+        inspect.Parameter.KEYWORD_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    )
+
+
+def grouped_narrowed(
+    readings: ResultReadings,
+    doc_type: str,
+    scope_id: str,
+    *,
+    by: Sequence[str],
+    measures: Mapping[str, GroupMeasure],
+    exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
+    field_in: Mapping[str, Sequence[Any]] | None = None,
+    **field_eq: Any,
+) -> list[dict[str, Any]]:
+    """``readings.grouped`` with ``exclude_in_items``, from a store whose ``grouped`` takes it or one written before it.
+
+    A store whose ``grouped`` declares ``exclude_in_items`` is asked with it, so it narrows before it ships a value. One
+    that does not (written to the port before the parameter) is asked without it, and its values are narrowed here
+    (:func:`narrow_groups`): the same groups, only with the whole items shipped. With no ``exclude_in_items``, the
+    parameter is never passed.
+
+    :param readings: The store.
+    :ptype readings: ResultReadings
+    :return: The groups, as :meth:`ResultReadings.grouped` answers them.
+    :rtype: list[dict[str, Any]]
+    :raises: What ``grouped`` raises.
+    """
+    if not exclude_in_items:
+        return readings.grouped(doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
+    if _takes_exclude_in_items(readings.grouped):
+        return readings.grouped(
+            doc_type,
+            scope_id,
+            by=by,
+            measures=measures,
+            exclude_in_items=exclude_in_items,
+            field_in=field_in,
+            **field_eq,
+        )
+    groups = readings.grouped(doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
+    return narrow_groups(groups, measures, exclude_in_items)
+
+
 @runtime_checkable
 class ResultReadings(Protocol):
     """Narrowed and grouped reads: the optional capability a :class:`DocumentStore` may offer beside its methods.
@@ -785,6 +887,7 @@ class ResultReadings(Protocol):
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
@@ -815,6 +918,12 @@ class ResultReadings(Protocol):
         :ptype by: Sequence[str]
         :param measures: Measure name → the measure. A name is never one of the ``by`` paths.
         :ptype measures: Mapping[str, GroupMeasure]
+        :param exclude_in_items: List-field path → dotted paths left out of each object item of that list, with
+            :func:`narrow_items`'s meaning, in every ``values`` value (:func:`narrow_groups`): for a reader of one
+            figure of each item, which need not ship the items' prose. No other measure's answer changes. Provisional,
+            and newer than the method: the engine reads a store whose ``grouped`` does not declare it through
+            :func:`grouped_narrowed`, which narrows the values itself.
+        :ptype exclude_in_items: Mapping[str, Sequence[str]]
         :param field_in: Field-membership predicates, as on :meth:`DocumentStore.by_doc_type`.
         :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates, as on :meth:`DocumentStore.by_doc_type`.
@@ -942,6 +1051,7 @@ class AsyncResultReadings(Protocol):
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
@@ -962,7 +1072,9 @@ __all__ = [
     "check_grouping",
     "field_in_values",
     "fold_groups",
+    "grouped_narrowed",
     "keep_fields",
+    "narrow_groups",
     "narrow_items",
     "omit_paths",
     "refuse_on_event_loop",

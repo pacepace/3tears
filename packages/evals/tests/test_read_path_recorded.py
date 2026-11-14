@@ -365,6 +365,52 @@ class TestOneOutageContract:
         assert store.calls == []
 
 
+class _GroupedBeforeNarrowing(CountingStore):
+    """A store whose ``grouped`` was written to the port before ``exclude_in_items``: it does not declare it."""
+
+    def grouped(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        assert "exclude_in_items" not in field_eq, "asked with a parameter it does not declare"
+        return super().grouped(doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
+
+
+_REJUDGED = {
+    "rejudged_at": "2026-11-14T00:00:00+00:00",
+    "dims": ["d"],
+    "prior_judge_error": "cut off",
+    "judge_model": "judge",
+    "cost_usd": 0.5,
+    "cannot_tell": {"d": "the judge's prose"},
+}
+
+
+@pytest.mark.parametrize("kind", ["capable", "before_narrowing", "engine"])
+def test_values_are_narrowed_in_their_items_on_every_path(kind: str) -> None:
+    store = _GroupedBeforeNarrowing() if kind == "before_narrowing" else CountingStore()
+    EvalStorage(store).save_eval_result(make_eval_result(id="r-00000", eval_run_id="run-1"))
+    store.merge_fields("r-00000", SCOPE, {"judge_rescores": [_REJUDGED]})
+    storage = EvalStorage(EngineOnlyStore(store) if kind == "engine" else store)
+
+    (group,) = storage.result_groups(
+        ["run-1"],
+        SCOPE,
+        by=["eval_run_id"],
+        measures={"rescores": ("values", "judge_rescores"), "n": ("count", None)},
+        exclude_in_items={"judge_rescores": ["cannot_tell"]},
+    ).groups
+
+    without = {key: value for key, value in _REJUDGED.items() if key != "cannot_tell"}
+    assert group == {"eval_run_id": "run-1", "rescores": [["r-00000", [without]]], "n": 1}
+
+
 class _RowsWatchingStore(CountingStore):
     """A counting store whose narrowed read says when its rows were closed; it keeps the rows it handed out."""
 

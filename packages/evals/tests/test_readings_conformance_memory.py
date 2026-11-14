@@ -151,6 +151,7 @@ class _PlainFold(InMemoryDocumentStore):
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
@@ -159,7 +160,9 @@ class _PlainFold(InMemoryDocumentStore):
         for kind, path in measures.values():
             if kind not in {"count", "values", *self.kinds} or (kind == "count") != (path is None):
                 raise ValueError(f"an undefined measure {kind!r}")
-        rows = list(self.iter_narrowed(doc_type, scope_id, field_in=field_in, **field_eq))
+        rows = list(
+            self.iter_narrowed(doc_type, scope_id, exclude_in_items=exclude_in_items, field_in=field_in, **field_eq)
+        )
         groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
         for row in rows:
             values = [_read(row, path) for path in by]
@@ -365,6 +368,23 @@ class _SharesStoredValues(InMemoryDocumentStore):
         )
 
 
+class _GroupsWholeItems(InMemoryDocumentStore):
+    """``grouped`` takes ``exclude_in_items`` and ignores it, so each ``values`` value ships its list items whole."""
+
+    def grouped(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        return super().grouped(doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
+
+
 class _SwallowsFailures(InMemoryDocumentStore):
     """A backend failure reads as an empty answer."""
 
@@ -397,6 +417,7 @@ _FAULTS: dict[type[DocumentStore], frozenset[str]] = {
     _GroupOfNothing: frozenset({"empty.answers"}),
     _SwallowsFailures: frozenset({"failure.raises"}),
     _SharesStoredValues: frozenset({"reads.copied_out"}),
+    _GroupsWholeItems: frozenset({"grouped.values_narrowed_in_items"}),
 }
 
 

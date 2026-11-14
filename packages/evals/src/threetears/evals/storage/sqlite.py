@@ -60,6 +60,7 @@ from threetears.evals.schema.store_port import (
     check_grouping,
     field_in_values,
     keep_fields,
+    narrow_groups,
     narrow_items,
     omit_paths,
 )
@@ -569,6 +570,7 @@ class SqliteDocumentStore:
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
@@ -593,6 +595,10 @@ class SqliteDocumentStore:
         :ptype by: Sequence[str]
         :param measures: Measure name → the measure.
         :ptype measures: Mapping[str, GroupMeasure]
+        :param exclude_in_items: List-field path → dotted paths left out of each object item of that list, in every
+            ``values`` value: applied in Python as each value is read back (:func:`~threetears.evals.schema.store_port.
+            narrow_groups`), since the file is in this process and nothing is shipped.
+        :ptype exclude_in_items: Mapping[str, Sequence[str]]
         :param field_in: Field-membership predicates: field → the values it may equal.
         :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates.
@@ -683,7 +689,8 @@ class SqliteDocumentStore:
             for index, (name, _) in enumerate(listed):
                 json_type, value, exact = row[at_values + 3 * index : at_values + 3 * index + 3]
                 answer[name].append([row[2], _stored_value(json_type, value, exact)])
-        return [{name: answer[name] for name in [*by, *measures]} for answer in answers.values()]
+        groups = [{name: answer[name] for name in [*by, *measures]} for answer in answers.values()]
+        return narrow_groups(groups, measures, exclude_in_items)
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
         """Yield the id of every document of one type within a scope.

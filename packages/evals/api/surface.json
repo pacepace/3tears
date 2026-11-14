@@ -611,6 +611,11 @@
       "signature": "GoalStateOutcome(expression: str, passed: bool, detail: str = '')",
       "tier": "stable"
     },
+    "threetears.evals.schema.grouped_narrowed": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.GroupMeasure": {
       "kind": "type alias",
       "signature": "",
@@ -873,6 +878,11 @@
     },
     "threetears.evals.schema.ModelRoleOrigin": {
       "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.narrow_groups": {
+      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },

@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from itertools import islice
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, cast
 
 from pydantic import ValidationError
@@ -109,6 +110,8 @@ from threetears.evals.schema.store_port import (
     StoreConflict,
     check_grouping,
     fold_groups,
+    grouped_narrowed,
+    narrow_items,
     refuse_on_event_loop,
 )
 from threetears.evals.schema.logs import get_logger
@@ -3039,6 +3042,7 @@ class EvalStorage:
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
     ) -> GroupsRead:
         """The results of the runs (or of the scope) grouped by ``by``, each measure computed per group, as the store's
         :meth:`~threetears.evals.schema.store_port.ResultReadings.grouped` answers over the same rows.
@@ -3067,6 +3071,12 @@ class EvalStorage:
         :ptype by: Sequence[str]
         :param measures: Measure name → the measure.
         :ptype measures: Mapping[str, GroupMeasure]
+        :param exclude_in_items: List-field path → the dotted paths left out of each object item of that list, in every
+            ``values`` value (:meth:`~threetears.evals.schema.store_port.ResultReadings.grouped`'s meaning). On the
+            store's path it is asked of the store, or applied after it answers where its ``grouped`` predates it
+            (:func:`~threetears.evals.schema.store_port.grouped_narrowed`); on the engine's, applied to each row as it
+            is folded.
+        :ptype exclude_in_items: Mapping[str, Sequence[str]]
         :return: The groups, the path and the store calls made: one ``grouped`` on the store's path; one key read and
             one ``get_many`` per page on the engine's; none for no runs named.
         :rtype: GroupsRead
@@ -3088,7 +3098,15 @@ class EvalStorage:
             # A refused grouping is the read's answer, raised as the engine's path raises it; anything else the store
             # raises is an outage.
             with charged("store"), _read_outage("the grouped results", refusals=(TypeError, ValueError)):
-                groups = store.grouped("eval_result", scope_id, by=by, measures=measures, field_in=_runs_in(runs))
+                groups = grouped_narrowed(
+                    store,
+                    "eval_result",
+                    scope_id,
+                    by=by,
+                    measures=measures,
+                    exclude_in_items=exclude_in_items,
+                    field_in=_runs_in(runs),
+                )
             return GroupsRead("store", 1, groups)
         if runs == []:
             served_by("engine", store_calls=0)
@@ -3111,7 +3129,8 @@ class EvalStorage:
                     }
                 for result_id in page:
                     if (row := read.get(result_id)) is not None:
-                        yield _projected(row, paths, scope_id)
+                        kept_row = _projected(row, paths, scope_id)
+                        yield narrow_items(kept_row, exclude_in_items) if exclude_in_items else kept_row
                 # Let go before the next page is read, so two pages of rows are never held at once.
                 del read, row
 

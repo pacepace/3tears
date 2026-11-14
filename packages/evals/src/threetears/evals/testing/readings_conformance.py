@@ -167,6 +167,43 @@ def _grouped(
     return _readings(store).grouped(doc_type, scope, by=by, measures=measures, field_in=field_in, **field_eq)
 
 
+def _values_narrowed_in_items(store: DocumentStore, _install: Callable[[Callable[[], None]], None]) -> None:
+    rows = (
+        _doc("n1", run="a", rejudges=[{"cost": 0.25, "prose": "long", "keep": {"prose": "nested"}}, "plain"]),
+        _doc("n2", run="a", rejudges=None, holder={"rejudges": [{"cost": 1, "prose": "x"}], "prose": "kept"}),
+        _doc("n3", run="a", rejudges={"prose": "an object, not a list"}),
+        _doc("n4", run="a"),
+    )
+    _write(store, *rows)
+    measures: dict[str, GroupMeasure] = {
+        "rejudges": ("values", "rejudges"),
+        "holder": ("values", "holder"),
+        "rows": ("count", None),
+    }
+    narrowing = {"rejudges": ["prose", "keep.prose"], "holder.rejudges": ["prose"]}
+    groups = _readings(store).grouped(_TYPE, _SCOPE, by=["run"], measures=measures, exclude_in_items=narrowing)
+    # The values the store's own narrowed read gives, paired with their rows in its order.
+    narrowed = {row["id"]: row for row in _narrowed(store, exclude_in_items=narrowing, run="a")}
+    order = _ids(store.by_doc_type(_TYPE, _SCOPE, run="a"))
+    _expect_equal(
+        groups,
+        [
+            {
+                "run": "a",
+                "rejudges": [[row_id, narrowed[row_id].get("rejudges")] for row_id in order],
+                "holder": [[row_id, narrowed[row_id].get("holder")] for row_id in order],
+                "rows": 4,
+            }
+        ],
+        "values with exclude_in_items: each list item narrowed as iter_narrowed narrows it, other values whole",
+    )
+    _expect_equal(
+        narrowed["n1"].get("rejudges"),
+        [{"cost": 0.25, "keep": {}}, "plain"],
+        "iter_narrowed's own narrowing of a list field",
+    )
+
+
 def _one_group(store: DocumentStore, measures: Mapping[str, GroupMeasure], **field_eq: Any) -> dict[str, Any]:
     groups = _grouped(store, [], measures, **field_eq)
     _expect(len(groups) == 1, f"grouped with no by paths answered {len(groups)} groups, expected one: {groups!r}")
@@ -667,6 +704,12 @@ RESULT_READINGS_CONFORMANCE_CASES: tuple[ResultReadingsConformanceCase, ...] = (
         "every integer whole at any width, negative zero, 1 apart from 1.0, false apart from 0, wherever its reads "
         "keep them apart",
         _values_are_exact,
+    ),
+    ResultReadingsConformanceCase(
+        "grouped.values_narrowed_in_items",
+        "exclude_in_items drops the named paths from each object item of a list in every values value, as "
+        "iter_narrowed drops them, and changes nothing else",
+        _values_narrowed_in_items,
     ),
     ResultReadingsConformanceCase(
         "grouped.undefined_grouping_refused",

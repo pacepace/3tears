@@ -55,6 +55,7 @@ from threetears.evals.schema.store_port import (
     AsyncResultReadings,
     AsyncStoreClock,
     GroupMeasure,
+    narrow_groups,
     refuse_on_event_loop,
 )
 
@@ -285,15 +286,33 @@ class _ReadingAsyncStoreBridge(AsyncStoreBridge):
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
-        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`: the async store's ``grouped``, on its loop."""
-        return self._call(
-            partial(
-                self._readings().grouped, doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq
+        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`: the async store's ``grouped``, on its loop.
+
+        ``exclude_in_items`` is passed on to a store whose ``grouped`` declares it; one written before it is asked
+        without it, and its values are narrowed here (:func:`~threetears.evals.schema.store_port.narrow_groups`).
+        """
+        grouped = self._readings().grouped
+        if exclude_in_items and "exclude_in_items" in inspect.signature(grouped).parameters:
+            return self._call(
+                partial(
+                    grouped,
+                    doc_type,
+                    scope_id,
+                    by=by,
+                    measures=measures,
+                    exclude_in_items=exclude_in_items,
+                    field_in=field_in,
+                    **field_eq,
+                )
             )
+        groups = self._call(
+            partial(grouped, doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
         )
+        return narrow_groups(groups, measures, exclude_in_items)
 
 
 class _ClockedReadingAsyncStoreBridge(ClockedAsyncStoreBridge, _ReadingAsyncStoreBridge):

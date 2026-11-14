@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: store reads (#1020, #1052, #1053, #1057, #1059)
+### evals: store reads (#1020, #1052, #1053, #1057, #1058, #1059)
 
 **Changed:** `fold_groups` folds each row into its group as it arrives and lets it go, so a fold holds its groups'
 answers, never the rows; a measure refuses a value when the fold reaches it. The engine's grouping of a store without
@@ -23,7 +23,7 @@ page first (#1059 item 2).
 numbers, booleans and nulls, where it deep-copied every value of every row on each read and write: about a third of
 the copy time, which inflated every profile run on it. The store conformance kit's `write.copied_in_and_out` now
 checks every read and `merge_fields`, at every depth, inside objects and list items, and the readings kit gains
-`reads.copied_out` (a narrowed row, a grouped value); a host store that hands out what it holds fails them.
+`reads.copied_out` (a narrowed row, a grouped value); a host store that hands out what it holds fails them (#1052).
 
 **Fixed:** the SQLite store's `grouped` sums `sum_int` exactly at any width, in its one statement: a sum past a
 signed 64-bit integer raised SQLite's `integer overflow`, and an integer wider than 64 bits was summed as a rounded
@@ -59,6 +59,15 @@ frozen with the analysis. Over frozen bundles this build no longer reads, it is 
 `load_report_snapshot`), both in `threetears.evals.analysis` (provisional). `EvalStorage` satisfies both; a host
 passing its own `AnalysisStore` adds the two reads. `read_report_doc` and `stored_headline` take `ReportDocReads`
 (#1020 item 2).
+
+**Added (provisional):** `ResultReadings.grouped` (and `AsyncResultReadings.grouped`) takes `exclude_in_items`, with
+`iter_narrowed`'s meaning, applied to every `values` value: the spend lenses' grouped read leaves each re-judge's
+`cannot_tell` and `errors` prose out, where it shipped every re-judge whole although they read only its `cost_usd`
+(#1058). The in-memory, SQLite and routed stores and `bridge_async_store` take it, and the readings kit gains
+`grouped.values_narrowed_in_items`. A host store whose `grouped` predates the parameter keeps working: the engine
+asks it without the parameter and narrows the values itself (`grouped_narrowed`, `narrow_groups` in
+`threetears.evals.schema`), so it ships the items whole until it declares `exclude_in_items`.
+`EvalStorage.result_groups` and `LensStore.result_groups` take `exclude_in_items` too.
 
 ### evals: export, seed and carry follow-ups
 

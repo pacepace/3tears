@@ -290,6 +290,7 @@ class InMemoryDocumentStore:
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
@@ -307,6 +308,9 @@ class InMemoryDocumentStore:
         :ptype by: Sequence[str]
         :param measures: Measure name → the measure.
         :ptype measures: Mapping[str, GroupMeasure]
+        :param exclude_in_items: List-field path → dotted paths left out of each object item of that list, in every
+            row before it is folded.
+        :ptype exclude_in_items: Mapping[str, Sequence[str]]
         :param field_in: Field-membership predicates: field → the values it may equal.
         :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates.
@@ -320,7 +324,8 @@ class InMemoryDocumentStore:
 
         def matching() -> Iterator[dict[str, Any]]:
             # Lazy, so fold_groups refuses a grouping before any document is read.
-            yield from self._matching(doc_type, scope_id, field_in, field_eq)
+            for row in self._matching(doc_type, scope_id, field_in, field_eq):
+                yield narrow_items(row, exclude_in_items) if exclude_in_items else row
 
         return fold_groups(matching(), by=by, measures=measures)
 
