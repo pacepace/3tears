@@ -271,8 +271,8 @@ declaration, so it stays, and no between-cells stop is read from it.
    launched as the arm will be (model, cassette mode, judges, simulator, apparatus and overlays) on the arm's
    subject. A sibling whose judged dimensions with their judge pins, conversation shape, world seed, allowed tools
    or kind spec differ is not drawn on, and is named: the price is per case, and a case's cost is not scaled across
-   such a change. The price's `method_id` is `borrowed-history` (`threetears.evals.analysis.BORROWED_PREDICTION_METHOD`
-   beside `COST_PREDICTION_METHOD`), its basis opens `borrowed from template '<name>' ('<id>'), <n> result(s): ...`,
+   such a change. The price's `method_id` is `borrowed-history`, where a template's own history reads
+   `usage-history`; its basis opens `borrowed from template '<name>' ('<id>'), <n> result(s): ...`,
    and a capped launch admits against it as against any price. Its band holds only if the arm's cases cost as the
    siblings' do, and the basis says so. It runs to the outer ends of a band over the siblings' observations and
    one over each case's mean cost, never nearer its centre than 3% either side, so it is never narrower than a

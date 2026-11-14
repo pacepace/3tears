@@ -1009,7 +1009,7 @@
 "threetears.evals.analysis.BarState": "provisional",
 "threetears.evals.analysis.BarStatus": "provisional",
 "threetears.evals.analysis.BaselineBarProposals": "provisional",
-"threetears.evals.analysis.BORROWED_PREDICTION_METHOD": "stable",
+"threetears.evals.analysis.BORROWED_PREDICTION_METHOD": "provisional",
 "threetears.evals.analysis.build_campaign_report": "provisional",
 "threetears.evals.analysis.build_code_only_report": "provisional",
 "threetears.evals.analysis.BUNDLE_READ_BUDGET": "provisional",
