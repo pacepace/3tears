@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 
+from tests.enforcement.scan_cache import ScanCache, private_binding_scan
 from threetears.enforcement.underscore_access import (
     PrivateBindingScan,
     private_binding_findings,
-    scan_private_bindings,
     undetected_planted_controls,
 )
 
@@ -27,8 +27,8 @@ _LEDGER = _REPO_ROOT / "tests" / "enforcement" / "_underscore_exemptions.txt"
 
 
 @pytest.fixture(scope="module")
-def scan() -> PrivateBindingScan:
-    return scan_private_bindings(_REPO_ROOT, _LEDGER)
+def scan(scan_cache: ScanCache) -> PrivateBindingScan:
+    return private_binding_scan(scan_cache, _REPO_ROOT, _LEDGER)
 
 
 class TestPrivateBinding:
