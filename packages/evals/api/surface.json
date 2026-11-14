@@ -3591,6 +3591,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.host.ReplayMiss": {
+      "kind": "exception",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.host.ResidualReader": {
       "kind": "type alias",
       "signature": "",

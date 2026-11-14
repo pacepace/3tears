@@ -30,6 +30,11 @@ entry naming the fault, its spend whatever the kind had reported through the cel
 on to the next cell. A run whose every cell an apparatus fault excluded measured nothing and ends
 ``failed``.
 
+**A replay miss is the exception** (:class:`ReplayMiss`): a replay asked for what its recording does not hold, so the
+recordings are stale, and every later cell reads the same stale recordings. The runner records the cell
+``apparatus_failed`` naming the call, as above, and then fails the run with the miss (owner ruling, #1162): a run that
+went on would read on fewer cells in silence.
+
 This module imports nothing but ``__future__``, and that is load-bearing rather than incidental: a
 host tool layer importing it acquires this one leaf and nothing behind it, and this leaf reaches
 back into no host. ``tests/test_extraction_import_boundary.py`` holds every module of the engine to
@@ -38,7 +43,7 @@ naming no host package, this one included.
 
 from __future__ import annotations
 
-__all__ = ["ApparatusError"]
+__all__ = ["ApparatusError", "ReplayMiss"]
 
 
 class ApparatusError(Exception):
@@ -46,4 +51,15 @@ class ApparatusError(Exception):
 
     Raised by a host's tool layer, caught by the engine. See the module docstring for the
     distinction it draws and why the engine rather than the host owns it.
+    """
+
+
+class ReplayMiss(ApparatusError):
+    """A replay asked for what its recording does not hold: the recordings are stale, and the run fails.
+
+    Any other rig fault excludes its one cell, since a later cell may meet a working rig. A replay miss does not stay
+    one cell's: every later cell reads the same stale recordings, and a run that went on would read on fewer cells in
+    silence. So wherever the engine meets one (a candidate's call, a scoring judge's, a judge kind's judge under test),
+    the runner records the cell ``apparatus_failed`` naming the call and then fails the run with it (owner ruling,
+    #1162). The remedy is to record again. A host whose own replay misses raises this, or a subclass of it.
     """

@@ -61,11 +61,12 @@ Each call is served once per client:
 one whose every recorded call already went to another eval's run in the process (a ``Model`` shared by two evals, or
 an eval run twice on one) is refused for that cause, naming the eval, and the remedy is a client per eval, never a
 recording made again. It is an
-:class:`~threetears.evals.kernel.host.ApparatusError`: a replay that cannot serve is a fault of the rig, not of the code
-under test, so a candidate that raises it has its cell excluded rather than scored. A judge call that meets one is
-never read as the judge's failed answer: :func:`~threetears.evals.run.run_judge_llm` raises it, so a writer's pairwise
-pass fails at the miss, and a run's scoring judge, or a judge kind's judge under test on any one trial, fails the
-run naming the call. A page whose text moved under a judge's recording is named, never judged on the calls still found.
+:class:`~threetears.evals.kernel.host.ReplayMiss`: a replay that cannot serve is a fault of the rig, not of the code
+under test, and its recordings are stale. So a candidate that meets one never has the cell scored: the cell is recorded
+``apparatus_failed`` naming the call, and the run fails with the miss. A judge call that meets one is never read as the
+judge's failed answer either: :func:`~threetears.evals.run.run_judge_llm` raises it, so a writer's pairwise pass fails
+at the miss, and a run's scoring judge, or a judge kind's judge under test on any one trial, fails the run naming the
+call. A page whose text moved under a judge's recording is named, never judged on the calls still found.
 :meth:`RecordedCompletions.check_covers` asks the same question of a list of prompts before any replay starts, which
 is how a test says by name that a prompt changed under its recording.
 
@@ -106,7 +107,7 @@ from typing import Any, ClassVar, Literal, NamedTuple, Self, get_args
 
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.eval_scope import RunningEval, running_eval
-from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.kernel.host.apparatus import ReplayMiss
 from threetears.evals.schema.completion import (
     COMPLETION_RESULT_ATTRIBUTES,
     OPTIONAL_COMPLETION_ATTRIBUTES,
@@ -160,11 +161,12 @@ _CELL_MEMBERS = frozenset({"subject", "variant", "case", "repeat", "ask"})
 _APPEND_LOCK = threading.Lock()
 
 
-class RecordingRefused(ApparatusError):
+class RecordingRefused(ReplayMiss):
     """A recording cannot serve what was asked of it: a miss, a missing or unreadable file, a newer format.
 
-    An :class:`~threetears.evals.kernel.host.ApparatusError`, because a replay that cannot serve a call is the rig's
-    fault rather than the code under test's: raised out of a candidate, its cell is excluded, not scored. The message
+    A :class:`~threetears.evals.kernel.host.ReplayMiss`, because a replay that cannot serve a call is the rig's fault
+    rather than the code under test's, and its recordings are stale: wherever it is met, a candidate's call or a judge's,
+    its cell is recorded ``apparatus_failed`` naming the call, never scored, and the run fails with it. The message
     names what was asked and ends with :attr:`remedy`.
 
     :ivar path: The recording.
