@@ -4655,6 +4655,68 @@ def test_a_delete_matching_on_built_from_a_declared_key_parameter_is_judged_as_t
     assert any(f == "Stages.drop_by_columns" and s.startswith("unknown-predicate") for f, s in found), found
 
 
+#: a tile's source rows (hub #59, ``aibots.hub.geo.loader.build_bbox_query``): a relation and its columns named by an
+#: operator's layer declaration at run time, the statement declaring its key where it is written
+_DECLARED_STATEMENT_KEY = """
+    from dataclasses import dataclass
+    from threetears.core.keyed import declared_key
+
+    _MAX = 200000
+
+    def _identifier(name):
+        return f'"{name}"'
+
+    @dataclass
+    class GeoLayerConfig:
+        table: str
+        version_column: str
+        feature_id: str
+        bbox_columns: tuple[str, str, str, str]
+
+    def build_bbox_query(layer: GeoLayerConfig) -> str:
+        min_x, min_y, max_x, max_y = layer.bbox_columns
+        return declared_key(
+            f"SELECT a FROM {_identifier(layer.table)} "
+            f"WHERE {_identifier(layer.version_column)} = $1 "
+            f"AND {_identifier(min_x)} <= $4 AND {_identifier(max_x)} >= $2 "
+            f"LIMIT {_MAX}",
+            key=(layer.version_column,),
+        )
+
+    def by_box_only(layer: GeoLayerConfig) -> str:
+        min_x, min_y, max_x, max_y = layer.bbox_columns
+        return declared_key(
+            f"SELECT a FROM {_identifier(layer.table)} WHERE {_identifier(min_x)} <= $1 LIMIT {_MAX}",
+            key=(layer.version_column,),
+        )
+
+    def other_column(layer: GeoLayerConfig) -> str:
+        return declared_key(
+            f"SELECT a FROM {_identifier(layer.table)} WHERE {_identifier(layer.feature_id)} = $1",
+            key=(layer.version_column,),
+        )
+
+    def undeclared(layer: GeoLayerConfig) -> str:
+        return f"SELECT a FROM {_identifier(layer.table)} WHERE {_identifier(layer.version_column)} = $1"
+
+    class DriverFeatureLoader:
+        def __init__(self, *, layers):
+            self._queries = {name: build_bbox_query(layer) for name, layer in layers.items()}
+"""
+
+
+def test_a_statement_declaring_its_key_is_judged_by_it(tmp_path: Path) -> None:
+    """Flips if a statement over a run-time relation that declares its key at the statement (``declared_key(sql,
+    key=(layer.version_column,))``, hub #59) is not judged by that key: a read pinning it passes (and so does the call
+    chain into it), while one pinning another column, one pinning nothing, and the same statement undeclared stay
+    findings."""
+    found = _symbols(_config(tmp_path, {"loader.py": _DECLARED_STATEMENT_KEY}))
+    functions = {function for function, _ in found}
+    assert "build_bbox_query" not in functions, found
+    assert "DriverFeatureLoader.__init__" not in functions, found
+    assert {"by_box_only", "other_column", "undeclared"} <= functions, found
+
+
 _UNTYPED_ARROW = """
     from threetears.core import keyed
     from threetears.core.collections.schema_backed import TableSchema

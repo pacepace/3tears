@@ -4194,6 +4194,39 @@ class _ModuleWalk(ast.NodeVisitor):
         source = iterated.args[0] if _final(iterated) == "enumerate" else iterated.args[place]
         return isinstance(element, ast.Name) and element.id == name and self._key_sourced(source, depth + 1)
 
+    def _statement_declared_key(self, node: ast.expr) -> bool:
+        """whether an interpolated expression is one the statement holding it declares as its relation's key
+        (``declared_key(f"... WHERE {q(layer.version_column)} = $1", key=(layer.version_column,))``, hub #59): the
+        statement is the first argument of a ``declared_key`` call, and the expression, or the one argument of a call
+        quoting it, is written as one of the ``key`` expressions (or the one argument of a call quoting one).
+
+        :param node: the interpolated expression
+        :ptype node: ast.expr
+        :return: whether it is
+        :rtype: bool
+        """
+
+        def spelled(value: ast.expr) -> str:
+            if isinstance(value, ast.Call) and len(value.args) == 1 and not value.keywords:
+                value = value.args[0]
+            return ast.dump(value)
+
+        child: ast.AST = node
+        parent = self._parents.get(child)
+        while parent is not None and not isinstance(parent, ast.stmt):
+            if (
+                isinstance(parent, ast.Call)
+                and _final(parent) == "declared_key"
+                and parent.args
+                and parent.args[0] is child
+            ):
+                given = next((k.value for k in parent.keywords if k.arg == "key"), None)
+                if not isinstance(given, ast.Tuple | ast.List) or not given.elts:
+                    return False
+                return spelled(node) in {spelled(element) for element in given.elts}
+            child, parent = parent, self._parents.get(parent)
+        return False
+
     def _key_expression(self, node: ast.expr, depth: int = 0) -> bool:
         """whether an interpolated expression holds a column list that flows from a declared key source
         (``{self._key_column}``, ``{", ".join(quote(c) for c in columns)}`` with ``columns`` one): a name a
@@ -4208,6 +4241,8 @@ class _ModuleWalk(ast.NodeVisitor):
         """
         if depth > _KEY_DEPTH:
             return False
+        if depth == 0 and self._statement_declared_key(node):
+            return True
         bound = {
             target.id
             for found in ast.walk(node)

@@ -100,6 +100,25 @@ KeyColumns: TypeAlias = Annotated[tuple[str, ...], DeclaredKey]
 KeyValues: TypeAlias = Annotated[Mapping[str, Any], DeclaredKey]
 
 
+def declared_key(statement: str, *, key: Sequence[str]) -> str:
+    """a statement over a relation named at run time, with the key its reads are bound by declared where it is
+    written: ``declared_key(f"SELECT ... FROM {q(layer.table)} WHERE {q(layer.version_column)} = $1 ...",
+    key=(layer.version_column,))``. The no_whole_reads rule reads each interpolation of a ``key`` expression in the
+    statement (itself, or quoted by a one-argument call) as the relation's key, as it reads a :class:`DeclaredKey`
+    source, and judges the read by it: a read pinning the key is keyed; one that does not is the finding it is. It
+    declares a key, never a whole read; the relation's owner holds the index its key leads (and its plan test).
+
+    :param statement: the statement, returned unchanged
+    :ptype statement: str
+    :param key: the key's columns, as the statement interpolates them
+    :ptype key: Sequence[str]
+    :return: ``statement``
+    :rtype: str
+    """
+    del key
+    return statement
+
+
 class KeyTooWide(ValueError):
     """one key alone holds as many rows as the transport answers a statement: it is a prefix to page through."""
 

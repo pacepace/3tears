@@ -63,6 +63,7 @@ from threetears.interfaces.keyed.rows import (
     KeyColumns,
     KeyValues,
     KeyTooWide,
+    declared_key,
     key_chunks,
     keyed_read_statement,
 )
@@ -77,6 +78,7 @@ __all__ = [
     "KeyColumns",
     "KeyValues",
     "KeyTooWide",
+    "declared_key",
     "any_rows",
     "key_batch_for",
     "read_joined",
