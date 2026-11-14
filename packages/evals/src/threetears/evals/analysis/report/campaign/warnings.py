@@ -23,7 +23,6 @@ from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.surface import GuardrailCheck
 
 __all__ = [
-    "_answer_split_lines",
     "answer_split_warnings",
     "bar_warnings",
     "campaign_warnings",
