@@ -30,7 +30,8 @@ The facts side is matched by path, so a new flat ``report_*.py`` is held to the 
   and the engine packages above the analysis package.
 
 Which side a module is on is written once, under "the two sides" below: a rule by directory, plus each module that
-sits directly in ``analysis/``, by name. A module there that neither the rule nor a name places fails the gate, so
+sits directly in ``analysis/``, by name. The modules directly in ``analysis/`` are named on both sides, and none
+is numbers by default, because a default would place a new printing module on the numbers side unread. A module there that neither the rule nor a name places fails the gate, so
 nothing joins the package unclassified.
 
 A wording or layout change must never move a measured result, so no numbers module imports a presentation module,
@@ -103,9 +104,9 @@ def _named_modules(path: Path, modules: dict[str, Path], root: Path) -> Iterator
             owner = _owner(target, modules)
             if owner is None:
                 continue
-            if isinstance(node, ast.Constant) and owner != target and not _is_page(owner):
+            if isinstance(node, ast.Constant) and owner != target and side(owner) != PRESENTATION:
                 # A dotted string that names no module (an event name, a logger) is no reach, unless it names
-                # something on the page, as a patch target does.
+                # something in a presentation module, as a patch target does.
                 continue
             yield getattr(node, "lineno", 0), owner
 
@@ -331,8 +332,8 @@ _KNOWN_PAIRS: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
-#: The most pairs the list has ever held. It only falls.
-_KNOWN_PAIRS_CEILING = 10
+#: How many pairs the list holds. It falls with every line deleted from the list, and never rises.
+_KNOWN_PAIRS_COUNT = 10
 
 
 def pair_findings(found: dict[tuple[str, str], int], known: frozenset[tuple[str, str]]) -> list[str]:
@@ -376,9 +377,9 @@ def test_no_numbers_module_imports_presentation_outside_the_known_pairs() -> Non
 
 
 def test_the_known_pairs_only_shrink() -> None:
-    assert len(_KNOWN_PAIRS) <= _KNOWN_PAIRS_CEILING, (
-        f"_KNOWN_PAIRS holds {len(_KNOWN_PAIRS)} pairs and its ceiling is {_KNOWN_PAIRS_CEILING}. Remove the new "
-        "import instead of listing it."
+    assert len(_KNOWN_PAIRS) == _KNOWN_PAIRS_COUNT, (
+        f"_KNOWN_PAIRS holds {len(_KNOWN_PAIRS)} pairs and _KNOWN_PAIRS_COUNT says {_KNOWN_PAIRS_COUNT}. After "
+        "deleting a pair, lower the count to match; never raise it, remove the new import instead."
     )
 
 
@@ -561,6 +562,10 @@ def _pairs(root: Path) -> list[tuple[str, str]]:
         ("from threetears.evals.analysis import summary\n", "analysis.summary"),
         ("import threetears.evals.harness.writer_eval\n", "harness.writer_eval"),
         ("TARGET = 'threetears.evals.analysis.report.forms.PageForms'\n", "analysis.report.forms"),
+        ("TARGET = 'threetears.evals.analysis.analyst.skill.render'\n", "analysis.analyst.skill"),
+        ("TARGET = 'threetears.evals.analysis.summary.print_summary'\n", "analysis.summary"),
+        ("TARGET = 'threetears.evals.harness.writer_eval.WriterEval'\n", "harness.writer_eval"),
+        ("TARGET = 'threetears.evals.ops.report_writer.write'\n", "ops.report_writer"),
     ],
 )
 def test_each_way_a_numbers_module_names_presentation_is_a_pair(tmp_path: Path, source: str, imported: str) -> None:
@@ -569,6 +574,7 @@ def test_each_way_a_numbers_module_names_presentation_is_a_pair(tmp_path: Path, 
         "threetears/evals/analysis/analyst/skill.py": "",
         "threetears/evals/analysis/summary.py": "",
         "threetears/evals/harness/writer_eval.py": "",
+        "threetears/evals/ops/report_writer/__init__.py": "",
         _PLANTED_NUMBERS: source,
     }
     root = _synthetic_tree(tmp_path, files)
