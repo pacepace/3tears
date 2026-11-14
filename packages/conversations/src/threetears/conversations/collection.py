@@ -213,10 +213,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 "user_id",
                 "status",
                 "conversation_id",
-                purpose=(
-                    "src/aibots/hub/admin/conversations.py::fetch_conversation_page; "
-                    "packages/core/src/threetears/core/collections/merge.py::repoint_user_rows"
-                ),
+                purpose="src/aibots/hub/admin/conversations.py::fetch_conversation_page",
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_user_status",
                 reason="conversations carries twelve indexes: one user's conversations by status",
             ),

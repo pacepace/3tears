@@ -61,7 +61,7 @@ _ACL_KEYED_METHOD_INDEXES_DDL: tuple[str, ...] = (
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_assignments_scope_type\n"
     "-- reason: the subtree and all grants any namespace may be reached by, the reverse access query's other half\n"
     "CREATE INDEX IF NOT EXISTS idx_role_assignments_scope_type ON role_assignments (scope_type, assignment_id)",
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.type_rows; packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.list_by_type;"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.type_rows;"
     " packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.tool_provider_ownership; packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.tool_provider_names;"
     " packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.get_by_owner_and_customer\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_type\n"
