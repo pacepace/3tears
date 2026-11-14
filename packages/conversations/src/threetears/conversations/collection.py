@@ -25,7 +25,7 @@ from uuid import UUID
 from threetears.conversations.entity import Conversation
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.keyed import Fragment, Sort, read_by
+from threetears.core.keyed import Count, Fragment, Sort, aggregate_keyed, read_by
 
 if TYPE_CHECKING:
     from threetears.conversations.buffer import ConversationWriteBuffer
@@ -692,11 +692,14 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         :return: number of conversations filed under ``folder_id``
         :rtype: int
         """
-        count = await self.required_l3_pool.fetchval(
-            "SELECT COUNT(*) FROM conversations WHERE agent_id = $1 AND folder_id = $2",
-            agent_id,
-            folder_id,
-        )
+        count = (
+            await aggregate_keyed(
+                self.required_l3_pool,
+                "conversations",
+                aggregates={"n": Count()},
+                by={"agent_id": agent_id, "folder_id": folder_id},
+            )
+        )[0]["n"]
         return int(count) if count is not None else 0
 
     async def find_by_ref(

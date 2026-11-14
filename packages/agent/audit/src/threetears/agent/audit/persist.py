@@ -45,18 +45,18 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from pydantic import ValidationError
+from threetears.agent.audit.anonymize import anonymize_details, anonymize_ip, refuse_identifying_details
+from threetears.agent.audit.envelope import AuditEvent
+from threetears.agent.audit.erasure import AuditAnonymization
 from threetears.agent.audit.migrations.v001_create_audit_events import (
     AUDIT_EVENTS_V001_DDL,
     AUDIT_EVENTS_V001_TIME_INDEX,
 )
 from threetears.agent.audit.migrations.v002_audit_time_range_index import AUDIT_EVENTS_V002_DDL
+from threetears.core.keyed import AnyOf, Fragment, Selected, Sort, keyset_page
 from threetears.core.serialization import json_datetime, to_stored_json
 from threetears.nats import Subjects
 from threetears.observe import cancel_and_wait, get_logger, spawn_background
-
-from threetears.agent.audit.anonymize import anonymize_details, anonymize_ip, refuse_identifying_details
-from threetears.agent.audit.envelope import AuditEvent
-from threetears.agent.audit.erasure import AuditAnonymization
 
 __all__ = [
     "AUDIT_EVENTS_DDL",
@@ -456,13 +456,18 @@ async def anonymize_audit_rows(
     matched = changed = 0
     after: UUID | None = None
     while True:
-        rows = await db.fetch(
-            "SELECT id, event_type, details::text AS details, ip_address FROM audit_events "
-            "WHERE actor_user_id = ANY($1::uuid[]) AND ($2::uuid IS NULL OR id > $2) ORDER BY id LIMIT $3",
-            actors,
-            after,
-            batch_size,
-        )
+        rows = (
+            await keyset_page(
+                db,
+                "audit_events",
+                columns=("id", "event_type", Selected("details::text", "details"), "ip_address"),
+                by={"actor_user_id": AnyOf(actors, cast="uuid")},
+                where=[Fragment("($1::uuid IS NULL OR id > $1)", (after,))],
+                order=[Sort("id")],
+                limit=batch_size,
+                records=True,
+            )
+        ).rows
         if not rows:
             break
         for row in rows:

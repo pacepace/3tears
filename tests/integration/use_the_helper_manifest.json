@@ -4564,5 +4564,108 @@
   "sets": [],
   "shape": "list",
   "table": "conversations"
+ },
+ {
+  "args": [
+   "actors",
+   "after",
+   "batch_size"
+  ],
+  "columns": [
+   "id",
+   "event_type",
+   {
+    "alias": "details",
+    "expr": "details::text"
+   },
+   "ip_address"
+  ],
+  "function": "anonymize_audit_rows",
+  "helper": "keyset_page",
+  "key_from": 1,
+  "limit": {
+   "param": 3
+  },
+  "line": 460,
+  "method": "fetch",
+  "new_call": "(await keyset_page(db, 'audit_events', columns=('id', 'event_type', Selected('details::text', 'details'), 'ip_address'), by={'actor_user_id': AnyOf(actors, cast='uuid')}, where=[Fragment('($1::uuid IS NULL OR id > $1)', (after,))], order=[Sort('id')], limit=batch_size, records=True)).rows",
+  "old_sql": "SELECT id, event_type, details::text AS details, ip_address FROM audit_events WHERE actor_user_id = ANY($1::uuid[]) AND ($2::uuid IS NULL OR id > $2) ORDER BY id LIMIT $3",
+  "order": [
+   {
+    "column": "id",
+    "descending": false,
+    "nulls": null
+   }
+  ],
+  "path": "packages/agent/audit/src/threetears/agent/audit/persist.py",
+  "pins": [
+   {
+    "cast": "uuid",
+    "column": "actor_user_id",
+    "compared": [],
+    "kind": "any",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "first",
+  "table": "audit_events",
+  "where": [
+   {
+    "cast": null,
+    "column": "",
+    "compared": [
+     "id"
+    ],
+    "kind": "guard",
+    "literal": "($1::uuid IS NULL OR id > $1)",
+    "param": null,
+    "params": [
+     2
+    ]
+   }
+  ]
+ },
+ {
+  "args": [
+   "agent_id",
+   "folder_id"
+  ],
+  "columns": null,
+  "function": "ConversationsCollection.count_by_folder",
+  "helper": "aggregate_keyed",
+  "line": 696,
+  "method": "fetchval",
+  "new_call": "(await aggregate_keyed(self.required_l3_pool, 'conversations', aggregates={'n': Count()}, by={'agent_id': agent_id, 'folder_id': folder_id}))[0]['n']",
+  "old_sql": "SELECT COUNT(*) FROM conversations WHERE agent_id = $1 AND folder_id = $2",
+  "order": [],
+  "path": "packages/conversations/src/threetears/conversations/collection.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "folder_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "count",
+  "table": "conversations"
  }
 ]

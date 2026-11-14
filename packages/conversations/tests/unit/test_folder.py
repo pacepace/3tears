@@ -620,10 +620,11 @@ class TestConversationFolderId:
             assert data["folder_id"] is None
 
     async def test_count_by_folder_pins_partition_and_folder(self) -> None:
-        """count_by_folder issues a COUNT(*) pinned to the partition
-        column (agent_id $1) + folder_id ($2) and returns the count."""
+        """count_by_folder issues one count(*) (the keyed aggregate's) pinned
+        to the partition column (agent_id $1) + folder_id ($2) and returns the
+        count."""
         pg = AsyncMock()
-        pg.fetchval = AsyncMock(return_value=3)
+        pg.fetch = AsyncMock(return_value=[{"n": 3}])
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection.l3_pool = pg
 
@@ -632,18 +633,19 @@ class TestConversationFolderId:
         count = await collection.count_by_folder(agent_id, folder_id)
 
         assert count == 3
-        pg.fetchval.assert_called_once()
-        sql, *params = pg.fetchval.call_args.args
-        assert "SELECT COUNT(*) FROM conversations" in sql
-        assert "agent_id = $1" in sql
-        assert "folder_id = $2" in sql
+        pg.fetch.assert_called_once()
+        sql, *params = pg.fetch.call_args.args
+        assert "count(*)" in sql.lower() and 'FROM "conversations"' in sql, sql
+        assert '"agent_id" = $1' in sql, sql
+        assert '"folder_id" = $2' in sql, sql
         assert params[0] == agent_id
         assert params[1] == folder_id
 
     async def test_count_by_folder_returns_zero_when_none(self) -> None:
-        """a NULL/None COUNT result coerces to 0 (defensive)."""
+        """no count answered coerces to 0 (defensive): a store answering no
+        row reads as no conversation (count(*) itself is never NULL)."""
         pg = AsyncMock()
-        pg.fetchval = AsyncMock(return_value=None)
+        pg.fetch = AsyncMock(return_value=[])
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection.l3_pool = pg
 
