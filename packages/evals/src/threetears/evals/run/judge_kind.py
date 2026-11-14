@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import contextlib
 import uuid
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -55,7 +55,7 @@ from threetears.evals.kernel.capped_completion import (
     refresh_prices,
     unpriced_because,
 )
-from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.failed_call import failed_call_output
 from threetears.evals.kernel.run_pages import iter_keyed_results
@@ -99,11 +99,13 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
+    CaseSet,
     CaseSetRef,
     EvalTestCase,
     JudgedArtifact,
     LabelKey,
     label_key_of,
+    utc_now_iso,
 )
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.logs import contain, get_logger
@@ -233,10 +235,23 @@ class JudgeCaseFreezeReport(EvalBaseModel):
     """What a freeze froze, the case set listing it, and what it could not freeze."""
 
     template_id: str
+    """The judge template the cases are cases of: the revision the freeze wrote, where it wrote one."""
     cases: list[FrozenJudgeCase]
     case_set: CaseSetRef | None = None
     """The case set version listing exactly these cases, in order; ``None`` when no set was asked for."""
     skipped: list[JudgeCaseSkip] = []
+    revision: int | None = None
+    """The template revision this freeze wrote, because it added a case to a template that already held cases
+    (``revise``); ``None`` for a freeze that wrote none: the cases are of the template named."""
+    superseded_template_id: str | None = None
+    """The revision ``revision`` supersedes, archived and readable by id, with every run measured against it;
+    ``None`` with ``revision``."""
+    carried: dict[str, str] = {}
+    """Each case of the superseded revision -> the id of its copy on the new one (``EvalTestCase.carried_from`` names
+    the source); empty with no ``revision``."""
+    stranded_case_sets: list[str] = []
+    """Each case set whose newest version lists cases of the superseded revision, by its label: it still points
+    there until its next version is minted over ``carried``'s copies."""
 
 
 def _judge_template(template: EvalTemplate) -> EvalTemplate:
@@ -334,6 +349,103 @@ def _carried_copies(storage: EvalStorage, template: EvalTemplate, scope_id: str)
     return copies
 
 
+def _case_id(
+    template: EvalTemplate,
+    source_result_id: str | None,
+    dim: str,
+    digest: str,
+    copies: Mapping[tuple[str, str, str], str] | None,
+) -> str:
+    """The id a frozen case is stored under in ``template``: derived from the template, its source, its dim and its
+    content, or the id of the copy a new revision carries under that identity (``copies``)."""
+    source = _AUTHORED_SOURCE if source_result_id is None else source_result_id
+    if copies is not None and (copied := copies.get((source, dim, digest))) is not None:
+        return copied
+    return str(uuid.uuid5(_CASE_ID_NAMESPACE, f"{template.id}|{source}|{dim}|{digest}"))
+
+
+@dataclass(frozen=True)
+class _Revised:
+    """A judge template's next revision, as :func:`_next_revision` wrote it."""
+
+    template: EvalTemplate
+    superseded: EvalTemplate
+    carried: dict[str, str]
+    stranded: list[str]
+
+
+def _refuse_superseded(storage: EvalStorage, template: EvalTemplate, scope_id: str) -> list[EvalTemplate]:
+    """Every record under the template's name, refusing a write into a revision a later one supersedes: its cases are
+    the cases its runs measured, and the later revision is where the template's cases now live."""
+    records = [t for t in storage.query_templates(scope_id, archived=None) if t.name == template.name]
+    newest = max(records, key=lambda t: t.revision, default=template)
+    if newest.revision > template.revision:
+        raise ValidationFailedError(
+            f"template {template.id!r} is revision {template.revision} of {template.name!r}, superseded by revision "
+            f"{newest.revision} ({newest.id}); its cases are the ones its runs measured, and no case joins them",
+            remedy=f"write the case into the template's newest revision ({newest.id})",
+        )
+    return records
+
+
+def _next_revision(
+    storage: EvalStorage, template: EvalTemplate, records: Sequence[EvalTemplate], scope_id: str, *, keep: str | None
+) -> _Revised:
+    """Write a judge template's next revision as a definition reset writes one, carrying every case of the revision
+    it supersedes: a new record under the same name, the older one archived and kept for every run and case measured
+    against it. Each case is copied with its content, payload, labels, stratum, name, seed record and curation state
+    unchanged, the copy naming its source (``EvalTestCase.carried_from``), so the new revision is the old one's
+    battery until the caller adds to it. ``keep`` names the case set the caller mints next, which is never stranded.
+
+    :raises StorageError: A write failed part-way: the revision written before it stands, and the message names each
+        case not yet carried, left only on the superseded revision.
+    """
+    now = utc_now_iso()
+    revision = max((t.revision for t in records), default=template.revision) + 1
+    written = template.model_copy(
+        update={"id": str(uuid.uuid7()), "revision": revision, "archived": False, "created_at": now, "updated_at": now}
+    )
+    storage.save_template(written)
+    for record in records:
+        if not record.archived:
+            storage.save_template(record.model_copy(update={"archived": True, "updated_at": now}))
+    held = storage.query_test_cases(scope_id, template_id=template.id)
+    carried: dict[str, str] = {}
+    for done, source in enumerate(held):
+        copied = source.model_copy(
+            update={"id": str(uuid.uuid7()), "template_id": written.id, "carried_from": source.id, "created_at": now}
+        )
+        try:
+            storage.save_test_case(copied)
+        except StorageError as failed:
+            left = [case.id for case in held[done:]]
+            raise StorageError(
+                f"{failed.message}; {template.name!r} revision {revision} ({written.id}) was written and revision "
+                f"{template.revision} archived, and {len(left)} case(s) not yet carried stay only on the archived "
+                f"revision: {', '.join(left)}"
+            ) from failed
+        carried[source.id] = copied.id
+    latest: dict[str, CaseSet] = {}
+    for case_set in storage.query_case_sets(scope_id):
+        if case_set.name not in latest or case_set.version > latest[case_set.name].version:
+            latest[case_set.name] = case_set
+    stranded = sorted(
+        case_set.ref.label
+        for case_set in latest.values()
+        if case_set.template_id == template.id and case_set.name != keep
+    )
+    log.info(
+        "eval.judge_template_revised name=%s revision=%d template=%s superseded=%s carried=%d stranded=%d",
+        template.name,
+        revision,
+        written.id,
+        template.id,
+        len(carried),
+        len(stranded),
+    )
+    return _Revised(template=written, superseded=template, carried=carried, stranded=stranded)
+
+
 def _store_case(
     storage: EvalStorage,
     template: EvalTemplate,
@@ -355,10 +467,7 @@ def _store_case(
     one.
     """
     digest = case.content_digest()
-    source = _AUTHORED_SOURCE if source_result_id is None else source_result_id
-    case_id = str(uuid.uuid5(_CASE_ID_NAMESPACE, f"{template.id}|{source}|{dim}|{digest}"))
-    if copies is not None and (copied := copies.get((source, dim, digest))) is not None:
-        case_id = copied
+    case_id = _case_id(template, source_result_id, dim, digest, copies)
     if case_id in seen:
         return None
     seen.add(case_id)
@@ -561,6 +670,7 @@ def freeze_judge_cases(
     case_set: str | None = None,
     from_labels: bool = False,
     authored: Sequence[AuthoredJudgeCase] = (),
+    revise: bool = False,
 ) -> JudgeCaseFreezeReport:
     """Freeze (output, criterion, labels) cases from stored judged results, or written by hand, into a judge template.
 
@@ -592,6 +702,16 @@ def freeze_judge_cases(
     in order — the set a launch targets, so cases a later freeze superseded are not run by it. A freeze whose cases
     the latest version already lists exactly is answered with that version.
 
+    **Into a template that holds cases** (``revise=True``, as every operator's write is): a freeze that would add a
+    case writes the template's next revision first, as a definition reset does, carrying every case of the revision
+    it supersedes, and freezes into that. Runs of two revisions never pool
+    (:func:`~threetears.evals.analysis.revisions.refuse_pooled_revisions`), so the runs measured before the write and
+    those after it never share a revision whose cases differ. The receipt names the revision, the one it superseded,
+    each carried case's copy, and each case set left listing the superseded revision's cases. A freeze that adds
+    nothing (every case already stored) writes no revision, and neither does the first freeze into a template with no
+    case. A write into a revision a later one supersedes is refused, naming the newest. Everything is read and
+    checked before the revision is written, so a refused freeze writes none.
+
     :param storage: The store the runs, their results and ratings live in, and the cases are written to.
     :ptype storage: EvalStorage
     :param template: The judge template the cases belong to, loaded.
@@ -611,11 +731,15 @@ def freeze_judge_cases(
     :param authored: Hand-written cases to freeze beside whatever else is frozen, each validated when it was built (its
         verdict on its criterion's scale).
     :ptype authored: Sequence[AuthoredJudgeCase]
-    :return: The cases, the set, and every result skipped with why.
+    :param revise: Write the template's next revision where it already holds cases and this freeze adds one. False
+        writes in place: for a caller that writes a revision itself (a definition reset) or one whose template no run
+        has measured.
+    :ptype revise: bool
+    :return: The cases, the set, every result skipped with why, and the revision written, if one was.
     :rtype: JudgeCaseFreezeReport
     :raises ValidationFailedError: The template is not of the judge kind; no run, no labels and no authored case are
-        named (or, from labels, a run or a result is); ``result_ids`` names a result outside the runs; or
-        nothing could be frozen.
+        named (or, from labels, a run or a result is); ``result_ids`` names a result outside the runs;
+        nothing could be frozen; or, under ``revise``, the template is a revision a later one supersedes.
     :raises NotFoundError: A run does not load.
     :raises StorageError: A case or the set could not be persisted.
     :raises ValueError: A case a definition reset carried into the template holds a judge case this build cannot read.
@@ -640,46 +764,68 @@ def freeze_judge_cases(
     copies = _carried_copies(storage, template, scope_id)
     wanted = None if result_ids is None else set(result_ids)
     found: set[str] = set()
-    for written in authored:
-        case = JudgeCase.from_authored(written)
-        minted_case = _store_case(storage, template, scope_id, None, case.dim, case, seen, copies=copies)
+
+    def frozen_cases() -> Iterator[tuple[str | None, str, JudgeCase]]:
+        """Every case this freeze names, as ``(source result, dim, case)``, authored ones first: each result read a
+        page at a time and let go before the next, with what could not be frozen noted in ``skipped``."""
+        for written in authored:
+            case = JudgeCase.from_authored(written)
+            yield None, case.dim, case
+        if from_labels:
+            labelled, unlabelled = _cases_of_labels(storage, scope_id, dims)
+            skipped.extend(unlabelled)
+            for source_result_id, case in labelled:
+                yield source_result_id, case.dim, case
+        for run_id in run_ids:
+            run = storage.load_eval_run(run_id, scope_id)
+            if run is None:
+                raise NotFoundError("run", run_id, remedy=FIND_RUN)
+            # The run's keys, then its results by id a page at a time (the named ones alone when results are named),
+            # each frozen and let go before the next page is read.
+            keys = storage.query_eval_result_keys_by_run(run.id, scope_id)
+            for result in iter_keyed_results(
+                storage, scope_id, [key for key in keys if wanted is None or key.id in wanted]
+            ):
+                found.add(result.id)
+                try:
+                    frozen = _cases_of_result(storage, template, run, result, scope_id, dims)
+                except (ValidationFailedError, NotFoundError) as refused:
+                    skipped.append(JudgeCaseSkip(result_id=result.id, reason=str(refused)))
+                    continue
+                if not frozen:
+                    skipped.append(
+                        JudgeCaseSkip(result_id=result.id, reason="none of the dims asked for was judged on it")
+                    )
+                for dim, case in frozen:
+                    yield result.id, dim, case
+
+    def refuse_stray() -> None:
+        if wanted is not None and (stray := sorted(wanted - found)):
+            raise ValidationFailedError(
+                f"result(s) {stray} are not results of the named runs in this scope",
+                remedy=f"name results of those runs ({FIND_RESULT})",
+            )
+
+    revised: _Revised | None = None
+    if revise and (held := {case.id for case in storage.query_test_cases(scope_id, template_id=template.id)}):
+        # Read once before anything is written: whether the freeze adds a case decides whether a revision is written
+        # at all, and a freeze that will be refused must not leave one behind.
+        records = _refuse_superseded(storage, template, scope_id)
+        adds = False
+        for source_result_id, dim, case in frozen_cases():
+            adds = adds or _case_id(template, source_result_id, dim, case.content_digest(), copies) not in held
+        refuse_stray()
+        skipped.clear()
+        found.clear()
+        if adds:
+            revised = _next_revision(storage, template, records, scope_id, keep=case_set)
+            template = revised.template
+            copies = _carried_copies(storage, template, scope_id)
+    for source_result_id, dim, case in frozen_cases():
+        minted_case = _store_case(storage, template, scope_id, source_result_id, dim, case, seen, copies=copies)
         if minted_case is not None:
             cases.append(minted_case)
-    if from_labels:
-        labelled, skipped = _cases_of_labels(storage, scope_id, dims)
-        for source_result_id, case in labelled:
-            minted_case = _store_case(
-                storage, template, scope_id, source_result_id, case.dim, case, seen, copies=copies
-            )
-            if minted_case is not None:
-                cases.append(minted_case)
-    for run_id in run_ids:
-        run = storage.load_eval_run(run_id, scope_id)
-        if run is None:
-            raise NotFoundError("run", run_id, remedy=FIND_RUN)
-        # The run's keys, then its results by id a page at a time (the named ones alone when results are named),
-        # each frozen and let go before the next page is read.
-        keys = storage.query_eval_result_keys_by_run(run.id, scope_id)
-        for result in iter_keyed_results(
-            storage, scope_id, [key for key in keys if wanted is None or key.id in wanted]
-        ):
-            found.add(result.id)
-            try:
-                frozen = _cases_of_result(storage, template, run, result, scope_id, dims)
-            except (ValidationFailedError, NotFoundError) as refused:
-                skipped.append(JudgeCaseSkip(result_id=result.id, reason=str(refused)))
-                continue
-            if not frozen:
-                skipped.append(JudgeCaseSkip(result_id=result.id, reason="none of the dims asked for was judged on it"))
-            for dim, case in frozen:
-                minted_case = _store_case(storage, template, scope_id, result.id, dim, case, seen, copies=copies)
-                if minted_case is not None:
-                    cases.append(minted_case)
-    if wanted is not None and (stray := sorted(wanted - found)):
-        raise ValidationFailedError(
-            f"result(s) {stray} are not results of the named runs in this scope",
-            remedy=f"name results of those runs ({FIND_RESULT})",
-        )
+    refuse_stray()
     if not cases:
         empty = "the scope holds no person label" if from_labels else "the runs have no results"
         why = "; ".join(f"{skip.result_id}: {skip.reason}" for skip in skipped) or empty
@@ -717,7 +863,16 @@ def freeze_judge_cases(
         len(skipped),
         minted.label if minted is not None else "none",
     )
-    return JudgeCaseFreezeReport(template_id=template.id, cases=cases, case_set=minted, skipped=skipped)
+    return JudgeCaseFreezeReport(
+        template_id=template.id,
+        cases=cases,
+        case_set=minted,
+        skipped=skipped,
+        revision=revised.template.revision if revised is not None else None,
+        superseded_template_id=revised.superseded.id if revised is not None else None,
+        carried=revised.carried if revised is not None else {},
+        stranded_case_sets=revised.stranded if revised is not None else [],
+    )
 
 
 # =============================================================================

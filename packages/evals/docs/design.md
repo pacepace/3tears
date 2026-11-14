@@ -49,7 +49,10 @@ from a [cassette](adopting-a-host.md#cassettes-recording-and-replaying-tools).
 An arm's identity is a digest of every setting it ran with, defaults included, so a shared name never
 merges two configurations. Observations pool only within one [cell](concepts.md#cell): one arm under one
 rig. Observations whose rig was set beforehand (commissioned) never pool with ones whose rig was recorded
-as found (witnessed), because only the first can show cause.
+as found (witnessed), because only the first can show cause. An arm is keyed by the model it asked for, and a
+provider may answer one id with another model, so an arm's cell also holds one answering model: runs answered by
+different models, or by a model some responses did not name, stand in cells of their own and are each compared
+with the control alone.
 
 **Whatever the subject perceives is seeded world, so a case reads the same every run.**
 A seed carries every field production shows, with production's types. State the rig cannot seed is

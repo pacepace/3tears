@@ -367,8 +367,8 @@ class PassHatKCellReading(EvalBaseModel):
     headline, never dropped. A headline that is itself a cell of one run, beside other cells kept out, carries the
     reason it pools with nothing (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_alone`), so the point says
     its pass^k rests on one run whose record is incomplete; a point of one cell keeps nothing out and says nothing of
-    its cells. The point's composite, cost and latency still pool every run of the variant under one
-    rig (:data:`PASS_HAT_K_CELL_READING`).
+    its cells. The point's composite, cost and latency still pool every run of the variant
+    (:data:`PASS_HAT_K_CELL_READING`).
     """
 
     run_ids: list[str]
@@ -395,8 +395,8 @@ PASS_HAT_K_CELL_READING = (
     "An arm's frontier pass^k, with its interval, bar and verdict, reads its headline pass^k cell alone: one "
     "measurement context, template revision, apparatus provenance and served model, whatever cases each run covered "
     "and whenever it ran. A run of another such cell is named below with why and its own pass^k, and is kept out of "
-    "that headline only: the arm's tables, cells, composite, cost and latency still count it, pooling every run of the "
-    "variant under one rig."
+    "that headline only: the arm's tables, composite, cost and latency still count it, and so do its cells, which "
+    "pool the runs of the variant under one rig that one candidate model answered."
 )
 
 #: Each reason a pass^k cell stands apart, as a reader is told it.

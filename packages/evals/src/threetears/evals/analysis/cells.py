@@ -34,6 +34,13 @@ one axis over, and lands on the FIRST rule rather than this one: a state dimensi
 subject perceives that one run seeded and another merely witnessed is an apparatus
 dimension recorded at two values, so it refuses to merge and names itself.
 
+*One answering model, or no merge.* A variant is keyed by the model its launch asked for, and a
+provider may answer one id with another model (a floating alias moves on its side). So the
+observations of one variant under one rig pool only while the provider's responses named one
+answering model for all of them (:func:`split_on_served_model`): where they named two, or
+named one for some and none for others, each stands in a cell of its own, and a silence is
+never read as a match.
+
 **Nothing here names a host concept.** The dimensions, the levers and the measures are
 whatever the host's profile registered; this module does arithmetic over names it never
 interprets.
@@ -68,6 +75,15 @@ from threetears.evals.schema.models import ApparatusProvenance
 #: both match. 14: the spend ceiling (``max_cost_usd``) leaves the apparatus coordinate
 #: (``Sweepable.no_rig_coordinate``), so runs that differ only in their cap pool in one cell.
 CELL_MODEL_VERSION: int = 14
+
+#: The dimension a cell is split on where the observations of one variant under one rig were answered by more than
+#: one candidate model, or some by a model nothing named (:func:`split_on_served_model`). The confound of the same
+#: name is what a comparison ACROSS arms carries; this is what keeps one arm's cell to one answering model.
+SERVED_CANDIDATE_DIMENSION = "served_model:candidate"
+
+#: The level :data:`SERVED_CANDIDATE_DIMENSION` records for an observation whose candidate made no model call, in a
+#: cell that is split: it recorded that nothing answered, which is neither a model nor a silence.
+NO_CANDIDATE_CALL = "no candidate call"
 
 
 class ApparatusClass(EvalDocumentModel):
@@ -121,6 +137,18 @@ class ApparatusClass(EvalDocumentModel):
             "id, so cells never pool across the two: the distinction is what separates an experiment from a "
             "log, and an analysis that cannot see it will describe one as the other."
         )
+    )
+
+    rig_class_id: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The class of the rig alone, set only on a class split on which candidate model answered "
+            "(`served_model:candidate` among its dimensions): that model is the contestant's, so two cells whose "
+            "classes share this id were measured by one instrument and may be compared. None = this class is the "
+            "rig's own."
+        ),
     )
 
     @model_validator(mode="after")
@@ -241,6 +269,19 @@ class Cell(EvalDocumentModel):
     unknown_dimensions: list[str] = Field(
         default_factory=list,
         description="Apparatus dimensions none of these observations recorded — why this cell did not pool further.",
+    )
+    # Left out of the document when unset, so a cell that is not split is stored as it was before the field existed.
+    rig_class_id: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The apparatus class of the rig alone, set only where this arm's observations under one rig were "
+            "answered by more than one candidate model, or some by a model no response named, and so stand in a "
+            "cell per answering model (`apparatus_class_id` then digests `served_model:candidate` too). Cells "
+            "sharing this id were measured by one instrument: a split cell is compared with the control's cell of "
+            "this rig. None = the cell is not split and `apparatus_class_id` is its rig."
+        ),
     )
 
     @model_validator(mode="after")
@@ -506,6 +547,100 @@ def _refusal(
     return None
 
 
+def rig_of(cell: Cell) -> str:
+    """The class of the rig a cell was measured under, whatever model answered its contestant.
+
+    :param cell: A cell.
+    :ptype cell: Cell
+    :return: ``rig_class_id`` where the cell is split on the answering model, else its ``apparatus_class_id``. Two
+        cells are compared only when this agrees: a contrast across rigs differs by its instrument too.
+    :rtype: str
+    """
+    return cell.rig_class_id or cell.apparatus_class_id
+
+
+def split_on_served_model(
+    observations: Sequence[Observation],
+    classes: Mapping[str, ApparatusClass],
+    served: Mapping[str, str | None],
+) -> tuple[list[Observation], dict[str, ApparatusClass]]:
+    """Keep observations answered by different candidate models out of one cell.
+
+    A variant is keyed at launch by the model it asked for, before any response names the one that answered. So
+    the observations of one variant under one rig are read for what answered them, and where they do not all say
+    one thing they are classed apart, each under a class that adds :data:`SERVED_CANDIDATE_DIMENSION` to the rig's:
+    recorded at the answering model, or unrecorded where a response named none. The split classes keep the rig's id
+    (``rig_class_id``), so each is still compared with the control under that rig, and the pooling that follows
+    (:func:`pool_observations`) states the refusal between them as it does any other.
+
+    An observation whose candidate made no call reads as its batch does where every calling observation of that
+    variant in the batch says one thing (a result that failed before its call belongs with its run), and otherwise
+    as having made none, a level of its own.
+
+    Where every observation of a variant under a rig says one thing — one model, or all silent — nothing is split
+    and its class is the rig's, as it was before this rule: the dimension enters a class id only where it
+    separates something.
+
+    :param observations: Every observation under analysis.
+    :ptype observations: Sequence[Observation]
+    :param classes: Apparatus class id → the class, for every id the observations reference.
+    :ptype classes: Mapping[str, ApparatusClass]
+    :param served: Observation id → the model, or models, the provider's responses named for its candidate calls,
+        as one level; ``None`` where a response named none. An observation ABSENT here made no candidate call.
+    :ptype served: Mapping[str, str | None]
+    :return: The observations in the order given, those of a split cell re-classed, and every class they now
+        reference: the given ones and each split class.
+    :rtype: tuple[list[Observation], dict[str, ApparatusClass]]
+    :raises KeyError: An observation references an apparatus class not in ``classes``.
+    :raises ValueError: A host's own apparatus dimension is named :data:`SERVED_CANDIDATE_DIMENSION`, so a split
+        class could not say which of the two it recorded.
+    """
+    # What each calling observation of one batch and variant said, for the observations there that made no call.
+    said_by_batch: dict[tuple[str, str], set[str | None]] = defaultdict(set)
+    for obs in observations:
+        if obs.apparatus_ref is not None and obs.id in served:
+            said_by_batch[(obs.apparatus_ref, obs.variant_key)].add(served[obs.id])
+
+    def level_of(obs: Observation) -> tuple[bool, str | None]:
+        """``(called, level)``: the level is the answering model, or None where a response named none."""
+        if obs.id in served:
+            return True, served[obs.id]
+        said = (
+            said_by_batch.get((obs.apparatus_ref, obs.variant_key), set()) if obs.apparatus_ref is not None else set()
+        )
+        if len(said) == 1:
+            return True, next(iter(said))
+        return False, NO_CANDIDATE_CALL
+
+    levels = {obs.id: level_of(obs) for obs in observations}
+    said_by_cell: dict[tuple[str, str], set[tuple[bool, str | None]]] = defaultdict(set)
+    for obs in observations:
+        said_by_cell[(obs.variant_key, obs.apparatus_class_id)].add(levels[obs.id])
+
+    known: dict[str, ApparatusClass] = dict(classes)
+    placed: list[Observation] = []
+    for obs in observations:
+        if obs.apparatus_class_id not in classes:
+            raise KeyError(f"observation {obs.id} references unknown apparatus class {obs.apparatus_class_id}")
+        if len(said_by_cell[(obs.variant_key, obs.apparatus_class_id)]) < 2:
+            placed.append(obs)
+            continue
+        rig = classes[obs.apparatus_class_id]
+        if SERVED_CANDIDATE_DIMENSION in rig.recorded or SERVED_CANDIDATE_DIMENSION in rig.unknown_dimensions:
+            raise ValueError(
+                f"apparatus class {rig.apparatus_class_id} already holds a dimension named "
+                f"{SERVED_CANDIDATE_DIMENSION}, the name a cell is split on by the model that answered"
+            )
+        split = apparatus_class_of(
+            {**rig.recorded, SERVED_CANDIDATE_DIMENSION: levels[obs.id][1]},
+            provenance=rig.provenance,
+            dimensions=rig.unknown_dimensions,
+        ).model_copy(update={"rig_class_id": rig.rig_class_id or rig.apparatus_class_id})
+        known[split.apparatus_class_id] = split
+        placed.append(obs.model_copy(update={"apparatus_class_id": split.apparatus_class_id}))
+    return placed, known
+
+
 def pool_observations(
     observations: Sequence[Observation],
     classes: Mapping[str, ApparatusClass],
@@ -541,6 +676,7 @@ def pool_observations(
             **_replication_of(members),
             observation_ids=sorted(o.id for o in members),
             unknown_dimensions=classes[class_id].unknown_dimensions,
+            rig_class_id=classes[class_id].rig_class_id,
         )
         for (variant, class_id), members in sorted(grouped.items())
     ]
@@ -792,6 +928,8 @@ def subject_key_instabilities(observed: Iterable[tuple[str, str]]) -> list[Subje
 
 __all__ = [
     "CELL_MODEL_VERSION",
+    "NO_CANDIDATE_CALL",
+    "SERVED_CANDIDATE_DIMENSION",
     "ApparatusClass",
     "Cell",
     "NextExperiment",
@@ -801,6 +939,8 @@ __all__ = [
     "apparatus_class_of",
     "cell_ref",
     "pool_observations",
+    "rig_of",
+    "split_on_served_model",
     "subject_key_instabilities",
     "variant_of_cell_ref",
 ]

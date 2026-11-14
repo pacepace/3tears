@@ -942,8 +942,13 @@ answered by different models. Each candidate usage row records the model the res
 (`RoleUsage.served_model`), and the bundle reads it into `arm_served_models`: per arm, `one`, `pooled` (its
 numbers are a mixture) or `unrecorded`. Where one requested id was answered by more than one model across a
 comparison's runs, the comparison names a `served_model:candidate` confound (`undecided` where some response
-named no model). The arm still pools under its key, fixed at launch, so the mixture is disclosed, not split.
-The read lenses outside the bundle use the same reading (`ServedModelReading`): each frontier point and its
+named no model). The arm keeps its key, fixed at launch, and its cells do not pool the mixture: the arm's
+observations under one test setup stand in one cell per answering model, and those whose responses named no model
+in a cell apart from those that named one (`Cell.rig_class_id` names the setup they share). Each such cell is read
+against the control on its own, so no contrast averages two answering models, and `refused_merges` says why they
+stayed apart (`served_model:candidate`). An arm answered by one model throughout, or by none any response named,
+is one cell as before. The read lenses outside the bundle disclose the mixture and do not split it; they use the
+same reading (`ServedModelReading`): each frontier point and its
 verdict, each history series and each of its points, each pivot cell on a table grouped by `variant_key` or
 `model` (with `served_model_disclosure` on the table), and each side of `compare_two_runs` (`served_models_a`,
 `served_models_b`). `served_model` is also a coordinate: pivot on it to read each model alone, and the export

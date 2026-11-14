@@ -15,6 +15,7 @@ from threetears.evals.actions import Caller, MountedTool, eval_catalogue, read_o
 from threetears.evals.kernel import JUDGE_KIND
 from threetears.evals.ops import JudgeCaseAuthor, judge_case_author
 from threetears.evals.ops.judge_cases import JudgeCaseListing
+from threetears.evals.run import JudgeCaseFreezeReport
 from threetears.evals.schema.models import EvalTemplate, EvalTestCase
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT
 from packages.evals.tests.fixtures.toyhost.judge import FAITHFULNESS_DIM, toyhost_judged_template
@@ -49,12 +50,12 @@ def _vouches_for_itself(*, scope_id: str, caller: str, person: str) -> str | Non
     return person if person == caller else None
 
 
-def _author(host: Any, expected: int, output: str) -> str:
+def _author(host: Any, expected: int, output: str, template_id: str | None = None) -> JudgeCaseFreezeReport:
     # The operation writes only what the host attests: here, each caller authoring as itself.
     report = judge_case_author(
         replace(host.eval_host, attests_person=_vouches_for_itself),
         JudgeCaseAuthor(
-            template_id=_judge_template().id,
+            template_id=template_id or _judge_template().id,
             criterion_template_id=toyhost_judged_template().id,
             criterion=FAITHFULNESS_DIM,
             output=json.dumps({"invoice_number": output}),
@@ -65,7 +66,7 @@ def _author(host: Any, expected: int, output: str) -> str:
         TOYHOST_SCOPE,
         collected_by=_AUTHOR,
     )
-    return report.cases[0].test_case_id
+    return report
 
 
 def _host() -> Any:
@@ -78,19 +79,22 @@ def _host() -> Any:
 
 async def test_it_lists_every_stored_case_in_stored_order_with_its_author_verdict_and_liveness() -> None:
     host = _host()
-    first = off_loop(_author, host, 1, "INV-1")
-    second = off_loop(_author, host, 3, "INV-2")
+    held = off_loop(_author, host, 1, "INV-1")
+    # A second case is a case of the template's next revision, which carries the first: the listing is of that one.
+    added = off_loop(_author, host, 3, "INV-2", held.template_id)
+    template_id = added.template_id
+    first, second = added.carried[held.cases[0].test_case_id], added.cases[0].test_case_id
     storage = host.eval_host.storage
     stored = off_loop(storage.load_test_case, second, TOYHOST_SCOPE)
     assert stored is not None
     off_loop(storage.save_test_case, stored.model_copy(update={"archived": True}))
 
-    outcome = await _list(host, _judge_template().id)
+    outcome = await _list(host, template_id)
 
     assert not outcome.is_error, outcome.text
     listing = JudgeCaseListing.model_validate(outcome.structured)
     assert [case.test_case_id for case in listing.cases] == [
-        case.id for case in off_loop(storage.query_test_cases, TOYHOST_SCOPE, template_id=_judge_template().id)
+        case.id for case in off_loop(storage.query_test_cases, TOYHOST_SCOPE, template_id=template_id)
     ]
     by_id = {case.test_case_id: case for case in listing.cases}
     assert set(by_id) == {first, second} and listing.unreadable == []

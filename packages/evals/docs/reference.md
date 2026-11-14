@@ -438,7 +438,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`fold_metered_cell`** · *host contract* · function · Fold one cell's action-seam tally into the external role's rows.
   <br>`fold_metered_cell(external_usage: RoleUsageLedger, cell: MeteredCallTally | None) -> None`
 - **`freeze_judge_cases`** · function · Freeze (output, criterion, labels) cases from stored judged results, or written by hand, into a judge template.
-  <br>`freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str] = (), scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None, from_labels: bool = False, authored: Sequence[AuthoredJudgeCase] = ()) -> JudgeCaseFreezeReport`
+  <br>`freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str] = (), scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None, from_labels: bool = False, authored: Sequence[AuthoredJudgeCase] = (), revise: bool = False) -> JudgeCaseFreezeReport`
 - **`get_result_trace`** · *host contract* · function · Load one result's trace payload, or `None` when it stored none.
   <br>`get_result_trace(storage: ResultStore, result: EvalResult) -> EvalTrace | None`
 - **`get_run`** · function · Load an eval run by id within its scope, whole.

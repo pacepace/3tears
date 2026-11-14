@@ -787,6 +787,7 @@ def multiple_comparisons(
     profile: HostProfile,
     run_margins: Mapping[str, float] | None = None,
     contended: Collection[CellKey] = frozenset(),
+    rigs: Mapping[str, str] | None = None,
     rubric_threshold: int,
 ) -> tuple[MultipleComparisons, GuardrailReadings, list[FloorContrast]]:
     """Test each contrast against the control in the aspect's one family, decide every guardrail, and carry what the
@@ -795,7 +796,9 @@ def multiple_comparisons(
     The aspect's family is every comparison its question could draw a verdict from: each contrast cell against
     the control cell under the same rig (a contrast across rigs differs by its instrument too, so it is
     not this test), on every reading on the aspect's merit axes (:func:`_family_readings`), whenever the question
-    was asked. With no question asked it is the exploratory family, every reading on a merit axis. The family is
+    was asked. An arm whose runs were answered by more than one candidate model holds a cell per answering model
+    (:func:`~threetears.evals.analysis.cells.split_on_served_model`), and each is a contrast of its own against the
+    control under that rig: no comparison pools two answering models. With no question asked it is the exploratory family, every reading on a merit axis. The family is
     corrected by Holm's method over the comparisons that carried a p, and each verdict is read off its
     adjusted p, so a family of ten cannot hand the writer a chance "difference" as a finding.
 
@@ -840,6 +843,9 @@ def multiple_comparisons(
     :param contended: The cells holding latency read under concurrency, which the bundle withheld — named as the
         reason a comparison or a guardrail on elapsed time could not be read, where it could not.
     :ptype contended: Collection[CellKey]
+    :param rigs: Apparatus class id → the class of its rig alone, for each class split on the answering model
+        (:func:`~threetears.evals.analysis.cells.rig_of`); a class absent here is its own rig.
+    :ptype rigs: Mapping[str, str] | None
     :param rubric_threshold: The 1–5 level a judged dimension must reach for a trial to pass, which the overall pass
         rate's per-case shares read (:func:`_trial_pass_counts`), as the scoreboard does.
     :ptype rubric_threshold: int
@@ -858,7 +864,7 @@ def multiple_comparisons(
                 [],
                 withheld=_NO_CONTROL_TO_HOLD_AGAINST if guardrail_readings else None,
             ),
-            _choice_contrasts(results_by_cell, rubric_threshold=rubric_threshold, catalog=catalog),
+            _choice_contrasts(results_by_cell, rubric_threshold=rubric_threshold, catalog=catalog, rigs=rigs or {}),
         )
     axes_asked = question_axes(declared)
     # An aspect that asked nothing is not thereby licensed to report chance differences: its family is every
@@ -892,7 +898,7 @@ def multiple_comparisons(
         for control_key in sorted(values)
         if control_key[0] == control_variant
         for contrast_key in sorted(values)
-        if contrast_key[1] == control_key[1] and contrast_key[0] not in not_contrasts
+        if _rig(contrast_key, rigs) == _rig(control_key, rigs) and contrast_key[0] not in not_contrasts
     ]
 
     # One answer per pair, stated on every reading the pair is compared on: which pair diverged is a fact
@@ -983,11 +989,21 @@ def multiple_comparisons(
     )
 
 
+def _rig(key: CellKey, rigs: Mapping[str, str] | None) -> str:
+    """The rig a cell was measured under: its class's rig where the class is split on the answering model."""
+    return (rigs or {}).get(key[1], key[1])
+
+
 def _choice_contrasts(
-    results_by_cell: dict[CellKey, list[ResultView]], *, rubric_threshold: int, catalog: dict[str, MetricDescriptor]
+    results_by_cell: dict[CellKey, list[ResultView]],
+    *,
+    rubric_threshold: int,
+    catalog: dict[str, MetricDescriptor],
+    rigs: Mapping[str, str],
 ) -> list[FloorContrast]:
     """With no control, every pair of arms under one rig on the overall pass rate, per case: what a choice's pairwise
-    readings read. The pair's ``control`` is the arm first in variant-key order, a position and never a role.
+    readings read. The pair's ``control`` is the arm first in variant-key order, a position and never a role. Two
+    cells of ONE arm, split on the model that answered it, are no pair: a choice is between arms.
 
     :return: One contrast per pair of cells under one rig with two cases a side, in variant-key order.
     :rtype: list[FloorContrast]
@@ -1010,7 +1026,7 @@ def _choice_contrasts(
         )
         for index, first in enumerate(keys)
         for second in keys[index + 1 :]
-        if first[1] == second[1] and values[first] and values[second]
+        if first[0] != second[0] and _rig(first, rigs) == _rig(second, rigs) and values[first] and values[second]
     ]
     return [contrast for contrast in contrasts if contrast is not None]
 

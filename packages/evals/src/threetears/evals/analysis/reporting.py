@@ -266,13 +266,30 @@ def served_model_coordinate(reading: ResultServedReading | None) -> str | None:
     return _SERVED_MODEL_JOIN.join(sorted(reading.served) + ([SERVED_MODEL_UNRECORDED] if reading.unrecorded else []))
 
 
+def served_level(reading: ResultServedReading) -> str | None:
+    """One result's answering model as the level a campaign's cell is split on, or ``None`` where it cannot say.
+
+    :param reading: The result's reading, from :func:`served_reading`.
+    :ptype reading: ResultServedReading
+    :return: The named models, sorted and joined with `` + `` (a result answered by two is itself a mixture, and a
+        level of its own). ``None`` where some candidate call's response named no model: a silence beside a name
+        is still a silence, so the result is not placed with those the name alone describes.
+    :rtype: str | None
+    """
+    if reading.unrecorded or not reading.served:
+        return None
+    return _SERVED_MODEL_JOIN.join(sorted(reading.served))
+
+
 class ServedModelReading(EvalBaseModel):
     """Which models answered the candidate calls a contestant, cell or row pooled (#684).
 
     A contestant is keyed by the model id its launch ASKED for, and a floating alias resolves on the provider's
-    side, so runs of one contestant can have been answered by different models and still pool as one. The mixture
-    is disclosed, not split: the key is fixed at launch, before any response names a model. The bundle's per-arm
-    reading (``AnalysisContextBundle.arm_served_models``) is this one, keyed by arm.
+    side, so runs of one contestant can have been answered by different models under one key. A campaign's cells
+    are split on it (:func:`~threetears.evals.analysis.cells.split_on_served_model`), so no cell and no contrast
+    pools two answering models; this reading is what says so per ARM, across its cells, and what the read lenses
+    outside the bundle disclose where they group by contestant. The bundle's per-arm reading
+    (``AnalysisContextBundle.arm_served_models``) is this one, keyed by arm.
     """
 
     served_models: list[str] = Field(

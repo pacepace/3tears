@@ -232,9 +232,13 @@ them as one condition.
 #### Apparatus class
 One configuration of the rig as recorded on the runs (`ApparatusClass`). Two observations pool only when
 their variant matches and their apparatus falls in the same class; an arm measured under two classes is
-named with `(test setup <digest>)` in a report. These cells, and every composite, cost and latency, pool on
-variant x rig alone. pass^k splits further: on the measurement context, the template revision and the model
-that answered (see [Measurement context](#measurement-context)).
+named with `(test setup <digest>)` in a report. These cells, and every contrast read between them, pool on
+variant x rig, and on the candidate model that answered: an arm whose runs under one rig were answered by more than
+one model, or by a model some responses did not name, holds a cell per answering model, each a class of its own
+that names the rig it shares (`Cell.rig_class_id`) and is compared with the control under that rig. An arm answered
+by one model throughout, or by none any response named, is one cell under the rig's own class. pass^k splits
+further: on the measurement context and the template revision, and a run whose responses named no model stands
+alone there (see [Measurement context](#measurement-context)).
 
 #### Apparatus settings
 Rig values your host declares and a launch may set (`apparatus_settings`), so one template can be run at two

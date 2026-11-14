@@ -670,6 +670,16 @@ the reason, if its run did not record its judging or its template was edited sin
 criterion and labels again returns the stored case. A re-freeze after a label changed mints a new case, and the
 new case-set version lists only the new one. The action is `judge_cases_freeze`.
 
+An operator's write that adds a case to a judge template already holding cases (`judge_cases_freeze`, or
+`judge_case_author` below) writes the template's next revision, as a definitions reset does, and the case is a case
+of that revision. It carries every case of the revision it supersedes, each copy naming its source
+(`EvalTestCase.carried_from`), retired ones still retired. The receipt names the new revision (`template_id`,
+`revision`), the one it superseded, each carried case's copy (`carried`) and each case set still listing the
+superseded revision's cases (`stranded_case_sets`). Launch and write the next case into the new `template_id`: a
+write into a superseded revision is refused, naming the newest. Runs of two revisions never pool, so a judge's runs
+before the case and after it are never read as one battery. A template's first cases, and a write that adds
+nothing, write no revision. Your own code's `freeze_judge_cases` writes in place unless it passes `revise=True`.
+
 **Freeze from the labels alone, across a core reset.** `freeze_judge_cases(..., from_labels=True)` (and
 `from_labels: true` on the action, with no `judged_run_ids`) reads no run, result or trace. It groups the scope's
 person ratings by label key, one case per output and criterion, and builds each case from the content its labels

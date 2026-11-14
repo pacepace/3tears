@@ -4118,7 +4118,7 @@
     },
     "threetears.evals.run.freeze_judge_cases": {
       "kind": "function",
-      "signature": "freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str] = (), scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None, from_labels: bool = False, authored: Sequence[AuthoredJudgeCase] = ()) -> JudgeCaseFreezeReport",
+      "signature": "freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str] = (), scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None, from_labels: bool = False, authored: Sequence[AuthoredJudgeCase] = (), revise: bool = False) -> JudgeCaseFreezeReport",
       "tier": "stable"
     },
     "threetears.evals.run.FrozenJudgeCase": {

@@ -461,10 +461,12 @@ class ArmServedModel(EvalDocumentModel):
     """Which model answered one arm's candidate calls, as the provider's responses named it.
 
     An arm is keyed by the model id its launch ASKED for, and a floating alias is resolved on the
-    provider's side, so two runs of one arm months apart can have been answered by different models and
-    still pool as one arm. Only the response names the model that answered (``RoleUsage.served_model``),
+    provider's side, so two runs of one arm months apart can have been answered by different models under
+    one key. Only the response names the model that answered (``RoleUsage.served_model``),
     so this reads that and nothing else: never the requested id standing in for a response that named
-    none.
+    none. It is read per ARM: the arm's cells are split on the answering model
+    (:func:`~threetears.evals.analysis.cells.split_on_served_model`), so ``pooled`` here says the arm holds a cell
+    per model, and its arm-level counts (the scoreboard's) are over all of them.
     """
 
     variant_key: str = Field(min_length=1, description="The arm, as `arms` and `design` key it.")
