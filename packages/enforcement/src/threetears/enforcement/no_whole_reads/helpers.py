@@ -76,6 +76,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "read_by",
         "read_row",
         "read_value",
+        "read_nearest",
         "read_joined",
         "read_by_joined",
         "read_link_chain",
@@ -111,6 +112,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         *(
             "read_by_statement",
             "read_row_statement",
+            "read_nearest_statement",
             "read_keyed_statements",
             "keyset_page_statement",
             "keyset_rows_statement",
@@ -129,6 +131,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
 BUILDER_CALLS: Final[Mapping[str, str]] = {
     "read_by_statement": "read_by",
     "read_row_statement": "read_row",
+    "read_nearest_statement": "read_nearest",
     "read_keyed_statements": "read_keyed",
     "keyset_page_statement": "keyset_page",
     "keyset_rows_statement": "keyset_rows",
@@ -518,6 +521,22 @@ def _read_by(call: ast.Call) -> list[str]:
     filtered, _ = _filters(call, place)
     order = _written_order(_argument(call, "order", None))
     return [f"SELECT {_selected_list(call)} FROM {table} AS t{_where([*pinned, *filtered])}{order}", *own]
+
+
+def _read_nearest(call: ast.Call) -> list[str]:
+    """the rows nearest a vector (``read_nearest``): its pins and ``where=`` fragments as :func:`_read_by` judges them,
+    ordered by the distance from a bound vector under its ``LIMIT``, as an approximate-nearest-neighbour index on the
+    column answers it. A ``nearest=`` the walk cannot read (not a literal ``Nearest(...)``) is judged by its pins alone,
+    unordered, as the read pinning them."""
+    (statement, *own) = _read_by(call)
+    node = _argument(call, "nearest", None)
+    if not (isinstance(node, ast.Call) and _name(node) == "Nearest"):
+        return [statement, *own]
+    column = _text(_argument(node, "column", 0), "nearest")
+    operator = _argument(node, "operator", 2)
+    distance = operator.value if isinstance(operator, ast.Constant) and isinstance(operator.value, str) else "<=>"
+    place = 1 + max((int(found) for found in re.findall(r"\$(\d+)", statement)), default=0)
+    return [f"{statement} ORDER BY {_quoted(column)} {distance} ${place} LIMIT ${place + 1}", *own]
 
 
 def _written_order(node: ast.expr | None) -> str:
@@ -1203,6 +1222,7 @@ _SYNTHESIZERS: Final = {
     "read_by": _read_by,
     "read_row": _read_by,
     "read_value": _read_by,
+    "read_nearest": _read_nearest,
     "read_joined": _read_joined,
     "read_by_joined": _read_by_joined,
     "read_link_chain": _read_link_chain,
@@ -1253,6 +1273,7 @@ _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
             "read_reached",
             "read_row",
             "read_value",
+            "read_nearest",
             "any_rows",
             "keyset_page",
             "keyset_rows",
@@ -1276,6 +1297,7 @@ _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
             "update_before",
             "read_row_statement",
             "read_by_statement",
+            "read_nearest_statement",
             "read_keyed_statements",
             "keyset_page_statement",
             "keyset_rows_statement",

@@ -5120,5 +5120,272 @@
   "sets": [],
   "shape": "list",
   "table": "scheduled_jobs"
+ },
+ {
+  "args": [
+   "self.customer_id",
+   "self.datasource_names"
+  ],
+  "columns": [
+   "id"
+  ],
+  "function": "SchemaPrimingIntegration.datasource_ids",
+  "helper": "read_by",
+  "line": 141,
+  "method": "fetch",
+  "new_call": "read_by(pool, 'datasources', by={'name': AnyOf(self.datasource_names, cast=None), 'status': 'active'}, where=[Fragment(\"( customer_id = $1 OR visibility = 'public' OR EXISTS ( SELECT 1 FROM datasource_customers dc WHERE dc.datasource_id = t.id AND dc.customer_id = $1 ))\", (self.customer_id,))], columns=('id',), records=True)",
+  "old_sql": "SELECT id FROM datasources WHERE name = ANY($2) AND status = 'active' AND (  customer_id = $1  OR visibility = 'public'  OR EXISTS (       SELECT 1 FROM datasource_customers dc        WHERE dc.datasource_id = datasources.id AND dc.customer_id = $1  ))",
+  "order": [],
+  "path": "packages/datasources/src/threetears/datasources/schema_priming.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "name",
+    "compared": [],
+    "kind": "any",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "status",
+    "compared": [],
+    "kind": "literal",
+    "literal": "active",
+    "param": null,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "datasources",
+  "where": [
+   {
+    "cast": null,
+    "column": "",
+    "compared": [
+     "customer_id"
+    ],
+    "kind": "guard",
+    "literal": "( customer_id = $1 OR visibility = 'public' OR EXISTS ( SELECT 1 FROM datasource_customers dc WHERE dc.datasource_id = t.id AND dc.customer_id = $1 ))",
+    "param": null,
+    "params": [
+     1
+    ]
+   }
+  ]
+ },
+ {
+  "args": [
+   "embedding_str",
+   "agent_id",
+   "user_id",
+   "top_k"
+  ],
+  "clauses": [
+   {
+    "at": 515,
+    "build": "threetears.agent.memory.read_filter:filter_clause",
+    "call": "clause_guards(filter_clause, self.read_filter, 't.tags')",
+    "leading": [
+     "memories.tags"
+    ],
+    "respelled": [
+     "t.tags"
+    ],
+    "subjects": "tests.integration.clause_subjects:read_filters"
+   }
+  ],
+  "columns": [
+   "memory_id",
+   "content",
+   "type_memory"
+  ],
+  "function": "MemoriesCollection.find_similar_for_dedup",
+  "helper": "read_nearest",
+  "key_from": null,
+  "limit": {
+   "param": 4
+  },
+  "line": 1521,
+  "method": "fetch",
+  "nearest": {
+   "column": "embedding",
+   "operator": "<=>",
+   "param": 1,
+   "schema": "public",
+   "similarity": "similarity"
+  },
+  "new_call": "read_nearest(self.l3_pool, 'memories', by={'agent_id': agent_id, 'user_id': user_id}, where=[Fragment('embedding IS NOT NULL', ()), Fragment('(superseded_by IS NULL OR NOT EXISTS ( SELECT 1 FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by))', ()), Fragment(\"NOT (COALESCE(tags, '[]'::jsonb) ? 'retracted')\", ()), *clause_guards(filter_clause, self.read_filter, 't.tags')], nearest=Nearest('embedding', embedding_str, similarity='similarity'), limit=top_k, columns=('memory_id', 'content', 'type_memory'), records=True)",
+  "old_sql": "\n            SELECT memory_id, content, type_memory,\n                   1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity\n            FROM memories\n            WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL\n              AND (superseded_by IS NULL OR NOT EXISTS (\n                    SELECT 1 FROM memories g\n                    WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))\n              AND NOT (COALESCE(tags, '[]'::jsonb) ? 'retracted')\n            ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector\n            LIMIT $4\n            ",
+  "order": [],
+  "path": "packages/agent/memory/src/threetears/agent/memory/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "user_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 3,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "first",
+  "table": "memories",
+  "where": [
+   {
+    "cast": null,
+    "column": "",
+    "compared": [],
+    "kind": "guard",
+    "literal": "embedding IS NOT NULL",
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "",
+    "compared": [],
+    "kind": "guard",
+    "literal": "(superseded_by IS NULL OR NOT EXISTS ( SELECT 1 FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by))",
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "",
+    "compared": [],
+    "kind": "guard",
+    "literal": "NOT (COALESCE(tags, '[]'::jsonb) ? 'retracted')",
+    "param": null,
+    "params": []
+   }
+  ]
+ },
+ {
+  "args": [
+   "json.dumps(embedding)",
+   "agent_id",
+   "user_id",
+   "message_ids",
+   "top_k"
+  ],
+  "clauses": [
+   {
+    "at": 600,
+    "build": "threetears.agent.memory.read_filter:filter_clause",
+    "call": "clause_guards(filter_clause, self.read_filter, 't.tags')",
+    "leading": [
+     "memories.tags"
+    ],
+    "respelled": [
+     "t.tags"
+    ],
+    "subjects": "tests.integration.clause_subjects:read_filters"
+   }
+  ],
+  "columns": [
+   "memory_id",
+   "content",
+   "type_memory",
+   "evergreen",
+   "date_created",
+   "tags"
+  ],
+  "function": "MemoriesCollection.find_same_event",
+  "helper": "read_nearest",
+  "key_from": null,
+  "limit": {
+   "param": 5
+  },
+  "line": 1587,
+  "method": "fetch",
+  "nearest": {
+   "column": "embedding",
+   "operator": "<=>",
+   "param": 1,
+   "schema": "public",
+   "similarity": "similarity"
+  },
+  "new_call": "read_nearest(self.l3_pool, 'memories', by={'agent_id': agent_id, 'user_id': user_id, 'message_id_source': AnyOf(message_ids, cast='uuid')}, where=[Fragment('embedding IS NOT NULL', ()), Fragment('(superseded_by IS NULL OR NOT EXISTS ( SELECT 1 FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by))', ()), Fragment(\"NOT (COALESCE(tags, '[]'::jsonb) ? 'retracted')\", ()), *clause_guards(filter_clause, self.read_filter, 't.tags')], nearest=Nearest('embedding', json.dumps(embedding), similarity='similarity'), limit=top_k, columns=('memory_id', 'content', 'type_memory', 'evergreen', 'date_created', 'tags'), records=True)",
+  "old_sql": "\n            SELECT memory_id, content, type_memory, evergreen, date_created, tags,\n                   1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity\n            FROM memories\n            WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL\n              AND message_id_source = ANY($4::uuid[])\n              AND (superseded_by IS NULL OR NOT EXISTS (\n                    SELECT 1 FROM memories g\n                    WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))\n              AND NOT (COALESCE(tags, '[]'::jsonb) ? 'retracted')\n            ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector\n            LIMIT $5\n            ",
+  "order": [],
+  "path": "packages/agent/memory/src/threetears/agent/memory/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "user_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 3,
+    "params": []
+   },
+   {
+    "cast": "uuid",
+    "column": "message_id_source",
+    "compared": [],
+    "kind": "any",
+    "literal": null,
+    "param": 4,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "first",
+  "table": "memories",
+  "where": [
+   {
+    "cast": null,
+    "column": "",
+    "compared": [],
+    "kind": "guard",
+    "literal": "embedding IS NOT NULL",
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "",
+    "compared": [],
+    "kind": "guard",
+    "literal": "(superseded_by IS NULL OR NOT EXISTS ( SELECT 1 FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by))",
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "",
+    "compared": [],
+    "kind": "guard",
+    "literal": "NOT (COALESCE(tags, '[]'::jsonb) ? 'retracted')",
+    "param": null,
+    "params": []
+   }
+  ]
  }
 ]

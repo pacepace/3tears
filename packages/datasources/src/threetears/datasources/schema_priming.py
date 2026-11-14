@@ -30,6 +30,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+from threetears.core.keyed import AnyOf, Fragment, read_by
 from threetears.observe import get_logger
 
 __all__ = ["SchemaPrimingIntegration"]
@@ -137,19 +138,18 @@ class SchemaPrimingIntegration:
         # customers granted via datasource_customers). admit:
         # the agent's OWN customer rows, PUBLIC shared rows, and
         # RESTRICTED shared rows explicitly granted to this customer.
-        rows = await pool.fetch(
-            "SELECT id FROM datasources "
-            "WHERE name = ANY($2) AND status = 'active' AND ("
-            "  customer_id = $1"
-            "  OR visibility = 'public'"
-            # the grant by its whole key (datasource_customers' primary key), for each named row
-            "  OR EXISTS ("
-            "       SELECT 1 FROM datasource_customers dc"
-            "        WHERE dc.datasource_id = datasources.id AND dc.customer_id = $1"
-            "  )"
-            ")",
-            self.customer_id,
-            self.datasource_names,
+        rows = await read_by(
+            pool,
+            "datasources",
+            by={"name": AnyOf(self.datasource_names, cast=None), "status": "active"},
+            where=[
+                Fragment(
+                    "( customer_id = $1 OR visibility = 'public' OR EXISTS ( SELECT 1 FROM datasource_customers dc WHERE dc.datasource_id = t.id AND dc.customer_id = $1 ))",
+                    (self.customer_id,),
+                )
+            ],
+            columns=("id",),
+            records=True,
         )
         resolved = [row["id"] for row in rows]
         # only memoize a NON-EMPTY result. a successful zero-row query means

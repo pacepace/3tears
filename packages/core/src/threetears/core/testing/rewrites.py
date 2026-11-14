@@ -76,6 +76,7 @@ from threetears.core.keyed import (
     Joined,
     Max,
     Min,
+    Nearest,
     Sum,
     keyset_page,
     Selected,
@@ -88,6 +89,7 @@ from threetears.core.keyed import (
     index_hint,
     read_by,
     read_by_joined,
+    read_nearest,
     read_link_chain,
     read_reached,
     read_row,
@@ -626,7 +628,7 @@ def _guarded_params(
 ) -> tuple[Callable[[Seeded], dict[str, Any]], list[Any]]:
     """:func:`row_factory`'s row and parameters for a read whose guards name parameters too: the pins numbered
     ``$1..`` among themselves for the row factory, each then placed at its own number, the guards' own after."""
-    if not entry.get("where"):
+    if not entry.get("where") and not entry.get("nearest"):
         return row_factory(shape, entry, overrides, nulled=nulled)
     numbered = sorted({pin["param"] for pin in entry["pins"] if pin["kind"] in _BOUND})
     compact = {number: place + 1 for place, number in enumerate(numbered)}
@@ -948,7 +950,10 @@ async def _assert_point_same(
     table = entry["table"]
     await _drop_checks(conn, table)
     shape = await _catalog(conn, table)
-    row, params = _guarded_params(shape, entry, (overrides or {}).get(table, {}), nulled=nulled)
+    seeds = dict((overrides or {}).get(table, {}))
+    if entry.get("nearest"):
+        seeds[entry["nearest"]["column"]] = _nearby(shape, entry["nearest"]["column"])
+    row, params = _guarded_params(shape, entry, seeds, nulled=nulled)
     by = _by(entry, params)
     where = _where(entry, params)
     columns = _selected(entry["columns"])
@@ -956,6 +961,9 @@ async def _assert_point_same(
     order = [_sort(term) for term in entry.get("order", ())]
     await conn.execute("SET session_replication_role = replica")
     try:
+        if entry.get("nearest"):
+            await _assert_nearest_same(conn, entry, row, params, by, where, shape)
+            return
         if entry.get("shape") == "first":
             await _assert_first_same(conn, entry, row, params, by, order, where)
             return
@@ -1180,6 +1188,76 @@ async def _assert_first_same(
             order_by=[term["column"] for term in own],
             ordered=True,
             limited=True,
+        )
+
+
+def _vector_width(shape: CatalogTable, column: str) -> int:
+    """the dimensions a vector column declares (``vector(1536)``)."""
+    declared = shape.columns.get(column)
+    width = re.search(r"\((\d+)\)", declared.type) if declared is not None else None
+    if width is None:
+        raise AssertionError(f"{column}: no vector column of a declared width")
+    return int(width.group(1))
+
+
+def _nearby(shape: CatalogTable, column: str) -> Callable[[Seeded], Any]:
+    """a nearest proof's vector for each seeded row: ``[1, tie, 0, ...]``, so each row's distance from the proof's
+    vector ``[1, 0, ...]`` (L2 and cosine alike) grows with its sort value, and rows tied there stand at one distance."""
+    width = _vector_width(shape, column)
+
+    def vector(seed: Seeded) -> str:
+        return "[" + ",".join(["1", str(seed.tie), *["0"] * (width - 2)]) + "]"
+
+    return vector
+
+
+async def _assert_nearest_same(
+    conn: Any,
+    entry: Mapping[str, Any],
+    row: Callable[[Seeded], dict[str, Any]],
+    params: list[Any],
+    by: dict[str, Any],
+    where: list[Fragment],
+    shape: CatalogTable,
+) -> None:
+    """a nearest-rows entry (``read_nearest``): its rows nearest the proof's vector ``[1, 0, ...]``, under the old
+    statement's ``LIMIT``, are the old statement's, compared nearest first by the similarity both select (exact before
+    the boundary, the similarity at it, where rows tie)."""
+    near = entry["nearest"]
+    if near["similarity"] is None:
+        raise AssertionError(f"{entry['table']}: a nearest read selecting no similarity cannot be compared by distance")
+    vector = "[" + ",".join(["1", *["0"] * (_vector_width(shape, near["column"]) - 1)]) + "]"
+    limit = entry["limit"]
+    numbers = [near["param"], *([limit["param"]] if "param" in limit else [])]
+    full = [*params, *([None] * (max([len(params), *numbers]) - len(params)))]
+    full[near["param"] - 1] = vector
+    rows = _TOP_N
+    if "param" in limit:
+        full[limit["param"] - 1] = _TOP_N
+    else:
+        rows = int(limit["literal"])
+    columns = _selected(entry["columns"])
+    nearest = Nearest(
+        near["column"], vector, operator=near["operator"], schema=near["schema"], similarity=near["similarity"]
+    )
+    for case in _clause_cases(entry["old_sql"], full, where, entry):
+
+        async def nearest_rows(c: Any, guards: list[Fragment] = case.where) -> list[Any]:
+            return await read_nearest(
+                c, entry["table"], by=by, nearest=nearest, limit=rows, columns=columns, where=guards, records=True
+            )
+
+        await assert_same_results(
+            conn,
+            table=entry["table"],
+            row=row,
+            old_sql=case.old_sql,
+            params=case.params,
+            helper=nearest_rows,
+            order_by=[near["similarity"]],
+            ordered=True,
+            limited=True,
+            related=case.related,
         )
 
 
@@ -1602,6 +1680,8 @@ def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
         return isinstance(column, ast.Constant) and column.value == entry["columns"][0]
     if entry.get("shape") == "first" and not _first_says(keywords, entry):
         return False
+    if entry.get("nearest") and not _nearest_says(keywords.get("nearest"), entry):
+        return False
     if entry.get("joins"):
         if not _joins_say(keywords.get("joins"), entry["joins"]):
             return False
@@ -1710,6 +1790,20 @@ def _first_says(keywords: Mapping[str | None, ast.expr], entry: Mapping[str, Any
         return False
     every = keywords.get("columns")
     return entry["columns"] is not None or (isinstance(every, ast.Constant) and every.value is None)
+
+
+def _nearest_says(nearest: ast.expr | None, entry: Mapping[str, Any]) -> bool:
+    """whether a ``read_nearest`` call's ``nearest=`` is the entry's: the same column, the vector its statement bound
+    at the recorded parameter, the same distance, schema and similarity's name."""
+    near = entry["nearest"]
+    parts = [repr(near["column"]), entry["args"][near["param"] - 1]]
+    if near["operator"] != "<=>":
+        parts.append(f"operator={near['operator']!r}")
+    if near["schema"] != "public":
+        parts.append(f"schema={near['schema']!r}")
+    if near["similarity"] is not None:
+        parts.append(f"similarity={near['similarity']!r}")
+    return nearest is not None and _same_expression(nearest, f"Nearest({', '.join(parts)})")
 
 
 def _joins_say(joins: ast.expr | None, recorded: Sequence[Mapping[str, Any]]) -> bool:

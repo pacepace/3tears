@@ -50,6 +50,7 @@ from threetears.conversations.migrations import register as register_conversatio
 from threetears.core.coordination.migrations import register as register_coordination
 from threetears.core.data.migrations import MigrationRunner
 from threetears.datasources.collections import (
+    DATASOURCE_CUSTOMERS_SCHEMA,
     CapabilitySourceCollection,
     DataSourceColumnCollection,
     DataSourceRelationCollection,
@@ -71,6 +72,8 @@ _DECLARED = (
     DataSourceSchemaDigestCollection.schema,
     DataSourceRelationCollection.schema,
     TableTemplateCollection.schema,
+    # the grants a datasource read's EXISTS guard reads (schema_priming's datasource_ids), declared beside them
+    DATASOURCE_CUSTOMERS_SCHEMA,
     ImpersonationGateCollection.schema,
 )
 

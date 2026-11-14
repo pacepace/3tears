@@ -5,7 +5,8 @@ filter :class:`AnyOf`, the trusted :class:`Fragment` and :class:`Selected`, the 
 :class:`KeyBatch`, a page's :class:`Sort`, a step's :class:`Match`, and the value types the runners answer) and the
 builders writing each shape's SQL text and binds are pure, so they live here, in the package that depends on nothing:
 
-- a point read: :func:`read_by_statement`, :func:`read_row_statement`;
+- a point read: :func:`read_by_statement`, :func:`read_row_statement`; the rows nearest a vector:
+  :func:`read_nearest_statement` (:class:`Nearest`);
 - a keyed batch: :func:`read_keyed_statements` (:func:`keyed_read_statement`, :func:`key_chunks`);
 - a listing's page, and a listing read to its end: :func:`keyset_page_statement` (:meth:`KeyPage.cut`),
   :func:`keyset_rows_statement` (:func:`next_past`); a visibility probe :func:`exists_keyed`;
@@ -47,7 +48,9 @@ from threetears.interfaces.keyed.connection import (
     KeyedConnection,
 )
 from threetears.interfaces.keyed.point import (
+    Nearest,
     read_by_statement,
+    read_nearest_statement,
     read_row_statement,
 )
 from threetears.interfaces.keyed.rows import (
@@ -181,6 +184,7 @@ __all__ = [
     "Rel",
     "SQL_DIALECT_ATTRIBUTE",
     "SQL_TYPE",
+    "Nearest",
     "Selected",
     "Sort",
     "StageMode",
@@ -209,6 +213,7 @@ __all__ = [
     "quote_identifier",
     "quoted_table",
     "read_by_statement",
+    "read_nearest_statement",
     "read_keyed_statements",
     "read_row_statement",
     "relation",

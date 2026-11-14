@@ -245,6 +245,10 @@ class PointSql:
     #: "items"}`` (its pins and guards as :class:`Pin` dicts in the statement's numbering, ``sql`` its own statement
     #: numbered from ``$1``, each item ``{"name", "function", "column"}``); none for any other read
     parts: tuple[dict[str, Any], ...] = ()
+    #: a nearest-rows read's (shape ``first``, ``ORDER BY <column> OPERATOR(<schema>.<op>) $n::text::<schema>.vector
+    #: LIMIT ...``): ``{"column", "param", "operator", "schema", "similarity"}`` (``similarity`` the name the select list
+    #: gives ``1 - <distance>``, or None); None for any other read
+    nearest: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -334,6 +338,9 @@ class Rewrite:
     #: an aggregate read's (shape ``aggregate``): each relation's part (:attr:`PointSql.parts`), one helper call each;
     #: not recorded for any other read
     parts: list[dict[str, Any]] = field(default_factory=list)
+    #: a nearest-rows read's (shape ``first``, ``read_nearest``): ``{"column", "param", "operator", "schema",
+    #: "similarity"}``; not recorded for any other read
+    nearest: dict[str, Any] | None = None
     # the edits that make it, not recorded: (start line, start col, end line, end col, text) in the module's bytes
     edits: list[tuple[int, int, int, int, str]] = field(default_factory=list, repr=False)
     # not recorded: index purpose entries naming the replaced constant, each (repo-relative file, old text, new text)
@@ -367,6 +374,8 @@ class Rewrite:
             entry.pop("chain")
         if not self.parts:
             entry.pop("parts")
+        if self.nearest is None:
+            entry.pop("nearest")
         return entry
 
 
@@ -406,7 +415,14 @@ def _literal(text: str) -> str | bool | int:
     return int(text)
 
 
-def parse_point(sql: str, *, ordered: bool = False, guards: bool = False, seeks: bool = False) -> PointSql | str:
+def parse_point(
+    sql: str,
+    *,
+    ordered: bool = False,
+    guards: bool = False,
+    seeks: bool = False,
+    beside: frozenset[int] = frozenset(),
+) -> PointSql | str:
     """a plain point read, or why it is not one.
 
     :param sql: the statement
@@ -419,6 +435,9 @@ def parse_point(sql: str, *, ordered: bool = False, guards: bool = False, seeks:
     :param seeks: a first-of read's: a guard binding a parameter is enough (a seek over the sort's index, the LIMIT
         bounding the rows), with no equality binding one
     :ptype seeks: bool
+    :param beside: parameters the statement binds outside what is parsed here (a nearest read's vector, its order
+        taken off), counted in its ``$1..$n``
+    :ptype beside: frozenset[int]
     :return: the parsed read, or the refusal's reason
     :rtype: PointSql | str
     """
@@ -467,7 +486,7 @@ def parse_point(sql: str, *, ordered: bool = False, guards: bool = False, seeks:
     pins = _pins(where, masked, qualifiers, kept)
     if isinstance(pins, str):
         return pins
-    numbers = sorted({number for pin in (*pins, *(kept or ())) for number in pin.numbers()})
+    numbers = sorted({number for pin in (*pins, *(kept or ())) for number in pin.numbers()} | beside)
     if numbers != list(range(1, len(numbers) + 1)):
         return "parameters not numbered $1..$n"
     sought = seeks and any(guard.params for guard in kept or ())
@@ -609,19 +628,80 @@ def parse_first(sql: str, *, guards: bool = False) -> PointSql | str:
     found = _LIMIT.search(text)
     if found is None:
         return "no trailing LIMIT 1 / LIMIT $n after its ORDER BY (an OFFSET, or no LIMIT)"
-    # a first-of read's parameters may all be its guards': a seek over the sort's index, its LIMIT bounding the rows
-    parsed = parse_point(text[: found.start()], ordered=True, guards=guards, seeks=True)
-    if isinstance(parsed, str):
-        return parsed
-    if not parsed.order:
-        return "a LIMIT with no ORDER BY: which rows it keeps is the engine's choice"
+    nearest = _nearest_read(text[: found.start()])
+    if isinstance(nearest, str):
+        return nearest
+    if nearest is not None:
+        body, near = nearest
+        parsed = parse_point(body, guards=guards, beside=frozenset({near["param"]}))
+        if isinstance(parsed, str):
+            return parsed
+        parsed = replace(parsed, nearest=near)
+    else:
+        # a first-of read's parameters may all be its guards': a seek over the sort's index, its LIMIT bounding the
+        # rows
+        parsed = parse_point(text[: found.start()], ordered=True, guards=guards, seeks=True)
+        if isinstance(parsed, str):
+            return parsed
+        if not parsed.order:
+            return "a LIMIT with no ORDER BY: which rows it keeps is the engine's choice"
     written = found.group("limit")
     if not written.startswith("$"):
         return replace(parsed, limit={"literal": int(written)}) if int(written) > 0 else "LIMIT 0"
     numbers = {number for pin in (*parsed.pins, *parsed.guards) for number in pin.numbers()}
+    if parsed.nearest is not None:
+        numbers.add(parsed.nearest["param"])
     if int(written[1:]) != len(numbers) + 1:
         return "the LIMIT's parameter is not the statement's last"
     return replace(parsed, limit={"param": int(written[1:])})
+
+
+#: a nearest-rows read's trailing order: the distance of a vector column from a bound vector, as pgvector's operator
+_NEAREST_ORDER: Final[re.Pattern[str]] = re.compile(
+    rf"\s+order\s+by\s+(?:(?P<q>{_IDENT})\.)?(?P<column>{_IDENT})\s+operator\s*\(\s*(?P<schema>{_IDENT})\.(?P<op><=>|<->|<#>|<\+>)"
+    rf"\s*\)\s+\$(?P<param>\d+)::text::(?P=schema)\.vector\s*$",
+    re.IGNORECASE,
+)
+
+
+def _nearest_read(text: str) -> tuple[str, dict[str, Any]] | str | None:
+    """a statement (its ``LIMIT`` cut off) ordered by a vector column's distance from a bound vector: the statement
+    with that order and the select list's ``1 - (<the same distance>) AS <name>`` taken out, and the nearest read's
+    ``{"column", "param", "operator", "schema", "similarity"}``; None when its order is no such distance; or why it
+    cannot be one (the vector's parameter read anywhere else).
+
+    :param text: the statement, one line, its ``LIMIT`` cut off
+    :ptype text: str
+    :return: the statement left and the nearest read, None, or the refusal's reason
+    :rtype: tuple[str, dict[str, Any]] | str | None
+    """
+    order = _NEAREST_ORDER.search(text)
+    if order is None:
+        return None
+    column, schema, operator, param = (order.group(name) for name in ("column", "schema", "op", "param"))
+    body = text[: order.start()]
+    distance = (
+        rf"(?:{_IDENT}\.)?{re.escape(column)}\s+operator\s*\(\s*{re.escape(schema)}\.{re.escape(operator)}\s*\)\s+"
+        rf"\${param}::text::{re.escape(schema)}\.vector"
+    )
+    similarity = None
+    item = re.search(rf",\s*1\s*-\s*\(\s*{distance}\s*\)\s+as\s+(?P<alias>{_IDENT})(?=\s+from\s)", body, re.IGNORECASE)
+    if item is not None:
+        similarity = item.group("alias")
+        body = body[: item.start()] + body[item.end() :]
+    if similarity is None:
+        return (
+            f"a nearest-rows read selecting no similarity (1 - its distance): the proof compares rows by it: {text!r}"
+        )
+    if re.search(rf"\${param}(?!\d)", body):
+        return f"the nearest vector's parameter ${param} read beside its order: {text!r}"
+    return body, {
+        "column": column,
+        "param": int(param),
+        "operator": operator,
+        "schema": schema,
+        "similarity": similarity,
+    }
 
 
 #: ``count(*)``, alone in a count's select list, under any name
@@ -1544,9 +1624,9 @@ def _guard(conjunct: str, qualifiers: set[str | None], row: str = "t") -> Pin | 
     :rtype: Pin | str
     """
     masked = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", conjunct)
-    exists = _EXISTS_GUARD.match(masked)
+    exists = _EXISTS_GUARD.match(masked) or _EXISTS_ANYWHERE.search(masked)
     if exists is not None:
-        respelled, refused = _exists_respelled(conjunct, masked, exists, qualifiers, row)
+        respelled, refused = _exists_within_respelled(conjunct, masked, qualifiers, row)
         if refused:
             return refused
         conjunct, masked = respelled, _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", respelled)
@@ -1699,6 +1779,72 @@ def _exists_respelled(
             pieces.append(conjunct[at : found.start()] + f"{row}.")
             at = found.start("column")
     pieces.append(conjunct[at:])
+    return "".join(pieces), ""
+
+
+#: where a ``[NOT] EXISTS (SELECT`` starts inside a conjunct (``(m.superseded_by IS NULL OR NOT EXISTS (...))``)
+_EXISTS_ANYWHERE: Final[re.Pattern[str]] = re.compile(r"(?<![\w.])(?:not\s+)?exists\s*\(\s*select\b", re.IGNORECASE)
+
+
+def _exists_within_respelled(conjunct: str, masked: str, qualifiers: set[str | None], row: str) -> tuple[str, str]:
+    """a conjunct holding one or more correlated ``[NOT] EXISTS (SELECT ...)`` (the whole conjunct, or a part of it:
+    ``(m.superseded_by IS NULL OR NOT EXISTS (SELECT 1 FROM memories g WHERE g.memory_id = m.superseded_by))``)
+    respelled over the helper's row: each ``EXISTS`` as :func:`_exists_respelled` respells it, and the outer table's
+    columns written beside them ``t.`` too. Refused: an ``EXISTS`` :func:`_exists_respelled` refuses, a subquery that
+    is no ``EXISTS``, a column of another relation beside them, unbalanced parentheses.
+
+    :return: the respelled conjunct and ``""``, or ``""`` and the refusal's reason
+    """
+    outer = {qualifier.lower() for qualifier in qualifiers if qualifier}
+    pieces: list[str] = []
+    at = 0
+    for found in _EXISTS_ANYWHERE.finditer(masked):
+        if found.start() < at:
+            continue
+        depth = 0
+        close = -1
+        for place in range(masked.index("(", found.start()), len(masked)):
+            if masked[place] == "(":
+                depth += 1
+            elif masked[place] == ")":
+                depth -= 1
+                if not depth:
+                    close = place
+                    break
+        if close < 0:
+            return "", f"unbalanced parentheses: {conjunct!r}"
+        end = close + 1
+        whole = _EXISTS_GUARD.match(masked[found.start() : end])
+        assert whole is not None
+        respelled, refused = _exists_respelled(
+            conjunct[found.start() : end], masked[found.start() : end], whole, qualifiers, row
+        )
+        if refused:
+            return "", refused
+        beside, refused = _outer_respelled(conjunct[at : found.start()], masked[at : found.start()], outer, row)
+        if refused:
+            return "", refused
+        pieces += [beside, respelled]
+        at = end
+    beside, refused = _outer_respelled(conjunct[at:], masked[at:], outer, row)
+    if refused:
+        return "", refused
+    return "".join([*pieces, beside]), ""
+
+
+def _outer_respelled(text: str, masked: str, outer: set[str], row: str) -> tuple[str, str]:
+    """``text``, written beside a conjunct's ``EXISTS``, with the outer table's qualifiers respelled ``row.``; or why
+    it cannot be (a subquery, a column of another relation)."""
+    if re.search(r"\bselect\b", masked, re.IGNORECASE):
+        return "", f"a subquery in a predicate: {text!r}"
+    pieces: list[str] = []
+    at = 0
+    for found in _QUALIFIED.finditer(masked):
+        if found.group("q").lower() not in outer:
+            return "", f"a column of another relation: {text!r}"
+        pieces.append(text[at : found.start()] + f"{row}.")
+        at = found.start("column")
+    pieces.append(text[at:])
     return "".join(pieces), ""
 
 
@@ -2527,6 +2673,26 @@ def _render_first(rewrite: Rewrite, receiver: str) -> str:
         return f"next(iter({page}.rows), None)"
     assert rewrite.columns is not None
     return f"next((row[{rewrite.columns[0]!r}] for row in {page}.rows), None)"
+
+
+def _render_nearest(rewrite: Rewrite, receiver: str) -> str:
+    """the ``read_nearest`` call, written in the ``fetch`` call's place: the rows nearest the vector, nearest first."""
+    assert rewrite.limit is not None and rewrite.nearest is not None
+    near = rewrite.nearest
+    by = "{" + ", ".join(f"{pin['column']!r}: {_value_text(pin, rewrite.args)}" for pin in rewrite.pins) + "}"
+    columns = "None" if rewrite.columns is None else _columns_text(rewrite.columns)
+    limit = str(rewrite.args[rewrite.limit["param"] - 1]) if "param" in rewrite.limit else str(rewrite.limit["literal"])
+    nearest = [repr(near["column"]), rewrite.args[near["param"] - 1]]
+    if near["operator"] != "<=>":
+        nearest.append(f"operator={near['operator']!r}")
+    if near["schema"] != "public":
+        nearest.append(f"schema={near['schema']!r}")
+    if near["similarity"] is not None:
+        nearest.append(f"similarity={near['similarity']!r}")
+    return (
+        f"read_nearest({receiver}, {rewrite.table!r}, by={by}{_where_text(rewrite)}, "
+        f"nearest=Nearest({', '.join(nearest)}), limit={limit}, columns={columns}, records=True)"
+    )
 
 
 def _joined_text(join: Mapping[str, Any]) -> str:
@@ -4306,7 +4472,7 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             refuse(unkeyed_value)
             continue
         completion: list[dict[str, Any]] = []
-        if parsed.limit is not None:
+        if parsed.limit is not None and parsed.nearest is None:
             completed = _key_completion(parsed, scan.schema.table(parsed.table))
             if isinstance(completed, str):
                 refuse(completed)
@@ -4406,7 +4572,7 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             refuse(elsewhere)
             continue
         bound = [number for pin in (*parsed.pins, *parsed.guards) for number in pin.numbers()]
-        numbers = sorted(set(bound))
+        numbers = sorted(set(bound) | ({parsed.nearest["param"]} if parsed.nearest is not None else set()))
         if parsed.limit is not None and "param" in parsed.limit:
             numbers.append(parsed.limit["param"])
         uses = Counter(bound)
@@ -4472,11 +4638,20 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 clauses=recorded,
                 joins=[join.record() for join in parsed.joins],
                 chain=parsed.chain,
+                nearest=parsed.nearest,
             )
             spliced: ast.expr = call
             if parsed.chain is not None and "to" in parsed.chain:
                 rewrite.helper = "read_reached"
                 rewrite.new_call = _render_reached(rewrite, module.segment(call.func.value))
+            elif parsed.nearest is not None:
+                if method != "fetch":
+                    refuse(f"a nearest-rows read sent by {method} (read_nearest answers its rows: a fetch only)")
+                    planned = []
+                    break
+                rewrite.helper = "read_nearest"
+                rewrite.key_from = None
+                rewrite.new_call = _render_nearest(rewrite, module.segment(call.func.value))
             elif parsed.chain is not None:
                 rewrite.helper = "read_link_chain"
                 rewrite.new_call = (
@@ -4799,6 +4974,8 @@ def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None
             names.add("Selected")
         if any(rewrite.clauses for rewrite in mine):
             names.add("clause_guards")
+        if any(rewrite.nearest for rewrite in mine):
+            names.add("Nearest")
         if any(rewrite.joins for rewrite in mine):
             names.add("Joined")
             if any(

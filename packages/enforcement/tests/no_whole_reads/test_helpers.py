@@ -52,6 +52,10 @@ CREATE INDEX nodes_by_kind_pod ON nodes (kind, (metadata->>'pod'));
 -- purpose: src/app.py::reader
 -- plan_test: tests/test_app.py::test_nodes_plan
 CREATE INDEX nodes_by_pod ON nodes ((metadata->>'pod'));
+CREATE TABLE docs (id UUID PRIMARY KEY, owner TEXT, embedding vector(3));
+-- purpose: src/app.py::reader
+-- plan_test: tests/test_app.py::test_docs_plan
+CREATE INDEX docs_by_embedding ON docs USING hnsw (embedding vector_cosine_ops);
 """
 
 
@@ -737,3 +741,18 @@ def test_a_link_chain_is_judged_as_the_recursive_read_it_sends(schema: SchemaCat
     keyed = 'read_link_chain(c, "fence", key="signal", link="signal", start=s, most=10, columns=("run_id",))'
     assert _judged(keyed, schema) == [[]]
     assert _judged(keyed.replace('key="signal"', 'key="run_id"'), schema) != [[]]
+
+
+def test_a_nearest_rows_read_is_judged_as_its_distance_order_under_its_limit(schema: SchemaCatalog) -> None:
+    """Flips if ``read_nearest`` is not judged as the statement it sends (its pins, ordered by the vector column's
+    distance from a bound vector under a LIMIT): served by an approximate-nearest-neighbour index whose purpose names
+    the reader it passes; read by any other reader, or by pins alone with no index's purpose, it is a finding."""
+    near = 'read_nearest(c, "docs", by={"owner": o}, nearest=Nearest("embedding", v, similarity="s"), limit=k)'
+    assert _judged(near, schema) == [[]]
+    assert _judged(near, schema, name="src/app.py::other") == [[("non-key-where", "docs")]]
+    assert _judged(
+        near.replace("read_nearest", "read_by").replace(
+            ', nearest=Nearest("embedding", v, similarity="s"), limit=k', ""
+        ),
+        schema,
+    ) == [[("non-key-where", "docs")]]

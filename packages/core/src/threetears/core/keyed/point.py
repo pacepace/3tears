@@ -25,10 +25,11 @@ from typing import Any, Literal, overload
 from threetears.core.keyed._filters import Fragment, Lock, Selected, sent_by
 from threetears.core.keyed.page import yugabyte_index_hint
 from threetears.interfaces.keyed.page import Sort
-from threetears.interfaces.keyed.point import read_by_statement, read_row_statement
+from threetears.interfaces.keyed.point import Nearest, read_by_statement, read_nearest_statement, read_row_statement
 
 __all__ = [
     "read_by",
+    "read_nearest",
     "read_row",
     "read_value",
 ]
@@ -195,3 +196,46 @@ async def read_value(
     sql, params = read_row_statement(table, by=by, columns=(column,), where=where)
     rows = list(await sent_by(conn).fetch(sql, *params))
     return rows[0][column] if rows else None
+
+
+async def read_nearest(
+    conn: Any,
+    table: str,
+    *,
+    by: Mapping[str, Any],
+    nearest: Nearest,
+    limit: int,
+    columns: Sequence[str | Selected] | None = None,
+    records: bool = False,
+    where: Sequence[Fragment] = (),
+) -> list[Any]:
+    """the ``limit`` rows of ``table`` the pinned columns name nearest to a vector, nearest first: what ``fetch`` of
+    the hand-written ``... ORDER BY embedding <=> $n LIMIT $k`` answered
+    (:func:`~threetears.interfaces.keyed.read_nearest_statement`).
+
+    The order is the distance alone, so an approximate-nearest-neighbour index on the vector column (its purpose naming
+    the caller) answers it; the no-whole-reads rule judges the call by the statement it sends.
+
+    :param conn: anything with an asyncpg-shaped ``fetch(query, *params)``
+    :ptype conn: Any
+    :param table: the table, a TRUSTED identifier
+    :ptype table: str
+    :param by: as :func:`read_by`'s; at least one column
+    :ptype by: Mapping[str, Any]
+    :param nearest: the vector column, the vector (its text), the distance, and the similarity's name if selected
+    :ptype nearest: Nearest
+    :param limit: how many rows, at most
+    :ptype limit: int
+    :param columns: as :func:`read_by`'s; the similarity, when named, after them
+    :ptype columns: Sequence[str | Selected] | None
+    :param records: as :func:`read_by`'s
+    :ptype records: bool
+    :param where: as :func:`read_by`'s
+    :ptype where: Sequence[Fragment]
+    :return: the rows, nearest first
+    :rtype: list[Any]
+    :raises ValueError: when nothing is pinned, ``columns`` is empty, or ``limit`` is negative
+    """
+    sql, params = read_nearest_statement(table, by=by, nearest=nearest, limit=limit, columns=columns, where=where)
+    rows = list(await sent_by(conn).fetch(sql, *params))
+    return rows if records else [dict(row) for row in rows]

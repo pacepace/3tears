@@ -14,7 +14,18 @@ from typing import Any
 import duckdb
 import pytest
 
-from threetears.core.keyed import AnyOf, Fragment, Lock, Sort, ThreadedDuckDB, read_by, read_row, read_value
+from threetears.core.keyed import (
+    AnyOf,
+    Fragment,
+    Lock,
+    Nearest,
+    Sort,
+    ThreadedDuckDB,
+    read_by,
+    read_nearest,
+    read_row,
+    read_value,
+)
 
 
 @pytest.fixture
@@ -160,3 +171,31 @@ async def test_an_unlocked_point_read_takes_no_lock() -> None:
     await read_by(conn, "epochs", by={"scope": "*"}, columns=("writing",))
     [(sql, _params)] = conn.calls
     assert "FOR " not in sql
+
+
+async def test_a_nearest_read_orders_by_the_distance_alone_under_its_limit() -> None:
+    """Flips if ``read_nearest`` does not send its pins and guards, the similarity (``1 -`` the distance) after the
+    columns, the order by the vector column's distance from the vector bound once past them (no tie-break column, so an
+    approximate-nearest-neighbour index answers it), and its LIMIT last; or takes a distance pgvector has no
+    operator for, or a negative limit."""
+    conn = _Sent()
+    await read_nearest(
+        conn,
+        "memories",
+        by={"agent_id": "a", "user_id": "u"},
+        nearest=Nearest("embedding", "[1,0]", similarity="similarity"),
+        limit=4,
+        columns=("memory_id",),
+        where=[Fragment("t.salience >= $1", (0.5,))],
+    )
+    [(sql, params)] = conn.calls
+    distance = 't."embedding" OPERATOR(public.<=>) $4::text::public.vector'
+    assert sql == (
+        f'SELECT t."memory_id", 1 - ({distance}) AS "similarity" FROM "memories" AS t WHERE t."agent_id" = $1 AND '
+        f't."user_id" = $2 AND (t.salience >= $3) ORDER BY {distance} LIMIT $5'
+    )
+    assert params == ("a", "u", 0.5, "[1,0]", 4)
+    with pytest.raises(ValueError, match="distance"):
+        Nearest("embedding", "[1]", operator="<>")
+    with pytest.raises(ValueError, match="no fewer"):
+        await read_nearest(conn, "memories", by={"agent_id": "a"}, nearest=Nearest("embedding", "[1]"), limit=-1)
