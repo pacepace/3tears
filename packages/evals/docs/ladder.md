@@ -21,7 +21,8 @@ directory you run from), and exits with its code. The report is code's: built fr
 called. A second door, at rung 3f, has a model write one too. Paths a file names (its cases, its recordings) are read
 beside the file. A recording that exists is replayed: no key, no network, no cost. A call it does not hold is never
 sent live: it fails the run, which exits 1, and the print opens with that failure, naming the call, and no verdict;
-the readings after it cover only the results recorded before it failed. `RECORD=1` with
+the readings after it cover only the results recorded before it failed. Any run that did not finish (cancelled,
+stopped by its budget) opens the same way, in the print and on its report. `RECORD=1` with
 `OPENROUTER_API_KEY` set records it again, live. After a pip install, fetch the examples first ([how](../examples/README.md#running-them)).
 
 The ladder's line counts are of non-blank lines: rung 1's program is 15 of them, each rung-3 file stays under 30 (its

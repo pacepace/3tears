@@ -29,6 +29,7 @@ from threetears.evals.analysis.bundle.schema import (
 from threetears.evals.analysis.contention import EXECUTION_MODE
 from threetears.evals.analysis.bundle.config import effective_config
 from threetears.evals.analysis.bundle.measures import measure_collection
+from threetears.evals.schema.models import run_ending_reason
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun
@@ -184,6 +185,8 @@ def digest_run(
         measures=measure_collection(run_results, profile=profile, undeclared="all_observed"),
         judge_shares_candidate_model=self_judging_models(run, run_results),
         apparatus=_run_apparatus(run, run_results),
+        # Why a run that did not finish ended, which its page opens on in place of a verdict.
+        ended_because=run_ending_reason(run) if run.status != "completed" else None,
     )
 
 

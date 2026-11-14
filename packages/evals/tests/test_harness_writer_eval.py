@@ -592,6 +592,25 @@ async def test_a_failed_promotion_gate_exits_4_naming_it_and_an_unfinished_arm_e
     # An arm whose run did not complete exits 1, whatever its gates read.
     unfinished = {**result.arms, "variant": result.arms["variant"].model_copy(update={"status": "failed"})}
     assert replace(failing, arms=unfinished).exit_code() == 1
+
+    # Its print opens on what stopped the arm's run, whatever stopped it, saying there is no verdict (#1173).
+    assert "no verdict" not in result.render()
+    for status, how in (
+        ("failed", "failed"),
+        ("exhausted", "stopped when its provider refused the account or the model"),
+        ("cancelled", "was cancelled"),
+        ("budget_stopped", "was stopped by its budget"),
+        ("running", "has not finished"),
+    ):
+        # A designed stop gives its reason; a failure's is the error the run recorded last.
+        why = {
+            "stopped_because": "the on-call said so",
+            "errors": [*result.arms["variant"].errors, "the on-call said so"],
+        }
+        ended = result.arms["variant"].model_copy(update={"status": status, **why})
+        first, second = replace(result, arms={**result.arms, "variant": ended}).render().splitlines()[:2]
+        assert first == f"{result.name}: variant {how}, so there is no verdict: the on-call said so", first
+        assert second.startswith("the readings below cover only the "), second
     assert offline == []
 
 
