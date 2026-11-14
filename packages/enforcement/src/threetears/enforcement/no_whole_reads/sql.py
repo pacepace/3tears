@@ -1308,7 +1308,11 @@ def _key_hit(
         # a range closed on both sides by bound values on the index's next column reads only the rows between them:
         # the index's key, as an equality on a column it leads with is
         bounded_next = prefix < len(columns) and columns[prefix] in bounded
-        if _covers(columns, eq | contained, tenants) or ranged_next or bounded_next:
+        # an index whose purpose names the read, its whole first column bound by equality and no LIMIT: the rows read
+        # are that lead value's, every one answered, as an index on the column alone reads them, though the column is
+        # a tenant's (hub #71 spec B: one customer's groups through (customer_id, <sort>, group_id)). Under a LIMIT
+        # the order must still come from the index (a page sorting the tenant's every row stays whole).
+        if (prefix > 0 and not level.limited) or _covers(columns, eq | contained, tenants) or ranged_next or bounded_next:
             following = columns[prefix] if prefix < len(columns) else None
             # the order past its columns bound by equality or a set (``ORDER BY kind, date_created, id`` with ``kind
             # = ANY``): of two indexes tied on the bound ``kind``, the one followed by ``date_created`` is read

@@ -118,6 +118,11 @@ _ALTER_TABLE: Final[re.Pattern[str]] = re.compile(
 _DROP_COLUMN_ACTION: Final[re.Pattern[str]] = re.compile(
     rf"^DROP\s+(?:COLUMN\s+)?(?:IF\s+EXISTS\s+)?(?!CONSTRAINT\b)({_IDENT})", re.IGNORECASE
 )
+#: one ``ALTER TABLE`` action dropping a constraint (``DROP CONSTRAINT [IF EXISTS] name``): a ``UNIQUE`` or primary key
+#: constraint's index takes the constraint's name, and goes with it
+_DROP_CONSTRAINT_ACTION: Final[re.Pattern[str]] = re.compile(
+    rf"^DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?({_IDENT})", re.IGNORECASE
+)
 _ADD_PK: Final[re.Pattern[str]] = re.compile(
     rf"\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?{_QNAME}\s+ADD\s+(?:CONSTRAINT\s+{_IDENT}\s+)?PRIMARY\s+KEY\s*\(",
     re.IGNORECASE,
@@ -985,6 +990,11 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
             dropped = _DROP_COLUMN_ACTION.match(action.strip())
             if dropped is not None:
                 events.append((match.start(), "drop_column", (match.group(1), dropped.group(1))))
+            constraint = _DROP_CONSTRAINT_ACTION.match(action.strip())
+            if constraint is not None:
+                # the index a UNIQUE (or primary key) constraint owns is named as the constraint; a CHECK or foreign
+                # key owns none, and no index carries its name
+                events.append((match.start(), "drop_index", constraint.group(1)))
     for match in _RENAME_TABLE.finditer(text):
         events.append((match.start(), "rename_table", (match.group(1), match.group(2))))
     for match in _RENAME_COLUMN.finditer(text):

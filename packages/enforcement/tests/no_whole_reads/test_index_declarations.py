@@ -366,3 +366,83 @@ def test_a_consumer_s_frozen_copy_of_a_dependency_s_index_takes_a_purpose_only_l
     assert any("index-addition-refused" in f for f in findings) is refused, findings
     if not refused:
         assert not any("in Listing.open_of_agent:" in f for f in findings), findings
+
+
+_CUSTOMER_PAGES = """
+    UP = "CREATE TABLE IF NOT EXISTS datasources (id UUID PRIMARY KEY, kind TEXT, status TEXT, customer_id UUID)"
+    BY_CUSTOMER = (
+        "-- purpose: src/registry.py::Digest.of_customer; src/registry.py::Digest.page_of_customer\\n"
+        "-- plan_test: tests/test_plans.py::test_refresh_active_uses_datasources_by_kind\\n"
+        "-- reason: one customer's datasources, read whole by the customer and paged by kind under it\\n"
+        "CREATE INDEX IF NOT EXISTS datasources_by_customer_kind ON datasources (customer_id, kind, id)"
+    )
+"""
+
+_CUSTOMER_READ = """
+    class Digest:
+        async def of_customer(self, conn, customer):
+            return await conn.fetch("SELECT id, kind FROM datasources WHERE customer_id = $1", customer)
+
+        async def page_of_customer(self, conn, customer):
+            return await conn.fetch(
+                "SELECT id, kind FROM datasources WHERE customer_id = $1 ORDER BY status LIMIT 5", customer
+            )
+
+        async def of_any_customer(self, conn, customer):
+            return await conn.fetch("SELECT id, kind FROM datasources WHERE customer_id = $1 AND status = 'x'", customer)
+"""
+
+
+def test_a_purposed_index_whose_lead_the_read_binds_keys_it(tmp_path: Path) -> None:
+    """Flips if a read binding by equality the whole first column of an index whose purpose names it (every row of
+    that lead value, as an index on the column alone reads) is not keyed by it, or its purpose is called unused; or if
+    the same read is keyed by such an index whose purpose does not name it, or a page under a LIMIT ordered by a column
+    the index does not hold is keyed by it."""
+    src = tmp_path / "src"
+    for name, source in {"versions/v001.py": _CUSTOMER_PAGES, "registry.py": _CUSTOMER_READ}.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+    (tmp_path / "tests").mkdir(exist_ok=True)
+    (tmp_path / "tests" / "test_plans.py").write_text(textwrap.dedent(_PLANS), encoding="utf-8")
+    (tmp_path / "_no_whole_reads_exemptions.txt").write_text("", encoding="utf-8")
+    config = NoWholeReadsConfig(repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path, dependency_schema=False)
+    findings = no_whole_reads_findings(config)
+    assert not [f for f in findings if "Digest.of_customer:" in f], findings
+    unused = [f for f in findings if "index-purpose-unused" in f]
+    assert unused and all("Digest.page_of_customer holds no read" in f for f in unused), unused
+    assert any("in Digest.of_any_customer: non-key-where datasources" in f for f in findings), findings
+    # under a LIMIT the page's order is not the index's: it sorts the customer's every row
+    assert any("in Digest.page_of_customer:" in f for f in findings), findings
+
+
+@pytest.mark.parametrize(
+    ("dropped", "left"),
+    [
+        ('ALTER TABLE datasources DROP CONSTRAINT IF EXISTS "datasources_kind_key"', False),
+        ("ALTER TABLE datasources DROP CONSTRAINT datasources_kind_key, DROP COLUMN status", False),
+        ("ALTER TABLE datasources DROP CONSTRAINT IF EXISTS datasources_kind_check", True),
+    ],
+)
+def test_a_dropped_constraint_takes_the_index_named_as_it(tmp_path: Path, dropped: str, left: bool) -> None:
+    """Flips if a later migration's ``ALTER TABLE ... DROP CONSTRAINT <name>`` leaves the index that constraint owns
+    (a ``UNIQUE`` constraint's, named as it) to be judged, or drops an index named otherwise."""
+    src = tmp_path / "src"
+    migrations = {
+        "versions/v001.py": """
+            UP = "CREATE TABLE IF NOT EXISTS datasources (id UUID PRIMARY KEY, kind TEXT, status TEXT)"
+            KIND = "CREATE UNIQUE INDEX IF NOT EXISTS datasources_kind_key ON datasources (kind)"
+        """,
+        "versions/v002.py": f"""
+            DOWN = '{dropped}'
+        """,
+        "registry.py": "",
+    }
+    for name, source in migrations.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+    (tmp_path / "_no_whole_reads_exemptions.txt").write_text("", encoding="utf-8")
+    config = NoWholeReadsConfig(repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path, dependency_schema=False)
+    named = [f for f in _index(no_whole_reads_findings(config)) if "datasources_kind_key" in f]
+    assert bool(named) == left, named
