@@ -91,3 +91,23 @@ def test_the_tool_declares_each_used_index_and_lists_the_unused(tmp_path: Path, 
     assert entries["items_by_owner"]["sql"] == 'SELECT * FROM "items" WHERE "owner_id" = $1'
     after = _index(no_whole_reads_findings(config))
     assert [finding for finding in after if "items_by_note" not in finding] == [], after
+
+
+def test_a_repo_names_its_own_plan_test_module_and_the_declarations_name_it(tmp_path: Path) -> None:
+    """Flips if ``--module`` does not move the generated plan tests and their manifest together, or the declarations
+    still name the default module (a repo whose engine fixtures live under its unit tree, the hub's, needs this)."""
+    config = _repo(tmp_path)
+    module = "tests/unit/test_index_plans_generated.py"
+    (tmp_path / "tests" / "unit").mkdir(parents=True)
+
+    assert main([str(tmp_path), "support.py", "CONFIG", "--write", "--module", module]) == 0
+
+    ledger = (tmp_path / "_index_declarations.txt").read_text(encoding="utf-8")
+    assert f"plan_test={module}::test_items_by_kind" in ledger
+    assert "tests/integration/" not in ledger
+    assert (tmp_path / module).is_file()
+    assert not (tmp_path / "tests/integration/test_index_plans_generated.py").exists()
+    entries = json.loads((tmp_path / "tests/unit/index_plan_manifest.json").read_text())
+    assert {e["index"] for e in entries} == {"items_by_kind", "items_by_owner"}
+    after = _index(no_whole_reads_findings(config))
+    assert [finding for finding in after if "items_by_note" not in finding] == [], after

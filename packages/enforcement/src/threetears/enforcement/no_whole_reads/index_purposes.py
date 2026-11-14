@@ -179,11 +179,13 @@ def _foreign_key(table: _DeclaredTable | None, columns: Sequence[str]) -> tuple[
     return None
 
 
-def decide(catalog: SchemaCatalog) -> Decisions:
+def decide(catalog: SchemaCatalog, module: str = _MODULE) -> Decisions:
     """what to write for every index of the repo the purpose rule faults, from a discovering walk's catalog.
 
     :param catalog: the catalog after a walk with :attr:`~.schema.SchemaCatalog.discovering` set
     :ptype catalog: SchemaCatalog
+    :param module: the repo-relative generated plan-test module the plan tests are named in
+    :ptype module: str
     :return: the decisions
     :rtype: Decisions
     """
@@ -242,7 +244,7 @@ def decide(catalog: SchemaCatalog) -> Decisions:
                 name,
                 site.origin,
                 purpose="; ".join(chosen),
-                plan_test=f"{_MODULE}::{_test_name(name)}",
+                plan_test=f"{module}::{_test_name(name)}",
                 bound=bound,
                 ordered=ordered,
                 where=where,
@@ -259,7 +261,7 @@ def decide(catalog: SchemaCatalog) -> Decisions:
                 name,
                 site.origin,
                 purpose=f"fk:{constraint}",
-                plan_test=f"{_MODULE}::{_test_name(name)}",
+                plan_test=f"{module}::{_test_name(name)}",
                 bound=columns,
                 where=where,
             )
@@ -402,6 +404,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("support", help="the repo-relative module holding the gate's NoWholeReadsConfig")
     parser.add_argument("config", help="its name there")
     parser.add_argument("--write", action="store_true", help="write the ledger, manifest and test module")
+    parser.add_argument(
+        "--module",
+        default=_MODULE,
+        help="the repo-relative generated plan-test module (its manifest beside it); a repo whose engine fixtures "
+        f"(conn, yugabyte_conn) live elsewhere names its own (default {_MODULE})",
+    )
     parser.add_argument("--drop-list", type=Path, help="where to write the drop candidates (default: printed)")
     parser.add_argument(
         "--consumer",
@@ -418,10 +426,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     for root, support, name in args.consumer:
         _, consumed = _hits(_load_config(Path(root).resolve(), support, name), discovering=True)
         _credit_consumer(scan.schema, consumed.schema, config.consumer_purposes)
-    decisions = decide(scan.schema)
+    module = args.module
+    manifest_path = str(Path(module).with_name(Path(_MANIFEST).name))
+    decisions = decide(scan.schema, module)
     lines = _ledger_lines(decisions)
     entries = _manifest(decisions)
-    manifest = repo_root / _MANIFEST
+    manifest = repo_root / manifest_path
     if manifest.is_file():
         # a test generated before stays while the ledger still names it as its index's plan test
         made = {entry["index"] for entry in entries}
@@ -429,7 +439,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         entries += [
             entry
             for entry in json.loads(manifest.read_text(encoding="utf-8"))
-            if entry["index"] not in made and f"plan_test={_MODULE}::{_test_name(entry['index'])}" in ledger_text
+            if entry["index"] not in made and f"plan_test={module}::{_test_name(entry['index'])}" in ledger_text
         ]
         entries.sort(key=lambda entry: entry["index"])
     drops = [f"{table}.{index}  ({origin})" for table, index, origin in sorted(decisions.drop)]
@@ -440,8 +450,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         written = {line.split(" :: ", 1)[0] for line in lines}
         kept = [line for line in kept if line.split(" :: ", 1)[0] not in written]
         ledger.write_text("\n".join([*kept, *lines]) + "\n", encoding="utf-8")
-        (repo_root / _MANIFEST).write_text(json.dumps(entries, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-        (repo_root / _MODULE).write_text(_module(entries), encoding="utf-8")
+        (repo_root / manifest_path).write_text(json.dumps(entries, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        (repo_root / module).write_text(_module(entries), encoding="utf-8")
         if args.drop_list is not None:
             args.drop_list.write_text("\n".join(drops) + "\n", encoding="utf-8")
     else:
