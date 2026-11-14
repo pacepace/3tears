@@ -544,8 +544,9 @@ change in it in points. Each measure reads at one precision on every page of its
 page and each aspect page alike, so one value reads the same in a table, a chart, a tooltip, the prose and the CLI.
 
 - **The digits come from the measure's uncertainty**: two significant figures of the width of the narrowest 95%
-  interval among the figures a reader compares (each arm's level and each comparison's change), so a value and its
-  interval read at the precision the interval justifies. A pooled figure, such as a code page's campaign-wide pass
+  interval among the figures a reader compares (each arm's level and each comparison's change). The precision is
+  set once per measure by that narrowest interval, and every figure of the measure reads at it, a change whose own
+  interval is wider too. A pooled figure, such as a code page's campaign-wide pass
   rate, prints at that form and never sets it. A pass rate whose narrowest interval is 11 points or wider reads
   whole (`21%`, `-7 pts`); one whose narrowest is 7 points reads a tenth (`85.3%`), as does a check near the ceiling
   (`99.7%`).

@@ -200,8 +200,10 @@ figure against any other.
    its own uncertainty: a pass rate at `85%` beside a check near the ceiling at `99.7%`.
 2. **The digits come from the measure's uncertainty.** Take the narrowest 95% interval among the figures a reader
    compares (each arm's level and each comparison's change, on every page of the campaign), and print to two
-   significant figures of its width (owner ruling, 2026-11-14): a value and its interval read at the precision the
-   interval justifies. A pooled figure (the code page's campaign-wide pass rate, or one pooled over the comparisons)
+   significant figures of its width (owner ruling, 2026-11-14). The precision is the measure's, not each interval's:
+   every figure of the measure on every page of the campaign reads at the one precision its narrowest interval sets,
+   so a change whose own interval is wider still reads at it (Kairo's pass rate: `85.3%`, `-7.6 pts`, `-12.9 to -1.8
+   pts`, set by its 7-point interval). A pooled figure (the code page's campaign-wide pass rate, or one pooled over the comparisons)
    prints at the measure's form but never sets it. A figure and interval no measure's set holds (a chart a host built
    with no decided texts, a glyph drawn with no table) read at two significant figures of their own interval's width.
    - A rate, or a change in points, never goes past one decimal, except next to a boundary: an end that would round

@@ -943,6 +943,10 @@ def _under_a_cent() -> dict[str, tuple[ReportInput, str, str, str]]:
     r1 = _measures_shrunk(INPUTS["r1"], frozenset({"cost_per_1k"}), 1000.0)
     # Under a cent even per 1,000,000: the ruler's cap, where the set reads with no mark beside the count.
     capped = _measures_shrunk(INPUTS["r1"], frozenset({"cost_per_1k"}), 1e6)
+    # r2 at the cap too, where its cells name the count they are over: the text pass reads those cells as well, which
+    # r2 per 1,000 never reaches (#1019 item 2: dropping the counted cells from it passed the sweep), and its gate's
+    # reason quotes a figure and a threshold an order of magnitude apart on its criterion's ruler.
+    r2_capped = _measures_shrunk(_sliced(INPUTS["r2"], "cost_per_1k", gate=True), frozenset({"cost_per_1k"}), 1e5)
     return {
         "r1 under a cent even per 1,000,000 conversations": (
             capped,
@@ -964,6 +968,7 @@ def _under_a_cent() -> dict[str, tuple[ReportInput, str, str, str]]:
             "per 1,000,000 replies",
         ),
         "r2 under a cent per 1,000 calls": (r2, "cost_per_1k", "per 1k calls", "per 1,000,000 calls"),
+        "r2 under a cent even per 1,000,000 calls": (r2_capped, "cost_per_1k", "per 1k calls", "per 1,000,000 calls"),
         "r5 under a cent per 1,000 replies": (
             r5,
             "production_replicating_cost",
@@ -1390,7 +1395,16 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
                 if found is None:
                     continue
                 criterion, ruler = found
-                assert all(decimals <= ruler.form.decimals for _, decimals in _places([text])), (label, text)
+                # Each amount to the decimals its criterion's form writes it to: two significant figures of its
+                # own, so a threshold of $0.0030 beside a figure of $0.010 keeps its fourth decimal (the money
+                # ruling: one count of figures, never one count of decimals). The form's ``decimals`` is its largest
+                # member's, which a smaller member rightly passes, so it bounds no amount.
+                written = [(one.group(0), _written_places(one)) for one in _AMOUNT.finditer(text)]
+                assert all(places == ruler.form.places(_amount(said)) for said, places in written), (
+                    label,
+                    text,
+                    [(said, ruler.form.places(_amount(said))) for said, _ in written],
+                )
                 line = [float(criterion.threshold)]
                 off = [
                     one
