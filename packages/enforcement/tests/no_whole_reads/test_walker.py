@@ -4717,6 +4717,33 @@ def test_a_statement_declaring_its_key_is_judged_by_it(tmp_path: Path) -> None:
     assert {"by_box_only", "other_column", "undeclared"} <= functions, found
 
 
+#: a run-time ``by=`` pin (reports ``RetainingDuckDB._delete_key``): a key's values handed as a declared key source
+_RUN_TIME_PINS = """
+    from collections.abc import Mapping
+    from typing import Any
+
+    from threetears.core.keyed import InlineDuckDB, delete_keyed, run_inline
+    from threetears.interfaces.keyed import KeyValues
+
+
+    class Retaining:
+        def _delete_key(self, table: str, named: KeyValues) -> None:
+            run_inline(delete_keyed(InlineDuckDB(self._db), table, by=named))
+
+        def _delete_any(self, table: str, named: Mapping[str, Any]) -> None:
+            run_inline(delete_keyed(InlineDuckDB(self._db), table, by=named))
+"""
+
+
+def test_a_by_holding_a_declared_key_source_s_values_is_the_key(tmp_path: Path) -> None:
+    """Flips if a ``by=`` holding a declared key source's values (``named: KeyValues``, reports #55's retention
+    delete) is not read as the key, or if a mapping no declaration names passes."""
+    found = _symbols(_config(tmp_path, {"pins.py": _RUN_TIME_PINS}))
+    functions = {function for function, _ in found}
+    assert "Retaining._delete_key" not in functions, found
+    assert any(f == "Retaining._delete_any" and s.startswith("unknown-predicate") for f, s in found), found
+
+
 _UNTYPED_ARROW = """
     from threetears.core import keyed
     from threetears.core.collections.schema_backed import TableSchema

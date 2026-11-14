@@ -4288,6 +4288,10 @@ class _ModuleWalk(ast.NodeVisitor):
         :return: it, its run-time columns judged
         :rtype: ast.expr
         """
+        if isinstance(by, ast.Name | ast.Attribute) and self._key_sourced(by):
+            # a mapping of the key's columns to values from a declared key source (``named: KeyValues``): every
+            # column of the key pinned, as ``dict(pk)`` is
+            return ast.Call(func=ast.Name("dict", ast.Load()), args=[ast.Name("pk", ast.Load())], keywords=[])
         if isinstance(by, ast.Dict):
             keys: list[ast.expr | None] = [
                 key if key is None or isinstance(key, ast.Constant | ast.Call) else self._key_column(key)
