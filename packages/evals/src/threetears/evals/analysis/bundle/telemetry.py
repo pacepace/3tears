@@ -1,6 +1,6 @@
 """The descriptive telemetry rollup: per-run summaries, token sums and model versions.
 
-Descriptive only — no scoring statistic lives here. :func:`run_summary` digests one run and its results,
+Descriptive only — no scoring statistic lives here. :func:`digest_run` digests one run and its results,
 :func:`_token_rollup` sums their tokens, and :func:`telemetry_rollup` assembles both into the bundle's
 :class:`~threetears.evals.analysis.bundle.schema.TelemetryRollup`.
 """
@@ -138,7 +138,7 @@ def _measured_prod_costs(run_results: list[ResultView]) -> list[float]:
     return measured
 
 
-def run_summary(
+def digest_run(
     run: EvalRun, run_results: list[ResultView], reportable: set[str], *, profile: HostProfile
 ) -> RunSummary:
     """Digest one run + its results into a :class:`RunSummary`.
@@ -253,6 +253,6 @@ def telemetry_rollup(
 
 __all__ = [
     "model_versions",
-    "run_summary",
+    "digest_run",
     "telemetry_rollup",
 ]

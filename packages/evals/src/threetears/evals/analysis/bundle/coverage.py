@@ -55,7 +55,7 @@ from threetears.evals.analysis.bundle.config import (
 )
 from threetears.evals.analysis.bundle.design import (
     arm_repeats,
-    campaign_arms,
+    group_runs_by_arm,
     CampaignArms,
     is_control_referenced,
     lever_cohort,
@@ -221,7 +221,7 @@ def _reportable_levers(
     to, that never moved. Those are the contestant's own properties — a subject's backstory
     resolves a level on every run and moves only when somebody edits the subject between arms —
     and they are what the campaign held constant rather than measured. They are on NEITHER
-    surface: ``run_summary`` narrows ``config`` to this same set, deliberately, because ten
+    surface: ``digest_run`` narrows ``config`` to this same set, deliberately, because ten
     content hashes per run each stamped ``overridden`` would tell the design lens every run
     departed from ten things it never touched. They reappear the moment one of them actually
     moves, which is the case worth seeing.
@@ -495,7 +495,7 @@ def coverage_map(
     :ptype observations: MechanismObservations
     :param served: Which model answered each result's candidate calls, for the served-model confound.
     :ptype served: ServedModels
-    :param arms: :func:`campaign_arms`'s answer, when the caller already has it; derived otherwise.
+    :param arms: :func:`group_runs_by_arm`'s answer, when the caller already has it; derived otherwise.
     :ptype arms: CampaignArms | None
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
@@ -506,7 +506,7 @@ def coverage_map(
         return []
 
     # k is per ARM: the runs repeating one arm pool their repeats into it.
-    groups = (arms if arms is not None else campaign_arms(runs, results_by_run, profile=profile)).groups()
+    groups = (arms if arms is not None else group_runs_by_arm(runs, results_by_run, profile=profile)).groups()
     group_of_run = {run.id: key for key, members in groups.items() for run in members}
     k_by_arm = {key: arm_repeats(members) for key, members in groups.items()}
     resolved_by_run = {run.id: resolve_config(run, results_by_run.get(run.id, []), profile=profile) for run in runs}

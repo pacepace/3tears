@@ -1,7 +1,7 @@
 """The cell notes a reader must see beside the numbers: short cells, unmeasured spend, contended latency, failed arms.
 
 :func:`short_cells` names every cell holding fewer repetitions than declared, :func:`cost_unmeasured` and
-:func:`latency_contended` name the cells whose spend or latency cannot be read, :func:`all_failed` the arms
+:func:`contended_latency_cells` name the cells whose spend or latency cannot be read, :func:`all_failed` the arms
 whose every result failed, and :func:`held_fixed_reading` what the campaign held fixed.
 """
 
@@ -119,7 +119,7 @@ def cost_unmeasured(results_by_cell: dict[CellKey, list[ResultView]]) -> tuple[l
     return unmeasured, f"{sentence} {_HOW_TO_REPORT_SPEND}"
 
 
-def latency_contended(
+def contended_latency_cells(
     results_by_cell: dict[CellKey, list[ResultView]], contended_ids: Collection[str], *, declared: bool = False
 ) -> tuple[list[CellCoordinate], str | None]:
     """Name every cell whose latency read under concurrency was left out, with the one sentence that says so.
@@ -216,6 +216,6 @@ __all__ = [
     "all_failed",
     "cost_unmeasured",
     "held_fixed_reading",
-    "latency_contended",
+    "contended_latency_cells",
     "short_cells",
 ]

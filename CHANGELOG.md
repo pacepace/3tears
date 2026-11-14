@@ -16,7 +16,7 @@ now cites it by the listing's key (#1021).
 **Changed:** `aspect_pass_rate` reads the trials' pass rate alone rather than every floor reading, and the scorecard
 reads each row's pass rate once. `campaign_arms` loads each member run once and reads every run's first result in one
 call by id, where it loaded each run twice and read each first result on its own; it still reads each run's result
-keys one run at a time (#1053). `editor_rubric` keeps at most 64 editor texts read (#1117). Output is unchanged.
+keys one run at a time, until the batched key read returns (#1053 items 1 and 3; item 2 in part, so #1053 stays open). `editor_rubric` keeps at most 64 editor texts read (#1117). Output is unchanged.
 
 ### evals: a page's forms, arm names and gate checks are worked out once per report input
 

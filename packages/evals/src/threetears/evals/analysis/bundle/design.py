@@ -394,7 +394,7 @@ class CampaignArms(NamedTuple):
         return {**self.keyed, **{f"run:{run.id}": [run] for run in self.unplaced}}
 
 
-def campaign_arms(
+def group_runs_by_arm(
     runs: list[EvalRun], results_by_run: dict[str, list[ResultView]], *, profile: HostProfile
 ) -> CampaignArms:
     """Group the campaign's runs by the arm each measured.
@@ -491,7 +491,7 @@ def campaign_design(
     :param results_by_run: Each run's results, keyed by run id — the observation side of
         effective-config resolution, and where a variant key resolves.
     :ptype results_by_run: dict[str, list[ResultView]]
-    :param arms: :func:`campaign_arms`'s answer, when the caller already has it; derived otherwise.
+    :param arms: :func:`group_runs_by_arm`'s answer, when the caller already has it; derived otherwise.
     :ptype arms: CampaignArms | None
     :param archived_control_variants: The variant keys carried by member runs an operator archived.
         Supplied by the caller because archived runs are held out of every lens and their
@@ -515,7 +515,7 @@ def campaign_design(
         ``contrasts`` list is what a reader acts on, not the shape word.
     :rtype: RealizedDesign
     """
-    grouping = arms if arms is not None else campaign_arms(runs, results_by_run, profile=profile)
+    grouping = arms if arms is not None else group_runs_by_arm(runs, results_by_run, profile=profile)
     arms_by_key = grouping.keyed
     unplaced = [run.id for run in grouping.unplaced]
 
@@ -1109,7 +1109,7 @@ __all__ = [
     "SurfaceFold",
     "SurfaceFolds",
     "arm_repeats",
-    "campaign_arms",
+    "group_runs_by_arm",
     "campaign_design",
     "declared_level_names",
     "is_control_referenced",

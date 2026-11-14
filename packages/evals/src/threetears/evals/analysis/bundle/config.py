@@ -24,24 +24,6 @@ if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime i
     from threetears.evals.schema.models import EvalRun
 
 
-# CANDIDATE_MODEL_LEVER is the one name the candidate model answers to, everywhere. The coverage map, the divergence
-# lens and the effective configuration all reach for this axis, and two of them holding two
-# names for it would let the bundle report a lever twice — or, worse, report coverage for one
-# name while the config names the other, which is a bundle disagreeing with itself in one
-# payload.
-#
-# It is the one lever :func:`lever_value` reads off the OBSERVATION rather than off the run,
-# because it is a declared coordinate of one (``ScoreRecord.model``): every record knows which
-# model produced it, including a record whose candidate role left no usage row for the run-level
-# resolution to recover a model from. **The name's shape has nothing to do with it** — that rule, dotted through
-# the effective config and plain off the record, is what bound every plain-named host lever to
-# ``'—'``, which is why it was retired.
-#
-# Declared in :mod:`threetears.evals.kernel.host.sweepables`, beside the core declaration that carries it,
-# so the literal has one owner; :mod:`threetears.evals.kernel.host.profile` re-exports it, and that is
-# where a host recovery rule claiming the name is refused, and every bundle module reads it from there.
-
-
 def _observed_model_levers(profile: HostProfile) -> dict[str, str]:
     """Levers whose *inherited* value is recoverable from what the run actually did.
 

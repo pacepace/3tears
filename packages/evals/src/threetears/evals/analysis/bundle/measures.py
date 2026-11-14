@@ -520,10 +520,10 @@ def answered_unclassified(result: ResultView) -> bool:
     return MATCH_MEASURE not in result.host_measures and classify_result(result) is ResultOutcome.OK
 
 
-def grades_otherwise(answered_unclassified: Iterable[str], classified_cases: Collection[str]) -> bool:
+def grades_otherwise(unclassified_cases: Iterable[str], classified_cases: Collection[str]) -> bool:
     """Whether a run that answered these cases without failing and without a verdict grades by something else: it
     answered a case some run classified (:func:`failures_as_misses`)."""
-    return any(case_id in classified_cases for case_id in answered_unclassified)
+    return any(case_id in classified_cases for case_id in unclassified_cases)
 
 
 def miss_counts(case_id: str, classified_cases: Collection[str], *, grading_otherwise: bool) -> bool:

@@ -327,7 +327,7 @@ def planning_readings(
 
 
 def _family_readings(
-    axes: list[MeritAxis], catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure]
+    axes: list[MeritAxis], catalog: dict[str, MetricDescriptor], measures_judged: list[JudgedMeasure]
 ) -> dict[tuple[ComparisonReading, str], bool]:
     """The readings a question with these axes could draw a verdict from, each with its better direction.
 
@@ -350,8 +350,8 @@ def _family_readings(
     :ptype axes: list[MeritAxis]
     :param catalog: The bundle's measure catalog.
     :ptype catalog: dict[str, MetricDescriptor]
-    :param judged_measures: The bundle's judged measures.
-    :ptype judged_measures: list[JudgedMeasure]
+    :param measures_judged: The bundle's judged measures.
+    :ptype measures_judged: list[JudgedMeasure]
     :return: ``{(reading, name): higher_is_better}``.
     :rtype: dict[tuple[ComparisonReading, str], bool]
     """
@@ -366,7 +366,7 @@ def _family_readings(
         if axis_in_question_scope(descriptor.merit_axis, axes):
             readings[("measure", name)] = descriptor.higher_is_better
     if axis_in_question_scope(JUDGED_MERIT_AXIS, axes):
-        for measure in judged_measures:
+        for measure in measures_judged:
             if measure.axis == "capability":
                 readings[("judged", measure.name)] = measure.higher_is_better
     return readings
@@ -781,7 +781,7 @@ def multiple_comparisons(
     records: list[ScoreRecord],
     *,
     catalog: dict[str, MetricDescriptor],
-    judged_measures: list[JudgedMeasure],
+    measures_judged: list[JudgedMeasure],
     observations: MechanismObservations,
     served: ServedModels,
     profile: HostProfile,
@@ -826,8 +826,8 @@ def multiple_comparisons(
     :ptype records: list[ScoreRecord]
     :param catalog: The bundle's measure catalog — direction and axis per measure.
     :ptype catalog: dict[str, MetricDescriptor]
-    :param judged_measures: The bundle's judged measures.
-    :ptype judged_measures: list[JudgedMeasure]
+    :param measures_judged: The bundle's judged measures.
+    :ptype measures_judged: list[JudgedMeasure]
     :param observations: The campaign's mechanism observations, read for each contrast between two models.
     :ptype observations: MechanismObservations
     :param served: Which model answered each result's candidate calls, read for every contrast.
@@ -849,7 +849,7 @@ def multiple_comparisons(
         instead (:func:`_choice_contrasts`), what a choice reads.
     :rtype: tuple[MultipleComparisons, GuardrailReadings, list[FloorContrast]]
     """
-    guardrail_readings = _guardrail_readings(catalog, judged_measures, declared.design if declared else None)
+    guardrail_readings = _guardrail_readings(catalog, measures_judged, declared.design if declared else None)
     if realized.control_arm is None:
         return (
             MultipleComparisons(withheld=_NO_CONTROL_TO_COMPARE_AGAINST),
@@ -905,10 +905,10 @@ def multiple_comparisons(
         for pair in pairs
     }
     # A judged dimension's scale bounds the interval on its delta; it declares no margin, so no equivalence reads it.
-    judged_ranges = {judged.name: judged.value_range for judged in judged_measures if judged.value_range is not None}
+    judged_ranges = {judged.name: judged.value_range for judged in measures_judged if judged.value_range is not None}
     families = []
     for family_aspect, axes in scopes:
-        readings = _family_readings(axes, catalog, judged_measures)
+        readings = _family_readings(axes, catalog, measures_judged)
         if pass_rate_asked and family_aspect is not None:
             readings[("trial", TRIAL_PASS_NAME)] = True
         tested: list[_Tested] = []
@@ -1062,7 +1062,7 @@ def _floor_contrast(
 def reading_scope(
     declared: AspectDeclaration | None,
     catalog: dict[str, MetricDescriptor],
-    judged_measures: list[JudgedMeasure],
+    measures_judged: list[JudgedMeasure],
     *,
     first_result_at: str | None,
 ) -> ReadingScope:
@@ -1088,7 +1088,7 @@ def reading_scope(
         ),
         exploratory_dimensions=sorted(
             measure.name
-            for measure in judged_measures
+            for measure in measures_judged
             if measure.axis == "capability" and not axis_in_question_scope(JUDGED_MERIT_AXIS, axes)
         ),
     )
@@ -1112,7 +1112,7 @@ class _Guardrail(NamedTuple):
 
 
 def _guardrail_readings(
-    catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure], declared: AspectDesign | None
+    catalog: dict[str, MetricDescriptor], measures_judged: list[JudgedMeasure], declared: AspectDesign | None
 ) -> dict[tuple[ReadingKind, str], _Guardrail]:
     """Every guardrail reading the bundle carries: the measures declared one and the boundary judged dimensions.
 
@@ -1128,7 +1128,7 @@ def _guardrail_readings(
         for name, descriptor in catalog.items()
         if descriptor.guardrail and descriptor.higher_is_better is not None
     }
-    for measure in judged_measures:
+    for measure in measures_judged:
         if measure.axis == "boundary":
             readings[("judged", measure.name)] = _Guardrail(
                 measure.higher_is_better, judged_margins.get(measure.name), measure.value_range

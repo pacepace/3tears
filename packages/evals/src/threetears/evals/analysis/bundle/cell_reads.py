@@ -385,7 +385,7 @@ def _no_turn(members: list[ResultView]) -> int:
     )
 
 
-def arm_exclusions(results_by_cell: Mapping[CellKey, list[ResultView]]) -> list[ArmExclusions]:
+def cell_arm_exclusions(results_by_cell: Mapping[CellKey, list[ResultView]]) -> list[ArmExclusions]:
     """Each arm's excluded trials by cause, and the caps the truncated ones' judge calls were sent.
 
     One entry per cell, in coordinate order, over every result the cell holds, each classified once by
@@ -436,7 +436,7 @@ def differential_exclusions(arms: Sequence[ArmExclusions]) -> list[DifferentialE
     The threshold is :data:`~threetears.evals.kernel.result_condition.DIFFERENTIAL_EXCLUSION_SHARE`; the other arms
     named are those under the same rig, the only arms a comparison reads the arm against.
 
-    :param arms: The arms' exclusions (:func:`arm_exclusions`).
+    :param arms: The arms' exclusions (:func:`cell_arm_exclusions`).
     :ptype arms: Sequence[ArmExclusions]
     :return: The flags, in the arms' order and then by cause; empty when no cause took more than the threshold anywhere.
     :rtype: list[DifferentialExclusion]
@@ -478,17 +478,17 @@ def cannot_tell_on(bar: BarName, counted: list[ResultView], judged_rows: dict[st
     )
 
 
-def _judged_by_cell(judged_measures: list[JudgedMeasure]) -> dict[CellKey, list[JudgedReading]]:
+def _judged_by_cell(measures_judged: list[JudgedMeasure]) -> dict[CellKey, list[JudgedReading]]:
     """The judged measures transposed — each cell's readings, one per dimension it was scored on.
 
-    :param judged_measures: Judged measures, from :func:`judged_measures`, sorted by name.
-    :ptype judged_measures: list[JudgedMeasure]
+    :param measures_judged: Judged measures, from :func:`judged_measures`, sorted by name.
+    :ptype measures_judged: list[JudgedMeasure]
     :return: Each cell's readings, sorted by dimension, keyed by the cell's coordinates.
     :rtype: dict[CellKey, list[JudgedReading]]
     """
     judged_by_cell: dict[CellKey, list[JudgedReading]] = {}
     # Judged measures are sorted by name, so each cell's readings arrive sorted by dimension.
-    for measure in judged_measures:
+    for measure in measures_judged:
         for arm in measure.arms:
             judged_by_cell.setdefault((arm.variant_key, arm.apparatus_class_id), []).append(
                 JudgedReading(
@@ -589,7 +589,7 @@ def cell_strata(
 def cell_measures(
     cells: list[Cell],
     results_by_cell: dict[CellKey, list[ResultView]],
-    judged_measures: list[JudgedMeasure],
+    measures_judged: list[JudgedMeasure],
     *,
     strata: dict[CellKey, list[StratumFacts]],
     short_runs: dict[str, str],
@@ -616,8 +616,8 @@ def cell_measures(
     :ptype cells: list[Cell]
     :param results_by_cell: Each cell's results, from :func:`group_results_by_cell`.
     :ptype results_by_cell: dict[CellKey, list[ResultView]]
-    :param judged_measures: The bundle's judged measures, from :func:`judged_measures`.
-    :ptype judged_measures: list[JudgedMeasure]
+    :param measures_judged: The bundle's judged measures, from :func:`judged_measures`.
+    :ptype measures_judged: list[JudgedMeasure]
     :param strata: Each broken-down cell's strata, from :func:`cell_strata`; a cell absent from it carries none.
     :ptype strata: dict[CellKey, list[StratumFacts]]
     :param short_runs: The bundle's short-run sentences, by run id.
@@ -635,7 +635,7 @@ def cell_measures(
         then every other arm alphabetically by name, each arm's rigs by id. Not a ranking.
     :rtype: list[CellFacts]
     """
-    judged_by_cell = _judged_by_cell(judged_measures)
+    judged_by_cell = _judged_by_cell(measures_judged)
     facts = []
     for cell in sorted(cells, key=lambda c: (c.variant_key, c.apparatus_class_id)):
         key = (cell.variant_key, cell.apparatus_class_id)
@@ -668,7 +668,7 @@ def cell_measures(
 
 __all__ = [
     "CellKey",
-    "arm_exclusions",
+    "cell_arm_exclusions",
     "boundary_dimensions",
     "cannot_tell_on",
     "cell_collections",

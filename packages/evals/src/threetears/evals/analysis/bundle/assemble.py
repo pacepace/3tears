@@ -114,7 +114,7 @@ from threetears.evals.analysis.bundle.measures import (
 )
 from threetears.evals.analysis.bundle.design import (
     read_apparatus_levels,
-    campaign_arms,
+    group_runs_by_arm,
     campaign_design,
     declared_level_names,
     read_lever_levels,
@@ -132,7 +132,7 @@ from threetears.evals.analysis.bundle.mechanisms import (
 )
 from threetears.evals.analysis.bundle.config import declared_axis_ids
 from threetears.evals.analysis.bundle.divergence import scope_divergences
-from threetears.evals.analysis.bundle.telemetry import model_versions, run_summary, telemetry_rollup
+from threetears.evals.analysis.bundle.telemetry import model_versions, digest_run, telemetry_rollup
 from threetears.evals.analysis.bundle.coverage import (
     coverage_map,
     declared_crossing,
@@ -144,7 +144,7 @@ from threetears.evals.analysis.bundle.cell_reads import (
     cell_strata,
     judged_measures,
     group_results_by_cell,
-    arm_exclusions,
+    cell_arm_exclusions,
     differential_exclusions,
 )
 from threetears.evals.analysis.bundle.bars import bar_adjudications, read_frontier_bar, verdict_order
@@ -152,7 +152,7 @@ from threetears.evals.analysis.bundle.cell_notes import (
     all_failed,
     cost_unmeasured,
     held_fixed_reading,
-    latency_contended,
+    contended_latency_cells,
     short_cells,
 )
 from threetears.evals.analysis.bundle.comparisons import (
@@ -541,7 +541,7 @@ def assemble_context_bundle(
     # contrasts, the coverage rows and their confounds, and the divergences all ask it over their
     # own cohorts, and two lenses answering it separately could disagree about one surface.
     folds = SurfaceFolds(runs, results_by_run, profile=profile)
-    arms = campaign_arms(runs, results_by_run, profile=profile)
+    arms = group_runs_by_arm(runs, results_by_run, profile=profile)
     # Every mechanism a lens compares across levels, read once so the coverage rows, the divergences
     # and the arm readings report one set of values.
     mechanisms = mechanism_observations(results, profile=profile)
@@ -668,7 +668,7 @@ def assemble_context_bundle(
         archived_run_ids=archived,
         model_versions=model_versions(runs, projection.records),
         window=derive_window([run.created_at for run in runs]),
-        run_summaries=[run_summary(run, results_by_run[run.id], reportable, profile=profile) for run in runs],
+        run_summaries=[digest_run(run, results_by_run[run.id], reportable, profile=profile) for run in runs],
         # WITH the results, because the pinned-role badge reads result-level declarations
         # (``judge_config_ids`` is observed ACROSS a run's results, not declared on the run).
         # Called without them, this surface was blind to exactly the difference a judge A/B is
@@ -788,7 +788,7 @@ def assemble_context_bundle(
             f" (first {len(negative.result_ids)})" if negative.n_results > len(negative.result_ids) else "",
             ", ".join(negative.result_ids),
         )
-    bundle.latency_contended_cells, bundle.latency_contended = latency_contended(
+    bundle.latency_contended_cells, bundle.latency_contended = contended_latency_cells(
         results_by_cell,
         contended_ids,
         declared=declared_design is not None and declared_design.measure_latency,
@@ -888,7 +888,7 @@ def assemble_context_bundle(
         results_by_cell,
         projection.records,
         catalog=bundle.measure_catalog,
-        judged_measures=bundle.judged_measures,
+        measures_judged=bundle.judged_measures,
         observations=mechanisms,
         served=served,
         profile=profile,
@@ -907,7 +907,7 @@ def assemble_context_bundle(
     bundle.design_frozen_at = first_run_at
     bundle.first_result_at = first_result_at
     # Over the same grouping every per-arm read uses, so an arm's exclusions describe the trials its readings lost.
-    bundle.exclusions = arm_exclusions(results_by_cell)
+    bundle.exclusions = cell_arm_exclusions(results_by_cell)
     bundle.differential_exclusions = differential_exclusions(bundle.exclusions)
     # Every trial and each arm's census of them, after the catalog, which names each check and says which scorers
     # are pass/fail: the countable half of the report, read off the same results every lens above read, each trial
