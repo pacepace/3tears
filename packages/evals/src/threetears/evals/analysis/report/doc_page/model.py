@@ -171,6 +171,16 @@ class DocPage(EvalDocumentModel):
         description="Whether the page is a draft: its editor's review did not clear it, so its first line under the "
         "masthead says so (draft_line) and its open findings are listed in the appendix. False for a finished page.",
     )
+    # Left out of the document while empty, so the page of a campaign whose runs all finished is the page it was.
+    stopped: str = Field(
+        default="",
+        exclude_if=lambda said: not said,
+        description=(
+            "Code's line where a run the document was written over did not finish: what stopped it, and that there is "
+            "no verdict. The page's first line under its masthead, before anything the document says; empty where "
+            "every run completed."
+        ),
+    )
     degraded: str = Field(
         default="", description="Code's one note where part of a stored document no longer reads; empty where all does."
     )

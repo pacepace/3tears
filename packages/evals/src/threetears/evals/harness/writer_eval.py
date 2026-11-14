@@ -153,6 +153,7 @@ from threetears.evals.analysis import (
     summarize_run,
     summarize_runs,
 )
+from threetears.evals.analysis.run_ending import stopped_short
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import (
     ChartBlock,
@@ -643,8 +644,9 @@ class WriterResult:
         return self.render()
 
     def render(self, *, full: bool = False) -> str:
-        """The result as text: what failed first, where anything did (an arm's run or a pairwise pass, a replay miss
-        named as the call its recording does not hold), then the readings table, the pairwise table, each arm's
+        """The result as text: what stopped it first, where anything did (an arm's run that failed, was cancelled or
+        was stopped by its budget, or a pairwise pass; a replay miss named as the call its recording does not hold),
+        then the readings table, the pairwise table, each arm's
         results and spend, the promotion read and disclosures.
 
         Each reading is a measure the writer host declares, named as its descriptor names it, then each judged
@@ -658,13 +660,15 @@ class WriterResult:
         """
         candidates = " and ".join(arm for arm in self.arms if arm != self.control)
         cases = next(iter(self.arms.values())).n_cases
-        # What failed leads, named in its own words (a replay miss fails an arm's run or a pairwise pass), so no reader
-        # takes the readings below for a finished run's: a failed arm's cover only the results recorded before it.
-        failed = {arm: text for arm, summary in self.arms.items() if (text := summary.failed_text) is not None}
-        lines = [f"{self.name}: {arm} failed: {one_line(text)}" for arm, text in failed.items()]
-        if failed:
-            recorded = sum(summary.n_results for summary in self.arms.values())
-            lines.append(f"the readings below cover only the {recorded} result(s) recorded before it failed")
+        # What stopped an arm's run leads, in the run's own words (a replay miss fails one), and the pairwise passes
+        # that did not complete after it, so no reader takes the readings below for a finished run's: the one decision
+        # every surface asks (``stopped_short``).
+        short = stopped_short(summary.ending for summary in self.arms.values())
+        lines: list[str] = []
+        if short is not None:
+            arm_of = {summary.run_id: arm for arm, summary in self.arms.items()}
+            lines += [f"{self.name}: {said}" for said in short.sentences(lambda ending: arm_of[ending.run_id])]
+            lines.append(short.covers(sum(summary.n_results for summary in self.arms.values())))
         lines += [
             f"{self.name}: the pairwise pass of {arm} did not complete: {one_line(why)}"
             for arm, why in self.pairwise_unread.items()

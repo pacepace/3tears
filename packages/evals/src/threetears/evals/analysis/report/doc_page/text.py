@@ -160,6 +160,8 @@ def _above(page: DocPage, *, editor: bool) -> Iterator[list[str]]:
             if part
         )
     ]
+    if page.stopped:
+        yield [one_line(page.stopped)]
     if page.draft:
         yield [draft_line(page)]
     if opened := open_findings_line(page):

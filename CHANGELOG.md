@@ -36,6 +36,43 @@ with it. A g shown at its four figures moves only where that error straddled the
 - A new analysis stores `v3:` aspect fingerprints, so the campaign bundle's fingerprint (still `v3:` of its own
   numbering, over its frame) differs from one generated before over the same evidence; nothing compares the two.
 - `AnalysisContextBundle` gains `evidence` (`EvidenceManifest`, optional, left out while unset); bundle shape stays 66.
+### evals: a run that did not finish never opens with a verdict, on any surface (#1173)
+
+**Changed:** a failed run's print opened on its failure with no verdict; its HTML and Markdown report, and every
+surface of a cancelled, budget-stopped or exhausted run, still opened with a verdict over the results recorded before
+the stop. Whether a reading may open with a verdict is now one decision (`analysis.run_ending.stopped_short`), read off
+each member run's stored status alone: only `completed` may. Every surface asks it and, where a run did not finish,
+opens on what stopped it, in the run's own words, and says there is no verdict:
+
+| Surface | Opens with |
+|---|---|
+| `Result.render()`, `WriterResult.render()` | `<name>: the run was cancelled, so there is no verdict: <reason>`, then how many results the readings cover |
+| An aspect's page (Markdown, HTML, JSON) | its verdict line, rule `unfinished`, tone `failed`: `<arm>'s run was stopped by its budget, so there is no verdict: <reason>.` |
+| A campaign's page | the same line, before code's lead on the aspects that finished and before a caller's own lead |
+| A written page (Markdown, HTML, text) | code's line first under the masthead, before the document's headline |
+| `analyses_list`, `campaigns_list` | `AnalysisLine.verdict` and `report.headline` lead with it; `outcome_short` reads `Did not finish`; `verdict_short` reads `No call` unless a person recorded one |
+| `evals gate` | prints the same line and exits 1, reading no verdict; it passed such a campaign before |
+
+On a page, the line then says what the readings under it are and what to do: `The readings below include the partial
+results recorded before the stop, so resume the run or leave it out of the campaign to read a verdict.` A campaign's
+contrasts still count an unfinished run's partial results beside every finished run's. In a campaign of several
+aspects only the aspect holding the run loses its verdict; the others keep their lead, after it.
+
+A run still `running` or `pending` when it is read (one interrupted and never taken up again) reads the same way. A
+failed run that recorded no error, which printed a verdict, prints none. A failed setup keeps its own line, which
+already states no verdict. Pages, inputs and listings over runs that all finished are unchanged.
+
+**For hosts:** a host that pins a page's first line, or shows `report.headline`, `outcome_short` or `verdict_short`,
+sees them move for a campaign holding a run that did not finish. A pipeline calling `evals gate` gets exit 1 for such
+a campaign, where it could get 0. To read a verdict, resume the run (`job_resume`) or take it out of the campaign: a
+code-only page and the gate read the evidence as it stands, so they follow at once. A written report is frozen over
+the evidence it was written from: once its unfinished run has finished or left the campaign, its listing line reads
+`needs_regeneration` (`FINISHED_SINCE`), `outcome_short` is null, and the report is generated again
+(`analysis_generate`) to read a verdict. `campaign_stopped_short(host, campaign_id, scope_id)` (new, provisional,
+`threetears.evals.analysis`) answers what the gate asks. A host branching on `VerdictLine.rule` or a verdict block's
+tone meets `unfinished` (tone `failed`). `RunSummary.ended_because`,
+`Caveats.unfinished` and `DocPage.stopped` are new, optional and left out of a document while unset, so nothing stored
+moves; `EvalSummary.ending` replaces `EvalSummary.failed_text`, which no release shipped.
 
 ### evals: a definitions reset fills the presentation names a template it leaves current lacks
 
