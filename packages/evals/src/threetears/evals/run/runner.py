@@ -2011,7 +2011,9 @@ async def _run_judge_phase(
     :return: What the phase leaves on the result, and its wall clock in milliseconds.
     :rtype: tuple[_JudgeRecord, float]
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol. Every other failure of the phase
-        is folded into the record; this one is the host's code, which every cell would meet, so it fails the run.
+        is folded into the record but the next; this one is the host's code, which every cell would meet, so it fails
+        the run.
+    :raises ApparatusError: The rig could not serve a judge call (a replayed judge's miss): it fails the run too.
     """
     judge_started = time.monotonic()
     context = build_judge_context(
@@ -3666,6 +3668,10 @@ async def judge_dims(
     completion breaking the protocol** (:class:`~threetears.evals.schema.completion.CompletionProtocolDefect`):
     that is the host's code, which every call would meet, so it is raised — what its calls were billed counted in
     the cell's spend, every sibling call still in flight cancelled — and fails whatever is judging, a run included.
+    **Nor a call the rig could not serve** (:class:`~threetears.evals.kernel.host.apparatus.ApparatusError`: a replayed
+    judge's recording holding no call for the prompt): it is no judging outcome, so it is raised the same way and fails
+    whatever is judging (a run, a re-judge, a second judge, a quick judged eval), naming the call, rather than letting
+    a replay read on fewer judgments.
 
     :param template: The run's template, whose ``rubric`` names the per-dim calls.
     :ptype template: EvalTemplate
@@ -3689,6 +3695,8 @@ async def judge_dims(
     :return: ``(dim_id, outcome)`` for every call made, in dimension order.
     :rtype: list[tuple[str, JudgeOutcome]]
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol; the other calls are cancelled
+        first.
+    :raises ApparatusError: The rig could not serve a judge call (a replay's miss); the other calls are cancelled
         first.
     """
     gate = asyncio.Semaphore(concurrency)
@@ -4078,7 +4086,9 @@ async def execute_run(
     recording) — the pure-function contract for tests and cap-disabled contexts.
 
     Apparatus faults: a cell an :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`
-    ended is recorded excluded and the loop goes on. Only when EVERY cell of the run ended that
+    out of its kind's ``prepare`` or ``invoke`` ended is recorded excluded and the loop goes on. One out of its judge
+    phase (a replayed judge's miss) is not: the cell is recorded ``apparatus_failed`` naming the call, and the fault
+    fails the run, as a judge completion breaking the protocol does. Only when EVERY cell of the run ended that
     way does the loop raise :class:`EveryCellApparatusFailedError`, after the last cell is saved:
     the rig never worked, so the run measured nothing, and the job manager files it ``failed``. When every
     cell was excluded for an ``infra`` fault the harness recorded on it but not all by the rig (a provider that
@@ -4121,6 +4131,8 @@ async def execute_run(
     :raises AccountExhaustedError: A cell's call was refused for the calling account.
     :raises ModelUnservedError: The provider does not serve the run's model, as the circuit counts it.
     :raises EveryCellApparatusFailedError: An apparatus fault excluded every cell the run produced.
+    :raises ApparatusError: A judge call the rig could not serve (a replayed judge's miss), naming the call; its cell
+        is recorded first.
     :raises NothingMeasuredError: Every cell was excluded for an ``infra`` fault the harness recorded on it, not every
         one by an apparatus fault.
     :raises asyncio.CancelledError: The run was cancelled; the cell it struck is recorded first, unless the run is
@@ -4571,7 +4583,8 @@ async def execute_run(
             superseded = (
                 None
                 if over.summary.cost_usd is None or over.superseded_spend_usd is None
-                else over.summary.cost_usd + over.superseded_spend_usd
+                # The replaced row's dropped sends move with its spend, so its next take-up's cap still counts them.
+                else over.summary.cost_usd + over.summary.maybe_billed_usd + over.superseded_spend_usd
             )
             result = result.model_copy(
                 update={
@@ -4727,7 +4740,10 @@ async def execute_run(
         return records, cost_now
 
     priced = [summary.cost_usd for summary in summaries if summary.cost_usd is not None]
-    accumulated_usd = sum(priced)
+    # What each priced cell's dropped sends may have billed counts too, as the cap counted it as the cells landed.
+    accumulated_usd = sum(priced) + sum(
+        summary.maybe_billed_usd for summary in summaries if summary.cost_usd is not None
+    )
     unpriced_results = len(summaries) - len(priced)
     # The cost cap's record of the cells whose judging it set aside, when the account's refusal or the model's
     # provider stopped the run first: the cap reached its own stop beside it, and its count is kept on the run.

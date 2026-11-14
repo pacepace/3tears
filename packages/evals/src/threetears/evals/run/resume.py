@@ -276,7 +276,8 @@ def _counted_spend(rows: Sequence[StoredCell]) -> list[float | None]:
     """
     spend: list[float | None] = []
     for row in rows:
-        spend.append(row.summary.cost_usd)
+        # Beside its cost, what its dropped sends may have billed, as the uninterrupted run's cap counted it.
+        spend.append(None if row.summary.cost_usd is None else row.summary.cost_usd + row.summary.maybe_billed_usd)
         if row.superseded_spend_usd != 0.0:
             spend.append(row.superseded_spend_usd)
     return spend

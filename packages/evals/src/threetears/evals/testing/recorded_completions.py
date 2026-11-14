@@ -895,7 +895,7 @@ def _nearest(heads: Mapping[str, str], user: str) -> str:
     alike = sorted(key for key, held in heads.items() if held == head)
     if alike:
         named = ", ".join(key[:_KEY_DIGITS] for key in alike[:3]) + (", ..." if len(alike) > 3 else "")
-        if len(user) <= _PROMPT_HEAD:
+        if len(user) < _PROMPT_HEAD:
             # The whole user message is kept and matches: only what no line keeps can have changed.
             return (
                 f"{len(alike)} recorded key(s) hold the same user message ({named}), so what changed is the system "

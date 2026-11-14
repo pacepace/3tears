@@ -668,6 +668,9 @@ def _telemetry(tally: Tally, model: str) -> CandidateTelemetry:
             cost_usd=turn.cost_usd,
             price_source=turn.price_source,
             unpriced_reason=turn.pricing_failure,
+            # A send that broke before any response began may have been billed too: counted beside the row's cost,
+            # and by the run's cap, as a completion's is.
+            maybe_billed_sends=turn.maybe_billed_sends or None,
         )
     if unreturned := tally.unreturned_turns():
         ledger.add_unanswered(model=model, lost=unreturned)

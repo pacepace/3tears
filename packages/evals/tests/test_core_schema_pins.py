@@ -33,14 +33,17 @@ which also catches a validator tightening the JSON schema cannot show (the goal 
   its v15 fixture moved out of this released corpus the same way, unedited, its digest with it. A move is the one
   change a released corpus takes: the file leaves with its bytes, and no other frozen file is touched.
 
-The v15 corpus is the baseline of a release that has not been published: no store a released build wrote holds a
-v15 document yet, so while that is true a baseline change regenerates it in place rather than copying it. (The v14
-corpus it replaced was the pre-release baseline of ``.21`` to ``.24``, dropped with no upgrader when ``.25`` reset
-the baseline, since no release reads a pre-release store.) **A
-released version's corpus is never regenerated**: it is what an old store holds, and rewriting it would make the test
-that reads it vouch for the current build instead of for the stored past.
+The v15 corpus shipped: v0.93.0 and v0.94.0 hold it, so a store those releases wrote holds v15 documents, and it is
+frozen. (The v14 corpus it replaced was the pre-release baseline of ``.21`` to ``.24``, dropped with no upgrader when
+``.25`` reset the baseline, since no release reads a pre-release store.) **A released version's corpus is never
+regenerated**: it is what an old store holds, and rewriting it would make the test that reads it vouch for the current
+build instead of for the stored past. So an additive change (a minor) writes no fixture: bump the minor, re-pin the
+digests and ``PINNED_CORE_SCHEMA_MINOR`` here by hand (:func:`core_shape_digest` computes each), and the frozen
+corpus must still read. Only a major rebuilds the fixtures, and a major deletes every stored core document of the old
+version.
 
-**Regenerating the current corpus** is one command, from the repo root, which writes
+**Regenerating the current corpus** (after a major, or for a version no release shipped) is one command, from the
+repo root, which writes
 ``tests/fixtures/core_documents/v{CORE_SCHEMA_VERSION}/`` from :func:`~packages.evals.tests.stored_models.stored_sample`
 and re-pins ``CORE_SHAPE_DIGESTS`` and ``FIXTURE_DIGESTS`` below (it leaves ``PINNED_CORE_SCHEMA_VERSION`` and
 ``PINNED_CORE_SCHEMA_MINOR`` to the author)::

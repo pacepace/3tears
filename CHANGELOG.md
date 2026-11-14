@@ -27,11 +27,15 @@ disconnected without sending a response") was raised unretried, and one such dro
 in. `Model` now sends it again once, after the first backoff wait, for a completion and a tool turn alike (owner
 ruling). The first send is read streamed, so a response that began and was cut short while its body was read, which
 was served and billed, is raised as before and never sent again. The provider may have served and billed the dropped
-send, so the resend says so, with the error's own text: a turn's `resent_after`, and a completion's new
-`resent_after` and `maybe_billed_sends`. A usage row counts those sends as `RoleUsage.maybe_billed_sends` (new,
-optional, left out while none is counted), beside `call_count` and never in its cost. A run's cost cap counts each
-at its row's price per call (`kernel.usage_capture.maybe_billed_usd`), so a run never ends past its cap by what no
-row states.
+send, so the resend says so, with the error's own text, and counts it: a turn's `resent_after` and new
+`maybe_billed_sends` (kept in a turn recording only when set), and a completion's new `resent_after` and
+`maybe_billed_sends`. A usage row counts those sends as `RoleUsage.maybe_billed_sends` (new, optional, left out while
+none is counted), beside `call_count` and never in its cost; the report writer's candidate row counts its turns'. A
+run's cost cap counts each at its row's price per call (`kernel.usage_capture.maybe_billed_usd`, carried on
+`CellSummary.maybe_billed_usd`) on every path: as a cell lands, when a run is taken up again (its starting spend and
+the spend a replaced row moves onto the row written over it), in a witnessed run's judge cap (a judgement a
+protocol defect stopped included), in a stop's totals, and in a batched writer eval's spend per arm, which the next
+batch's cap is what is left of. So a run never ends past its cap by what no row states.
 
 ### evals: a replayed completion names the upstream its recording kept (#1161)
 

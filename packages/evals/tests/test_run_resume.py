@@ -41,6 +41,7 @@ from threetears.evals.kernel.errors import StorageError
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.scoring import compute_pass_hat_k
+from threetears.evals.kernel.usage_capture import maybe_billed_usd
 from threetears.evals.ops import OpsHost, job_poll, run_job_id
 from threetears.evals.run import (
     ArmPrice,
@@ -661,6 +662,63 @@ async def test_a_run_its_budget_stopped_is_taken_up_only_under_a_cap_above_its_s
     assert first.budget_stops and first.reason == stopped.budget_stop_reason
     assert (second.status, second.max_cost_usd, second.epoch) == ("budget_stopped", barely, 1)
     assert (third.status, third.max_cost_usd, third.epoch) == ("completed", 2.0, 2)
+
+
+async def test_a_take_up_counts_what_its_rows_dropped_sends_may_have_billed_toward_its_cap() -> None:
+    """A stored row whose calls each met a send that broke before any response began may have been billed twice. The
+    uninterrupted run's cap counted those sends at their calls' price, so a take-up counts them too: a cap above the
+    rows' cost but below it with the dropped sends is refused. Counted from the rows' cost alone, it was admitted and
+    the run went on past what its cap allowed."""
+    store = ClockedStore()
+    holder = _cheaply_priced(off_loop(ops_fixture, store=store).host)
+    run_id = await launched_run(holder, K, max_cost_usd=0.000001)
+    assert (await settled(holder, run_job_id(run_id))).status == "budget_stopped"
+    spent = sum(row.cost_usd or 0.0 for row in _rows(holder, run_id))
+    for (_scope, _doc_id), document in list(store.documents.items()):
+        if document.get("doc_type") != "eval_result" or document.get("eval_run_id") != run_id:
+            continue
+        # Each priced row in the cell's cost as one call that met a drop (the toy's rows count no calls of their own).
+        usage = [
+            row | {"call_count": row.get("call_count") or 1, "maybe_billed_sends": row.get("call_count") or 1}
+            if row.get("cost_usd") and row["role"] in document["cost_roles"]
+            else row
+            for row in document["usage"]
+        ]
+        store.upsert(document | {"usage": usage})
+    dropped = sum(maybe_billed_usd(row.usage, row.cost_roles) for row in _rows(holder, run_id))
+    assert dropped > 0
+
+    with pytest.raises(ValidationFailedError, match="max_cost_usd above"):
+        await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE, max_cost_usd=spent + dropped / 2)
+
+
+async def test_a_replaced_row_s_dropped_sends_move_with_its_spend_onto_the_row_written_over_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cell a cancel cut short had spent $0.05 on one call whose first send broke before any response began, so the
+    provider may have billed $0.05 more. Taken up, the cell runs again and its row is written over the old one: the
+    old attempt's spend moves onto it whole, the dropped send included, so a later take-up's cap still counts it."""
+    holder, run_id, _launched, store = await _interrupted(monkeypatch, "cancelled")
+    for document in list(store.documents.values()):
+        if document.get("eval_run_id") == run_id and document.get("termination") == "cancelled":
+            row = {
+                "role": "candidate",
+                "model": "toy",
+                "cost_usd": CUT_SHORT_USD,
+                "call_count": 1,
+                "maybe_billed_sends": 1,
+            }
+            store.upsert(document | {"cost_usd": CUT_SHORT_USD, "usage": [row]})
+    cut_short = [row for row in _rows(holder, run_id) if row.termination == "cancelled"]
+    assert cut_short and all(maybe_billed_usd(row.usage, row.cost_roles) == CUT_SHORT_USD for row in cut_short)
+
+    resumer = other_process(holder)
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+
+    after = {row.id: row for row in _rows(holder, run_id)}
+    for row in cut_short:
+        assert after[row.id].superseded_spend_usd == pytest.approx(2 * CUT_SHORT_USD), "the dropped send moved too"
 
 
 # =============================================================================
