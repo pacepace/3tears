@@ -17,6 +17,13 @@ excluded and counted. A miss now names the prompt's key and where it parts from 
 the same 80 characters, or the nearest recorded key and the character it parts at. Rung 5's recordings README says
 what to do when page text moves.
 
+### evals: a request the server dropped with no response is sent again once (#1137)
+
+**Fixed:** a first send the server dropped without a response (`httpx.RemoteProtocolError`) was raised unretried, and
+one such drop ended a live writer run 34 turns in. `Model` now sends it again once, after the first backoff wait, for
+a completion and a tool turn alike. The provider may have served and billed the first, so a turn's `resent_after`
+names the drop, and the resend is logged at WARNING.
+
 ### evals: a page's forms, arm names and gate checks are worked out once per report input
 
 **Changed:** `PageForms.of`, `page_arm_names` and a `gate_check` read off any page (no `forms`) keep their results per

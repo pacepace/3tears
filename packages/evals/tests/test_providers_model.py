@@ -915,6 +915,33 @@ async def test_a_resend_lost_on_the_way_raises_the_decline_before_it_never_the_t
     assert describe_failure(raised.value).owner == "provider"
 
 
+async def test_a_call_the_server_dropped_with_no_response_is_sent_again_once() -> None:
+    """A completion changes nothing but what it bills, so a first send dropped with no response is sent again, once,
+    after the first wait; a call that drops on its resend too raises the first drop, from the second."""
+    status, reply = message("answered")
+    sent: list[int] = []
+
+    def dropped_then_answered(request: httpx.Request) -> httpx.Response:
+        sent.append(1)
+        if len(sent) == 1:
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.", request=request)
+        return httpx.Response(status, json=reply)
+
+    waits = Waits()
+    completion = await answering(dropped_then_answered, waits).generate(system="", user="x")
+    assert len(sent) == 2 and waits.asked == [1.0] and completion.content == "answered"
+
+    drops: list[httpx.RemoteProtocolError] = []
+
+    def always_dropped(request: httpx.Request) -> httpx.Response:
+        drops.append(httpx.RemoteProtocolError(f"drop {len(drops) + 1}", request=request))
+        raise drops[-1]
+
+    with pytest.raises(httpx.RemoteProtocolError) as raised:
+        await answering(always_dropped, Waits()).generate(system="", user="x")
+    assert len(drops) == 2 and raised.value is drops[0] and raised.value.__cause__ is drops[1]
+
+
 async def test_a_derived_model_keeps_its_retry_policy() -> None:
     status, reply = message()
     server, waits = Answers((529, _OVERLOADED, {}), (status, reply, {})), Waits()

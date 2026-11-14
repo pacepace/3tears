@@ -566,7 +566,11 @@ class _Live:
         With ``failure_attempts`` above 1 (a tool turn's: the policy's ``turn_failure_attempts``), a call the provider
         failed with a 5xx status that is no decline, or whose connection was never made, is sent again too, up to that
         many attempts in all: nothing came back, so nothing was billed. A gateway's timeout (504, 524) is not: the
-        provider may still have served it. Every wait and resend ends within one
+        provider may still have served it. A first send the server dropped without sending a response
+        (``httpx.RemoteProtocolError``: "Server disconnected without sending a response") is sent again once, whatever
+        ``failure_attempts`` is: a completion request changes nothing but what it bills, so one resend costs at most a
+        second call, and the disconnect is named among what the resend followed, since the provider may have served the
+        first and billed it. Every wait and resend ends within one
         request's timeout of the first attempt. Any other failure, and the last decline or failure, is raised as it
         came; an error in a 200's body that is no decline is left to :func:`read_reply`, as before.
         """
@@ -581,9 +585,10 @@ class _Live:
         until = time.monotonic() + budget if budget is not None else None
         made = declined = failed = 0
         resent_after: list[str] = []
-        # The answer the next resend follows, re-read if that resend brings none; or the connection never made.
+        # The answer the next resend follows, re-read if that resend brings none; or the first send that brought none:
+        # a connection never made, or one the server dropped with no response.
         previous: httpx.Response | None = None
-        unsent: httpx.ConnectError | httpx.ConnectTimeout | None = None
+        unsent: httpx.ConnectError | httpx.ConnectTimeout | httpx.RemoteProtocolError | None = None
         while True:
             if made == 0:
                 try:
@@ -593,6 +598,10 @@ class _Live:
                         raise
                     # NOSILENT: the request never reached the provider; it is sent again below, or raised there.
                     response, unsent = None, never
+                except httpx.RemoteProtocolError as dropped:
+                    # NOSILENT: the server dropped the request with no response; it is sent again once below, or
+                    # raised there.
+                    response, unsent = None, dropped
             else:
                 response, lost = await self._resend(client, path, body, headers, until=until)
                 if response is None:
@@ -615,10 +624,16 @@ class _Live:
             if response is None:
                 assert unsent is not None
                 failed += 1
-                if failed >= failure_attempts:
+                dropped_once = isinstance(unsent, httpx.RemoteProtocolError)
+                if failed >= failure_attempts and not dropped_once:
                     raise unsent
                 after, wait = (
-                    f"the connection was never made ({type(unsent).__name__})",
+                    (
+                        "the server disconnected without sending a response (RemoteProtocolError), so the provider "
+                        "may have served and billed it"
+                        if dropped_once
+                        else f"the connection was never made ({type(unsent).__name__})"
+                    ),
                     self._retry.wait_s(failed, None),
                 )
                 standing: BaseException = unsent
@@ -910,8 +925,8 @@ class Model:
     naming the variable, unless a recording will serve every call.
 
     Implements :class:`~threetears.evals.schema.CompletionClient` and
-    :class:`~threetears.evals.schema.BoundCompletionClient`; ``generate`` is safe to call concurrently. Two resends,
-    and nothing else is retried. A provider's refusal of a setting the request carried, which the provider did not
+    :class:`~threetears.evals.schema.BoundCompletionClient`; ``generate`` is safe to call concurrently. The
+    resends below are made, and nothing else is retried. A provider's refusal of a setting the request carried, which the provider did not
     bill, is answered with the closest setting the model then takes, learned for every model sharing the
     :class:`~threetears.evals.providers.Catalogue`. A call the provider declined at that moment (a 429 that is no
     spent quota, a 529 overloaded, a 503 unavailable, as a status or as the code a 200's body carries), which it also
@@ -922,7 +937,10 @@ class Model:
     timeout (a 500, a 502, a 520 from its edge; never a 504 or a 524, which it may still have served), or whose
     connection was never made, is sent again too, two attempts in all by default
     (``DeclinedRetry.turn_failure_attempts``), within the same bound: no completion came back, so nothing was billed,
-    and the reply names what each resend followed (``TurnReply.resent_after``).
+    and the reply names what each resend followed (``TurnReply.resent_after``). A call or a turn whose first send the
+    server dropped without a response (``httpx.RemoteProtocolError``) is sent again once, after the same wait: the
+    request changes nothing but what it bills, and the provider may have served and billed the first, which the resend
+    names and a WARNING logs.
 
     **Keys.** A model handed no ``api_key=`` reads its provider's variable (``ANTHROPIC_API_KEY``), then the
     variables ``<VARIABLE>_FALLBACKS`` names, a comma list tried in order
