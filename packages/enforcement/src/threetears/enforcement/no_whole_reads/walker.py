@@ -2963,6 +2963,13 @@ class _ModuleWalk(ast.NodeVisitor):
         :return: whether it is
         :rtype: bool
         """
+        if (
+            isinstance(receiver, ast.Attribute)
+            and isinstance(receiver.value, ast.Name)
+            and receiver.value.id == "self"
+            and (known := self._self_attribute_class(receiver.attr)) is not None
+        ):
+            return _generic(_optional_of(known))[0] == owner
         if not isinstance(receiver, ast.Name):
             return False
         if receiver.id == owner:
@@ -2971,6 +2978,67 @@ class _ModuleWalk(ast.NodeVisitor):
             return bool(self._class_nodes) and self._class_nodes[-1].name == owner
         known = self._name_class(receiver.id)
         return known is not None and _generic(_optional_of(known))[0] == owner
+
+    def _self_attribute_class(self, attribute: str) -> ast.expr | None:
+        """the annotation an attribute of ``self`` in the enclosing class is known to hold: the class body's
+        annotation of it, or the annotation of the ``__init__`` parameter the constructor binds it to
+        (``self._relations = relations`` with ``relations: LsfRelations``), when that is its only binding there.
+
+        :param attribute: the attribute's name
+        :ptype attribute: str
+        :return: its annotation, or None when the walk cannot tell
+        :rtype: ast.expr | None
+        """
+        if not self._class_nodes:
+            return None
+        owner = self._class_nodes[-1]
+        for statement in owner.body:
+            if (
+                isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and statement.target.id == attribute
+            ):
+                return statement.annotation
+        init = next(
+            (
+                statement
+                for statement in owner.body
+                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef) and statement.name == "__init__"
+            ),
+            None,
+        )
+        if init is None:
+            return None
+        bound: list[ast.expr] = []
+        for node in ast.walk(init):
+            targets = (
+                node.targets
+                if isinstance(node, ast.Assign)
+                else [node.target]
+                if isinstance(node, ast.AnnAssign | ast.AugAssign)
+                else []
+            )
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                    and target.attr == attribute
+                ):
+                    if isinstance(node, ast.AnnAssign):
+                        return node.annotation
+                    bound.append(node.value if isinstance(node, ast.Assign) else ast.Constant(None))
+        if len(bound) != 1 or not isinstance(bound[0], ast.Name):
+            return None
+        arguments = init.args
+        return next(
+            (
+                argument.annotation
+                for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+                if argument.arg == bound[0].id
+            ),
+            None,
+        )
 
     def _name_class(self, name: str) -> ast.expr | None:
         """the annotation a name of the enclosing function is known to hold: its parameter's or an annotated
@@ -3073,7 +3141,7 @@ class _ModuleWalk(ast.NodeVisitor):
             # a sequence of constants (``order=(STATE_COLUMN,)``): each element the string it names
             if isinstance(value, (ast.Tuple, ast.List)):
                 elements = [literal(element) for element in value.elts]
-                return (
+                return _hoisted(
                     ast.Tuple(elts=elements, ctx=ast.Load())
                     if isinstance(value, ast.Tuple)
                     else ast.List(elts=elements, ctx=ast.Load())
@@ -3126,6 +3194,23 @@ class _ModuleWalk(ast.NodeVisitor):
                 is not None
             ):
                 return ast.Call(func=value.func, args=[ast.Constant(text), *value.args[1:]], keywords=value.keywords)
+            # a fragment over a local the function binds only to f-strings or strings, one per branch (``chosen =
+            # f"run_id IN ({ids})"`` or ``f"run_id IN (SELECT ...)"``, reports #55 ask 4): each text, judged in turn
+            if (
+                isinstance(value, ast.Call)
+                and _final(value) == "Fragment"
+                and value.args
+                and isinstance(value.args[0], ast.Name)
+                and (texts := self._bound_texts(value.args[0].id)) is not None
+            ):
+                fragments = [
+                    ast.Call(func=value.func, args=[ast.Constant(text), *value.args[1:]], keywords=value.keywords)
+                    for text in texts
+                ]
+                chained = fragments[-1]
+                for fragment in reversed(fragments[:-1]):
+                    chained = ast.IfExp(test=ast.Constant(True), body=fragment, orelse=chained)
+                return chained
             # a batch's columns named at run time: the key when they flow from a declared key source (:mod:`.keys`),
             # whatever they are named; any other, a predicate the walk cannot see
             if isinstance(value, ast.Call) and _final(value) == "KeyBatch" and value.args:
@@ -3173,13 +3258,41 @@ class _ModuleWalk(ast.NodeVisitor):
                 return ast.Constant(produced)
             if isinstance(value, ast.DictComp) and (produced := self._relation_produced(value.value)) is not None:
                 return ast.Dict(keys=[ast.Constant("")], values=[ast.Constant(produced)])
+            # a name the function binds once to a declared producer's return (``named = counted_relations(rels)``):
+            # that producer's relation, as the call itself is read
+            if (
+                isinstance(value, ast.Name)
+                and (bound := self._bound_once(value.id)) is not None
+                and len(bound) == 1
+                and isinstance(bound[0], ast.Call)
+                and (produced := self._relation_produced(bound[0])) is not None
+            ):
+                return ast.Constant(produced)
             return value
 
+        def tables(value: ast.expr) -> ast.expr:
+            # a mapping of relations a declared producer yields (``counted_relations(rels)``, reports #55 ask 3):
+            # each relation in it judged by the producer's declared key, as one relation
+            if isinstance(value, ast.Constant) and str(value.value).startswith(PRODUCED_PREFIX):
+                return ast.Dict(keys=[ast.Constant("")], values=[value])
+            return value
+
+        mapped = _final(node) == "counts_by_relations"
         return ast.Call(
             func=node.func,
-            args=[literal(argument) for argument in node.args],
+            args=[
+                tables(literal(argument)) if mapped and place == 1 else literal(argument)
+                for place, argument in enumerate(node.args)
+            ],
             keywords=[
-                ast.keyword(arg=k.arg, value=self._key_pins(literal(k.value)) if k.arg == "by" else literal(k.value))
+                ast.keyword(
+                    arg=k.arg,
+                    value=self._key_pins(literal(k.value))
+                    if k.arg == "by"
+                    else tables(literal(k.value))
+                    if mapped and k.arg == "tables"
+                    else literal(k.value),
+                )
                 for k in node.keywords
             ],
         )
@@ -4151,6 +4264,31 @@ class _ModuleWalk(ast.NodeVisitor):
             return bound[0]  # type: ignore[return-value]
         return None
 
+    def _bound_texts(self, name: str) -> list[str] | None:
+        """the texts of every value the enclosing function binds ``name`` to, when each is a string or an f-string the
+        walk can read (each interpolation it cannot name ``{}``): a fragment's condition chosen by a branch.
+
+        :param name: the local name
+        :ptype name: str
+        :return: the texts, in binding order, or None
+        :rtype: list[str] | None
+        """
+        bound = self._bound_once(name)
+        if not bound:
+            return None
+        texts: list[str] = []
+        for value in bound:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                texts.append(value.value)
+                continue
+            if not isinstance(value, ast.JoinedStr):
+                return None
+            text = _string_text(value, self._envs[-1], self._produced_by, self._key_expression)
+            if text is None:
+                return None
+            texts.append(text)
+        return texts
+
     def _producer_spellings(self) -> frozenset[str]:
         """the text each declared transient producer of this module returns (``_scratch``: ``_export.{}``), an
         interpolation's every name ``{}``: a relation spelled the same is one of the change sets the producer names.
@@ -5063,6 +5201,11 @@ class _ModuleWalk(ast.NodeVisitor):
             return TRANSIENT_PRODUCED
         if self._helper_relation(node):
             return HELPER_RELATION
+        # a relation a declared producer yields (``self._relations.runs``) written into a statement: the name its
+        # declaration is judged as, as when it is handed to a keyed helper
+        produced = self._relation_produced(node)
+        if produced is not None:
+            return produced
         owner = self._class_nodes[-1] if self._class_nodes else None
         if (
             isinstance(node, ast.Attribute)
@@ -5428,8 +5571,44 @@ def _arms(value: ast.IfExp) -> list[ast.expr]:
     """every arm of a condition, a chained condition's arms flattened."""
     found: list[ast.expr] = []
     for arm in (value.body, value.orelse):
-        found.extend(_arms(arm) if isinstance(arm, ast.IfExp) and _string_arm(arm) else [arm])
+        found.extend(
+            _arms(arm) if isinstance(arm, ast.IfExp) and (_string_arm(arm) or _literal_branches(arm)) else [arm]
+        )
     return found
+
+
+def _fragment_arms(value: ast.expr) -> list[ast.expr] | None:
+    """every arm of a condition each arm of which is a ``Fragment`` (a chained condition's arms flattened), or None."""
+    if isinstance(value, ast.Call) and _final(value) == "Fragment":
+        return [value]
+    if not isinstance(value, ast.IfExp):
+        return None
+    body, orelse = _fragment_arms(value.body), _fragment_arms(value.orelse)
+    return None if body is None or orelse is None else [*body, *orelse]
+
+
+def _hoisted(sequence: ast.Tuple | ast.List) -> ast.expr:
+    """a sequence one element of which is one ``Fragment`` or another by a condition, as the condition of whole
+    sequences, one an arm (``[c if t else d]`` -> ``[c] if t else [d]``), so each statement is judged in turn
+    (:func:`_branch_calls`); the sequence itself when no element is one.
+
+    :param sequence: the sequence, its elements resolved
+    :ptype sequence: ast.Tuple | ast.List
+    :return: the sequence, or a chain of conditions over copies of it
+    :rtype: ast.expr
+    """
+    for index, element in enumerate(sequence.elts):
+        if not isinstance(element, ast.IfExp) or (arms := _fragment_arms(element)) is None:
+            continue
+        copies: list[ast.expr] = [
+            _hoisted(type(sequence)(elts=[*sequence.elts[:index], arm, *sequence.elts[index + 1 :]], ctx=ast.Load()))
+            for arm in arms
+        ]
+        chained = copies[-1]
+        for copy in reversed(copies[:-1]):
+            chained = ast.IfExp(test=ast.Constant(True), body=copy, orelse=chained)
+        return chained
+    return sequence
 
 
 def _none_test(test: ast.expr) -> tuple[str, bool] | None:

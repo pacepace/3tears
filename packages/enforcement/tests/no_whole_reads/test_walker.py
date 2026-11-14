@@ -4254,6 +4254,104 @@ def test_a_run_time_relation_with_no_producer_declared_stays_unseen(tmp_path: Pa
         assert any(f == function and s.startswith("unknown-predicate") for f, s in found), (function, found)
 
 
+#: reports' counted relations (``aibots_reports.pod.lsf``, reports #55 asks 3 and 4): a producer's mapping of
+#: relations handed to ``counts_by_relations``, its runs pinned by literal ids or by the ok runs the warehouse selects
+_COUNTED = """
+    from collections.abc import Sequence
+
+    from threetears.core import keyed
+
+    _OK = "ok"
+
+
+    class LsfRelations:
+        runs: str
+        run_role: str
+
+
+    def counted_relations(relations: LsfRelations) -> dict[str, str]:
+        return {name: relations.relation(name) for name in counted_tables(relations)}
+
+
+    class LsfWarehouse:
+        def __init__(self, reader, *, relations: LsfRelations) -> None:
+            self._reader = reader
+            self._relations = relations
+
+        async def _counted(self, run_ids: Sequence[int], ok: int):
+            named = counted_relations(self._relations)
+            if len(run_ids) <= 10:
+                chosen = f"run_id IN ({', '.join(str(int(run_id)) for run_id in run_ids)})"
+                items = len(run_ids) * len(named)
+            else:
+                role = f" AND run_role = '{self._relations.run_role}'" if self._relations.run_role else ""
+                chosen = f"run_id IN (SELECT run_id FROM {self._relations.runs} WHERE status = '{_OK}'{role})"
+                items = ok
+            return await keyed.counts_by_relations(
+                self._reader, named, column="run_id", where=[keyed.Fragment(chosen)], groups=items
+            )
+
+        async def named_runs(self, run_ids):
+            chosen = f"run_id IN ({', '.join(str(int(run_id)) for run_id in run_ids)})"
+            return await keyed.counts_by_relations(
+                self._reader, counted_relations(self._relations), column="run_id", where=[keyed.Fragment(chosen)]
+            )
+
+        async def runs_of(self, run_ids):
+            return await keyed.counts_by_relations(
+                self._reader, counted_relations(self._relations), column="run_id", values=keyed.AnyOf(run_ids)
+            )
+
+        async def runs_at(self, at):
+            chosen = f"run_id IN (SELECT run_id FROM {self._relations.runs} WHERE data_time = '{at}')"
+            return await keyed.counts_by_relations(
+                self._reader, counted_relations(self._relations), column="run_id", where=[keyed.Fragment(chosen)]
+            )
+
+        async def kinds_of(self, kinds):
+            return await keyed.counts_by_relations(
+                self._reader, counted_relations(self._relations), column="kind", values=keyed.AnyOf(kinds)
+            )
+
+        async def kinds_at(self, at):
+            chosen = f"kind IN (SELECT kind FROM {self._relations.runs} WHERE data_time = '{at}')"
+            return await keyed.counts_by_relations(
+                self._reader, counted_relations(self._relations), column="run_id", where=[keyed.Fragment(chosen)]
+            )
+"""
+
+_COUNTED_PRODUCERS = {"counted_relations": ("run_id",), "LsfRelations.runs": ("data_time",)}
+
+
+def test_a_producer_s_mapping_of_relations_is_judged_per_relation_by_its_key(tmp_path: Path) -> None:
+    """Flips if a mapping of relations a declared producer returns (``counted_relations(rels)``, called in place or
+    bound to a local once) is not judged by the producer's key when handed to ``counts_by_relations`` (reports #55
+    ask 3): runs named by values or literal ids pass, a count of another column is the whole read it is."""
+    found = _symbols(_config(tmp_path, {"lsf.py": _COUNTED}, relation_producers=_COUNTED_PRODUCERS))
+    functions = {function for function, _ in found}
+    for keyed_read in ("LsfWarehouse.named_runs", "LsfWarehouse.runs_of", "LsfWarehouse.runs_at"):
+        assert keyed_read not in functions, found
+    assert ("LsfWarehouse.kinds_of", "whole-aggregate produced.counted_relations") in found, found
+    assert ("LsfWarehouse.kinds_at", "whole-aggregate produced.counted_relations") in found, found
+
+
+def test_a_fragment_chosen_by_a_branch_is_judged_in_each_arm(tmp_path: Path) -> None:
+    """Flips if a ``Fragment`` over a local bound to one f-string or another (``_counted``'s literal ids, or the ok
+    runs the warehouse selects) is dropped or left unseen instead of judged arm by arm (reports #55 ask 4): the
+    literal-ids arm is keyed; the ok-runs arm keys the counted relations by the runs it selects, and its read of the
+    runs relation by status, a column no key of it leads, is the non-key read it is."""
+    found = _symbols(_config(tmp_path, {"lsf.py": _COUNTED}, relation_producers=_COUNTED_PRODUCERS))
+    counted = {symbol for function, symbol in found if function == "LsfWarehouse._counted"}
+    assert counted == {"non-key-where produced.lsfrelations__runs"}, found
+
+
+def test_a_producer_s_mapping_with_no_producer_declared_stays_unseen(tmp_path: Path) -> None:
+    """Flips if a producer's mapping of relations passes, or is judged against any key, with no producer declared."""
+    found = _symbols(_config(tmp_path, {"lsf.py": _COUNTED}))
+    for function in ("LsfWarehouse.named_runs", "LsfWarehouse.runs_of", "LsfWarehouse._counted"):
+        assert any(f == function and s.startswith("unknown-") for f, s in found), (function, found)
+
+
 #: a settle's relations, as ``aibots_reports.pod.settle`` writes them: a change's rows registered by a transient
 #: producer (``_Work.put``) and read through ``self`` attributes, mappings of them, names bound more than once, lists
 #: of steps and forwarders that hand a step on (``_Work.step``, ``_union``, ``_undropped``, ``_Lsf(work, sources)``)
