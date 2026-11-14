@@ -39,7 +39,8 @@ For each cell:
    the candidate's own failures and the rig's apart — and, through the cell's sink, what it is waiting
    on and how to read what it has spent so far, so a cell its deadline cancels is still recorded.
    An :class:`~threetears.evals.kernel.host.apparatus.ApparatusError` out of ``prepare`` or
-   ``invoke`` is recorded the same way, as that one cell excluded, and the run goes on.
+   ``invoke`` is recorded the same way, as that one cell excluded, and the run goes on; a judge call's out of
+   ``invoke`` (:class:`JudgeCallUnserved`) fails the run, as one in step 4 does.
 4. Run the rubric judge, when a judge service is wired and the cell produced something to judge.
 5. Build one :class:`~threetears.evals.schema.models.EvalResult`, and one trace document beside it.
 
@@ -371,6 +372,30 @@ class EveryCellApparatusFailedError(RuntimeError):
             f"the eval apparatus failed every one of the run's {total} cell(s), so the run measured nothing — "
             f"repair the rig before relaunching: {shown}"
         )
+
+
+class JudgeCallUnserved(Exception):
+    """A judge call the rig could not serve, raised out of ``invoke`` by a kind whose candidate is itself a judge.
+
+    An :class:`~threetears.evals.kernel.host.apparatus.ApparatusError` out of ``invoke`` excludes that one cell and the
+    run goes on: a later cell may meet a working rig. A judge call's is not a cell's alone. A replayed judge whose
+    recording holds no call for the prompt (its prompt moved since it was recorded) fails the run naming the call
+    wherever it is asked (owner ruling, #1162), so a replay never reads on fewer judgments in silence: the run's scoring
+    judge fails it in the judge phase, and the judge kind, whose trial asks the judge under test, wraps the fault in
+    this. It is not itself an ``ApparatusError``, so the exclusion around ``invoke`` lets it pass; :func:`execute_run`
+    records the cell ``apparatus_failed`` naming :attr:`fault`, and raises the fault, as it raises the scoring judge's.
+
+    :ivar fault: What the rig raised, naming the call it could not serve.
+    """
+
+    def __init__(self, fault: ApparatusError) -> None:
+        """Carry the rig's fault.
+
+        :param fault: What the judge's client raised.
+        :ptype fault: ApparatusError
+        """
+        self.fault = fault
+        super().__init__(f"{type(fault).__name__}: {fault}")
 
 
 #: How many cells in a row, as a run records them, must find its candidate's model not served before the run stops
@@ -4086,9 +4111,10 @@ async def execute_run(
     recording) — the pure-function contract for tests and cap-disabled contexts.
 
     Apparatus faults: a cell an :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`
-    out of its kind's ``prepare`` or ``invoke`` ended is recorded excluded and the loop goes on. One out of its judge
-    phase (a replayed judge's miss) is not: the cell is recorded ``apparatus_failed`` naming the call, and the fault
-    fails the run, as a judge completion breaking the protocol does. Only when EVERY cell of the run ended that
+    out of its kind's ``prepare`` or ``invoke`` ended is recorded excluded and the loop goes on. One out of a judge call
+    (a replayed judge's miss) is not, in its judge phase or out of a judge kind's ``invoke`` (:class:`JudgeCallUnserved`):
+    the cell is recorded ``apparatus_failed`` naming the call, and the fault fails the run, as a judge completion
+    breaking the protocol does. Only when EVERY cell of the run ended that
     way does the loop raise :class:`EveryCellApparatusFailedError`, after the last cell is saved:
     the rig never worked, so the run measured nothing, and the job manager files it ``failed``. When every
     cell was excluded for an ``infra`` fault the harness recorded on it but not all by the rig (a provider that
@@ -4131,8 +4157,8 @@ async def execute_run(
     :raises AccountExhaustedError: A cell's call was refused for the calling account.
     :raises ModelUnservedError: The provider does not serve the run's model, as the circuit counts it.
     :raises EveryCellApparatusFailedError: An apparatus fault excluded every cell the run produced.
-    :raises ApparatusError: A judge call the rig could not serve (a replayed judge's miss), naming the call; its cell
-        is recorded first.
+    :raises ApparatusError: A judge call the rig could not serve (a replayed judge's miss, the run's scoring judge's or
+        a judge kind's judge under test's), naming the call; its cell is recorded first.
     :raises NothingMeasuredError: Every cell was excluded for an ``infra`` fault the harness recorded on it, not every
         one by an apparatus fault.
     :raises asyncio.CancelledError: The run was cancelled; the cell it struck is recorded first, unless the run is
@@ -4524,14 +4550,17 @@ async def execute_run(
                 unfinished_judging=f"did not finish: {msg}",
             )
             cancelled_in_cell = True
-        except (CandidateKindDefect, CompletionProtocolDefect, ApparatusError) as defect:
+        except (CandidateKindDefect, CompletionProtocolDefect, ApparatusError, JudgeCallUnserved) as raised:
             # NOSILENT: the cell is recorded excluded with what it spent, and the defect is re-raised to fail the run.
             # The host's code — a kind contradicting its declaration, a judge completion short of the protocol —
             # which every cell would meet, so it fails the run; it is re-raised below. So does a judge call the rig
-            # could not serve (a replayed judge's miss; a candidate's is excluded in its cell and never reaches here):
-            # a replay must fail at the miss, never read on fewer judgments (owner ruling, #1162). But what the cell was billed
+            # could not serve (a replayed judge's miss), the run's scoring judge's or, carried out of ``invoke`` as a
+            # JudgeCallUnserved, the judge kind's judge under test (a candidate's other rig faults are excluded in
+            # their cell and never reach here): a replay must fail at the miss, never read on fewer judgments (owner
+            # ruling, #1162). Either way the cell and the run name the rig's own fault. But what the cell was billed
             # before it was found is real spend, and lives only on this sink: the cell is recorded excluded first,
             # so the run's totals and its cost cap count it, as a cancelled cell's are.
+            defect = raised.fault if isinstance(raised, JudgeCallUnserved) else raised
             log.error(
                 "Eval cell hit %s, which fails its run (test_case=%s model=%s k=%s run=%s); recording what it spent",
                 type(defect).__name__,
@@ -4815,6 +4844,7 @@ __all__ = [
     "ErrorLedger",
     "EveryCellApparatusFailedError",
     "GoalCheckUnevaluable",
+    "JudgeCallUnserved",
     "NOTHING_MEASURED_FAULT",
     "NothingMeasuredError",
     "template_as_graded",

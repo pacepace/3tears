@@ -49,7 +49,7 @@ from threetears.evals.run import (
     rate_result,
 )
 from threetears.evals.run.judge_service import builtin_judge_config_ids, judge_config_ids_for
-from threetears.evals.run.runner import EveryCellApparatusFailedError
+from threetears.evals.run.runner import cell_execution_order
 from threetears.evals.schema import (
     DEFAULT_JUDGE_TEMPERATURE,
     CompletionProtocolDefect,
@@ -586,28 +586,50 @@ async def test_a_trial_whose_completion_carries_no_temperature_fails_the_run_and
     assert spent > 0 and room.spent == {"candidate": pytest.approx(spent)}
 
 
-async def test_a_judge_under_test_whose_replay_misses_is_excluded_as_the_rig_s_fault_never_graded(
-    tmp_path: Path,
-) -> None:
-    """The judge under test replays a recording that holds none of the prompts the trials ask, as after its prompt
-    moved. Each trial once came back graded no_reply, charged to the judge; now the miss leaves ``invoke`` and the
-    runner excludes the cell as apparatus_failed, naming the call. Every cell missed, so the run fails."""
+class _ResentUntempered(_Untempered):
+    """The judge's replies stripped of ``temperature``, each counting one send that broke before any response began and
+    was sent again, which the provider may have billed too."""
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        reply = await super().generate(system=system, user=user, response_format=response_format)
+        reply.maybe_billed_sends = 1
+        return reply
+
+
+async def test_a_trial_failed_by_a_protocol_defect_counts_its_resent_send_on_its_row() -> None:
+    """A trial whose completion breaks the protocol fails the run with what it was billed. Its first send was dropped
+    and sent again, so its row counts the send the provider may have billed beside the call, as every other row does,
+    and the run's cost cap counts it from there."""
     campaign = await _campaign()
-    path = tmp_path / "judge.jsonl"
-    async with RecordedCompletions.record(campaign.judge, path, settings=None) as recorder:
-        await recorder.generate(system="A prompt the trials never ask.", user="Score this.")
-    replay = RecordedCompletions.replay(path, settings=None)
-    kind = JudgeKind(
-        clients=lambda role, model, *, temperature=None: replay,
-        model=TOY_JUDGE_MODEL,
-        failure_describer=describe_failure,
-    )
     stored = off_loop(campaign.host.storage.load_test_case, campaign.case_ids[0], TOYHOST_SCOPE)
     assert stored is not None
+    resent = _ResentUntempered(campaign.judge)
+    kind = JudgeKind(
+        clients=lambda role, model, *, temperature=None: resent,
+        model=TOY_JUDGE_MODEL,
+        failure_describer=withhold_failure_detail,
+    )
+    room = FakeCellSink()
 
-    with pytest.raises(RecordingRefused, match="no call is recorded for the prompt"):
-        await kind.invoke(await _prepared(kind), stored, sink=FakeCellSink())
+    with pytest.raises(CompletionProtocolDefect) as raised:
+        await kind.invoke(await _prepared(kind), stored, sink=room)
 
+    assert raised.value.maybe_billed_sends == 1
+    assert room.progress is not None
+    [row] = room.progress().telemetry.usage
+    assert row.call_count == 1 and row.maybe_billed_sends == 1
+    assert row.cost_usd is not None and row.cost_usd > 0
+
+
+async def test_a_judge_under_test_whose_replay_misses_on_one_trial_fails_the_run_naming_the_call(
+    tmp_path: Path,
+) -> None:
+    """The judge under test replays a recording made of every trial but the last one the run asks, so the recording
+    serves each of those and cannot serve the last. The trials it serves score; the one it misses once came back graded
+    no_reply and charged to the judge, and then was excluded alone, so the campaign finished on fewer trials in silence.
+    A judge call's miss now fails the run, as a scoring judge's does (owner ruling, #1162): that cell is recorded
+    apparatus_failed naming the call, and the run raises the miss."""
+    campaign = await _campaign()
     template = _judge_template()
     run = make_eval_run(
         id="judge-arm-replay-missed",
@@ -620,7 +642,27 @@ async def test_a_judge_under_test_whose_replay_misses_is_excluded_as_the_rig_s_f
     )
     off_loop(campaign.host.storage.save_eval_run, run)
     cases = off_loop(campaign.host.storage.load_test_cases_by_ids, list(campaign.case_ids), TOYHOST_SCOPE)
-    with pytest.raises(EveryCellApparatusFailedError):
+    order = [case for _, case in cell_execution_order(run, cases)]
+    *held, missed = order
+    assert held, "the campaign holds more than one case, so some trials are served"
+
+    path = tmp_path / "judge.jsonl"
+    async with RecordedCompletions.record(campaign.judge, path, settings=None) as recorder:
+        recording = JudgeKind(
+            clients=lambda role, model, *, temperature=None: recorder,
+            model=TOY_JUDGE_MODEL,
+            failure_describer=describe_failure,
+        )
+        for case in held:
+            await recording.invoke(await _prepared(recording), case, sink=FakeCellSink())
+    replay = RecordedCompletions.replay(path, settings=None)
+    kind = JudgeKind(
+        clients=lambda role, model, *, temperature=None: replay,
+        model=TOY_JUDGE_MODEL,
+        failure_describer=describe_failure,
+    )
+
+    with pytest.raises(RecordingRefused, match=r"recording .+judge\.jsonl: the prompt .+; re-record "):
         await execute_run(
             campaign.host,
             run=run,
@@ -629,13 +671,21 @@ async def test_a_judge_under_test_whose_replay_misses_is_excluded_as_the_rig_s_f
             judge_service=None,
             options=RunnerOptions(candidate_kinds={JUDGE_KIND: lambda _cell: kind}),
         )
-    results = off_loop(campaign.host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
-    assert len(results) == len(campaign.case_ids)
-    for result in results:
-        assert result.termination == "apparatus_failed"
-        assert result.infra_error is not None and "RecordingRefused" in result.infra_error
-        assert "no call is recorded for the prompt" in result.infra_error
-        assert result.kind_payload is None or result.kind_payload.get("outcome") != "no_reply"
+
+    results = {
+        result.test_case_id: result
+        for result in off_loop(campaign.host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
+    }
+    assert set(results) == {case.id for case in order}
+    failed = results.pop(missed.id)
+    assert failed.termination == "apparatus_failed"
+    assert failed.infra_error is not None and failed.infra_error.startswith("apparatus: RecordingRefused: recording ")
+    assert str(path) in failed.infra_error and "re-record" in failed.infra_error
+    assert failed.kind_payload is None, "no trial is graded on a call the rig could not serve"
+    for served in results.values():
+        assert served.termination == "completed"
+        trial = judge_trial_of(served.kind_payload)
+        assert trial is not None and trial.outcome == "scored"
 
 
 def test_a_config_pinning_another_model_than_the_arm_is_refused() -> None:
