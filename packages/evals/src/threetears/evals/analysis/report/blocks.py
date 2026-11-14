@@ -41,7 +41,7 @@ from threetears.evals.analysis.report.charts import (
     Token,
 )
 from threetears.evals.analysis.report.cost_unit import REPLIES, money_ruler, per_count
-from threetears.evals.analysis.report.number_forms.policy import policy_lone_interval
+from threetears.evals.analysis.report.number_forms.policy import policy_interval_set, policy_lone_interval
 from threetears.evals.analysis.report.parts.look import arm_shape, arm_token, cost_axis_format
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.analysis.report.unit_once import ends_beside, interval_beside
@@ -1257,18 +1257,19 @@ class ChartBlock(_Block):
                 return spelled(amount) if money else number_in(amount * scale, self.unit)
 
             headers = ["Arm", f"Cost {per}{cost}", f"Interval{cost}", "Pass rate (%)", "Interval (%)"]
+            # The pass rate is one measure, so its column reads at one precision: its narrowest interval's.
+            rates = policy_interval_set(
+                [(point.pass_rate, point.pass_rate_low, point.pass_rate_high) for point in self.points], rate=True
+            )
             return headers, [
                 [
                     point.arm,
                     said(point.cost),
                     interval_beside(said(point.cost_low), said(point.cost_high)),
-                    point.pass_rate_text
-                    or interval_value_text(
-                        point.pass_rate, PERCENT, interval=(point.pass_rate_low, point.pass_rate_high)
-                    ),
-                    point.pass_rate_interval_text or interval_text(point.pass_rate_low, point.pass_rate_high, PERCENT),
+                    point.pass_rate_text or rate,
+                    point.pass_rate_interval_text or ends,
                 ]
-                for point in self.points
+                for point, (rate, ends) in zip(self.points, rates, strict=True)
             ]
         unit = f" ({unit_label(self.unit)})" if self.unit else ""
         headers = [
@@ -1279,13 +1280,13 @@ class ChartBlock(_Block):
             *(["Verdict"] if any(row.verdict for row in self.rows) else []),
         ]
         body = []
-        for row in self.rows:
-            cells = [
-                row.label,
-                interval_value_text(row.value, self.unit, interval=(row.low, row.high)),
-                interval_text(row.low, row.high, self.unit),
-                str(row.n_cases),
-            ]
+        # The rows are one measure's, so its column reads at one precision: its narrowest interval's (owner ruling,
+        # 2026-11-14).
+        texts = policy_interval_set(
+            [(row.value, row.low, row.high) for row in self.rows], rate=self.unit in (PERCENT, POINTS)
+        )
+        for row, (value, ends) in zip(self.rows, texts, strict=True):
+            cells = [row.label, value, ends, str(row.n_cases)]
             if len(headers) == 5:
                 cells.append(row.verdict or "—")
             body.append(cells)

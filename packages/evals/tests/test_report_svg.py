@@ -161,6 +161,38 @@ def test_interval_rows_carry_no_level_so_they_read_as_their_table_alone() -> Non
     assert _interval_chart().kit_chart() is None
 
 
+def _decimals(text: str) -> set[int]:
+    """How many decimals each figure in a cell carries."""
+    return {len(found.partition(".")[2]) for found in re.findall(r"\d+(?:\.\d+)?", text)}
+
+
+def test_one_measures_column_reads_at_one_precision_its_narrowest_intervals() -> None:
+    """A chart a host built with no decided texts reads as its table: its rows are one measure's, so every value and
+    every end reads at the one precision its narrowest interval sets (two significant figures of a 0.70 width: two
+    decimals), never each row at its own (``12.35`` above ``46``; owner ruling, 2026-11-14; Critic D-2)."""
+    block = ChartBlock(
+        section="contrasts",
+        chart="interval_rows",
+        title="Latency by arm",
+        rows=[
+            IntervalRow(label="a", value=12.345, low=12.0, high=12.7, n_cases=8),
+            IntervalRow(label="b", value=45.6, low=30.1, high=60.2, n_cases=8),
+        ],
+        unit="",
+    )
+    _, rows = block.values_table()
+    assert [row[1:3] for row in rows] == [["12.35", "12.00 to 12.70"], ["45.60", "30.10 to 60.20"]], rows
+
+
+def test_a_cost_quality_tables_pass_rate_reads_at_one_precision() -> None:
+    """The pass rate down a cost/quality chart's table is one measure: one precision, its narrowest interval's."""
+    block = _cost_chart(1.0, 2.0)
+    narrow = block.points[1].model_copy(update={"pass_rate": 61.234, "pass_rate_low": 58.0, "pass_rate_high": 64.5})
+    block = block.model_copy(update={"points": [block.points[0], narrow]})
+    _, rows = block.values_table()
+    assert {decimals for row in rows for cell in row[3:5] for decimals in _decimals(cell)} == {1}, rows
+
+
 def test_two_lost_causes_side_by_side_are_two_colours_and_neither_is_a_series() -> None:
     _, data = _drawn(_bar_chart())
     lost = [segment["color"] for segment in data["rows"][0]["segments"][2:]]

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import decimal
 import math
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Sequence
 
 from threetears.evals.analysis.quantities import PERCENT
 from threetears.evals.analysis.report.unit_once import interval_alone, unit_spaced
@@ -133,6 +133,35 @@ def policy_lone_interval(
     bounds = _RATE_BOUNDS if rate and not change else ()
     figure = "" if value is None else policy_figure(value, places, bounds=bounds, signed=change)
     return figure, policy_interval(low, high, places, change=change, bounds=bounds)[2]
+
+
+def policy_interval_set(
+    rows: Sequence[tuple[float | None, float, float]], *, rate: bool = False
+) -> list[tuple[str, str]]:
+    """Figures of one measure and their intervals where no measure's set holds them but one column does (a chart a
+    host built with no decided texts, read as its table): every row at one precision, two significant figures of the
+    narrowest interval's width (:func:`policy_places`), as a measure reads across its campaign (owner ruling,
+    2026-11-14), never each row at its own interval's (``12.35`` above ``46``).
+
+    :param rows: Each row's figure (None for an interval alone) and its interval's ends, as printed.
+    :ptype rows: Sequence[tuple[float | None, float, float]]
+    :param rate: Whether the figures are percents or changes in points, which read to at most one decimal and, as a
+        level, are kept off 0% and 100%.
+    :ptype rate: bool
+    :return: Each row's figure's digits (empty for none) and its interval's text, ``low to high``, with no unit.
+    :rtype: list[tuple[str, str]]
+    """
+    places = policy_places(
+        [(high - low) / 2 for _, low, high in rows], [end for _, low, high in rows for end in (low, high)], capped=rate
+    )
+    bounds = _RATE_BOUNDS if rate else ()
+    return [
+        (
+            "" if value is None else policy_figure(value, places, bounds=bounds),
+            policy_interval(low, high, places, change=False, bounds=bounds)[2],
+        )
+        for value, low, high in rows
+    ]
 
 
 def policy_level(percent: float) -> str:

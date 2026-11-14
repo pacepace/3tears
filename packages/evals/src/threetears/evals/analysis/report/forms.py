@@ -2464,7 +2464,8 @@ class PageForms:
         """A figure in its unit, unsigned, at the unit's own precision (a percent's or a point's one decimal) and by
         the number rule in any other, as an aspect page states one today where no set decides it: a declared margin or
         line in the unit a change is stated in (``declared``), an interval's level in percent (``confidence``), a
-        judged reading's rectifier (``change``), a quick print's figure beside its unit.
+        judged reading's rectifier (``change``), a quick print's figure beside its unit. An interval's level in percent
+        reads as every level as text does (:func:`policy_level`: ``99.69%`` for 99.6875%; owner ruling, 2026-11-14).
 
         :param value: The figure, already in ``unit``.
         :ptype value: float
@@ -2479,7 +2480,7 @@ class PageForms:
         :return: The figure.
         :rtype: Printed
         """
-        text = with_unit(value, unit)
+        text = policy_level(value) if role == "confidence" and unit == PERCENT else with_unit(value, unit)
         written = MONEY if is_money(unit) else unit
         return self._issue(*_keyed(measure, kind), role, value, text, _digits_of(text, written), written)
 
