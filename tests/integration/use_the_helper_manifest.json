@@ -4992,5 +4992,133 @@
   "sets": [],
   "shape": "point",
   "table": "memory_chunks"
+ },
+ {
+  "args": [
+   "agent_id"
+  ],
+  "columns": null,
+  "function": "WorkspaceCollection.find_by_agent",
+  "helper": "read_by",
+  "line": 172,
+  "method": "fetch",
+  "new_call": "read_by(self.required_l3_pool, 'workspaces', by={'agent_id': agent_id}, records=True, order=[Sort('date_updated', descending=True)])",
+  "old_sql": "SELECT * FROM workspaces WHERE agent_id = $1 ORDER BY date_updated DESC",
+  "order": [
+   {
+    "column": "date_updated",
+    "descending": true,
+    "nulls": null
+   }
+  ],
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "list",
+  "table": "workspaces"
+ },
+ {
+  "args": [
+   "agent_id"
+  ],
+  "columns": null,
+  "function": "WorkspaceCollection.find_by_agent",
+  "helper": "read_by",
+  "line": 174,
+  "method": "fetch",
+  "new_call": "read_by(self.required_l3_pool, 'workspaces', by={'agent_id': agent_id, 'date_deleted': None}, records=True, order=[Sort('date_updated', descending=True)])",
+  "old_sql": "SELECT * FROM workspaces WHERE agent_id = $1 AND date_deleted IS NULL ORDER BY date_updated DESC",
+  "order": [
+   {
+    "column": "date_updated",
+    "descending": true,
+    "nulls": null
+   }
+  ],
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "date_deleted",
+    "compared": [],
+    "kind": "null",
+    "literal": null,
+    "param": null,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "list",
+  "table": "workspaces"
+ },
+ {
+  "args": [
+   "partition_key"
+  ],
+  "columns": [
+   "partition_key",
+   "job_id",
+   "kind",
+   "payload",
+   "schedule_type",
+   "schedule_config",
+   "status",
+   "next_fire_at",
+   "last_fired_at",
+   "missed_fire_policy",
+   "name",
+   "date_created",
+   "date_updated"
+  ],
+  "function": "ScheduledJobCollection.list_for_partition",
+  "helper": "read_by",
+  "line": 355,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'scheduled_jobs', by={'partition_key': partition_key}, columns=('partition_key', 'job_id', 'kind', 'payload', 'schedule_type', 'schedule_config', 'status', 'next_fire_at', 'last_fired_at', 'missed_fire_policy', 'name', 'date_created', 'date_updated'), records=True, order=[Sort('date_created', descending=True)])",
+  "old_sql": "SELECT partition_key, job_id, kind, payload, schedule_type, schedule_config, status, next_fire_at, last_fired_at, missed_fire_policy, name, date_created, date_updated FROM scheduled_jobs WHERE partition_key = $1 ORDER BY date_created DESC",
+  "order": [
+   {
+    "column": "date_created",
+    "descending": true,
+    "nulls": null
+   }
+  ],
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "partition_key",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "list",
+  "table": "scheduled_jobs"
  }
 ]

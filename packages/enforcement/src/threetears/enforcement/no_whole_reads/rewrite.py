@@ -27,9 +27,11 @@ run again: a rewritten function must hold no whole-read finding it did not hold 
 
 **Listings** (shape ``list``): the same statement as a point read, sent by ``fetch``, with a trailing ``ORDER BY`` of
 plain columns (``col [ASC|DESC] [NULLS FIRST|LAST]``, or none), becomes :func:`~threetears.core.keyed.read_by` with
-``order=[Sort(...)]``, term for term: the same rows, in the same order, ties as the engine leaves them. Refused: a
-``LIMIT`` / ``OFFSET`` (a page, not a listing), an expression or alias in the order, a listing sent by ``fetchrow`` /
-``fetchval`` (its first row is a first-of read), and every point-read refusal.
+``order=[Sort(...)]``, term for term: the same rows, in the same order, ties as the engine leaves them. An ``ORDER BY``
+column the statement does not select is added to both sides' select lists in the proof only (it compares the order by
+its values); the call reads the statement's own columns. Refused: a ``LIMIT`` / ``OFFSET`` (a page, not a listing), an
+expression or alias in the order, a listing sent by ``fetchrow`` / ``fetchval`` (its first row is a first-of read), and
+every point-read refusal.
 
 **First-of and top-n reads** (shape ``first``, ruling 2026-11-13): a listing's statement with a trailing ``LIMIT 1``
 or ``LIMIT $n`` after its ``ORDER BY``, sent by ``fetch`` (the top n), ``fetchrow`` (the first row) or ``fetchval``
@@ -453,8 +455,6 @@ def parse_point(sql: str, *, ordered: bool = False, guards: bool = False) -> Poi
     pins = _pins(where, masked, qualifiers, kept)
     if isinstance(pins, str):
         return pins
-    if columns is not None and any(term["column"] not in column_names(columns) for term in order):
-        return "an ORDER BY column it does not select (the equivalence proof compares the order by its values)"
     numbers = sorted({number for pin in (*pins, *(kept or ())) for number in pin.numbers()})
     if numbers != list(range(1, len(numbers) + 1)):
         return "parameters not numbered $1..$n"
@@ -1346,7 +1346,7 @@ def _pins(
     it is not one.
 
     With ``guards``, every other conjunct (a range, ``<>``, an optional pin ``($5::text IS NULL OR col = $5)``, a
-    ``NOT (...)``) is appended there as a ``guard`` pin instead of refused: the helper's ``where=`` fragments, ANDed
+    ``NOT (...)``, an equality on a column already pinned) is appended there as a ``guard`` pin instead of refused: the helper's ``where=`` fragments, ANDed
     beside the pins, so the rows read are the same. A top-level ``OR`` (which the conjunction would misread) is refused.
 
     :param where: the ``WHERE`` clause's text
@@ -1394,6 +1394,14 @@ def _pins(
         if pinned.group("q") not in qualifiers:
             return f"a column of another relation: {conjunct!r}"
         name = pinned.group("column").lower()
+        if guards is not None and name in {pin.column for pin in pins}:
+            # a column pinned again (``status = $1 AND status IN ('queued', 'running')``): the first pin keys the
+            # read, the rest restrict its rows as a guard, ANDed beside it as written
+            again = _guard(conjunct, qualifiers)
+            if isinstance(again, str):
+                return again
+            guards.append(again)
+            continue
         if kind == "param":
             pins.append(Pin(name, "param", param=int(pinned.group("n"))))
         elif kind == "any":
@@ -1698,9 +1706,53 @@ def _call_of(module: _Module, use: ast.expr, methods: frozenset[str] = frozenset
             return read
     if call.keywords:
         return "keyword arguments to the call (timeout=, ...)"
-    if any(isinstance(arg, ast.Starred) for arg in call.args):
-        return "starred arguments"
+    spread = _call_arguments(module, call)
+    if isinstance(spread, str):
+        return spread
     return call
+
+
+def _call_arguments(module: _Module, call: ast.Call) -> list[ast.expr] | str:
+    """the parameters a call sends after its statement, ``$1`` first: its arguments as written, a starred argument
+    spread into the elements of the tuple or list literal it names; or why they cannot be read.
+
+    A starred name is spread when the function binds it once, to a literal of plain names and constants none of which
+    is bound more than once in the function (a parameter counts as its one binding), and reads it only spread into calls (``matching = await
+    conn.fetch(SQL, *params)``): its elements are then what the call sends, written the same at the call."""
+    arguments: list[ast.expr] = []
+    for argument in call.args[1:]:
+        if not isinstance(argument, ast.Starred):
+            arguments.append(argument)
+            continue
+        scope = module.scope(call)
+        if not (isinstance(argument.value, ast.Name) and isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef)):
+            return "starred arguments"
+        name = argument.value.id
+        holder = _bound_once(scope, name)
+        if isinstance(holder, str) or not isinstance(holder.value, ast.Tuple | ast.List):
+            return "starred arguments"
+        loads = [
+            use
+            for use in ast.walk(scope)
+            if isinstance(use, ast.Name) and use.id == name and isinstance(use.ctx, ast.Load)
+        ]
+        if any(not isinstance(module.parent(use), ast.Starred) for use in loads):
+            return f"starred arguments: {name} is read other than spread into a call"
+        for element in holder.value.elts:
+            if isinstance(element, ast.Constant):
+                continue
+            if not isinstance(element, ast.Name):
+                return f"starred arguments: {name} holds an element other than a name or a constant"
+            stores = [
+                node
+                for node in ast.walk(scope)
+                if isinstance(node, ast.Name) and node.id == element.id and isinstance(node.ctx, ast.Store)
+            ]
+            parameters = {arg.arg for arg in (*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs)}
+            if len(stores) + (element.id in parameters) > 1:
+                return f"starred arguments: {name}'s element {element.id} is bound more than once"
+        arguments.extend(holder.value.elts)
+    return arguments
 
 
 #: a status compared with a literal: ``status == "UPDATE 0"``, the verb and the count
@@ -2004,6 +2056,30 @@ def _sent_by(
     return call if isinstance(call, str) else ([call], None)
 
 
+def _spent_spreads(module: _Module, calls: Sequence[ast.Call]) -> list[tuple[int, int, int, int, str]]:
+    """the edits removing each tuple or list a starred argument of ``calls`` spreads (:func:`_call_arguments`) when
+    these calls are its only readers: the rewrite writes its elements at each call, leaving it unused."""
+    edits: list[tuple[int, int, int, int, str]] = []
+    seen: set[int] = set()
+    for call in calls:
+        scope = module.scope(call)
+        for argument in call.args[1:]:
+            if not (isinstance(argument, ast.Starred) and isinstance(argument.value, ast.Name)):
+                continue
+            holder = _bound_once(scope, argument.value.id)
+            if isinstance(holder, str) or id(holder) in seen:
+                continue
+            loads = [
+                use
+                for use in ast.walk(scope)
+                if isinstance(use, ast.Name) and use.id == argument.value.id and isinstance(use.ctx, ast.Load)
+            ]
+            if all(any(use is node for other in calls for node in ast.walk(other)) for use in loads):
+                seen.add(id(holder))
+                edits.append(_spent_edit(holder))
+    return edits
+
+
 def _function_at(module: _Module, node: ast.AST) -> str:
     """the qualified name of the function (or class) holding ``node``, ``<module>`` at the top, as the walk names it."""
     names: list[str] = []
@@ -2281,6 +2357,9 @@ def _module_text(module: _Module, value: ast.expr, seen: frozenset[str] = frozen
         and not value.keywords
     ):
         listed = value.args[0]
+        declared = _declared_column_names(module, listed)
+        if declared is not None:
+            return value.func.value.value.join(declared)
         if isinstance(listed, ast.Name):
             bound = _module_binding(module, listed.id)
             if bound is None or listed.id in seen:
@@ -2294,6 +2373,52 @@ def _module_text(module: _Module, value: ast.expr, seen: frozenset[str] = frozen
     if isinstance(value, ast.Name) and value.id not in seen:
         bound = _module_binding(module, value.id)
         return None if bound is None else _module_text(module, bound, seen | {value.id})
+    return None
+
+
+def _declared_column_names(module: _Module, listed: ast.expr) -> list[str] | None:
+    """the column names ``<c>.name for <c> in <SCHEMA>.columns`` reads, when ``<SCHEMA>`` is a module constant bound
+    once to a ``TableSchema(..., columns=[Column("<name>", ...), ...])`` written in the module (each column's name a
+    text literal, no ``if``): the declared table's columns in declared order. None for anything else."""
+    if not isinstance(listed, ast.GeneratorExp | ast.ListComp) or len(listed.generators) != 1:
+        return None
+    loop = listed.generators[0]
+    if loop.ifs or loop.is_async or not isinstance(loop.target, ast.Name):
+        return None
+    element = listed.elt
+    if not (
+        isinstance(element, ast.Attribute)
+        and element.attr == "name"
+        and isinstance(element.value, ast.Name)
+        and element.value.id == loop.target.id
+    ):
+        return None
+    source = loop.iter
+    if not (isinstance(source, ast.Attribute) and source.attr == "columns" and isinstance(source.value, ast.Name)):
+        return None
+    schema = _module_binding(module, source.value.id)
+    if not (isinstance(schema, ast.Call) and _called_name(schema.func) == "TableSchema"):
+        return None
+    columns = [keyword.value for keyword in schema.keywords if keyword.arg == "columns"]
+    if len(columns) != 1 or not isinstance(columns[0], ast.List | ast.Tuple):
+        return None
+    names: list[str] = []
+    for column in columns[0].elts:
+        if not (isinstance(column, ast.Call) and _called_name(column.func) == "Column" and column.args):
+            return None
+        first = column.args[0]
+        if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+            return None
+        names.append(first.value)
+    return names or None
+
+
+def _called_name(func: ast.expr) -> str | None:
+    """the last name of a called expression (``TableSchema`` of ``schema.TableSchema``), or None."""
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
     return None
 
 
@@ -3102,9 +3227,44 @@ def _loads(scope: ast.AST, name: str) -> list[ast.Name]:
     return [node for node in ast.walk(scope) if isinstance(node, ast.Name) and node.id == name]
 
 
-def _choice_of(module: _Module, literal: ast.Constant) -> ast.IfExp | None:
+def _branch_of(module: _Module, literal: ast.Constant) -> ast.If | None:
+    """the ``if``/``else`` statement binding one local to a statement literal on each side (``if c: x = "A"`` /
+    ``else: x = "B"``, each side that one assignment) a literal is one side of, or None."""
+    binding = module.parent(literal)
+    if not (
+        isinstance(binding, ast.Assign)
+        and binding.value is literal
+        and len(binding.targets) == 1
+        and isinstance(binding.targets[0], ast.Name)
+    ):
+        return None
+    branch = module.parent(binding)
+    if not (isinstance(branch, ast.If) and len(branch.body) == 1 and len(branch.orelse) == 1):
+        return None
+    sides = [*branch.body, *branch.orelse]
+    if binding not in sides:
+        return None
+    name = binding.targets[0].id
+    for side in sides:
+        if not (
+            isinstance(side, ast.Assign)
+            and len(side.targets) == 1
+            and isinstance(side.targets[0], ast.Name)
+            and side.targets[0].id == name
+            and isinstance(side.value, ast.Constant)
+            and isinstance(side.value.value, str)
+        ):
+            return None
+    return branch
+
+
+def _choice_of(module: _Module, literal: ast.Constant) -> ast.IfExp | ast.If | None:
     """the conditional choosing between two statement constants (``x = A if c else B``) a constant's one use is in,
-    or None when its use is not one."""
+    or the ``if``/``else`` binding a local to one statement literal per side (:func:`_branch_of`) the literal is in;
+    None when it is neither."""
+    branch = _branch_of(module, literal)
+    if branch is not None:
+        return branch
     found = _module_constant(module, literal)
     if found is None:
         return None
@@ -3118,7 +3278,7 @@ def _choice_of(module: _Module, literal: ast.Constant) -> ast.IfExp | None:
 def _plan_choice(
     config: NoWholeReadsConfig,
     module: _Module,
-    choice: ast.IfExp,
+    choice: ast.IfExp | ast.If,
     shape: _Shape,
     pending: Mapping[tuple[str, int], Any],
     unkeyed: Mapping[tuple[str, int], str],
@@ -3127,13 +3287,28 @@ def _plan_choice(
     statement sends (``await conn.execute(x, *args)``): the call rewritten into ``(<A's helper call> if c else <B's>)``,
     the local's binding and both constants removed; or why not. Both must be statements of the shape the rule finds
     (and not unkeyed), of the call's argument count; the condition is evaluated where it was, before the arguments.
+    An ``if``/``else`` statement binding the local to one statement literal on each side (:func:`_branch_of`) is taken
+    the same way: the call becomes the conditional of the two helper calls and the ``if`` statement is removed.
 
     :return: the two rewrites (the first holds the edits), or the refusal
     :rtype: list[Rewrite] | str
     """
     relative = module.path.relative_to(config.repo_root).as_posix()
-    chosen: list[tuple[ast.Assign | ast.AnnAssign, str, ast.Constant, Any]] = []
-    for side in (choice.body, choice.orelse):
+    chosen: list[tuple[ast.Assign | ast.AnnAssign | None, str, ast.Constant, Any]] = []
+    for written in (*choice.body, *choice.orelse) if isinstance(choice, ast.If) else ():
+        assert isinstance(written, ast.Assign) and isinstance(written.value, ast.Constant)
+        inline = written.value
+        if (relative, inline.lineno) in unkeyed:
+            return "a branch's statement: the no-whole-reads rule finds it unkeyed: a real fix first"
+        if (relative, inline.lineno) not in pending:
+            return f"a branch's statement is no {shape.shape} statement the rule finds"
+        one = shape.parse(str(inline.value))
+        if isinstance(one, str):
+            return f"a branch's statement: {one}"
+        if shape.shape == "write" and one.returning:
+            return "a branch's statement: a RETURNING write"
+        chosen.append((None, "the branch's statement", inline, one))
+    for side in (choice.body, choice.orelse) if isinstance(choice, ast.IfExp) else ():
         if not isinstance(side, ast.Name):
             return "a conditional choosing something other than two constants"
         bound = [
@@ -3159,21 +3334,27 @@ def _plan_choice(
         if shape.shape == "write" and one.returning:
             return f"its choice's {side.id}: a RETURNING write"
         chosen.append((bound[0], side.id, literal, one))
-    binding = module.parent(choice)
-    if not (
+    binding: ast.AST | None = choice if isinstance(choice, ast.If) else module.parent(choice)
+    if isinstance(choice, ast.If):
+        first = choice.body[0]
+        assert isinstance(first, ast.Assign) and isinstance(first.targets[0], ast.Name)
+        local, stores = first.targets[0].id, 2
+    elif (
         isinstance(binding, ast.Assign)
         and binding.value is choice
         and len(binding.targets) == 1
         and isinstance(binding.targets[0], ast.Name)
     ):
+        local, stores = binding.targets[0].id, 1
+    else:
         return "a choice of statements not bound to one local"
-    local = binding.targets[0].id
+    assert isinstance(binding, ast.stmt)
     scope = module.scope(binding)
     if not isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
         return "a choice of statements outside a function"
     named = _loads(scope, local)
     loads = [node for node in named if isinstance(node.ctx, ast.Load)]
-    if len(loads) != 1 or len(named) != 2:
+    if len(loads) != 1 or len(named) != 1 + stores:
         return f"its local {local} is bound or read more than once"
     block = next(
         (
@@ -3193,7 +3374,8 @@ def _plan_choice(
         return call
     assert isinstance(call.func, ast.Attribute)
     method = call.func.attr
-    arguments = call.args[1:]
+    arguments = _call_arguments(module, call)
+    assert not isinstance(arguments, str)
     planned: list[Rewrite] = []
     edits: list[tuple[int, int, int, int, str]] = []
     repoints: list[tuple[str, str, str]] = []
@@ -3210,11 +3392,12 @@ def _plan_choice(
             return "fetchval of SELECT *"
         if method == "fetchval" and not isinstance((one.columns or ("",))[0], str):
             return "fetchval of a select-list expression (read_value reads a column)"
-        elsewhere = _elsewhere(config.repo_root, module, constant, [call])
-        if isinstance(elsewhere, str):
-            return elsewhere
-        repoints += elsewhere[0]
-        notes += elsewhere[1]
+        if constant is not None:
+            elsewhere = _elsewhere(config.repo_root, module, constant, [call])
+            if isinstance(elsewhere, str):
+                return elsewhere
+            repoints += elsewhere[0]
+            notes += elsewhere[1]
         rewrite = Rewrite(
             path=relative,
             function=_function_at(module, call),
@@ -3232,7 +3415,8 @@ def _plan_choice(
         )
         receiver = module.segment(call.func.value)
         rewrite.new_call = _render(rewrite, receiver) if shape.shape != "write" else _render_write(rewrite, receiver)
-        edits.append(_constant_edit(module, constant))
+        if constant is not None:
+            edits.append(_constant_edit(module, constant))
         planned.append(rewrite)
     assert call.end_lineno is not None and call.end_col_offset is not None
     text = f"({planned[0].new_call} if {module.segment(choice.test)} else {planned[1].new_call})"
@@ -3573,7 +3757,9 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
         uses = Counter(bound)
         planned: list[Rewrite] = []
         for call in calls:
-            arguments = list(clause.arguments) if clause is not None else call.args[1:]
+            spread = list(clause.arguments) if clause is not None else _call_arguments(module, call)
+            assert not isinstance(spread, str)
+            arguments = spread
             assert isinstance(call.func, ast.Attribute)
             method = call.func.attr
             problem = ""
@@ -3665,6 +3851,8 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             if clause is not None:
                 rewrite.edits.extend(_spent_edit(spent) for spent in clause.spent)
             planned.append(rewrite)
+        if planned:
+            planned[0].edits.extend(_spent_spreads(module, calls))
         if planned and constant is not None:
             planned[0].edits.append(_constant_edit(module, constant))
             planned[0].repoints, planned[0].notes = elsewhere
@@ -3770,7 +3958,9 @@ def plan_write_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
         uses = Counter(bound)
         planned: list[Rewrite] = []
         for call in calls:
-            arguments = call.args[1:]
+            spread = _call_arguments(module, call)
+            assert not isinstance(spread, str)
+            arguments = spread
             problem = ""
             if len(arguments) != len(numbers):
                 problem = f"{len(arguments)} arguments for {len(numbers)} parameters"
@@ -3817,6 +4007,8 @@ def plan_write_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
                     break
                 rewrite.edits.extend(edits)
             planned.append(rewrite)
+        if planned:
+            planned[0].edits.extend(_spent_spreads(module, calls))
         if planned and constant is not None:
             planned[0].edits.append(_constant_edit(module, constant))
             planned[0].repoints, planned[0].notes = elsewhere

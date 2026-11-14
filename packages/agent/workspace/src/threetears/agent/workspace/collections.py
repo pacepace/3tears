@@ -168,11 +168,23 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         :return: list of workspace entities, newest update first
         :rtype: list[Workspace]
         """
-        if include_deleted:
-            sql = "SELECT * FROM workspaces WHERE agent_id = $1 ORDER BY date_updated DESC"
-        else:
-            sql = "SELECT * FROM workspaces WHERE agent_id = $1 AND date_deleted IS NULL ORDER BY date_updated DESC"
-        rows = await self.required_l3_pool.fetch(sql, agent_id)
+        rows = await (
+            read_by(
+                self.required_l3_pool,
+                "workspaces",
+                by={"agent_id": agent_id},
+                records=True,
+                order=[Sort("date_updated", descending=True)],
+            )
+            if include_deleted
+            else read_by(
+                self.required_l3_pool,
+                "workspaces",
+                by={"agent_id": agent_id, "date_deleted": None},
+                records=True,
+                order=[Sort("date_updated", descending=True)],
+            )
+        )
         entities: list[Workspace] = []
         for row in rows:
             data = dict(row)

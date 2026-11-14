@@ -42,7 +42,7 @@ from typing import Any
 from uuid import UUID
 
 from threetears.core.collections import repoint_user_rows
-from threetears.core.operator import operator_command
+from threetears.core.keyed import KeyBatch, Lock, read_keyed
 from threetears.observe import get_logger
 
 __all__ = ["MemoryRepointResult", "repoint_user"]
@@ -148,10 +148,6 @@ def _columns(keys: list[tuple[Any, ...]]) -> tuple[list[Any], list[Any]]:
     return [key[0] for key in keys], [key[1] for key in keys]
 
 
-@operator_command(
-    "an operator's merge of two users: every memory the source user holds, across every agent, moves to the master",
-    proof="packages/agent/memory/tests/test_merge.py::test_deletes_alias_collisions_before_repoint",
-)
 async def _delete_alias_collisions(
     conn: Any,
     *,
@@ -199,39 +195,61 @@ async def _delete_alias_collisions(
     if not locked:
         return result
     memory_agents, memory_ids = _columns([(row["agent_id"], row["memory_id"]) for row in locked])
-    memories = _key_set("$1", "$2")
+    # every child read by key: the colliding memories (or their media) are all the schema's agent's, so each read pins
+    # the agent and names the parents, through the index each table's cascade follows
+    pinned = {"agent_id": agent_id}
+    named = [(memory_id,) for memory_id in memory_ids]
 
-    media_rows = await conn.fetch(
-        f"SELECT agent_id, media_id FROM media WHERE (agent_id, memory_id) IN {memories} FOR UPDATE",
-        memory_agents,
-        memory_ids,
+    media_rows = await read_keyed(
+        conn,
+        "media",
+        keys=KeyBatch(("memory_id",), named, casts=("uuid",)),
+        by=pinned,
+        columns=["agent_id", "media_id"],
+        lock=Lock.UPDATE,
     )
     removed["media"] = [(row["agent_id"], row["media_id"]) for row in media_rows]
-    media_agents, media_ids = _columns(removed["media"])
 
-    content_rows = await conn.fetch(
-        f"SELECT agent_id, content_id FROM media_content WHERE (agent_id, media_id) IN {_key_set('$1', '$2')}",
-        media_agents,
-        media_ids,
+    content_rows = await read_keyed(
+        conn,
+        "media_content",
+        keys=KeyBatch(("media_id",), [(media_id,) for _, media_id in removed["media"]], casts=("uuid",)),
+        by=pinned,
+        columns=["agent_id", "content_id"],
     )
     removed["media_content"] = [(row["agent_id"], row["content_id"]) for row in content_rows]
 
-    chunk_rows = await conn.fetch(
-        f"SELECT agent_id, chunk_id FROM memory_chunks WHERE (agent_id, memory_id) IN {memories}",
-        memory_agents,
-        memory_ids,
+    chunk_rows = await read_keyed(
+        conn,
+        "memory_chunks",
+        keys=KeyBatch(("memory_id",), named, casts=("uuid",)),
+        by=pinned,
+        columns=["agent_id", "chunk_id"],
     )
     removed["memory_chunks"] = [(row["agent_id"], row["chunk_id"]) for row in chunk_rows]
 
-    edge_rows = await conn.fetch(
-        "SELECT agent_id, consolidated_memory_id, source_memory_id FROM memory_consolidations WHERE "
-        f"(agent_id, consolidated_memory_id) IN {memories} OR (agent_id, source_memory_id) IN {memories}",
-        memory_agents,
-        memory_ids,
+    # an edge with either end on a colliding memory: by the consolidated end (the key's lead), then by the source end
+    # (idx_memory_consolidations_source); an edge between two colliding memories is named once
+    edge_columns = ["agent_id", "consolidated_memory_id", "source_memory_id"]
+    by_consolidated = await read_keyed(
+        conn,
+        "memory_consolidations",
+        keys=KeyBatch(("consolidated_memory_id",), named, casts=("uuid",)),
+        by=pinned,
+        columns=edge_columns,
     )
-    removed["memory_consolidations"] = [
-        (row["agent_id"], row["consolidated_memory_id"], row["source_memory_id"]) for row in edge_rows
-    ]
+    by_source = await read_keyed(
+        conn,
+        "memory_consolidations",
+        keys=KeyBatch(("source_memory_id",), named, casts=("uuid",)),
+        by=pinned,
+        columns=edge_columns,
+    )
+    edges = {
+        (row["agent_id"], row["consolidated_memory_id"], row["source_memory_id"]): None
+        for row in (*by_consolidated, *by_source)
+    }
+    removed["memory_consolidations"] = list(edges)
 
     deleted = await conn.fetch(
         f"DELETE FROM memories m WHERE {_COLLISION_PREDICATE} "
@@ -247,10 +265,6 @@ async def _delete_alias_collisions(
     return result
 
 
-@operator_command(
-    "an operator's merge of two users: every memory the source user holds, across every agent, moves to the master",
-    proof="packages/agent/memory/tests/test_merge.py::test_deletes_alias_collisions_before_repoint",
-)
 async def repoint_user(
     conn: Any,
     *,

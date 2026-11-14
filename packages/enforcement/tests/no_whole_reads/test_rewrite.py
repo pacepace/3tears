@@ -310,8 +310,8 @@ _LISTINGS = """
 
 
 def test_a_listing_s_order_is_parsed_term_for_term() -> None:
-    """Flips if a listing's ``ORDER BY`` is not read as its plain-column terms (direction, NULLs as written), or a
-    point read starts taking one."""
+    """Flips if a listing's ``ORDER BY`` is not read as its plain-column terms (direction, NULLs as written), including
+    a column it does not select, or a point read starts taking one."""
     parsed = parse_list("SELECT g.geo_id, name FROM geos g WHERE g.state = $1 ORDER BY g.name DESC NULLS LAST, geo_id")
     assert isinstance(parsed, PointSql), parsed
     assert parsed.order == (
@@ -326,22 +326,25 @@ def test_a_listing_s_order_is_parsed_term_for_term() -> None:
         "SELECT geo_id FROM geos WHERE state = $1 ORDER BY geo_id LIMIT 5",
         "SELECT geo_id FROM geos WHERE state = $1 ORDER BY geo_id OFFSET 5",
         "SELECT geo_id FROM geos WHERE state = $1 ORDER BY lower(geo_id)",
-        "SELECT name FROM geos WHERE state = $1 ORDER BY geo_id",
         "SELECT geo_id FROM geos WHERE state = $1 ORDER BY u.geo_id",
     ):
         assert isinstance(parse_list(refused), str), refused
+    hidden = parse_list("SELECT name FROM geos WHERE state = $1 ORDER BY geo_id")
+    assert isinstance(hidden, PointSql), hidden
+    assert hidden.columns == ("name",) and hidden.order == ({"column": "geo_id", "descending": False, "nulls": None},)
 
 
 def test_listings_are_rewritten_onto_read_by_in_their_order(tmp_path: Path) -> None:
-    """Flips if a plain listing is not rewritten onto ``read_by(order=[Sort(...)])`` term for term and recorded, or a
-    page, a first-of read, an expression order or an unselected order column is not left and listed."""
+    """Flips if a plain listing (one ordered by a column it does not select too, which its call does not read) is not
+    rewritten onto ``read_by(order=[Sort(...)])`` term for term and recorded, or a page, a first-of read or an
+    expression order is not left and listed."""
     config = _config(tmp_path)
     (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_LISTINGS), encoding="utf-8")
     before = no_whole_reads_findings(config)
     rewrites, refusals = plan_list_rewrites(config)
-    assert sorted(rewrite.function for rewrite in rewrites) == ["geos_of", "geos_unordered"]
+    assert sorted(rewrite.function for rewrite in rewrites) == ["by_hidden", "geos_of", "geos_unordered"]
     refused = {refusal.function: refusal.reason for refusal in refusals}
-    assert refused.keys() == {"first_geo", "geo_page", "by_hidden", "by_lower"}, refused
+    assert refused.keys() == {"first_geo", "geo_page", "by_lower"}, refused
     assert "first-of" in refused["first_geo"]
 
     apply_rewrites(tmp_path, rewrites, ruff=None)
@@ -356,10 +359,15 @@ def test_listings_are_rewritten_onto_read_by_in_their_order(tmp_path: Path) -> N
         "order=[Sort('name', descending=True, nulls='last'), Sort('geo_id')])" in source
     )
     assert "read_by(conn, 'geos', by={'state': state}, records=True, order=[Sort('geo_id')])" in source
+    assert (
+        "read_by(conn, 'geos', by={'state': state}, columns=('name',), records=True, order=[Sort('geo_id')])" in source
+    )
     for entry in entries:
         assert_source_says(tmp_path, entry)
     left = [
-        finding for finding in use_the_helper_findings(config) if " in geos_of:" in finding or "unordered" in finding
+        finding
+        for finding in use_the_helper_findings(config)
+        if " in geos_of:" in finding or "unordered" in finding or "by_hidden" in finding
     ]
     assert not left, left
     assert _unlined(no_whole_reads_findings(config)) == _unlined(before)
@@ -410,20 +418,27 @@ _CLASS_CONSTANTS = """
 
 def test_a_class_constant_sent_through_self_or_cls_is_rewritten(tmp_path: Path) -> None:
     """Flips if a class-level statement constant sent as ``self.X`` / ``cls.X`` is taken for unused (and left), if
-    one also read through another object is rewritten away, or if a local bound by branch is rewritten (two
-    statements onto one call) or refused as named elsewhere in the repo."""
+    one also read through another object is rewritten away, or if a local bound to one statement per branch of an
+    ``if``/``else`` is not rewritten into the conditional of their two helper calls (never two statements onto one
+    call)."""
     config = _config(tmp_path)
     (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_CLASS_CONSTANTS), encoding="utf-8")
     rewrites, refusals = plan_point_rewrites(config)
-    assert sorted(rewrite.function for rewrite in rewrites) == ["Agents.again", "Agents.one"]
+    assert sorted(rewrite.function for rewrite in rewrites) == ["Agents.again", "Agents.one", "by_branch", "by_branch"]
     refused = {refusal.function: refusal.reason for refusal in refusals}
     assert "read through other" in refused["Agents"], refused
-    assert "bound more than once" in refused["by_branch"], refused
+    assert "by_branch" not in refused, refused
     apply_rewrites(tmp_path, rewrites, ruff=None)
     source = (tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8")
     assert "_ONE_SQL" not in source and "an agent by its key" not in source
     assert "await read_row(conn, 'agents', by={'id': agent_id}, records=True)" in source
     assert "_NAME_SQL = " in source
+    assert "if live:" not in source, source
+    assert (
+        "return await (read_row(conn, 'agents', by={'id': agent_id, 'live': True}, columns=('id',), records=True) "
+        "if live else read_row(conn, 'agents', by={'id': agent_id}, columns=('id',), records=True))"
+        in " ".join(source.split())
+    ), source
     for rewrite in rewrites:
         assert_source_says(tmp_path, rewrite.record())
 
@@ -1475,6 +1490,180 @@ def test_an_f_string_of_module_constants_is_rewritten_as_the_statement_it_sends(
         assert_source_says(tmp_path, entry)
     left = [line for line in use_the_helper_findings(config) if "reads.py" in line]
     assert sorted(line.split(":")[1].split(" in ")[1] for line in left) == ["by_local", "computed"], left
+
+
+_DECLARED_COLUMNS = """
+    from threetears.core.collections.schema_backed import Column, TableSchema
+
+    _ROWS_SCHEMA = TableSchema(
+        name="geos",
+        primary_key=("state", "geo_id"),
+        columns=[Column("state", "text"), Column("geo_id", "text"), Column("name", "text")],
+    )
+    _COMPUTED_SCHEMA = TableSchema(name="geos", primary_key=("state", "geo_id"), columns=_column_list())
+    _ALL = ", ".join(column.name for column in _ROWS_SCHEMA.columns)
+    _SOME = ", ".join(column.name for column in _ROWS_SCHEMA.columns if column.name != "state")
+    _OTHER = ", ".join(column.name for column in _COMPUTED_SCHEMA.columns)
+
+
+    async def every_column(conn, state):
+        return await conn.fetch(f"SELECT {_ALL} FROM geos WHERE state = $1 ORDER BY geo_id", state)
+
+
+    async def filtered_columns(conn, state):
+        return await conn.fetch(f"SELECT {_SOME} FROM geos WHERE state = $1 ORDER BY geo_id", state)
+
+
+    async def computed_columns(conn, state):
+        return await conn.fetch(f"SELECT {_OTHER} FROM geos WHERE state = $1 ORDER BY geo_id", state)
+"""
+
+
+def test_a_declared_schema_s_column_names_joined_are_a_module_constant(tmp_path: Path) -> None:
+    """Flips if ``", ".join(c.name for c in <SCHEMA>.columns)`` over a TableSchema whose columns are written in the
+    module as ``Column("<name>", ...)`` is not read as those names in declared order (so the read is rewritten with
+    them), or if a filtered generator or a schema whose column list is computed at run time is taken."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_DECLARED_COLUMNS), encoding="utf-8")
+    planned, refusals = plan_list_rewrites(config)
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert [rewrite.function for rewrite in planned] == ["every_column"], refused
+    assert planned[0].old_sql == "SELECT state, geo_id, name FROM geos WHERE state = $1 ORDER BY geo_id"
+    assert "_SOME" in refused["filtered_columns"] and "_OTHER" in refused["computed_columns"], refused
+    apply_rewrites(tmp_path, planned, ruff=None)
+    source = " ".join((tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8").split())
+    assert (
+        "read_by(conn, 'geos', by={'state': state}, columns=('state', 'geo_id', 'name'), records=True, "
+        "order=[Sort('geo_id')])" in source
+    )
+
+
+_UNSELECTED_ORDER = """
+    async def names_by_pop(conn, state):
+        return await conn.fetch("SELECT geo_id, name FROM geos WHERE state = $1 ORDER BY pop DESC, geo_id", state)
+"""
+
+
+def test_a_listing_ordered_by_a_column_it_does_not_select_is_rewritten_reading_its_own_columns(tmp_path: Path) -> None:
+    """Flips if a listing whose ``ORDER BY`` names a column it does not select is refused, or if its call reads that
+    column too: the call reads the statement's own columns, and the proof (core.testing.rewrites) adds the order's
+    columns to both sides to compare the order by its values."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_UNSELECTED_ORDER), encoding="utf-8")
+    planned, refusals = plan_list_rewrites(config)
+    assert [rewrite.function for rewrite in planned] == ["names_by_pop"], refusals
+    apply_rewrites(tmp_path, planned, ruff=None)
+    source = " ".join((tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8").split())
+    assert (
+        "read_by(conn, 'geos', by={'state': state}, columns=('geo_id', 'name'), records=True, "
+        "order=[Sort('pop', descending=True), Sort('geo_id')])" in source
+    ), source
+
+
+_SPREAD = """
+    _NAMES_SQL = "SELECT name FROM geos WHERE state = $1 AND geo_id = $2"
+    _GONE_SQL = "DELETE FROM geos WHERE state = $1 AND geo_id = $2"
+
+
+    async def spread_read(conn, state, geo):
+        params = (state, geo)
+        return await conn.fetch(_NAMES_SQL, *params)
+
+
+    async def spread_twice(conn, state, geo):
+        key = (state, geo)
+        await conn.execute(_GONE_SQL, *key)
+        await conn.execute(_GONE_SQL, *key)
+
+
+    async def spread_kept(conn, state, geo):
+        params = [state, geo]
+        found = await conn.fetch("SELECT name FROM geos WHERE state = $1 AND geo_id = $2", *params)
+        return found, len(params)
+
+
+    async def spread_rebound(conn, state, geo):
+        params = (state, geo)
+        state = state.upper()
+        return await conn.fetch("SELECT geo_id FROM geos WHERE state = $1 AND geo_id = $2", *params)
+"""
+
+
+def test_a_starred_tuple_bound_once_is_spread_into_its_elements(tmp_path: Path) -> None:
+    """Flips if a statement sent with ``*params``, ``params`` a tuple or list literal of names bound once and read only
+    spread, is refused, or is not rewritten with its elements (the tuple removed once no call reads it); or if one read
+    other than spread, or holding a name bound twice, is taken."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_SPREAD), encoding="utf-8")
+    reads, read_refusals = plan_point_rewrites(config)
+    writes, write_refusals = plan_write_rewrites(config)
+    refused = {refusal.function: refusal.reason for refusal in (*read_refusals, *write_refusals)}
+    assert sorted(rewrite.function for rewrite in (*reads, *writes)) == [
+        "spread_read",
+        "spread_twice",
+        "spread_twice",
+    ], refused
+    assert "read other than spread" in refused["spread_kept"], refused
+    assert "bound more than once" in refused["spread_rebound"], refused
+    apply_rewrites(tmp_path, [*reads, *writes], ruff=None)
+    source = " ".join((tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8").split())
+    assert "read_by(conn, 'geos', by={'state': state, 'geo_id': geo}, columns=('name',), records=True)" in source
+    assert source.count("delete_keyed(conn, 'geos', by={'state': state, 'geo_id': geo})") == 2, source
+    assert "params = (state, geo)" in source  # spread_rebound's, left
+    assert "key = (" not in source and source.count("params = (") == 1, source
+
+
+_BRANCHED = """
+    async def by_branch(conn, state, every):
+        if every:
+            sql = "SELECT geo_id FROM geos WHERE state = $1 ORDER BY geo_id"
+        else:
+            sql = "SELECT geo_id FROM geos WHERE state = $1 AND live ORDER BY geo_id"
+        rows = await conn.fetch(sql, state)
+        return [row["geo_id"] for row in rows]
+
+
+    async def branch_read_twice(conn, state, every):
+        if every:
+            sql = "SELECT name FROM geos WHERE state = $1 ORDER BY geo_id"
+        else:
+            sql = "SELECT name FROM geos WHERE state = $1 AND live ORDER BY geo_id"
+        rows = await conn.fetch(sql, state)
+        return rows, sql
+"""
+
+
+def test_a_local_bound_to_one_statement_per_branch_becomes_a_conditional_of_helper_calls(tmp_path: Path) -> None:
+    """Flips if ``if c: sql = "A"`` / ``else: sql = "B"`` sent by the next statement is refused, or is not rewritten
+    into ``(<A's call> if c else <B's call>)`` with the ``if`` statement removed; or if a local read again after the
+    send is taken."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_BRANCHED), encoding="utf-8")
+    planned, refusals = plan_list_rewrites(config)
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert sorted(rewrite.function for rewrite in planned) == ["by_branch", "by_branch"], refused
+    assert "bound or read more than once" in refused["branch_read_twice"], refused
+    apply_rewrites(tmp_path, planned, ruff=None)
+    text = (tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8")
+    source = " ".join(text.split())
+    assert (
+        "rows = await (read_by(conn, 'geos', by={'state': state}, columns=('geo_id',), records=True, "
+        "order=[Sort('geo_id')]) if every else read_by(conn, 'geos', by={'state': state, 'live': True}, "
+        "columns=('geo_id',), records=True, order=[Sort('geo_id')]))" in source
+    ), source
+    assert text.count("if every:") == 1, text  # branch_read_twice's, left
+
+
+def test_a_column_pinned_again_restricts_as_a_guard() -> None:
+    """Flips if a read whose ``WHERE`` pins a column twice (``status = $1 AND status IN ('a', 'b')``) is refused when
+    guards are taken, or its second conjunct is not kept as a guard beside the first pin; without guards it stays
+    refused."""
+    sql = "SELECT id FROM geos WHERE state = $1 AND state IN ('a', 'b') AND live = FALSE ORDER BY id LIMIT $2"
+    parsed = parse_first(sql, guards=True)
+    assert isinstance(parsed, PointSql), parsed
+    assert [(pin.column, pin.kind) for pin in parsed.pins] == [("state", "param"), ("live", "literal")]
+    assert [guard.literal for guard in parsed.guards] == ["state IN ('a', 'b')"]
+    assert parse_first(sql) == "a column pinned twice"
 
 
 _NULL_SAFE_KINDS = """

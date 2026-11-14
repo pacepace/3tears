@@ -41,10 +41,10 @@ async def test_deletes_alias_collisions_before_repoint() -> None:
         {
             "DELETE FROM memories": [{"agent_id": agent, "memory_id": colliding}],
             "FROM memories m WHERE": [{"agent_id": agent, "memory_id": colliding}],
-            "FROM media_content": [],
-            "FROM media WHERE": [],
-            "FROM memory_chunks WHERE": [],
-            "FROM memory_consolidations": [],
+            'FROM "media_content"': [],
+            'FROM "media" AS t': [],
+            'FROM "memory_chunks"': [],
+            'FROM "memory_consolidations"': [],
             'UPDATE "memories"': [{"agent_id": agent, "memory_id": uuid4()}],
             'UPDATE "media" ': [{"agent_id": agent, "media_id": uuid4()}],
             'UPDATE "media_content"': [{"agent_id": agent, "content_id": uuid4()}],
@@ -169,10 +169,10 @@ async def test_the_children_an_alias_collision_cascades_to_are_named() -> None:
         {
             "DELETE FROM memories": [{"agent_id": agent, "memory_id": memory_id}],
             "FROM memories m WHERE": [{"agent_id": agent, "memory_id": memory_id}],
-            "FROM media_content": [{"agent_id": agent, "content_id": content_id}],
-            "FROM media WHERE": [{"agent_id": agent, "media_id": media_id}],
-            "FROM memory_chunks WHERE": [{"agent_id": agent, "chunk_id": chunk_id}],
-            "FROM memory_consolidations": [
+            'FROM "media_content"': [{"agent_id": agent, "content_id": content_id}],
+            'FROM "media" AS t': [{"agent_id": agent, "media_id": media_id}],
+            'FROM "memory_chunks"': [{"agent_id": agent, "chunk_id": chunk_id}],
+            'FROM "memory_consolidations"': [
                 {"agent_id": agent, "consolidated_memory_id": gist_id, "source_memory_id": memory_id}
             ],
             'UPDATE "memories"': [],
@@ -193,7 +193,7 @@ async def test_the_children_an_alias_collision_cascades_to_are_named() -> None:
     }
     # every child is named before the DELETE takes it, inside the same transaction.
     delete_at = conn.order.index("DELETE FROM memories")
-    for lookup in ("FROM media WHERE", "FROM media_content", "FROM memory_chunks WHERE", "FROM memory_consolidations"):
+    for lookup in ('FROM "media" AS t', 'FROM "media_content"', 'FROM "memory_chunks"', 'FROM "memory_consolidations"'):
         assert conn.order.index(lookup) < delete_at, f"{lookup} ran after the DELETE had cascaded"
 
 
@@ -206,10 +206,10 @@ async def test_evict_names_every_touched_key_by_table_in_one_map() -> None:
         {
             "DELETE FROM memories": [{"agent_id": agent, "memory_id": deleted}],
             "FROM memories m WHERE": [{"agent_id": agent, "memory_id": deleted}],
-            "FROM media_content": [],
-            "FROM media WHERE": [{"agent_id": agent, "media_id": cascaded_media}],
-            "FROM memory_chunks WHERE": [],
-            "FROM memory_consolidations": [],
+            'FROM "media_content"': [],
+            'FROM "media" AS t': [{"agent_id": agent, "media_id": cascaded_media}],
+            'FROM "memory_chunks"': [],
+            'FROM "memory_consolidations"': [],
             'UPDATE "memories"': [{"agent_id": agent, "memory_id": moved}],
             'UPDATE "media" ': [{"agent_id": agent, "media_id": moved_media}],
             'UPDATE "media_content"': [],
@@ -267,13 +267,13 @@ async def test_the_summary_log_counts_what_the_cascade_removed(caplog: pytest.Lo
         {
             "DELETE FROM memories": [{"agent_id": agent, "memory_id": memory_id}],
             "FROM memories m WHERE": [{"agent_id": agent, "memory_id": memory_id}],
-            "FROM media_content": [{"agent_id": agent, "content_id": uuid4()}],
-            "FROM media WHERE": [{"agent_id": agent, "media_id": uuid4()}],
-            "FROM memory_chunks WHERE": [
+            'FROM "media_content"': [{"agent_id": agent, "content_id": uuid4()}],
+            'FROM "media" AS t': [{"agent_id": agent, "media_id": uuid4()}],
+            'FROM "memory_chunks"': [
                 {"agent_id": agent, "chunk_id": uuid4()},
                 {"agent_id": agent, "chunk_id": uuid4()},
             ],
-            "FROM memory_consolidations": [],
+            'FROM "memory_consolidations"': [],
             'UPDATE "memories"': [],
             'UPDATE "media" ': [],
             'UPDATE "media_content"': [],
