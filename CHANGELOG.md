@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a mean cost or latency takes an interval that holds 95% on skewed values
+
+**Changed:** the interval on the mean of a spend or a time (a `nonnegative` measure on the cost or latency axis,
+or in dollars, `ms` or `s`) is the union of the t interval over cases, clipped at zero, and a log-scale interval on the case means. The clipped t
+interval alone, labelled 95%, covered a lognormal mean 83% of the time at 10 cases and 91% at 50 (log-SD 1.0), and 72%
+at 10 cases at log-SD 1.5; the new interval covered at least 96% from 5 to 50 cases
+(`tests/test_simulated_floored_mean.py`). It is wider, by about 1.4 times at 10 cases of moderate skew and several
+times on heavy skew, and **under five differing cases above zero no interval is stated**, only the mean
+(`docs/measuring-soundly.md`, "Variance, k and how many cases"; limits in `docs/open-problems.md`). Measures on a
+declared range, counts, rates and differences between arms are unchanged.
+
+**Changed:** a launch estimate's detectable difference names its test (`paired t-test`) and marks each rate:
+`DetectableEffect.rate` (new, default false), and a rate's printed line says its bounded interval must exclude zero
+too, so a difference that size needs more cases. The figures themselves are unchanged.
+
+**For hosts:** a host pinning a report page, a bundle's `ci_low` / `ci_high` on a spend or a time, or the launch
+estimate's text updates its match; a reader of those intervals must accept none where the arm holds under five
+differing cases. Nothing stored changes shape.
+
 ### evals: a definitions reset fills the presentation names a template it leaves current lacks
 
 **Added:** `reset_definitions` runs the definition seed's fill-only presentation-name pass after its writes, on every

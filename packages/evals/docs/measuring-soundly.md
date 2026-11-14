@@ -308,6 +308,29 @@ k to the depth the question needs first, then add cases
 ([above](#how-many-cases-how-many-repeats)).
 *Evidence:* agent with tools, two independent arm pairs at n=5, 2026-08, pass^k 0.2 → 0.8 gave p=0.174 and p=0.629, replicated; in simulation (2026-09) a 95% interval over observations from 5 cases × k=3 covered the truth 70.3% of the time, against 94.3% over case means; from 2 to 15 cases at k=1 to 5 the engine's interval over cases covered 95% on average for a mean, every configuration within Monte-Carlo error, and at least 96% for a rate, against as little as 51% and 67% over observations (`tests/test_sim_reading_intervals.py`, 2026-10).
 
+**A mean cost or latency needs a wider interval than a t interval, and has none under five cases.** A spend and a
+time are bounded below and right-skewed: a few long conversations cost several times the median, and
+a small sample usually lacks them, so its mean and its standard error both read low. The engine's interval on
+such a mean (a measure on the cost or latency axis, or in dollars or a unit of time) is the union of the t interval over cases, clipped at zero, and a log-scale interval on the case
+means, so it holds 95% where either does: on lognormal values at any count, and on any distribution as cases grow.
+It is wider than the t interval, and how much wider depends on the skew the cases show (median width against the
+t interval's, 2,000 replicates):
+
+| Cases | Log-SD 0.5 | Log-SD 1.0 | Log-SD 1.5 |
+|---|---|---|---|
+| 5 | 2.2× | 17× | 920× |
+| 10 | 1.4× | 2.7× | 9.8× |
+| 20 | 1.2× | 1.8× | 3.2× |
+| 50 | 1.1× | 1.3× | 1.8× |
+
+At log-SD 1.0 the 95th percentile is five times the median. Under five differing cases above zero no interval is
+stated, only the mean: bounds that hold there span orders of magnitude. The interval reads a case far below the
+rest as skew too, so one near-free case widens the upper end; it errs wide
+([open problems](open-problems.md#an-interval-on-a-mean-cost-is-wide-and-holds-only-up-to-the-skew-tested-accepted-limit)).
+An interval on a difference between two arms' costs is still the paired t interval, and a count's (tokens, turns,
+calls) still the t interval clipped at zero.
+*Evidence:* in simulation (2026-11), the clipped t interval covered a lognormal mean 83% of the time at 10 cases and 91% at 50 (log-SD 1.0), and 72% at 10 cases at log-SD 1.5; the engine's interval covered at least 96% from 5 to 50 cases on lognormal values up to log-SD 1.5, on gamma, exponential and normal values, on cases repeated three times with and without lost repeats, and with a fifth of cases free (`tests/test_simulated_floored_mean.py`, 1,000 replicates each, held to 95% less Monte-Carlo error).
+
 **A small bank misses whole failure classes.** A hand-picked handful covers the cases its author thought of. See
 [How many cases](building-an-inventory.md#how-many-cases).
 *Evidence:* three-label classifier, k=3, 8 then 20 cases, 2026-09: the 20-case bank held a failure class (5 cases, all failed) the 8-case bank had no case of. The prompt also changed between the two banks, so the score's fall (0.875 → 0.750) is not attributable to the bank alone; single campaign.
@@ -443,7 +466,10 @@ timeouts as harness failures dropped 10 of 15 cells and left pass^k at 1.0 over 
 candidate for a turn truncated at its output cap, and never excludes a trial a failed check already decided. A call
 the provider declined (a 429 that is not a spent quota, or a 529 overloaded or 503 unavailable) is not the model's
 failure but the provider declining to serve it, as it would any request, so it is excluded, never charged
-([design](design.md#a-failure-is-charged-to-whoever-caused-it)); its lost trials are bounded in every verdict, and an
+([design](design.md#a-failure-is-charged-to-whoever-caused-it)); its lost trials are given their best and worst outcomes wherever a floor or a
+campaign reading is decided (`held`, `broken`, a gain or a drop shown), and nowhere else: a bar, the frontier's
+pass^k and an aspect page's contrasts read the trials that were left, and a cell a budget stop never started is in
+no count of lost trials at all. An
 arm that loses more than a tenth of its trials to one cause is flagged.
 
 - **The candidate was told something the seed contradicted.** A "you were just restarted" notice fired at

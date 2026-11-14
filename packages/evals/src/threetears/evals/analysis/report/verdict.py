@@ -106,7 +106,8 @@ LOSS_CAUSE_WORDS: Final[dict[str, CauseWords]] = {
     "cost_cap": CauseWords(
         words=(
             "the run's cost cap had too little left to judge it: it ran whole, and its other readings count it, but"
-            " nothing scored it, so the judged readings leave it out"
+            " nothing scored it, so the judged readings leave it out; a trial a check had already failed stays"
+            " failed, so the trials left pass less often than all of them would have"
         ),
         remedy=(
             "re-judge each lost trial (result_regrade with apply), which reads the answer it stored and pays for no candidate"

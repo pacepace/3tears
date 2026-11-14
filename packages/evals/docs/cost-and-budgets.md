@@ -93,6 +93,26 @@ new cell starts, the cells already running finish, and the run ends `budget_stop
 the ceiling was spent the contaminated one, so at width above 1 two identical runs contaminated different cells; a
 candidate is measured whole or never begun.
 
+**What a cap leaves out is not left out at random, in two ways.** Read both before comparing arms a cap stopped.
+
+- **The dearer arm loses more cases.** The cap is per run and each arm is its own run, so on one `max_cost_usd` the
+  arm that costs more per cell reaches it after fewer cells. Each run starts its cells in its own shuffled order, so
+  which cases it never started is chance, but how many is not, and two stopped arms lack different cases. A paired
+  contrast reads only the cases both arms ran, so it rests on fewer cases than either arm's count, and on the
+  unpaired test below two shared. A cell never started has no result: it is in no lost-trial count, so
+  `differential_exclusions` does not flag it and no floor or campaign reading bounds it. The run's stop line
+  (`cells_not_started`) is the only place it is counted.
+- **Setting judging aside lowers the pass rate of what is left.** A trial whose judging the cap set aside is lost
+  to the pass rate and pass^k (cause `cost_cap`) unless a check had already failed it: that trial stays failed, since
+  no judge could rescue it. The trials set aside therefore leave behind every failure a check decided and none of
+  the passes a judge would have confirmed, and the arm's pass rate over its usable trials reads below what all of
+  them would have given. A floor and a campaign reading give the lost trials their best and worst outcomes, so
+  they stay honest and read `undecided` more often; a bar, the frontier's pass^k and an aspect page's contrasts do
+  not. A re-judge (`result_regrade` with `apply`) removes the bias, since it scores the set-aside trials.
+
+Give every arm a cap its whole matrix fits (the launch estimate prices each arm), so that a cap is a guard that
+does not bind, never the thing that ends a comparison.
+
 - **Judging is admitted against the cost cap, before any of a cell's judge calls is paid for.** Judging is the
   engine's own spend, and a cell running when the cap was crossed would otherwise judge on past it. A cell's judge
   phase is priced whole, every call at its client's `price_ceiling`
@@ -115,7 +135,8 @@ candidate is measured whole or never begun.
   mark is its count: the summary's `n_not_judged`). So a hung judge call holding its room can see several cells pay
   for their candidates and be set aside this way, within the cap.
 - **A cell whose judging was set aside is never scored low.** It asks the judge nothing; it is marked
-  (`EvalResult.judging_set_aside`) and left out of the judged readings (its dimensions, pass^k and the composite)
+  (`EvalResult.judging_set_aside`) and left out of the judged readings (its dimensions, pass^k and the composite;
+  a trial a check had already failed stays failed, which biases what is left, as above)
   under its own exclusion cause, `cost_cap` ("cost cap" in a report's loss table), while its measures, checks and cost
   count as measured, a report it finished among them. Each of its dimensions carries a judge error that names the
   cap, and a re-judge
@@ -375,7 +396,12 @@ Holm's correction asks of the family. Its variance comes from earlier runs of th
 noise, and how far two arms disagree about one case (measured where two earlier runs launched differently
 shared cases; otherwise one arm's case-to-case spread, counted twice). With no earlier run, or no repeated
 cases, a reading says it cannot estimate and why; no default variance is ever used. The block states its
-assumptions, among them near-normal per-case differences and that only the one comparison differs. The block
+assumptions, among them near-normal per-case differences and that only the one comparison differs. **For a rate (a pass rate, a goal check, a pass or fail judgment) Δ is the least the launch could detect, not what it will.** The
+figure plans the paired t-test, and a rate is separated only where its bounded interval excludes zero too
+([why](measuring-soundly.md#a-floor-is-held-only-on-the-bounded-interval)); that interval needs more cases. At the
+stated Δ, 20 to 80 planned cases separated a pass rate 37–62% of the time in simulation, against the 80% stated, and
+the bounded interval reached 80% at one and a half to two times the cases. Each rate's line says so
+(`DetectableEffect.rate`); plan a rate with that margin until the estimate plans the bounded test itself. The block
 reads every earlier run's results, a page at a time, keeping of each result only its per-case values, so its memory
 holds a page of results and those values (a few of them per reading), never the results themselves. Its read time still grows with the history, so for a template whose earlier runs
 (archived ones left out) hold more than `PLANNING_READ_BUDGET` results by their matrices, or by their stored keys, it

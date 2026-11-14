@@ -243,14 +243,22 @@ class TestRetractionReadsOnlyTheArchivedFlag:
 class TestEveryIntervalIsAtTheOneLevel:
     """The bundle's intervals are computed at ``stats.INTERVAL_LEVEL``, not a level of its own."""
 
-    def test_moving_the_level_moves_every_cell_interval(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        at_95 = _measure(_bundle().cell_measures[0], "total_ms")
+    @pytest.mark.parametrize("name", ["total_ms", "field_accuracy"])
+    def test_moving_the_level_moves_every_cell_interval(self, name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A score on a declared range takes the t interval, so its half-width is the multiplier at the moved level
+        times its standard error. A time takes the union of that interval and a log-scale one (2026-11: the t
+        interval alone covered a skewed mean far under its level, ``tests/test_simulated_floored_mean.py``), so
+        its upper end reaches at least that far; both narrow as the level drops."""
+        at_95 = _measure(_bundle().cell_measures[0], name)
         monkeypatch.setattr(stats, "INTERVAL_LEVEL", 0.80)
-        at_80 = _measure(_bundle().cell_measures[0], "total_ms")
+        at_80 = _measure(_bundle().cell_measures[0], name)
 
         # The interval is read on the cell's cases, not its observations (#590).
         half = stats.t_critical_two_sided(0.80, at_80.n_independent - 1) * at_80.sem
-        assert at_80.ci_high - at_80.mean == pytest.approx(half)
+        if name == "field_accuracy":
+            assert at_80.ci_high - at_80.mean == pytest.approx(half)
+        else:
+            assert half * (1 - 1e-9) <= at_80.ci_high - at_80.mean < 1.5 * half
         assert at_80.ci_high - at_80.ci_low < at_95.ci_high - at_95.ci_low
 
 

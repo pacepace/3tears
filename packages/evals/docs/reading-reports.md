@@ -655,7 +655,9 @@ that adopts the aspects it keeps.
 
 ## Excluded trials by cause
 
-A trial is left out of an arm's measures for one of three causes (`trial_exclusion`): `infra`, the harness faulted
+A trial is left out of an arm's measures for one of five causes (`trial_exclusion`): `model_unserved`, the provider
+does not serve the model the call named; `cost_cap`, the run's cost cap had too little left to judge it, which leaves
+it out of the judged readings only ([below](#a-run-a-ceiling-stopped)); `infra`, the harness faulted
 it or the provider declined one of its calls (a 429 that is not a spent quota, or a 529 overloaded or 503
 unavailable, which says nothing about the model: it needs no fix, only a rerun once the provider can serve it, and the
 trial's error says which it was; but when an arm lost every trial this way and its run ended `failed` for it, the
@@ -682,6 +684,11 @@ other arm's share of the same cause under the same rig. Read it before any compa
 threshold the arms are not compared over the same trials, and the lost ones were lost for a reason that may differ
 by arm (a challenger whose long answers run its judge out of room, say). It is a flag, not a test.
 
+**Lost trials are bounded in a floor and a campaign reading only.** There each lost trial is given its best and its
+worst outcome, and a reading that depends on which is `undecided`. A bar, the frontier's pass^k and an aspect page's
+contrasts read the trials left, with no bound. A cell a budget stop never started has no result, so it is not a lost
+trial anywhere: not in `exclusions`, not in this flag, not in a bound.
+
 ## A run a ceiling stopped
 
 A run whose cost cap or metered-call ceiling was reached ends `budget_stopped`, and says so in one line written from
@@ -698,7 +705,11 @@ cell's judging on its price ceiling before paying for it, so judging stays withi
 bounds the bill; a cell whose judging did not fit is
 set aside, and the line ends *2 cells not judged, as the cap had too little left for their judging*. Those cells are
 left out of the judged readings, never scored low, and counted in every other reading as what they did; a re-judge
-takes them up, and a report's lost-trial table counts them under *cost cap*. A cap that stopped a run this way can read
+takes them up, and a report's lost-trial table counts them under *cost cap*. One exception makes what is left read
+low: a set-aside trial a check had already failed stays failed, so the usable trials keep those failures and none of
+the passes a judge would have confirmed. And a stopped arm lacks the cases it never started, more of them the dearer
+it is, so a contrast between two stopped arms pairs fewer cases than either ran
+([what a cap leaves out](cost-and-budgets.md#caps)). A cap that stopped a run this way can read
 under its ceiling: the stop came before the cap was reached.
 A run both ceilings stopped at one boundary reads both. The figures are `EvalRun.budget_stops`; a run stopped by its
 wall-clock budget has none and gives its reason instead.
@@ -717,7 +728,8 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 
 | Number | Method |
 |---|---|
-| Interval on a mean | t on `n_cases − 1` degrees of freedom with a cluster-robust standard error over cases (Miller 2024), clipped to the measure's scale, or at zero for a time, a spend or a count (`nonnegative`). One case gives no interval. |
+| Interval on a mean | t on `n_cases − 1` degrees of freedom with a cluster-robust standard error over cases (Miller 2024), clipped to the measure's scale, or at zero for a count (`nonnegative`). One case gives no interval. |
+| Interval on a mean spend or time (`nonnegative`, on the cost or latency axis or in dollars, `ms` or `s`) | The union of that t interval, clipped at zero, and a log-scale interval on the case means (the generalized interval on a lognormal mean, Krishnamoorthy & Mathew 2003), because such a measure is right-skewed and the t interval alone covered as little as 72% at ten cases. With cases at zero, the share of cases above zero (Clopper–Pearson) times the log-scale bounds on those, each at half the tail. Wider than the t interval: about 1.4 times at ten cases of moderate skew, several times on heavy skew. Under five differing cases above zero there is no interval. [Why](measuring-soundly.md#variance-k-and-how-many-cases). |
 | Interval on a rate (accuracy, precision, recall, any 0/1 measure) | Wilson, on the effective sample size the clustering of repeats leaves, with t on `n_cases − 1` df. F1 has none. |
 | Mean composite | The mean of each result's capability dimensions put on 0–1, per case first. Every pooled composite (run summary, compare, pivot cell, frontier point, history point, a lever's dispersion) names the dimension sets it was meaned over, and a pool whose results carried different sets is marked *ragged*: its mean averages different questions. |
 | pass^k | An attempt passes when every goal-state check passed, its label matched, every check the host declares held, and every capability criterion reached the behavior's pass threshold (3 of 5 unless declared; recorded as `rubric_threshold`, printed as `pass^k (k=3, criterion >= 4 of 5)`). An attempt with no goal-state check, no label, no declared check and no judge has nothing to pass: it is left out and counted (`n_no_criterion_excluded`), and an arm with none measurable has no pass^k (`pass_hat_k_unmeasured_reason`), never 0. Unbiased C(c, k) / C(n, k) per case, averaged over the cases with n ≥ k, pooled across the runs of one cell; its interval is Clopper–Pearson on an effective size. |

@@ -34,6 +34,7 @@ from __future__ import annotations
 import functools
 import math
 import random
+import sys
 from collections.abc import Collection, Hashable, Mapping, Sequence
 from fractions import Fraction
 from functools import lru_cache
@@ -645,12 +646,148 @@ def mean_interval(
     return low, high
 
 
+#: How closely a log-scale bound's quantile is solved: four float steps.
+_QUANTILE_TOLERANCE: Final = 4.0 * sys.float_info.epsilon
+
+#: The largest ``x`` whose ``exp(x)`` is a finite float.
+_LARGEST_EXPONENT: Final = math.log(sys.float_info.max)
+
+
+def _log_scale_mean_bounds(positives: Sequence[float], level: float) -> tuple[float, float] | None:
+    """Bounds at ``level`` on the mean of positive, right-skewed values, read on the log scale.
+
+    The mean of a lognormal is ``exp(μ + σ²/2)``. The bounds are the quantiles of that quantity under the law
+    :func:`lognormal_sum_prediction_band` reads a cost by, with ``μ`` and ``σ`` unknown (the reference prior,
+    ``1/σ``): the spread's uncertainty is its chi-square law on ``n − 1`` degrees of freedom and the mean's is
+    normal given the spread. It is Krishnamoorthy and Mathew's generalized confidence interval (2003). The
+    closed-form alternative (Cox's, on a t multiplier) covered 92–94% at log-SD 1.5 on 5 to 20 values; this one
+    held 95%.
+
+    :return: ``(low, high)``, or ``None`` below two values; equal values give a band of no width at their value.
+    """
+    n = len(positives)
+    if n < 2:
+        return None
+    if min(positives) == max(positives):
+        return positives[0], positives[0]
+    logs = [math.log(value) for value in positives]
+    centre = math.fsum(logs) / n
+    spread = math.fsum((value - centre) ** 2 for value in logs) / (n - 1)
+    if spread == 0.0:
+        # Unequal values whose logs are equal (see :func:`lognormal_sum_prediction_band`).
+        return min(positives), max(positives)
+    df = n - 1
+    components = []
+    for node in _chi_square_nodes(df):
+        variance = df * spread / node
+        components.append((centre + 0.5 * variance, math.sqrt(variance / n)))
+    tail = 0.5 * (1.0 - level)
+    # Solved to the last few bits, not the band's 1e-12: these ends are a bundle's figures, which fingerprint at twelve
+    # significant figures, and an end is the exponential of the quantile, so an error in the quantile is the same
+    # relative error in the end. Two builds whose C maths differ in the last bit must round to one figure.
+    low = _normal_mixture_quantile(components, tail, tolerance=_QUANTILE_TOLERANCE)
+    high = _normal_mixture_quantile(components, 1.0 - tail, tolerance=_QUANTILE_TOLERANCE)
+    # A spread of hundreds of log units (1e-300 beside 1) puts the upper end past a float; it stops at the largest
+    # one rather than raising, and the lower end underflows to zero by itself.
+    return math.exp(min(low, _LARGEST_EXPONENT)), math.exp(min(high, _LARGEST_EXPONENT))
+
+
+def _floored_mean_interval(
+    values: Sequence[float], *, cases: Sequence[Hashable], floor: float = 0.0
+) -> tuple[float, float] | None:
+    """The interval at :data:`INTERVAL_LEVEL` on the mean of a spend or a time: bounded below only, and skewed.
+
+    Such a measure is right-skewed: a few long conversations cost several times the median. The symmetric t
+    interval, clipped at the floor, is labelled 95% and is not: on lognormal case costs at log-SD 1.0 it covered the
+    true mean 83% of the time at 10 cases and 91% at 50, and 72% at 10 cases at log-SD 1.5, because the cases that
+    would have pulled the mean and its standard error up are the ones a small sample usually lacks.
+
+    **The interval is the union of two**, each over the cases (a case's repeats are one draw, so each case
+    contributes the mean of its observations above the floor):
+
+    - the clipped t interval on the :func:`clustered_standard_error` (:func:`mean_interval`), which is right as
+      the cases grow whatever their distribution, and on symmetric values at any count;
+    - the log-scale interval (:func:`_log_scale_mean_bounds`), which is right on lognormal values at the counts
+      an eval has.
+
+    A union covers at least as often as either part, so it holds its level where either does. Over 5 to 50 cases
+    it covered at least 96% on lognormal values up to log-SD 1.5, on gamma and exponential values, on normal ones,
+    and on cases repeated three times (``tests/test_simulated_floored_mean.py`` checks it on the engine). The
+    price is width. Against the t interval's, the median width was about 1.4 times at log-SD 0.5 on 10 cases, 2.7
+    times at log-SD 1.0 and 10 times at log-SD 1.5, where the t interval's narrowness was the error; at 50 cases,
+    1.1, 1.3 and 1.8 times.
+
+    **Below five cases above the floor there is no interval** (:data:`SMALL_N_BAND_FLOOR`). Two to four values
+    say almost nothing about how far a skewed measure's tail reaches, and bounds that hold their level say so in
+    numbers nobody can use: at three cases at log-SD 1.0 the median interval was several hundred thousand times
+    as wide as the t interval, whose 84% coverage there was the alternative. The mean is still stated.
+
+    **Cases at the floor** (a cached call that cost nothing) cannot be read on the log scale. The mean is then
+    the share of cases above the floor times their mean, and each factor is bounded at half the tail mass:
+    Clopper–Pearson on the share, the log-scale bounds on the cases above the floor, their product united with the
+    t interval. Cases all equal, at the floor or above it, keep an interval of no width, as any equal values do.
+
+    **What it does not hold.** No interval on the mean of an unbounded measure holds its level for every
+    distribution at a fixed count: a tail heavier than lognormal at log-SD 1.5 that the sample has not met can
+    still sit above it. And the log scale reads a case far BELOW the rest as spread, so one near-free case widens
+    the upper end well past what the mean could reach; it errs wide, never narrow
+    (``docs/open-problems.md``, "An interval on a mean cost").
+
+    A value below the floor is a host's defect (the bundle names it); the log scale cannot read it, and the
+    clipped t interval stands alone there.
+
+    :param values: The observations.
+    :ptype values: Sequence[float]
+    :param cases: Each observation's case, aligned with ``values``.
+    :ptype cases: Sequence[Hashable]
+    :param floor: The lowest value the measure can take (``MetricDescriptor.interval_floor``).
+    :ptype floor: float
+    :return: ``(low, high)`` containing the mean of ``values``, or ``None`` below two cases, or where the cases
+        differ and fewer than :data:`SMALL_N_BAND_FLOOR` of them sit above the floor.
+    :rtype: tuple[float, float] | None
+    :raises ValueError: ``values`` and ``cases`` differ in length.
+    """
+    _require_aligned(values, cases)
+    sem = clustered_standard_error(values, cases)
+    if sem is None:
+        return None
+    mean = sum(values) / len(values)
+    groups = len(set(cases))
+    symmetric = mean_interval(mean, sem, groups, floor=floor)
+    if symmetric is None or any(value < floor for value in values):
+        return symmetric
+    sums: dict[Hashable, float] = {}
+    counts: dict[Hashable, int] = {}
+    for value, case in zip(values, cases):
+        sums[case] = sums.get(case, 0.0) + (value - floor)
+        counts[case] = counts.get(case, 0) + 1
+    above = [sums[case] / counts[case] for case in sums if sums[case] > 0.0]
+    if not above or (len(above) == groups and min(above) == max(above)):
+        return symmetric
+    if len(above) < SMALL_N_BAND_FLOOR:
+        return None
+    at_floor = groups - len(above)
+    tail = (1.0 - INTERVAL_LEVEL) / 2.0
+    if at_floor == 0:
+        skewed = _log_scale_mean_bounds(above, INTERVAL_LEVEL)
+        share_low = share_high = 1.0
+    else:
+        skewed = _log_scale_mean_bounds(above, 1.0 - tail)
+        share_low = _beta_quantile(tail / 2.0, len(above), at_floor + 1.0)
+        share_high = _beta_quantile(1.0 - tail / 2.0, len(above) + 1.0, at_floor)
+    assert skewed is not None, "at least five values were passed"
+    low = min(symmetric[0], floor + share_low * skewed[0])
+    high = max(symmetric[1], floor + share_high * skewed[1])
+    return low, high
+
+
 def observed_mean_interval(
     values: Sequence[float],
     *,
     cases: Sequence[Hashable],
     value_range: tuple[float, float] | None = None,
     floor: float | None = None,
+    skewed: bool = False,
 ) -> tuple[float, float] | None:
     """The interval on the mean of a numeric measure's observations — the ONE rule every numeric summary takes.
 
@@ -658,9 +795,12 @@ def observed_mean_interval(
     is a proportion: ``accuracy``, derived from each observation's ``match``, is exactly that. A
     proportion is bounded by :func:`proportion_interval`, the rule its boolean twin takes, so ``accuracy``
     and ``match`` over the same observations state one interval rather than two different ones — and
-    a perfect score keeps a width instead of the t interval's zero-width point. Every other numeric
-    measure takes :func:`mean_interval` on the :func:`clustered_standard_error` over its cases, clipped to
-    its declared scale, or at its floor where it is bounded below only.
+    a perfect score keeps a width instead of the t interval's zero-width point. A spend or a time
+    (``skewed``) is bounded below only and right-skewed, and takes :func:`_floored_mean_interval`, which holds
+    its level there. Every other numeric measure takes :func:`mean_interval` on the
+    :func:`clustered_standard_error` over its cases, clipped to its declared scale, or at its floor where it is
+    bounded below only. **A count is one of those**: its clipped t interval is not checked on skewed counts
+    (``docs/open-problems.md``).
 
     :param values: The observations.
     :ptype values: Sequence[float]
@@ -673,10 +813,14 @@ def observed_mean_interval(
     :param floor: The measure's lower bound where it declares no range (``MetricDescriptor.interval_floor``),
         or None; see :func:`mean_interval`.
     :ptype floor: float | None
+    :param skewed: Whether the measure is a spend or a time: positive with a long right tail. Read only for a
+        measure with a floor and no range.
+    :ptype skewed: bool
     :return: ``(low, high)``, or ``None`` below two observations, where no interval is estimable — the
         position :func:`standard_error_of_mean` takes, held for a proportion too, so a numeric
         measure's interval appears and disappears at one n whatever its values — and ``None`` when the
-        observations all repeat one case, which has no between-case spread to estimate.
+        observations all repeat one case, which has no between-case spread to estimate. A ``skewed`` measure has
+        none under five differing cases above its floor (:func:`_floored_mean_interval`).
     :rtype: tuple[float, float] | None
     :raises ValueError: ``values`` and ``cases`` differ in length.
     """
@@ -686,6 +830,8 @@ def observed_mean_interval(
         return None
     if value_range == (0.0, 1.0) and all(value in (0.0, 1.0) for value in values):
         return proportion_interval([value == 1.0 for value in values], cases)
+    if skewed and value_range is None and floor is not None:
+        return _floored_mean_interval(values, cases=cases, floor=floor)
     sem = clustered_standard_error(values, cases)
     if sem is None:
         return None
@@ -2503,6 +2649,43 @@ def _log_sum_variance(spread: float, count: int) -> float:
     return spread - math.log(count) + math.log1p((count - 1) * math.exp(-spread))
 
 
+def _normal_mixture_quantile(components: Sequence[tuple[float, float]], p: float, *, tolerance: float = 1e-12) -> float:
+    """The ``p`` quantile of an equal-weight mixture of normals, each a ``(mean, scale)``.
+
+    Newton's method on the mixture's CDF, kept inside a bracket that every component's own quantile bounds, and
+    bisecting whenever a step would leave it. It stops once a step moves the quantile by under ``tolerance`` of
+    itself (of 1, below 1).
+    """
+    root_two = math.sqrt(2.0)
+    root_two_pi = math.sqrt(2.0 * math.pi)
+
+    def cdf_and_density(point: float) -> tuple[float, float]:
+        mass = density = 0.0
+        for mean, scale in components:
+            z = (point - mean) / scale
+            mass += 0.5 * math.erfc(-z / root_two)
+            density += math.exp(-0.5 * z * z) / (scale * root_two_pi)
+        return mass / len(components), density / len(components)
+
+    z = NormalDist().inv_cdf(p)
+    low = min(mean + scale * z for mean, scale in components)
+    high = max(mean + scale * z for mean, scale in components)
+    guess = 0.5 * (low + high)
+    for _ in range(100):
+        mass, density = cdf_and_density(guess)
+        if mass < p:
+            low = guess
+        else:
+            high = guess
+        step = guess - (mass - p) / density if density > 0.0 else 0.5 * (low + high)
+        if not low < step < high:
+            step = 0.5 * (low + high)
+        if abs(step - guess) < tolerance * max(1.0, abs(guess)):
+            return step
+        guess = step
+    return guess
+
+
 def lognormal_sum_prediction_band(history: Sequence[float], n_future: int) -> tuple[float, float] | None:
     """A prediction band at :data:`INTERVAL_LEVEL` for the TOTAL of ``n_future`` new draws like ``history``.
 
@@ -2563,40 +2746,10 @@ def lognormal_sum_prediction_band(history: Sequence[float], n_future: int) -> tu
             )
         )
     tail = 0.5 * (1.0 - INTERVAL_LEVEL)
-
-    root_two = math.sqrt(2.0)
-    root_two_pi = math.sqrt(2.0 * math.pi)
-
-    def cdf_and_density(log_total: float) -> tuple[float, float]:
-        mass = density = 0.0
-        for mean, scale in components:
-            z = (log_total - mean) / scale
-            mass += 0.5 * math.erfc(-z / root_two)
-            density += math.exp(-0.5 * z * z) / (scale * root_two_pi)
-        return mass / len(components), density / len(components)
-
-    def quantile(p: float) -> float:
-        # Newton's method on the mixture's CDF, kept inside a bracket that every component's own quantile
-        # bounds, and bisecting whenever a step would leave it.
-        z = NormalDist().inv_cdf(p)
-        low = min(mean + scale * z for mean, scale in components)
-        high = max(mean + scale * z for mean, scale in components)
-        guess = 0.5 * (low + high)
-        for _ in range(100):
-            mass, density = cdf_and_density(guess)
-            if mass < p:
-                low = guess
-            else:
-                high = guess
-            step = guess - (mass - p) / density if density > 0.0 else 0.5 * (low + high)
-            if not low < step < high:
-                step = 0.5 * (low + high)
-            if abs(step - guess) < 1e-12 * max(1.0, abs(guess)):
-                return math.exp(step)
-            guess = step
-        return math.exp(guess)
-
-    return quantile(tail), quantile(1.0 - tail)
+    return (
+        math.exp(_normal_mixture_quantile(components, tail)),
+        math.exp(_normal_mixture_quantile(components, 1.0 - tail)),
+    )
 
 
 #: The power a detectable difference is stated at: the smallest difference the planned comparison finds four

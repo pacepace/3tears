@@ -83,7 +83,7 @@ from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 
 from threetears.evals.kernel.host import DEFAULT_PASS_THRESHOLD, EvalHost, pass_threshold_label
 
-from threetears.evals.kernel.metrics import measure_title
+from threetears.evals.kernel.metrics import describe_reported_measure, measure_title, reads_as_rate
 
 from threetears.evals.schema.models import EvalRun, EvalTemplate
 
@@ -593,12 +593,18 @@ class DetectableEffect(EvalBaseModel):
     :ivar difference_sd: The planned standard deviation of one case's difference of means at the planned ``k``.
     :ivar n_history_cases: The earlier cases the between-case figure rests on.
     :ivar run_ids: The earlier runs whose values were read.
+    :ivar rate: Whether the reading is a rate (:func:`~threetears.evals.kernel.metrics.reads_as_rate`). A family
+        separates a rate only where its bounded interval excludes zero as well as its t-test rejecting, and
+        ``delta`` plans the t-test alone, so a rate's ``delta`` is the least the launch could detect: at it, 20 to
+        80 planned cases separated a pass rate 37–62% of the time in simulation against the 80% stated
+        (``tests/test_power_preflight.py`` holds the 20-case row).
     """
 
     reading: ReadingKind
     name: str
     delta: float | None
     cannot_estimate: str | None
+    rate: bool = False
     basis: Literal["paired_runs", "unrelated_case_effects"] | None = None
     within_case_sd: float | None = None
     between_case_sd: float | None = None
@@ -612,8 +618,10 @@ DETECTABLE_EFFECT_ASSUMPTIONS = (
     "the planned arms run the same cases and are compared paired, as a family compares them; one case's difference "
     "of means is near normal (the paired t-test's own assumption — on a coarse pass/fail or 1-5 reading over few "
     "cases it is only approximate); the earlier runs' variance holds for the planned arms; only the one comparison "
-    "differs, so Holm's correction asks it to clear α/m (more real differences make each easier to find); and the "
-    "variance is an estimate from the earlier runs, whose own error is not in the figure"
+    "differs, so Holm's correction asks it to clear α/m (more real differences make each easier to find); the "
+    "variance is an estimate from the earlier runs, whose own error is not in the figure; and the test planned is "
+    "the paired t-test alone, where a rate is separated only once its bounded interval excludes zero too, which "
+    "takes more cases, so a rate's Δ is the least the launch could detect, not what it will"
 )
 
 
@@ -623,7 +631,10 @@ class DetectableEffects(EvalBaseModel):
     A power pre-flight beside the price. Each reading's difference is the smallest true difference between two
     arms that the paired two-sided t-test on per-case means (the test a comparison family runs on cases both
     arms ran) rejects with probability :attr:`power`, at the per-comparison level the first step of Holm's
-    correction asks of a family of :attr:`family_size` comparisons. The variance it plans from is measured,
+    correction asks of a family of :attr:`family_size` comparisons. **For a rate that is the less demanding of the
+    two tests that decide it** (:attr:`DetectableEffect.rate`): the family also needs the rate's bounded interval to
+    exclude zero, whose power has no closed form and is not planned here, so the figure is optimistic for a rate
+    and each such line says so. The variance it plans from is measured,
     never supplied: the within-case (repeat) and between-case components of earlier runs of the same template
     (:func:`~threetears.evals.analysis.stats.variance_components`). With none to measure, it says so.
 
@@ -951,10 +962,20 @@ def detectable_effects(
         )
     launched = {run.id: (run.candidate_model, run.overlays, run.apparatus_settings) for run in runs}
     effects = [
-        _detectable_effect(reading, launched, n_cases=n_cases, k_runs=k_runs, alpha=block.per_comparison_alpha)
+        _detectable_effect(
+            reading, launched, n_cases=n_cases, k_runs=k_runs, alpha=block.per_comparison_alpha
+        ).model_copy(update={"rate": _planned_as_rate(reading, host)})
         for reading in readings
     ]
     return block.model_copy(update={"effects": effects})
+
+
+def _planned_as_rate(reading: PlanningReading, host: EvalHost) -> bool:
+    """Whether a family would read ``reading`` as a rate, and so separate it only on its bounded interval too."""
+    if reading.reading == "measure":
+        descriptor = describe_reported_measure(reading.name, host.profile.measures)
+        return reads_as_rate("measure", reading.name, descriptor=descriptor)
+    return reads_as_rate(reading.reading, reading.name, value_range=reading.value_range)
 
 
 def _counted(readings: Iterable[ResultView], counts: dict[str, int]) -> Iterator[ResultView]:
@@ -1771,7 +1792,7 @@ def detectable_effect_lines(block: DetectableEffects) -> list[str]:
     """A launch's power pre-flight as text: one line per reading, then what every line assumes."""
     forms = PageForms.off_page()
     head = (
-        f"detectable difference ({forms.lone(100 * block.power).text}% power, paired, Holm over {block.family_size} "
+        f"detectable difference ({forms.lone(100 * block.power).text}% power, paired t-test, Holm over {block.family_size} "
         f"comparison(s) so α/m = {forms.lone(block.per_comparison_alpha).text}):"
     )
     if block.cannot_estimate is not None:
@@ -1790,6 +1811,11 @@ def detectable_effect_lines(block: DetectableEffects) -> list[str]:
                 "between-arm case spread measured on earlier paired runs)"
                 if effect.basis == "paired_runs"
                 else "no earlier paired runs, so two arms' case levels are taken as unrelated)"
+            )
+            + (
+                "; a rate: its bounded interval must exclude zero too, so a difference this size needs more cases"
+                if effect.rate
+                else ""
             )
         )
     lines.append(f"assumes: {block.assumptions}")

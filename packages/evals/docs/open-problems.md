@@ -58,6 +58,27 @@ a good arm, which is the lesser harm, and refusing every breach without a range 
 unbounded measure be adopted, so the t breach is kept and the gap recorded as a strict xfail in
 `tests/test_simulated_guardrails.py`. On a declared range the breach is the bounded test's, and holds its rate.
 
+### An interval on a mean cost is wide, and holds only up to the skew tested (accepted limit)
+
+No issue filed yet. The interval on the mean of a spend or a time is the
+union of the clipped t interval and a log-scale interval
+([measuring soundly](measuring-soundly.md#variance-k-and-how-many-cases)). Three limits come with it.
+
+- **No interval holds for every distribution.** The mean of an unbounded measure can hide a rare large value at
+  any fixed number of cases. The interval is checked on lognormal values up to log-SD 1.5 and on lighter tails; a
+  tail heavier than that which the sample has not met can still sit above it.
+- **A case far below the rest widens the upper end.** The log scale reads spread in either direction as skew, so
+  one near-free case (a refusal, a cache hit) among ordinary ones gives an upper end well past what the mean could
+  reach. It errs wide, never narrow. A fix would read the spread from the upper tail alone; none is built.
+- **Under five differing cases above zero there is no interval**, where a t interval used to be stated. Bounds that
+  hold their level there span orders of magnitude.
+
+**Three intervals beside it are still t intervals, and none is checked on skewed values.** A count's (tokens, turns,
+calls, findings), clipped at zero: counts are skewed too, and one that is zero on most cases has too few cases above
+zero for the log-scale reading, so it was left as it was. A difference between two arms on a spend or a time: it is
+paired, so most of the skew cancels within a case. And the launch estimate's fallback band for a history holding a
+zero cost, which says on the band that it assumes symmetric costs.
+
 ## Reporting
 
 ### Latency read under concurrency is withheld rather than reported with a flag
