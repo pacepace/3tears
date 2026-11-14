@@ -11,7 +11,8 @@ as keyed by construction, judged by the key it names):
 - **a listing's page**: a bound prefix, a closed sort, an opaque cursor, a ``LIMIT``, visibility as a keyed
   ``EXISTS``, filters on a partial index's predicate or a range (``where=``), a row lock (:class:`Lock`):
   :func:`keyset_page` (:class:`Sort`, :func:`exists_keyed`, :class:`Fragment`); its joined rows by a keyed read of
-  the values the page holds: :func:`read_joined`; every row of a prefix as ``COPY`` CSV text: :func:`copy_keyed`. An
+  the values the page holds: :func:`read_joined`; a point read with joins, as a read and a keyed batch a joined
+  table: :func:`read_by_joined` (:class:`Joined`); every row of a prefix as ``COPY`` CSV text: :func:`copy_keyed`. An
   internal drain of
   every row a prefix names, a page a statement, from a saved place: :func:`threetears.core.keyset.keyset_pages`
   (``after=``);
@@ -101,6 +102,7 @@ from threetears.core.keyed.literal import literal_select, literal_upsert
 from threetears.core.keyed.probes import access_probe_sql, probe_access
 from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_past_marks
 from threetears.core.keyed.options import with_options
+from threetears.core.keyed.joins import Joined, read_by_joined
 from threetears.core.keyed.point import read_by, read_row, read_value
 from threetears.interfaces.keyed.keys import (
     DeclaredIndex,
@@ -230,6 +232,7 @@ __all__ = [
     "ThreadedDuckDB",
     "ThreadedSQLite",
     "InlineSQLite",
+    "Joined",
     "WholeReads",
     "aggregate_keyed",
     "any_rows",
@@ -255,6 +258,7 @@ __all__ = [
     "keyset_rows",
     "read_after",
     "read_by",
+    "read_by_joined",
     "read_joined",
     "read_keyed",
     "read_keyed_arrow",

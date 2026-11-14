@@ -29,11 +29,13 @@ from threetears.enforcement.no_whole_reads.rewrite import (
     apply_rewrites,
     parse_count,
     parse_first,
+    parse_join,
     parse_list,
     parse_point,
     parse_write,
     plan_count_rewrites,
     plan_first_rewrites,
+    plan_join_rewrites,
     plan_list_rewrites,
     plan_point_rewrites,
     plan_write_rewrites,
@@ -1748,3 +1750,136 @@ def test_a_clause_builders_parent_seeder_is_recorded_beside_it(tmp_path: Path) -
 
     assert planned({"pkg.filters:tag_clause": "pkg.filters:parents"})["parents"] == "pkg.filters:parents"
     assert "parents" not in planned({})
+
+
+_JOIN_TABLES = """
+    from threetears.core.collections.schema_backed import TableSchema
+
+    KEYS_SCHEMA = TableSchema(name="api_keys", primary_key="id", columns=[])
+    CUSTOMERS_SCHEMA = TableSchema(name="customers", primary_key="id", columns=[])
+    LINKS_SCHEMA = TableSchema(name="links", primary_key=("ref", "link", "relation_id"), columns=[])
+    RELATIONS_SCHEMA = TableSchema(name="relations", primary_key="id", columns=[])
+"""
+
+_JOINS = """
+    async def with_slug(pool, key_id):
+        row = await pool.fetchrow(
+            "SELECT ak.*, c.slug AS customer_slug FROM api_keys ak JOIN customers c ON c.id = ak.customer_id "
+            "WHERE ak.id = $1",
+            key_id,
+        )
+        return None if row is None else dict(row)
+
+
+    async def relations_of(conn, ref):
+        rows = await conn.fetch(
+            "SELECT r.id, r.name FROM relations r JOIN links l ON l.relation_id = r.id "
+            "WHERE l.ref = $1 AND l.link = 'member' ORDER BY r.id",
+            ref,
+        )
+        return [dict(row) for row in rows]
+
+
+    async def with_template(conn, key_id):
+        row = await conn.fetchrow(
+            "SELECT ak.id, c.name AS template FROM api_keys ak LEFT JOIN customers c ON c.id = ak.customer_id "
+            "WHERE ak.id = $1",
+            key_id,
+        )
+        return row["template"] if row else None
+
+
+    async def by_place(conn, key_id):
+        row = await conn.fetchrow(
+            "SELECT ak.id, c.slug FROM api_keys ak JOIN customers c ON c.id = ak.customer_id WHERE ak.id = $1",
+            key_id,
+        )
+        return row[1]
+
+
+    async def by_slug(conn, slug):
+        return await conn.fetch(
+            "SELECT ak.id FROM api_keys ak JOIN customers c ON c.id = ak.customer_id WHERE c.slug = $1", slug
+        )
+
+
+    async def ordered_by_theirs(conn, key_id):
+        rows = await conn.fetch(
+            "SELECT ak.id, c.name FROM api_keys ak LEFT JOIN customers c ON c.id = ak.customer_id "
+            "WHERE ak.id = $1 ORDER BY c.name",
+            key_id,
+        )
+        return list(rows)
+"""
+
+
+def _join_config(tmp_path: Path) -> NoWholeReadsConfig:
+    src = tmp_path / "src"
+    for name, source in {"pkg/tables.py": _JOIN_TABLES, "pkg/joins.py": _JOINS}.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+    return NoWholeReadsConfig(
+        repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path, dependency_schema=False, table_lists=()
+    )
+
+
+def test_a_point_read_with_joins_is_rewritten_onto_read_by_joined(tmp_path: Path) -> None:
+    """Flips if a keyed read with joins is not rewritten as the read of the table its parameters pin and each other
+    table joined to it (``read_by_joined``: a ``fetchrow`` its first row, a ``LEFT JOIN`` ``left=True``, a table the
+    parameters pin on the other side of a ``JOIN`` read first and the ``FROM`` table joined back, an ``ORDER BY`` of
+    a joined column equal to one of the read's ordered by that one), or if one whose rows are read by position, one
+    ordered by a joined column, or one keyed by nothing is taken; or if the rewrite leaves a finding."""
+    config = _join_config(tmp_path)
+    before_nwr = no_whole_reads_findings(config)
+    rewrites, refusals = plan_join_rewrites(config)
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert sorted(rewrite.function for rewrite in rewrites) == ["relations_of", "with_slug", "with_template"], refused
+    assert "by position" in refused["by_place"], refused
+    assert "ORDER BY of a joined" in refused["ordered_by_theirs"], refused
+    calls = {rewrite.function: rewrite.new_call for rewrite in rewrites}
+    assert calls["with_slug"] == (
+        "next(iter(await read_by_joined(pool, 'api_keys', by={'id': key_id}, columns=None, "
+        "joins=[Joined('customers', on={'id': 'customer_id'}, columns={'customer_slug': 'slug'})])), None)"
+    )
+    assert calls["relations_of"] == (
+        "read_by_joined(conn, 'links', by={'ref': ref, 'link': 'member'}, columns=(), "
+        "joins=[Joined('relations', on={'id': 'relation_id'}, columns={'id': 'id', 'name': 'name'})], "
+        "order=[Sort('relation_id')])"
+    )
+    assert "left=True" in calls["with_template"]
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    source = (tmp_path / "src/pkg/joins.py").read_text(encoding="utf-8")
+    assert "from threetears.core.keyed import Joined, Sort, read_by_joined" in source, source
+    ast.parse(source)
+    remaining = {hit.split(" in ")[1].split(":")[0] for hit in use_the_helper_findings(config) if "joins.py" in hit}
+    assert remaining == {"by_place", "ordered_by_theirs", "by_slug"}, remaining
+    assert _unlined(no_whole_reads_findings(config)) == _unlined(before_nwr)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    entries = {entry["function"]: entry for entry in json.loads(manifest.read_text(encoding="utf-8"))}
+    assert entries["relations_of"]["joins"][0]["on"] == {"id": "relation_id"}
+    for entry in entries.values():
+        assert_source_says(tmp_path, entry)
+
+
+@pytest.mark.parametrize(
+    ("sql", "refused"),
+    [
+        ("SELECT a.id, b.x FROM a JOIN b ON b.id = a.b_id JOIN c ON c.id = b.c_id WHERE a.id = $1", "another joined"),
+        ("SELECT a.id, b.x FROM a LEFT JOIN b ON b.id = a.b_id WHERE a.id = $1 AND b.k = 'z'", "LEFT JOIN's table"),
+        ("SELECT a.id, b.x FROM a JOIN b ON b.id = a.b_id WHERE a.id = $1 AND b.k = $2", "by a parameter"),
+        ("SELECT a.id, upper(b.x) AS x FROM a JOIN b ON b.id = a.b_id WHERE a.id = $1", "an expression"),
+        ("SELECT a.id, b.id FROM a JOIN b ON b.id = a.b_id WHERE a.id = $1", "under one name"),
+        ("SELECT a.id, b.x FROM a JOIN b ON b.id = a.b_id WHERE a.id = $1 LIMIT 5", "LIMIT"),
+        ("SELECT a.id, b.x FROM a RIGHT JOIN b ON b.id = a.b_id WHERE a.id = $1", "RIGHT"),
+        ("SELECT a.id, b.x FROM a JOIN b ON b.id = a.b_id WHERE id = $1", "naming no table"),
+        ("SELECT a.id, b.x FROM a LEFT JOIN b ON b.id = a.b_id WHERE b.k = $1", "no parameter pins the FROM"),
+    ],
+)
+def test_a_joined_read_the_helper_cannot_send_is_refused(sql: str, refused: str) -> None:
+    """Flips if a joined read ``read_by_joined`` would answer otherwise is parsed: a chain of joins, a LEFT JOIN's
+    table pinned in the WHERE, a joined table pinned by a parameter, an expression, two items under one name, a
+    LIMIT, a RIGHT JOIN, an unqualified column, a LEFT JOIN read from its right side."""
+    parsed = parse_join(sql, guards=True)
+    assert isinstance(parsed, str) and refused in parsed, parsed

@@ -485,6 +485,26 @@ def test_joined_rows_are_judged_as_the_keyed_read_they_send(schema: SchemaCatalo
     assert _judged('read_joined(c, rows, "results", on={"geo": "g"}, columns=cols)', schema) != [[]]
 
 
+def test_a_read_with_joins_is_judged_as_its_read_and_each_joined_table_s_keyed_batch(schema: SchemaCatalog) -> None:
+    """Flips if ``read_by_joined`` is judged as anything but the statements it sends: its read by its pins (keyed by a
+    leading part of the key, a whole read by a non-key column) and each joined table by the columns it is joined on
+    (keyed when they lead its key, else a finding), a join's own pins beside them."""
+    keyed = (
+        'read_by_joined(c, "grants", by={"who": w}, columns=None, '
+        'joins=[Joined("results", on={"state": "state"}, columns={"g": "geo"}, by={"kind": "k"})])'
+    )
+    assert _judged(keyed, schema) == [[], []]
+    by_kind = keyed.replace('"results", on={"state": "state"}', '"results", on={"geo": "state"}')
+    assert _judged(by_kind, schema)[1] != []
+    unpinned = keyed.replace('by={"who": w}', 'by={"state": s}')
+    assert _judged(unpinned, schema)[0] != []
+    two = keyed.replace("})])", '}), Joined("fence", on={"signal": "g"}, columns={"run": "run_id"}, left=True)])')
+    assert _judged(two, schema) == [[], [], []]
+    assert list(helper_statements(_call('read_by_joined(c, "grants", by={"who": w}, columns=None, joins=js)')))[
+        -1
+    ].unseen
+
+
 @pytest.mark.parametrize(
     "code",
     [

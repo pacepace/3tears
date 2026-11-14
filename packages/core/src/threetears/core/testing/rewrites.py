@@ -73,6 +73,7 @@ from threetears.core.keyed import (
     Count,
     Fragment,
     Increment,
+    Joined,
     keyset_page,
     Selected,
     Sort,
@@ -83,6 +84,7 @@ from threetears.core.keyed import (
     holds_any,
     index_hint,
     read_by,
+    read_by_joined,
     read_row,
     read_value,
     serving_index,
@@ -655,9 +657,120 @@ async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides:
         if any(pin["kind"] == "nullsafe" for pin in entry["pins"]):
             await _assert_count_same(conn, entry, overrides=overrides, nulled=True)
         return
+    if entry.get("joins"):
+        await _assert_join_same(conn, entry, overrides=overrides)
+        return
     await _assert_point_same(conn, entry, overrides=overrides, nulled=False)
     if any(pin["kind"] == "nullsafe" for pin in entry["pins"]):
         await _assert_point_same(conn, entry, overrides=overrides, nulled=True)
+
+
+#: the stray rows a joined table holds that no read row's values match
+_JOIN_STRAYS: Final = 2
+
+
+def _join_pin_value(column: CatalogColumn, pin: Mapping[str, Any], *, held: bool) -> Any:
+    """a joined table's pinned column on a seeded row: the pin's value (``held``), or another."""
+    if pin["kind"] == "null":
+        return None if held else _value(column, 0)
+    literal = pin["literal"][0] if pin["kind"] == "anylit" else pin["literal"]
+    if held:
+        return literal
+    other = _other(column, literal)
+    while pin["kind"] == "anylit" and other in pin["literal"]:
+        other = _other(column, other)
+    return other
+
+
+def _joined_rows(
+    shape: CatalogTable, join: Mapping[str, Any], seeded: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """a joined table's rows for one seed case, from the read's seeded rows: for each distinct value the read's rows
+    hold in the columns it is joined on (a NULL part matches nothing, so none), in turn: one row matching it; two (where
+    no unique key of the joined table's columns and pins forbids it) and one matching it but for a pin; none, but one
+    matching it but for a pin. Then rows matching no read row. Each row fixes its join and pin columns only."""
+    on: dict[str, str] = dict(join["on"])
+    pins = {pin["column"]: pin for pin in join["pins"]}
+    for column in [*on, *pins]:
+        if column not in shape.columns:
+            raise AssertionError(f"{join['table']}: the join names {column}, which the table has no column of")
+    fixed = set(on) | set(pins)
+    twice = not any(unique <= fixed for unique in shape.unique)
+    unpinned = bool(pins) and not any(unique <= set(on) for unique in shape.unique)
+    values: list[tuple[Any, ...]] = []
+    for row in seeded:
+        value = tuple(row[ours] for ours in on.values())
+        if all(part is not None for part in value) and value not in values:
+            values.append(value)
+
+    def made(value: Sequence[Any], *, held: bool) -> dict[str, Any]:
+        made_row = dict(zip(on, value, strict=True))
+        for column, pin in pins.items():
+            made_row[column] = _join_pin_value(shape.columns[column], pin, held=held)
+        return made_row
+
+    rows: list[dict[str, Any]] = []
+    for place, value in enumerate(values):
+        if place % 3 == 0:
+            rows.append(made(value, held=True))
+        elif place % 3 == 1:
+            rows += [made(value, held=True)] * (2 if twice else 1)
+            if unpinned:
+                rows.append(made(value, held=False))
+        elif unpinned:
+            rows.append(made(value, held=False))
+    for stray in range(_JOIN_STRAYS):
+        rows.append(made([_value(shape.columns[column], 800_000 + stray) for column in on], held=True))
+    return rows
+
+
+async def _assert_join_same(conn: Any, entry: Mapping[str, Any], *, overrides: _Overrides | None) -> None:
+    """a joined read's ``read_by_joined`` call gives what its old statement gave, over every seed case: the read's
+    table seeded as a point read's, each joined table from the read's seeded rows (:func:`_joined_rows`), compared as
+    every row and column, in the order's values when ordered."""
+    table = entry["table"]
+    await _drop_checks(conn, table)
+    shape = await _catalog(conn, table)
+    row, params = _guarded_params(shape, entry, (overrides or {}).get(table, {}), nulled=False)
+    by = _by(entry, params)
+    where = _where(entry, params)
+    columns = _selected(entry["columns"])
+    order = [_sort(term) for term in entry.get("order", ())]
+    joined_shapes: dict[str, CatalogTable] = {}
+    for join in entry["joins"]:
+        await _drop_checks(conn, join["table"])
+        joined_shapes[join["table"]] = await _catalog(conn, join["table"])
+    joins = [
+        Joined(
+            join["table"],
+            on=dict(join["on"]),
+            columns=dict(join["columns"]),
+            left=join["left"],
+            by=_by({"pins": join["pins"]}, ()) or None,
+            matched=join["matched"] or None,
+        )
+        for join in entry["joins"]
+    ]
+
+    async def related(c: Any, seeded: list[Mapping[str, Any]]) -> None:
+        for join in entry["joins"]:
+            await seed_rows(c, join["table"], _joined_rows(joined_shapes[join["table"]], join, seeded))
+
+    await conn.execute("SET session_replication_role = replica")
+    try:
+        await assert_same_results(
+            conn,
+            table=table,
+            row=row,
+            old_sql=entry["old_sql"],
+            params=params,
+            helper=lambda c: read_by_joined(c, table, by=by, columns=columns, joins=joins, where=where, order=order),
+            order_by=[term["shown"] for term in entry.get("order", ())] or None,
+            ordered=bool(order),
+            related=related,
+        )
+    finally:
+        await conn.execute("SET session_replication_role = DEFAULT")
 
 
 def _sort(term: Mapping[str, Any]) -> Sort:
@@ -1217,9 +1330,13 @@ def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
         return isinstance(column, ast.Constant) and column.value == entry["columns"][0]
     if entry.get("shape") == "first" and not _first_says(keywords, entry):
         return False
-    records = keywords.get("records")
-    if not (isinstance(records, ast.Constant) and records.value is True):
-        return False
+    if entry.get("joins"):
+        if not _joins_say(keywords.get("joins"), entry["joins"]):
+            return False
+    else:
+        records = keywords.get("records")
+        if not (isinstance(records, ast.Constant) and records.value is True):
+            return False
     if not _order_says(keywords.get("order"), entry.get("order", ())):
         return False
     columns = keywords.get("columns")
@@ -1256,6 +1373,35 @@ def _first_says(keywords: Mapping[str | None, ast.expr], entry: Mapping[str, Any
         return False
     every = keywords.get("columns")
     return entry["columns"] is not None or (isinstance(every, ast.Constant) and every.value is None)
+
+
+def _joins_say(joins: ast.expr | None, recorded: Sequence[Mapping[str, Any]]) -> bool:
+    """whether a ``read_by_joined`` call's ``joins=`` is the entry's, join for join: each ``Joined`` of the same
+    table, matched on the same pairs, adding the same columns, as left, pinned and flagged as recorded."""
+    if not isinstance(joins, ast.List | ast.Tuple) or len(joins.elts) != len(recorded):
+        return False
+    for written, join in zip(joins.elts, recorded, strict=True):
+        parts = [repr(join["table"]), f"on={dict(join['on'])!r}", f"columns={dict(join['columns'])!r}"]
+        if join["left"]:
+            parts.append("left=True")
+        if join["pins"]:
+            pinned = ", ".join(repr(pin["column"]) + ": " + _pin_text(pin) for pin in join["pins"])
+            parts.append("by={" + pinned + "}")
+        if join["matched"]:
+            parts.append(f"matched={join['matched']!r}")
+        if not _same_expression(written, f"Joined({', '.join(parts)})"):
+            return False
+    return True
+
+
+def _pin_text(pin: Mapping[str, Any]) -> str:
+    """a joined table's pin (a literal, a set of literals, or NULL) as its ``by=`` writes it."""
+    if pin["kind"] == "anylit":
+        listed = ", ".join(repr(value) for value in pin["literal"])
+        return f"AnyOf(({listed}{',' if len(pin['literal']) == 1 else ''}), cast=None)"
+    if pin["kind"] == "literal":
+        return repr(pin["literal"])
+    return "None"
 
 
 def _order_says(order: ast.expr | None, terms: Sequence[Mapping[str, Any]]) -> bool:

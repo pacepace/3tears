@@ -76,6 +76,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "read_row",
         "read_value",
         "read_joined",
+        "read_by_joined",
         "any_rows",
         "keyset_page",
         "keyset_rows",
@@ -708,6 +709,30 @@ def _read_joined(call: ast.Call) -> list[str]:
     return [f"SELECT * FROM {table} AS t JOIN unnest({unnested}) AS k({named}) ON {joined}{_where(pinned)}"]
 
 
+def _read_by_joined(call: ast.Call) -> list[str]:
+    """a read with joins (``read_by_joined``): its read by its pins, as :func:`_read_by` judges one, then each joined
+    table's keyed batch by the columns it is joined on and its own pins, as :func:`_read_joined` judges one; joins the
+    walk cannot read as a literal list of ``Joined(...)`` are unseen."""
+    joins = _argument(call, "joins", None)
+    if not isinstance(joins, ast.List | ast.Tuple):
+        raise _Unseen("joins")
+    statements = _read_by(call)
+    for join in joins.elts:
+        if not (isinstance(join, ast.Call) and _name(join) == "Joined"):
+            raise _Unseen("joins")
+        joined = ast.Call(
+            func=ast.Name("read_joined", ast.Load()),
+            args=[],
+            keywords=[
+                ast.keyword(arg="table", value=_argument(join, "table", 0) or ast.Name("_unseen", ast.Load())),
+                ast.keyword(arg="on", value=_argument(join, "on", 1) or ast.Name("_unseen", ast.Load())),
+                *([ast.keyword(arg="by", value=by)] if (by := _argument(join, "by", None)) is not None else []),
+            ],
+        )
+        statements += _read_joined(joined)
+    return statements
+
+
 def _relation(node: ast.expr | None, argument: str) -> tuple[str, list[str]]:
     """a relation a helper reads, as its statement names it, and the statements it holds of its own: a table literal
     (``schema.table`` quoted a segment at a time), or a ``Derived("SELECT ...")`` judged on its own text."""
@@ -1138,6 +1163,7 @@ _SYNTHESIZERS: Final = {
     "read_row": _read_by,
     "read_value": _read_by,
     "read_joined": _read_joined,
+    "read_by_joined": _read_by_joined,
     "any_rows": _any_rows,
     "keyset_page": _keyset_page,
     "keyset_rows": _keyset_page,
@@ -1174,6 +1200,7 @@ _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
             "read_keyed",
             "read_keyed_arrow",
             "read_by",
+            "read_by_joined",
             "read_row",
             "read_value",
             "any_rows",
