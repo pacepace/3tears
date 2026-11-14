@@ -56,6 +56,7 @@ rows and for a write's SET parameters (:func:`set_value`).
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -73,14 +74,17 @@ from threetears.core.keyed import (
     Fragment,
     Increment,
     keyset_page,
+    Selected,
     Sort,
     aggregate_keyed,
     delete_before,
     delete_keyed,
     holds_any,
+    index_hint,
     read_by,
     read_row,
     read_value,
+    serving_index,
     update_keyed,
 )
 from threetears.core.testing.plans import StatementPlan, explain_statement, on_yugabyte
@@ -548,7 +552,7 @@ async def _assert_point_same(
     row, params = _guarded_params(shape, entry, (overrides or {}).get(table, {}), nulled=nulled)
     by = _by(entry, params)
     where = _where(entry, params)
-    columns = entry["columns"]
+    columns = _selected(entry["columns"])
     old_sql = entry["old_sql"]
     order = [_sort(term) for term in entry.get("order", ())]
     await conn.execute("SET session_replication_role = replica")
@@ -659,7 +663,7 @@ async def _assert_first_same(
     async def first_page(c: Any) -> list[Any]:
         return (
             await keyset_page(
-                c, table, columns=entry["columns"], by=by, where=where, order=order, limit=rows, records=True
+                c, table, columns=_selected(entry["columns"]), by=by, where=where, order=order, limit=rows, records=True
             )
         ).rows
 
@@ -865,18 +869,47 @@ def _module_columns(tree: ast.Module, name: str) -> list[Any] | None:
         else:
             continue
         if any(isinstance(target, ast.Name) and target.id == name for target in targets):
-            if isinstance(value, ast.Tuple | ast.List) and all(isinstance(e, ast.Constant) for e in value.elts):
-                return [element.value for element in value.elts if isinstance(element, ast.Constant)]
-            return None
+            return _column_elements(value)
     return None
+
+
+def _column_element(element: ast.expr) -> Any:
+    """one written column: a literal's value, or a ``Selected("<expression>", "<alias>")`` as the manifest records
+    it (``{"expr", "alias"}``); None for anything else."""
+    if isinstance(element, ast.Constant):
+        return element.value
+    if (
+        isinstance(element, ast.Call)
+        and isinstance(element.func, ast.Name)
+        and element.func.id == "Selected"
+        and len(element.args) == 2
+        and not element.keywords
+        and all(isinstance(arg, ast.Constant) and isinstance(arg.value, str) for arg in element.args)
+    ):
+        expression, alias = (arg.value for arg in element.args if isinstance(arg, ast.Constant))
+        return {"expr": expression, "alias": alias}
+    return None
+
+
+def _column_elements(value: ast.expr) -> list[Any] | None:
+    """a tuple or list of written columns (:func:`_column_element`), or None when any is not one."""
+    if not isinstance(value, ast.Tuple | ast.List):
+        return None
+    elements = [_column_element(element) for element in value.elts]
+    return None if any(element is None for element in elements) else elements
+
+
+def _selected(columns: Sequence[Any] | None) -> tuple[Any, ...] | None:
+    """a manifest entry's columns as a helper takes them: each ``{"expr", "alias"}`` a :class:`Selected`."""
+    if columns is None:
+        return None
+    return tuple(column if isinstance(column, str) else Selected(column["expr"], column["alias"]) for column in columns)
 
 
 def _written_columns(columns: ast.expr | None, tree: ast.Module) -> list[Any] | None:
     """the columns a call names: a tuple or list of literals written in the call, or a module-level name assigned one."""
     if isinstance(columns, ast.Tuple | ast.List):
-        if not all(isinstance(element, ast.Constant) for element in columns.elts):
-            return None
-        return [element.value for element in columns.elts if isinstance(element, ast.Constant)]
+        return _column_elements(columns)
     if isinstance(columns, ast.Name):
         return _module_columns(tree, columns.id)
     return None
@@ -1149,9 +1182,39 @@ async def explain_index_read(conn: Any, entry: Mapping[str, Any]) -> StatementPl
         if not yugabyte:
             await conn.execute(f"ANALYZE {table}")
         await conn.execute("SET LOCAL enable_seqscan = off")
-        return await explain_statement(conn, entry["sql"], *params, yugabyte=yugabyte)
+        hint = _declared_hint(entry, params) if yugabyte else ""
+        return await explain_statement(conn, hint + entry["sql"], *params, yugabyte=yugabyte)
     finally:
         await transaction.rollback()
+
+
+#: an index-purpose entry's read's sort, as the keyed helpers write it (the table read as ``t``)
+_ENTRY_ORDER: Final = re.compile(r'\bORDER BY t\."(\w+)"( DESC)?', re.IGNORECASE)
+
+
+def _declared_hint(entry: Mapping[str, Any], params: Sequence[Any]) -> str:
+    """the hint a keyed helper starts the entry's read with on YugabyteDB, as production sends it: the declared index
+    serving its pins and order (:func:`~threetears.core.keyed.serving_index`, over the tables its purposes' modules
+    declare), named to pg_hint_plan; nothing for a read not written over ``t`` or one only the primary key serves.
+
+    :param entry: the manifest entry (its ``table``, ``sql``, ``pins`` and ``purpose``)
+    :ptype entry: Mapping[str, Any]
+    :param params: the values its read is bound to
+    :ptype params: Sequence[Any]
+    :return: the hint and a space, or the empty string
+    :rtype: str
+    """
+    if f'FROM "{entry["table"]}" AS t' not in entry["sql"]:
+        return ""
+    for purpose in str(entry.get("purpose", "")).split(";"):
+        path = purpose.strip().split("::", 1)[0]
+        if "/src/" in path and path.endswith(".py"):
+            # its module declares the table (a TableSchema registers its indexes when its class is built)
+            importlib.import_module(path.split("/src/", 1)[1].removesuffix(".py").replace("/", "."))
+    by = {pin["column"]: params[pin["param"] - 1] for pin in entry["pins"] if pin["kind"] == "param"}
+    order = [Sort(column, descending=bool(down)) for column, down in _ENTRY_ORDER.findall(entry["sql"])]
+    index = serving_index(entry["table"], by, order)
+    return "" if index is None or index.primary else index_hint(index)
 
 
 async def insert_duplicate(conn: Any, entry: Mapping[str, Any]) -> None:

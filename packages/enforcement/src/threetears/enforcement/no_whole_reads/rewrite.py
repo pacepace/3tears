@@ -222,7 +222,9 @@ class PointSql:
     """
 
     table: str
-    columns: tuple[str, ...] | None
+    #: each selected item: a plain column, or a :data:`Selected <threetears.core.keyed.Selected>` expression as
+    #: ``{"expr", "alias"}`` (the expression over the helper's row ``t``)
+    columns: tuple[str | dict[str, str], ...] | None
     pins: tuple[Pin, ...]
     order: tuple[dict[str, Any], ...] = ()
     limit: dict[str, int] | None = None
@@ -334,6 +336,33 @@ class Rewrite:
         return entry
 
 
+class _TopSelect:
+    """:data:`_SELECT` matched on a statement's top level (each parenthesized part and quoted literal blanked, so a
+    sub-select in the select list does not end it), its groups read back from the statement as written."""
+
+    def __init__(self, text: str, match: re.Match[str]) -> None:
+        self._text = text
+        self._match = match
+
+    def group(self, name: str) -> Any:
+        start, end = self._match.span(name)
+        return None if start < 0 else self._text[start:end]
+
+
+def _top_select(text: str) -> _TopSelect | None:
+    """:data:`_SELECT` over ``text``'s top level, or None."""
+    masked = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", text)
+    blanked, depth = [], 0
+    for char in masked:
+        if char == ")":
+            depth -= 1
+        blanked.append(char if depth == 0 or char in "()" else "_")
+        if char == "(":
+            depth += 1
+    match = _SELECT.match("".join(blanked))
+    return None if match is None else _TopSelect(text, match)
+
+
 def _literal(text: str) -> str | bool | int:
     lowered = text.lower()
     if lowered in {"true", "false"}:
@@ -361,7 +390,7 @@ def parse_point(sql: str, *, ordered: bool = False, guards: bool = False) -> Poi
         return "interpolated"
     if text.startswith("/*") or "--" in text:
         return "a comment or hint in the statement"
-    match = _SELECT.match(text)
+    match = _top_select(text)
     if match is None:
         return "not SELECT <columns> FROM <table> WHERE ..."
     alias = match.group("alias")
@@ -389,22 +418,19 @@ def parse_point(sql: str, *, ordered: bool = False, guards: bool = False) -> Poi
             )
     if re.search(r"\b(order\s+by|limit|offset|group\s+by|for\s+update|for\s+share)\b", masked, re.IGNORECASE):
         return "ORDER BY / LIMIT / GROUP BY / a row lock"
-    columns: tuple[str, ...] | None
+    columns: tuple[str | dict[str, str], ...] | None
     if match.group("columns").strip() == "*":
         columns = None
     else:
-        picked = []
-        for item in match.group("columns").split(","):
-            column = _COLUMN.match(item.strip())
-            if column is None or column.group("qualifier") not in qualifiers:
-                return "an expression, alias or DISTINCT in the select list"
-            picked.append(column.group("column"))
-        columns = tuple(picked)
+        picked = _select_list(match.group("columns"), match.group("table"), alias)
+        if isinstance(picked, str):
+            return picked
+        columns = picked
     kept: list[Pin] | None = [] if guards else None
     pins = _pins(where, masked, qualifiers, kept)
     if isinstance(pins, str):
         return pins
-    if columns is not None and any(term["column"] not in columns for term in order):
+    if columns is not None and any(term["column"] not in column_names(columns) for term in order):
         return "an ORDER BY column it does not select (the equivalence proof compares the order by its values)"
     numbers = sorted({number for pin in (*pins, *(kept or ())) for number in pin.numbers()})
     if numbers != list(range(1, len(numbers) + 1)):
@@ -418,6 +444,75 @@ def parse_point(sql: str, *, ordered: bool = False, guards: bool = False) -> Poi
         order=tuple(order),
         guards=tuple(kept or ()),
     )
+
+
+#: a select-list item ``<expression> AS <alias>``: the expression, the alias it is answered under
+_SELECTED_ITEM: Final[re.Pattern[str]] = re.compile(
+    rf"^(?P<expr>.+?)\s+as\s+(?P<alias>{_IDENT})$", re.IGNORECASE | re.DOTALL
+)
+
+
+def _reads_unaliased(masked: str, table: str) -> bool:
+    """whether ``masked`` reads ``table`` with no alias of its own (``FROM table WHERE ...``, ``FROM table)``)."""
+    for found in re.finditer(rf'\bfrom\s+"?{re.escape(table)}"?(?![\w"])\s*(?P<next>{_IDENT})?', masked, re.IGNORECASE):
+        following = (found.group("next") or "").lower()
+        if not following or following in _KEYWORDS:
+            return True
+    return False
+
+
+def column_names(columns: Sequence[str | Mapping[str, str]]) -> list[str]:
+    """the names a select list's rows answer under: each plain column, each expression's alias.
+
+    :param columns: the parsed select list
+    :ptype columns: Sequence[str | Mapping[str, str]]
+    :return: the names, in order
+    :rtype: list[str]
+    """
+    return [column if isinstance(column, str) else column["alias"] for column in columns]
+
+
+def _select_list(text: str, table: str, alias: str | None) -> tuple[str | dict[str, str], ...] | str:
+    """a select list's items: a plain column (qualified by the table or its alias, or not), or ``<expression> AS
+    <alias>`` -- the expression respelled over the helper's row ``t`` (each ``<table>.`` / ``<alias>.`` it names
+    becomes ``t.``), sent as ``Selected(expression, alias)``; or why it is not one.
+
+    Refused: ``DISTINCT``, an expression binding a parameter (the helper numbers only its pins), an unnamed expression,
+    and one reading the same table again unaliased (its own ``<table>.`` would be the inner read's, not the row's)."""
+    bare = table.split(".")[-1]
+    qualifiers = {None, alias, bare}
+    masked = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", text)
+    if re.match(r"\s*distinct\b", masked, re.IGNORECASE):
+        return "an expression, alias or DISTINCT in the select list"
+    cuts = [-1, *_top_level_commas(masked), len(text)]
+    picked: list[str | dict[str, str]] = []
+    for start, end in zip(cuts, cuts[1:], strict=False):
+        item, item_masked = text[start + 1 : end].strip(), masked[start + 1 : end].strip()
+        column = _COLUMN.match(item)
+        if column is not None:
+            if column.group("qualifier") not in qualifiers:
+                return "a select-list column of another relation"
+            picked.append(column.group("column"))
+            continue
+        named = _SELECTED_ITEM.match(item_masked)
+        if named is None:
+            return "an expression in the select list with no alias (AS <name>)"
+        if re.search(r"\$\d", item_masked):
+            return "a select-list expression binding a parameter"
+        names = {name for name in (alias, bare) if name}
+        if _reads_unaliased(item_masked, bare):
+            return f"a select-list expression reading {bare} again unaliased"
+        expression = item[: named.end("expr")]
+        for name in names:
+            # only outside quoted text: the masked text says where those are
+            spans = [
+                found.span()
+                for found in re.finditer(rf'(?<![\w."]){re.escape(name)}\.', item_masked[: named.end("expr")])
+            ]
+            for begin, finish in reversed(spans):
+                expression = expression[:begin] + "t." + expression[finish:]
+        picked.append({"expr": " ".join(expression.split()), "alias": named.group("alias")})
+    return tuple(picked)
 
 
 def parse_list(sql: str, *, guards: bool = False) -> PointSql | str:
@@ -565,7 +660,7 @@ def _key_completion(parsed: PointSql, declared: Any) -> list[dict[str, Any]] | s
     keys = [*declared.primary_keys, *(key for key in declared.unique_keys if key not in declared.primary_keys)]
     if any({column.lower() for column in key} <= held for key in keys):
         return []
-    selected = None if parsed.columns is None else {column.lower() for column in parsed.columns}
+    selected = None if parsed.columns is None else {column.lower() for column in column_names(parsed.columns)}
     reasons: list[str] = []
     for key in sorted(keys, key=lambda key: sum(column.lower() not in held for column in key)):
         completing = [column for column in key if column.lower() not in held]
@@ -1383,8 +1478,7 @@ def _render(rewrite: Rewrite, receiver: str) -> str:
         parts.append(f"column={rewrite.columns[0]!r}")
     else:
         if rewrite.columns is not None:
-            listed = ", ".join(repr(column) for column in rewrite.columns)
-            parts.append(f"columns=({listed}{',' if len(rewrite.columns) == 1 else ''})")
+            parts.append(f"columns={_columns_text(rewrite.columns)}")
         parts.append("records=True")
         if rewrite.order:
             parts.append(f"order=[{', '.join(_sort_text(term) for term in rewrite.order)}]")
@@ -1396,15 +1490,7 @@ def _render_first(rewrite: Rewrite, receiver: str) -> str:
     and read as that method answered: the page's rows, its first row or None, that row's column or None."""
     assert rewrite.limit is not None
     by = "{" + ", ".join(f"{pin['column']!r}: {_value_text(pin, rewrite.args)}" for pin in rewrite.pins) + "}"
-    if rewrite.columns is None:
-        columns = "None"
-    else:
-        columns = (
-            "("
-            + ", ".join(repr(column) for column in rewrite.columns)
-            + ("," if len(rewrite.columns) == 1 else "")
-            + ")"
-        )
+    columns = "None" if rewrite.columns is None else _columns_text(rewrite.columns)
     limit = str(rewrite.args[rewrite.limit["param"] - 1]) if "param" in rewrite.limit else str(rewrite.limit["literal"])
     order = ", ".join(_sort_text(term) for term in rewrite.order)
     page = (
@@ -1417,6 +1503,15 @@ def _render_first(rewrite: Rewrite, receiver: str) -> str:
         return f"next(iter({page}.rows), None)"
     assert rewrite.columns is not None
     return f"next((row[{rewrite.columns[0]!r}] for row in {page}.rows), None)"
+
+
+def _columns_text(columns: Sequence[str | Mapping[str, str]]) -> str:
+    """a helper call's ``columns=``: a tuple of each plain column and each ``Selected(expression, alias)``."""
+    listed = ", ".join(
+        repr(column) if isinstance(column, str) else f"Selected({column['expr']!r}, {column['alias']!r})"
+        for column in columns
+    )
+    return f"({listed}{',' if len(columns) == 1 else ''})"
 
 
 def _render_count(rewrite: Rewrite, receiver: str) -> str:
@@ -2039,6 +2134,8 @@ def _plan_dict(
         return f"its dict {name}: a call's arguments are not its values' {count} parameters"
     if shape.shape != "write" and method == "fetchval" and any(one.columns is None for one in parsed):
         return f"its dict {name}: fetchval of SELECT *"
+    if method == "fetchval" and any(not isinstance((one.columns or ("",))[0], str) for one in parsed):
+        return f"its dict {name}: fetchval of a select-list expression"
     elsewhere = _elsewhere(config.repo_root, module, constant, calls)
     if isinstance(elsewhere, str):
         return elsewhere
@@ -2213,6 +2310,8 @@ def _plan_choice(
             return "a parameter used twice whose argument is not a plain name"
         if shape.shape != "write" and method == "fetchval" and one.columns is None:
             return "fetchval of SELECT *"
+        if method == "fetchval" and not isinstance((one.columns or ("",))[0], str):
+            return "fetchval of a select-list expression (read_value reads a column)"
         elsewhere = _elsewhere(config.repo_root, module, constant, [call])
         if isinstance(elsewhere, str):
             return elsewhere
@@ -2461,6 +2560,8 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 problem = "a parameter used twice whose argument is not a plain name"
             elif method == "fetchval" and parsed.columns is None and not parsed.aggregate:
                 problem = "fetchval of SELECT *"
+            elif method == "fetchval" and not isinstance((parsed.columns or ("",))[0], str):
+                problem = "fetchval of a select-list expression (read_value reads a column)"
             elif method not in shape.methods and parsed.aggregate:
                 problem = f"a count sent by {method}: read by a column name the helper does not answer under"
             elif method not in shape.methods:
@@ -2774,6 +2875,8 @@ def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None
             names.add("AnyOf")
         if any(rewrite.order for rewrite in mine):
             names.add("Sort")
+        if any(not isinstance(column, str) for rewrite in mine for column in rewrite.columns or ()):
+            names.add("Selected")
         source = _with_import(source, names)
         for rewrite in mine:
             for imported, wanted in rewrite.imports.items():

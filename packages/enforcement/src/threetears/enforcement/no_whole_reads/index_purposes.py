@@ -82,6 +82,8 @@ class IndexDecision:
     :ivar reason: the reason to write; empty when none is asked
     :ivar bound: the columns the plan test's read binds, in the index's order
     :ivar ordered: the column it orders by after them, or ""
+    :ivar descending: whether its read orders by that column descending
+    :ivar also: the other columns its read binds to a parameter by equality (not the index's), as the read sends them
     :ivar where: the index's partial ``WHERE``, kept in the read so the planner may use it
     :ivar refuses: a unique index declared by its constraint: its test inserts a duplicate the database must refuse
     :ivar literals: a partial unique index's ``WHERE`` as ``(column, literal)`` equalities its two rows hold
@@ -95,6 +97,8 @@ class IndexDecision:
     reason: str = ""
     bound: tuple[str, ...] = ()
     ordered: str = ""
+    descending: bool = False
+    also: tuple[str, ...] = ()
     where: str = ""
     refuses: bool = False
     literals: tuple[tuple[str, Any], ...] = ()
@@ -151,6 +155,18 @@ def _shape(statement: str, columns: Sequence[str]) -> tuple[tuple[str, ...], str
         bound.append(name)
     following = names[len(bound)] if len(bound) < len(names) else ""
     return tuple(bound), following if following and _orders(statement, following) else ""
+
+
+def _also_bound(statement: str, bound: Sequence[str]) -> tuple[str, ...]:
+    """the columns other than ``bound`` the statement binds to a parameter by plain equality (``"col" = $n``), in
+    the statement's order: the plan test's read sends them too, as the read does."""
+    found = re.findall(r'(?<![\w."])(?:\w+\.)?"?(\w+)"?\s*=\s*\$\d+', _where_part(statement))
+    return tuple(dict.fromkeys(column.lower() for column in found if column.lower() not in bound))
+
+
+def _descending(statement: str, column: str) -> bool:
+    """whether the statement orders by ``column`` (first) descending."""
+    return re.search(rf"ORDER\s+BY\s+{_qualified(column)}\s+DESC\b", statement, re.IGNORECASE) is not None
 
 
 def _preferred(reader: str) -> tuple[int, str]:
@@ -292,6 +308,7 @@ def decide(catalog: SchemaCatalog, module: str = _MODULE) -> Decisions:
         if best[0] > 0 or best[1]:
             chosen = [reader for reader in readers if _preferred(reader)[0] == 0][:_MOST_PURPOSES] or readers[:1]
             bound, ordered = scored[chosen[0]]
+            read = credited[chosen[0]]
             decision = IndexDecision(
                 table_name,
                 name,
@@ -300,6 +317,8 @@ def decide(catalog: SchemaCatalog, module: str = _MODULE) -> Decisions:
                 plan_test=f"{module}::{_test_name(name)}",
                 bound=bound,
                 ordered=ordered,
+                descending=bool(ordered) and _descending(read, ordered),
+                also=_also_bound(read, bound),
                 where=where,
             )
             if needs_reason:
@@ -331,18 +350,21 @@ def decide(catalog: SchemaCatalog, module: str = _MODULE) -> Decisions:
 
 
 def _statement(decision: IndexDecision) -> tuple[str, list[dict[str, Any]]]:
-    """the read the plan test explains, and its pins (each bound column a parameter, in order)."""
-    conditions = [f'"{column}" = ${number}' for number, column in enumerate(decision.bound, start=1)]
+    """the read the plan test explains, and its pins (each bound column a parameter, in order): the index's columns
+    the read binds, then the read's other equalities, its order as it sends it; the table read as ``t``, as the keyed
+    helpers read it (and name the index to YugabyteDB)."""
+    bound = (*decision.bound, *decision.also)
+    conditions = [f't."{column}" = ${number}' for number, column in enumerate(bound, start=1)]
     if decision.where:
         conditions.append(f"({decision.where})")
-    sql = f'SELECT * FROM "{decision.table}"'
+    sql = f'SELECT * FROM "{decision.table}" AS t'
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)
     if decision.ordered:
-        sql += f' ORDER BY "{decision.ordered}" LIMIT 10'
+        sql += f' ORDER BY t."{decision.ordered}"{" DESC" if decision.descending else ""} LIMIT 10'
     pins = [
         {"column": column, "kind": "param", "param": number, "literal": None}
-        for number, column in enumerate(decision.bound, start=1)
+        for number, column in enumerate(bound, start=1)
     ]
     return sql, pins
 

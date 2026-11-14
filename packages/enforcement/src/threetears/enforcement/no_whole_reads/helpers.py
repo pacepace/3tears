@@ -482,7 +482,25 @@ def _read_by(call: ast.Call) -> list[str]:
     else:
         table, own = _relation(table_node, "table")
     pinned, _ = _conditions(pins, alias="t")
-    return [f"SELECT * FROM {table} AS t{_where(pinned)}", *own]
+    return [f"SELECT * FROM {table} AS t{_where(pinned)}{_written_order(_argument(call, 'order', None))}", *own]
+
+
+def _written_order(node: ast.expr | None) -> str:
+    """`` ORDER BY ...`` for a read's ``order=`` written as a list of ``Sort`` terms, as the helper sends it; ``""``
+    for none, or one the walk cannot read (a name bound elsewhere): such a read is judged by its pins, as before."""
+    if node is None:
+        return ""
+    try:
+        columns = _sort_columns(node)
+    except _Unseen:  # NOSILENT: an order the walk cannot read is left out; the pins alone judge the read
+        return ""
+    assert isinstance(node, ast.Tuple | ast.List)
+    terms = []
+    for column, element in zip(columns, node.elts, strict=True):
+        descending = _argument(element, "descending", None) if isinstance(element, ast.Call) else None
+        down = isinstance(descending, ast.Constant) and descending.value is True
+        terms.append(f"{column} DESC" if down else column)
+    return f" ORDER BY {', '.join(terms)}"
 
 
 def _literal_select(call: ast.Call) -> list[str]:

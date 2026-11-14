@@ -10,3 +10,4 @@ ix_context_items_agent_var_key :: on context_items :: purpose=constraint :: plan
 uq_folders_agent_user_name :: on folders :: purpose=constraint :: plan_test=tests/integration/test_index_plans_generated.py::test_uq_folders_agent_user_name
 uq_folders_folder_id :: on folders :: purpose=constraint :: plan_test=tests/integration/test_index_plans_generated.py::test_uq_folders_folder_id
 uq_identity_active_per_variant :: on identity_versions :: purpose=constraint :: plan_test=tests/integration/test_index_plans_generated.py::test_uq_identity_active_per_variant
+idx_identity_variant_history :: on identity_versions :: purpose=packages/agent/identity/src/threetears/agent/identity/collections.py::IdentityVersionsCollection.find_versions_for_block :: plan_test=tests/integration/test_index_plans_generated.py::test_idx_identity_variant_history

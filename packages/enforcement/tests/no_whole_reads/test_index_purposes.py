@@ -92,8 +92,12 @@ def test_the_tool_declares_each_used_index_and_lists_the_unused(tmp_path: Path, 
     assert "items_by_note" not in ledger
     assert drops.read_text(encoding="utf-8").startswith("items.items_by_note")
     entries = {e["index"]: e for e in json.loads((tmp_path / "tests/integration/index_plan_manifest.json").read_text())}
-    assert entries["items_by_kind"]["sql"] == 'SELECT * FROM "items" WHERE "kind" = $1 ORDER BY "made_at" LIMIT 10'
-    assert entries["items_by_owner"]["sql"] == 'SELECT * FROM "items" WHERE "owner_id" = $1'
+    # the read as its purpose sends it: its order's direction too, the table read as ``t`` (as the helpers read it)
+    assert (
+        entries["items_by_kind"]["sql"]
+        == 'SELECT * FROM "items" AS t WHERE t."kind" = $1 ORDER BY t."made_at" DESC LIMIT 10'
+    )
+    assert entries["items_by_owner"]["sql"] == 'SELECT * FROM "items" AS t WHERE t."owner_id" = $1'
     after = _index(no_whole_reads_findings(config))
     assert [finding for finding in after if "items_by_note" not in finding] == [], after
 

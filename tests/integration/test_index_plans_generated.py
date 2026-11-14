@@ -37,6 +37,12 @@ async def test_idx_audit_events_type(engine_conn: Any) -> None:
     assert plan_uses_index(plan, "idx_audit_events_type"), json.dumps(plan.plan)
 
 
+async def test_idx_identity_variant_history(engine_conn: Any) -> None:
+    """Flips if packages/agent/identity/src/threetears/agent/identity/collections.py::IdentityVersionsCollection.find_versions_for_block's read stops reading idx_identity_variant_history."""
+    plan = await explain_index_read(engine_conn, _ENTRIES["idx_identity_variant_history"])
+    assert plan_uses_index(plan, "idx_identity_variant_history"), json.dumps(plan.plan)
+
+
 async def test_idx_workspace_file_versions_history(engine_conn: Any) -> None:
     """Flips if packages/agent/workspace/src/threetears/agent/workspace/collections.py::WorkspaceFileVersionCollection.find_by_workspace; packages/agent/workspace/src/threetears/agent/workspace/collections.py::WorkspaceFileVersionCollection.find_by_workspace_and_path's read stops reading idx_workspace_file_versions_history."""
     plan = await explain_index_read(engine_conn, _ENTRIES["idx_workspace_file_versions_history"])

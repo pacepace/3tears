@@ -211,7 +211,6 @@ def test_null_safe_and_literal_list_pins_are_read() -> None:
         "SELECT id FROM t WHERE a = $1 ORDER BY id",
         "SELECT id FROM t WHERE a = $1 LIMIT 1",
         "SELECT count(*) FROM t WHERE a = $1",
-        "SELECT a AS b FROM t WHERE a = $1",
         "SELECT DISTINCT a FROM t WHERE a = $1",
         "SELECT * FROM {} WHERE a = $1",
         "SELECT id FROM t WHERE a = 'x'",
@@ -1538,3 +1537,77 @@ def test_null_safe_pins_and_text_enum_values_are_rewritten_onto_the_helper(tmp_p
     assert "read_by(conn, 'versions', by={'agent_id': agent_id, 'user_id': user_id, 'status': 'proposed'}" in source, (
         source
     )
+
+
+def test_a_select_list_expression_is_read_as_selected_over_the_helpers_row() -> None:
+    """Flips if an aliased expression in the select list (a cast, a sub-select naming the row) is not read as the
+    helper's ``Selected(expression, alias)`` with the row's own table or alias respelled ``t.`` (outside quoted text and
+    other relations' qualifiers), or a sub-select there ends the select list early."""
+    parsed = parse_point(
+        "SELECT id, embedding::text AS embedding, (SELECT g.made FROM memories g WHERE g.id = memories.parent "
+        "AND g.note = 'memories.x') AS parent_made FROM memories WHERE agent_id = $1"
+    )
+    assert isinstance(parsed, PointSql), parsed
+    assert parsed.columns == (
+        "id",
+        {"expr": "embedding::text", "alias": "embedding"},
+        {
+            "expr": "(SELECT g.made FROM memories g WHERE g.id = t.parent AND g.note = 'memories.x')",
+            "alias": "parent_made",
+        },
+    )
+    aliased = parse_point("SELECT m.id, lower(m.name) AS name FROM memories m WHERE m.agent_id = $1")
+    assert isinstance(aliased, PointSql), aliased
+    assert aliased.columns == ("id", {"expr": "lower(t.name)", "alias": "name"})
+    renamed = parse_point("SELECT a AS b FROM t WHERE a = $1")
+    assert isinstance(renamed, PointSql) and renamed.columns == ({"expr": "a", "alias": "b"},)
+
+
+@pytest.mark.parametrize(
+    ("sql", "reason"),
+    [
+        ("SELECT lower(name) FROM t WHERE a = $1", "no alias"),
+        ("SELECT coalesce(name, $2) AS name FROM t WHERE a = $1", "binding a parameter"),
+        ("SELECT (SELECT max(x) FROM t WHERE x > 0) AS top FROM t WHERE a = $1", "reading t again unaliased"),
+        ("SELECT u.name FROM t WHERE a = $1", "another relation"),
+    ],
+)
+def test_a_select_list_expression_the_helper_cannot_send_is_refused(sql: str, reason: str) -> None:
+    """Flips if a select-list expression is taken that has no alias to answer under, binds a parameter the helper would
+    not number, reads the row's own table again with no alias of its own (its ``<table>.`` would be the inner read's),
+    or names another relation."""
+    refused = parse_point(sql)
+    assert isinstance(refused, str) and reason in refused, refused
+
+
+def test_a_selected_read_is_rewritten_with_selected_and_its_source_says_so(tmp_path: Path) -> None:
+    """Flips if a read with an aliased expression in its select list is not rewritten onto its helper with
+    ``Selected`` (imported beside it), or its manifest entry is not one the source check reads back."""
+    src = tmp_path / "src"
+    sources = {
+        "pkg/tables.py": _TABLES,
+        "pkg/reads.py": """
+            async def geo_named(conn, state, geo):
+                return await conn.fetch(
+                    "SELECT geo_id, lower(name) AS name FROM geos WHERE state = $1 AND geo_id = $2", state, geo
+                )
+        """,
+    }
+    for name, source in sources.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+    config = NoWholeReadsConfig(
+        repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path, dependency_schema=False, table_lists=()
+    )
+    rewrites, refusals = plan_point_rewrites(config)
+    assert [rewrite.function for rewrite in rewrites] == ["geo_named"], refusals
+    assert apply_rewrites(tmp_path, rewrites, ruff=None) == ["src/pkg/reads.py"]
+    source = (tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8")
+    assert "from threetears.core.keyed import Selected, read_by" in source, source
+    assert "columns=('geo_id', Selected('lower(name)', 'name'))" in source, source
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    (entry,) = json.loads(manifest.read_text(encoding="utf-8"))
+    assert entry["columns"] == ["geo_id", {"expr": "lower(name)", "alias": "name"}]
+    assert_source_says(tmp_path, entry)
