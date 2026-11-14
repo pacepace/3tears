@@ -226,8 +226,14 @@ async def handler(state: str) -> int:
 - The store tells its readers after each publish: a superseded version goes as soon as its last read ends, so two
   versions are held only while a read of the old one is open.
 - `read.cursor` is a DuckDB cursor with every table as a view over its mapped Arrow; `read.tables` the tables.
-- `reader.status()` gives the version held, its open reads, and the reads and mappings so far. Close the reader when
-  done.
+- A reader runs as many reads at once as keep reads x DuckDB `threads` within the process's usable cores (its cgroup
+  quota within its CPU affinity); a read past that waits its turn off the loop, at most `admit_wait` seconds (30), then
+  raises `TimeoutError`. More engine threads than cores leave a read thread that holds the interpreter lock preempted,
+  and the event loop waits for it.
+- `threads` unset is 2, set on the connection explicitly (never DuckDB's default of every core), so what runs is what
+  the slots were counted from.
+- `reader.status()` gives the version held, its open reads, the reads and mappings so far, and the slots with the
+  reads running in them (`in_flight`) and waiting (`queued`). Close the reader when done.
 
 ## Run jobs in workers over the current version
 

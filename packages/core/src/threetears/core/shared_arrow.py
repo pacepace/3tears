@@ -69,6 +69,7 @@ Guide: ``docs/shared-arrow.md``.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import fcntl
 import functools
@@ -90,7 +91,9 @@ from pathlib import Path
 from types import MappingProxyType, TracebackType
 from typing import Any, Final
 
+from threetears.core.utils.cpu_quota import effective_cpu_count
 from threetears.observe import contain, get_logger, remove_tree
+from threetears.observe.metrics import gauge
 
 
 # pyarrow alone carries the store, its slots and hand-offs, and the pool: a process that never opens DuckDB (the hub,
@@ -148,6 +151,15 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: the longest a shared Arrow read waits for an engine slot before it fails, naming the reads ahead of it: a wait that
+#: long is a starved reader, not a busy one
+_ADMIT_WAIT_SECONDS: Final = 30.0
+
+#: the DuckDB threads a shared Arrow reader's connection runs a query on when its caller names none. Always set, never
+#: DuckDB's own default (every core): the reader's slots are counted from it, so what runs is what was counted, and no
+#: caller silently runs all-core engines or, counted as all-core, silently runs one read at a time
+_READER_THREADS: Final = 2
 
 #: the store's four parts: published versions (each a manifest), the files they name, workers' results, and the tables
 #: handed to one job each
@@ -2349,23 +2361,27 @@ class SharedArrowStore:
         schema: str | None = None,
         config: Mapping[str, Any] | None = None,
         prepare: Callable[[Any], Any] | None = None,
+        admit_wait: float = _ADMIT_WAIT_SECONDS,
     ) -> SharedArrowReader:
         """a reader of the current version for this process (the serving process reading what its workers read), told
         after every publish so it lets a superseded version go as soon as its last read ends.
 
         :param schema: the schema each read's views are made in; None for the connection's default
         :ptype schema: str | None
-        :param config: DuckDB settings for the reader's connection (``threads``, ``memory_limit``)
+        :param config: DuckDB settings for the reader's connection (``threads``, ``memory_limit``); ``threads`` unset
+            is 2, never DuckDB's every core
         :ptype config: Mapping[str, Any] | None
         :param prepare: called once with each version's connection as it is mapped (to make views over its tables,
             say); what it returns is each read's ``prepared``
         :ptype prepare: Callable[[duckdb.DuckDBPyConnection], Any] | None
+        :param admit_wait: the longest a read waits for an engine slot (:class:`SharedArrowReader`)
+        :ptype admit_wait: float
         :return: the reader; close it when done
         :rtype: SharedArrowReader
         :raises ImportError: when duckdb is not installed
         """
         _require_duckdb()
-        made = SharedArrowReader(self, schema=schema, config=config, prepare=prepare)
+        made = SharedArrowReader(self, schema=schema, config=config, prepare=prepare, admit_wait=admit_wait)
         with self._state:
             self._readers.add(made)
         return made
@@ -3240,6 +3256,92 @@ def _clean_cursor(cursor: Any, made: int) -> bool:
         return False
 
 
+#: reads a serving process's shared Arrow readers have running now, and waiting for a slot (:class:`_Admission`): a
+#: starved reader shows as a queue that does not drain
+_READS_IN_FLIGHT = gauge(
+    "threetears_shared_arrow_reads_in_flight",
+    description="shared Arrow reads running now, across this process's readers",
+)
+_READS_QUEUED = gauge(
+    "threetears_shared_arrow_reads_queued",
+    description="shared Arrow reads waiting for an engine slot, across this process's readers",
+)
+
+
+def _usable_cores() -> int:
+    """the cores this process may run on: its cgroup's quota, within its CPU affinity (never the machine's count)."""
+    return effective_cpu_count(cpu_count=getattr(os, "process_cpu_count", os.cpu_count))
+
+
+class _Admission:
+    """the reads one reader runs at once: as many as keep (reads x engine threads) within the process's usable cores.
+
+    Past that, the OS shares the cores among more runnable threads than there are, and a read thread holding the
+    interpreter lock (building a result's Python rows) is preempted with it: the event loop then waits until that
+    thread runs again (2 CPUs, 4 reads of 2 engine threads each: the loop 12.6-15.8 ms late with the host idle on
+    time; prod 2026-10-31, engines sized past the pod's CPU quota froze the loop each throttled period). A read past
+    the slots waits, off the loop, first come first served, at most ``wait`` seconds.
+    """
+
+    def __init__(self, slots: int, wait: float) -> None:
+        self.slots = max(1, slots)
+        self._wait = wait
+        self._turn = threading.Condition()
+        self._running = 0
+        self._waiting: collections.deque[object] = collections.deque()
+        #: the slots each thread holds: a thread already in a read runs no second query at once, so a read it opens
+        #: inside one takes no other slot (and would wait forever on its own if it did)
+        self._held = threading.local()
+
+    @property
+    def counts(self) -> tuple[int, int]:
+        """the reads running and waiting now."""
+        with self._turn:
+            return self._running, len(self._waiting)
+
+    def enter(self) -> None:
+        """take a slot, waiting in turn for one.
+
+        :raises TimeoutError: when no slot came within the wait
+        """
+        depth = getattr(self._held, "depth", 0)
+        if depth:
+            self._held.depth = depth + 1
+            return
+        me = object()
+        with self._turn:
+            self._waiting.append(me)
+            _READS_QUEUED.inc()
+            try:
+                admitted = self._turn.wait_for(
+                    lambda: self._running < self.slots and self._waiting[0] is me, timeout=self._wait
+                )
+            finally:
+                self._waiting.remove(me)
+                _READS_QUEUED.dec()
+            if not admitted:
+                self._turn.notify_all()
+                raise TimeoutError(
+                    f"a shared Arrow read waited {self._wait:.0f} s for one of {self.slots} engine slots "
+                    f"({self._running} running, {len(self._waiting)} waiting)"
+                )
+            self._running += 1
+            _READS_IN_FLIGHT.inc()
+            self._held.depth = 1
+            # the next in line may be admitted too, when slots remain
+            self._turn.notify_all()
+
+    def leave(self) -> None:
+        """give the slot back (when the thread's outermost read ends)."""
+        self._held.depth -= 1
+        if self._held.depth:
+            return
+        with self._turn:
+            self._running -= 1
+            _READS_IN_FLIGHT.dec()
+            self._turn.notify_all()
+
+
 class SharedArrowReader:
     """the current version read in place by the process that owns the store: a serving process answering from the
     same pages its workers map, with no copy of its own. Each read takes the version current as it opens and keeps it
@@ -3254,11 +3356,15 @@ class SharedArrowReader:
     :ptype store: SharedArrowStore
     :param schema: the schema each read's views are made in; None for the connection's default
     :ptype schema: str | None
-    :param config: DuckDB settings for the reader's connection
+    :param config: DuckDB settings for the reader's connection; ``threads`` unset is 2 (always set explicitly: the
+        slots are counted from it)
     :ptype config: Mapping[str, Any] | None
     :param prepare: called once with each version's connection as it is mapped; its answer is each read's
         ``prepared``
     :ptype prepare: Callable[[duckdb.DuckDBPyConnection], Any] | None
+    :param admit_wait: the longest a read waits for an engine slot (:class:`_Admission`: reads run at once only as
+        many as keep reads x the connection's ``threads`` within the process's usable cores)
+    :ptype admit_wait: float
     """
 
     def __init__(
@@ -3268,10 +3374,18 @@ class SharedArrowReader:
         schema: str | None = None,
         config: Mapping[str, Any] | None = None,
         prepare: Callable[[Any], Any] | None = None,
+        admit_wait: float = _ADMIT_WAIT_SECONDS,
     ) -> None:
         self._store = store
         self._schema = schema
         self._config = dict(config or {})
+        # set on the connection explicitly, so the engine runs on the threads the slots are counted from
+        if self._config.get("threads") is None:
+            self._config["threads"] = _READER_THREADS
+        engine_threads = int(self._config["threads"])
+        if engine_threads < 1:
+            raise ValueError(f"a shared Arrow reader's DuckDB threads must be at least 1, got {engine_threads}")
+        self._admission = _Admission(_usable_cores() // engine_threads, admit_wait)
         self._prepare = prepare
         self._lock = threading.Lock()
         self._held: _HeldVersion | None = None
@@ -3308,7 +3422,18 @@ class SharedArrowReader:
         :rtype: Iterator[SharedRead]
         :raises LookupError: when nothing is published yet
         :raises RuntimeError: after :meth:`close`
+        :raises TimeoutError: when no engine slot came within the reader's ``admit_wait``
         """
+        self._admission.enter()
+        try:
+            with self._read() as read:
+                yield read
+        finally:
+            self._admission.leave()
+
+    @contextlib.contextmanager
+    def _read(self) -> Iterator[SharedRead]:
+        """:meth:`read`, its slot taken."""
         let_go: _HeldVersion | None = None
         with self._lock:
             if self._closed:
@@ -3387,7 +3512,8 @@ class SharedArrowReader:
     def status(self) -> dict[str, Any]:
         """what the reader holds, as plain JSON values.
 
-        :return: the version held, its open reads, and the reads and mappings so far
+        :return: the version held, its open reads, the reads and mappings so far, and the engine slots with the reads
+            running in them and waiting for one
         :rtype: dict[str, Any]
         """
         with self._lock:
@@ -3397,6 +3523,9 @@ class SharedArrowReader:
                 "open_reads": 0 if held is None else held.reads,
                 "reads": self._reads,
                 "mapped": self._mapped,
+                "slots": self._admission.slots,
+                "in_flight": self._admission.counts[0],
+                "queued": self._admission.counts[1],
             }
 
     def _supersede(self) -> _HeldVersion | None:

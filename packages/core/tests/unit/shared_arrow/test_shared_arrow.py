@@ -30,6 +30,7 @@ import pytest
 
 from packages.core.tests.unit.shared_arrow import jobs
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
+from threetears.core import shared_arrow
 from threetears.core.shared_arrow import (
     MappedTables,
     MappedVersion,
@@ -776,7 +777,8 @@ class TestAReadBorrowsARegisteredCursor:
         """Flips if a read registers the version's tables again on a cursor an earlier read registered (SharedRead
         made a cursor and registered every table on every read: 45k registrations over 40 uploads in reports)."""
         _serving_version(store, "v1")
-        reader = store.reader()
+        # four reads held open at once: one engine thread each keeps 4 x 1 within any pool host's cores
+        reader = store.reader(config={"threads": 1})
         for index in range(50):
             with reader.read() as read:
                 assert read.cursor.execute('SELECT sum(a) FROM "t3"').fetchone() == (30,)
@@ -1412,3 +1414,99 @@ class TestASweepNeverTakesAnOpenSlotsStaging:
         store.discard(slot)
 
         assert _hidden(store) == []
+
+
+class TestAReaderRunsNoMoreEngineThreadsThanItsCores:
+    """#1167 / prod 2026-10-31: reads x their engine threads past the process's usable cores leave a read thread that
+    holds the interpreter lock preempted, and the event loop waits for it (2 CPUs, 4 reads of 2 threads: 12.6-15.8 ms
+    late, the host's idle loop on time). A reader admits reads only while reads x engine threads fit the cores."""
+
+    @pytest.mark.parametrize(
+        ("cores", "threads", "slots"), [(2, 2, 1), (4, 2, 2), (10, 2, 5), (8, None, 4), (3, None, 1), (3, 4, 1)]
+    )
+    def test_its_slots_are_the_usable_cores_over_the_engine_threads(
+        self, store: SharedArrowStore, monkeypatch: pytest.MonkeyPatch, cores: int, threads: int | None, slots: int
+    ) -> None:
+        """Flips if a reader admits more reads than keep reads x engine threads within the usable cores (an unset
+        ``threads`` is 2), or fewer than one."""
+        monkeypatch.setattr(shared_arrow, "_usable_cores", lambda: cores)
+        reader = store.reader(config=None if threads is None else {"threads": threads})
+
+        assert reader.status()["slots"] == slots
+        reader.close()
+
+    @pytest.mark.parametrize(("config", "threads"), [(None, 2), ({"threads": None}, 2), ({"threads": 3}, 3)])
+    def test_its_connection_runs_on_the_threads_its_slots_are_counted_from(
+        self, store: SharedArrowStore, config: dict[str, Any] | None, threads: int
+    ) -> None:
+        """Flips if a reader whose caller names no ``threads`` leaves DuckDB's default (every core) on its connection
+        while counting its slots from 2, or runs on other threads than the caller named."""
+        _serving_version(store, "v1")
+        reader = store.reader(config=config)
+        with reader.read() as read:
+            assert read.cursor.execute("SELECT current_setting('threads')").fetchone() == (threads,)
+        reader.close()
+
+    def test_a_reader_refuses_engine_threads_below_one(self, store: SharedArrowStore) -> None:
+        """Flips if a reader takes ``threads`` below 1, whose slots could not be counted."""
+        with pytest.raises(ValueError, match="at least 1"):
+            store.reader(config={"threads": 0})
+
+    def test_a_read_past_the_slots_waits_its_turn_and_runs_when_one_frees(
+        self, store: SharedArrowStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flips if a read past the slots runs beside the one holding the slot, or never runs once it frees; the
+        waiting read shows as queued."""
+        monkeypatch.setattr(shared_arrow, "_usable_cores", lambda: 2)
+        _serving_version(store, "v1")
+        reader = store.reader(config={"threads": 2})
+        order: list[str] = []
+        first = reader.read()
+        first.__enter__()
+        order.append("first in")
+
+        def second() -> None:
+            with reader.read():
+                order.append("second in")
+
+        waiting = threading.Thread(target=second)
+        waiting.start()
+        deadline = time.monotonic() + 5
+        while reader.status()["queued"] != 1 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert (reader.status()["in_flight"], reader.status()["queued"]) == (1, 1)
+        assert order == ["first in"]
+        order.append("first out")
+        first.__exit__(None, None, None)
+        waiting.join(timeout=5)
+
+        assert order == ["first in", "first out", "second in"]
+        assert (reader.status()["in_flight"], reader.status()["queued"]) == (0, 0)
+        reader.close()
+
+    def test_a_read_that_waits_past_its_bound_fails_naming_the_reads_ahead(
+        self, store: SharedArrowStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flips if a starved read waits without bound, or fails without saying what held the slots; a slot it
+        never took is not given back."""
+        monkeypatch.setattr(shared_arrow, "_usable_cores", lambda: 1)
+        _serving_version(store, "v1")
+        reader = store.reader(config={"threads": 1}, admit_wait=0.05)
+        with reader.read():
+            failed: list[BaseException] = []
+
+            def late() -> None:
+                try:
+                    with reader.read():
+                        pass
+                except TimeoutError as exc:
+                    failed.append(exc)
+
+            thread = threading.Thread(target=late)
+            thread.start()
+            thread.join(timeout=5)
+        assert len(failed) == 1 and "1 running" in str(failed[0]), failed
+        assert (reader.status()["in_flight"], reader.status()["queued"]) == (0, 0)
+        with reader.read():
+            pass
+        reader.close()
