@@ -1,7 +1,7 @@
 """The descriptive telemetry rollup: per-run summaries, token sums and model versions.
 
-Descriptive only — no scoring statistic lives here. :func:`_run_summary` digests one run and its results,
-:func:`_token_rollup` sums their tokens, and :func:`_telemetry_rollup` assembles both into the bundle's
+Descriptive only — no scoring statistic lives here. :func:`digest_run` digests one run and its results,
+:func:`_token_rollup` sums their tokens, and :func:`telemetry_rollup` assembles both into the bundle's
 :class:`~threetears.evals.analysis.bundle.schema.TelemetryRollup`.
 """
 
@@ -27,8 +27,8 @@ from threetears.evals.analysis.bundle.schema import (
     TokenRollup,
 )
 from threetears.evals.analysis.contention import EXECUTION_MODE
-from threetears.evals.analysis.bundle.config import _effective_config
-from threetears.evals.analysis.bundle.measures import _measure_collection
+from threetears.evals.analysis.bundle.config import effective_config
+from threetears.evals.analysis.bundle.measures import measure_collection
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun
@@ -138,7 +138,7 @@ def _measured_prod_costs(run_results: list[ResultView]) -> list[float]:
     return measured
 
 
-def _run_summary(
+def digest_run(
     run: EvalRun, run_results: list[ResultView], reportable: set[str], *, profile: HostProfile
 ) -> RunSummary:
     """Digest one run + its results into a :class:`RunSummary`.
@@ -158,7 +158,7 @@ def _run_summary(
     :rtype: RunSummary
     """
     effective = {
-        lever: eff for lever, eff in _effective_config(run, run_results, profile=profile).items() if lever in reportable
+        lever: eff for lever, eff in effective_config(run, run_results, profile=profile).items() if lever in reportable
     }
     prod_costs = _measured_prod_costs(run_results)
     return RunSummary(
@@ -181,7 +181,7 @@ def _run_summary(
         production_footing=(
             None if run.elided_payload_paths else profile.sweepables.production_footing(run, run_results)
         ),
-        measures=_measure_collection(run_results, profile=profile, undeclared="all_observed"),
+        measures=measure_collection(run_results, profile=profile, undeclared="all_observed"),
         judge_shares_candidate_model=self_judging_models(run, run_results),
         apparatus=_run_apparatus(run, run_results),
     )
@@ -214,7 +214,7 @@ def _run_apparatus(run: EvalRun, run_results: list[ResultView]) -> RunApparatus 
     return apparatus if apparatus.recorded else None
 
 
-def _model_versions(runs: list[EvalRun], records: list[ScoreRecord]) -> dict[str, str]:
+def model_versions(runs: list[EvalRun], records: list[ScoreRecord]) -> dict[str, str]:
     """Collect distinct models by role — candidate/judge/simulator — as a flat map.
 
     A single value per role reads cleanly; a swept role (e.g. a judge bake-off)
@@ -235,7 +235,7 @@ def _model_versions(runs: list[EvalRun], records: list[ScoreRecord]) -> dict[str
     return versions
 
 
-def _telemetry_rollup(
+def telemetry_rollup(
     runs: list[EvalRun], results: list[ResultView], budget: ProgramBudget, *, profile: HostProfile
 ) -> TelemetryRollup:
     """Compose the campaign-wide telemetry rollup from results + the budget lens."""
@@ -246,9 +246,13 @@ def _telemetry_rollup(
         total_cost_usd=budget.total_cost_usd,
         incomplete_cost_usd=budget.incomplete_cost_usd,
         unattributed_cost_usd=budget.unattributed_cost_usd,
-        measures=_measure_collection(results, profile=profile, undeclared="all_observed"),
+        measures=measure_collection(results, profile=profile, undeclared="all_observed"),
         tokens=_token_rollup(results),
     )
 
 
-__all__: list[str] = []
+__all__ = [
+    "model_versions",
+    "digest_run",
+    "telemetry_rollup",
+]

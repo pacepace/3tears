@@ -298,7 +298,7 @@ SERVED_MODEL_PREFIX = "served_model:"
 CANDIDATE_SERVED_MODEL_CONFOUND = f"{SERVED_MODEL_PREFIX}candidate"
 
 #: Why the candidate's served model moving under one requested id clouds a comparison, in the catalog's words.
-_SERVED_MODEL_CONFOUNDS = (
+SERVED_MODEL_CONFOUNDS = (
     "the candidate was asked for one model id and the provider's responses named more than one model as having "
     "answered it — a floating alias (a 'latest' pointer) resolves on the provider's side and can move between "
     "runs or within one — so the numbers recorded under that id are a mixture of models, and a difference between "
@@ -326,7 +326,7 @@ class _ObservedMechanism:
 #: The covariates read as observed mechanisms, each with its threshold and the reason a divergence in it
 #: clouds a comparison. One entry today; the check is written over the covariate name, so a second
 #: is an entry here rather than a second code path.
-_OBSERVED_MECHANISMS: dict[str, _ObservedMechanism] = {
+OBSERVED_MECHANISMS: dict[str, _ObservedMechanism] = {
     REASONING_RATIO_KEY: _ObservedMechanism(
         threshold=REASONING_SHARE_DIVERGENCE,
         reason=(
@@ -3885,7 +3885,7 @@ class AnalysisContextBundle(EvalDocumentModel):
 
     def level_name(self, axis_id: str, content_hash: str) -> str:
         """What a page calls a declared level: its display as the aspect's declared design renders it, the first one
-        declaring the hash on the axis, as the variant index names it (``_declared_level_names``). A name read at
+        declaring the hash on the axis, as the variant index names it (``declared_level_names``). A name read at
         render time from the declaration the bundle froze, never from fingerprinted evidence, so a stored analysis
         prints the names it was frozen with and renaming a level moves no fingerprint.
 
@@ -4350,12 +4350,11 @@ def host_declarations_digest(profile: HostProfile) -> str:
 
 
 __all__ = [
+    "ASPECT_BUNDLE_SHAPE",
     "AliasedFactors",
     "AnalysisContextBundle",
     "ArmMechanismReading",
     "ArmPricing",
-    "NEGATIVE_VALUE_IDS_SHOWN",
-    "NegativeValues",
     "ArmServedModel",
     "BundleInspection",
     "CANDIDATE_SERVED_MODEL_CONFOUND",
@@ -4364,70 +4363,73 @@ __all__ = [
     "ComparisonFamily",
     "ComparisonReading",
     "ComparisonVerdict",
-    "SEPARATED_VERDICTS",
     "Confound",
+    "CriterionKind",
     "DeclaredCellCoverage",
     "DeclaredCrossing",
     "DeclaredLevelCoverage",
     "DesignArm",
-    "exploratory_disclosure",
-    "ASPECT_BUNDLE_SHAPE",
-    "refuse_a_bundle_of_another_shape",
-    "asks_a_question",
-    "CriterionKind",
-    "late_criteria",
-    "LateCriterion",
-    "question_axes",
+    "FINGERPRINT_PREFIX",
+    "FLOOR_COST_MEASURE",
     "FactorPairCell",
     "FactorPairPivot",
     "FactorPairScan",
     "FamilyComparison",
-    "FLOOR_COST_MEASURE",
     "FloorContrast",
     "FloorContrastReading",
     "GoalCheckProofReading",
     "HeldFixedReading",
-    "host_declarations_digest",
     "INTERACTION_ALIASING_UNCHECKED",
-    "JudgeChange",
     "JUDGED_OFF_RANKING_REASON",
-    "JudgedArm",
-    "JudgedMeasure",
+    "JudgeChange",
     "JudgeDriftLink",
     "JudgeIdentityLevel",
+    "JudgedArm",
+    "JudgedMeasure",
+    "LateCriterion",
     "LeverCoverageInput",
     "MeasureMovement",
     "MechanismCheck",
     "MechanismUncheckedReason",
     "MeritTier",
     "MovementDirection",
-    "PairingCorrelation",
     "MultipleComparisons",
-    "NO_DESIGN_EXPLORATORY",
+    "NEGATIVE_VALUE_IDS_SHOWN",
     "NO_AXIS_EXPLORATORY",
+    "NO_DESIGN_EXPLORATORY",
     "NO_QUESTION_EXPLORATORY",
-    "observed_mechanism_key",
+    "NegativeValues",
+    "OBSERVED_MECHANISMS",
     "OBSERVED_MECHANISM_PREFIX",
+    "PairingCorrelation",
     "QuestionScope",
+    "REASONING_SHARE_DIVERGENCE",
     "ReadingScope",
     "RealizedDesign",
     "RoleUnanswered",
     "RunApparatus",
-    "REASONING_SHARE_DIVERGENCE",
     "RunSummary",
-    "ScopeDivergence",
+    "SEPARATED_VERDICTS",
+    "SERVED_MODEL_CONFOUNDS",
     "SERVED_MODEL_PREFIX",
+    "ScopeDivergence",
     "ShortCell",
+    "TRIAL_PASS_NAME",
     "TelemetryRollup",
     "TokenRollup",
-    "TRIAL_PASS_NAME",
     "UNDECIDED_CONFOUND_PREFIX",
-    "UnexercisedFactor",
     "UNVERIFIED_FOLD_PREFIX",
+    "UnexercisedFactor",
     "VerdictOrder",
     "WholeSwing",
-    "FINGERPRINT_PREFIX",
+    "asks_a_question",
     "evidence_digest",
-    "unnamed_axes",
+    "exploratory_disclosure",
     "fingerprint_digest",
+    "host_declarations_digest",
+    "late_criteria",
+    "observed_mechanism_key",
+    "question_axes",
+    "refuse_a_bundle_of_another_shape",
+    "unnamed_axes",
 ]

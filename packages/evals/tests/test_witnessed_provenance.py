@@ -13,9 +13,9 @@ pooled into one cell. Now:
 - what the campaign declared held fixed is compared with what the runs recorded.
 
 Mutations that turn this file red: restoring ``provenance="commissioned"`` in the bundle's
-``_apparatus_classes`` (the hardcoded value, renamed); dropping ``provenance`` from the class digest
+``classify_apparatus`` (the hardcoded value, renamed); dropping ``provenance`` from the class digest
 in ``apparatus_class_of``; giving ``EvalRun.apparatus_provenance`` a default; deleting the launch
-path's stamp; inverting the contradiction test in ``_held_fixed_reading``.
+path's stamp; inverting the contradiction test in ``held_fixed_reading``.
 """
 
 from __future__ import annotations

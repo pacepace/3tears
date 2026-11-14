@@ -86,7 +86,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
+from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if, contrast_key
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.call import (
     AskedStanding,
@@ -101,7 +101,7 @@ from threetears.evals.analysis.report.call import (
     weighed_axes,
 )
 from threetears.evals.analysis.report.gates import GateFinding, GateStatus, gate_check, gate_findings, routing_picks
-from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, ReportInput
+from threetears.evals.analysis.report_input import Aspect, Criterion, ReportInput
 from threetears.evals.analysis.report_margins import (
     CriterionFigure,
     criterion_aspect,
@@ -549,13 +549,6 @@ class Dominance(BaseModel):
     notes: list[str] = Field(description="How the result was read, where that is not the default, and why.")
 
 
-def _contrast_key(contrast: Contrast) -> str:
-    """A contrast's key, by its aspect where it states one (the form every aspect's contrast reads by)."""
-    if contrast.aspect is not None:
-        return f"aspects.{contrast.aspect}.contrast.{contrast.arm}.{contrast.measure}"
-    return f"contrast.{contrast.arm}.{contrast.measure}"
-
-
 def _place(report_input: ReportInput, figure: CriterionFigure) -> str | None:
     """Where a criterion's figure sits, as its key names it: a task's id, a cell's ``<row>.<column>``, or None."""
     if figure.cell is not None:
@@ -603,7 +596,7 @@ def _standing_figures(report_input: ReportInput, arm: str) -> list[CitedFigure]:
                 found.append(cite(f"aspects.{aspect.id}.pair.{pair.arms[0]}.{pair.arms[1]}.change", report_input))
     for contrast in separating_contrasts(report_input, arm):
         if contrast.delta is not None:
-            found.append(cite(_contrast_key(contrast) + ".delta", report_input))
+            found.append(cite(f"{contrast_key(report_input, contrast)}.delta", report_input))
     asked_ids = {aspect.id for aspect in asked}
     for read in report_input.floors:
         if read.arm == arm and read.aspect in asked_ids and read.status != "held":

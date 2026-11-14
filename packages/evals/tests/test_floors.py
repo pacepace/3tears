@@ -384,6 +384,18 @@ async def test_the_aspect_pass_rate_is_read_at_the_level_it_is_asked_for() -> No
     assert stricter.interval[0] < nominal.interval[0] and stricter.interval[1] > nominal.interval[1]
 
 
+@pytest.mark.parametrize("confidence", [INTERVAL_LEVEL, 0.99])
+async def test_the_aspect_pass_rate_is_the_floor_readings_pass_rate(confidence: float) -> None:
+    """One rate under two doors: what ``aspect_pass_rate`` reads alone is the overall rate the floor readings carry
+    (``FloorReadings.pass_rate``, which a campaign's readings take from the readings they hold), at every level, and
+    neither is read for an arm off the scoreboard (#1053)."""
+    bundle, control, candidate = await _shape(5)
+    readings = floor_readings(bundle, control, candidate, confidence=confidence)
+    assert len(readings.rates) > 1, "the control: the readings carry more rates than the pass rate"
+    assert aspect_pass_rate(bundle, control, candidate, confidence=confidence) == readings.pass_rate()
+    assert floor_readings(bundle, control, "no-such-arm").pass_rate() is None
+
+
 # =============================================================================
 # A bundle from before aspects is refused by name, never half-read
 # =============================================================================

@@ -48,6 +48,18 @@ summary's `n_not_judged` does. In a judge phase that cannot be priced, a cell th
 failed on one dimension when the cap kept the next one unasked is now excluded as the judge's fault, which a re-judge
 recovers. It is no longer filed under `cost_cap`, and the stop record no longer counts it as set aside.
 
+### evals: the analyst cites a contrast under one key; a campaign's arms and its scorecard read less
+
+**Fixed:** `dominance` cited a separating contrast's delta under `aspects.<aspect>.contrast.<arm>.<measure>` wherever
+the contrast named an aspect, while `contrasts_list` and the editor's facts cite it as `contrast.<arm>.<measure>`
+unless the input holds that arm and measure twice. The analyst saw one figure under two keys; a survivor's standing
+now cites it by the listing's key (#1021).
+
+**Changed:** `aspect_pass_rate` reads the trials' pass rate alone rather than every floor reading, and the scorecard
+reads each row's pass rate once. `campaign_arms` loads each member run once and reads every run's first result in one
+call by id, where it loaded each run twice and read each first result on its own; it still reads each run's result
+keys one run at a time, until the batched key read returns (#1053 items 1 and 3; item 2 in part, so #1053 stays open). `editor_rubric` keeps at most 64 editor texts read (#1117). Output is unchanged.
+
 ### evals: a page's forms, arm names and gate checks are worked out once per report input
 
 **Changed:** `PageForms.of`, `page_arm_names` and a `gate_check` read off any page (no `forms`) keep their results per

@@ -72,6 +72,7 @@ from threetears.evals.analysis.report.campaign.common import floor_of
 from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
 from threetears.evals.analysis.report.decision import (
     CasesNeeded,
+    RateReading,
     RateVerdict,
     SampleProjection,
     aspect_pass_rate,
@@ -539,9 +540,10 @@ def table_blocks(
             )
         ]
     blocks: list[ReportBlock] = []
+    rates = _PassRates(reports, readings.control)
     if readings.readings:
         blocks += [
-            _change_matrix(campaign, readings, reports, names, readings.control, forms),
+            _change_matrix(campaign, readings, reports, names, readings.control, rates, forms),
             _change_rows(readings, names, forms),
         ]
     else:
@@ -564,10 +566,28 @@ def table_blocks(
         for row in readings.readings
         if row.rig is not None
     ]
-    notes += _reconciled_lines(readings, reports, names, forms)
+    notes += _reconciled_lines(readings, reports, rates, names, forms)
     notes += _unread_lines(campaign, readings, names)
     blocks += [DisclosureBlock(section="scorecard", source="comparisons", text=note) for note in notes if note]
     return blocks
+
+
+class _PassRates:
+    """Each row's overall pass rate against the control
+    (:func:`~threetears.evals.analysis.report.decision.aspect_pass_rate`), read once per scorecard: the matrix's
+    baselines and the lines reconciling a contrast both read it."""
+
+    def __init__(self, reports: Mapping[str, Report], control: str) -> None:
+        self._reports = reports
+        self._control = control
+        self._read: dict[tuple[str, str], RateReading | None] = {}
+
+    def of(self, row: AspectReading) -> RateReading | None:
+        """The row's pass rate, read off its aspect's evidence the first time it is asked for."""
+        key = (row.aspect, row.arm)
+        if key not in self._read:
+            self._read[key] = aspect_pass_rate(self._reports[row.aspect].bundle, self._control, row.arm)
+        return self._read[key]
 
 
 def _change_matrix(
@@ -576,6 +596,7 @@ def _change_matrix(
     reports: Mapping[str, Report],
     names: AspectNames,
     control: str,
+    rates: _PassRates,
     forms: PageForms,
 ) -> TableBlock:
     """One row per aspect any candidate was compared on, one column per candidate, the control's pass rate beside the
@@ -603,7 +624,7 @@ def _change_matrix(
         if not on:
             continue
         bundle = reports[aspect.label].bundle
-        baselines = {arm: _baseline(row, bundle, control) for arm, row in on.items()}
+        baselines = {arm: _baseline(row, rates) for arm, row in on.items()}
         shown = _control_cell(list(on.values()), bundle, control, baselines, forms)
         # Where the candidates' changes read different cases, the control's cell is its trials passed, and every
         # candidate names the baseline its own change is read from.
@@ -736,12 +757,12 @@ def _glyph_key(readings: CampaignReadings, candidates: Sequence[str], forms: Pag
     )
 
 
-def _baseline(row: AspectReading, bundle: AnalysisContextBundle, control: str) -> tuple[float, int | None]:
+def _baseline(row: AspectReading, rates: _PassRates) -> tuple[float, int | None]:
     """The control's level a row's change is read from, in percent, and the cases it is a mean over: the mean of the
     control's per-case shares the change reads (the change is the candidate's mean less this one), so the candidate's
     level, this plus the change, closes with it on the page. Where no per-case shares were read the change is on the
     trial counts, and so is its baseline, over no cases named."""
-    rate = aspect_pass_rate(bundle, control, row.arm)
+    rate = rates.of(row)
     if rate is not None and rate.samples is not None and rate.samples[0]:
         shares = rate.samples[0]
         return 100 * math.fsum(shares) / len(shares), len(shares)
@@ -1011,7 +1032,7 @@ def _listed(items: Sequence[str]) -> str:
 
 
 def _reconciled_lines(
-    readings: CampaignReadings, reports: Mapping[str, Report], names: AspectNames, forms: PageForms
+    readings: CampaignReadings, reports: Mapping[str, Report], rates: _PassRates, names: AspectNames, forms: PageForms
 ) -> list[str]:
     """Where a contrast in an aspect's fold reads the very per-case values a row reads and reaches another verdict, one
     line naming both and the interval each was read on, so the disagreement is explained where it is seen.
@@ -1028,7 +1049,7 @@ def _reconciled_lines(
     for row in readings.readings:
         _, level = _shown_interval(row)
         bundle = reports[row.aspect].bundle
-        rate = aspect_pass_rate(bundle, control, row.arm)
+        rate = rates.of(row)
         if level is None or rate is None or rate.samples is None:
             continue
         for comparison, _ in _contrasts(bundle, control, row.arm):

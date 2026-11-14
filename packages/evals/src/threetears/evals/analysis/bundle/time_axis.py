@@ -28,16 +28,16 @@ from threetears.evals.kernel.surface import (
     TimePosition,
 )
 from threetears.evals.analysis.bundle.cell_reads import (
-    _cell_measures,
-    _judged_measures,
-    _results_by_cell,
+    cell_measures,
+    judged_measures,
+    group_results_by_cell,
 )
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun
 
 
-def _time_axis(
+def time_axis(
     runs: list[EvalRun],
     results_by_run: dict[str, list[ResultView]],
     observations: list[Observation],
@@ -57,7 +57,7 @@ def _time_axis(
 
     **Each position's cells are the decision surface's own algebra over that position's runs**: the
     observations re-pooled (:func:`~threetears.evals.analysis.cells.pool_observations`), the judged
-    dimensions summarised (:func:`_judged_measures`) and the cells measured (:func:`_cell_measures`) by the
+    dimensions summarised (:func:`judged_measures`) and the cells measured (:func:`cell_measures`) by the
     same functions the whole surface is, so a cell's figure at one build and its figure over the campaign
     differ only in which observations they read. A run that measured nothing has no place in time — it
     cannot say what was measured when — and is left out of every position.
@@ -109,8 +109,8 @@ def _time_axis(
         slice_cells, _, _ = pool_observations([obs for obs in observations if obs.apparatus_ref in member_ids], classes)
         slice_results = [result for run in members for result in results_by_run[run.id]]
         result_ids = {result.id for result in slice_results}
-        by_cell = _results_by_cell(slice_cells, slice_results)
-        judged = _judged_measures(
+        by_cell = group_results_by_cell(slice_cells, slice_results)
+        judged = judged_measures(
             [record for record in records if record.result_id in result_ids], by_cell, design, tiers=tiers
         )
         held = {cell_key[0] for cell_key in by_cell}
@@ -133,7 +133,7 @@ def _time_axis(
                 run_ids=sorted(member_ids),
                 # A position's cells are not broken down by stratum: the breakdown is read over the whole
                 # campaign, and per position it would multiply the bundle by every stratum at every build.
-                cells=_cell_measures(
+                cells=cell_measures(
                     slice_cells,
                     by_cell,
                     judged,
@@ -219,4 +219,6 @@ def _utc_day(run: EvalRun) -> str:
     return created.date().isoformat()
 
 
-__all__: list[str] = []
+__all__ = [
+    "time_axis",
+]

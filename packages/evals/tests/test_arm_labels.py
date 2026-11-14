@@ -27,6 +27,7 @@ that spells it differently.
 from __future__ import annotations
 
 import html
+from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -52,11 +53,13 @@ from threetears.evals.analysis.arms import (
     writer_arms,
 )
 from threetears.evals.analysis.report import ChartBlock, TableBlock
-from threetears.evals.kernel.campaign import VariantIndexEntry
+from threetears.evals.kernel.campaign import EvalCampaign, VariantIndexEntry
 from threetears.evals.kernel.host import HostProfile, KindContract
 from threetears.evals.schema import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
-from threetears.evals.schema.models import EvalRun
+from threetears.evals.kernel.run_pages import ResultKey
+from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.schema.models import EvalResult, EvalRun, EvalRunStamp, EvalTemplate
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_aspect_design, toyhost_campaign_of_one_aspect
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.corpus import (
@@ -404,6 +407,70 @@ def test_a_derived_arm_is_labelled_by_the_page_s_word_and_a_taken_one_gets_a_num
     held = named.model_copy(update={"arms": [named.control.model_copy(update={"label": "1024tok"})]})
     labels = [arm.label for arm in campaign_arms(host.storage, held, profile=host.profile)]
     assert labels[0] == "1024tok" and labels[1:] == ["1024tok (2)"]
+
+
+# parity-with: threetears.evals.analysis.campaigns.CampaignStore
+class FakeCountingCampaignStore:
+    """The engine's store, counting the reads a campaign's arms make of its runs and their results."""
+
+    def __init__(self, inner: EvalStorage) -> None:
+        self._inner = inner
+        #: Each run read, by id, in call order.
+        self.run_reads: list[str] = []
+        #: Each run whose result keys were read, in call order.
+        self.key_reads: list[str] = []
+        #: The ids each read of results by id named, one entry per read.
+        self.result_reads: list[list[str]] = []
+
+    def load_campaign(self, campaign_id: str, scope_id: str, /) -> EvalCampaign | None:
+        return self._inner.load_campaign(campaign_id, scope_id)
+
+    def save_campaign(self, campaign: EvalCampaign, /) -> None:
+        self._inner.save_campaign(campaign)
+
+    def list_campaigns(
+        self,
+        scope_id: str,
+        /,
+        *,
+        subject_id: str | None = None,
+        behavior: str | None = None,
+        archived: bool | None = None,
+    ) -> list[EvalCampaign]:
+        return self._inner.list_campaigns(scope_id, subject_id=subject_id, behavior=behavior, archived=archived)
+
+    def load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None:
+        return self._inner.load_template(template_id, scope_id)
+
+    def load_eval_run_stamps(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalRunStamp]:
+        return self._inner.load_eval_run_stamps(run_ids, scope_id)
+
+    def load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None:
+        self.run_reads.append(run_id)
+        return self._inner.load_eval_run(run_id, scope_id)
+
+    def query_eval_result_keys_by_run(self, run_id: str, scope_id: str, /) -> list[ResultKey]:
+        self.key_reads.append(run_id)
+        return self._inner.query_eval_result_keys_by_run(run_id, scope_id)
+
+    def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
+        self.result_reads.append(list(result_ids))
+        return self._inner.load_eval_results(result_ids, scope_id)
+
+
+def test_a_campaigns_arms_read_each_run_once_and_every_runs_first_result_in_one_read() -> None:
+    """The arms a campaign's runs carry are read with each member run loaded once, its result keys once, and the
+    first result of every run in one read by id: the same arms the store gives read directly (#1053)."""
+    host, campaign = toy_campaign_host()
+    counted = FakeCountingCampaignStore(host.storage)
+
+    arms = campaign_arms(counted, campaign, profile=host.profile)
+
+    members = list(dict.fromkeys(campaign.run_ids))
+    assert len(members) > 1, "the control: the campaign holds more than one run"
+    assert arms == campaign_arms(host.storage, campaign, profile=host.profile)
+    assert counted.run_reads == members and counted.key_reads == members
+    assert len(counted.result_reads) == 1 and len(counted.result_reads[0]) == len(members)
 
 
 # --- an arm's short name, where a chart has no room for its name ---------------------------------------------------

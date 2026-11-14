@@ -1869,13 +1869,11 @@ def campaign_arms_spelled(
     named = list(campaign.arms)
     known = {key for arm in named for key in (arm.variant_key, *resolve_control_arm(arm).variant_keys)}
     derived: dict[str, _AddressedArm] = {}
-    for aspect in campaign.aspects:
-        for run_id in aspect.run_ids:
-            if storage.load_eval_run(run_id, campaign.scope_id) is None:
-                continue
-            addressed = _address_arm(storage, campaign.scope_id, run_id, profile=profile)
-            if addressed.key not in known and addressed.key not in derived:
-                derived[addressed.key] = addressed
+    members = dict.fromkeys(run_id for aspect in campaign.aspects for run_id in aspect.run_ids)
+    loaded = [run for run_id in members if (run := storage.load_eval_run(run_id, campaign.scope_id)) is not None]
+    for addressed in _address_runs(storage, campaign.scope_id, loaded, profile=profile):
+        if addressed.key not in known and addressed.key not in derived:
+            derived[addressed.key] = addressed
     if not derived:
         return named, {}
     entries = [_index_entry(arm) for arm in [*map(_addressed, named), *derived.values()]]
@@ -2010,22 +2008,41 @@ def _address_arm(storage: CampaignStore, scope_id: str, run_id: str, *, profile:
             f"run '{run_id}' does not exist in scope '{scope_id}' — nothing to resolve a variant from",
             remedy=f"name a run of this scope ({FIND_RUN})",
         )
-    identity = resolve_variant_identity(run=run, profile=profile)
-    # The key is the first result's (`variant_key_of_run`), so the run's keys are read and that one result by id: never
-    # the run's results.
-    results = read_results(storage, scope_id, storage.query_eval_result_keys_by_run(run_id, scope_id)[:1])
-    key = variant_key_of_run(results)
-    if key is None:
-        # A run launched a moment ago has no observation yet, and a designation made AT launch
-        # is the common case, not an edge: the operator picks the control while choosing the
-        # arms. Every result such a run writes is stamped by digesting the lever map
-        # `resolve_variant_identity` reads — the runner's own read — so the key its observations
-        # WILL carry is known now, from the same read, not a second derivation.
-        return _AddressedArm(identity.variant_key, identity.levers, identity.identity_version)
-    version = results[0].identity_version
-    reproduces = identity.variant_key == key
-    recorded_under_another = run.variant_levers is not None and version != IDENTITY_VERSION
-    return _AddressedArm(key, identity.levers if reproduces or recorded_under_another else None, version)
+    (addressed,) = _address_runs(storage, scope_id, [run], profile=profile)
+    return addressed
+
+
+def _address_runs(
+    storage: CampaignStore, scope_id: str, runs: Sequence[EvalRun], *, profile: HostProfile
+) -> list[_AddressedArm]:
+    """Each run's arm as :func:`_address_arm` reads it, in the runs' order: each run's identity, then its keys, and
+    every run's first result in one read by id.
+
+    :raises LeverCoordinateError: A run recorded no lever map, and the host's variant map disagrees with its own
+        registry; the first such run in order is named.
+    """
+    identities = [resolve_variant_identity(run=run, profile=profile) for run in runs]
+    # The key is the first result's (`variant_key_of_run`), so each run's keys are read and that one result by id:
+    # never a run's results, and every run's first result in one read.
+    firsts = [storage.query_eval_result_keys_by_run(run.id, scope_id)[:1] for run in runs]
+    by_id = {result.id: result for result in read_results(storage, scope_id, [key for keys in firsts for key in keys])}
+    addressed: list[_AddressedArm] = []
+    for run, identity, keys in zip(runs, identities, firsts, strict=True):
+        results = [by_id[key.id] for key in keys if key.id in by_id]
+        key = variant_key_of_run(results)
+        if key is None:
+            # A run launched a moment ago has no observation yet, and a designation made AT launch
+            # is the common case, not an edge: the operator picks the control while choosing the
+            # arms. Every result such a run writes is stamped by digesting the lever map
+            # `resolve_variant_identity` reads — the runner's own read — so the key its observations
+            # WILL carry is known now, from the same read, not a second derivation.
+            addressed.append(_AddressedArm(identity.variant_key, identity.levers, identity.identity_version))
+            continue
+        version = results[0].identity_version
+        reproduces = identity.variant_key == key
+        recorded_under_another = run.variant_levers is not None and version != IDENTITY_VERSION
+        addressed.append(_AddressedArm(key, identity.levers if reproduces or recorded_under_another else None, version))
+    return addressed
 
 
 if TYPE_CHECKING:

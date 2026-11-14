@@ -40,7 +40,7 @@ from threetears.evals.analysis.bundle.caps import (
     MAX_LABEL_INPUT_CHARS,
     MAX_REASON_CHARS,
     MAX_TRIALS,
-    _capped,
+    capped,
     capped_text,
     tail_text,
 )
@@ -224,7 +224,7 @@ def trials_and_census(
             result.id,
         ),
     )
-    kept, omitted = _capped(ordered, MAX_TRIALS, weight=lambda result: _KEEP_WEIGHT[readings[result.id].state])
+    kept, omitted = capped(ordered, MAX_TRIALS, weight=lambda result: _KEEP_WEIGHT[readings[result.id].state])
     traced = [result.id for result in kept if result.has_trace]
     evidence = load_judge_evidence(traced) if traced else {}
     labels = _case_labels(kept, strata, evidence, names or {})
