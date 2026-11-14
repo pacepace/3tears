@@ -1096,6 +1096,65 @@ def test_a_partial_index_keys_a_predicate_only_read_only_with_its_proof(tmp_path
     assert [f for f in findings if "notes_hot on notes: index-speed-test" in f and "budget_problem" in f], findings
 
 
+_QUEUE = """
+    QUEUE = (
+        "CREATE TABLE IF NOT EXISTS stuck (id UUID PRIMARY KEY, at TIMESTAMPTZ, state TEXT, held TIMESTAMPTZ, tag TEXT)",
+        "-- purpose: src/queue.py::newest; src/queue.py::newest_after; src/queue.py::newest_tagged; src/queue.py::every\\n"
+        "-- plan_test: tests/test_plans.py::test_stuck_newest\\n"
+        "CREATE INDEX IF NOT EXISTS stuck_newest ON stuck (at DESC, id DESC)"
+        " WHERE at IS NOT NULL AND (state <> 'closed' OR held IS NOT NULL)",
+    )
+
+    async def newest(conn, limit):
+        return await conn.fetch(
+            "SELECT id FROM stuck WHERE at IS NOT NULL AND (state <> 'closed' OR held IS NOT NULL)"
+            " ORDER BY at DESC, id DESC LIMIT $1",
+            limit,
+        )
+
+    async def newest_after(conn, at, limit):
+        return await conn.fetch(
+            "SELECT id FROM stuck WHERE at IS NOT NULL AND (state <> 'closed' OR held IS NOT NULL) AND at < $1"
+            " ORDER BY at DESC, id DESC LIMIT $2",
+            at,
+            limit,
+        )
+
+    async def newest_tagged(conn, limit):
+        return await conn.fetch(
+            "SELECT id FROM stuck WHERE at IS NOT NULL AND (state <> 'closed' OR held IS NOT NULL) AND tag LIKE 'x%'"
+            " ORDER BY at DESC, id DESC LIMIT $1",
+            limit,
+        )
+
+    async def every(conn):
+        return await conn.fetch(
+            "SELECT id FROM stuck WHERE at IS NOT NULL AND (state <> 'closed' OR held IS NOT NULL) ORDER BY at DESC, id DESC"
+        )
+"""
+
+_QUEUE_PLANS = """
+    from threetears.core.testing.plans import plan_uses_index
+
+    def test_stuck_newest(plan):
+        assert plan_uses_index(plan, "stuck_newest")
+"""
+
+
+def test_a_page_in_a_partial_index_s_order_stating_only_its_predicate_is_keyed(tmp_path: Path) -> None:
+    """Flips if a page (``LIMIT``) in a purposed partial index's order whose ``WHERE`` is that index's predicate (and
+    the page's cursor on the order's lead) is a finding -- every row the index walk meets is answered, so the walk
+    stops at the limit -- or if a filter the predicate does not hold, or no ``LIMIT``, stops being one (scrape
+    list_walled, 3tears #92)."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_plans.py").write_text(textwrap.dedent(_QUEUE_PLANS), encoding="utf-8")
+    found = _symbols(_config(tmp_path, {"queue.py": _QUEUE}))
+    functions = {function for function, _ in found}
+    assert not functions & {"newest", "newest_after"}, found
+    assert "newest_tagged" in functions, found
+    assert "every" in functions, found
+
+
 _DEDUP = """
     from sqlalchemy import Column, Index, MetaData, String, Table
 

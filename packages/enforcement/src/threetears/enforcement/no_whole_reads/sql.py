@@ -1368,8 +1368,16 @@ def _key_hit(
                 reader.schema.use(reader.template.name, name, reader.names)
             return True
     order = level.order
-    if level.limited and order is not None and index in _owner(level, order[0]) and not filters:
+    if level.limited and order is not None and index in _owner(level, order[0]):
         for key, name in [*((key, "") for key in primary), *((columns, name) for name, columns in purposed)]:
+            # a filter drops rows the walk meets, so a page may read past its limit -- unless it is a purposed partial
+            # index's own predicate, which every row of that index holds (scrape list_walled, 3tears #92)
+            if filters and not (
+                name
+                and fits.get(name) is True
+                and _only_its_predicate(reader, relation, name, level.where, eq, order[1])
+            ):
+                continue
             prefix = 0
             while prefix < len(key) and key[prefix] in eq:
                 prefix += 1
@@ -1382,6 +1390,38 @@ def _key_hit(
                 return True
     # (d) the k nearest rows through an approximate-nearest-neighbour index of the column it orders by a distance from
     return nearest
+
+
+def _only_its_predicate(
+    reader: Reader, relation: _Relation, name: str, where: str | None, eq: set[str], lead: str
+) -> bool:
+    """whether a read's ``WHERE`` says nothing a partial index's predicate does not, beyond its pins and its page's
+    cursor on the order's lead: each of its ANDed predicates is one of the index's, a pinned column's equality, or a
+    comparison of ``lead``. A row the index's walk meets is then a row the read answers.
+
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :param relation: the relation read
+    :ptype relation: _Relation
+    :param name: the partial index, whose predicate the read states (:func:`_partial_fit`)
+    :ptype name: str
+    :param where: the read's ``WHERE``
+    :ptype where: str | None
+    :param eq: the columns it binds by equality
+    :ptype eq: set[str]
+    :param lead: the column it orders by first
+    :ptype lead: str
+    :return: whether it does
+    :rtype: bool
+    """
+    declared = reader.schema.table(relation.name) if bare_table(relation.name) is not None else reader.template
+    index = declared.indexes.get(name) if declared is not None else None
+    if index is None or not index.where or where is None:
+        return False
+    own = {_QUOTED.sub("'_'", term) for term in _predicate_terms(index.where)}
+    pinned = "|".join(re.escape(column) for column in sorted(eq))
+    allowed = re.compile(rf"(?:{re.escape(lead)} (?:<|<=|>|>=) .+)" + (rf"|(?:(?:{pinned}) = .+)" if pinned else ""))
+    return all(term in own or allowed.fullmatch(term) is not None for term in _predicate_terms(where))
 
 
 def _predicate_terms(text: str) -> set[str]:
