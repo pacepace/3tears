@@ -469,8 +469,8 @@ def _read_keyed(call: ast.Call) -> list[str]:
 
 
 def _read_by(call: ast.Call) -> list[str]:
-    """a point read (``read_by``, ``read_row``, ``read_value``): the rows its ``by`` pins, each ``= $n``; one pinning
-    nothing is the whole read it is. A table the code names at run time read by columns it also names at run time
+    """a point read (``read_by``, ``read_row``, ``read_value``): the rows its ``by`` pins, each ``= $n``, and its
+    ``where=`` fragments after them; one pinning nothing is the whole read it is. A table the code names at run time read by columns it also names at run time
     (``by=dict(pk)``, ``by={pk_column: i}``) is a generic reader's, judged as the interpolated SQL it would write
     (``FROM {table} WHERE {pk} = $1``), as :func:`_read_keyed` judges one; by literal columns, the walk cannot match
     them to any table's key."""
@@ -481,8 +481,14 @@ def _read_by(call: ast.Call) -> list[str]:
         table = _named(table_node, "table")
     else:
         table, own = _relation(table_node, "table")
-    pinned, _ = _conditions(pins, alias="t")
-    return [f"SELECT * FROM {table} AS t{_where(pinned)}{_written_order(_argument(call, 'order', None))}", *own]
+    pinned, place = _conditions(pins, alias="t")
+    # its ``where=`` fragments, ANDed after the pins as the helper sends them: a partial index's predicate a fragment
+    # states (``where=[Fragment("kind = 'live'")]``) is stated by the read
+    filtered, _ = _filters(call, place)
+    return [
+        f"SELECT * FROM {table} AS t{_where([*pinned, *filtered])}{_written_order(_argument(call, 'order', None))}",
+        *own,
+    ]
 
 
 def _written_order(node: ast.expr | None) -> str:

@@ -7,6 +7,8 @@ import json
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, no_whole_reads_findings
 from threetears.enforcement.no_whole_reads.index_purposes import main
 
@@ -239,6 +241,101 @@ def test_a_keyed_helper_s_literal_pin_states_a_partial_index_s_predicate(tmp_pat
     assert "of_owner_and_kind" not in line, line
     # a partial index serves no foreign key: the lookup of a deleted owner's items asks every item, live or not
     assert "fk:" not in line, line
+
+
+_CONSTANT_READERS = """
+    from typing import Final
+
+    from threetears.core.keyed import Fragment, Sort, keyset_page, read_by
+
+    LIVE: Final[str] = "live"
+    _LIVE_ONLY: Final[Fragment] = Fragment("kind = 'live'")
+    _LIVE_SPELLED: Final[Fragment] = Fragment(f"kind = '{LIVE}'")
+    _DEAD_ONLY: Final[Fragment] = Fragment("kind = 'dead'")
+    _LIVE_TEXT: Final[str] = "kind = 'live'"
+
+    class ConstantItems:
+        async def live_by_constant(self, conn, owner_id):
+            return await read_by(
+                conn, "items", by={"owner_id": owner_id}, where=[_LIVE_ONLY], order=[Sort("made_at", descending=True)]
+            )
+
+        async def live_by_spelled_constant(self, conn, owner_id):
+            return await read_by(
+                conn, "items", by={"owner_id": owner_id}, where=[_LIVE_SPELLED], order=[Sort("made_at", descending=True)]
+            )
+
+        async def live_by_constant_text(self, conn, owner_id):
+            return await read_by(
+                conn, "items", by={"owner_id": owner_id}, where=(Fragment(_LIVE_TEXT, ()),),
+                order=[Sort("made_at", descending=True)],
+            )
+
+        async def dead_by_constant(self, conn, owner_id):
+            return await read_by(
+                conn, "items", by={"owner_id": owner_id}, where=[_DEAD_ONLY], order=[Sort("made_at", descending=True)]
+            )
+"""
+
+
+@pytest.mark.parametrize(
+    "reader", ["live_by_constant", "live_by_spelled_constant", "live_by_constant_text", "dead_by_constant"]
+)
+def test_a_module_constant_fragment_states_a_partial_index_s_predicate(tmp_path: Path, reader: str) -> None:
+    """Flips if a keyed helper's ``where=`` fragment held in a module constant (``where=[_LIVE_ONLY]``, its text a
+    literal or an f-string of module constants), or a fragment over a string constant (``Fragment(_LIVE_TEXT, ())``),
+    is not read as the predicate it states: the hub's partial indexes
+    (objects_uploads_*, agents_page_by_*) lost every read that pins their predicate this way once a partial index
+    keyed only a read stating it. A constant stating another predicate still does not state it."""
+    _repo(tmp_path)
+    (tmp_path / "src/versions/v002.py").write_text(textwrap.dedent(_LIVE), encoding="utf-8")
+    source = textwrap.dedent(_CONSTANT_READERS)
+    # only the one reader: a ledger line names one purpose
+    kept = source.split("        async def ")[0] + "".join(
+        "        async def " + part for part in source.split("        async def ")[1:] if part.startswith(reader + "(")
+    )
+    (tmp_path / "src/constant_items.py").write_text(kept, encoding="utf-8")
+
+    assert main([str(tmp_path), "support.py", "CONFIG", "--write"]) == 0
+
+    ledger = (tmp_path / "_index_declarations.txt").read_text(encoding="utf-8")
+    lines = [entry for entry in ledger.splitlines() if entry.startswith("items_live_by_owner ")]
+    credited = any(f"src/constant_items.py::ConstantItems.{reader}" in line for line in lines)
+    assert credited is reader.startswith("live_"), lines
+
+
+_STATED_WHOLE = """
+    EITHER = "CREATE INDEX IF NOT EXISTS items_noted_or_kinded ON items (owner_id, made_at) WHERE note IS NOT NULL OR kind IS NOT NULL"
+"""
+
+_STATED_WHOLE_READER = """
+    from typing import Final
+
+    from threetears.core.keyed import Fragment, Sort, read_by
+
+    _EITHER: Final[Fragment] = Fragment("(note IS NOT NULL OR kind IS NOT NULL)")
+
+    class EitherItems:
+        async def noted_or_kinded(self, conn, owner_id):
+            return await read_by(
+                conn, "items", by={"owner_id": owner_id}, where=[_EITHER], order=[Sort("made_at", descending=True)]
+            )
+"""
+
+
+def test_a_read_stating_an_or_predicate_whole_states_it(tmp_path: Path) -> None:
+    """Flips if a read stating a partial index's ``OR`` predicate whole (``(note IS NOT NULL OR kind IS NOT NULL)``,
+    the hub's eval_sets_holding_legacy_keys and objects_uploads_due) is judged only arm by arm, where no single arm
+    is a predicate the read states."""
+    _repo(tmp_path)
+    (tmp_path / "src/versions/v002.py").write_text(textwrap.dedent(_STATED_WHOLE), encoding="utf-8")
+    (tmp_path / "src/either_items.py").write_text(textwrap.dedent(_STATED_WHOLE_READER), encoding="utf-8")
+
+    assert main([str(tmp_path), "support.py", "CONFIG", "--write"]) == 0
+
+    ledger = (tmp_path / "_index_declarations.txt").read_text(encoding="utf-8")
+    lines = [entry for entry in ledger.splitlines() if entry.startswith("items_noted_or_kinded ")]
+    assert any("src/either_items.py::EitherItems.noted_or_kinded" in line for line in lines), lines
 
 
 _NOTED = """
