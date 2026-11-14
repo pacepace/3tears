@@ -232,12 +232,19 @@ def _answer_split_lines(readings: CampaignReadings, names: AspectNames) -> list[
         else:
             answered = "more than one model"
         on = where([names(split.aspect) for split in splits], len(readings.aspects))
-        withheld = (
-            f"no candidate is read against {label} there"
-            if arm == readings.control
-            else f"no change, interval or verdict is given for {label} there"
+        if arm == readings.control:
+            # Every contrast is read against the control, so a control read per model leaves none to read: all of
+            # the campaign where it is split on every aspect.
+            scope = "the whole campaign" if len(splits) == len(readings.aspects) else on
+            lines.append(
+                f"{label} is the control, and its results on {on} were answered by {answered}, so they are read per "
+                f"model: {scope} is not compared, since no candidate is read against {label} there."
+            )
+            continue
+        lines.append(
+            f"{label}'s results on {on} were answered by {answered}, so they are read per model: no change, interval "
+            f"or verdict is given for {label} there."
         )
-        lines.append(f"{label}'s results on {on} were answered by {answered}, so they are read per model: {withheld}.")
     return lines
 
 

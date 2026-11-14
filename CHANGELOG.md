@@ -32,6 +32,7 @@ per model; a host that expects a row per candidate and aspect handles its absenc
 `superseded_template_id`, `carried`, `stranded_case_sets`, all new): it is the template to launch and to write the
 next case into, and a case set left on the superseded revision needs its next version minted over `carried`'s
 copies. `freeze_judge_cases` writes in place unless called with `revise=True`.
+
 ### evals: a run that did not finish never opens with a verdict, on any surface (#1173)
 
 **Changed:** a failed run's print opened on its failure with no verdict; its HTML and Markdown report, and every

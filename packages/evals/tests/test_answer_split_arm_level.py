@@ -137,6 +137,9 @@ def test_the_page_gives_the_split_arm_no_verdict_and_says_it_is_read_per_model()
     ) in first
     for decided in ("better", "worse", "no worse than", "Adopt", "Keep", "floor"):
         assert decided not in first, first
+    page = read.page()
+    assert f"{ASPECT} is not compared: {_ALIAS}'s results there were answered by more than one model" in page
+    assert "holds the runs of one side only" not in page, "both sides ran: the cause is the split"
 
 
 def test_the_report_input_gives_the_split_arm_no_figure_and_says_why() -> None:
@@ -161,7 +164,19 @@ def test_a_control_answered_by_two_models_leaves_no_candidate_read_against_it() 
     assert read.readings.readings == [] and read.readings.floors == []
     (split,) = read.readings.answer_splits
     assert split.arm_label == _CONTROL
-    assert f"no candidate is read against {_CONTROL} there" in read.first_screen()
+    first = read.first_screen()
+    assert (
+        f"{_CONTROL} is the control, and its results on {ASPECT} were answered by 2 models (pinned-1 and pinned-2), so "
+        f"they are read per model: the whole campaign is not compared, since no candidate is read against {_CONTROL} "
+        "there."
+    ) in first
+    assert f"**On {ASPECT}, not compared.**" in first
+    # The scorecard says why the aspect has no row: never that one side did not run.
+    page = read.page()
+    assert f"{ASPECT} is not compared: {_CONTROL}'s results there were answered by more than one model" in page
+    assert "holds the runs of one side only" not in page
+    # No contrast is read for the campaign: the candidate, answered by one model, has no figure against the control.
+    assert read.readings.aggregate is None
 
 
 def test_an_arm_answered_by_one_model_throughout_is_read_as_one_arm_with_nothing_withheld() -> None:
@@ -174,3 +189,50 @@ def test_an_arm_answered_by_one_model_throughout_is_read_as_one_arm_with_nothing
     built = report_input(read.whole)
     assert not [line for line in built.caveats.unreported if "answered by" in line]
     assert "read per model" not in read.page()
+
+
+def test_a_one_arm_campaign_whose_arm_was_answered_by_two_models_reads_no_pooled_rate_and_says_why() -> None:
+    """A measurement reads each arm's own figures, and a split arm has none: never a pass rate over both models."""
+    trials = []
+    for index, served in enumerate((_MARCH, _JUNE)):
+        run = run_of(_ALIAS).model_copy(update={"id": f"run-solo-{index}"})
+        trials.append((run, _results(run, served, CASES if index else 1)))
+    runs = [run for run, _ in trials]
+    arms = [CampaignArm(label=_ALIAS, role="candidate", variant_key=fixture_variant_key(_ALIAS))]
+    campaign = make_aspect_campaign(
+        id="campaign-answer-split-solo",
+        label=ASPECT,
+        run_ids=[run.id for run in runs],
+        design=minimal_aspect_design(merit_axes=[]),
+        question=QUESTION,
+        asked_at=ASKED_AT,
+        arms=arms,
+        scope_id=runs[0].scope_id,
+        name="answer split solo",
+        subject_id=runs[0].subject_snapshot.subject_id,
+        subject_kind="s",
+        created_at=ASKED_AT,
+    )
+    bundle = assemble_context_bundle(
+        campaign, storage=ToyhostStorage(runs, {run.id: held for run, held in trials}), profile=toyhost_profile()
+    )
+    assert len([cell for cell in bundle.cells if cell.rig_class_id is not None]) == 2
+
+    readings = campaign_readings(campaign, {ASPECT: bundle}, arms=arms)
+
+    assert readings.kind == "measurement"
+    assert readings.measures == [], "no pass rate pooled over both models, no interval, no cell's figure as the arm's"
+    (split,) = readings.answer_splits
+    assert (split.arm_label, split.served_models) == (_ALIAS, [_MARCH, _JUNE])
+    built = report_input(build_campaign_bundle(campaign, [bundle], arms=arms, readings=readings))
+    (note,) = [line for line in built.caveats.unreported if _ALIAS in line]
+    assert "answered by more than one candidate model" in note and "no figure is given" in note
+    for name, measure in built.measures.items():
+        assert _ALIAS not in measure.per_arm, f"{name} gives the arm a figure the note says is not given"
+    aspect = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00", arm_labels=readings.arm_labels())
+    first = campaign_report_markdown(build_campaign_report(campaign, readings, {ASPECT: aspect}, arms=arms)).split(
+        "\n## ", 1
+    )[0]
+    assert (
+        f"{_ALIAS}'s results on {ASPECT} were answered by 2 models ({_MARCH} and {_JUNE}), so they are read per model"
+    ) in first

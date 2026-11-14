@@ -725,8 +725,11 @@ class _Builder:
                         p95=tail,
                     )
                     facts.setdefault(summary.name, self.measure_facts(aspect, summary.name))
+            split = answer_split_variants(aspect.cells)
             for measured in self.bundle.readings.measures:
-                if measured.aspect != aspect.aspect:
+                # An arm read per answering model has no figure of its own (`cells`), so none is filled in for it
+                # from readings frozen before they withheld it.
+                if measured.aspect != aspect.aspect or measured.arm in split:
                     continue
                 held = figures.setdefault(measured.measure, {}).setdefault(aspect.aspect, {})
                 if measured.arm_label not in held:

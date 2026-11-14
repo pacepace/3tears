@@ -1669,12 +1669,17 @@ def _measure_readings(
 ) -> list[MeasureReading]:
     """A measurement's measures on every aspect: each arm's pass rate, its count over every rig with the Wilson
     interval on it, the cases the independent draws (:func:`~threetears.evals.analysis.stats.pooled_rate_interval`);
-    then each measure each of its cells (one per rig) summarises with an interval, the summary's own."""
+    then each measure each of its cells (one per rig) summarises with an interval, the summary's own. An arm whose
+    results on an aspect were answered by more than one candidate model has no reading there (``answer_splits`` names
+    it): its pass rate would pool the models its cells keep apart, and a cell's figure is one model's, not the arm's."""
     labels = {arm.variant_key: arm.label for arm in arms}
     found: list[MeasureReading] = []
     for aspect in campaign.aspects:
         bundle = bundles[aspect.label]
+        split = answer_split_variants(bundle.cells)
         for board in bundle.scoreboard:
+            if board.variant_key in split:
+                continue
             label = labels.get(board.variant_key, f"arm {board.variant_key[:12]}")
             found.append(
                 MeasureReading(
