@@ -2706,7 +2706,9 @@ class SharedArrowPool:
         :rtype: JobResult
         :raises LookupError: when nothing is published, or the version named is gone
         :raises SharedArrowFullError: when the store has no room for ``result_bytes`` or the handed tables
-        :raises Exception: what the job raised; ``BrokenProcessPool`` when its worker died (the pool is replaced)
+        :raises Exception: what the job raised; ``BrokenProcessPool`` when its worker died (the pool is replaced).
+            A pool whose worker died before the job was given to it (idle between jobs, or killed by another's job)
+            refuses it: it is replaced then, and the job given to the fresh one
         """
         # leased, reserved and submitted on a thread: a fresh pool spawns its workers there, and a lease waits on a
         # sweep. A caller that stops waiting meanwhile leaves the thread to finish; what it took is let go then
@@ -2720,16 +2722,9 @@ class SharedArrowPool:
             raise
         claimed = False
         try:
-            try:
-                value, error, private, worker = await asyncio.wrap_future(future)
-            except BrokenProcessPool:
-                if not self._stale:
-                    log.warning(
-                        "shared Arrow worker died; its pool is replaced",
-                        extra={"extra_data": {"pool": self._name}},
-                    )
-                self._stale = True
-                raise
+            # a dead worker's BrokenProcessPool is said, and its pool marked for replacing, by the future's own
+            # callback (:meth:`_reap_if_broken`), before this await hears it
+            value, error, private, worker = await asyncio.wrap_future(future)
             self._jobs += 1
             if private > self._private_bytes:
                 log.info(
@@ -2790,37 +2785,66 @@ class SharedArrowPool:
                 run.handed = self._store.hand(tables, max_bytes=tables_bytes)
             if result_bytes is not None:
                 run.slot = self._store.reserve(result_bytes)
+            given = functools.partial(
+                _run_job,
+                str(self._store.root),
+                None if lease is None else lease.version.name,
+                run.slot,
+                job,
+                args,
+                run.handed,
+            )
             with self._lock:
-                if self._pool is not None and self._stale:
-                    self._pool.shutdown(wait=False)
-                    self._pool = None
-                    self._replaced += 1
-                if self._pool is None:
-                    self._pool = ProcessPoolExecutor(
-                        max_workers=self._workers,
-                        mp_context=multiprocessing.get_context("spawn"),
-                        initializer=self._initializer,
-                        initargs=self._initargs,
-                    )
-                    self._stale = False
-                    for _ in range(self._workers):
-                        self._pool.submit(_spawned)
-                pool = self._pool
-                future = pool.submit(
-                    _run_job,
-                    str(self._store.root),
-                    None if lease is None else lease.version.name,
-                    run.slot,
-                    job,
-                    args,
-                    run.handed,
-                )
+                try:
+                    pool = self._current()
+                    future = pool.submit(given)
+                except BrokenProcessPool:
+                    # a worker died with none of our jobs pending on it -- idle between jobs, or killed by another's
+                    # job before its future failed -- and the executor refuses every submission from now on. Nothing
+                    # ran, so the job is given once more, to a fresh pool; a fresh pool's refusal reaches the caller
+                    self._broken(self._pool)
+                    try:
+                        pool = self._current()
+                        future = pool.submit(given)
+                    except BrokenProcessPool:
+                        self._broken(self._pool)
+                        raise
         except BaseException:
             run.release_all()
             raise
         future.add_done_callback(run.worker_done)
         future.add_done_callback(functools.partial(self._reap_if_broken, pool))
         return run, future
+
+    def _current(self) -> ProcessPoolExecutor:
+        """the pool to submit to: the current one, or a fresh one in place of none, a broken one or a stale one.
+        Called under ``_lock``.
+
+        A broken pool is left to its reaper (:meth:`_broken`), whose waiting shutdown one here would race; a pool
+        replaced for its workers' memory finishes what it was given and goes.
+
+        :return: the pool
+        :rtype: ProcessPoolExecutor
+        """
+        if self._pool is not None:
+            with self._reaping_lock:
+                broken = self._pool in self._reaping
+            if broken or self._stale:
+                if not broken:
+                    self._pool.shutdown(wait=False)
+                self._pool = None
+                self._replaced += 1
+        if self._pool is None:
+            self._pool = ProcessPoolExecutor(
+                max_workers=self._workers,
+                mp_context=multiprocessing.get_context("spawn"),
+                initializer=self._initializer,
+                initargs=self._initargs,
+            )
+            self._stale = False
+            for _ in range(self._workers):
+                self._pool.submit(_spawned)
+        return self._pool
 
     def _reap_if_broken(self, pool: ProcessPoolExecutor, future: Future[Any]) -> None:
         """a job's future's callback: when its worker died, sweep once the broken pool's processes are reaped.
@@ -2842,10 +2866,25 @@ class SharedArrowPool:
         """
         if future.cancelled() or not isinstance(future.exception(), BrokenProcessPool):
             return
+        self._broken(pool)
+
+    def _broken(self, pool: ProcessPoolExecutor | None) -> None:
+        """a pool one of whose workers died: said, and reaped and swept on a thread of its own, once; the next
+        submission replaces it (:meth:`_current`). Called by a failed job's future (:meth:`_reap_if_broken`) or by a
+        submission the pool refused (:meth:`_submit`), whichever hears the death first.
+
+        :param pool: the broken pool; None for none (a submission refused before a pool was made)
+        :ptype pool: ProcessPoolExecutor | None
+        :return: nothing
+        :rtype: None
+        """
+        if pool is None:
+            return
         with self._reaping_lock:
             if pool in self._reaping:
                 return
             self._reaping.add(pool)
+        log.warning("shared Arrow worker died; its pool is replaced", extra={"extra_data": {"pool": self._name}})
         threading.Thread(target=self._reap, args=(pool,), name=f"shared-arrow-reap-{self._name}").start()
 
     def _reap(self, pool: ProcessPoolExecutor) -> None:

@@ -15,8 +15,9 @@ import fcntl
 import gc
 import logging
 import os
-import sys
 import shutil
+import signal
+import sys
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -1042,6 +1043,68 @@ class TestAWorkerDeathIsSaid:
         )
 
         assert overlapped == []
+
+
+def _reaped(pid: int) -> bool:
+    """whether process ``pid`` is gone, its exit collected: a dead worker the executor has joined.
+
+    :return: whether it is
+    :rtype: bool
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+class TestADeadWorkersPoolIsReplaced:
+    async def test_a_worker_dead_between_jobs_has_its_pool_replaced_and_what_it_held_swept(
+        self, store: SharedArrowStore, single: SharedArrowPool, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # no job is pending when the worker dies, so no job's future fails: the executor refuses the next submission
+        caplog.set_level(logging.WARNING)
+        store.publish("v1", {TABLE: _table(1)})
+        dead = (await single.run(jobs.process_id)).value
+        store.publish("v2", {TABLE: _table(2)})
+        assert set(store.versions()) == {"v1", "v2"}, "the idle worker still maps v1"
+
+        os.kill(dead, signal.SIGKILL)
+        await _until(lambda: _reaped(dead), "the executor joining its dead worker")
+
+        assert (await single.run(jobs.column_sum, TABLE, "a")).value == 2 * ROWS, "the job ran on a fresh pool"
+        assert single.replaced == 1
+        assert caplog.text.count("worker died") == 1
+        await _until(lambda: store.versions() == ("v2",), "the dead worker's v1 swept")
+
+    async def test_a_broken_pool_is_shut_down_by_its_reaper_alone(
+        self, single: SharedArrowPool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # the reaper's waiting shutdown, and a replacement's shutdown of the same executor without waiting, could
+        # interleave: the second clears the executor's queues and thread out from under the first
+        shutdown = ProcessPoolExecutor.shutdown
+        waited: list[int] = []
+        not_waited: list[int] = []
+
+        def watched(executor: ProcessPoolExecutor, wait: bool = True, *, cancel_futures: bool = False) -> None:
+            (waited if wait else not_waited).append(id(executor))
+            if wait:
+                time.sleep(0.3)  # widen the window a replacement's shutdown would share
+            shutdown(executor, wait=wait, cancel_futures=cancel_futures)
+
+        monkeypatch.setattr(ProcessPoolExecutor, "shutdown", watched)
+        with pytest.raises(BrokenProcessPool):
+            await single.run(jobs.die_mid_write, read=False, result_bytes=1 << 20)
+        assert (await single.run(jobs.make_rows, 10, 1, read=False, result_bytes=1 << 20)).segment is not None, (
+            "a fresh pool"
+        )
+        await single.close()
+        await _until(
+            lambda: not any(t.name == "shared-arrow-reap-single" and t.is_alive() for t in threading.enumerate()),
+            "the reaper finishing",
+        )
+
+        assert [executor for executor in not_waited if executor in waited] == []
 
 
 class TestAWorkersResultBecomesAPart:
