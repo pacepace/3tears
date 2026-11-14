@@ -1088,8 +1088,6 @@ class TestADeadWorkersPoolIsReplaced:
 
         def watched(executor: ProcessPoolExecutor, wait: bool = True, *, cancel_futures: bool = False) -> None:
             (waited if wait else not_waited).append(id(executor))
-            if wait:
-                time.sleep(0.3)  # widen the window a replacement's shutdown would share
             shutdown(executor, wait=wait, cancel_futures=cancel_futures)
 
         monkeypatch.setattr(ProcessPoolExecutor, "shutdown", watched)
@@ -1105,6 +1103,45 @@ class TestADeadWorkersPoolIsReplaced:
         )
 
         assert [executor for executor in not_waited if executor in waited] == []
+
+    async def test_a_pool_stale_for_its_memory_whose_worker_then_died_is_said_reaped_and_swept_once(
+        self, store: SharedArrowStore, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # the stale pool is replaced without a submission, so nothing but its retirement hears the idle death
+        shutdown = ProcessPoolExecutor.shutdown
+        shutdowns: list[tuple[int, bool]] = []
+
+        def watched(executor: ProcessPoolExecutor, wait: bool = True, *, cancel_futures: bool = False) -> None:
+            shutdowns.append((id(executor), wait))
+            shutdown(executor, wait=wait, cancel_futures=cancel_futures)
+
+        monkeypatch.setattr(ProcessPoolExecutor, "shutdown", watched)
+        caplog.set_level(logging.WARNING)
+        bounded = SharedArrowPool(store, workers=1, private_bytes=0, name="bounded")
+        try:
+            store.publish("v1", {TABLE: _table(1)})
+            dead = (await bounded.run(jobs.process_id)).value
+            store.publish("v2", {TABLE: _table(2)})
+            assert set(store.versions()) == {"v1", "v2"}, "the idle worker still maps v1"
+
+            os.kill(dead, signal.SIGKILL)
+            await _until(lambda: _reaped(dead), "the executor joining its dead worker")
+
+            assert (await bounded.run(jobs.column_sum, TABLE, "a")).value == 2 * ROWS, "the job ran on a fresh pool"
+            assert bounded.replaced == 1
+            await _until(lambda: store.versions() == ("v2",), "the dead worker's v1 swept")
+        finally:
+            await bounded.close()
+        await _until(
+            lambda: not any(t.name == "shared-arrow-reap-bounded" and t.is_alive() for t in threading.enumerate()),
+            "the reaper finishing",
+        )
+
+        assert caplog.text.count("worker died") == 1
+        executors = [executor for executor, _ in shutdowns]
+        assert len(set(executors)) == 2, "the dead worker's pool and its replacement"
+        assert len(executors) == 2, "each shut down once"
+        assert all(wait for _, wait in shutdowns), "each waited for"
 
 
 class TestAWorkersResultBecomesAPart:

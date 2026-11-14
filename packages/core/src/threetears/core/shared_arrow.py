@@ -2647,11 +2647,13 @@ class SharedArrowPool:
         self._stale = False
         #: held while a thread picks, makes or shuts a pool: never by the event loop
         self._lock = threading.Lock()
-        #: the broken pools a thread is reaping, each once (:meth:`_reap_if_broken`); a lock of its own, since the
-        #: executor's thread takes it while holding the executor's lock, which :meth:`_submit` takes under ``_lock``
+        #: the retired pools a thread is reaping, each once (:meth:`_retire`), and the pools whose worker's death
+        #: was said, each once (:meth:`_broken`); a lock of their own, since the executor's thread takes it while
+        #: holding the executor's lock, which :meth:`_submit` takes under ``_lock``
         self._reaping: weakref.WeakSet[ProcessPoolExecutor] = weakref.WeakSet()
+        self._dead: weakref.WeakSet[ProcessPoolExecutor] = weakref.WeakSet()
         self._reaping_lock = threading.Lock()
-        #: held across a waiting shutdown, so a broken pool's reaper (:meth:`_reap`) and :meth:`close` never shut
+        #: held across a waiting shutdown, so a retired pool's reaper (:meth:`_reap`) and :meth:`close` never shut
         #: one executor down at once: ``ProcessPoolExecutor.shutdown`` closes its result queue unlocked, and two at
         #: once close the same pipe twice -- ``OSError: [Errno 9] Bad file descriptor`` at best, or another file
         #: that took the number in between. never taken under ``_lock``.
@@ -2820,18 +2822,26 @@ class SharedArrowPool:
         """the pool to submit to: the current one, or a fresh one in place of none, a broken one or a stale one.
         Called under ``_lock``.
 
-        A broken pool is left to its reaper (:meth:`_broken`), whose waiting shutdown one here would race; a pool
-        replaced for its workers' memory finishes what it was given and goes.
+        Every pool replaced is retired by its reaper (:meth:`_retire`), the one shutdown it gets before :meth:`close`:
+        a broken one is already being reaped (:meth:`_broken`); a stale one finishes what it was given and goes, and
+        is first given a probe, which a pool whose worker died between jobs refuses, so that death is said too.
 
         :return: the pool
         :rtype: ProcessPoolExecutor
         """
         if self._pool is not None:
+            pool = self._pool
             with self._reaping_lock:
-                broken = self._pool in self._reaping
+                broken = pool in self._reaping
             if broken or self._stale:
                 if not broken:
-                    self._pool.shutdown(wait=False)
+                    try:
+                        probe = pool.submit(_spawned)
+                    except BrokenProcessPool:
+                        self._broken(pool)
+                    else:
+                        probe.add_done_callback(functools.partial(self._reap_if_broken, pool))
+                    self._retire(pool)
                 self._pool = None
                 self._replaced += 1
         if self._pool is None:
@@ -2847,7 +2857,8 @@ class SharedArrowPool:
         return self._pool
 
     def _reap_if_broken(self, pool: ProcessPoolExecutor, future: Future[Any]) -> None:
-        """a job's future's callback: when its worker died, sweep once the broken pool's processes are reaped.
+        """a job's (or a retiring pool's probe's) future's callback: when its worker died, say so, and sweep once
+        the broken pool's processes are reaped.
 
         The executor hears a worker die when a pipe the worker holds closes, which the kernel does as the process
         exits, in no order against the other files it closes then, the hand-off's lock among them; and it fails the
@@ -2869,9 +2880,9 @@ class SharedArrowPool:
         self._broken(pool)
 
     def _broken(self, pool: ProcessPoolExecutor | None) -> None:
-        """a pool one of whose workers died: said, and reaped and swept on a thread of its own, once; the next
-        submission replaces it (:meth:`_current`). Called by a failed job's future (:meth:`_reap_if_broken`) or by a
-        submission the pool refused (:meth:`_submit`), whichever hears the death first.
+        """a pool one of whose workers died: said once, and retired (:meth:`_retire`); the next submission replaces
+        it (:meth:`_current`). Called by a failed future (:meth:`_reap_if_broken`) or by a submission the pool
+        refused (:meth:`_submit`, :meth:`_current`'s probe), whichever hears the death first.
 
         :param pool: the broken pool; None for none (a submission refused before a pool was made)
         :ptype pool: ProcessPoolExecutor | None
@@ -2881,16 +2892,31 @@ class SharedArrowPool:
         if pool is None:
             return
         with self._reaping_lock:
+            said = pool in self._dead
+            self._dead.add(pool)
+        if not said:
+            log.warning("shared Arrow worker died; its pool is replaced", extra={"extra_data": {"pool": self._name}})
+        self._retire(pool)
+
+    def _retire(self, pool: ProcessPoolExecutor) -> None:
+        """reap a pool that is done with -- broken, or stale -- on a thread of its own, once (:meth:`_reap`).
+
+        :param pool: the pool
+        :ptype pool: ProcessPoolExecutor
+        :return: nothing
+        :rtype: None
+        """
+        with self._reaping_lock:
             if pool in self._reaping:
                 return
             self._reaping.add(pool)
-        log.warning("shared Arrow worker died; its pool is replaced", extra={"extra_data": {"pool": self._name}})
         threading.Thread(target=self._reap, args=(pool,), name=f"shared-arrow-reap-{self._name}").start()
 
     def _reap(self, pool: ProcessPoolExecutor) -> None:
-        """wait until a broken pool's processes are reaped, then sweep what they left (:meth:`_reap_if_broken`).
+        """wait until a retired pool's jobs are done and its processes reaped, then sweep what they left
+        (:meth:`_reap_if_broken`).
 
-        :param pool: the broken pool
+        :param pool: the retired pool
         :ptype pool: ProcessPoolExecutor
         :return: nothing
         :rtype: None
@@ -2899,7 +2925,7 @@ class SharedArrowPool:
             self._shut_down(pool)
             self._store.sweep()
         except Exception as exc:  # noqa: BLE001 -- a thread has no caller to raise to; contained, so it is counted
-            contain(exc, log=log, what="a dead shared Arrow worker's hand-off, version or result could not be swept")
+            contain(exc, log=log, what="a retired shared Arrow pool's hand-offs, versions or results went unswept")
 
     async def close(self) -> None:
         """shut the workers down, waiting for them: what they map and hold goes back to the system.
