@@ -506,11 +506,17 @@ def _visible(call: ast.Call) -> list[str]:
 def _visible_columns(call: ast.Call) -> list[str]:
     """the columns a listing's ``visible=`` binds to the caller's customers (``customers.fragment('t."customer_id"')``,
     a :class:`threetears.agent.acl.VisibleCustomers` fragment): each a set the page is narrowed to, as its statement
-    reads it (``"customer_id" = ANY($n)``)."""
+    reads it (``"customer_id" = ANY($n)``). :func:`threetears.agent.acl.visible_rows` binds its ``customer_column`` so
+    itself."""
+    columns = []
+    if _name(call) == "visible_rows":
+        customer = _argument(call, "customer_column", None)
+        if not (isinstance(customer, ast.Constant) and isinstance(customer.value, str)):
+            raise _Unseen("customer_column")
+        columns.append(customer.value)
     node = _argument(call, "visible", None)
     if not isinstance(node, ast.Tuple | ast.List):
-        return []
-    columns = []
+        return columns
     for element in node.elts:
         if (
             isinstance(element, ast.Call)

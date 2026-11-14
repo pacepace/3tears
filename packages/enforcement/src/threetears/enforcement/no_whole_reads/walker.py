@@ -1797,6 +1797,7 @@ class _ModuleWalk(ast.NodeVisitor):
         parameter_sites: dict[str, list[Site]] | None = None,
         view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None = None,
         tuples: dict[str, list[Passed]] | None = None,
+        sort_orders: dict[str, ast.expr] | None = None,
         relation_producers: frozenset[str] = frozenset(),
         match_builders: Mapping[str, MatchBuilder] | None = None,
         forwarders: RepoForwarders | None = None,
@@ -1846,6 +1847,9 @@ class _ModuleWalk(ast.NodeVisitor):
         :param tuples: the module tuples this module reads (its own and the ones it imports), onto their elements
             (:func:`_module_tuples`)
         :ptype tuples: dict[str, list[Passed]] | None
+        :param sort_orders: the sort orders this module imports from the repo's other modules
+            (:func:`_imported_sort_orders`)
+        :ptype sort_orders: dict[str, ast.expr] | None
         :param view_producers: each function that builds a view under a name it is handed onto the keys its views
             declare
         :ptype view_producers: Mapping[str, tuple[tuple[str, ...], ...]] | None
@@ -2002,6 +2006,9 @@ class _ModuleWalk(ast.NodeVisitor):
             and isinstance(statement.target, ast.Name)
             and statement.value is not None
         }
+        # a sort order another module of the repo declares and this one imports (``from x import OLDEST_FIRST``):
+        # read as this module's own constant of that shape; one the module binds itself wins
+        self._module_values = {**(sort_orders or {}), **self._module_values}
         #: in a module of :data:`_KEYED_HELPER_MODULES`, the parameters and fields that hold a keyed helper's relation
         #: parameter (:func:`_helper_relations`): a statement over one is judged at the helper's call sites
         self._helper_parameters, self._helper_fields = (
@@ -7180,6 +7187,54 @@ def _imported_tuples(
     return {**found, **tuples.get(relative, {})}
 
 
+def _sort_orders(tree: ast.Module) -> dict[str, ast.expr]:
+    """the module's top-level sort orders: each name bound to a tuple or list of ``Sort(...)`` calls.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :return: name onto the sequence
+    :rtype: dict[str, ast.expr]
+    """
+    found: dict[str, ast.expr] = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target, value = statement.targets[0], statement.value
+        elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+            target, value = statement.target, statement.value
+        else:
+            continue
+        if (
+            isinstance(target, ast.Name)
+            and isinstance(value, ast.Tuple | ast.List)
+            and value.elts
+            and all(isinstance(element, ast.Call) and _final(element) == "Sort" for element in value.elts)
+        ):
+            found[target.id] = value
+    return found
+
+
+def _imported_sort_orders(tree: ast.Module, per_module: dict[str, dict[str, ast.expr]]) -> dict[str, ast.expr]:
+    """the sort orders a module imports from the repo's own modules (:func:`_sort_orders`), by the name it imports
+    each as.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param per_module: every module's path onto its sort orders
+    :ptype per_module: dict[str, dict[str, ast.expr]]
+    :return: name onto the sequence
+    :rtype: dict[str, ast.expr]
+    """
+    found: dict[str, ast.expr] = {}
+    for statement in tree.body:
+        if not (isinstance(statement, ast.ImportFrom) and statement.module and not statement.level):
+            continue
+        source = _module_named(statement.module, per_module)
+        for alias in statement.names:
+            if source is not None and alias.name in source:
+                found[alias.asname or alias.name] = source[alias.name]
+    return found
+
+
 def _module_named[T](module: str, per_module: dict[str, dict[str, T]]) -> dict[str, T] | None:
     """what a walked module binds, found by its dotted name (``pkg.tables``), or None when no walked module is it.
 
@@ -7386,6 +7441,7 @@ def scan_whole_reads(
     never_none = _never_none_parameters([(relative, trees[relative]) for relative, _ in modules])
     sentinel_templates = declared_templates([(relative, trees[relative]) for relative, _ in modules], strings)
     key_sources = declared_key_sources(trees.values())
+    sort_orders = {relative: _sort_orders(trees[relative]) for relative, _ in modules}
     walked: list[tuple[str, Path]] = []
     for relative, path in modules:
         excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
@@ -7423,6 +7479,7 @@ def scan_whole_reads(
             parameter_sites=parameter_sites,
             view_producers=view_producers,
             tuples=_imported_tuples(tree, relative, tuples),
+            sort_orders=_imported_sort_orders(tree, sort_orders),
             relation_producers=relation_producers,
             match_builders=match_builders,
             forwarders=forwarders,

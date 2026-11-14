@@ -264,3 +264,31 @@ def test_a_wrong_reason_supplement_is_refused(
     assert any(kind in f for f in findings), findings
     if "-- reason:" not in migration:
         assert any("index-wide-no-reason" in f for f in findings), f"a refused line's reason was applied: {findings}"
+
+
+_SECOND_READER = """
+    class Other:
+        async def refresh_other(self, conn, kind):
+            return await conn.fetch("SELECT id FROM datasources WHERE status = 'active' AND kind = $1", kind)
+"""
+
+_AGAIN = """
+    BY_KIND = (
+        "-- purpose: src/other.py::Other.refresh_other\\n"
+        "-- plan_test: tests/test_plans.py::test_refresh_active_uses_datasources_by_kind\\n"
+        "CREATE INDEX IF NOT EXISTS datasources_by_kind ON datasources (kind)"
+    )
+"""
+
+
+def test_a_second_declaration_of_an_index_adds_its_purposes(tmp_path: Path) -> None:
+    """Flips if a second declaration of the same index (a consumer's own DDL of an index its dependency declares) loses
+    its purposes to the first: each declaration's reads are the index's (hub #55 S1)."""
+    src = tmp_path / "src"
+    for name, source in {"versions/v002.py": _AGAIN, "other.py": _SECOND_READER}.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+    findings = _findings(tmp_path, None, migration=_INLINE)
+    assert not [finding for finding in findings if "refresh_other" in finding], findings
+    assert not _index(findings), findings

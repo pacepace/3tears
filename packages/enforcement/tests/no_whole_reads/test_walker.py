@@ -2460,6 +2460,71 @@ def test_a_read_in_a_shared_constant_and_a_helper_s_constant_order_are_judged_an
     assert not any("index-purpose-unused" in finding for finding in findings), findings
 
 
+_IMPORTED_ORDER = {
+    "listing_order.py": """
+    from typing import Final
+
+    from threetears.core.keyed import Sort
+
+    OLDEST_FIRST: Final = (Sort("date_started", cast="timestamptz"), Sort("operation_id", cast="uuid"))
+""",
+    "listing.py": """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import keyset_page
+    from listing_order import OLDEST_FIRST as OLDEST
+
+    OPERATIONS = TableSchema(
+        name="backup_operations",
+        primary_key="operation_id",
+        columns=[],
+        indexes=(Index("recent", "date_started", purpose="src/listing.py::oldest"),),
+    )
+
+    async def oldest(pool, cols):
+        return await keyset_page(pool, "backup_operations", columns=cols, by={}, order=OLDEST, limit=10)
+""",
+}
+
+
+def test_a_helper_s_order_imported_from_another_module_is_read(tmp_path: Path) -> None:
+    """Flips if a helper's order given as a constant another module of the repo declares (``from x import NAME``,
+    renamed too) is unread: the read unknown and its purposed index unused (hub #55 S2)."""
+    found = _symbols(_config(tmp_path, _IMPORTED_ORDER))
+    assert not any(function == "oldest" for function, _ in found), found
+    findings = no_whole_reads_findings(_config(tmp_path, _IMPORTED_ORDER))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
+
+
+_VISIBLE_LISTING = {
+    "listing_order.py": _IMPORTED_ORDER["listing_order.py"],
+    "concepts.py": """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.agent.acl import visible_rows
+    from listing_order import OLDEST_FIRST
+
+    CONCEPTS = TableSchema(
+        name="concepts",
+        primary_key="operation_id",
+        columns=[],
+        indexes=(Index("by_customer", "customer_id", "date_started", purpose="src/concepts.py::listed"),),
+    )
+
+    async def listed(conn, user_id):
+        return await visible_rows(
+            conn, "concepts", columns=["operation_id"], user_id=user_id, namespace_type="knowledge",
+            customer_column="customer_id", user_column="user_id", order=OLDEST_FIRST,
+        )
+""",
+}
+
+
+def test_a_visible_listing_is_narrowed_to_the_caller_s_customers(tmp_path: Path) -> None:
+    """Flips if visible_rows is judged as a page over every row: it narrows each page to the caller's customers by
+    its ``customer_column`` (``= ANY($n)``), so an index led by that column keys it (hub #55 S2)."""
+    found = _symbols(_config(tmp_path, _VISIBLE_LISTING))
+    assert not any(function == "listed" for function, _ in found), found
+
+
 _ORDERS_BY_FIELD = """
     from threetears.core.collections.schema_backed import Index, TableSchema
     from threetears.core.keyed import Sort, keyset_page

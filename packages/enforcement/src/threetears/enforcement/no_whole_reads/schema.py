@@ -589,7 +589,9 @@ class SchemaCatalog:
         return frozenset(tied)
 
     def add_index(self, index: _DeclaredIndex) -> None:
-        """record an index of a table, merging a second declaration of the same name (the purpose of either wins).
+        """record an index of a table, merging a second declaration of the same name: its purposes are both
+        declarations' reads (a consumer's own DDL of an index its dependency declares adds the consumer's reads); any
+        other note, the first that has one.
 
         :param index: the index
         :ptype index: _DeclaredIndex
@@ -606,7 +608,7 @@ class SchemaCatalog:
         if known is None:
             entry.indexes[index.name] = index
         else:
-            known.purpose = known.purpose or index.purpose
+            known.purpose = "; ".join(dict.fromkeys((*purposes(known.purpose), *purposes(index.purpose))))
             known.plan_test = known.plan_test or index.plan_test
             known.reason = known.reason or index.reason
             known.include = known.include or index.include
