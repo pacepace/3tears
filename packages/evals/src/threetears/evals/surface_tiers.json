@@ -1029,6 +1029,7 @@
 "threetears.evals.analysis.campaign_report": "stable",
 "threetears.evals.analysis.campaign_report_html": "provisional",
 "threetears.evals.analysis.campaign_report_markdown": "provisional",
+"threetears.evals.analysis.campaign_stopped_short": "provisional",
 "threetears.evals.analysis.campaign_verdicts": "provisional",
 "threetears.evals.analysis.CampaignAggregate": "provisional",
 "threetears.evals.analysis.CampaignAspectFold": "provisional",

@@ -2,7 +2,7 @@
 
 A verdict is read first and acted on. One over a run that did not finish is a figure over whichever cells happened to
 be stored when the run stopped, so no surface opens with it: the console print, the aspect's page, the campaign's page,
-the written page, a listing's line and the gate each ask :func:`stopped_short` and, where it answers, open on what
+the written page, a listing's line and the gate (``evals gate``) each ask :func:`stopped_short` and, where it answers, open on what
 stopped the run instead (:meth:`StoppedShort.sentences`), with no verdict.
 
 **The decision is the run's stored status alone.** A run that reached ``completed`` may be opened with a verdict;
@@ -103,6 +103,21 @@ class StoppedShort:
         recorded = said.pop() if len(said) == 1 else "recorded before it stopped"
         counted = "the results" if results is None else f"the {results} result(s)"
         return f"the readings below cover only {counted} {recorded}"
+
+    def pooled(self) -> str:
+        """What the readings after the opening rest on where the reading pools several runs, and the remedy, in one
+        sentence without a closing stop: a campaign's contrasts are computed with an unfinished run's partial results
+        counted beside every finished run's, so the sentence says so and how to read a verdict.
+
+        :return: The sentence.
+        :rtype: str
+        """
+        live = all(ending.status in ("running", "pending") for ending in self.endings)
+        partial = "recorded so far" if live else "recorded before the stop"
+        return (
+            f"The readings below include the partial results {partial}, so resume the run or leave it out of the "
+            "campaign to read a verdict"
+        )
 
 
 def stopped_short(endings: Iterable[RunEnding]) -> StoppedShort | None:

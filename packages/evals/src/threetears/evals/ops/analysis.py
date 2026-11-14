@@ -270,7 +270,8 @@ class CampaignLine(EvalBaseModel):
             "Where it stands in a few words, written by code and never by a model: from the recorded call, `Keep "
             "<arm>` for the control and `Adopt <arm>` for a candidate; else from the one arm its report document "
             "recommends (`EvalAnalysis.recommended_variant_key`), the same way, a draft's marked `Draft: ` as its "
-            "headline is (`Draft: Keep <arm>`); `No call` for a report recommending no arm or more than one; None "
+            "headline is (`Draft: Keep <arm>`); `No call` for a report recommending no arm or more than one, and for "
+            "one written over a run that did not finish; None "
             "with neither a call nor a report. report.headline is the long form."
         ),
     )
@@ -285,8 +286,9 @@ class CampaignLine(EvalBaseModel):
             "improved` (a candidate shown worse, or every one shown within its margin). A choice: `<arm> ahead` "
             "where one arm is shown ahead of another and behind none, else `Arms differ` where any pair separates, else `Cannot "
             "tell apart` where the evidence tells no pair apart. A measurement: `Measured`. `No readings yet` where the readings hold no row of their kind. "
-            "`Did not finish` where a run the report was written over did not finish, whatever its readings: its "
-            "headline says what stopped it. "
+            "`Did not finish` where a run the report was written over did not finish and still has not, whatever "
+            "its readings: its headline says what stopped it. None once that run has finished or left the campaign: "
+            "the report needs regeneration. "
             "Where the arms the answer names (the improving arms, the leader, the measured arm) broke a floor or "
             "missed a bar it adds `, broke a floor`, `, missed a bar` or `, broke a floor and missed a bar` (floor "
             "first; `Measured, <arm> missed a bar` names the arm; several arms count, `2 candidates improved, 1 broke "
@@ -791,6 +793,23 @@ def _lever_names(campaign: EvalCampaign, frozen: CampaignBundle | None, profile:
     )
 
 
+#: Why a report written over a run that did not finish needs regeneration once that run has finished or left the
+#: campaign: what it froze is no longer the campaign's evidence.
+FINISHED_SINCE = (
+    "the report was written over a run that had not finished, which has since finished or left the campaign; "
+    "generate it again (analysis_generate)"
+)
+
+
+def _finished_since(host: EvalHost, campaign: EvalCampaign, frozen: CampaignBundle) -> bool:
+    """Whether every run the report's frozen evidence names as unfinished has since completed, been archived or left
+    the campaign: read off the store, one batch read of those runs, and only for a report written over one."""
+    unfinished = {run_id for aspect in frozen.aspects for run_id in aspect.incomplete_runs}
+    held = unfinished & set(campaign.run_ids)
+    runs = host.storage.load_eval_runs(sorted(held), campaign.scope_id) if held else []
+    return not any(run.status != "completed" and not run.archived for run in runs)
+
+
 #: What a listing line says the evidence shows where a run its report was written over did not finish
 #: (:attr:`CampaignLine.outcome_short`): no reading in a few words, since a verdict over such a run is none.
 DID_NOT_FINISH = "Did not finish"
@@ -929,6 +948,15 @@ def _with_report(
         why = f"{NO_LONGER_READS} ({unread})"
     if why is None and read.bundle is not None and _runs_moved(analysis, campaign, read.bundle):
         why = "the campaign holds other runs than the report was written over; generate it again (analysis_generate)"
+    # Written over a run that did not finish. While that run still stands unfinished the line says so; once every such
+    # run has finished or left the campaign, the report's frozen evidence is no longer the campaign's, and the line
+    # says to generate it again, never that a run now finished did not finish.
+    stopped = reading.lead is not None and reading.lead.stopped
+    finished_since = stopped and read.bundle is not None and _finished_since(host, campaign, read.bundle)
+    if finished_since:
+        if why is None:
+            why = FINISHED_SINCE
+        headline = f"Needs regeneration: {FINISHED_SINCE}"
     caveats = list(reading.lead.caveats) if reading.lead is not None else []
     attempt = next(
         (
@@ -955,13 +983,18 @@ def _with_report(
             "report": report,
             "outcome_short": (
                 # No reading of the evidence in a few words where a run did not finish: the headline says what stopped it.
-                DID_NOT_FINISH
-                if reading.lead is not None and reading.lead.stopped
+                None
+                if finished_since
+                else DID_NOT_FINISH
+                if stopped
                 else _outcome(read.bundle.readings, _reader_arms(read.bundle))
                 if read.bundle is not None
                 else None
             ),
-            "verdict_short": line.verdict_short or _drafted(_recommended(analysis, campaign, read.bundle), report),
+            # A person's recorded call stands. A report written over a run that did not finish recommends no arm a
+            # row may lead with: its recommendation was drawn from the results recorded before the run stopped.
+            "verdict_short": line.verdict_short
+            or _drafted("No call" if stopped else _recommended(analysis, campaign, read.bundle), report),
         }
     )
 

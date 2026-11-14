@@ -9,8 +9,15 @@ surface to it, for every way a run ends short:
 - the quick print (``Result.render``), one arm and several;
 - the aspect's page, in Markdown and HTML;
 - the campaign's page, in Markdown and HTML, under code's lead and under a caller's own;
-- what a stored analysis is listed by;
-- the report input a written page is built from, and the written page in Markdown, HTML and text.
+- what a stored analysis is listed by, and a campaign's listing line: its headline, its short outcome and its
+  short verdict, and that the line says to regenerate once the run has finished;
+- the report input a written page is built from, and the written page in Markdown, HTML and text;
+- ``evals gate``, which reads no verdict over such a campaign and exits 1;
+- a campaign of several aspects, where only the aspect holding the run loses its verdict;
+- a failed setup beside an unfinished run, which keeps the setup's own line and still states no verdict.
+
+Where a run is ended in the store (the gate, the assembled bundle, the listing), the reason on the page is the one
+the stored run records, read by the engine and never set on the page's evidence by hand.
 
 The evidence of a run that finished reads as it did: its pages, its input and its line carry nothing of this.
 """
@@ -25,7 +32,17 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.campaign_page_support import first_screen_markdown, header_html, kairo_page, opening
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
+from packages.evals.tests.campaign_page_support import (
+    aspect_fixture,
+    first_screen_markdown,
+    header_html,
+    kairo_page,
+    opening,
+    page_of,
+)
+from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, generate, ops_fixture, settled
 from packages.evals.tests.factories import analysed_aspect, make_analysis
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.report_doc_support import converted_doc, snapshot_of
@@ -33,8 +50,12 @@ from threetears.evals import Eval
 from threetears.evals.analysis import (
     AnalysisContextBundle,
     CampaignBundle,
+    assemble_campaign_bundle,
     build_campaign_report,
     build_code_only_report,
+    campaign_report,
+    campaign_report_markdown,
+    campaign_stopped_short,
     report_html,
     report_markdown,
 )
@@ -50,6 +71,11 @@ from threetears.evals.analysis.report.verdict import bundle_stopped_short, verdi
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.run_ending import RunEnding, stopped_short
 from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.ops import campaigns_list
+from threetears.evals.providers.failures import error_from_response
+from threetears.evals.quick import EXIT_OK, run_cli
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.schema.models import RUN_STATUSES
 
@@ -241,7 +267,12 @@ def test_the_aspect_s_page_opens_on_what_stopped_the_run_in_markdown_and_html(st
     labels = bundle.readings.arm_labels()
     line = verdict_line(aspect, lambda key: labels.get(key, key))
     assert line.rule == "unfinished" and line.decisions == () and line.lead == opens
-    assert line.text.startswith(opens) and "The readings below cover only the results recorded" in line.text
+    # What follows the opening says what is true of a campaign's readings, and the remedy, in one sentence.
+    recorded = "recorded so far" if status in ("running", "pending") else "recorded before the stop"
+    assert line.text == (
+        f"{opens} The readings below include the partial results {recorded}, so resume the run or leave it out of the "
+        "campaign to read a verdict."
+    )
 
     page = build_code_only_report(aspect, assembled_at=ASSEMBLED_AT, arm_labels=labels)
     (verdict,) = [
@@ -356,3 +387,215 @@ def test_the_written_page_says_what_stopped_the_run_before_its_headline_in_every
     callout = page_html.index('data-part="stopped"')
     assert html.escape(line) in page_html[callout : callout + len(html.escape(line)) + 40]
     assert callout < page_html.index('class="bluf"')
+
+
+# ---------------------------------------------------------------------------
+# A run ended in the store: the gate, the assembled evidence, the campaign's report
+# ---------------------------------------------------------------------------
+
+GATED = [{"n": index} for index in range(48)]
+
+
+def _correct(case: Mapping[str, Any], answer: str) -> bool:
+    return answer == "right"
+
+
+def _wrong_below(count: int) -> Any:
+    async def candidate(case: Mapping[str, Any]) -> str:
+        return "wrong" if case["n"] < count else "right"
+
+    return candidate
+
+
+async def _better(scope: str) -> Any:
+    """A comparison whose candidate is shown better: a campaign the gate passes while every run is finished."""
+    arms = {"current": _wrong_below(30), "better": _wrong_below(0)}
+    return await Eval(GATED, arms, [_correct], k=1, name="current vs better").run(store=":memory:", scope=scope)
+
+
+#: What a stored run records of each ending, beside its status: the field its reason is read from.
+STORED: dict[str, dict[str, Any]] = {
+    "failed": {"error_details": [REASON]},
+    "cancelled": {"cancellation_reason": REASON},
+    "budget_stopped": {"budget_stop_reason": REASON},
+    "running": {},
+}
+
+
+def _end_stored(host: EvalHost, run_id: str, scope: str, status: str) -> None:
+    """End the stored run ``status``, as its record would read; ``completed`` puts it back as a finished run."""
+    run = host.storage.load_eval_run(run_id, scope)
+    assert run is not None
+    cleared = {"error_details": [], "cancellation_reason": None, "budget_stop_reason": None}
+    host.storage.save_eval_run(run.model_copy(update={**cleared, "status": status, **STORED.get(status, {})}))
+
+
+def _gate(comparison: Any) -> int:
+    return run_cli(
+        ["gate", comparison.campaign_id, "--scope", comparison.scope_id], host_factory=lambda: comparison.host
+    )
+
+
+@pytest.mark.parametrize("status", sorted(STORED))
+async def test_the_gate_reads_no_verdict_over_an_unfinished_run_and_exits_1(
+    status: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    comparison = await _better(f"gate-{status}")
+    run_id = comparison.arms["better"].run_id
+    assert off_loop(_gate, comparison) == EXIT_OK
+    assert capsys.readouterr().out.startswith("gate passed: ")
+
+    off_loop(_end_stored, comparison.host, run_id, comparison.scope_id, status)
+    assert off_loop(_gate, comparison) == 1
+    printed = capsys.readouterr().out
+    reason = f": {REASON_SAID}" if STORED[status] else "."
+    assert printed.startswith(f"better's run {ENDINGS[status]}, so there is no verdict{reason}"), printed
+    assert "gate passed" not in printed and "gate FAILED" not in printed
+
+    # Finished again, the campaign is gated as it was.
+    off_loop(_end_stored, comparison.host, run_id, comparison.scope_id, "completed")
+    assert off_loop(_gate, comparison) == EXIT_OK
+
+
+@pytest.mark.parametrize("status", sorted(STORED))
+async def test_the_assembled_evidence_carries_why_the_stored_run_ended_and_its_report_opens_on_it(status: str) -> None:
+    comparison = await _better(f"assembled-{status}")
+    host, scope, campaign_id = comparison.host, comparison.scope_id, comparison.campaign_id
+    run_id = comparison.arms["better"].run_id
+
+    def read() -> tuple[CampaignBundle, list[str], str]:
+        return (
+            assemble_campaign_bundle(host, campaign_id, scope),
+            campaign_stopped_short(host, campaign_id, scope),
+            campaign_report_markdown(campaign_report(host, campaign_id, scope)),
+        )
+
+    whole, stopped, page = off_loop(read)
+    assert stopped == [] and "no verdict" not in page
+    for summary in whole.aspects[0].run_summaries:
+        assert summary.ended_because is None and "ended_because" not in summary.model_dump(mode="json")
+
+    off_loop(_end_stored, host, run_id, scope, status)
+    ended, stopped, page = off_loop(read)
+    (aspect,) = ended.aspects
+    assert aspect.incomplete_runs == {run_id: status}
+    reasons = {summary.run_id: summary.ended_because for summary in aspect.run_summaries}
+    assert reasons.pop(run_id) == (REASON if STORED[status] else None)
+    assert set(reasons.values()) == {None}, "a finished run carries no reason"
+    opens = f"better's run {ENDINGS[status]}, so there is no verdict" + (f": {REASON_SAID}" if STORED[status] else ".")
+    (said,) = stopped
+    assert said.startswith(opens)
+    assert f"**{opens}" in page.split("\n## ", 1)[0], page[:600]
+
+
+# ---------------------------------------------------------------------------
+# A failed setup beside an unfinished run
+# ---------------------------------------------------------------------------
+
+_OVERLOADED = '{"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}'
+
+
+async def test_a_run_that_failed_measuring_nothing_keeps_the_setup_s_line_on_every_page_and_states_no_verdict() -> None:
+    error = error_from_response("anthropic", 529, _OVERLOADED)
+
+    async def declined(case: Mapping[str, Any]) -> int:
+        raise error
+
+    result = await Eval(CASES, declined, [_even], k=1, name="declined").run(store=":memory:", scope="setup-failed")
+    assert result.summary.status == "failed" and bundle_stopped_short(result.report.bundle) is not None
+    setup = "The test setup failed or the provider declined every call, so every trial was lost."
+    # The print opens on the run's failure; the aspect's page and the campaign's keep the setup's line, which names
+    # what lost the trials and the remedy. Neither states a verdict, and the campaign's page adds no lead of its own.
+    assert result.render().splitlines()[0].startswith("declined: the run failed, so there is no verdict: ")
+    assert verdict_line(result.report.bundle, lambda key: "declined").rule == "setup"
+    said = [text for source, text in opening(result.page) if source == "verdict"]
+    assert len(said) == 1 and said[0].startswith(setup), said
+    assert "passed" not in said[0]
+
+
+# ---------------------------------------------------------------------------
+# Several aspects: only the aspect holding the run loses its verdict
+# ---------------------------------------------------------------------------
+
+
+def _stop_billing(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+    return _stopped_aspect(bundle, "cancelled")[0] if bundle.aspect == "billing" else bundle
+
+
+async def test_a_campaign_of_two_aspects_opens_on_the_stopped_one_and_keeps_the_other_s_lead() -> None:
+    whole = [text for source, text in opening(await page_of("billing", "tone")) if source == "verdict"]
+    assert len(whole) == 1 and "on billing" in whole[0] and "on tone" in whole[0]
+
+    stopped, lead = [
+        text for source, text in opening(await page_of("billing", "tone", bundle=_stop_billing)) if source == "verdict"
+    ]
+    assert stopped.startswith("On billing: ") and f" was cancelled{NO_VERDICT}{REASON_SAID}" in stopped
+    assert "on tone" in lead and "on billing" not in lead, "the aspect that finished keeps its lead; the other has none"
+
+
+async def test_two_aspects_are_listed_and_read_into_the_report_input_by_the_stopped_one_first() -> None:
+    billing = (await aspect_fixture("billing")).bundle
+    # Each fixture aspect was measured as a campaign of its own; here they are one campaign's.
+    tone = (await aspect_fixture("tone")).bundle.model_copy(update={"campaign_id": billing.campaign_id})
+    bundle = campaign_bundle(_stop_billing(billing), tone)
+    stored = make_analysis(
+        campaign_id=bundle.campaign_id,
+        scope_id=bundle.scope_id,
+        aspects=[analysed_aspect(aspect) for aspect in bundle.aspects],
+        campaign_bundle=bundle.frame(),
+        observation_refs=bundle.run_ids,
+    )
+    lead = analysis_lead(stored, bundle=bundle)
+    assert lead.stopped
+    assert lead.verdict.startswith("billing: ") and f" was cancelled{NO_VERDICT}{REASON_SAID}" in lead.verdict
+    # The aspect that finished is still listed by what code read on it, after the stopped one; billing by no reading.
+    after = lead.verdict.split("to read a verdict.", 1)[1]
+    assert after.strip().startswith("tone: ") and "billing: " not in after
+
+    (said,) = report_input(bundle).caveats.unfinished
+    assert said.startswith("On billing: ") and f" was cancelled{NO_VERDICT}{REASON_SAID}" in said
+    assert report_input(campaign_bundle(billing, tone)).caveats.unfinished == []
+
+
+# ---------------------------------------------------------------------------
+# A campaign's listing line
+# ---------------------------------------------------------------------------
+
+
+async def test_a_report_written_over_an_unfinished_run_is_listed_by_what_stopped_it_until_the_run_finishes() -> None:
+    fixture = off_loop(ops_fixture)
+    host = fixture.host.eval_host
+    run_id = fixture.campaign.run_ids[-1]
+    off_loop(_end_stored, host, run_id, TOYHOST_SCOPE, "cancelled")
+    (job,) = (await generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    status = await settled(fixture.host, job.job_id)
+    await run_blocking(
+        host.blocking_executor, _listed_then_finished, host, fixture.campaign.id, status.analysis_id, run_id
+    )
+
+
+def _listed_then_finished(host: EvalHost, campaign_id: str, analysis_id: str | None, run_id: str) -> None:
+    analysis = host.storage.load_reported_analysis(campaign_id, TOYHOST_SCOPE)
+    assert analysis is not None and analysis.id == analysis_id
+    # The report recommends an arm, so a short verdict read off it would say to adopt or keep one.
+    arm = analysis.aspects[0].bundle["scoreboard"][0]["variant_key"]
+    host.storage.save_analysis(analysis.model_copy(update={"recommended_variant_key": arm}))
+
+    def line() -> Any:
+        (found,) = [each for each in campaigns_list(host, TOYHOST_SCOPE).campaigns if each.id == campaign_id]
+        return found
+
+    listed = line()
+    assert listed.report is not None and listed.report_state == "written"
+    assert f" was cancelled{NO_VERDICT}{REASON_SAID}" in listed.report.headline
+    assert listed.outcome_short == "Did not finish"
+    assert listed.verdict_short is not None and listed.verdict_short.removeprefix("Draft: ") == "No call"
+
+    # The run is taken up again and completes: the line no longer says it did not finish, and says to regenerate.
+    _end_stored(host, run_id, TOYHOST_SCOPE, "completed")
+    finished = line()
+    assert finished.report is not None and finished.report_state == "needs_regeneration"
+    assert finished.outcome_short is None
+    assert finished.report.why_regenerate is not None and "has since finished" in finished.report.why_regenerate
+    assert finished.report.headline.startswith("Needs regeneration: ")
+    assert "was cancelled" not in finished.report.headline

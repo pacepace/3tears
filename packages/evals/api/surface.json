@@ -5141,6 +5141,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.campaign_stopped_short": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.campaign_verdicts": {
       "kind": "function",
       "signature": "",

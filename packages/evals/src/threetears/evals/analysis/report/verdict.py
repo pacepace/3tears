@@ -286,8 +286,8 @@ def _unfinished_sentences(bundle: AnalysisContextBundle, arm: Callable[[str], st
 
 def unfinished_line(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> VerdictLine | None:
     """The line a page opens with in place of a verdict where a run of ``bundle`` did not finish, or None when every
-    run completed: what stopped each run (:func:`_unfinished_sentences`), then that the readings below cover only the
-    results recorded before it stopped. Nothing in it is a decision, so nothing is set in bold.
+    run completed: what stopped each run (:func:`_unfinished_sentences`), then that the readings below still count
+    its partial results, and the remedy (:meth:`~threetears.evals.analysis.run_ending.StoppedShort.pooled`). Nothing in it is a decision, so nothing is set in bold.
 
     :param bundle: The campaign's evidence.
     :ptype bundle: AnalysisContextBundle
@@ -300,8 +300,7 @@ def unfinished_line(bundle: AnalysisContextBundle, arm: Callable[[str], str]) ->
     if short is None:
         return None
     stopped = " ".join(_unfinished_sentences(bundle, arm))
-    covers = short.covers()
-    return VerdictLine(rule="unfinished", text=f"{stopped} {covers[:1].upper()}{covers[1:]}.", lead=stopped)
+    return VerdictLine(rule="unfinished", text=f"{stopped} {short.pooled()}.", lead=stopped)
 
 
 def measured_nothing(exclusions: Iterable[ArmExclusions], run_statuses: Iterable[str]) -> bool:
