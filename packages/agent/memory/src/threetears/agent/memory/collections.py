@@ -84,6 +84,7 @@ from threetears.core.keyed import (
     AnyOf,
     Count,
     Fragment,
+    Nearest,
     Selected,
     Sort,
     aggregate_keyed,
@@ -91,6 +92,7 @@ from threetears.core.keyed import (
     holds_any,
     keyset_page,
     read_by,
+    read_nearest,
     read_row,
     update_keyed,
 )
@@ -1515,22 +1517,23 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # surfacing). A source orphaned by a dead gist self-heals back into
         # the candidate set. The gist itself (superseded_by NULL) stays a
         # candidate, so a correction can still land on the live gist.
-        args: list[Any] = [embedding_str, agent_id, user_id, top_k]
-        allowed = filter_clause(self.read_filter, "memories.tags", args)
-        rows = await self.l3_pool.fetch(
-            f"""
-            SELECT memory_id, content, type_memory,
-                   1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
-            FROM memories
-            WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL
-              AND (superseded_by IS NULL OR NOT EXISTS (
-                    SELECT 1 FROM memories g
-                    WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
-              AND {_NOT_RETRACTED}{allowed}
-            ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
-            LIMIT $4
-            """,
-            *args,
+        rows = await read_nearest(
+            self.l3_pool,
+            "memories",
+            by={"agent_id": agent_id, "user_id": user_id},
+            where=[
+                Fragment("embedding IS NOT NULL", ()),
+                Fragment(
+                    "(superseded_by IS NULL OR NOT EXISTS ( SELECT 1 FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by))",
+                    (),
+                ),
+                Fragment("NOT (COALESCE(tags, '[]'::jsonb) ? 'retracted')", ()),
+                *clause_guards(filter_clause, self.read_filter, "t.tags"),
+            ],
+            nearest=Nearest("embedding", embedding_str, similarity="similarity"),
+            limit=top_k,
+            columns=("memory_id", "content", "type_memory"),
+            records=True,
         )
         return [
             {
@@ -1581,23 +1584,23 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         if self.l3_pool is None or not message_ids:
             return []
         # cache-bypass: vector-distance search, as find_similar_for_dedup.
-        args: list[Any] = [json.dumps(embedding), agent_id, user_id, message_ids, top_k]
-        allowed = filter_clause(self.read_filter, "memories.tags", args)
-        rows = await self.l3_pool.fetch(
-            f"""
-            SELECT memory_id, content, type_memory, evergreen, date_created, tags,
-                   1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
-            FROM memories
-            WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL
-              AND message_id_source = ANY($4::uuid[])
-              AND (superseded_by IS NULL OR NOT EXISTS (
-                    SELECT 1 FROM memories g
-                    WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
-              AND {_NOT_RETRACTED}{allowed}
-            ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
-            LIMIT $5
-            """,
-            *args,
+        rows = await read_nearest(
+            self.l3_pool,
+            "memories",
+            by={"agent_id": agent_id, "user_id": user_id, "message_id_source": AnyOf(message_ids, cast="uuid")},
+            where=[
+                Fragment("embedding IS NOT NULL", ()),
+                Fragment(
+                    "(superseded_by IS NULL OR NOT EXISTS ( SELECT 1 FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by))",
+                    (),
+                ),
+                Fragment("NOT (COALESCE(tags, '[]'::jsonb) ? 'retracted')", ()),
+                *clause_guards(filter_clause, self.read_filter, "t.tags"),
+            ],
+            nearest=Nearest("embedding", json.dumps(embedding), similarity="similarity"),
+            limit=top_k,
+            columns=("memory_id", "content", "type_memory", "evergreen", "date_created", "tags"),
+            records=True,
         )
         return [
             {
