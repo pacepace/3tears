@@ -10,8 +10,11 @@ it reads (hashed by content, never by modification time, which several filesyste
 apart across quick rewrites), the directories it may list, the programs it may start and any other
 fact its answer depends on (a git tree id). The key builders for the gates are the public
 functions below, so they are tested as the gates use them. The store's name carries a key of the
-code that computes: the source of every loaded ``threetears`` module, this directory's gate shells
-and helpers, the lockfile and the interpreter's version.
+code that computes: the source of every ``threetears`` module in the static import closure of the
+modules the scans call into, read from wherever they are installed (an editable install pointing at
+another checkout included), plus this directory's gate shells and helpers, the lockfile and the
+interpreter's version. The closure is computed from the source, not from what the session happens
+to have imported, so every process computes the same key whatever else it ran.
 
 **What is never stored.** A computed value is stored only when, while it ran, the computation
 opened no file, listed no directory and started no program outside its declared inputs, as the
@@ -47,6 +50,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib.util
 import os
 import pickle
 import subprocess
@@ -57,13 +61,29 @@ import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 from threetears.enforcement.common import clear_parse_cache, find_local_src_roots
 from threetears.enforcement.release import surface_at, surface_now
 from threetears.enforcement.underscore_access import PrivateBindingScan, scan_private_bindings
 from threetears.observe import BuildOnce
+
+#: the modules whose functions the scans here call; their import closure is the code a value comes from
+SCANNER_MODULES = tuple(
+    sorted(
+        {
+            function.__module__
+            for function in (
+                clear_parse_cache,
+                find_local_src_roots,
+                surface_at,
+                surface_now,
+                scan_private_bindings,
+                BuildOnce,
+            )
+        }
+    )
+)
 
 #: where :meth:`ScanCache.for_repo` keeps its stores, under the repo root (gitignored)
 CACHE_DIRECTORY = Path(".cache") / "enforcement-scans"
@@ -151,11 +171,85 @@ def files_key(paths: Iterable[Path], root: Path) -> str:
     return content_key(*parts)
 
 
-def code_key(modules: Iterable[ModuleType], files: Iterable[Path], root: Path) -> str:
+def installed_module_file(name: str) -> Path | None:
+    """the source file of ``threetears`` module *name* as installed, found without importing it.
+
+    The leaf package (``threetears.core``, ``threetears.agent.memory``) is located through the import
+    system, so an editable install pointing at another checkout answers with that checkout's file;
+    the rest of the dotted name is a path below it.
+
+    :param name: a dotted module name under ``threetears``
+    :ptype name: str
+    :return: its ``.py`` file (a package's ``__init__.py``), or ``None`` when no such module is installed
+    :rtype: Path | None
+    """
+    parts = name.split(".")
+    depth = 3 if len(parts) > 2 and parts[1] == "agent" else 2
+    if parts[0] != "threetears" or len(parts) < depth:
+        return None
+    try:
+        spec = importlib.util.find_spec(".".join(parts[:depth]))
+    except ModuleNotFoundError:
+        return None
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    rest = parts[depth:]
+    for location in spec.submodule_search_locations:
+        base = Path(location).joinpath(*rest)
+        for candidate in (base / "__init__.py", base.with_suffix(".py") if rest else None):
+            if candidate is not None and candidate.is_file():
+                return candidate
+    return None
+
+
+def module_closure(entries: Iterable[str], locate: Callable[[str], Path | None]) -> dict[str, Path]:
+    """every ``threetears`` module the *entries* import at any depth, with each one's source file.
+
+    Read statically from each module's imports, so the answer is the same whatever the process has
+    imported: every ``import`` and ``from ... import`` of a ``threetears`` module (relative ones
+    resolved), each imported name tried as a submodule too, and every package above a module, whose
+    ``__init__`` runs on import. A name *locate* cannot find is not installed, so runs nowhere.
+
+    :param entries: dotted module names to start from
+    :ptype entries: Iterable[str]
+    :param locate: a module's source file, or ``None`` (:func:`installed_module_file`)
+    :ptype locate: Callable[[str], Path | None]
+    :return: module name -> its source file
+    :rtype: dict[str, Path]
+    :raises OSError: when a source file cannot be read
+    :raises SyntaxError: when a source file is not valid python
+    """
+    found: dict[str, Path] = {}
+    pending = list(entries)
+    while pending:
+        name = pending.pop()
+        if name in found:
+            continue
+        path = locate(name)
+        if path is None:
+            continue
+        found[name] = path
+        pending.extend(".".join(name.split(".")[:depth]) for depth in range(2, name.count(".") + 1))
+        package = name if path.name == "__init__.py" else name.rpartition(".")[0]
+        for node in ast.walk(ast.parse(path.read_bytes(), filename=str(path))):
+            if isinstance(node, ast.Import):
+                pending.extend(alias.name for alias in node.names if alias.name.startswith("threetears."))
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    anchor = package.split(".")[: len(package.split(".")) - node.level + 1]
+                    base = ".".join([*anchor, *([node.module] if node.module else [])])
+                if base.startswith("threetears."):
+                    pending.append(base)
+                    pending.extend(f"{base}.{alias.name}" for alias in node.names)
+    return found
+
+
+def code_key(modules: dict[str, Path], files: Iterable[Path], root: Path) -> str:
     """one key for the code that computes: each module's name and source, and each file's content.
 
-    :param modules: modules whose source is hashed; one without a source file adds its name only
-    :ptype modules: Iterable[ModuleType]
+    :param modules: module name -> source file (:func:`module_closure`)
+    :ptype modules: dict[str, Path]
     :param files: further files, named relative to *root*
     :ptype files: Iterable[Path]
     :param root: what each file is named relative to
@@ -165,10 +259,9 @@ def code_key(modules: Iterable[ModuleType], files: Iterable[Path], root: Path) -
     :raises OSError: when a source file cannot be read
     """
     parts: list[str | bytes] = [sys.version]
-    for module in sorted(modules, key=lambda module: module.__name__):
-        source = getattr(module, "__file__", None)
-        parts.append(module.__name__)
-        parts.append(Path(source).read_bytes() if source else b"")
+    for name in sorted(modules):
+        parts.append(name)
+        parts.append(modules[name].read_bytes())
     parts.append(files_key(files, root))
     return content_key(*parts)
 
@@ -289,10 +382,10 @@ class ScanCache:
 
     @classmethod
     def for_repo(cls, repo_root: Path) -> ScanCache:
-        """the cache a gate in this directory uses: under the repo root, keyed by the code loaded now.
+        """the cache a gate in this directory uses: under the repo root, keyed by the code its scans run.
 
-        Build it after the gates are imported (a session fixture is): the code key hashes every
-        ``threetears`` module loaded at that moment, from wherever it was loaded.
+        The code key hashes the import closure of the modules the scans below call into
+        (:data:`SCANNER_MODULES`), as installed, so it is the same in every process.
 
         :param repo_root: the repo's root
         :ptype repo_root: Path
@@ -300,13 +393,9 @@ class ScanCache:
         :rtype: ScanCache
         :raises OSError: when a file of the code cannot be read
         """
-        loaded = [
-            module
-            for name, module in list(sys.modules.items())
-            if name == "threetears" or name.startswith("threetears.")
-        ]
         gates = sorted((repo_root / "tests" / "enforcement").glob("*.py"))
-        code = code_key(loaded, [*gates, repo_root / "uv.lock"], repo_root)
+        modules = module_closure(SCANNER_MODULES, installed_module_file)
+        code = code_key(modules, [*gates, repo_root / "uv.lock"], repo_root)
         return cls(directory=repo_root / CACHE_DIRECTORY, code=code)
 
     def memoised[K, V](
