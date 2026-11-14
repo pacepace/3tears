@@ -586,6 +586,41 @@ async def test_a_trial_whose_completion_carries_no_temperature_fails_the_run_and
     assert spent > 0 and room.spent == {"candidate": pytest.approx(spent)}
 
 
+class _ResentUntempered(_Untempered):
+    """The judge's replies stripped of ``temperature``, each counting one send that broke before any response began and
+    was sent again, which the provider may have billed too."""
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        reply = await super().generate(system=system, user=user, response_format=response_format)
+        reply.maybe_billed_sends = 1
+        return reply
+
+
+async def test_a_trial_failed_by_a_protocol_defect_counts_its_resent_send_on_its_row() -> None:
+    """A trial whose completion breaks the protocol fails the run with what it was billed. Its first send was dropped
+    and sent again, so its row counts the send the provider may have billed beside the call, as every other row does,
+    and the run's cost cap counts it from there."""
+    campaign = await _campaign()
+    stored = off_loop(campaign.host.storage.load_test_case, campaign.case_ids[0], TOYHOST_SCOPE)
+    assert stored is not None
+    resent = _ResentUntempered(campaign.judge)
+    kind = JudgeKind(
+        clients=lambda role, model, *, temperature=None: resent,
+        model=TOY_JUDGE_MODEL,
+        failure_describer=withhold_failure_detail,
+    )
+    room = FakeCellSink()
+
+    with pytest.raises(CompletionProtocolDefect) as raised:
+        await kind.invoke(await _prepared(kind), stored, sink=room)
+
+    assert raised.value.maybe_billed_sends == 1
+    assert room.progress is not None
+    [row] = room.progress().telemetry.usage
+    assert row.call_count == 1 and row.maybe_billed_sends == 1
+    assert row.cost_usd is not None and row.cost_usd > 0
+
+
 async def test_a_judge_under_test_whose_replay_misses_on_one_trial_fails_the_run_naming_the_call(
     tmp_path: Path,
 ) -> None:
