@@ -394,7 +394,10 @@ asks it of each arm's candidate, judge and simulator models: a model the list do
 and a list that cannot be read lets the launch, the sweep or the resume go ahead saying the check was skipped
 (`JobsStarted.notices`, `ArmEstimate.served_check_skipped`). A model going to Anthropic or OpenAI directly is not
 checked. A candidate your kind calls through your own route, not a role of the factory, is asked with `role=None`:
-`Clients` does not route it and answers nothing, so its check is reported skipped, and the notice names the fix.
+`Clients` does not route it and answers nothing, so its check is reported skipped, and the notice names the fix; it
+comes with every launch until you make it. The list is read under the catalogue's own refresh, so a model retired
+within the last `refresh_after` (six hours by default) can pass: the unserved-model circuit, which stops the arm
+after three cells in a row meet the provider's answer, is the backstop.
 
 **Declaring your candidate's route takes one line.** When your kind calls its candidate through a client of your
 factory, name that role on its launch entry, and the candidate is checked against that role's provider list:

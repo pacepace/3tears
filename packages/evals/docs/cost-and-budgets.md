@@ -105,9 +105,13 @@ candidate is measured whole or never begun.
   bill: a model whose rates are an estimate (`Model.ceiling_is_estimate`) may be billed otherwise, and the shipped
   adapter prices a resent request as unbilled (below). A judge that cannot price a call is asked one call at a time, with no other
   phase beside it, each call only while the run is within its cap, so it can pass the cap by that last call alone.
+  When the cap keeps such a phase's next dimension unasked after the judge had failed it on one, the cell is the
+  judge's fault (excluded as one, and a re-judge recovers it), not set aside, and the stop record does not count it.
   A judged run also starts no new cell once what has landed, what its running cells have spent and the judging they
   hold reach the cap, reaching it exactly included: such a cell would pay for its candidate and have its judging set
-  aside. A cell whose deadline strikes while its judging waits for the cap's room is set aside the same way.
+  aside. A cell whose deadline strikes while its judging waits for the cap's room is set aside the same way, but stops
+  nothing: a phase waits only while another holds room it may not bill, so the cap's shortage was never established,
+  and the cells after it are asked of the cap as every cell is.
 - **A cell whose judging was set aside is never scored low.** It asks the judge nothing; it is marked
   (`EvalResult.judging_set_aside`) and left out of the judged readings (its dimensions, pass^k and the composite)
   under its own exclusion cause, `cost_cap` ("cost cap" in a report's loss table), while its measures, checks and cost
@@ -156,7 +160,10 @@ judging aside before the cap was reached. When both ceilings are reached at the 
 run's summary prints one line written from the records, never from prose, for example `stopped by its metered-call
 ceiling: 40 of 40 at the stop, 47 once 3 running cells finished (+7); 12 cells not started`, which ends `; 2 cells
 not judged, as the cap had too little left for their judging` when the cost cap set any aside; money reads as `$`. A run the wall-clock budget stopped has no
-record, and its `budget_stop_reason` says so. A resume moves the records to the lifetime entry of the holding
+record, and its `budget_stop_reason` says so. A run the account's refusal or the unserved-model circuit stopped first
+ends `exhausted`, but when the cost cap then set a running cell's judging aside it keeps the cap's record in
+`budget_stops` all the same, so the count of the cells left unjudged is not lost; its job status names what gave out
+first and the cap's line after it. A resume moves the records to the lifetime entry of the holding
 they stopped, so the run itself only ever describes its current holding.
 
 **The metered-call ceiling.** `max_metered_calls` bounds the third-party calls a run's tools may make, counted at
@@ -315,10 +322,14 @@ its own route is asked with no role, and only the host's factory can say where i
 not route it, so it answers nothing, and the check is reported skipped rather than read from a list of a provider the
 candidate may never be sent to. A host turns the check on in one line: `candidate_role="<factory role>"` on its kind's
 launch entry when the candidate goes through a factory client, or a factory `model_listing` that answers for
-`role=None` ([adopting a host](adopting-a-host.md#bringing-a-provider)); the skip notice names both. The shipped `Clients` reads OpenRouter's model list, which is the price catalogue its
+`role=None` ([adopting a host](adopting-a-host.md#bringing-a-provider)); the skip notice names both. Until one of
+the two is in place, every launch of such a kind carries the notice, and its candidate is checked by nothing but
+the unserved-model circuit once it runs. The shipped `Clients` reads OpenRouter's model list, which is the price catalogue its
 models share, so one read serves this check and the pricing after it: rows younger than the catalogue's
 `refresh_after` are kept, older ones fetched again. A model that list does not name is refused, naming the model
-and the provider. A list that cannot be read, or whose refresh failed so it is not current, leaves the arm admitted,
+and the provider. So a model the provider retired within the last `refresh_after` (six hours by default) can pass the
+check; its run's cells then meet the provider's answer, and the unserved-model circuit stops the arm (three cells in a
+row, [adopting a host](adopting-a-host.md)), which is the backstop. A list that cannot be read, or whose refresh failed so it is not current, leaves the arm admitted,
 and the check skipped is said with the reason on the estimate (`ArmEstimate.served_check_skipped`, and its text),
 on the admitted launch (`AdmittedLaunch.notices`), and on the answer of `run_launch`, `sweep_launch`,
 `sweep_resume` and `job_resume` (`JobsStarted.notices`). A model
