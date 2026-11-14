@@ -37,16 +37,14 @@ stale and must go.
 
 from __future__ import annotations
 
-import ast
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from tests.enforcement.scan_cache import ScanCache, content_key, files_key
-from threetears.enforcement.common import parse_python_path
-from threetears.enforcement.release import release_tags, surface_at, surface_now
+from tests.enforcement.scan_cache import ScanCache, module_names, surfaces_at, surfaces_now
+from threetears.enforcement.release import release_tags
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LEDGER = _REPO_ROOT / "tests" / "enforcement" / "_public_api_consumers.txt"
@@ -151,113 +149,23 @@ class _Scan:
         return False
 
 
-def _names(tree: ast.Module, *, re_exports: bool) -> tuple[frozenset[str], frozenset[str]]:
-    """the names a module references, and the names it defines at top level.
-
-    :param tree: the module
-    :ptype tree: ast.Module
-    :param re_exports: whether a ``from ... import`` counts as a reference (not in a package ``__init__``)
-    :ptype re_exports: bool
-    :return: references, definitions
-    :rtype: tuple[frozenset[str], frozenset[str]]
-    """
-    used: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name):
-            used.add(node.id)
-        elif isinstance(node, ast.Attribute):
-            used.add(node.attr)
-        elif isinstance(node, ast.ImportFrom) and re_exports:
-            used.update(alias.name for alias in node.names)
-    defined: set[str] = set()
-    for statement in tree.body:
-        if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-            defined.add(statement.name)
-        elif isinstance(statement, ast.Assign | ast.AnnAssign):
-            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-            defined.update(target.id for target in targets if isinstance(target, ast.Name))
-    return frozenset(used), frozenset(defined)
-
-
-def _tree_at(ref: str) -> str:
-    """the id of *ref*'s tree: what every file read at *ref* is, so a key for anything read there.
-
-    :param ref: a tag
-    :ptype ref: str
-    :return: the tree's object id
-    :rtype: str
-    :raises subprocess.CalledProcessError: when this clone cannot name the ref's tree
-    """
-    found = subprocess.run(
-        ["git", "rev-parse", "--verify", f"{ref}^{{tree}}"], cwd=_REPO_ROOT, capture_output=True, text=True, check=True
-    )
-    return found.stdout.strip()
-
-
-def _names_key(item: tuple[str, bool]) -> str:
-    """the content key of one module's names: its source, and whether its imports count.
-
-    :param item: (module path, whether a ``from ... import`` counts as a reference)
-    :ptype item: tuple[str, bool]
-    :return: the key
-    :rtype: str
-    """
-    relative, re_exports = item
-    return content_key("names", str(re_exports), (_REPO_ROOT / relative).read_bytes())
-
-
-def _module_names(item: tuple[str, bool]) -> tuple[frozenset[str], frozenset[str]]:
-    """:func:`_names` of one module.
-
-    :param item: (module path, whether a ``from ... import`` counts as a reference)
-    :ptype item: tuple[str, bool]
-    :return: references, definitions
-    :rtype: tuple[frozenset[str], frozenset[str]]
-    """
-    relative, re_exports = item
-    return _names(parse_python_path(_REPO_ROOT / relative), re_exports=re_exports)
-
-
-def _surface_now_key(source_root: str) -> str:
-    """the content key of a source root's surface in the working tree: every module under it.
-
-    :param source_root: repo-relative source tree
-    :ptype source_root: str
-    :return: the key
-    :rtype: str
-    """
-    return content_key("surface_now", source_root, files_key((_REPO_ROOT / source_root).rglob("*.py"), _REPO_ROOT))
-
-
 @pytest.fixture(scope="module")
 def scan(scan_cache: ScanCache) -> _Scan:
     tags = release_tags(_REPO_ROOT)
     if not tags:
         pytest.fail("no vX.Y.Z release tag is visible (`git fetch --tags`); without a baseline nothing is compared")
     baseline = max(tags.items(), key=lambda item: item[1])[0]
-    baseline_tree = _tree_at(baseline)
     exported: set[tuple[str, str]] = set()
     added: set[tuple[str, str]] = set()
     # a moved module's baseline surface lives under its old source root, which no longer exists in the tree
     moved_roots = {old.partition("/src/")[0] + "/src" for old, _ in _MOVED_MODULES}
     before: dict[str, frozenset[str] | set[str]] = {}
-    baseline_surfaces = scan_cache.memoised(
-        "public_api_surface_at",
-        sorted(set(_SOURCE_ROOTS) | moved_roots),
-        lambda source_root: content_key("surface_at", baseline_tree, source_root),
-        lambda source_root: surface_at(_REPO_ROOT, baseline, source_root).modules,
-    )
-    for modules in baseline_surfaces.values():
+    for modules in surfaces_at(scan_cache, _REPO_ROOT, baseline, sorted(set(_SOURCE_ROOTS) | moved_roots)).values():
         before.update(modules)
-    surfaces = scan_cache.memoised(
-        "public_api_surface_now",
-        _SOURCE_ROOTS,
-        _surface_now_key,
-        lambda source_root: surface_now(_REPO_ROOT, source_root).modules,
-    )
+    now = surfaces_now(scan_cache, _REPO_ROOT, _SOURCE_ROOTS)
     src_modules: list[tuple[str, bool]] = []
     for source_root in _SOURCE_ROOTS:
-        for module, names in surfaces[source_root].items():
+        for module, names in now[source_root].items():
             for name in names:
                 if "." in name or " " in name:
                     continue
@@ -273,12 +181,12 @@ def scan(scan_cache: ScanCache) -> _Scan:
                 relative = path.relative_to(_REPO_ROOT).as_posix()
                 if not relative.startswith(_ENFORCEMENT_TESTS):
                     test_modules.append((relative, True))
-    names = scan_cache.memoised("public_api_names", [*src_modules, *test_modules], _names_key, _module_names)
+    names = module_names(scan_cache, _REPO_ROOT, [*src_modules, *test_modules])
     uses: dict[str, frozenset[str]] = {}
     defines: dict[str, frozenset[str]] = {}
-    for item in src_modules:
-        uses[item[0]], defines[item[0]] = names[item]
-    test_uses = {item[0]: names[item][0] for item in test_modules}
+    for module in src_modules:
+        uses[module[0]], defines[module[0]] = names[module]
+    test_uses = {module[0]: names[module][0] for module in test_modules}
     return _Scan(frozenset(exported), frozenset(added), uses, test_uses, defines, baseline)
 
 
