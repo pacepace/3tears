@@ -28,6 +28,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+from prometheus_client import REGISTRY
 
 from threetears.core.collections import WRITE_GENERATION, CollectionRegistry
 from threetears.core.collections.change_notes import ChangeNoteKeeper
@@ -37,6 +38,7 @@ from threetears.core.collections.schema_backed import STRING_TYPE, TableSchema, 
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.data.migrations import MigrationRunner, MigrationScope, PackageMigrations
 from threetears.core.data.store import DataStore
+from threetears.core.testing.plans import on_yugabyte
 from threetears.core.ddl.change_notes import (
     NOTE_SLOT_SETTING,
     NOTE_TRIGGER,
@@ -334,6 +336,7 @@ class TestTheIdleTableEmptiesByDeletes:
         await source.advance_with_change(table, [ChangedRow(ids=["x"])])
 
         waits: list[bool] = []
+        held: list[float | None] = []
         with caplog.at_level(logging.WARNING):
             for _ in range(10):
                 done = await keeper.run_pass()
@@ -342,11 +345,29 @@ class TestTheIdleTableEmptiesByDeletes:
                     assert left == 0, "switched into an emptied table"
                     break
                 waits.append(done.switch_waited)
+                held.append(REGISTRY.get_sample_value("threetears_change_notes_switch_held_since_timestamp_seconds"))
                 assert (await keeper.ring()).current == 0
         assert done.switched_to == 1
-        assert waits == [True] * 4, "each batch pass waited, the last one emptied and switched"
-        said = [r for r in caplog.records if "switch is due but waits" in r.getMessage()]
-        assert len(said) == 1, "logged once per due switch"
+        async with pool.acquire() as conn:
+            yugabyte = await on_yugabyte(conn)
+        # Postgres walks the 45 notes by id, 10 a batch: four passes wait, the fifth empties and switches. YugabyteDB
+        # walks bands of the key's hash, sized from the notes each deleted, so how many passes its random keys take
+        # varies run to run (1, 2 or 3 waits seen): every pass before the switch waited, at least one
+        if yugabyte:
+            assert waits and all(waits), waits
+        else:
+            assert waits == [True] * 4, "each batch pass waited, the last one emptied and switched"
+        # Pace 2026-11-14: a held switch is said at ERROR on every pass it is held, naming how long and how far past
+        # plan the current table is; the held-since gauge holds one time while held and is 0 once the switch lands
+        said = [r for r in caplog.records if "ring switch is HELD" in r.getMessage()]
+        assert len(said) == len(waits) and all(r.levelno == logging.ERROR for r in said), "an error on every held pass"
+        assert {"held_seconds", "current_bytes", "switch_at_bytes", "current_notes_at_least", "waiting_on"} <= set(
+            said[-1].__dict__["extra_data"]
+        )
+        assert held[0] is not None and held[0] > 0 and len(set(held)) == 1, held
+        assert REGISTRY.get_sample_value("threetears_change_notes_switch_held_since_timestamp_seconds") == 0
+        assert REGISTRY.get_sample_value("threetears_change_notes_switch_at_bytes") == 1
+        assert (REGISTRY.get_sample_value("threetears_change_notes_current_bytes") or 0) >= 0
 
 
 class TestTheMigrationRunGivesANewNotedTableItsTriggers:

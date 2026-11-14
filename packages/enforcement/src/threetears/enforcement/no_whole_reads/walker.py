@@ -101,6 +101,7 @@ from threetears.enforcement.no_whole_reads.sql import (
 __all__ = [
     "DECLARED_KINDS",
     "DECLARED_OUTSIDE_KINDS",
+    "DECLARED_RING_KINDS",
     "DECLARED_SPEED_KINDS",
     "DEFAULT_NARROWING_KEYWORDS",
     "DEFAULT_PAGER_CALLS",
@@ -112,6 +113,7 @@ __all__ = [
     "WrittenStatement",
     "declared_whole_read",
     "scan_whole_reads",
+    "RING_NOTE_TABLE",
 ]
 
 #: 3tears' helpers that read every row they are not narrowed to: a keyset pager over a head, a whole-table copy, a
@@ -517,6 +519,26 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
     "drain": frozenset({"whole-select", "whole-delete", "calls-whole-read"}),
     # an operator's reset
     "operator_reset": frozenset({"truncate", "truncate-call", "whole-delete"}),
+    # the change-note ring's own upkeep (Pace 2026-11-14, as the 11-11 TRUNCATE ruling): emptying an idle ring slot
+    # whole, a DELETE of that slot's notes and nothing else (RING_NOTE_TABLE guards the table). It only declares the
+    # keeper's batched deletes; why they are batched and never TRUNCATE is measured and written above
+    # threetears.core.collections.change_notes.ChangeNoteKeeper.empty_slot
+    "ring_empty": frozenset(
+        {"non-key-where", "whole-delete", "unknown-schema", "unknown-predicate", "calls-whole-read"}
+    ),
+    # putting a lost change log back reads every note of the ring's coverage (its current and previous slots, named
+    # at run time) and nothing else (RING_NOTE_TABLE guards the table)
+    "restore": frozenset(
+        {
+            "whole-select",
+            "whole-aggregate",
+            "non-key-where",
+            "unknown-schema",
+            "unknown-predicate",
+            "may-read-whole",
+            "calls-whole-read",
+        }
+    ),
     # a read serving writers older than a rolling upgrade, until the release it names (``until=``): the gate refuses it
     # once the package reaches that release (Pace 2026-11-12: rolling_upgrade until 0.96.0)
     "rolling_upgrade": frozenset(
@@ -536,8 +558,23 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
 #: every statement is a bare ``count(*)`` or row checksum over one table (no join, filter or ordering) may omit it: the
 #: statement IS the bare operation (coordinator ruling 2026-11-12)
 DECLARED_SPEED_KINDS: Final[frozenset[str]] = frozenset(
-    {"cold_start", "every_state_answer", "backup_verification", "schema_change", "rolling_upgrade"}
+    {
+        "cold_start",
+        "every_state_answer",
+        "backup_verification",
+        "schema_change",
+        "rolling_upgrade",
+        "ring_empty",
+        "restore",
+    }
 )
+
+#: the kinds whose every statement is over the change-note ring's slots (``threetears_change_notes_<n>``, its template
+#: ``threetears_change_notes_{}``), and nothing else
+DECLARED_RING_KINDS: Final[frozenset[str]] = frozenset({"ring_empty", "restore"})
+
+#: a change-note ring slot as the walk spells it, quoted or not (its place, and any schema, read at run time)
+RING_NOTE_TABLE: Final[re.Pattern[str]] = re.compile(r'(?:^|\.)"?threetears_change_notes_(?:\{\}|\d+)?"?$')
 
 #: the kinds whose relation is never a declared L3 table: a process-local buffer, a warehouse relation
 DECLARED_OUTSIDE_KINDS: Final[frozenset[str]] = frozenset({"drain", "unbounded_by_warehouse"})

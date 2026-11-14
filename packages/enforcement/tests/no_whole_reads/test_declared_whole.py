@@ -739,3 +739,86 @@ def test_a_schema_change_omits_its_speed_test_only_when_it_is_the_maintenance_op
         assert any("refresh_statistics whole_read(kind='schema_change'): names no speed test" in f for f in findings), (
             findings
         )
+
+
+_RING = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.declared import whole_read
+
+    ITEMS = TableSchema(name="items", primary_key="id", columns=[])
+
+    def note_table(index):
+        return f"threetears_change_notes_{index}"
+
+    async def empty(conn, schema, index, start, end):
+        return await whole_read(
+            conn.execute(f"DELETE FROM {schema}.{note_table(index)} WHERE yb_hash_code(id) >= $1 AND yb_hash_code(id) < $2", start, end),
+            kind="ring_empty",
+            reason="an idle ring slot is emptied whole, a band of its key hashes a statement",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_empty_entry",
+            speed="tests/test_backup.py::test_empty_speed",
+        )
+
+    async def count_coverage(conn, schema, current, previous):
+        return await whole_read(
+            conn.fetch(
+                f"SELECT count(*) AS notes FROM (SELECT noted_at FROM {schema}.{note_table(current)} "
+                f"UNION ALL SELECT noted_at FROM {schema}.{note_table(previous)}) n"
+            ),
+            kind="restore",
+            reason="a lost change log is put back from every note of the ring's coverage",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_count_coverage_entry",
+            speed="tests/test_backup.py::test_count_coverage_speed",
+        )
+
+    async def empty_items(conn, body):
+        return await whole_read(
+            conn.execute("DELETE FROM items WHERE body = $1", body),
+            kind="ring_empty",
+            reason="an idle ring slot is emptied whole, a band of its key hashes a statement",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_empty_items_entry",
+            speed="tests/test_backup.py::test_empty_items_speed",
+        )
+
+    async def count_items(conn):
+        return await whole_read(
+            conn.fetchval("SELECT count(*) FROM items"),
+            kind="restore",
+            reason="a lost change log is put back from every note of the ring's coverage",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_count_items_entry",
+            speed="tests/test_backup.py::test_count_items_speed",
+        )
+
+    async def read_ring(conn, schema, index):
+        return await whole_read(
+            conn.fetch(f"SELECT key_text FROM {schema}.{note_table(index)}"),
+            kind="ring_empty",
+            reason="an idle ring slot is emptied whole, a band of its key hashes a statement",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_read_ring_entry",
+            speed="tests/test_backup.py::test_read_ring_speed",
+        )
+"""
+
+
+def test_a_ring_empty_or_restore_declaration_covers_the_ring_alone(tmp_path: Path) -> None:
+    """Flips if a ring_empty declaration does not let through the DELETE emptying a change-note ring slot, or a
+    restore declaration the read of the ring's coverage (Pace 2026-11-14); or if either lets through anything else:
+    a delete or count of another table, or a ring_empty wrapping a read of the ring."""
+    proofs = _PROOFS + textwrap.indent(
+        "".join(
+            f"\ndef test_{name}_entry():\n    assert {name}\n\ndef test_{name}_speed():\n    budget_problem({name})\n"
+            for name in ("empty", "count_coverage", "empty_items", "count_items", "read_ring")
+        ),
+        "    ",
+    )
+    findings = _findings(tmp_path, {"ring.py": _RING}, proofs)
+    assert not [finding for finding in findings if " in empty:" in finding or " empty whole_read" in finding], findings
+    assert not [finding for finding in findings if "count_coverage" in finding], findings
+    assert any(" in empty_items: " in finding for finding in findings), findings
+    assert any(" in count_items: " in finding for finding in findings), findings
+    assert any(" in read_ring: " in finding for finding in findings), findings

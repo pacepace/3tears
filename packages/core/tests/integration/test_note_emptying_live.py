@@ -70,7 +70,8 @@ async def ring(db_container: str) -> AsyncIterator[_Ring]:
 
 async def test_an_idle_table_is_emptied_once_each_note_within_twice_a_keyed_delete(ring: _Ring) -> None:
     """Flips if an emptying leaves a note, counts one twice, or (on YugabyteDB) rereads its own tombstones past
-    twice the time of one keyed delete of as many rows."""
+    twice the time of one keyed delete of as many rows (``_delete_band`` on YugabyteDB, ``_delete_past`` elsewhere: the
+    slot's whole emptying, declared ``ring_empty``)."""
     keeper = ChangeNoteKeeper(
         ring.pool,
         notes_schema=ring.schema,

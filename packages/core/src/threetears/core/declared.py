@@ -45,6 +45,10 @@ WholeReadKind = Literal[
     "drain",
     "operator_reset",
     "rolling_upgrade",
+    # the change-note ring's upkeep (Pace 2026-11-14): emptying an idle slot whole, and a lost log's restore from the
+    # coverage; the gate admits them over the ring's slots alone
+    "ring_empty",
+    "restore",
 ]
 
 #: the kinds, for the run-time check
@@ -58,6 +62,8 @@ _KINDS: Final[frozenset[str]] = frozenset(
         "drain",
         "operator_reset",
         "rolling_upgrade",
+        "ring_empty",
+        "restore",
     }
 )
 
