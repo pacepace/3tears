@@ -378,7 +378,8 @@ async def counts_by(
     :ptype values: AnyOf | None
     :param where: filters naming the rows counted beside ``by``, each a fragment from ``$1``
     :ptype where: Sequence[Fragment]
-    :param by: the prefix pinned ahead of it (a state, a tenant)
+    :param by: the prefix pinned ahead of it (a state, a tenant); ``column`` pinned here to an :class:`AnyOf` (with no
+        ``values``) names the values counted, as ``values`` does
     :ptype by: Mapping[str, Any] | None
     :param batch: the most values a statement names (or, paging every value, the most groups a statement answers)
     :ptype batch: int
@@ -391,9 +392,11 @@ async def counts_by(
     :ptype nullable: bool
     :return: value -> its rows; a value holding none is absent
     :rtype: dict[Any, int]
-    :raises ValueError: when ``batch`` is under one, ``by`` names ``column`` too, or neither ``values``, ``where``
-        nor a prefix ``by`` names the rows
+    :raises ValueError: when ``batch`` is under one, ``by`` pins ``column`` to other than an :class:`AnyOf` (an
+        :class:`AnyOf` there, with no ``values``, names the values counted), or neither ``values``, ``where`` nor a
+        prefix ``by`` names the rows
     """
+    values, by = _counted_pin(column, values, by)
     if values is None and not where:
         return await _counts_paged(
             conn, table, column=column, by=dict(by or {}), batch=batch, cast=cast, nullable=nullable
@@ -402,6 +405,28 @@ async def counts_by(
         conn, {"": table}, column=column, values=values, where=where, by=by, batch=batch
     )
     return counted[""]
+
+
+def _counted_pin(
+    column: str, values: AnyOf | None, by: Mapping[str, Any] | None
+) -> tuple[AnyOf | None, Mapping[str, Any] | None]:
+    """a count by ``column`` whose ``by=`` pins that column to an :class:`AnyOf` (and names no ``values``): those are
+    the values counted, so ``by={"run_id": AnyOf(runs), **others}`` counts each run's rows as
+    ``values=AnyOf(runs), by=others`` does; anything else as given.
+
+    :param column: the column counted by
+    :ptype column: str
+    :param values: the values named apart, or None
+    :ptype values: AnyOf | None
+    :param by: the pins
+    :ptype by: Mapping[str, Any] | None
+    :return: the values and the pins left
+    :rtype: tuple[AnyOf | None, Mapping[str, Any] | None]
+    """
+    if values is not None or not by or not isinstance(by.get(column), AnyOf):
+        return values, by
+    rest = {name: value for name, value in by.items() if name != column}
+    return by[column], rest or None
 
 
 async def _counts_paged(
@@ -579,6 +604,8 @@ async def counts_by_relations(
         ``fresh`` is not a stamp of every relation's marks; ``group``, ``max_of`` or ``fresh`` without ``since``
     """
     quote_identifier(packed_as)
+    if since is None:
+        values, by = _counted_pin(column, values, by)
     if since is not None:
         return await _counts_since(
             conn,

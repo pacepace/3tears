@@ -22,6 +22,7 @@ from threetears.core.keyed import (
     Fragment,
     KeyBatch,
     Selected,
+    counts_by,
     counts_by_relations,
     delete_keyed,
     read_keyed,
@@ -192,4 +193,25 @@ async def test_a_pinned_read_past_a_floor_reads_what_the_hand_written_one_read(c
         old_sql="SELECT k, s FROM t WHERE tenant = $1 AND k % 2 = $2 AND CAST(s AS TIMESTAMPTZ) > CAST($3 AS TIMESTAMPTZ)",
         params=["t0", 0, floor],
         helper=moved,
+    )
+
+
+async def test_a_count_by_a_column_pinned_to_its_values_answers_the_group_by_it_replaces(
+    conn: asyncpg.Connection,
+) -> None:
+    """Flips if counts_by with the counted column pinned in by= to an AnyOf (reports' grouped count over a pinned list
+    of runs) answers other groups or counts than the hand-written GROUP BY it replaces, on PostgreSQL or YugabyteDB."""
+    keys = list(range(14))
+
+    async def counted(c: asyncpg.Connection) -> list[dict[str, Any]]:
+        held = await counts_by(c, "t", column="k", by={"tenant": "t0", "k": AnyOf(keys, "int")})
+        return [{"counted": value, "held": rows} for value, rows in held.items()]
+
+    await assert_same_results(
+        conn,
+        table="t",
+        row=_row,
+        old_sql="SELECT k AS counted, count(*) AS held FROM t WHERE tenant = $1 AND k = ANY($2::int[]) GROUP BY k",
+        params=["t0", keys],
+        helper=counted,
     )

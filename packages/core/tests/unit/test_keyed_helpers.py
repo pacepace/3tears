@@ -363,7 +363,13 @@ class TestKeysetPage:
         rewritten onto the page answers what its ``fetchrow`` answered."""
         reader = _Rows(db)
         page = await keyset_page(
-            reader, "t", columns=None, by={"a": "k3"}, order=[Sort("b", "bigint", descending=True)], limit=2, records=True
+            reader,
+            "t",
+            columns=None,
+            by={"a": "k3"},
+            order=[Sort("b", "bigint", descending=True)],
+            limit=2,
+            records=True,
         )
         assert [id(row) for row in page.rows] == [id(row) for row in reader.answered[:2]]
         assert all(type(row) is _Row for row in page.rows)
@@ -371,7 +377,7 @@ class TestKeysetPage:
             db, "SELECT * FROM t WHERE a = 'k3' ORDER BY b DESC LIMIT 2"
         )
         assert page.next_cursor is not None
-        assert 't.*' in reader.statements[0][0]
+        assert "t.*" in reader.statements[0][0]
 
     async def test_a_page_of_every_column_refuses_a_sort_expression(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a page of every column sorts by an expression, whose name could be a column's own."""
@@ -552,6 +558,25 @@ class TestCounts:
         )
         assert counted == {1: 1, 11: 1}
         assert [len(params[-1]) for _, params in reader.statements] == [2, 2]
+
+    async def test_a_column_counted_by_and_pinned_to_its_values_counts_those_values(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a count by a column ``by=`` pins to an AnyOf (``by={"b": AnyOf(...), **others}``) is refused, or
+        counts other than what ``values=`` of the same values beside the other pins counts, in other statements; or a
+        column pinned to one value (not an AnyOf), or pinned beside ``values=``, is taken."""
+        pinned, named = _Recording(db), _Recording(db)
+        values = AnyOf([1, 11, 2, 500], "bigint")
+        counted = await counts_by(pinned, "t", column="b", by={"b": values, "a": "k1"}, batch=2)
+        assert counted == await counts_by(named, "t", column="b", values=values, by={"a": "k1"}, batch=2)
+        assert counted == {1: 1, 11: 1}
+        assert pinned.statements == named.statements
+        relations = await counts_by_relations(_Recording(db), {"": "t"}, column="b", by={"b": values, "a": "k1"})
+        assert relations == {"": counted}
+        with pytest.raises(ValueError, match="is counted by"):
+            await counts_by(db, "t", column="b", by={"b": 1, "a": "k1"})
+        with pytest.raises(ValueError, match="is counted by"):
+            await counts_by(db, "t", column="b", values=values, by={"b": values, "a": "k1"})
 
     async def test_counting_every_value_of_a_not_null_column_sends_no_null_group_count(
         self, db: duckdb.DuckDBPyConnection
