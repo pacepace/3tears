@@ -169,7 +169,9 @@ async def read_row(
     return rows[0] if records else dict(rows[0])
 
 
-async def read_value(conn: Any, table: str, *, by: Mapping[str, Any], column: str) -> Any:
+async def read_value(
+    conn: Any, table: str, *, by: Mapping[str, Any], column: str, where: Sequence[Fragment] = ()
+) -> Any:
     """one column of the first row of ``table`` the pinned columns name, or None: what ``fetchval`` of the
     hand-written statement answered (None both when the key names no row and when the column holds none).
 
@@ -181,10 +183,12 @@ async def read_value(conn: Any, table: str, *, by: Mapping[str, Any], column: st
     :ptype by: Mapping[str, Any]
     :param column: the column, a TRUSTED identifier
     :ptype column: str
+    :param where: guards beside the pins, each a fragment written as ``t."col"`` from ``$1``; none when empty
+    :ptype where: Sequence[Fragment]
     :return: its value, or None
     :rtype: Any
     :raises ValueError: when nothing is pinned
     """
-    sql, params = read_row_statement(table, by=by, columns=(column,))
+    sql, params = read_row_statement(table, by=by, columns=(column,), where=where)
     rows = list(await sent_by(conn).fetch(sql, *params))
     return rows[0][column] if rows else None

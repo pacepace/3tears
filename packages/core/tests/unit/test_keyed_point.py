@@ -14,7 +14,7 @@ from typing import Any
 import duckdb
 import pytest
 
-from threetears.core.keyed import AnyOf, Lock, Sort, ThreadedDuckDB, read_by, read_row, read_value
+from threetears.core.keyed import AnyOf, Fragment, Lock, Sort, ThreadedDuckDB, read_by, read_row, read_value
 
 
 @pytest.fixture
@@ -99,6 +99,15 @@ async def test_read_value_answers_the_column_of_the_first_row_or_none(db: duckdb
     assert await read_value(conn, "t", by={"a": "k2", "b": 8}, column="v") == 8
     assert await read_value(conn, "t", by={"a": "k2", "b": 9}, column="v") is None
     assert await read_value(conn, "t", by={"a": "k7", "b": 9}, column="v") is None
+
+
+async def test_read_value_keeps_its_guards_beside_the_pins(db: duckdb.DuckDBPyConnection) -> None:
+    """Flips if read_value drops a ``where=`` guard (the codemod sends a predicate other than equality as one): the
+    row the pins name is answered only where the guard holds too."""
+    conn = _Recording(db)
+    assert await read_value(conn, "t", by={"a": "k2"}, column="b", where=[Fragment("b > $1", (9,))]) in {10, 11}
+    assert await read_value(conn, "t", by={"a": "k2"}, column="b", where=[Fragment("b > $1", (11,))]) is None
+    assert "b > $2" in conn.statements[-1][0]
 
 
 async def test_a_read_pinning_nothing_is_refused(db: duckdb.DuckDBPyConnection) -> None:

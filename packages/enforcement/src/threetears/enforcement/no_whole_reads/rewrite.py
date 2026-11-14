@@ -63,6 +63,16 @@ lead (the primary key first, then a unique key, then an index): one row read, at
 test whose pins lead no declared key or index, a count sent by ``fetch`` / ``fetchrow`` (read by a column name the
 helper does not answer under), and every point-read refusal.
 
+**Guards** (every read and write shape, ruling 2026-11-14): a ``WHERE`` conjunct other than an equality beside the
+equalities (a range ``col > $n``, ``col <> $n``, an optional pin ``($n::text IS NULL OR col = $n)``, a ``NOT (...)``)
+is sent as a ``where=`` :class:`~threetears.core.keyed.Fragment` beside the ``by=`` pins: its qualifiers dropped (the
+helper reads one relation), its parameters renumbered from ``$1`` and bound to the same arguments. The rows read or
+written are the same (the conjunction is the same). The equalities must still bind a parameter, and the no-whole-reads
+rule must still find the statement keyed by them. Refused: a top-level ``OR`` (the ``AND`` beside it binds first), a
+``BETWEEN``, a subquery, another relation's column, a ``?`` placeholder, an existence test (``holds_any`` takes no
+guard), and a guard parameter no pin binds that its predicate compares with no column (the generated proof binds it
+to that column's seeded value).
+
 Splicing is by the call's ``ast`` span; the touched files are then put through ``ruff check --select I --fix`` (the
 new import sorted in) and ``ruff format``, which every repo runs.
 
@@ -179,8 +189,12 @@ class Pin:
     cast: str | None = None
     #: a ``fragment`` SET (``col = GREATEST(col, $n)``): its expression is ``literal``, renumbered from ``$1`` in the
     #: order of these, the statement's own parameter numbers; an ``increment`` (``col = col + 1``) holds its amount in
-    #: ``literal``
+    #: ``literal``; a ``guard``'s (a predicate other than equality, sent as a ``where=`` fragment beside the pins)
+    #: likewise, its text renumbered from ``$1``
     params: tuple[int, ...] = ()
+    #: a ``guard``'s: for each of ``params``, the column the predicate compares it with (``""``: none it names), the
+    #: column whose seeded value the generated proof binds it to when no pin binds that parameter
+    compared: tuple[str, ...] = ()
 
     def numbers(self) -> tuple[int, ...]:
         """the statement's parameters this pin binds.
@@ -188,7 +202,9 @@ class Pin:
         :return: the parameter numbers
         :rtype: tuple[int, ...]
         """
-        return self.params if self.kind == "fragment" else (() if self.param is None else (self.param,))
+        if self.kind in {"fragment", "guard"}:
+            return self.params
+        return () if self.param is None else (self.param,)
 
 
 @dataclass(frozen=True)
@@ -211,6 +227,9 @@ class PointSql:
     #: a count's (shape ``count``): ``count`` for ``SELECT count(*)``, ``exists`` for ``SELECT EXISTS (SELECT 1 ...)``;
     #: empty for every other read
     aggregate: str = ""
+    #: each ``WHERE`` conjunct other than an equality (a range, ``<>``, an optional pin, ``NOT (...)``), as a ``guard``
+    #: pin: the helper's ``where=`` fragments, ANDed beside its ``by=`` pins
+    guards: tuple[Pin, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -282,6 +301,9 @@ class Rewrite:
     key_from: int | None = None
     #: shape ``count``, an existence test (``holds_any``): the declared key or index its probe walks (``order=``)
     walk: list[str] = field(default_factory=list)
+    #: each ``WHERE`` conjunct other than an equality (a ``guard`` :class:`Pin` as a dict): the call's ``where=``
+    #: fragments; not recorded when there is none
+    where: list[dict[str, Any]] = field(default_factory=list)
     # the edits that make it, not recorded: (start line, start col, end line, end col, text) in the module's bytes
     edits: list[tuple[int, int, int, int, str]] = field(default_factory=list, repr=False)
     # not recorded: index purpose entries naming the replaced constant, each (repo-relative file, old text, new text)
@@ -305,6 +327,8 @@ class Rewrite:
             entry.pop("key_from")
         if self.helper != "holds_any":
             entry.pop("walk")
+        if not self.where:
+            entry.pop("where")
         return entry
 
 
@@ -317,13 +341,16 @@ def _literal(text: str) -> str | bool | int:
     return int(text)
 
 
-def parse_point(sql: str, *, ordered: bool = False) -> PointSql | str:
+def parse_point(sql: str, *, ordered: bool = False, guards: bool = False) -> PointSql | str:
     """a plain point read, or why it is not one.
 
     :param sql: the statement
     :ptype sql: str
     :param ordered: a listing (shape ``list``): a trailing ``ORDER BY`` of plain columns is read as its sort
     :ptype ordered: bool
+    :param guards: each ``WHERE`` conjunct other than an equality is kept as a guard (the helper's ``where=``), not
+        refused; at least one equality must still bind a parameter
+    :ptype guards: bool
     :return: the parsed read, or the refusal's reason
     :rtype: PointSql | str
     """
@@ -371,41 +398,52 @@ def parse_point(sql: str, *, ordered: bool = False) -> PointSql | str:
                 return "an expression, alias or DISTINCT in the select list"
             picked.append(column.group("column"))
         columns = tuple(picked)
-    pins = _pins(where, masked, qualifiers)
+    kept: list[Pin] | None = [] if guards else None
+    pins = _pins(where, masked, qualifiers, kept)
     if isinstance(pins, str):
         return pins
     if columns is not None and any(term["column"] not in columns for term in order):
         return "an ORDER BY column it does not select (the equivalence proof compares the order by its values)"
-    numbers = sorted({pin.param for pin in pins if pin.param is not None})
+    numbers = sorted({number for pin in (*pins, *(kept or ())) for number in pin.numbers()})
     if numbers != list(range(1, len(numbers) + 1)):
         return "parameters not numbered $1..$n"
     if not any(pin.kind in _BOUND_KINDS for pin in pins):
         return "no bound parameter (literals only): a constant read, judged by hand"
-    return PointSql(table=match.group("table").lower(), columns=columns, pins=tuple(pins), order=tuple(order))
+    return PointSql(
+        table=match.group("table").lower(),
+        columns=columns,
+        pins=tuple(pins),
+        order=tuple(order),
+        guards=tuple(kept or ()),
+    )
 
 
-def parse_list(sql: str) -> PointSql | str:
+def parse_list(sql: str, *, guards: bool = False) -> PointSql | str:
     """a plain listing: a point read's pins, its rows in a trailing ``ORDER BY`` of plain columns (or in none), or why
     it is not one.
 
     :param sql: the statement
     :ptype sql: str
+    :param guards: as :func:`parse_point`'s
+    :ptype guards: bool
     :return: the parsed read, or the refusal's reason
     :rtype: PointSql | str
     """
-    return parse_point(sql, ordered=True)
+    return parse_point(sql, ordered=True, guards=guards)
 
 
 #: a first-of or top-n read's trailing ``LIMIT`` (shape ``first``)
 _LIMIT: Final[re.Pattern[str]] = re.compile(r"\s+limit\s+(?P<limit>\d+|\$\d+)\s*$", re.IGNORECASE)
 
 
-def parse_first(sql: str) -> PointSql | str:
+def parse_first(sql: str, *, guards: bool = False) -> PointSql | str:
     """a first-of or top-n read: a listing's pins and ``ORDER BY`` of plain columns with a trailing ``LIMIT 1`` /
     ``LIMIT $n``, or why it is not one.
 
     :param sql: the statement
     :ptype sql: str
+    :param guards: as :func:`parse_point`'s
+    :ptype guards: bool
     :return: the parsed read, its ``limit`` set, or the refusal's reason
     :rtype: PointSql | str
     """
@@ -413,7 +451,7 @@ def parse_first(sql: str) -> PointSql | str:
     found = _LIMIT.search(text)
     if found is None:
         return "no trailing LIMIT 1 / LIMIT $n after its ORDER BY (an OFFSET, or no LIMIT)"
-    parsed = parse_point(text[: found.start()], ordered=True)
+    parsed = parse_point(text[: found.start()], ordered=True, guards=guards)
     if isinstance(parsed, str):
         return parsed
     if not parsed.order:
@@ -421,7 +459,7 @@ def parse_first(sql: str) -> PointSql | str:
     written = found.group("limit")
     if not written.startswith("$"):
         return replace(parsed, limit={"literal": int(written)}) if int(written) > 0 else "LIMIT 0"
-    numbers = {pin.param for pin in parsed.pins if pin.param is not None}
+    numbers = {number for pin in (*parsed.pins, *parsed.guards) for number in pin.numbers()}
     if int(written[1:]) != len(numbers) + 1:
         return "the LIMIT's parameter is not the statement's last"
     return replace(parsed, limit={"param": int(written[1:])})
@@ -436,12 +474,14 @@ _EXISTS: Final[re.Pattern[str]] = re.compile(
 )
 
 
-def parse_count(sql: str) -> PointSql | str:
+def parse_count(sql: str, *, guards: bool = False) -> PointSql | str:
     """a count (``SELECT count(*) FROM <table> WHERE <pins>``) or an existence test (``SELECT EXISTS (SELECT 1 FROM
     <table> WHERE <pins>)``) of a point read's rows, or why it is not one.
 
     :param sql: the statement
     :ptype sql: str
+    :param guards: as :func:`parse_point`'s
+    :ptype guards: bool
     :return: the parsed read, its ``aggregate`` ``count`` or ``exists`` and no columns, or the refusal's reason
     :rtype: PointSql | str
     """
@@ -450,7 +490,7 @@ def parse_count(sql: str) -> PointSql | str:
         return "interpolated"
     exists = _EXISTS.match(text)
     if exists is not None:
-        parsed = parse_point(f"SELECT * {exists.group('inner')}")
+        parsed = parse_point(f"SELECT * {exists.group('inner')}", guards=guards)
         aggregate = "exists"
     else:
         match = _SELECT.match(text)
@@ -458,10 +498,12 @@ def parse_count(sql: str) -> PointSql | str:
             return "not SELECT count(*) / EXISTS (SELECT 1 ...) FROM <table> WHERE ..."
         if _COUNT_ITEM.match(match.group("columns").strip()) is None:
             return "a select list other than count(*) alone (a sum, a max, a column, a GROUP BY)"
-        parsed = parse_point(f"{text[: match.start('columns')]}*{text[match.end('columns') :]}")
+        parsed = parse_point(f"{text[: match.start('columns')]}*{text[match.end('columns') :]}", guards=guards)
         aggregate = "count"
     if isinstance(parsed, str):
         return parsed
+    if aggregate == "exists" and parsed.guards:
+        return f"an existence test with a predicate other than equality: {parsed.guards[0].literal!r}"
     return replace(parsed, columns=None, aggregate=aggregate)
 
 
@@ -526,9 +568,103 @@ def _key_completion(parsed: PointSql, declared: Any) -> list[dict[str, Any]] | s
 _ONE_VALUE_KINDS: Final[frozenset[str]] = frozenset({"param", "literal", "null", "nullsafe"})
 
 
-def _pins(where: str, masked: str, qualifiers: set[str | None]) -> list[Pin] | str:
+def _top_level(masked: str, pattern: re.Pattern[str]) -> list[re.Match[str]] | str:
+    """each match of ``pattern`` in ``masked`` (its quoted literals masked) outside every parenthesis, or why the
+    parentheses do not balance."""
+    depth = 0
+    depths = []
+    for char in masked:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return "unbalanced parentheses"
+        depths.append(depth)
+    if depth:
+        return "unbalanced parentheses"
+    return [found for found in pattern.finditer(masked) if depths[found.start()] == 0]
+
+
+#: a column written with a qualifier (``t.col``), not a cast's type (``::public.vector``) nor a number (``1.5``)
+_QUALIFIED: Final[re.Pattern[str]] = re.compile(rf"(?<![\w.$:])(?P<q>{_IDENT})\.(?P<column>{_IDENT})\b", re.IGNORECASE)
+_TOP_OR: Final[re.Pattern[str]] = re.compile(r"\s+or\s+", re.IGNORECASE)
+#: a comparison of a column with a parameter, either way round (``col >= $2``, ``$2::timestamptz < col``)
+_COMPARISON: Final[str] = r"(?:=|<>|!=|<=|>=|<|>|\s+is\s+(?:not\s+)?distinct\s+from\s+)"
+#: a guard's ``compared`` for a parameter standing as a truth value on its own, which the proof binds False
+_BOOL_OPERAND: Final[str] = ":bool"
+#: words that read as a column in a comparison and are not one
+_SQL_WORDS: Final[frozenset[str]] = frozenset({"null", "true", "false", "not", "and", "or", "is", "any", "all"})
+
+
+def _guard(conjunct: str, qualifiers: set[str | None]) -> Pin | str:
+    """a ``WHERE`` conjunct other than an equality as a ``guard`` pin: its qualifiers dropped (the helper reads one
+    relation), its parameters renumbered from ``$1``, each paired with the column it is compared with; or why it cannot
+    be one (a subquery, a column of another relation, a ``?`` placeholder, an interpolation).
+
+    :param conjunct: the conjunct, as written
+    :ptype conjunct: str
+    :param qualifiers: the names a column may be qualified by (None: unqualified)
+    :ptype qualifiers: set[str | None]
+    :return: the guard, or the refusal's reason
+    :rtype: Pin | str
+    """
+    masked = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", conjunct)
+    if re.search(r"\bselect\b", masked, re.IGNORECASE):
+        return f"a subquery in a predicate: {conjunct!r}"
+    if re.search(r"\?\s*(?:$|[),])", masked):
+        # a ? placeholder (SQLite's), not jsonb's ? operator (which a quoted key follows)
+        return f"a ? placeholder in a predicate: {conjunct!r}"
+    if re.search(r"\bbetween\b", masked, re.IGNORECASE):
+        return f"a BETWEEN (its AND is not a conjunction): {conjunct!r}"
+    for found in _QUALIFIED.finditer(masked):
+        if found.group("q").lower() not in {qualifier.lower() for qualifier in qualifiers if qualifier}:
+            return f"a column of another relation: {conjunct!r}"
+    text = "".join(_unqualified(conjunct, masked))
+    order: list[int] = []
+    for number in _PARAMETER.findall(text):
+        if int(number) not in order:
+            order.append(int(number))
+    renumbered = _PARAMETER.sub(lambda found: f"${order.index(int(found.group(1))) + 1}", text)
+    compared = []
+    for place in range(1, len(order) + 1):
+        parameter = rf"\${place}(?!\d)(?:\s*::\s*{_IDENT}(?:\[\])?)*"
+        paired = re.search(
+            rf"(?P<column>{_IDENT})\s*{_COMPARISON}\s*{parameter}", renumbered, re.IGNORECASE
+        ) or re.search(rf"{parameter}\s*{_COMPARISON}\s*(?P<column>{_IDENT})", renumbered, re.IGNORECASE)
+        column = paired.group("column").lower() if paired is not None else ""
+        if column in _SQL_WORDS:
+            column = ""
+        if not column and re.search(
+            rf"(?:^|(?<!\w)\(|\bor\b|\band\b|\bnot\b)\s*\${place}(?!\d)(?:\s*::\s*bool(?:ean)?)?\s*(?:$|\)|\bor\b|\band\b)",
+            renumbered,
+            re.IGNORECASE,
+        ):
+            # a parameter standing as a truth value on its own (``($1 OR col <> 'x')``): the proof binds it False, so
+            # the predicate beside it decides
+            column = _BOOL_OPERAND
+        compared.append(column)
+    return Pin("", "guard", literal=" ".join(renumbered.split()), params=tuple(order), compared=tuple(compared))
+
+
+def _unqualified(text: str, masked: str) -> list[str]:
+    """``text`` cut around each qualifier :data:`_QUALIFIED` finds in ``masked``, the qualifiers left out."""
+    pieces = []
+    at = 0
+    for found in _QUALIFIED.finditer(masked):
+        pieces.append(text[at : found.start()])
+        at = found.start("column")
+    pieces.append(text[at:])
+    return pieces
+
+
+def _pins(where: str, masked: str, qualifiers: set[str | None], guards: list[Pin] | None = None) -> list[Pin] | str:
     """each column a ``WHERE`` of equalities pins (``= $n``, ``= <literal>``, ``IS NULL``, joined by ``AND``), or why
     it is not one.
+
+    With ``guards``, every other conjunct (a range, ``<>``, an optional pin ``($5::text IS NULL OR col = $5)``, a
+    ``NOT (...)``) is appended there as a ``guard`` pin instead of refused: the helper's ``where=`` fragments, ANDed
+    beside the pins, so the rows read are the same. A top-level ``OR`` (which the conjunction would misread) is refused.
 
     :param where: the ``WHERE`` clause's text
     :ptype where: str
@@ -536,12 +672,20 @@ def _pins(where: str, masked: str, qualifiers: set[str | None]) -> list[Pin] | s
     :ptype masked: str
     :param qualifiers: the names a column may be qualified by (None: unqualified)
     :ptype qualifiers: set[str | None]
+    :param guards: where the conjuncts other than equalities go; refused when None
+    :ptype guards: list[Pin] | None
     :return: the pins, or the refusal's reason
     :rtype: list[Pin] | str
     """
     pins: list[Pin] = []
-    starts = [0, *(found.end() for found in _AND.finditer(masked))]
-    ends = [found.start() for found in _AND.finditer(masked)] + [len(where)]
+    ands = _top_level(masked, _AND)
+    if isinstance(ands, str):
+        return ands
+    ors = _top_level(masked, _TOP_OR)
+    if guards is not None and ors:
+        return "an OR outside every parenthesis (the AND beside it binds first)"
+    starts = [0, *(found.end() for found in ands)]
+    ends = [found.start() for found in ands] + [len(where)]
     for start, end in zip(starts, ends, strict=True):
         conjunct = where[start:end].strip()
         for pattern, kind in (
@@ -557,7 +701,13 @@ def _pins(where: str, masked: str, qualifiers: set[str | None]) -> list[Pin] | s
             if pinned is not None and not (kind == "bool" and pinned.group("column").lower() in _NOT_COLUMNS):
                 break
         else:
-            return f"a predicate other than equality: {conjunct!r}"
+            if guards is None:
+                return f"a predicate other than equality: {conjunct!r}"
+            guard = _guard(conjunct, qualifiers)
+            if isinstance(guard, str):
+                return guard
+            guards.append(guard)
+            continue
         if pinned.group("q") not in qualifiers:
             return f"a column of another relation: {conjunct!r}"
         name = pinned.group("column").lower()
@@ -599,6 +749,8 @@ class WriteSql:
     sets: tuple[Pin, ...]
     pins: tuple[Pin, ...]
     returning: tuple[str, ...] = ()
+    #: as :attr:`PointSql.guards`
+    guards: tuple[Pin, ...] = ()
 
 
 _UPDATE: Final[re.Pattern[str]] = re.compile(
@@ -678,13 +830,15 @@ def _returning(text: str, masked: str) -> tuple[str, tuple[str, ...]] | str:
     return text[: found.start()], tuple(columns)
 
 
-def parse_write(sql: str) -> WriteSql | str:
+def parse_write(sql: str, *, guards: bool = False) -> WriteSql | str:
     """a keyed write by equality, or why it is not one: every ``SET`` a column to a parameter, a literal, ``NULL`` or
     ``now()``; every ``WHERE`` conjunct an equality :func:`parse_point` takes; a ``RETURNING`` of plain columns at
     most; no alias, join, subquery or expression.
 
     :param sql: the statement
     :ptype sql: str
+    :param guards: as :func:`parse_point`'s
+    :ptype guards: bool
     :return: the parsed write, or the refusal's reason
     :rtype: WriteSql | str
     """
@@ -716,7 +870,8 @@ def parse_write(sql: str) -> WriteSql | str:
     table = match.group("table")
     where = match.group("where")
     masked = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", where)
-    pins = _pins(where, masked, {None, table.split(".")[-1]})
+    kept: list[Pin] | None = [] if guards else None
+    pins = _pins(where, masked, {None, table.split(".")[-1]}, kept)
     if isinstance(pins, str):
         return pins
     sets: list[Pin] = []
@@ -762,7 +917,7 @@ def parse_write(sql: str) -> WriteSql | str:
             return "a column set twice"
         if any(pin.kind == "now" and pin.column in returning for pin in sets):
             return "a now() column returned (each side's transaction stamps its own instant)"
-    numbers = sorted({number for pin in (*sets, *pins) for number in pin.numbers()})
+    numbers = sorted({number for pin in (*sets, *pins, *(kept or ())) for number in pin.numbers()})
     if numbers != list(range(1, len(numbers) + 1)):
         return "parameters not numbered $1..$n"
     if not any(pin.kind in _BOUND_KINDS for pin in pins):
@@ -773,6 +928,7 @@ def parse_write(sql: str) -> WriteSql | str:
         sets=tuple(sets),
         pins=tuple(pins),
         returning=returning,
+        guards=tuple(kept or ()),
     )
 
 
@@ -1095,7 +1251,7 @@ def _class_constant_uses(module: _Module, owner: ast.ClassDef, name: str) -> lis
 
 
 def _sent_by(
-    module: _Module, literal: ast.Constant, methods: frozenset[str] = frozenset(_HELPER_OF)
+    module: _Module, literal: ast.Constant | ast.JoinedStr, methods: frozenset[str] = frozenset(_HELPER_OF)
 ) -> tuple[list[ast.Call], ast.Assign | ast.AnnAssign | None] | str:
     """every awaited ``fetch``/``fetchrow``/``fetchval`` call sending a statement literal (written at the call, or a
     constant -- ``.strip()`` of one too -- every one of whose uses is such a call), and the constant; or why not."""
@@ -1157,10 +1313,30 @@ def _python_literal(value: str | bool | int | None) -> str:
     return repr(value)
 
 
+def _unseeded_guard(parsed: PointSql | WriteSql) -> str:
+    """why the generated proof could not bind a guard's parameter (no pin binds it and the guard compares it with no
+    column, so no seeded value is its), or ``""``."""
+    pinned = {number for pin in (*parsed.pins, *getattr(parsed, "sets", ())) for number in pin.numbers()}
+    for guard in parsed.guards:
+        for number, column in zip(guard.params, guard.compared, strict=True):
+            if number not in pinned and not column:
+                return f"a predicate's parameter ${number} compared with no column: {guard.literal!r}"
+    return ""
+
+
+def _where_text(rewrite: Rewrite) -> str:
+    """the helper call's ``where=`` argument (`` where=[Fragment(...), ...]``, with its leading ``, ``), or ``""``."""
+    if not rewrite.where:
+        return ""
+    return f", where=[{', '.join(_value_text(guard, rewrite.args) for guard in rewrite.where)}]"
+
+
 def _render(rewrite: Rewrite, receiver: str) -> str:
     """the helper call, written in the statement's call's place."""
     by = "{" + ", ".join(f"{pin['column']!r}: {_value_text(pin, rewrite.args)}" for pin in rewrite.pins) + "}"
     parts = [receiver, repr(rewrite.table), f"by={by}"]
+    if rewrite.where:
+        parts.append(_where_text(rewrite).removeprefix(", "))
     if rewrite.helper == "read_value":
         assert rewrite.columns is not None
         parts.append(f"column={rewrite.columns[0]!r}")
@@ -1191,8 +1367,8 @@ def _render_first(rewrite: Rewrite, receiver: str) -> str:
     limit = str(rewrite.args[rewrite.limit["param"] - 1]) if "param" in rewrite.limit else str(rewrite.limit["literal"])
     order = ", ".join(_sort_text(term) for term in rewrite.order)
     page = (
-        f"(await keyset_page({receiver}, {rewrite.table!r}, columns={columns}, by={by}, order=[{order}], "
-        f"limit={limit}, records=True))"
+        f"(await keyset_page({receiver}, {rewrite.table!r}, columns={columns}, by={by}{_where_text(rewrite)}, "
+        f"order=[{order}], limit={limit}, records=True))"
     )
     if rewrite.method == "fetch":
         return f"{page}.rows"
@@ -1209,7 +1385,10 @@ def _render_count(rewrite: Rewrite, receiver: str) -> str:
     if rewrite.helper == "holds_any":
         walk = ", ".join(repr(column) for column in rewrite.walk)
         return f"(await holds_any({receiver}, {rewrite.table!r}, order=[{walk}], by={by}))"
-    return f"(await aggregate_keyed({receiver}, {rewrite.table!r}, aggregates={{'n': Count()}}, by={by}))[0]['n']"
+    return (
+        f"(await aggregate_keyed({receiver}, {rewrite.table!r}, aggregates={{'n': Count()}}, by={by}"
+        f"{_where_text(rewrite)}))[0]['n']"
+    )
 
 
 def _sort_text(term: Mapping[str, Any]) -> str:
@@ -1241,7 +1420,7 @@ def _value_text(pin: Mapping[str, Any], args: Sequence[str]) -> str:
         return f"AnyOf({args[pin['param'] - 1]}, cast={pin.get('cast')!r})"
     if pin["kind"] == "increment":
         return f"Increment({pin['literal']!r})"
-    if pin["kind"] == "fragment":
+    if pin["kind"] in {"fragment", "guard"}:
         bound = "".join(f"{args[number - 1]}, " for number in pin["params"])
         return f"Fragment({pin['literal']!r}, ({bound.rstrip(' ') if len(pin['params']) == 1 else bound[:-2]}))"
     if pin["kind"] == "literal":
@@ -1265,6 +1444,8 @@ def _render_write(rewrite: Rewrite, receiver: str) -> str:
         values = ", ".join(f"{pin['column']!r}: {_value_text(pin, rewrite.args)}" for pin in rewrite.sets)
         parts.append(f"values={{{values}}}")
     parts.append(f"by={by}")
+    if rewrite.where:
+        parts.append(_where_text(rewrite).removeprefix(", "))
     if not rewrite.returning:
         return f"{rewrite.helper}({', '.join(parts)})"
     listed = ", ".join(repr(column) for column in rewrite.returning)
@@ -1272,7 +1453,120 @@ def _render_write(rewrite: Rewrite, receiver: str) -> str:
     return f"(await {rewrite.helper}({', '.join(parts)})).{_RETURNED[rewrite.method]}"
 
 
-def _statement_literal(module: _Module, line: int, verb: str = "select") -> ast.Constant | str:
+def _module_text(module: _Module, value: ast.expr, seen: frozenset[str] = frozenset()) -> str | None:
+    """the text a module-level expression holds, read without running it: a string literal, ``+`` of texts,
+    ``"<sep>".join(<a tuple or list of string literals>)``, or a module constant bound once to one of those; None
+    for anything else (a value computed at run time)."""
+    if isinstance(value, ast.Constant):
+        return value.value if isinstance(value.value, str) else None
+    if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+        left, right = _module_text(module, value.left, seen), _module_text(module, value.right, seen)
+        return None if left is None or right is None else left + right
+    if (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "join"
+        and isinstance(value.func.value, ast.Constant)
+        and isinstance(value.func.value.value, str)
+        and len(value.args) == 1
+        and not value.keywords
+    ):
+        listed = value.args[0]
+        if isinstance(listed, ast.Name):
+            bound = _module_binding(module, listed.id)
+            if bound is None or listed.id in seen:
+                return None
+            seen, listed = seen | {listed.id}, bound
+        if not isinstance(listed, ast.Tuple | ast.List):
+            return None
+        parts = [_module_text(module, element, seen) for element in listed.elts]
+        texts = [part for part in parts if part is not None]
+        return None if len(texts) != len(parts) else value.func.value.value.join(texts)
+    if isinstance(value, ast.Name) and value.id not in seen:
+        bound = _module_binding(module, value.id)
+        return None if bound is None else _module_text(module, bound, seen | {value.id})
+    return None
+
+
+def _module_binding(module: _Module, name: str) -> ast.expr | None:
+    """the value ``name`` is bound to at the module's top, when it is bound exactly once in the whole module (no other
+    assignment, ``global`` or loop target anywhere rebinds it); None otherwise."""
+    bindings = [
+        node
+        for node in ast.walk(module.tree)
+        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store | ast.Del)
+    ]
+    if len(bindings) != 1 or any(isinstance(node, ast.Global) and name in node.names for node in ast.walk(module.tree)):
+        return None
+    for statement in module.tree.body:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target, value = statement.targets[0], statement.value
+        elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+            target, value = statement.target, statement.value
+        else:
+            continue
+        if isinstance(target, ast.Name) and target.id == name:
+            return value
+    return None
+
+
+def _fstring_text(module: _Module, node: ast.JoinedStr) -> tuple[str, str] | str:
+    """an f-string statement whose every interpolation is a module constant of text (:func:`_module_text`), as the
+    statement it sends and as the walk writes it (each interpolation ``{}``); or why it is not one."""
+    sent: list[str] = []
+    walked: list[str] = []
+    for part in node.values:
+        if isinstance(part, ast.Constant) and isinstance(part.value, str):
+            sent.append(part.value)
+            walked.append(part.value)
+            continue
+        assert isinstance(part, ast.FormattedValue)
+        if part.conversion != -1 or part.format_spec is not None or not isinstance(part.value, ast.Name):
+            return f"interpolated: {{{module.segment(part.value)}}} is not a module constant"
+        text = _module_text(module, part.value)
+        if text is None:
+            return f"interpolated: {{{part.value.id}}} is not a module constant of text written in the module"
+        sent.append(text)
+        walked.append("{}")
+    return "".join(sent), "".join(walked)
+
+
+def _literal_sent(module: _Module, literal: ast.Constant | ast.JoinedStr) -> str:
+    """the statement a literal sends: its text, or an f-string's with each module constant written in (``""`` when an
+    interpolation is not one, which no walk's text equals)."""
+    if isinstance(literal, ast.Constant):
+        return str(literal.value)
+    resolved = _fstring_text(module, literal)
+    return "" if isinstance(resolved, str) else resolved[0]
+
+
+def _sent_text(config: NoWholeReadsConfig, modules: dict[str, _Module], statement: Any) -> str:
+    """the statement a finding's call sends: the walk's text, or, for an f-string whose every interpolation is a
+    module constant of text, that text with each constant written in (checked against the walk's ``{}`` spelling);
+    ``"!<reason>"`` when it cannot be read."""
+    if "{" not in statement.text:
+        return str(statement.text)
+    module = modules.get(statement.path)
+    if module is None:
+        module = modules[statement.path] = _Module.read(config.repo_root / statement.path)
+    verb = statement.text.split(None, 1)[0] if statement.text.split() else "select"
+    found = _statement_literal(module, statement.line, verb.lower(), fstrings=True)
+    if isinstance(found, str):
+        return f"!{found}"
+    if not isinstance(found, ast.JoinedStr):
+        return "!interpolated"
+    resolved = _fstring_text(module, found)
+    if isinstance(resolved, str):
+        return f"!{resolved}"
+    sent, walked = resolved
+    if " ".join(walked.split()) != " ".join(statement.text.split()):
+        return "!the f-string at its line is not the statement the walk found"
+    return sent
+
+
+def _statement_literal(
+    module: _Module, line: int, verb: str = "select", *, fstrings: bool = False
+) -> ast.Constant | ast.JoinedStr | str:
     """the string literal holding the statement at ``line``, one starting with ``verb`` (a status tag the statement's
     status is compared with, ``"DELETE 0"``, is not one)."""
     found = [
@@ -1281,7 +1575,19 @@ def _statement_literal(module: _Module, line: int, verb: str = "select") -> ast.
         if isinstance(node, ast.Constant | ast.JoinedStr) and getattr(node, "lineno", None) == line
     ]
     if any(isinstance(node, ast.JoinedStr) for node in found):
-        return "interpolated (an f-string)"
+        if not fstrings:
+            return "interpolated (an f-string)"
+        joined = [
+            node
+            for node in found
+            if isinstance(node, ast.JoinedStr)
+            and node.values
+            and isinstance(node.values[0], ast.Constant)
+            and re.match(rf"\s*{verb}\b", str(node.values[0].value), re.I)
+        ]
+        if len(joined) != 1:
+            return f"{len(joined)} interpolated {verb.upper()} statements on its line"
+        return joined[0]
     strings = [
         node
         for node in found
@@ -1961,9 +2267,17 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 f"the no-whole-reads rule finds it unkeyed ({unkeyed[statement.path, statement.line]}): a real fix first"
             )
             continue
-        parsed = shape.parse(statement.text)
+        text = _sent_text(config, modules, statement)
+        if text.startswith("!"):
+            refuse(text[1:])
+            continue
+        parsed = shape.parse(text, guards=True)
         if isinstance(parsed, str):
             refuse(parsed)
+            continue
+        unproven = _unseeded_guard(parsed)
+        if unproven:
+            refuse(unproven)
             continue
         completion: list[dict[str, Any]] = []
         if parsed.limit is not None:
@@ -1982,22 +2296,24 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
         module = modules.get(statement.path)
         if module is None:
             module = modules[statement.path] = _Module.read(config.repo_root / statement.path)
-        literal = _statement_literal(module, statement.line)
+        literal = _statement_literal(module, statement.line, fstrings=True)
         if isinstance(literal, str):
             refuse(literal)
             continue
-        old_sql = literal.value
+        old_sql = _literal_sent(module, literal)
         assert isinstance(old_sql, str)
-        if " ".join(old_sql.split()) != " ".join(statement.text.split()):
+        if " ".join(old_sql.split()) != " ".join(text.split()):
             refuse("the literal at its line is not the statement the walk found")
             continue
-        choice = _choice_of(module, literal)
-        if (parsed.limit is not None or parsed.aggregate) and (
-            isinstance(module.parent(literal), ast.Dict) or choice is not None
-        ):
+        if isinstance(literal, ast.JoinedStr) and not isinstance(module.parent(literal), ast.Call):
+            refuse("an interpolated statement not written at the call sending it")
+            continue
+        held_in = isinstance(literal, ast.Constant) and isinstance(module.parent(literal), ast.Dict)
+        choice = _choice_of(module, literal) if isinstance(literal, ast.Constant) else None
+        if (parsed.limit is not None or parsed.aggregate) and (held_in or choice is not None):
             refuse(f"a {'count' if parsed.aggregate else 'first-of read'} held in a dict or chosen by a branch")
             continue
-        if isinstance(module.parent(literal), ast.Dict) or choice is not None:
+        if (held_in or choice is not None) and isinstance(literal, ast.Constant):
             held = module.parent(literal) if choice is None else choice
             group = groups.get(id(held))
             if group is None:
@@ -2020,10 +2336,11 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
         if isinstance(elsewhere, str):
             refuse(elsewhere)
             continue
-        numbers = sorted({pin.param for pin in parsed.pins if pin.param is not None})
+        bound = [number for pin in (*parsed.pins, *parsed.guards) for number in pin.numbers()]
+        numbers = sorted(set(bound))
         if parsed.limit is not None and "param" in parsed.limit:
             numbers.append(parsed.limit["param"])
-        uses = Counter(pin.param for pin in parsed.pins if pin.param is not None)
+        uses = Counter(bound)
         planned: list[Rewrite] = []
         for call in calls:
             arguments = call.args[1:]
@@ -2062,6 +2379,7 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 limit=parsed.limit,
                 key_from=len(parsed.order) if parsed.limit is not None else None,
                 walk=walk,
+                where=[asdict(guard) for guard in parsed.guards],
             )
             spliced: ast.expr = call
             if parsed.aggregate:
@@ -2131,24 +2449,32 @@ def plan_write_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
                 f"the no-whole-reads rule finds it unkeyed ({unkeyed[statement.path, statement.line]}): a real fix first"
             )
             continue
-        parsed = parse_write(statement.text)
+        text = _sent_text(config, modules, statement)
+        if text.startswith("!"):
+            refuse(text[1:])
+            continue
+        parsed = parse_write(text, guards=True)
         if isinstance(parsed, str):
             refuse(parsed)
             continue
         module = modules.get(statement.path)
         if module is None:
             module = modules[statement.path] = _Module.read(config.repo_root / statement.path)
-        literal = _statement_literal(module, statement.line, parsed.kind)
+        literal = _statement_literal(module, statement.line, parsed.kind, fstrings=True)
         if isinstance(literal, str):
             refuse(literal)
             continue
-        old_sql = literal.value
+        old_sql = _literal_sent(module, literal)
         assert isinstance(old_sql, str)
-        if " ".join(old_sql.split()) != " ".join(statement.text.split()):
+        if " ".join(old_sql.split()) != " ".join(text.split()):
             refuse("the literal at its line is not the statement the walk found")
             continue
-        choice = _choice_of(module, literal)
-        if isinstance(module.parent(literal), ast.Dict) or choice is not None:
+        if isinstance(literal, ast.JoinedStr) and not isinstance(module.parent(literal), ast.Call):
+            refuse("an interpolated statement not written at the call sending it")
+            continue
+        held_in = isinstance(literal, ast.Constant) and isinstance(module.parent(literal), ast.Dict)
+        choice = _choice_of(module, literal) if isinstance(literal, ast.Constant) else None
+        if (held_in or choice is not None) and isinstance(literal, ast.Constant):
             held = module.parent(literal) if choice is None else choice
             group = groups.get(id(held))
             if group is None:
@@ -2171,7 +2497,11 @@ def plan_write_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
         if isinstance(elsewhere, str):
             refuse(elsewhere)
             continue
-        bound = [number for pin in (*parsed.sets, *parsed.pins) for number in pin.numbers()]
+        unproven = _unseeded_guard(parsed)
+        if unproven:
+            refuse(unproven)
+            continue
+        bound = [number for pin in (*parsed.sets, *parsed.pins, *parsed.guards) for number in pin.numbers()]
         numbers = sorted(set(bound))
         uses = Counter(bound)
         planned: list[Rewrite] = []
@@ -2203,6 +2533,7 @@ def plan_write_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
                 shape="write",
                 sets=[asdict(pin) for pin in parsed.sets],
                 returning=returning,
+                where=[asdict(guard) for guard in parsed.guards],
             )
             rewrite.new_call = _render_write(rewrite, module.segment(call.func.value))
             # a RETURNING write replaces the awaited call (the helper's answer is read through .rows/.row/.value)
@@ -2325,7 +2656,9 @@ def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None
         names = {rewrite.helper for rewrite in mine}
         if "aggregate_keyed" in names:
             names.add("Count")
-        if any(pin["kind"] in {"now", "fragment"} for rewrite in mine for pin in rewrite.sets):
+        if any(pin["kind"] in {"now", "fragment"} for rewrite in mine for pin in rewrite.sets) or any(
+            rewrite.where for rewrite in mine
+        ):
             names.add("Fragment")
         if any(pin["kind"] == "increment" for rewrite in mine for pin in rewrite.sets):
             names.add("Increment")

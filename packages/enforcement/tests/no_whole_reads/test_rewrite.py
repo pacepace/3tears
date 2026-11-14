@@ -1245,3 +1245,184 @@ def test_counts_and_existence_tests_are_rewritten_onto_aggregate_keyed_and_holds
         assert_source_says(tmp_path, entry)
     left = [line for line in use_the_helper_findings(config) if "reads.py" in line]
     assert [line.split(":")[1].split(" in ")[1] for line in left] == ["summed", "counted_row"], left
+
+
+_GUARDED = """
+    async def big_geos(conn, state, floor):
+        return await conn.fetchval("SELECT count(*) FROM geos WHERE state = $1 AND pop > $2", state, floor)
+
+
+    async def named_or_all(conn, state, name):
+        return await conn.fetch(
+            "SELECT geo_id, name FROM geos WHERE state = $1 AND ($2::text IS NULL OR geos.name = $2) ORDER BY geo_id",
+            state,
+            name,
+        )
+
+
+    async def live_name(conn, agent_id):
+        return await conn.fetchval(
+            "SELECT name FROM agents WHERE id = $1 AND NOT (COALESCE(tags, '[]'::jsonb) ? 'gone')", agent_id
+        )
+
+
+    async def rename_big(conn, name, state, floor):
+        await conn.execute("UPDATE geos SET name = $1 WHERE state = $2 AND pop >= $3", name, state, floor)
+
+
+    async def either(conn, state, name):
+        return await conn.fetch("SELECT geo_id FROM geos WHERE state = $1 AND name = $2 OR pop > 3", state, name)
+
+
+    async def flagged(conn, state, on):
+        return await conn.fetch("SELECT geo_id FROM geos WHERE state = $1 AND length($2) > 3", state, on)
+"""
+
+
+def test_a_predicate_other_than_equality_is_kept_as_a_guard_when_asked() -> None:
+    """Flips if, with ``guards=True``, a range, an optional pin or a ``NOT (...)`` beside the equalities is not kept
+    as a ``where=`` guard (qualifiers dropped, parameters renumbered from ``$1``, each paired with the column it is
+    compared with), or a top-level ``OR``, a ``BETWEEN``, a subquery or another relation's column is taken."""
+    counted = parse_count("SELECT count(*) FROM geos g WHERE g.state = $1 AND g.pop > $2", guards=True)
+    assert isinstance(counted, PointSql), counted
+    assert [(guard.literal, guard.params, guard.compared) for guard in counted.guards] == [("pop > $1", (2,), ("pop",))]
+    optional = parse_list(
+        "SELECT geo_id FROM geos WHERE state = $1 AND ($2::text IS NULL OR geos.name = $2) ORDER BY geo_id",
+        guards=True,
+    )
+    assert isinstance(optional, PointSql), optional
+    assert [(guard.literal, guard.params, guard.compared) for guard in optional.guards] == [
+        ("($1::text IS NULL OR name = $1)", (2,), ("name",))
+    ]
+    flagged = parse_count("SELECT count(*) FROM geos WHERE state = $1 AND ($2 OR name <> 'x')", guards=True)
+    assert isinstance(flagged, PointSql), flagged
+    # a truth value standing alone: the proof binds it False so the predicate beside it decides
+    assert [(guard.literal, guard.compared) for guard in flagged.guards] == [("($1 OR name <> 'x')", (":bool",))]
+    written = parse_write("UPDATE geos SET name = $1 WHERE state = $2 AND pop >= $3", guards=True)
+    assert isinstance(written, WriteSql) and [guard.literal for guard in written.guards] == ["pop >= $1"], written
+    for refused in (
+        "SELECT id FROM t WHERE a = $1 AND b = $2 OR c = $3",
+        "SELECT id FROM t WHERE a = $1 AND b BETWEEN $2 AND $3",
+        "SELECT id FROM t WHERE a = $1 AND EXISTS (SELECT 1 FROM u WHERE u.id = t.id)",
+        "SELECT id FROM t WHERE a = $1 AND u.b > $2",
+        "SELECT id FROM t WHERE a = $1 AND b = ?",
+        "SELECT id FROM t WHERE b > $1",
+    ):
+        assert isinstance(parse_point(refused, guards=True), str), refused
+
+
+def test_a_read_or_write_with_a_guard_is_rewritten_with_where_fragments(tmp_path: Path) -> None:
+    """Flips if a keyed read or write whose ``WHERE`` holds a predicate other than equality is not rewritten onto its
+    helper with that predicate as a ``where=`` ``Fragment`` beside the ``by=`` pins (recorded, found by the source
+    check, and no use-the-helper finding left for it), or a top-level ``OR`` or a guard parameter no seed can bind is
+    taken."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_GUARDED), encoding="utf-8")
+    before = no_whole_reads_findings(config)
+    rewrites = []
+    refused: dict[str, str] = {}
+    for planner in (plan_count_rewrites, plan_list_rewrites, plan_point_rewrites, plan_write_rewrites):
+        planned, refusals = planner(config)
+        rewrites.extend(planned)
+        refused.update({refusal.function: refusal.reason for refusal in refusals})
+    assert sorted(rewrite.function for rewrite in rewrites) == ["big_geos", "live_name", "named_or_all", "rename_big"]
+    assert "OR outside" in refused["either"], refused
+    assert "compared with no column" in refused["flagged"], refused
+
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    entries = {entry["function"]: entry for entry in json.loads(manifest.read_text(encoding="utf-8"))}
+    assert entries["big_geos"]["where"] == [
+        {
+            "column": "",
+            "kind": "guard",
+            "param": None,
+            "literal": "pop > $1",
+            "cast": None,
+            "params": [2],
+            "compared": ["pop"],
+        }
+    ]
+    source = " ".join((tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8").split())
+    assert "Fragment" in source.split("import")[1]
+    assert (
+        "(await aggregate_keyed(conn, 'geos', aggregates={'n': Count()}, by={'state': state}, "
+        "where=[Fragment('pop > $1', (floor,))]))[0]['n']" in source
+    )
+    assert (
+        "read_by(conn, 'geos', by={'state': state}, where=[Fragment('($1::text IS NULL OR name = $1)', (name,))], "
+        "columns=('geo_id', 'name'), records=True, order=[Sort('geo_id')])" in source
+    )
+    assert (
+        "read_value(conn, 'agents', by={'id': agent_id}, where=[Fragment(\"NOT (COALESCE(tags, '[]'::jsonb) ? "
+        "'gone')\", ())], column='name')" in source
+    )
+    assert (
+        "update_keyed(conn, 'geos', values={'name': name}, by={'state': state}, where=[Fragment('pop >= $1', "
+        "(floor,))])" in source
+    )
+    for entry in entries.values():
+        assert_source_says(tmp_path, entry)
+    left = [line for line in use_the_helper_findings(config) if "reads.py" in line]
+    assert sorted(line.split(":")[1].split(" in ")[1] for line in left) == ["either", "flagged"], left
+    assert _unlined(no_whole_reads_findings(config)) == _unlined(before)
+
+
+_CONSTANT_COLUMNS = """
+    _COLUMNS = "geo_id, " "name"
+    _LISTED = ("geo_id", "name")
+    _JOINED = ", ".join(_LISTED)
+    _COMPUTED = ", ".join(column for column in _LISTED)
+
+
+    async def by_constant(conn, state, geo):
+        return await conn.fetchrow(f"SELECT {_COLUMNS} FROM geos WHERE state = $1 AND geo_id = $2", state, geo)
+
+
+    async def by_joined(conn, state):
+        return await conn.fetch(f"SELECT {_JOINED} FROM geos WHERE state = $1 ORDER BY geo_id", state)
+
+
+    async def computed(conn, state):
+        return await conn.fetch(f"SELECT {_COMPUTED} FROM geos WHERE state = $1", state)
+
+
+    async def by_local(conn, state, columns):
+        return await conn.fetch(f"SELECT {columns} FROM geos WHERE state = $1", state)
+"""
+
+
+def test_an_f_string_of_module_constants_is_rewritten_as_the_statement_it_sends(tmp_path: Path) -> None:
+    """Flips if an f-string statement whose every interpolation is a module constant of text (a literal, or a
+    ``", ".join`` of a literal tuple) is not rewritten as the statement it sends (recorded as that text, found by the
+    source check), or one interpolating a value computed at run time (a generator join, a local) is taken."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_CONSTANT_COLUMNS), encoding="utf-8")
+    rewrites = []
+    refused: dict[str, str] = {}
+    for planner in (plan_point_rewrites, plan_list_rewrites):
+        planned, refusals = planner(config)
+        rewrites.extend(planned)
+        refused.update({refusal.function: refusal.reason for refusal in refusals})
+    assert sorted(rewrite.function for rewrite in rewrites) == ["by_constant", "by_joined"], refused
+    assert "_COMPUTED" in refused["computed"] and "columns" in refused["by_local"], refused
+    olds = {rewrite.function: rewrite.old_sql for rewrite in rewrites}
+    assert olds["by_constant"] == "SELECT geo_id, name FROM geos WHERE state = $1 AND geo_id = $2"
+    assert olds["by_joined"] == "SELECT geo_id, name FROM geos WHERE state = $1 ORDER BY geo_id"
+
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    source = " ".join((tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8").split())
+    assert (
+        "read_row(conn, 'geos', by={'state': state, 'geo_id': geo}, columns=('geo_id', 'name'), records=True)" in source
+    )
+    assert (
+        "read_by(conn, 'geos', by={'state': state}, columns=('geo_id', 'name'), records=True, order=[Sort('geo_id')])"
+        in source
+    )
+    for entry in json.loads(manifest.read_text(encoding="utf-8")):
+        assert_source_says(tmp_path, entry)
+    left = [line for line in use_the_helper_findings(config) if "reads.py" in line]
+    assert sorted(line.split(":")[1].split(" in ")[1] for line in left) == ["by_local", "computed"], left

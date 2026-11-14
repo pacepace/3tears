@@ -407,7 +407,7 @@ _BOUND: Final[frozenset[str]] = frozenset({"param", "any", "nullsafe"})
 
 def _numbers(pin: Mapping[str, Any]) -> tuple[int, ...]:
     """the statement's parameters a manifest pin or SET binds (a fragment's, in order; none for a literal)."""
-    if pin["kind"] == "fragment":
+    if pin["kind"] in {"fragment", "guard"}:
         return tuple(pin["params"])
     return (pin["param"],) if pin.get("param") else ()
 
@@ -438,6 +438,66 @@ def _by(entry: Mapping[str, Any], params: Sequence[Any]) -> dict[str, Any]:
         else:
             by[pin["column"]] = None
     return by
+
+
+def _where(entry: Mapping[str, Any], params: Sequence[Any]) -> list[Fragment]:
+    """the entry's guards (each ``WHERE`` conjunct other than an equality) as the ``where=`` fragments its helper call
+    takes, bound to the statement's parameters."""
+    return [
+        Fragment(guard["literal"], tuple(params[number - 1] for number in guard["params"]))
+        for guard in entry.get("where", ())
+    ]
+
+
+def _guard_params(
+    shape: CatalogTable,
+    entry: Mapping[str, Any],
+    params: list[Any],
+    bound: set[int],
+    overrides: Mapping[str, Callable[[Seeded], Any]],
+) -> list[Any]:
+    """``params`` grown to every parameter the entry's guards name, each one no pin binds (not in ``bound``) given the
+    first seeded row's value of the column its guard compares it with: a range from that row keeps some rows and
+    leaves others."""
+    first = Seeded(index=0, case="params", tenant=0, null=False, tie=0)
+    total = max([len(params), *(number for guard in entry.get("where", ()) for number in guard["params"])])
+    grown = [*params, *([None] * (total - len(params)))]
+    for guard in entry.get("where", ()):
+        for number, compared in zip(guard["params"], guard["compared"], strict=True):
+            if number in bound:
+                continue
+            if compared == ":bool":
+                # a truth value standing on its own (``($1 OR col <> 'x')``): False, so the predicate beside it decides
+                grown[number - 1] = False
+                bound.add(number)
+                continue
+            column = shape.columns.get(compared)
+            if column is None:
+                raise AssertionError(f"{entry['table']}: a guard compares ${number} with {compared}, no column of it")
+            grown[number - 1] = overrides[compared](first) if compared in overrides else _value(column, 0)
+            bound.add(number)
+    return grown
+
+
+def _guarded_params(
+    shape: CatalogTable,
+    entry: Mapping[str, Any],
+    overrides: Mapping[str, Callable[[Seeded], Any]],
+    *,
+    nulled: bool,
+) -> tuple[Callable[[Seeded], dict[str, Any]], list[Any]]:
+    """:func:`row_factory`'s row and parameters for a read whose guards name parameters too: the pins numbered
+    ``$1..`` among themselves for the row factory, each then placed at its own number, the guards' own after."""
+    if not entry.get("where"):
+        return row_factory(shape, entry, overrides, nulled=nulled)
+    numbered = sorted({pin["param"] for pin in entry["pins"] if pin["kind"] in _BOUND})
+    compact = {number: place + 1 for place, number in enumerate(numbered)}
+    pins = [{**pin, "param": compact[pin["param"]]} if pin["kind"] in _BOUND else pin for pin in entry["pins"]]
+    row, pinned = row_factory(shape, {**entry, "pins": pins}, overrides, nulled=nulled)
+    params: list[Any] = [None] * max(numbered or [0])
+    for number, place in compact.items():
+        params[number - 1] = pinned[place - 1]
+    return row, _guard_params(shape, entry, params, set(compact), overrides)
 
 
 async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides: _Overrides | None = None) -> None:
@@ -482,15 +542,16 @@ async def _assert_point_same(
     table = entry["table"]
     await _drop_checks(conn, table)
     shape = await _catalog(conn, table)
-    row, params = row_factory(shape, entry, (overrides or {}).get(table, {}), nulled=nulled)
+    row, params = _guarded_params(shape, entry, (overrides or {}).get(table, {}), nulled=nulled)
     by = _by(entry, params)
+    where = _where(entry, params)
     columns = entry["columns"]
     old_sql = entry["old_sql"]
     order = [_sort(term) for term in entry.get("order", ())]
     await conn.execute("SET session_replication_role = replica")
     try:
         if entry.get("shape") == "first":
-            await _assert_first_same(conn, entry, row, params, by, order)
+            await _assert_first_same(conn, entry, row, params, by, order, where)
             return
         await assert_same_results(
             conn,
@@ -498,14 +559,14 @@ async def _assert_point_same(
             row=row,
             old_sql=old_sql,
             params=params,
-            helper=lambda c: read_by(c, table, by=by, columns=columns, records=True, order=order),
+            helper=lambda c: read_by(c, table, by=by, columns=columns, records=True, order=order, where=where),
             order_by=[term["column"] for term in entry.get("order", ())] or None,
             ordered=bool(order),
         )
         if entry["helper"] == "read_row":
 
             async def one_row(c: Any) -> list[Any]:
-                found = await read_row(c, table, by=by, columns=columns, records=True)
+                found = await read_row(c, table, by=by, columns=columns, records=True, where=where)
                 return [] if found is None else [found]
 
             await assert_same_results(
@@ -520,7 +581,7 @@ async def _assert_point_same(
             column = columns[0]
 
             async def one_value(c: Any) -> list[dict[str, Any]]:
-                return [{column: await read_value(c, table, by=by, column=column)}]
+                return [{column: await read_value(c, table, by=by, column=column, where=where)}]
 
             await assert_same_results(
                 conn,
@@ -542,13 +603,14 @@ async def _assert_count_same(
     table = entry["table"]
     await _drop_checks(conn, table)
     shape = await _catalog(conn, table)
-    row, params = row_factory(shape, entry, (overrides or {}).get(table, {}), nulled=nulled)
+    row, params = _guarded_params(shape, entry, (overrides or {}).get(table, {}), nulled=nulled)
     by = _by(entry, params)
+    where = _where(entry, params)
 
     async def answered(c: Any) -> list[dict[str, Any]]:
         if entry["helper"] == "holds_any":
             return [{"answer": await holds_any(c, table, order=entry["walk"], by=by)}]
-        counted = await aggregate_keyed(c, table, aggregates={"n": Count()}, by=by)
+        counted = await aggregate_keyed(c, table, aggregates={"n": Count()}, by=by, where=where)
         return [{"answer": counted[0]["n"]}]
 
     await conn.execute("SET session_replication_role = replica")
@@ -577,6 +639,7 @@ async def _assert_first_same(
     params: list[Any],
     by: dict[str, Any],
     order: list[Sort],
+    where: list[Fragment],
 ) -> None:
     """a first-of or top-n entry (shape ``first``): ``keyset_page``'s first page, its order completed by the key, gives
     the old ``LIMIT`` statement's rows (:func:`~threetears.core.testing.same_results.assert_same_results`,
@@ -592,7 +655,9 @@ async def _assert_first_same(
 
     async def first_page(c: Any) -> list[Any]:
         return (
-            await keyset_page(c, table, columns=entry["columns"], by=by, order=order, limit=rows, records=True)
+            await keyset_page(
+                c, table, columns=entry["columns"], by=by, where=where, order=order, limit=rows, records=True
+            )
         ).rows
 
     await assert_same_results(
@@ -638,7 +703,9 @@ async def _assert_write_cases(
     compact = {number: place + 1 for place, number in enumerate(numbered)}
     pins = [{**pin, "param": compact[pin["param"]]} if pin["kind"] in _BOUND else pin for pin in entry["pins"]]
     row, pinned = row_factory(shape, {**entry, "pins": pins}, (overrides or {}).get(table, {}), nulled=nulled)
-    total = max([number for pin in (*entry["pins"], *entry["sets"]) for number in _numbers(pin)] or [0])
+    total = max(
+        [number for pin in (*entry["pins"], *entry["sets"], *entry.get("where", ())) for number in _numbers(pin)] or [0]
+    )
     params: list[Any] = [None] * total
     for number, place in compact.items():
         params[number - 1] = pinned[place - 1]
@@ -652,7 +719,10 @@ async def _assert_write_cases(
             # a value no seeded row holds, so the write shows in the table after it (a fragment's parameters are
             # taken as the set column's type: GREATEST(col, $1), COALESCE($1::jsonb, col))
             params[number - 1] = set_value(column, 900_000 + offset, (overrides or {}).get(table, {}))
+    set_numbers = {number for pin in entry["sets"] for number in _numbers(pin)}
+    params = _guard_params(shape, entry, params, {*compact, *set_numbers}, (overrides or {}).get(table, {}))
     by = _by(entry, params)
+    where = _where(entry, params)
     values: dict[str, Any] = {}
     for pin in entry["sets"]:
         if pin["kind"] == "param":
@@ -672,9 +742,9 @@ async def _assert_write_cases(
 
     async def helper(c: Any) -> list[Any]:
         if entry["helper"] == "update_keyed":
-            written = await update_keyed(c, table, values=values, by=by, returning=returning)
+            written = await update_keyed(c, table, values=values, by=by, returning=returning, where=where)
         else:
-            written = await delete_keyed(c, table, by=by, returning=returning)
+            written = await delete_keyed(c, table, by=by, returning=returning, where=where)
         return written.rows
 
     # now() differs between the two sides' transactions: compared by whether it was set, not by its instant
@@ -714,7 +784,7 @@ def _write_says(call: ast.Call, entry: Mapping[str, Any]) -> bool:
                 return False
         return True
 
-    if not matches(keywords.get("by"), entry["pins"]):
+    if not matches(keywords.get("by"), entry["pins"]) or not _where_says(keywords, entry):
         return False
     returning = keywords.get("returning")
     if entry.get("returning"):
@@ -727,6 +797,18 @@ def _write_says(call: ast.Call, entry: Mapping[str, Any]) -> bool:
     if entry["helper"] == "update_keyed":
         return matches(keywords.get("values"), entry["sets"])
     return "values" not in keywords
+
+
+def _where_says(keywords: Mapping[str | None, ast.expr], entry: Mapping[str, Any]) -> bool:
+    """whether a helper call's ``where=`` holds the entry's guards, each ``Fragment(<text>, (<arguments>))`` as recorded
+    and in order; none written for none recorded."""
+    guards = entry.get("where") or ()
+    written = keywords.get("where")
+    if not guards:
+        return written is None
+    if not isinstance(written, ast.List | ast.Tuple) or len(written.elts) != len(guards):
+        return False
+    return all(_pin_says(value, guard, entry["args"]) for value, guard in zip(written.elts, guards, strict=True))
 
 
 def _pin_says(value: ast.expr, pin: Mapping[str, Any], args: Sequence[str]) -> bool:
@@ -743,7 +825,7 @@ def _pin_says(value: ast.expr, pin: Mapping[str, Any], args: Sequence[str]) -> b
         return _same_expression(value, 'Fragment("now()")')
     if pin["kind"] == "increment":
         return _same_expression(value, f"Increment({pin['literal']!r})")
-    if pin["kind"] == "fragment":
+    if pin["kind"] in {"fragment", "guard"}:
         bound = ", ".join(args[number - 1] for number in pin["params"])
         tail = "," if len(pin["params"]) == 1 else ""
         return _same_expression(value, f"Fragment({pin['literal']!r}, ({bound}{tail}))")
@@ -922,6 +1004,8 @@ def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
             return False
         if not _pin_says(value, pin, entry["args"]):
             return False
+    if not _where_says(keywords, entry):
+        return False
     if entry.get("shape") == "count":
         return _count_says(keywords, entry)
     if entry["helper"] == "read_value":
@@ -954,7 +1038,7 @@ def _count_says(keywords: Mapping[str | None, ast.expr], entry: Mapping[str, Any
     return (
         aggregates is not None
         and _same_expression(aggregates, '{"n": Count()}')
-        and set(keywords) == {"aggregates", "by"}
+        and set(keywords) == {"aggregates", "by"} | ({"where"} if entry.get("where") else set())
     )
 
 
