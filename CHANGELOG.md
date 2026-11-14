@@ -93,8 +93,12 @@ active, as its model reads it. `campaigns_list` reads what an exploratory campai
 is still named; the archive filter is in the read, so its pages are full but the last. New provisional reads:
 `EvalStorage.query_eval_runs_page`, `EvalStorage.list_campaigns_page`, `list_runs_page` (`threetears.evals.run`).
 **For hosts:** `LIST_PAGE_SIZE` (100) and `LIST_PAGE_MAX` (1000), a page's default and its most rows from Python, are
-exported from `threetears.evals.ops` (provisional), so a host's own listing surface states its `limit` from them
-rather than restating the numbers.
+exported from `threetears.evals.ops`, so a host's own listing surface states its `limit` from them rather than
+restating the numbers. Four names a host binds are declared, and the declared surface's ceiling moves from 499 to 503
+(owner rule: the ceiling gives way for a genuinely necessary host name): `LIST_PAGE_SIZE` and `LIST_PAGE_MAX` are
+stable; `threetears.evals.schema.check_after`, which a store declaring `after` calls, and
+`threetears.evals.run.UnpricedCall`, which the host-contract `LaunchableKind.price_subject_call_floor` and
+`price_largest_call` return, join the host contract.
 
 **For hosts (a caller of the listings):** a caller that expected every run or campaign gets the first 100 and a
 `next`. To read them all, loop: `page = runs_list(host, scope)`, then while `page.next` is not `None`,

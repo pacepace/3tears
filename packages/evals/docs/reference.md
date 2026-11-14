@@ -75,6 +75,8 @@ The engine's stored shapes and the ports a host implements: what is written down
 
 - **`bind_cell_identity`** · *host contract* · function · Make `identity` the answer of `current_cell_identity` for the extent of the block.
   <br>`bind_cell_identity(identity: CellIdentity) -> Iterator[None]`
+- **`check_after`** · *host contract* · function · Return `DocumentStore.by_doc_type`'s `after` checked, as a pair — the calls every implementation refuses.
+  <br>`check_after(after: Any, order_by: str | None) -> tuple[Any, str] | None`
 - **`current_cell_identity`** · *host contract* · function · Return the cell the calling task is working for, or `None` outside any cell.
   <br>`current_cell_identity() -> CellIdentity | None`
 - **`field_in_values`** · *host contract* · function · Return `field_in` checked and each field's values with repeats dropped — the meaning of `field_in`.
@@ -532,6 +534,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`SimulatorTurn`** · dataclass · One user-side utterance produced by the simulator.
 - **`TurnDriver`** · dataclass · Multi-actor round scheduler and utterance generator.
 - **`UnknownSubject`** · *host contract* · dataclass · A host's answer that it holds no subject of the id a launch named — and how its caller finds one it does.
+- **`UnpricedCall`** · *host contract* · dataclass · A call an arm's cells are bound to make that the clients they call through cannot price before launch.
 
 **Types**
 
@@ -845,6 +848,10 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 - **`ANALYSIS_PREPARATION_BUDGET_S`** · *host contract* · constant (float) · The default wall-clock ceiling on a generation job's preparation, used when a host supplies none (`AnalysisGeneration.preparation_budget_s`, read on every call): building the `analyst` client, holding it to the host's allowed writers and asking whether its turns can be priced — in seconds.
   <br>`= 900.0`
+- **`LIST_PAGE_MAX`** · constant (int) · The most rows one listing page reads; a caller wanting more reads the next page.
+  <br>`= 1000`
+- **`LIST_PAGE_SIZE`** · constant (int) · How many rows a listing page reads when its caller names no `limit`.
+  <br>`= 100`
 
 **Also exported here**
 
