@@ -119,6 +119,8 @@ from threetears.evals.analysis.report.number_forms.policy import (
     policy_effect,
     policy_figure,
     policy_interval,
+    policy_level,
+    policy_lone_interval,
     policy_p,
     policy_places,
     policy_rate,
@@ -1296,10 +1298,10 @@ class PageForms:
 
         :param level: The level, as a share.
         :ptype level: float
-        :return: The level to four decimals.
+        :return: The level as its text states it (:func:`policy_level`), as a share.
         :rtype: float
         """
-        return round(level, 4)
+        return float(policy_level(100 * level).removesuffix(PERCENT)) / 100
 
     # --- figures that are no measurement -----------------------------------------------------------------------------
 
@@ -1361,12 +1363,13 @@ class PageForms:
         :return: The level.
         :rtype: Printed
         """
-        digits = format_number(level * 100 if level <= 1 else level)
-        return self._issue("", "", "confidence", level, digits + PERCENT, digits, PERCENT)
+        text = policy_level(level * 100 if level <= 1 else level)
+        return self._issue("", "", "confidence", level, text, text.removesuffix(PERCENT), PERCENT)
 
     def confidence_share(self, level: float) -> Printed:
-        """An interval's level held as a share (``0.95``, ``0.99688``), as a code page states it today: in percent to the
-        hundredth that tells two levels apart (``99.69%``). Its ``held`` is the level to that precision, as a share,
+        """An interval's level held as a share (``0.95``, ``0.99688``), as a code page states it: in percent, its distance
+        from 100% to two significant figures (:func:`policy_level`: ``99.69%``). Its ``held`` is the level to that
+        precision, as a share,
         which is how the page tells whether two levels read alike or one is the nominal level. It belongs to no
         measure: a level is how a family's intervals were read, the same for every measure the family holds, as
         :meth:`confidence`'s is.
@@ -1376,7 +1379,7 @@ class PageForms:
         :return: The level.
         :rtype: Printed
         """
-        text = format_number(round(100 * level, 2)) + PERCENT
+        text = policy_level(100 * level)
         return self._issue(
             "", "", "confidence", level, text, text.removesuffix(PERCENT), PERCENT, held=self.told_apart(level)
         )
@@ -1846,10 +1849,11 @@ class PageForms:
         return shares
 
     def glyph_title(self, value: float, low: float, high: float, *, unit: str, margin: float | None = None) -> Printed:
-        """What an interval glyph drawn with no table's text beside it states in its title, as it prints one today:
-        the figure in its unit by the number rule, then its interval in its one form, its unit on the figure alone
-        (``88.1 to 100``, ``-$0.01 to $0.06``, ``-4.2 to +2``), then a declared margin, ``±5 pts``. A table's glyph
-        states its cells' text instead; this is the glyph's own, of no measure.
+        """What an interval glyph drawn with no table's text beside it states in its title: the figure in its unit,
+        then its interval in its one form, its unit on the figure alone, both at two significant figures of the
+        interval's width (:func:`policy_lone_interval`: ``88 to 100``, ``-4.2 to +2.0``), money in its own form
+        (``-$0.01 to $0.06``), then a declared margin, ``±5 pts``. A table's glyph states its cells' text instead;
+        this is the glyph's own, of no measure.
 
         :param value: The figure, in ``unit``.
         :ptype value: float
@@ -1866,15 +1870,15 @@ class PageForms:
         """
         # The unit is on the figure alone, the interval beside it bare (number rule 3), but money's ``$`` on each end.
         if is_money(unit):
-            ends = (with_unit(low, unit), with_unit(high, unit))
-        elif unit == POINTS:
-            # A change in points: the figure and its interval's ends carry their signs.
-            ends = (plus_signed(number_in(low, unit), low), plus_signed(number_in(high, unit), high))
+            interval = interval_beside(with_unit(low, unit), with_unit(high, unit))
+            figure = with_unit(value, unit)
         else:
-            ends = (number_in(low, unit), number_in(high, unit))
-        interval = interval_beside(*ends)
-        figure = with_unit(value, unit)
-        said = f"{plus_signed(figure, value) if unit == POINTS else figure}, interval {interval}"
+            # A change in points: the figure and its interval's ends carry their signs.
+            digits, interval = policy_lone_interval(
+                low, high, rate=unit in (PERCENT, POINTS), change=unit == POINTS, value=value
+            )
+            figure = unit_spaced(digits, unit)
+        said = f"{figure}, interval {interval}"
         if margin is not None:
             said += f", margin ±{with_unit(margin, unit)}"
         return self._issue("", "", "lone", value, said, said, "")
@@ -2714,8 +2718,9 @@ class PageForms:
     def key_percent(self, figure: Figure, hundred: float, *, tens: bool = False) -> str:
         """A rate's figure in percent, its digits without the ``%``: at its measure's decimals where the page holds the
         rate (:meth:`_key_rate_places`), else by the number rule for a percent; a descriptive ratio whole
-        (:attr:`~threetears.evals.analysis.report.figure_keys.Figure.whole`); an interval's confidence level as stored
-        (the per-interval level ``{family.level}`` cites), or the joint guarantee, which a figure in the package's own
+        (:attr:`~threetears.evals.analysis.report.figure_keys.Figure.whole`); an interval's confidence level as every
+        level prints as text (:func:`policy_level`; the per-interval level ``{family.level}`` cites), or the joint
+        guarantee, which a figure in the package's own
         words holds as its value (:attr:`~threetears.evals.analysis.report.figure_keys.Figure.joint`); and ``tens`` to the nearest 10% (the ``pct10`` filter, an
         approximation the writer chooses).
 
@@ -2732,10 +2737,10 @@ class PageForms:
         if tens:
             text = format_number(float(round(hundred / 10) * 10))
         elif figure.level:
-            # An interval's level as its figure holds it: the joint guarantee where the package's own words state one
-            # (its value, from :func:`joint_level`), else the level as stored, the per-interval one {family.level}
-            # cites by definition.
-            text = format_number(hundred)
+            # An interval's level as every level prints as text (:func:`policy_level`): the joint guarantee where the
+            # package's own words state one (its value, from :func:`joint_level`), else the per-interval one
+            # {family.level} cites, its figure exact and its text rounded (owner ruling, 2026-11-14).
+            text = policy_level(hundred).removesuffix(PERCENT)
         elif figure.whole:
             text = number_in(float(round(hundred)), PERCENT)
         elif places is not None:

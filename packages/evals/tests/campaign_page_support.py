@@ -22,6 +22,8 @@ from threetears.evals.analysis import (
     campaign_report_html,
     campaign_report_markdown,
 )
+from threetears.evals.analysis.report.build import build_code_only_report_in_forms
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     TableBlock,
@@ -133,8 +135,13 @@ def kairo_page() -> CampaignReport:
         }
     )
     labels = bundle.readings.arm_labels()
+    # Each fold in its campaign's forms, as the service builds a campaign's page: a measure reads at the campaign's
+    # set of it, the code page's readings too, so a fold's outcome note reads the pass rate as the scorecard does.
+    forms = PageForms.of_aspects(bundle.aspects, bundle.readings)
     reports = {
-        aspect.aspect: build_code_only_report(aspect, assembled_at="2026-10-31T00:00:00+00:00", arm_labels=labels)
+        aspect.aspect: build_code_only_report_in_forms(
+            aspect, assembled_at="2026-10-31T00:00:00+00:00", arm_labels=labels, forms=forms[aspect.aspect]
+        )
         for aspect in bundle.aspects
     }
     return build_campaign_report(campaign, bundle.readings, reports)

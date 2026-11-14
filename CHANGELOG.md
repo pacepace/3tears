@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a value and its interval print to the precision the interval justifies (#1127, #1024)
+
+**Changed:** a measure's figures read at two significant figures of the width of its narrowest headline interval
+(owner ruling, 2026-11-14), where they read at the half-width's first figure, or its second when that was a 1 or a 2.
+A measure whose narrowest interval is 6 to 10 units wide now reads one decimal more: Kairo's pass rate reads `85.3%`,
+`-7.6 pts` and `-12.9 to -1.8 pts` where it read `85%`, `-8 pts` and `-13 to -2 pts`, and its failed-reply notices
+`0.0022` where they read `0.002`. A measure still reads at one precision across its campaign, and a rate at most one
+decimal. A figure and interval no measure's set holds (a chart a host built with no decided texts, a glyph drawn with
+no table) read at two figures of their own interval's width through one function, so they no longer print at two
+precisions (`-4.2 to +2.0`, never `-4.2 to +2`). A confidence level printed as text reads its distance from 100% to
+two significant figures (`99.69%`, `98.3%` for 98.33%), in a head, a cell and the prose alike; the level a figure
+holds stays exact. Page text moves, so the writer and judge recordings keyed on it are re-recorded.
+
 ### evals: a judge call its replay does not hold is named, never dropped (#1162)
 
 **Fixed:** a replayed judge whose recording held no call for a prompt read the miss as a failed call, its text

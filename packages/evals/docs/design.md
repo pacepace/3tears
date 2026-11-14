@@ -198,10 +198,12 @@ figure against any other.
    notes, tooltips, glyph titles and the prose keys that cite it share one count of decimals. The set is
    the measure, not the surface, the column or the role. Two measures on one page can differ, because each reads to
    its own uncertainty: a pass rate at `85%` beside a check near the ceiling at `99.7%`.
-2. **The digits come from the measure's uncertainty.** Take the narrowest 95% half-width among the intervals of the
-   figures a reader compares (each arm's level and each comparison's change, on every page of the campaign), and print
-   to its first significant digit, or to its second when that digit is a 1 or a 2. A pooled figure (the code page's
-   campaign-wide pass rate, or one pooled over the comparisons) prints at the measure's form but never sets it.
+2. **The digits come from the measure's uncertainty.** Take the narrowest 95% interval among the figures a reader
+   compares (each arm's level and each comparison's change, on every page of the campaign), and print to two
+   significant figures of its width (owner ruling, 2026-11-14): a value and its interval read at the precision the
+   interval justifies. A pooled figure (the code page's campaign-wide pass rate, or one pooled over the comparisons)
+   prints at the measure's form but never sets it. A figure and interval no measure's set holds (a chart a host built
+   with no decided texts, a glyph drawn with no table) read at two significant figures of their own interval's width.
    - A rate, or a change in points, never goes past one decimal, except next to a boundary: an end that would round
      onto zero, 0% or 100% takes just enough digits to stay off it. `99.7%` never reads `100%`, and an interval whose
      end excludes zero never reads as touching it (`-15 to -0.03 pts`). A judge's preference share keeps off even,
@@ -218,8 +220,11 @@ figure against any other.
 4. **A heading states the joint guarantee.** A chart's head reads `95% intervals (adjusted for 16 comparisons)`, a
    column's header `95% interval (adjusted for 16 comparisons)`, and either plain `95%` where nothing is adjusted.
    The package's own words print the per-interval level a correction implies (99.69%) only in Method and the
-   glossary, as stored, so they never round a level. `{family.level}` is the key that cites it, at that stored
-   precision. An interval at another level, one no family adjustment explains, states its own.
+   glossary. `{family.level}` is the key that cites it. A level printed as text rounds as a value does by its
+   interval: its distance from 100% to two significant figures (`99.69%`, `97.5%`, an uncorrected 98.33% as `98.3%`;
+   owner ruling, 2026-11-14), in a head, a cell and the prose alike. The level a figure holds stays exact, so only
+   the text gives up "never rounded": two levels that differ past those figures print alike. An interval at another
+   level, one no family adjustment explains, states its own.
 5. **Figures that are not measurements keep fixed forms.**
    - A count is whole and grouped: `765 of 897`.
    - A declared value prints as declared: a margin, a floor or a setting reads `-15 pts`, never `-15.0 pts`.
@@ -237,9 +242,11 @@ figure against any other.
 The scope of a set is decided in one place, `campaign_set` in `report/number_forms/sets.py`, so a later ruling that each page decides
 its own forms changes one line there (`_SET_SCOPE`).
 
-The digits follow the Particle Data Group's rule (quote an uncertainty to one or two significant figures and round
-the value to the same place), simplified to "two when the first is 1 or 2" so that two measures of similar
-uncertainty don't split across a threshold on one page. Cole ("Too many digits", 2015) gives the same advice for
+The digits follow the Particle Data Group's practice (quote an uncertainty to one or two significant figures and
+round the value to the same place), fixed at two figures of the interval's width so that one rule covers every
+measure and two measures of similar uncertainty don't split across a threshold on one page. Until 2026-11-14 the
+rule read the half-width's first figure, or its second when that was a 1 or a 2, which read a pass rate with a 3.7
+point half-width whole (`85%`, `-8 pts`); two figures of its 7.4 point width read it to a tenth. Cole ("Too many digits", 2015) gives the same advice for
 effect sizes and measures of spread, and the APA manual (§6.36) the p-value form; gtsummary is the tooling precedent
 for deciding a whole table's forms once.
 
@@ -256,9 +263,9 @@ What the policy changed, on Kairo's written page and the scaled campaign's code 
 
 | Figure | Reads | Read before |
 |---|---|---|
-| A candidate's change in pass rate (Kairo) | `-8 pts`, `-13 to -2 pts` | `-7.6`, `-12.9 to -1.8`, beside a table at `85%` |
+| A candidate's change in pass rate (Kairo) | `-7.6 pts`, `-12.9 to -1.8 pts`, beside a table at `85.3%` | `-7.6`, `-12.9 to -1.8`, beside a table at `85%` |
 | A check near the ceiling (Kairo) | `99.7%`, `-1.0 pts`, `-3.6 to +1.6 pts` | the same: its interval is ±0.6 points |
-| Failed-reply notices (Kairo) | `0.002 notices`, `-0.002 notices`, `-0.007 to +0.002 notices` | four decimals, set by one stratum's figure |
+| Failed-reply notices (Kairo) | `0.0022 notices`, `-0.0022 notices`, `-0.0069 to +0.0025 notices` | four decimals, set by one stratum's figure |
 | The margin (Kairo) | `-15 pts` in the chart, "the 15-point margin" in the prose | `-15.0 pts` in the chart |
 | Adjusted p (Kairo) | `< 0.001`, `0.005`, `0.11`, `0.50`, `1.00` | `< 0.000001`, `0.00008342`, `0.4996`, `1` |
 | A corrected interval's heading (Kairo) | `95% interval (adjusted for 16 comparisons)` | `99.7% (95% across 16 comparisons)` |

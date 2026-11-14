@@ -20,6 +20,7 @@ from pydantic import ConfigDict, Field, JsonValue, ModelWrapValidatorHandler, Va
 from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.quantities import (
     PERCENT,
+    POINTS,
     is_money,
     number_in,
     render_cell,
@@ -40,6 +41,7 @@ from threetears.evals.analysis.report.charts import (
     Token,
 )
 from threetears.evals.analysis.report.cost_unit import REPLIES, money_ruler, per_count
+from threetears.evals.analysis.report.number_forms.policy import policy_lone_interval
 from threetears.evals.analysis.report.parts.look import arm_shape, arm_token, cost_axis_format
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.analysis.report.unit_once import ends_beside, interval_beside
@@ -1251,7 +1253,10 @@ class ChartBlock(_Block):
                     point.arm,
                     said(point.cost),
                     interval_beside(said(point.cost_low), said(point.cost_high)),
-                    point.pass_rate_text or interval_value_text(point.pass_rate, PERCENT),
+                    point.pass_rate_text
+                    or interval_value_text(
+                        point.pass_rate, PERCENT, interval=(point.pass_rate_low, point.pass_rate_high)
+                    ),
                     point.pass_rate_interval_text or interval_text(point.pass_rate_low, point.pass_rate_high, PERCENT),
                 ]
                 for point in self.points
@@ -1268,7 +1273,7 @@ class ChartBlock(_Block):
         for row in self.rows:
             cells = [
                 row.label,
-                interval_value_text(row.value, self.unit),
+                interval_value_text(row.value, self.unit, interval=(row.low, row.high)),
                 interval_text(row.low, row.high, self.unit),
                 str(row.n_cases),
             ]
@@ -1295,26 +1300,39 @@ def _data_domain(ends: Sequence[float], *, floor: float, ceiling: float | None =
     return (low, min(high, ceiling) if ceiling is not None else high)
 
 
-def interval_value_text(value: float, unit: str = "") -> str:
-    """A charted value as text, by the one number rule, at the precision its unit is read to; the unit itself is
-    the header's."""
-    return number_in(value, unit)
+def interval_value_text(value: float, unit: str = "", *, interval: tuple[float, float] | None = None) -> str:
+    """A charted value as text, at the precision its interval justifies (two significant figures of its width, as
+    :func:`interval_text` reads the interval beside it), so the value and its interval read at one precision; a value
+    with no interval at two significant figures of itself. The unit itself is the header's.
+
+    :param value: The value.
+    :ptype value: float
+    :param unit: The unit it is read in: a percent or a point reads to at most one decimal.
+    :ptype unit: str
+    :param interval: The interval printed beside it, or None.
+    :ptype interval: tuple[float, float] | None
+    :return: The text.
+    :rtype: str
+    """
+    low, high = interval if interval is not None else (value, value)
+    return policy_lone_interval(low, high, rate=unit in (PERCENT, POINTS), value=value)[0]
 
 
 def interval_text(low: float, high: float, unit: str = "") -> str:
-    """A charted interval as text, in the one form every page prints an interval in: ``low to high``, each end at the
-    precision its unit is read to; the unit itself is the header's.
+    """A charted interval as text, in the one form every page prints an interval in: ``low to high``, both ends at
+    the precision the interval justifies (two significant figures of its width), as the value beside it reads
+    (:func:`interval_value_text`); the unit itself is the header's.
 
     :param low: The low end.
     :ptype low: float
     :param high: The high end.
     :ptype high: float
-    :param unit: The unit the ends are read in, which sets their precision.
+    :param unit: The unit the ends are read in: a percent or a point reads to at most one decimal.
     :ptype unit: str
     :return: The text.
     :rtype: str
     """
-    return interval_beside(number_in(low, unit), number_in(high, unit))
+    return policy_lone_interval(low, high, rate=unit in (PERCENT, POINTS))[1]
 
 
 class PrintedCheck(EvalDocumentModel):

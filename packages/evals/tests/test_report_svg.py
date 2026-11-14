@@ -288,8 +288,9 @@ async def test_a_campaign_with_enough_cases_draws_its_contrast_s_interval_in_the
 def test_a_glyph_is_ink_on_one_scale_with_its_numbers_in_its_title() -> None:
     svg = interval_glyph_svg(-1.1, -4.2, 2.0, unit="pts", scale=(-7.0, 36.7), margin=5.0)
     assert svg.startswith('<svg class="viz-glyph" viewBox="0 0 120 14" role="img">')
-    # The interval in its one form, a change's ends signed, the unit once, on the figure (number rule 3).
-    assert "<title>-1.1 pts, interval -4.2 to +2, margin ±5 pts</title>" in svg
+    # The interval in its one form, a change's ends signed, the unit once, on the figure (number rule 3), the figure
+    # and both ends at two significant figures of the interval's width (owner ruling, 2026-11-14): +2.0, never +2.
+    assert "<title>-1.1 pts, interval -4.2 to +2.0, margin ±5 pts</title>" in svg
     for mark in ("viz-track", "viz-zero", "viz-band", "viz-whisker", "viz-point"):
         assert f'class="{mark}"' in svg, mark
     assert "<script" not in svg and "url(" not in svg and "#" not in svg and "href" not in svg

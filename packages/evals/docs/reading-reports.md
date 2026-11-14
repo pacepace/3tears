@@ -543,18 +543,20 @@ on 0–1 (a pass rate, an accuracy, a precision, a pass/fail grader or judged di
 change in it in points. Each measure reads at one precision on every page of its campaign, the written page, the code
 page and each aspect page alike, so one value reads the same in a table, a chart, a tooltip, the prose and the CLI.
 
-- **The digits come from the measure's uncertainty**: the first significant digit of the narrowest 95% half-width
-  among the figures a reader compares (each arm's level and each comparison's change), or the second when that digit
-  is a 1 or a 2. A pooled figure, such as a code page's campaign-wide pass rate, prints at that form and never sets
-  it. A pass rate over a few hundred cases reads whole (`85%`, `-8 pts`); a check near the ceiling, whose interval
-  is narrow, reads a decimal (`99.7%`).
+- **The digits come from the measure's uncertainty**: two significant figures of the width of the narrowest 95%
+  interval among the figures a reader compares (each arm's level and each comparison's change), so a value and its
+  interval read at the precision the interval justifies. A pooled figure, such as a code page's campaign-wide pass
+  rate, prints at that form and never sets it. A pass rate whose narrowest interval is 11 points or wider reads
+  whole (`21%`, `-7 pts`); one whose narrowest is 7 points reads a tenth (`85.3%`), as does a check near the ceiling
+  (`99.7%`).
 - **A rate, or a change in points, never goes past one decimal**, except where an end would round onto zero, 0% or
   100%: it takes just enough digits to stay off it, so `99.7%` never reads `100%`, and an interval that excludes zero
   never reads as touching it (`-15 to -0.03 pts`). A judge's preference share keeps off even, 50%, the same way.
 - **An interval reads `low to high`**, its unit once (`-13 to -2 pts`), a change's ends signed.
 - **A heading states what a family's intervals hold at together**: a chart's `95% intervals (adjusted for 16
   comparisons)`, a column's `95% interval (adjusted for 16 comparisons)`, plain `95%` where nothing is adjusted.
-  Each interval's own level (99.69%) is in Method and the glossary, and the key `{family.level}` cites it.
+  Each interval's own level (99.69%) is in Method and the glossary, and the key `{family.level}` cites it. A
+  level printed as text reads its distance from 100% to two significant figures (`99.69%`, `98.3%` for 98.33%).
 - **Figures that are not measurements keep fixed forms**: a count whole (`765 of 897`), a declared margin as declared
   (`-15 pts`), a criterion's gap or the weakest margin as a bare distance (signed only by `|signed`), a p-value as
   APA writes it (`< 0.001`, `0.005`, `0.50`), an effect size or correlation to two decimals (`0.08`), an exact zero

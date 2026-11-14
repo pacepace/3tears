@@ -204,15 +204,15 @@ def test_page_b_s_lead_says_what_the_interval_allows_each_arm_the_subject(rungs:
 def test_a_margin_lead_opens_on_its_cell_s_reading_then_says_an_arm_lies_below_the_control() -> None:
     """qwen3.8-flash's interval on its drop lies wholly below zero and within the 15-point margin: the lead opens on the
     reading in the scorecard cell's own term, as 1017's does, then says it lies below September, September the
-    subject of its own count. Every figure reads at the pass rate's whole points, as Kairo's pages print it (number
-    policy, rule 2)."""
+    subject of its own count. Every figure reads at the pass rate's tenth of a point, as Kairo's pages print it (number
+    policy, rule 2: two significant figures of its narrowest interval's width, 7.0 points)."""
     page = kairo_page()
     (lead,) = _said(page.blocks, "verdict", "answer")
     assert lead.text == (
         "Pass rate: qwen3.8-flash against September no worse than the margin, though below September. Of 897 trials, "
-        "September passed 765. Of 895, qwen3.8-flash passed 695. The interval puts qwen3.8-flash between 3 and 11 "
+        "September passed 765. Of 895, qwen3.8-flash passed 695. The interval puts qwen3.8-flash between 3.4 and 10.8 "
         "points worse. Pass rate: 1017 against September no worse than the margin. Of 897 trials each, September "
-        "passed 765 and 1017 738. The interval allows 1017 to be as much as 6 points worse or 1 better."
+        "passed 765 and 1017 738. The interval allows 1017 to be as much as 5.8 points worse or 1.1 better."
     )
     # Each arm's first clause carries its scorecard cell's reading term, word for word.
     (rows,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "aspects"]
