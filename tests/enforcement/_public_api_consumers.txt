@@ -363,7 +363,7 @@ packages/core/src/threetears/core/keyed/__init__.py:value_ranks  # bluelabsio/14
 packages/core/src/threetears/core/keyed/steps.py:value_ranks  # defined here and re-exported from threetears.core.keyed for the reports caller the keyed/__init__.py entry names
 packages/epoch/src/threetears/epoch/standing_rows.py:Standing  # bluelabsio/14-eng-ai-bot: src/aibots/hub/agents/standing.py declares the hub's standing sets (active agents, active customers) with it
 packages/epoch/src/threetears/epoch/__init__.py:Standing  # re-exported from threetears.epoch for the hub caller the standing_rows.py entry names
-packages/epoch/src/threetears/epoch/standing_rows.py:StandingRows  # bluelabsio/14-eng-ai-bot: src/aibots/hub/agents/standing.py holds the hub's standing sets (AgentCollection.list_active, CustomerCollection.list_active, delegation, pending access)
+packages/epoch/src/threetears/epoch/standing_rows.py:StandingRows  # bluelabsio/14-eng-ai-bot: src/aibots/hub/agents/standing.py holds the hub's standing sets (AgentCollection.list_active, CustomerCollection.list_active, delegation, pending access); ActiveAgentCounts (admin health active_count) reads its cold_reads to rebuild the per-customer sets it derives
 packages/epoch/src/threetears/epoch/__init__.py:StandingRows  # re-exported from threetears.epoch for the hub caller the standing_rows.py entry names
 packages/epoch/src/threetears/epoch/row_follower.py:follow_since  # bluelabsio/14-eng-ai-bot: src/aibots/hub/app.py follows the datasources table from its cold read beside several followers, and src/aibots/gateway/service.py the catalog tables
 packages/epoch/src/threetears/epoch/__init__.py:follow_since  # re-exported from threetears.epoch for the hub callers the row_follower.py entry names

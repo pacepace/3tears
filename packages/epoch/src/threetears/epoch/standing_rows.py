@@ -21,7 +21,10 @@ the two is missed.
 A caller that acts on each row that starts or stops standing (re-enrolling a principal whose membership was deleted,
 removing one whose principal went) passes ``on_change=``: told each followed change to what is held, once the set
 holds it, with the row held before and after. The cold read is no change: such a caller converges its own state
-against :meth:`StandingRows.keys` after it, as it would after a reset.
+against :meth:`StandingRows.keys` after it, as it would after a reset. It knows one happened by
+:attr:`StandingRows.cold_reads`, which moves at each cold read (the first question, and the first after each reset):
+a caller holding state derived from the set checks it at each question, after the question settled the set, and
+rebuilds from :meth:`StandingRows.held` when it moved.
 """
 
 from __future__ import annotations
@@ -166,6 +169,7 @@ class StandingRows:
         self._since: dict[str, str | None] | None = None
         self._held: dict[tuple[Any, ...], dict[str, Any]] = {}
         self._missed: set[tuple[Any, ...]] = set()
+        self._cold_reads = 0
         self._rows = RowFollower({}, self.on_table_dropped, name=name, key_reads={standing.table: self._on_key})
 
     @property
@@ -176,6 +180,17 @@ class StandingRows:
         :rtype: Standing
         """
         return self._standing
+
+    @property
+    def cold_reads(self) -> int:
+        """how many times the set has been read cold: its first question, and the first after each reset. A caller
+        holding state derived from the set rebuilds it from :meth:`held` when this moves; a followed change never
+        moves it.
+
+        :return: the cold reads taken so far
+        :rtype: int
+        """
+        return self._cold_reads
 
     @property
     def rows(self) -> RowFollower:
@@ -316,6 +331,7 @@ class StandingRows:
         self._held = {standing.key_of(row): dict(row) for row in rows if standing.member(row)}
         self._missed.clear()
         self._loaded = True
+        self._cold_reads += 1
         log.info("standing rows read cold: set=%s table=%s rows=%d", self._name, standing.table, len(self._held))
 
     async def _apply(self, key: tuple[Any, ...]) -> None:

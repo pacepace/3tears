@@ -151,6 +151,28 @@ async def test_a_reset_reads_cold_at_the_next_question() -> None:
     assert cold.calls == 2
 
 
+async def test_cold_reads_counts_each_cold_read_and_no_followed_change() -> None:
+    """Flips if cold_reads does not move at the first question and the first after a reset (the hub's derived counts
+    rebuild from held() when it moves), moves at a reset before its question reads cold, or moves at a followed
+    change."""
+    row = _agent()
+    db = _FakeAgentsDb([row])
+    rows = _set(db, _Cold(db))
+    assert rows.cold_reads == 0
+    assert await rows.count() == 1
+    assert rows.cold_reads == 1
+    added = _agent(row["customer_id"])
+    db.rows[(added["customer_id"], added["id"])] = added
+    rows.rows.on_row(_TABLE, _changed(added))
+    await rows.settled()
+    assert await rows.count() == 2
+    assert rows.cold_reads == 1, "a followed change is no cold read"
+    rows.on_table_dropped()
+    assert rows.cold_reads == 1, "the reset reads nothing; its next question reads cold"
+    assert await rows.count() == 2
+    assert rows.cold_reads == 2
+
+
 async def test_the_rows_are_read_by_key_and_judged_again() -> None:
     """Flips if the rows are read other than by the held keys, a page's worth a statement, or a row that stopped
     standing after it was held is answered."""
