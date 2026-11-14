@@ -31,7 +31,7 @@ design points:
 - the walker, the discovery list and the exemptions live in
   ``partition_column_walker.py`` beside this module, shared with the
   walker's meta-test.
-- exemptions live in the walker's ``_EXEMPT_LITERAL_FRAGMENTS`` -- a narrow
+- exemptions live in the walker's ``EXEMPT_LITERAL_FRAGMENTS`` (:mod:`threetears.enforcement.partition_column`) -- a narrow
   allowlist of string fragments for SQL that legitimately spans
   partitions (e.g. the body of a ``@spans_partitions``-decorated
   method). every entry carries an inline ``# rationale: ...``

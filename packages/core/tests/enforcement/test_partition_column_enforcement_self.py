@@ -255,3 +255,46 @@ class TestPartitionWalkerForeignKeyTie:
         )
         strict, _ = violations_in_file(target, tied)
         assert len(strict) == 1
+
+
+class TestPartitionWalkerHelperCalls:
+    """a keyed helper call is a read or write of its table too: it pins the partition column in ``by=``."""
+
+    def test_a_helper_call_missing_the_partition_pin_is_flagged(self, tmp_path: Path) -> None:
+        """Flips if a keyed helper call reading or writing a partitioned table without its partition column in
+        ``by=`` (or with no ``by=`` at all) passes, as a statement written as SQL text does not."""
+        target = _write(
+            tmp_path / "src" / "pkg" / "mod.py",
+            "from threetears.core.keyed import read_by, update_keyed, holds_any\n"
+            "async def by_user(conn, user_id):\n"
+            "    return await read_by(conn, 'memories', by={'user_id': user_id}, records=True)\n"
+            "async def every(conn):\n"
+            "    return await holds_any(conn, 'conversations', order=['agent_id'])\n"
+            "async def mark(conn, fire_id):\n"
+            "    await update_keyed(conn, 'wake_fires', values={'status': 'done'}, by={'fire_id': fire_id})\n",
+        )
+        strict, _ = violations_in_file(target)
+        assert len(strict) == 3, strict
+        assert all("partition column" in message for message in strict), strict
+
+    def test_a_helper_call_pinning_the_partition_column_passes(self, tmp_path: Path) -> None:
+        """Flips if a helper call pinning the partition column in ``by=``, or handing ``by=`` built elsewhere (opaque,
+        as an f-string placeholder is), or naming its table at run time, or under a statement whose comment block
+        declares it ``__SPANS_PARTITIONS__``, is flagged."""
+        target = _write(
+            tmp_path / "src" / "pkg" / "mod.py",
+            "from threetears.core.keyed import read_by, keyset_page\n"
+            "async def by_user(conn, agent_id, user_id):\n"
+            "    return await read_by(conn, 'memories', by={'agent_id': agent_id, 'user_id': user_id})\n"
+            "async def page(conn, by, table):\n"
+            "    await keyset_page(conn, 'conversations', columns=None, by=by, order=[], limit=5)\n"
+            "    await read_by(conn, table, by={'user_id': 1})\n"
+            "async def due(conn):\n"
+            "    # __SPANS_PARTITIONS__: the tick reads due jobs across every partition\n"
+            "    async with conn.transaction():\n"
+            "        rows = (\n"
+            "            await read_by(conn, 'scheduled_jobs', by={'status': 'active'})\n"
+            "        )\n",
+        )
+        strict, deferred = violations_in_file(target)
+        assert strict == [] and deferred == [], strict
