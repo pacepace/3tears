@@ -948,9 +948,8 @@ def _reflective_private_violations(
     owned_markers: set[str] = set()
     candidates: list[tuple[ast.Call, str, str]] = []
     reflective = _reflective_private_calls(tree) if _may_reflect_privately(calls) else []
-    for call, scopes in reflective:
+    for call, scopes, name in reflective:
         accessor = call.func.id if isinstance(call.func, ast.Name) else ""
-        name = _private_name_argument(call, scopes)
         receiver = call.args[0]
         if isinstance(receiver, ast.Name) and receiver.id in _OWNER_RECEIVERS:
             continue
@@ -1009,30 +1008,35 @@ def _may_reflect_privately(calls: list[ast.Call]) -> bool:
     )
 
 
-def _reflective_private_calls(tree: ast.Module) -> list[tuple[ast.Call, tuple[_ScopeNode, ...]]]:
+def _reflective_private_calls(tree: ast.Module) -> list[tuple[ast.Call, tuple[_ScopeNode, ...], str]]:
     """every reflective call with a private-name literal, with its enclosing scopes outermost first.
 
     :param tree: the parsed module
     :ptype tree: ast.Module
-    :return: ``(call, scopes)`` pairs in source order
-    :rtype: list[tuple[ast.Call, tuple[_ScopeNode, ...]]]
+    :return: ``(call, scopes, private name)`` in source order
+    :rtype: list[tuple[ast.Call, tuple[_ScopeNode, ...], str]]
     """
-    found: list[tuple[ast.Call, tuple[_ScopeNode, ...]]] = []
+    found: list[tuple[ast.Call, tuple[_ScopeNode, ...], str]] = []
+    loops: dict[int, dict[str, list[str]]] = {}
 
     def _visit(node: ast.AST, scopes: tuple[_ScopeNode, ...]) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, _NESTED_SCOPES):
                 _visit(child, (*scopes, child))
                 continue
-            if isinstance(child, ast.Call) and _private_name_argument(child, scopes):
-                found.append((child, scopes))
+            if isinstance(child, ast.Call):
+                name = _private_name_argument(child, scopes, loops)
+                if name:
+                    found.append((child, scopes, name))
             _visit(child, scopes)
 
     _visit(tree, (tree,))
     return sorted(found, key=lambda pair: (pair[0].lineno, pair[0].col_offset))
 
 
-def _private_name_argument(call: ast.Call, scopes: tuple[_ScopeNode, ...] = ()) -> str:
+def _private_name_argument(
+    call: ast.Call, scopes: tuple[_ScopeNode, ...], loops: dict[int, dict[str, list[str]]]
+) -> str:
     """the private attribute name a reflective builtin call names, or ``""`` when it names none.
 
     The name is a string literal, or a variable whose values the enclosing code spells as literals:
@@ -1043,6 +1047,8 @@ def _private_name_argument(call: ast.Call, scopes: tuple[_ScopeNode, ...] = ()) 
     :ptype call: ast.Call
     :param scopes: the call's enclosing scopes, outermost first
     :ptype scopes: tuple[_ScopeNode, ...]
+    :param loops: :func:`_loop_strings` per scope, filled as scopes are first asked about
+    :ptype loops: dict[int, dict[str, list[str]]]
     :return: the private name, or the empty string for any other call
     :rtype: str
     """
@@ -1052,11 +1058,11 @@ def _private_name_argument(call: ast.Call, scopes: tuple[_ScopeNode, ...] = ()) 
         if isinstance(argument, ast.Constant) and isinstance(argument.value, str) and is_private_name(argument.value):
             result = argument.value
         elif isinstance(argument, ast.Name):
-            result = next((v for v in _literal_values(argument.id, scopes) if is_private_name(v)), "")
+            result = next((v for v in _literal_values(argument.id, scopes, loops) if is_private_name(v)), "")
     return result
 
 
-def _literal_values(name: str, scopes: tuple[_ScopeNode, ...]) -> list[str]:
+def _literal_values(name: str, scopes: tuple[_ScopeNode, ...], loops: dict[int, dict[str, list[str]]]) -> list[str]:
     """the string literals a variable is given by the code around it: the ``for`` loops over literal
     sequences that bind it, and a ``parametrize`` decorator of an enclosing function that names it.
 
@@ -1064,22 +1070,37 @@ def _literal_values(name: str, scopes: tuple[_ScopeNode, ...]) -> list[str]:
     :ptype name: str
     :param scopes: the enclosing scopes, outermost first
     :ptype scopes: tuple[_ScopeNode, ...]
+    :param loops: :func:`_loop_strings` per scope, keyed by node identity, so each scope is walked
+        once per module rather than once per call inside it
+    :ptype loops: dict[int, dict[str, list[str]]]
     :return: the literal strings, in source order
     :rtype: list[str]
     """
     values: list[str] = []
     for scope in scopes:
-        for node in ast.walk(scope):
-            if (
-                isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension))
-                and isinstance(node.target, ast.Name)
-                and node.target.id == name
-            ):
-                values += _strings_in(node.iter)
+        key = id(scope)
+        if key not in loops:
+            loops[key] = _loop_strings(scope)
+        values += loops[key].get(name, [])
         if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for decorator in scope.decorator_list:
                 values += _parametrized_strings(decorator, name)
     return values
+
+
+def _loop_strings(scope: _ScopeNode) -> dict[str, list[str]]:
+    """the strings every ``for`` loop and comprehension under *scope* gives a plain-name target.
+
+    :param scope: the scope node; nested scopes are walked too, as a variable's loops may sit in them
+    :ptype scope: _ScopeNode
+    :return: target name -> the literal strings its loops iterate, in :func:`ast.walk` order
+    :rtype: dict[str, list[str]]
+    """
+    found: dict[str, list[str]] = {}
+    for node in ast.walk(scope):
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)) and isinstance(node.target, ast.Name):
+            found.setdefault(node.target.id, []).extend(_strings_in(node.iter))
+    return found
 
 
 def _parametrized_strings(decorator: ast.expr, name: str) -> list[str]:
