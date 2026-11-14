@@ -378,6 +378,9 @@ class SchemaCatalog:
     matches: dict[tuple[str, str], dict[str, str]] = field(default_factory=dict)
     #: the statement being judged (:func:`~.sql.judge_sql`), recorded with each use
     statement: str = ""
+    #: each local copy relation (``copy.<name>``, ``copy.{}`` for the default) a read was judged by: a
+    #: ``NoWholeReadsConfig.local_relations`` entry none was is reported
+    copies_read: set[str] = field(default_factory=set)
     #: ``(ledger line, table, index, purpose entry)`` of each read a purpose-only ledger line adds to a dependency's
     #: index (:mod:`.declarations`): each held to a function the walk found whose read uses the index
     added_purposes: list[tuple[str, str, str, str]] = field(default_factory=list)
@@ -482,6 +485,8 @@ class SchemaCatalog:
         if found is None and bare is not None and bare.startswith(COPY_PREFIX):
             # a copy the repo declares no key for has the default every copy declares (``local_relations["*"]``)
             found = self.tables.get(f"{COPY_PREFIX}{{}}")
+        if found is not None and found.name.startswith(COPY_PREFIX):
+            self.copies_read.add(found.name)
         return found
 
     def _entry(self, table: str, origin: str) -> _DeclaredTable:

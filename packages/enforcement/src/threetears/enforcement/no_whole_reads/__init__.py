@@ -163,8 +163,10 @@ class NoWholeReadsConfig:
         the gates themselves); each must match a module
     :ivar extra_pagers: the repo's own helpers that read every row they are not narrowed to
     :ivar extra_narrowing: the repo's own keywords that narrow them
-    :ivar transient_relations: a regular expression of relations that are a change set being applied (a stage of
-        rows a change named), never a data table; empty for none
+    :ivar transient_relations: regular expressions of relations that are a change set being applied (a stage of
+        rows a change named), never a data table: a tuple, one pattern per alternative (a single ``str`` is still
+        read as one pattern); empty for none. A pattern no relation of the walk matches, or one matching only what
+        another matches, is a finding
     :ivar transient_producers: the repo's functions whose returned relation is such a change set (``Stages._stage``,
         ``_Work.put``): ``Class.method``, or a module function's name. A statement over what one returns -- the call in
         the placeholder, a name bound to it, a ``self`` attribute every assignment of which is one -- reads a change
@@ -233,6 +235,10 @@ class NoWholeReadsConfig:
         hub's ``src/aibots/hub/``): an index purpose under one names a consumer's read, which keys that read in the
         consumer's own gate (its indexes are the dependency's there); here such an entry is neither unknown nor unused.
         The plan test, in this repo, still proves the index serves the consumer's statement
+    :ivar local_relations_checked: whether a ``local_relations`` entry no read of the walk is judged by is a finding,
+        as every other unused loosening declaration is (``transient_producers``, ``view_producers``,
+        ``relation_producers``, ``bounded_producers``, ``transient_relations``); a repo whose entries record the
+        copy's key facts whether or not a read names them today turns it off
     :ivar bounded_producers: the copy accessor (``Snapshot.relation``) onto the producer that cuts every relation it
         answers to a key (:class:`~threetears.enforcement.no_whole_reads.bounded.BoundBy`: reports'
         ``limited_snapshot``, each relation to the reader's states): a read through the accessor is judged as reading
@@ -247,7 +253,7 @@ class NoWholeReadsConfig:
     excluded_prefixes: tuple[str, ...] = ()
     extra_pagers: frozenset[str] = field(default_factory=frozenset)
     extra_narrowing: frozenset[str] = field(default_factory=frozenset)
-    transient_relations: str = ""
+    transient_relations: str | tuple[str, ...] = ""
     transient_producers: frozenset[str] = field(default_factory=frozenset)
     view_producers: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
     verify_prefixes: tuple[str, ...] = ()
@@ -267,6 +273,7 @@ class NoWholeReadsConfig:
     consumer_purposes: tuple[str, ...] = ()
     frozen_migrations: tuple[str, ...] = ()
     bounded_producers: Mapping[str, BoundBy] = field(default_factory=dict)
+    local_relations_checked: bool = True
 
 
 @dataclass(frozen=True)
@@ -952,6 +959,52 @@ def _announce_declared(accepted: list[DeclaredWhole]) -> list[str]:
     return lines
 
 
+def _unused_declarations(config: NoWholeReadsConfig, scan: WholeReadScan) -> list[str]:
+    """each loosening declaration of the config no judgement of the walk went through, and each transient pattern
+    matching only what another matches: a dead allowance would let a new read through unjudged (reports #59).
+
+    :param config: the repo's config
+    :ptype config: NoWholeReadsConfig
+    :param scan: the walk
+    :ptype scan: WholeReadScan
+    :return: the findings
+    :rtype: list[str]
+    """
+    used = scan.declarations_used
+    findings = [
+        f"{field} {entry} matches nothing the walk read; delete it"
+        for field, declared in (
+            ("transient_producers", config.transient_producers),
+            ("view_producers", config.view_producers),
+            ("relation_producers", config.relation_producers),
+        )
+        for entry in sorted(declared)
+        if (field, entry) not in used
+    ]
+    if config.bounded_producers and ("bounded_producers", "*") not in used:
+        findings.extend(
+            f"bounded_producers {entry} matches nothing the walk read; delete it"
+            for entry in sorted(config.bounded_producers)
+        )
+    if config.local_relations_checked:
+        findings.extend(
+            f"local_relations {written} matches nothing the walk read; delete it"
+            for written in sorted(config.local_relations)
+            if f"{COPY_PREFIX}{'{}' if written == '*' else written.lower()}" not in scan.schema.copies_read
+        )
+    matched = scan.transient_matched
+    for pattern, names in sorted(matched.items()):
+        if not names:
+            findings.append(f"transient_relations {pattern} matches nothing the walk read; delete it")
+            continue
+        covering = next(
+            (other for other, theirs in sorted(matched.items()) if other != pattern and names <= theirs), None
+        )
+        if covering is not None and (pattern > covering or matched[covering] != names):
+            findings.append(f"transient_relations {pattern} matches only what {covering} matches; delete it")
+    return findings
+
+
 def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
     """every finding: each whole read outside an exempt function, and every ledger or walk defect.
 
@@ -974,6 +1027,7 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
         "<Class>.<method>.<parameter>); fix or delete the declaration"
         for key in sorted(set(config.declared_parameters) - scan.declared_matched)
     )
+    findings.extend(_unused_declarations(config, scan))
     exemptions, defects = _parse(config.ledger_dir / _EXEMPTIONS_NAME)
     findings.extend(defects)
     sound: list[_Exemption] = []

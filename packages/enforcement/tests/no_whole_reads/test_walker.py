@@ -6756,3 +6756,77 @@ def test_a_keyed_helper_over_a_table_schema_parameter_s_key_prefix_is_keyed(tmp_
     declared = {"CollectionTableStore._race_counts.table": ("rows",)}
     found = _symbols(_config(tmp_path, {"pod/m.py": _TABLE_PARAMETERS}, declared_parameters=declared))
     assert not any(function == "CollectionTableStore._race_counts" for function, _ in found), found
+
+
+def _unused(findings: list[str]) -> list[str]:
+    return [
+        finding for finding in findings if "matches nothing the walk read" in finding or "matches only what" in finding
+    ]
+
+
+def test_a_loosening_declaration_nothing_used_is_a_finding(tmp_path: Path) -> None:
+    """Flips if a loosening declaration no judgement of the walk went through -- a transient producer, a relation or
+    view producer, a local relation, a transient pattern -- is not reported (a dead allowance would let a new read
+    through unjudged: reports #59), if one in use is, or if a transient pattern matching only what another matches is
+    not reported as covered by it."""
+    tables = {"pkg/tables.py": _TABLES, "pkg/page.py": _PAGE}
+    used = _unused(
+        no_whole_reads_findings(
+            _config(tmp_path, tables, transient_relations=r"^__stage", local_relations={"geos": ("geo_id",)})
+        )
+    )
+    assert used == [], used
+    dead = _unused(
+        no_whole_reads_findings(
+            _config(
+                tmp_path,
+                tables,
+                transient_relations=(r"^__stage", r"^__nothing", r"^__stag"),
+                local_relations={"geos": ("geo_id",), "towns": ("town_id",)},
+            )
+        )
+    )
+    assert "transient_relations ^__nothing matches nothing the walk read; delete it" in dead, dead
+    assert "local_relations towns matches nothing the walk read; delete it" in dead, dead
+    assert any(finding.startswith("transient_relations ^__stage matches only what ^__stag") for finding in dead), dead
+    assert not any("local_relations geos" in finding for finding in dead), dead
+    unchecked = _unused(
+        no_whole_reads_findings(
+            _config(tmp_path, tables, local_relations={"towns": ("town_id",)}, local_relations_checked=False)
+        )
+    )
+    assert unchecked == [], unchecked
+
+    produced = _unused(
+        no_whole_reads_findings(
+            _config(
+                tmp_path,
+                {"pkg/produced.py": _PRODUCED},
+                transient_producers=frozenset({"Stages._stage", "_Work.put", "Gone.stage"}),
+            )
+        )
+    )
+    assert produced == ["transient_producers Gone.stage matches nothing the walk read; delete it"], produced
+
+    views = _unused(
+        no_whole_reads_findings(
+            _config(
+                tmp_path,
+                {"views.py": _VIEW_PRODUCERS},
+                view_producers={"_view_sql": ("office_key",), "Parts.copy_view": ("office_key",), "_gone": ("x",)},
+                local_relations={"newest": ()},
+            )
+        )
+    )
+    assert "view_producers _gone matches nothing the walk read; delete it" in views, views
+    assert not any("_view_sql" in finding or "copy_view" in finding for finding in views), views
+
+    (tmp_path / "tests").mkdir(exist_ok=True)
+    (tmp_path / "tests" / "test_source.py").write_text("async def test_runs(lsf):\n    assert lsf\n", encoding="utf-8")
+    with pytest.warns(UserWarning):
+        relations = _unused(
+            no_whole_reads_findings(
+                _config(tmp_path, {"lsf.py": _SOURCE_DERIVED}, relation_producers={"long_derived": (), "gone": ()})
+            )
+        )
+    assert relations == ["relation_producers gone matches nothing the walk read; delete it"], relations

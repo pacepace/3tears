@@ -930,6 +930,42 @@ class WrittenStatement:
     reader: Reader
 
 
+class TransientPatterns:
+    """the repo's transient relation patterns (``NoWholeReadsConfig.transient_relations``), each one's matches recorded
+    over the whole walk, so a pattern nothing matched (or that matched only what another did) is reported."""
+
+    def __init__(self, patterns: Sequence[str]) -> None:
+        """compile each pattern.
+
+        :param patterns: the patterns, one per alternative
+        :ptype patterns: Sequence[str]
+        :return: nothing
+        :rtype: None
+        """
+        self._compiled = [(text, re.compile(text)) for text in patterns if text]
+        #: each pattern onto the relation names it matched
+        self.matched: dict[str, set[str]] = {text: set() for text, _ in self._compiled}
+
+    def __bool__(self) -> bool:
+        return bool(self._compiled)
+
+    def search(self, name: str) -> re.Match[str] | None:
+        """the first pattern's match of ``name``, every matching pattern recorded.
+
+        :param name: the relation's name
+        :ptype name: str
+        :return: a match, or None
+        :rtype: re.Match[str] | None
+        """
+        found: re.Match[str] | None = None
+        for text, pattern in self._compiled:
+            match = pattern.search(name)
+            if match is not None:
+                self.matched[text].add(name)
+                found = found or match
+        return found
+
+
 @dataclass
 class WholeReadScan:
     """everything one walk found.
@@ -947,6 +983,10 @@ class WholeReadScan:
     :ivar statements: every SQL statement the walked modules write as text
     :ivar declarations: every read declared whole by nature (``whole_read``)
     :ivar bounded_findings: each failed check of a declared bounded producer (:mod:`.bounded`)
+    :ivar declared_matched: each ``declared_parameters`` key naming a parameter the walk read
+    :ivar declarations_used: each loosening declaration a judgement went through, ``(field, entry)``
+        (``transient_producers``, ``view_producers``, ``relation_producers``, ``bounded_producers``)
+    :ivar transient_matched: each ``transient_relations`` pattern onto the relations it matched
     """
 
     hits: list[WholeReadHit] = field(default_factory=list)
@@ -959,6 +999,8 @@ class WholeReadScan:
     schema: SchemaCatalog = field(default_factory=SchemaCatalog)
     statements: list[WrittenStatement] = field(default_factory=list)
     declared_matched: set[str] = field(default_factory=set)
+    declarations_used: set[tuple[str, str]] = field(default_factory=set)
+    transient_matched: dict[str, set[str]] = field(default_factory=dict)
     declarations: list[DeclaredWhole] = field(default_factory=list)
     bounded_findings: tuple[str, ...] = ()
 
@@ -1811,7 +1853,7 @@ class _ModuleWalk(ast.NodeVisitor):
         pagers: frozenset[str],
         always_whole: frozenset[str],
         narrowing: frozenset[str],
-        transient: re.Pattern[str] | None,
+        transient: TransientPatterns | None,
         verify: bool,
         schema: SchemaCatalog | None = None,
         imported: dict[str, str] | None = None,
@@ -1848,7 +1890,7 @@ class _ModuleWalk(ast.NodeVisitor):
         :param narrowing: keywords that narrow a pager
         :ptype narrowing: frozenset[str]
         :param transient: relations that are a change set, never a data table
-        :ptype transient: re.Pattern[str] | None
+        :ptype transient: TransientPatterns | None
         :param verify: whether the module is load code, where a count or fingerprint even of one key's rows is a
             verification scan
         :ptype verify: bool
@@ -1909,6 +1951,8 @@ class _ModuleWalk(ast.NodeVisitor):
         self._declared_values = frozenset(value for values in self._declared.values() for value in values)
         #: the declarations a function of this module has the parameter of
         self.declared_matched: set[str] = set()
+        #: each loosening declaration a judgement of this module went through, ``(field, entry)``
+        self.declarations_used: set[tuple[str, str]] = set()
         #: the module's lookup functions (:func:`_lookup_functions`), read once its strings are known
         self._lookups: dict[str, tuple[dict[str, str], str | None]] | None = None
         #: each nested function onto the function it is nested in, read once
@@ -1948,6 +1992,12 @@ class _ModuleWalk(ast.NodeVisitor):
             (owner.rsplit(".", 1)[-1], method)
             for owner, _, method in (producer.rpartition(".") for producer in sorted(producers))
         )
+        #: each producer ``(class, method)`` onto its declaration as written
+        self._producer_entries: dict[tuple[str, str], str] = {
+            (owner.rsplit(".", 1)[-1], method): producer
+            for producer in producers
+            for owner, _, method in (producer.rpartition("."),)
+        }
         #: per class, the ``self`` attributes every assignment of which is a producer's return
         self._produced_attributes: dict[int, frozenset[str]] = {}
         #: the module's transient producers' returns as written (:meth:`_producer_spellings`), read once
@@ -2173,6 +2223,7 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: ast.expr
         """
         if self._function in self._view_producers and _joined_statements(value):
+            self.declarations_used.add(("view_producers", self._function))
             assert isinstance(value, ast.Call) and isinstance(value.args[0], (ast.GeneratorExp, ast.ListComp))
             return value.args[0].elt
         return value
@@ -2441,6 +2492,8 @@ class _ModuleWalk(ast.NodeVisitor):
                 scope = "" if self._function == "<module>" else f"{self._function}."
                 names.add(f"{self.path}::{scope}{target.id}")
         stamps, ids, unit = self._source[-1] if self._source else _NO_SOURCE
+        if self._function in self._view_producers:
+            self.declarations_used.add(("view_producers", self._function))
         return Reader(
             schema=self._schema,
             names=frozenset(names),
@@ -2948,11 +3001,10 @@ class _ModuleWalk(ast.NodeVisitor):
         for owner, name, entry in self._relation_producers:
             if name != member:
                 continue
-            if not owner:
-                if isinstance(value, ast.Call) and receiver is None:
-                    return produced_relation(entry)
-                continue
-            if self._receiver_is(receiver, owner):
+            if (not owner and isinstance(value, ast.Call) and receiver is None) or (
+                owner and self._receiver_is(receiver, owner)
+            ):
+                self.declarations_used.add(("relation_producers", entry))
                 return produced_relation(entry)
         return None
 
@@ -5370,6 +5422,7 @@ class _ModuleWalk(ast.NodeVisitor):
             # reads, one the producer leaves whole as the copy relation it is
             cut = self._bounded.relation(_placeholder(node, self._envs[-1]))
             if cut is not None:
+                self.declarations_used.add(("bounded_producers", "*"))
                 return cut
         if self._helper_change_parameter(node):
             return TRANSIENT_PRODUCED
@@ -5515,15 +5568,17 @@ class _ModuleWalk(ast.NodeVisitor):
             if method != name:
                 continue
             if not producer_class:
-                if isinstance(node.func, ast.Name):
-                    return True
-                continue
-            if isinstance(receiver, ast.Name) and (
-                receiver.id == producer_class
-                or (receiver.id in ("self", "cls") and owner is not None and owner.name == producer_class)
-            ):
-                return True
-            if receiver is not None and self._receiver_class(node, function, owner) == producer_class:
+                matched = isinstance(node.func, ast.Name)
+            else:
+                matched = (
+                    isinstance(receiver, ast.Name)
+                    and (
+                        receiver.id == producer_class
+                        or (receiver.id in ("self", "cls") and owner is not None and owner.name == producer_class)
+                    )
+                ) or (receiver is not None and self._receiver_class(node, function, owner) == producer_class)
+            if matched:
+                self.declarations_used.add(("transient_producers", self._producer_entries[(producer_class, method)]))
                 return True
         return False
 
@@ -6140,7 +6195,7 @@ _TEMP_VIEW: Final[re.Pattern[str]] = re.compile(
 _READS_FROM: Final[re.Pattern[str]] = re.compile(r"\b(?:FROM|JOIN)\s+\"?([\w{}]+)\"?", re.IGNORECASE)
 
 
-def _transient_views(tree: ast.Module, registered: set[str], transient: re.Pattern[str] | None) -> set[str]:
+def _transient_views(tree: ast.Module, registered: set[str], transient: TransientPatterns | None) -> set[str]:
     """the temporary views a module creates over only transient relations (rows registered from memory, a stage):
     each is those rows too, never a data table.
 
@@ -6149,7 +6204,7 @@ def _transient_views(tree: ast.Module, registered: set[str], transient: re.Patte
     :param registered: the relations the module registers from memory
     :ptype registered: set[str]
     :param transient: the repo's transient relations
-    :ptype transient: re.Pattern[str] | None
+    :ptype transient: TransientPatterns | None
     :return: the views
     :rtype: set[str]
     """
@@ -7806,7 +7861,7 @@ def scan_whole_reads(
     pagers: frozenset[str] = DEFAULT_PAGER_CALLS,
     always_whole: frozenset[str] = _ALWAYS_WHOLE_CALLS,
     narrowing: frozenset[str] = DEFAULT_NARROWING_KEYWORDS,
-    transient: str = "",
+    transient: str | tuple[str, ...] = "",
     schema_change_dirs: tuple[str, ...] = ("migrations",),
     verify_prefixes: tuple[str, ...] = (),
     schema: SchemaCatalog | None = None,
@@ -7874,7 +7929,8 @@ def scan_whole_reads(
     module_classes: dict[str, set[str]] = {}
     stubs: set[str] = set()
     imports: dict[str, dict[str, str]] = {}
-    pattern = re.compile(transient) if transient else None
+    patterns = TransientPatterns((transient,) if isinstance(transient, str) else transient)
+    pattern = patterns if patterns else None
     modules = [(relative_posix_path(path, repo_root), path) for root in src_roots for path in iter_python_files(root)]
     # one tree per module for the whole walk: the passes below key what they find by the nodes they found it at
     # (a builder, a forwarder, a module's tuples) and later passes look those nodes up again, so each pass must see
@@ -7986,6 +8042,7 @@ def scan_whole_reads(
         scan.declarations.extend(walk.declarations)
         imports[relative] = walk.imports
         scan.declared_matched.update(walk.declared_matched)
+        scan.declarations_used.update(walk.declarations_used)
         constant_uses |= constant_readers(relative, tree)
         scan.files_scanned += 1
     resolved, callers = _resolve(
@@ -8002,4 +8059,5 @@ def scan_whole_reads(
     scan.hits.extend(resolved)
     scan.operator_callers = callers
     scan.unmatched_exclusions = [prefix for prefix in excluded_prefixes if prefix not in used]
+    scan.transient_matched = patterns.matched
     return scan
