@@ -65,6 +65,7 @@ from typing import Final, Literal, Self
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, AnalysisContextBundle, ArmScoreboard
+from threetears.evals.analysis.cells import answer_split_variants
 from threetears.evals.analysis.depth import Depth, Precision, precision
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.report.decision import (
@@ -100,6 +101,7 @@ from threetears.evals.schema.base import EvalDocumentModel
 
 __all__ = [
     "AggregateFigure",
+    "AnswerSplit",
     "AggregateWeighting",
     "ArmAggregate",
     "AspectReading",
@@ -398,6 +400,27 @@ def _in_side_order(precision: Precision, sides: Sequence[str]) -> Precision:
     return precision.model_copy(update={"half_widths": {side: precision.half_widths[side] for side in sides}})
 
 
+class AnswerSplit(EvalDocumentModel):
+    """One arm whose results on one aspect were answered by more than one candidate model, so it is read per model.
+
+    The arm's cells there hold one answering model each (``Cell.rig_class_id``), and each is compared with the
+    control in the aspect's bundle. Nothing is read for the ARM on that aspect: no row, no floor and no pair names
+    it, since a change or a verdict for the arm would be one model's presented as the arm's, beside counts that pool
+    them. A split control withholds every candidate's row on the aspect.
+    """
+
+    aspect: str = Field(min_length=1, description="The aspect's label.")
+    arm: str = Field(min_length=1, description="The arm's variant key.")
+    arm_label: str = Field(description="What a reader calls the arm.")
+    cells: int = Field(ge=2, description="How many cells the arm holds there, one per answering model.")
+    served_models: list[str] = Field(
+        default_factory=list, description="The models the provider's responses named for the arm there, sorted."
+    )
+    unrecorded: bool = Field(
+        default=False, description="Whether some of the arm's responses there named no model: a cell of its own."
+    )
+
+
 class BarStatus(EvalDocumentModel):
     """One arm against one absolute bar on one aspect: met, missed or unclear, as the bundle adjudicated it."""
 
@@ -637,6 +660,16 @@ class CampaignReadings(EvalDocumentModel):
             "None for a measurement, and on readings frozen before the aggregate was read."
         ),
     )
+    # Left out of the document when empty, so readings over arms each answered by one model are stored as before.
+    answer_splits: list[AnswerSplit] = Field(
+        default_factory=list,
+        exclude_if=lambda splits: not splits,
+        description=(
+            "Each arm whose results on an aspect were answered by more than one candidate model, aspect by aspect: "
+            "it has no row, floor status or pair there (a split control leaves the aspect none), and is read per "
+            "model in the aspect's bundle."
+        ),
+    )
 
     @field_validator("aspects")
     @classmethod
@@ -683,6 +716,7 @@ class CampaignReadings(EvalDocumentModel):
             labels.update({pair.first: pair.first_label, pair.second: pair.second_label})
         labels.update({measure.arm: measure.arm_label for measure in self.measures})
         labels.update({status.arm: status.arm_label for status in self.bars})
+        labels.update({split.arm: split.arm_label for split in self.answer_splits})
         return labels
 
     def relabelled(self, names: Mapping[str, str]) -> CampaignReadings:
@@ -986,6 +1020,32 @@ def _candidates(campaign: EvalCampaign, arms: Sequence[CampaignArm]) -> list[Cam
     return found
 
 
+def _answer_splits(
+    campaign: EvalCampaign, bundles: Mapping[str, AnalysisContextBundle], arms: Sequence[CampaignArm]
+) -> list[AnswerSplit]:
+    """Each arm holding a cell per answering model on an aspect, aspect by aspect, in the arms' order."""
+    splits: list[AnswerSplit] = []
+    for aspect in campaign.aspects:
+        bundle = bundles[aspect.label]
+        held = answer_split_variants(bundle.cells)
+        served = {reading.variant_key: reading for reading in bundle.arm_served_models}
+        for arm in arms:
+            if arm.variant_key not in held:
+                continue
+            answered = served.get(arm.variant_key)
+            splits.append(
+                AnswerSplit(
+                    aspect=aspect.label,
+                    arm=arm.variant_key,
+                    arm_label=arm.label,
+                    cells=held[arm.variant_key],
+                    served_models=sorted(answered.served_models) if answered is not None else [],
+                    unrecorded=answered is not None and answered.n_unrecorded > 0,
+                )
+            )
+    return splits
+
+
 def _shared_rigs(bundle: AnalysisContextBundle, first: str, second: str) -> list[str]:
     """The test setups both arms ran under on the aspect, in the bundle's order of cells."""
     theirs = {cell.apparatus_class_id for cell in bundle.cells if cell.variant_key == second}
@@ -1177,7 +1237,10 @@ def campaign_readings(
     ``question_declared``), whenever it was asked: a criterion set after the aspect's readings were visible reads as
     one set before them, and the bundle discloses it (``reading_scope.late_criteria``).
 
-    A candidate that did not run on an aspect, or an aspect its control did not run on, has no row there. Each row's
+    A candidate that did not run on an aspect, or an aspect its control did not run on, has no row there. Nor has an
+    arm whose results there were answered by more than one candidate model, or any candidate where the control's
+    were (``answer_splits``): its cells hold one answering model each and are read per model in the aspect's bundle,
+    so no change, interval, verdict, floor or pair is read for the arm, never one cell's beside counts that pool them. Each row's
     change and intervals are read on one rig's per-case shares, named where both arms ran under several.
 
     **A choice** (no control, two or more arms) reads no row and no floor: every pair of arms on every aspect both ran
@@ -1207,6 +1270,7 @@ def campaign_readings(
     bars = _bar_statuses(campaign, checked, every)
     control = campaign.control or next((arm for arm in every if arm.role == "control"), None)
     memo = _Floors()
+    splits = _answer_splits(campaign, checked, every)
     if kind != "change" or control is None:
         return _aggregated(
             CampaignReadings(
@@ -1221,6 +1285,7 @@ def campaign_readings(
                 pairs=_pair_readings(campaign, checked, every, alpha, memo) if kind == "choice" else [],
                 bars=bars,
                 measures=_measure_readings(campaign, checked, every) if kind == "measurement" else [],
+                answer_splits=splits,
             ),
             checked,
             memo,
@@ -1344,6 +1409,7 @@ def campaign_readings(
             floors=floors,
             kind=kind,
             bars=bars,
+            answer_splits=splits,
         ),
         checked,
         memo,

@@ -67,6 +67,7 @@ from threetears.evals.analysis.bundle.schema import (
     TrialRow,
 )
 from threetears.evals.analysis.campaign_bundle import KIND_MEANS, CampaignBundle
+from threetears.evals.analysis.cells import answer_split_variants
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading, reading_name
 from threetears.evals.analysis.report.decision import floor_subject
 from threetears.evals.analysis.depth import REPEATS_FLOOR
@@ -665,11 +666,22 @@ class _Builder:
 
     def cells(self, aspect: AnalysisContextBundle) -> dict[str, CellFacts]:
         """Each arm's cell on one aspect, by label: its first rig's where it ran under more than one, which
-        ``caveats.unreported`` then says."""
+        ``caveats.unreported`` then says. An arm whose results there were answered by more than one candidate model
+        holds a cell per model under one rig and has NO cell here: none of them is the arm's, so its figures are
+        withheld and ``caveats.unreported`` says why."""
         cells: dict[str, CellFacts] = {}
         rigs: dict[str, int] = {}
+        split = answer_split_variants(aspect.cells)
         for cell in aspect.cell_measures:
             label = self.arm(cell.variant_key)
+            if cell.variant_key in split:
+                note = (
+                    f"{label}'s results on {aspect.aspect} were answered by more than one candidate model, so they "
+                    f"are read per model in {split[cell.variant_key]} cells and no figure is given for {label} there."
+                )
+                if note not in self.unreported:
+                    self.unreported.append(note)
+                continue
             cells.setdefault(label, cell)
             rigs[label] = rigs.get(label, 0) + 1
         for label, count in rigs.items():

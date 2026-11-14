@@ -678,7 +678,8 @@ of that revision. It carries every case of the revision it supersedes, each copy
 superseded revision's cases (`stranded_case_sets`). Launch and write the next case into the new `template_id`: a
 write into a superseded revision is refused, naming the newest. Runs of two revisions never pool, so a judge's runs
 before the case and after it are never read as one battery. A template's first cases, and a write that adds
-nothing, write no revision. Your own code's `freeze_judge_cases` writes in place unless it passes `revise=True`.
+nothing, write no revision. The new revision becomes the live one only once it holds every carried case: a store
+failure part-way leaves the superseded revision live and whole, and the same write again starts over. Your own code's `freeze_judge_cases` writes in place unless it passes `revise=True`.
 
 **Freeze from the labels alone, across a core reset.** `freeze_judge_cases(..., from_labels=True)` (and
 `from_labels: true` on the action, with no `judged_run_ids`) reads no run, result or trace. It groups the scope's

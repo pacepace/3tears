@@ -14,7 +14,9 @@ results under one setup were answered by more than one model, or some by a model
 cell per answering model, each compared with the control under that setup on its own, and the bundle says why they
 stayed apart (`refused_merges` on `served_model:candidate`). An arm answered by one model throughout, or by none any
 response named, is one cell exactly as before. The arm-level readings (the scoreboard's counts, `arm_served_models`,
-the frontier, history and pivot lenses) still span the arm and disclose the mixture.
+the frontier, history and pivot lenses) still span the arm and disclose the mixture. Nothing is read for a split arm
+as a whole: the campaign's readings give it no row, floor status or pair on that aspect, the campaign page reads the
+aspect as not compared with one line naming the models, and the report input gives it no figure there and says why.
 
 **Changed:** `judge_case_author` and `judge_cases_freeze` adding a case to a judge template that already holds cases
 write the template's next revision, as a definitions reset does, carrying every case of the revision it supersedes.
@@ -25,7 +27,8 @@ into a superseded revision is refused, naming the newest.
 arm's cell with the control's by `rig_class_id or apparatus_class_id`, not by equal `apparatus_class_id`. Stored runs
 that stop pooling: within one arm and setup of a campaign, results whose candidate responses named different models,
 and those that named none beside those that named one. No host apparatus dimension may be named
-`served_model:candidate`. After a judge-case write, read the receipt's `template_id` (with `revision`,
+`served_model:candidate`. `CampaignReadings.answer_splits` (new, optional, left out when empty) names each arm read
+per model; a host that expects a row per candidate and aspect handles its absence there. After a judge-case write, read the receipt's `template_id` (with `revision`,
 `superseded_template_id`, `carried`, `stranded_case_sets`, all new): it is the template to launch and to write the
 next case into, and a case set left on the superseded revision needs its next version minted over `carried`'s
 copies. `freeze_judge_cases` writes in place unless called with `revise=True`.

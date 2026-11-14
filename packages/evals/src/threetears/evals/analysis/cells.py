@@ -559,6 +559,25 @@ def rig_of(cell: Cell) -> str:
     return cell.rig_class_id or cell.apparatus_class_id
 
 
+def answer_split_variants(cells: Iterable[Cell]) -> dict[str, int]:
+    """The variants whose observations under one rig stand in a cell per answering model, with how many such cells.
+
+    What a reader of ONE figure per arm asks before it reads any: an arm here has no single cell under the rig, so a
+    figure, a change or a verdict given for the arm would be one answering model's presented as the arm's, or two
+    models' pooled.
+
+    :param cells: The cells to consider: a bundle's.
+    :ptype cells: Iterable[Cell]
+    :return: Variant key -> its cells split on the answering model (``rig_class_id`` set); empty when none is split.
+    :rtype: dict[str, int]
+    """
+    split: dict[str, int] = defaultdict(int)
+    for cell in cells:
+        if cell.rig_class_id is not None:
+            split[cell.variant_key] += 1
+    return dict(split)
+
+
 def split_on_served_model(
     observations: Sequence[Observation],
     classes: Mapping[str, ApparatusClass],
@@ -934,6 +953,7 @@ __all__ = [
     "Observation",
     "RefusedMerge",
     "SubjectKeyInstability",
+    "answer_split_variants",
     "apparatus_class_of",
     "cell_ref",
     "pool_observations",

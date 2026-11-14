@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import assemble_context_bundle, create_campaign
-from threetears.evals.kernel import JUDGE_KIND, EvalStorage, ValidationFailedError
+from threetears.evals.kernel import JUDGE_KIND, EvalStorage, StorageError, ValidationFailedError
 from threetears.evals.ops import JudgeCaseAuthor, judge_case_author
 from threetears.evals.run import JudgeCaseFreezeReport
 from threetears.evals.schema import EvalTemplate
@@ -240,3 +240,39 @@ def test_a_write_into_a_superseded_revision_is_refused_naming_the_newest_and_wri
     old, new = _templates(fixture)
     assert (old.archived, new.archived) == (True, False), "the current revision is not archived by the refused write"
     assert len(_cases(fixture, old.id)) == 1 and len(_cases(fixture, new.id)) == 2
+
+
+def test_a_revision_that_fails_part_way_leaves_the_prior_revision_live_and_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All or nothing: the name never resolves to a revision holding part of the battery, and a retry works."""
+    fixture = _fixture()
+    storage = _storage(fixture)
+    first = _author(fixture, _judge_template().id, "INV-1")
+    second = _author(fixture, first.template_id, "INV-2")
+    live = second.template_id
+    held = {case.id for case in _cases(fixture, live)}
+    assert len(held) == 2
+    save, saved = storage.save_test_case, []
+
+    def fail_on_the_second_case(case: Any) -> None:
+        if len(saved) == 1:
+            raise StorageError("the store refused the write")
+        saved.append(case.id)
+        save(case)
+
+    monkeypatch.setattr(storage, "save_test_case", fail_on_the_second_case)
+    with pytest.raises(StorageError) as failed:
+        _author(fixture, live, "INV-3")
+    monkeypatch.undo()
+
+    assert "still the live one" in failed.value.message and live in failed.value.message
+    resolved = off_loop(lambda: storage.load_template_by_name(_JUDGE, TOYHOST_SCOPE))
+    assert resolved is not None and resolved.id == live, "the name still resolves to the whole revision"
+    assert {case.id for case in _cases(fixture, live)} == held, "which holds exactly what it held"
+    assert [(t.revision, t.archived) for t in _templates(fixture)] == [(1, True), (2, False), (3, True)]
+    # The same write again is not refused for the incomplete revision, and carries the whole battery.
+    retried = _author(fixture, live, "INV-3")
+    assert (retried.revision, retried.superseded_template_id) == (4, live)
+    assert len(_cases(fixture, retried.template_id)) == 3
+    assert [(t.revision, t.archived) for t in _templates(fixture)] == [(1, True), (2, True), (3, True), (4, False)]

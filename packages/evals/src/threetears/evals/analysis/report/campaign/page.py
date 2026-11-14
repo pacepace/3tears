@@ -61,7 +61,12 @@ from threetears.evals.analysis.report.campaign.scorecard import (
     settle_blocks,
     table_blocks,
 )
-from threetears.evals.analysis.report.campaign.warnings import bar_warnings, floor_warnings, guardrail_warnings
+from threetears.evals.analysis.report.campaign.warnings import (
+    answer_split_warnings,
+    bar_warnings,
+    floor_warnings,
+    guardrail_warnings,
+)
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (
     CampaignAspectFold,
@@ -227,6 +232,7 @@ def build_campaign_report_in_aspect_forms(
         *bar_warnings(readings, names=names),
         *floor_warnings(readings, names=names, forms=forms),
         *guardrail_warnings(campaign, readings, reports, names=names, forms=forms),
+        *answer_split_warnings(readings, names=names),
         *caveat_blocks(bundles, section="warnings", names=names),
     ]
     if kind == "change":

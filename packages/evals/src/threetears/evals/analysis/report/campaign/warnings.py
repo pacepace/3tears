@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.campaign_readings import BarStatus, CampaignReadings, FloorStatus
+from threetears.evals.analysis.campaign_readings import AnswerSplit, BarStatus, CampaignReadings, FloorStatus
 from threetears.evals.analysis.report.campaign.common import named_arms
 from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.forms import PageForms
@@ -22,7 +22,17 @@ from threetears.evals.analysis.report.model import DisclosureBlock, Report, Repo
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.surface import GuardrailCheck
 
-__all__ = ["bar_warnings", "campaign_warnings", "floor_line", "floor_warnings", "guardrail_warnings", "listed", "where"]
+__all__ = [
+    "answer_split_lines",
+    "answer_split_warnings",
+    "bar_warnings",
+    "campaign_warnings",
+    "floor_line",
+    "floor_warnings",
+    "guardrail_warnings",
+    "listed",
+    "where",
+]
 
 
 def bar_warnings(readings: CampaignReadings, *, names: AspectNames) -> list[ReportBlock]:
@@ -195,9 +205,54 @@ def floor_warnings(readings: CampaignReadings, *, names: AspectNames, forms: Pag
     ]
 
 
+def answer_split_lines(readings: CampaignReadings, names: AspectNames) -> list[str]:
+    """One line per arm whose results were answered by more than one candidate model, naming the models and the
+    aspects: ``latest's results on billing were answered by 2 models (m-03 and m-06), so they are read per model: no
+    change, interval or verdict is given for latest there.`` A split control's line says no candidate is read against
+    it there. The per-model readings are each aspect's own contrasts.
+
+    :param readings: What code read off the campaign.
+    :ptype readings: CampaignReadings
+    :param names: What the page calls each aspect.
+    :ptype names: AspectNames
+    :return: The lines, in the arms' order as first met; none where no arm is split.
+    :rtype: list[str]
+    """
+    by_arm: dict[str, list[AnswerSplit]] = {}
+    for split in readings.answer_splits:
+        by_arm.setdefault(split.arm, []).append(split)
+    lines: list[str] = []
+    for arm, splits in by_arm.items():
+        label = splits[0].arm_label
+        models = sorted({model for split in splits for model in split.served_models})
+        unnamed = any(split.unrecorded for split in splits)
+        if models and unnamed:
+            answered = f"{listed(models)}, and a model some responses did not name"
+        elif len(models) > 1:
+            answered = f"{len(models)} models ({listed(models)})"
+        else:
+            answered = "more than one model"
+        on = where([names(split.aspect) for split in splits], len(readings.aspects))
+        withheld = (
+            f"no candidate is read against {label} there"
+            if arm == readings.control
+            else f"no change, interval or verdict is given for {label} there"
+        )
+        lines.append(f"{label}'s results on {on} were answered by {answered}, so they are read per model: {withheld}.")
+    return lines
+
+
+def answer_split_warnings(readings: CampaignReadings, *, names: AspectNames) -> list[ReportBlock]:
+    """:func:`answer_split_lines` as the page's warnings, after the guardrails'."""
+    return [
+        DisclosureBlock(section="warnings", source="runs", text=text) for text in answer_split_lines(readings, names)
+    ]
+
+
 def campaign_warnings(readings: CampaignReadings, names: AspectNames, *, forms: PageForms) -> list[str]:
     """What warns on a campaign's page of its bars and floors, as code words it: each arm missing a bar, then each
-    candidate breaking a floor — never the guardrail lines after.
+    candidate breaking a floor — never the guardrail lines after — then each arm read per answering model
+    (:func:`answer_split_lines`), which has no row for a listing to quote.
 
     The page's own warnings are these lines, so whatever repeats them (an analysis's listing line) says what its page
     says, word for word.
@@ -212,8 +267,10 @@ def campaign_warnings(readings: CampaignReadings, names: AspectNames, *, forms: 
     :return: The lines, in the page's order; none where no bar is missed and no floor broken.
     :rtype: list[str]
     """
-    return [text for *_, text in _bar_lines(readings, names)] + [
-        text for *_, text in _floor_lines(readings, names, forms)
+    return [
+        *(text for *_, text in _bar_lines(readings, names)),
+        *(text for *_, text in _floor_lines(readings, names, forms)),
+        *answer_split_lines(readings, names),
     ]
 
 

@@ -378,7 +378,9 @@ def _refuse_superseded(storage: EvalStorage, template: EvalTemplate, scope_id: s
     """Every record under the template's name, refusing a write into a revision a later one supersedes: its cases are
     the cases its runs measured, and the later revision is where the template's cases now live."""
     records = [t for t in storage.query_templates(scope_id, archived=None) if t.name == template.name]
-    newest = max(records, key=lambda t: t.revision, default=template)
+    # A later revision that is archived supersedes nothing: it is one a failed write left incomplete, or one an
+    # operator retired, and the name does not resolve to it.
+    newest = max((t for t in records if not t.archived), key=lambda t: t.revision, default=template)
     if newest.revision > template.revision:
         raise ValidationFailedError(
             f"template {template.id!r} is revision {template.revision} of {template.name!r}, superseded by revision "
@@ -397,18 +399,17 @@ def _next_revision(
     unchanged, the copy naming its source (``EvalTestCase.carried_from``), so the new revision is the old one's
     battery until the caller adds to it. ``keep`` names the case set the caller mints next, which is never stranded.
 
-    :raises StorageError: A write failed part-way: the revision written before it stands, and the message names each
-        case not yet carried, left only on the superseded revision.
+    :raises StorageError: A case could not be carried: the new revision is left archived and incomplete, the one it
+        was to supersede stays live and unchanged, and the same write again starts a new revision.
     """
     now = utc_now_iso()
     revision = max((t.revision for t in records), default=template.revision) + 1
     written = template.model_copy(
         update={"id": str(uuid.uuid7()), "revision": revision, "archived": False, "created_at": now, "updated_at": now}
     )
-    storage.save_template(written)
-    for record in records:
-        if not record.archived:
-            storage.save_template(record.model_copy(update={"archived": True, "updated_at": now}))
+    # Written archived, and made the live revision only once it holds every case: until then the name resolves to the
+    # revision it supersedes, so a write that fails part-way leaves no launch a partial battery.
+    storage.save_template(written.model_copy(update={"archived": True}))
     held = storage.query_test_cases(scope_id, template_id=template.id)
     carried: dict[str, str] = {}
     for done, source in enumerate(held):
@@ -418,13 +419,16 @@ def _next_revision(
         try:
             storage.save_test_case(copied)
         except StorageError as failed:
-            left = [case.id for case in held[done:]]
             raise StorageError(
-                f"{failed.message}; {template.name!r} revision {revision} ({written.id}) was written and revision "
-                f"{template.revision} archived, and {len(left)} case(s) not yet carried stay only on the archived "
-                f"revision: {', '.join(left)}"
+                f"{failed.message}; {template.name!r} revision {revision} ({written.id}) was left archived with "
+                f"{done} of {len(held)} case(s) carried, and revision {template.revision} ({template.id}) is still "
+                "the live one, unchanged: nothing was added, and the same write again starts a new revision"
             ) from failed
         carried[source.id] = copied.id
+    storage.save_template(written)
+    for record in records:
+        if not record.archived:
+            storage.save_template(record.model_copy(update={"archived": True, "updated_at": now}))
     latest: dict[str, CaseSet] = {}
     for case_set in storage.query_case_sets(scope_id):
         if case_set.name not in latest or case_set.version > latest[case_set.name].version:

@@ -947,7 +947,10 @@ observations under one test setup stand in one cell per answering model, and tho
 in a cell apart from those that named one (`Cell.rig_class_id` names the setup they share). Each such cell is read
 against the control on its own, so no contrast averages two answering models, and `refused_merges` says why they
 stayed apart (`served_model:candidate`). An arm answered by one model throughout, or by none any response named,
-is one cell as before. The read lenses outside the bundle disclose the mixture and do not split it; they use the
+is one cell as before. Nothing is read for a split arm as a whole on that aspect: the campaign's readings give it no
+row, floor status or pair there (`CampaignReadings.answer_splits` names it), the campaign page reads the aspect as
+not compared and says the arm is read per model, and the report input gives it no figure. Its per-model contrasts
+are the aspect's own. The read lenses outside the bundle disclose the mixture and do not split it; they use the
 same reading (`ServedModelReading`): each frontier point and its
 verdict, each history series and each of its points, each pivot cell on a table grouped by `variant_key` or
 `model` (with `served_model_disclosure` on the table), and each side of `compare_two_runs` (`served_models_a`,
