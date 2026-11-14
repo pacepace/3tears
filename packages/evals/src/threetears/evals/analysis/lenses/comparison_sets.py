@@ -11,10 +11,13 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
 
+from pydantic import Field
+
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.identity import case_set_fingerprint, resolve_context_identity
+from threetears.evals.kernel.numbers import spell_count
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.analysis.reporting import _subject_id_of
 from threetears.evals.analysis.measurement_windows import measurement_window, measurement_window_disclosure
@@ -127,6 +130,13 @@ class ComparisonSet(EvalBaseModel):
     #: two live arms or a replayed arm that never measured the third party at all.
     #: ``None`` whenever the badge is absent — one predicate, so the two cannot disagree.
     cassette_mode_disclosure: str | None = None
+    #: The ``measure_definitions_differ`` badge's substance, and more: the host measures the group's runs recorded
+    #: under two or more definitions and which runs read them together, the runs that recorded no definitions (each
+    #: pools with nothing) and the runs that were re-measured. Present whenever the badge is; also present without it
+    #: for a group whose only such fact is a silent or a re-measured run. ``None`` when every run recorded the same
+    #: definitions and none was re-measured, and then left out of a dump, so a bundle over such runs serializes
+    #: and fingerprints as it did before the field existed.
+    measure_definition_disclosure: str | None = Field(default=None, exclude_if=lambda value: value is None)
     #: The runs that share this group's (subject, template) and that the caller's scope
     #: left out. Empty when unscoped, which is every group's ordinary state.
     #:
@@ -183,6 +193,60 @@ BADGE_MEASUREMENT_WINDOWS_DISJOINT = "measurement_windows_disjoint"
 # ``off``/``capture`` recording difference from a live-versus-replayed substitution, and
 # that distinction is the whole of what a reader needs.
 BADGE_CASSETTE_MODE_DIFFERS = "cassette_mode_differs"
+# The group's runs recorded two or more definitions of one host measure: the host changed what
+# the measure counts and kept its key. ``measure_definitions`` is a context component, so such a
+# pair fires ``context_differs`` too; this names the condition, and its disclosure names the
+# measures. Only RECORDED definitions evidence a difference: a run that recorded none is
+# ``context_incomplete``'s to carry, and the disclosure says which runs those are.
+BADGE_MEASURE_DEFINITIONS_DIFFER = "measure_definitions_differ"
+
+
+def _listed(run_ids: Iterable[str]) -> str:
+    """Run ids as a sentence lists them, sorted."""
+    return ", ".join(sorted(run_ids))
+
+
+def measure_definition_disclosure(runs: Sequence[EvalRun]) -> tuple[bool, str | None]:
+    """Whether a group's runs recorded differing definitions of a host measure, and what a reader is told.
+
+    Read off what each run RECORDED (``EvalRun.measure_definitions``), never the host's registry as it is today.
+
+    :param runs: One comparison group's runs.
+    :ptype runs: Sequence[EvalRun]
+    :return: ``(differ, disclosure)``. ``differ`` is True when two runs recorded different digests for one measure.
+        The disclosure names the measures and which runs read them under which definition, then the runs that
+        recorded none (which pool with nothing) and the runs that were re-measured; ``None`` when every run recorded
+        the same definitions and none was re-measured.
+    :rtype: tuple[bool, str | None]
+    """
+    recorded = [run for run in runs if run.measure_definitions is not None]
+    silent = [run.id for run in runs if run.measure_definitions is None]
+    remeasured = [run.id for run in runs if run.measure_remeasures]
+    names = sorted({name for run in recorded for name in run.measure_definitions or {}})
+    moved = [name for name in names if len({(run.measure_definitions or {}).get(name) for run in recorded}) > 1]
+    sentences: list[str] = []
+    if moved:
+        by_definitions: dict[tuple[str | None, ...], list[str]] = {}
+        for run in recorded:
+            held = tuple((run.measure_definitions or {}).get(name) for name in moved)
+            by_definitions.setdefault(held, []).append(run.id)
+        groups = "; ".join(_listed(run_ids) for _held, run_ids in sorted(by_definitions.items(), key=lambda kv: kv[1]))
+        sentences.append(
+            f"The host defined {', '.join(moved)} in {spell_count(len(by_definitions))} ways across these runs "
+            f"(runs read under one definition together: {groups}), so their values are not one quantity and never "
+            "pool; a re-measure reads a run again under the current definitions."
+        )
+    if silent:
+        sentences.append(
+            f"{_listed(silent)} recorded no measure definitions, so nothing says which definition their values were "
+            "read under, and each pools with nothing until it is re-measured."
+        )
+    if remeasured:
+        sentences.append(
+            f"{_listed(remeasured)} were re-measured: their values were read again from what their cells stored, "
+            "under the definitions they now record."
+        )
+    return bool(moved), " ".join(sentences) or None
 
 
 class ComparisonSetsResult(EvalBaseModel):
@@ -467,6 +531,9 @@ def compute_comparison_sets(
         cassette_disclosure = cassette_mode_disclosure({run.id: run.cassette_mode for run in grouped})
         if cassette_disclosure:
             badges.append(BADGE_CASSETTE_MODE_DIFFERS)
+        definitions_differ, definition_disclosure = measure_definition_disclosure(grouped)
+        if definitions_differ:
+            badges.append(BADGE_MEASURE_DEFINITIONS_DIFFER)
 
         case_sets = [
             CaseSetIdentity(
@@ -490,6 +557,7 @@ def compute_comparison_sets(
                 badges=badges,
                 measurement_window_disclosure=window_disclosure,
                 cassette_mode_disclosure=cassette_disclosure,
+                measure_definition_disclosure=definition_disclosure,
                 out_of_scope_run_ids=sorted(out_of_scope_by_key.get((subject_id, template_id), [])),
             )
         )
@@ -504,6 +572,7 @@ __all__ = [
     "BADGE_CASSETTE_MODE_DIFFERS",
     "BADGE_CONTEXT_DIFFERS",
     "BADGE_CONTEXT_INCOMPLETE",
+    "BADGE_MEASURE_DEFINITIONS_DIFFER",
     "BADGE_MEASUREMENT_WINDOWS_DISJOINT",
     "BADGE_ROLES_DIFFER",
     "BADGE_TOOL_CONFIG_DIFFERS",

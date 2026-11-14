@@ -120,6 +120,11 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
         "variant_levers",
         "test_case_ids",
         "template_digest",
+        # Held by the context identity too, as its ``measure_definitions`` component: a take-up across a change to
+        # what a host measure counts is refused there, naming the measure. The record of a re-measure is what was
+        # done to the stored run, which a fresh launch has none of.
+        "measure_definitions",
+        "measure_remeasures",
         # Held by its outcome, never its number: the take-up's launch re-proves the run's own goal checks under the
         # proof rules in force (``goal_check_proofs``, pinned), so a rules change that proves them as the run's own
         # proofs did is taken up. The run then reads as proved under the newer rules, and each holding records the

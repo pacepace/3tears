@@ -4420,6 +4420,11 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
         # it: the world a subject is placed in is stimulus, and two runs that placed it differently
         # are not repetitions of one condition.
         run.world_placements = host.place(run)
+        # What each of the host's measures counts as this run's values are read, by its definition digest. Stamped
+        # for the reason the placements are: the measure registry is host CODE and moves under stored runs, so a
+        # read cannot recover it later. Before the identity below, which composes it: runs read under two
+        # definitions of one measure are not repeats of one condition.
+        run.measure_definitions = host.eval_host.profile.measures.definition_digests()
 
         # Measurement-context identity, stamped from the assembled run rather
         # than from the launch arguments: the run is the thing whose conditions

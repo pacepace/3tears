@@ -2891,6 +2891,20 @@ class ContextComponents(EvalDocumentModel, CoreShapeModel):
             "equal."
         ),
     )
+    measure_definitions: dict[str, str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The definition digest of each measure the run's host declared when the run was launched, measure key "
+            "-> digest (EvalRun.measure_definitions): what each of the host's measures counted when the run's "
+            "values were read. Its own component because a host changes what a measure counts and keeps its key, "
+            "and runs read under two definitions of one measure are not repeats of one condition. Kept as the map, "
+            "as subject_state is, so a badge names WHICH measure moved. None where the run recorded none (stored "
+            "before runs recorded it, or assembled without a launch), on the all-or-none rule: such a context is "
+            "partial and its run pools with nothing. An empty MAP is a recording (the host declared no measure of "
+            "its own) and hashes."
+        ),
+    )
     scope: str | None = Field(
         default=None,
         description="Storage scope the run executed in, kept raw so a mismatch badges as a value.",
@@ -3621,6 +3635,33 @@ def run_label_problem(label: str) -> str | None:
     if len(label) > RUN_LABEL_MAX_LENGTH:
         return f"is {len(label)} characters, longer than {RUN_LABEL_MAX_LENGTH}"
     return None
+
+
+class MeasureRemeasure(EvalBaseModel, CoreShapeModel):
+    """One re-measure of a run, recorded on the run it re-read (``threetears.evals.run.remeasure_run``).
+
+    A re-measure reads the run's stored results again, from what each cell stored, under the host's current
+    definition of every measure whose definition the run did not record or recorded otherwise. Nothing is
+    interpolated: a stored value the host's reader cannot read again refuses the whole re-measure. This entry is the
+    mark: a run that carries one joined the cell of the definitions it names by being read again, not by being
+    launched under them.
+    """
+
+    remeasured_at: str = Field(default_factory=utc_now_iso)
+    was: dict[str, str] | None = Field(
+        description=(
+            "The run's measure_definitions before this re-measure, measure key -> digest. None = it recorded none."
+        )
+    )
+    now: dict[str, str] = Field(description="Its measure_definitions after: the host's, when it was re-measured.")
+    reread: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The measures whose stored values were read again, sorted. A measure whose definition moved and of which "
+            "no result of the run held a value is not here: there was nothing to read again."
+        ),
+    )
+    results_reread: int = Field(default=0, ge=0, description="How many of the run's results had a value read again.")
 
 
 class RunLifetime(EvalBaseModel, CoreShapeModel):
@@ -4458,6 +4499,28 @@ class EvalRun(CoreDocumentModel):
             "Which key-derivation predicate produced context_key. Stored beside the key rather than only "
             "hashed into it so keys from different predicates are queryably distinct instead of silently "
             "regrouped. None exactly when context_key is."
+        ),
+    )
+    measure_definitions: dict[str, str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The definition digest of each measure the host declared when this run was launched, measure key -> "
+            "digest (MeasureRegistry.definition_digests()): what each host measure on this run's results counted "
+            "when it was read. Stamped by the launch before the context key, which composes it "
+            "(ContextComponents.measure_definitions), and moved only by a re-measure. None = NOT RECORDED: stored "
+            "before runs recorded it, or assembled by its host without a launch. Such a run pools with nothing "
+            "until it is re-measured, since nothing says which definition its values were read under. {} is a "
+            "recording: the host declared no measure of its own."
+        ),
+    )
+    measure_remeasures: list[MeasureRemeasure] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "Each re-measure of this run, oldest first (MeasureRemeasure). Empty for a run whose values are as its "
+            "cells wrote them. A run carrying one has its context identity derived at read, from "
+            "measure_definitions as the re-measure left them, never read off the key its launch stamped."
         ),
     )
 
@@ -5850,6 +5913,27 @@ class EvalTrace(CoreDocumentModel):
         return self
 
 
+class MeasureReread(EvalDocumentModel, CoreShapeModel):
+    """One re-read of a result's host measures under another definition, recorded on the result it changed.
+
+    Written by a re-measure of the result's run (``threetears.evals.run.remeasure_run``). It keeps what the cell
+    wrote, so a re-read result is never indistinguishable from one whose cell wrote the value it holds.
+    """
+
+    reread_at: str = Field(default_factory=utc_now_iso)
+    definitions: dict[str, str] = Field(
+        min_length=1,
+        description="measure key -> the definition digest its value was read again under, for each measure re-read.",
+    )
+    was: dict[str, bool | float | str] = Field(
+        default_factory=dict,
+        description=(
+            "measure key -> the value the result held before, for each re-read measure it held one of. A measure "
+            "absent here and present in host_measures was first read by this re-read."
+        ),
+    )
+
+
 class JudgeRescore(EvalDocumentModel, CoreShapeModel):
     """One re-judge of a result's failed judge dimensions, recorded on the result it changed.
 
@@ -6440,6 +6524,10 @@ class EvalResult(CoreDocumentModel):
     # :class:`JudgeRescore`. Empty for a result scored in one pass.
     judge_rescores: list[JudgeRescore] = Field(default_factory=list)
 
+    # Re-reads of this result's host measures under another definition, oldest first: see
+    # :class:`MeasureReread`. Empty, and left out of the document, for a result whose measures are as its cell wrote them.
+    measure_rereads: list[MeasureReread] = Field(default_factory=list, exclude_if=lambda value: not value)
+
     # Repeats of this result's judge scores, oldest first — see :class:`JudgeRepeat`. A measurement
     # of the judge, never a change to the scores above. Empty for a result nobody repeated.
     judge_repeats: list[JudgeRepeat] = Field(default_factory=list)
@@ -7023,6 +7111,8 @@ __all__ = [
     "RUN_LABEL_MAX_LENGTH",
     "run_label_problem",
     "MeasureDeclaration",
+    "MeasureRemeasure",
+    "MeasureReread",
     "EvalRunStatus",
     "ArmSchedule",
     "EvalTemplate",

@@ -91,7 +91,14 @@ if TYPE_CHECKING:
 #:   missed, is more samples of one condition rather than a condition of its own, so its attempts pool per case
 #:   with every other run of that variant and context. The case set stays frozen on each run, and a surface that
 #:   reads it (a comparison's case-set badge, a resume) reads it there.
-IDENTITY_VERSION: int = 25
+#: - **v26** — each host measure's definition joins the context key (#1160). ``measure_definitions`` is a component:
+#:   the definition digest of every measure the run's host declared at launch, by measure key
+#:   (``EvalRun.measure_definitions``), so runs read under two definitions of one measure are two conditions and
+#:   never pool. A run that recorded none (stored before this version, or assembled without a launch) re-derives a
+#:   partial context whose key is the digest it had, and pools with nothing: a silence is never evidence of a match.
+#:   A run re-measured from what its cells stored (``EvalRun.measure_remeasures``) is always re-derived, never read
+#:   off the key its launch stamped, so it joins the condition of the definitions it was read again under.
+IDENTITY_VERSION: int = 26
 """Version of the key-derivation predicate below.
 
 Bump whenever the hashed inputs of *any* key change — adding a factor, removing
@@ -223,6 +230,7 @@ def compute_context_components(
     scope_id: str,
     world_placements: Mapping[str, str] | None,
     apparatus_settings: Mapping[str, Any],
+    measure_definitions: Mapping[str, str] | None = None,
     include_roles: bool = True,
     omitted_roles: Collection[str] = (),
 ) -> ContextComponents:
@@ -331,6 +339,13 @@ def compute_context_components(
         is a level — the launch set none — so the component is always composed and two runs that set
         none hash equal. Sorted for the reason ``effective_judges`` is.
     :ptype apparatus_settings: Mapping[str, Any]
+    :param measure_definitions: The definition digest of each measure the run's host declared when the run's values
+        were read, by measure key (``EvalRun.measure_definitions``). Composed because a host changes what a measure
+        counts and keeps its key, and two runs read under two definitions of one measure are not repeats of one
+        condition. Kept as the map, as ``subject_state`` is, so a surface names which measure moved. ``{}`` is a
+        recording (the host declared no measure of its own); ``None`` is the absence (the run recorded none) and
+        drops the component, which marks the context partial.
+    :ptype measure_definitions: Mapping[str, str] | None
     :param omitted_roles: The declared apparatus dimensions this run does not HAVE — pinned to a rig seat
         its kind does not fill — by
         :meth:`~threetears.evals.kernel.host.profile.HostProfile.omits_apparatus` over what the run
@@ -404,6 +419,9 @@ def compute_context_components(
         # the registry's business and must not split an otherwise identical world.
         world=None if world_placements is None else canonical_digest(dict(sorted(world_placements.items()))),
         apparatus_settings=canonical_digest(dict(sorted(apparatus_settings.items()))),
+        # The MAP, for the reason `subject_state` is one: a surface names which measure's definition moved. Sorted,
+        # though the key's digest sorts it again, so the stored component reads in one order.
+        measure_definitions=None if measure_definitions is None else dict(sorted(measure_definitions.items())),
         scope=scope_id,
     )
 
@@ -510,7 +528,10 @@ _ROLE_INPUT_DEPENDENCIES: Mapping[str, str] = {
 #: would be a *different* component wearing the same name — so ``None`` on one of these means "this
 #: run could not say", never "this run's value was empty". Every other component is either always
 #: computable or carries its own emptiness as a real value.
-_ALL_OR_NONE_COMPONENTS: tuple[str, ...] = ("subject_state", "roles", "world")
+#:
+#: ``measure_definitions`` is here on the same rule: a run either recorded the definition of every measure its host
+#: declared or recorded none, and one that recorded none cannot say which definition its values were read under.
+_ALL_OR_NONE_COMPONENTS: tuple[str, ...] = ("subject_state", "roles", "world", "measure_definitions")
 
 
 def case_set_fingerprint(run: EvalRun) -> str:
@@ -589,6 +610,9 @@ class DerivedContextIdentity(EvalBaseModel):
     source: Literal["stamped", "derived"]
     partial: bool
     missing_components: list[str] = []
+    remeasured: bool = False
+    """Whether the run was re-measured (``EvalRun.measure_remeasures``): its values were read again from what its
+    cells stored, under the measure definitions this identity composes. Always ``derived`` then."""
 
 
 class DerivedVariantIdentity(EvalBaseModel):
@@ -682,7 +706,10 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
         which means one thing only: a host that wired no state reader. What a
         state-less host's subject carried is not recoverable from anything
         stored now, so the component drops rather than being built from a
-        subset.
+        subset. ``measure_definitions`` is absent when the run recorded none
+        (``EvalRun.measure_definitions`` is ``None``): the host's measure registry is host CODE and moves under the
+        record, so composing today's definitions for a run read under older ones would assert a match nothing
+        recorded.
     :rtype: DerivedContextIdentity
     :raises StateCoordinateError: The snapshot's state map names something the host's registry does
         not declare as apparatus.
@@ -801,6 +828,9 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
         world_placements=run.world_placements,
         # Never absent: a run whose launch set no apparatus value records that, and it is a level.
         apparatus_settings=run.apparatus_settings,
+        # What the run RECORDED, never the host's registry as it is today: `None` is a run that recorded none, and
+        # it stays absent.
+        measure_definitions=run.measure_definitions,
         include_roles=has_roles,
         omitted_roles=omitted_roles,
     )
@@ -812,6 +842,7 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
         source="derived",
         partial=bool(missing),
         missing_components=missing,
+        remeasured=bool(run.measure_remeasures),
     )
 
 
@@ -839,6 +870,12 @@ def resolve_context_identity(run: EvalRun, profile: HostProfile) -> DerivedConte
     its key as ``partial`` instead of sitting alongside complete ones. Which
     version did which is on :data:`IDENTITY_VERSION`.
 
+    A re-measured run (``EvalRun.measure_remeasures``) is re-derived whatever version
+    stamped it. A re-measure reads the run's values again under other measure
+    definitions and records them on the run; the key its launch stamped composes the
+    definitions it was launched under and stays on the document, honest about its own
+    era, while the identity a reader shows composes the ones its values hold now.
+
     :param run: The run to resolve.
     :ptype run: EvalRun
     :param profile: The host a re-derivation reads; unread for a run stamped at this version.
@@ -847,7 +884,12 @@ def resolve_context_identity(run: EvalRun, profile: HostProfile) -> DerivedConte
         launch or reconstructed here.
     :rtype: DerivedContextIdentity
     """
-    if run.context_key is not None and run.context_components is not None and run.identity_version == IDENTITY_VERSION:
+    if (
+        run.context_key is not None
+        and run.context_components is not None
+        and run.identity_version == IDENTITY_VERSION
+        and not run.measure_remeasures
+    ):
         # The same predicate the derived branch uses, not a second reading of the same question:
         # this function is one public answer to "is this key partial", and two implementations of
         # it drift the first time a component joins the set.

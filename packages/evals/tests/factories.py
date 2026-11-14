@@ -242,6 +242,9 @@ def make_eval_run(**overrides: Any) -> EvalRun:
         test_case_ids=["tc-1"],
         rubric_scales={},
         world_placements={},
+        # What the launch path stamps on a host that declares no measure of its own: a recording, so a factory run
+        # pools as a launched one does. A test about a run that recorded none passes ``measure_definitions=None``.
+        measure_definitions={},
         # What the launch path stamps; a witnessed run is the one a test names.
         apparatus_provenance="commissioned",
     )

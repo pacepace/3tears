@@ -402,6 +402,8 @@ def courier_run(model: str, *, cases: Sequence[EvalTestCase], world: WorldRegist
         # also what puts the courier's apparatus vocabulary in front of a reader.
         host_payload={_PAYLOAD: {"search_depth": 3, "traffic_feed": FEEDS[model]}},
         world_placements=world.place(seeded=("road_closures",), carriers=RoutePlannerKind.CARRIERS),
+        # What the launch stamps: each of the host's measures' definitions.
+        measure_definitions=MeasureRegistry(COURIER_MEASURES).definition_digests(),
         rubric_scales={},
     )
 

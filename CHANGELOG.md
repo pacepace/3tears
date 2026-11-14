@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: runs read under two definitions of a host measure never pool, and a run can be re-measured (#1160)
+
+**Changed:** a run records the definition digest of every measure its host declares (`EvalRun.measure_definitions`),
+and the map is a component of its measurement context (`IDENTITY_VERSION` 26, core minor 15.18). Two runs that recorded
+different definitions of one measure are two pass^k cells (`other_measure_definition`), a comparison set holding both is
+badged `measure_definitions_differ` and names the measures, and a take-up across the change is refused. A run that
+recorded none (owner ruling, 2026-11-14: a silence is never a match) is a cell of its own
+(`no_recorded_measure_definitions`) and pools with nothing. The digest covers what a stored value counts
+(`MEASURE_DEFINITION_FIELDS`: type, unit, range, categories, formula, family, and the new `definition_revision` and
+`shapes_run`), never a name, a description or how the value is read.
+
+**Added:** `threetears.evals.run.remeasure_run(host, run_id, scope_id, apply=False)` reads a stored run's host measures
+again from what its cells stored, through the host's `HostProfile.measure_rereader`, and records it: each result keeps
+the values it held (`EvalResult.measure_rereads`), the run records the definitions its values now hold and that it was
+re-measured (`EvalRun.measure_remeasures`), and it joins the cell of those definitions. Nothing is interpolated: a
+stored value the reader does not answer refuses the run before anything is written, and so does a moved measure that
+declares `shapes_run`.
+
+**Not yet:** a campaign bundle's cells (`analysis/cells.py`, variant by apparatus class) do not read the definitions,
+so a campaign page still pools such runs; that needs a new rig dimension, `CELL_MODEL_VERSION` 15 and regenerated
+goldens.
+
+**For hosts:** every run stored before this release recorded no definitions and pools with nothing in pass^k until it
+is re-measured; wire `measure_rereader` and call `remeasure_run`, or run again. Raise `definition_revision` on a
+measure whenever its reading code changes what it counts. A host that assembles runs itself sets
+`measure_definitions=profile.measures.definition_digests()`. `packages/evals/MIGRATIONS.toml` has the detail.
+
 ### evals: a definitions reset fills the presentation names a template it leaves current lacks
 
 **Added:** `reset_definitions` runs the definition seed's fill-only presentation-name pass after its writes, on every

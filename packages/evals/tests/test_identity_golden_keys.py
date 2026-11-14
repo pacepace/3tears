@@ -45,7 +45,7 @@ from packages.evals.tests.fixtures.toyhost.run import (
 )
 
 #: The ``IDENTITY_VERSION`` every golden below was derived under.
-PINNED_IDENTITY_VERSION = 25
+PINNED_IDENTITY_VERSION = 26
 
 #: The toy host's context, shared by both its arms: one condition, two contestants.
 _TOY_CONTEXT = {
@@ -57,9 +57,17 @@ _TOY_CONTEXT = {
     "tool_permissions": "baf5287548d904d9d942c97182d06b2bbc9ba2c35129e6cc9f1302922224e915",
     "world": "35efc88198267d603fa880ed25f36644d541fd4a5884a401dfb08b60867e7742",
     "apparatus_settings": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "measure_definitions": {
+        "cost_per_document_usd": "8731e8a74313cced0ba25a3f3935158b078450b260d20e9da0b442e2a04a9108",
+        "field_accuracy": "82b2bdacf813c6e17e9083cb563dead56910d819d7ac52e45fad4a0806b09d74",
+        "field_count_error": "d70f100236616fab6233281b1bb54bd42e8ff021f3d13b9f662f1d24d875f887",
+        "fields_stripped": "3ba26f7471e514db85e06ac50522170b7387d38f211db0f8a2a8eabe30e9278e",
+        "manual_review_rate": "39cde6227406731e70286522e4d11eb389aef14ddfef17af4b082495bc0033e4",
+        "p95_extract_ms": "cee585a5657d25ebbe6e5d6d9a7a138dad54cca8aff0a764dd02fc90d42c34cc",
+    },
     "scope": "toyhost-scope",
 }
-_TOY_CONTEXT_KEY = "32938755aefdf646ca72c579d5824eb76ff8e92994989fb8d5248f770f8c62de"
+_TOY_CONTEXT_KEY = "c4884862148e96edc421adcd30c40719a0d67e96c96da817010e86e30323f414"
 
 _COURIER_CONTEXT = {
     "subject_state": {},
@@ -70,9 +78,14 @@ _COURIER_CONTEXT = {
     "tool_permissions": "baf5287548d904d9d942c97182d06b2bbc9ba2c35129e6cc9f1302922224e915",
     "world": "0868b4f01fb7c86e57c3a9270c1115d89d309d6e72418e664a57f4dc79679b54",
     "apparatus_settings": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "measure_definitions": {
+        "detour_km": "9dacbcdcba220f2cec862d02d720074ffdc1602834278edf03bd401cfd87e323",
+        "field_accuracy": "b3ed331985fca566cdd296b886afe28c56c94f88b7037a0832eba9c7c8cb0c0c",
+        "on_time_rate": "d053f8b04fede2b6502a98c500953b81d2afec5f332905c2e9cf6b69323b8f59",
+    },
     "scope": "courier-depot-north",
 }
-_COURIER_CONTEXT_KEY = "a8824d8721bb5058e2a79b668448f5eb6e2ef15b9d28be5497ecdc1597ff1338"
+_COURIER_CONTEXT_KEY = "c77d2054b9d2e1e2bb93ef1ea6188e576248b71b0a0c2b5a6f8a92594f1b3fb1"
 
 
 @dataclass(frozen=True)

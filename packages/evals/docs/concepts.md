@@ -233,8 +233,10 @@ them as one condition.
 One configuration of the rig as recorded on the runs (`ApparatusClass`). Two observations pool only when
 their variant matches and their apparatus falls in the same class; an arm measured under two classes is
 named with `(test setup <digest>)` in a report. These cells, and every composite, cost and latency, pool on
-variant x rig alone. pass^k splits further: on the measurement context, the template revision and the model
-that answered (see [Measurement context](#measurement-context)).
+variant x rig alone. pass^k splits further: on the measurement context, the template revision, each host
+measure's definition and the model that answered (see [Measurement context](#measurement-context)). These cells
+do not yet read a measure's definition: a campaign page pools runs read under two definitions of one host measure,
+where pass^k and the comparison sets keep them apart.
 
 #### Apparatus settings
 Rig values your host declares and a launch may set (`apparatus_settings`), so one template can be run at two
@@ -250,20 +252,33 @@ judged kind, `callable-judged`, seats the judge and nothing else.
 #### Measurement context
 Everything pinned around a run that is not the variant: the subject and its state, the template, the resolved
 judge and simulator models, judge configs, cassette mode and corpus, tool bound, scope, world seed, apparatus
-settings (`compute_context_components`). Its digest is the context key, stamped once at launch. The frozen
-case set is not in it: more cases, or more repeats, under one context are more samples of one condition.
+settings, and the definition of each measure your host declares (`compute_context_components`). Its digest is
+the context key, stamped once at launch. The frozen case set is not in it: more cases, or more repeats, under one
+context are more samples of one condition.
+
+A measure's definition is what one stored value of it counts: the descriptor's type, unit, range, categories,
+formula and family, and `definition_revision`, which you raise when your reading code changes what the measure
+counts and the descriptor stays as it is (`measure_definition_digest`). A name, a description or a better end is
+how a value is read, and moves nothing. A run records every measure's digest at launch
+(`EvalRun.measure_definitions`). Runs that recorded two definitions of one measure are two conditions; a run that
+recorded none (stored before runs recorded them, or assembled without a launch) pools with nothing.
+`remeasure_run` reads a stored run again from what its cells stored, through your `HostProfile.measure_rereader`,
+and the run then joins the cell of the definitions it was read under, marked (`EvalRun.measure_remeasures`).
+Nothing is guessed: a stored value your reader does not answer refuses the run, and so does a moved measure that
+declares `shapes_run` (its definition decided what the run did).
 
 A contestant's pass^k pools per case over the runs of one pass^k cell (`PassHatKCell`): one context (read at
 today's identity version), one template revision (the template's id and the digest of what it measured that
-the run froze, `EvalRun.template_digest`), one apparatus provenance and one set of served models, whatever
+the run froze, `EvalRun.template_digest`), one definition of each host measure, one apparatus provenance and one
+set of served models, whatever
 cases each run covered and whenever each ran. Its headline figure, interval, bar and verdict read the headline
 cell alone, chosen in the one order `PassHatKCellReading` states (a recorded, resolved context first, then a cell
 that pools, then most runs, most results and the first run id); every other cell stands beside it with its own
 pass^k and the reason it is not the headline (`FrontierPoint.pass_hat_k_cells`), named on the frontier's text and the report page.
 A run kept out of the headline is kept out of the frontier's pass^k, bar and verdict
 only: the arm's tables, its cells (see [Apparatus class](#apparatus-class)), composite, cost and latency still
-count it. A run that froze no template digest, and a run with a candidate call whose response named no model, is
-a cell of its own: a silence is never evidence of a match, so it pools with nothing and is named with what it did
+count it. A run that froze no template digest, a run that recorded no measure definitions, and a run with a
+candidate call whose response named no model, is a cell of its own: a silence is never evidence of a match, so it pools with nothing and is named with what it did
 not record, the headline too when every run is silent and others are kept out beside it. A run whose candidate made no model call recorded
 that, and pools on everything else.
 

@@ -98,6 +98,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal
 from pydantic import Field, model_validator
 
 from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.hashing import canonical_digest
 
 # The reserved dual-score axis ids, re-exported so a caller describing a judged dimension
 # has one import for both the ids and their descriptors.
@@ -118,6 +119,10 @@ if TYPE_CHECKING:
 
 __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why the aliases are exported
     "declaration_of",
+    "MEASURE_DEFINITION_FIELDS",
+    "MEASURE_READING_FIELDS",
+    "measure_definition_digest",
+    "measure_definition_digests",
     "OUTCOME_DIM_ID",
     "TIME_UNITS",
     "is_latency_measure",
@@ -578,6 +583,30 @@ class MetricDescriptor(EvalBaseModel):
         ),
     )
 
+    # Both left out of a dump at their defaults, for the reason ``pass_fail`` is: a descriptor that declares neither
+    # serializes as it did before the fields existed.
+    definition_revision: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: value == 0,
+        description=(
+            "The revision of the code that reads this measure. Raise it whenever what the measure counts changes "
+            "while this descriptor stays as it is (the reader counts something more, or something less), so the "
+            "change reaches the measure's definition digest (`measure_definition_digest`): a run records that "
+            "digest in its measurement context, and runs read under two definitions of one measure never pool."
+        ),
+    )
+    shapes_run: bool = Field(
+        default=False,
+        exclude_if=lambda value: value is False,
+        description=(
+            "True where the measure's definition decides what a run DOES, not only how it is read: a stop rule, a "
+            "gate the candidate meets, a floor the world tops up to. A run measured under another definition of "
+            "such a measure did something else, so its stored artifacts cannot be read again under the current one "
+            "and a re-measure refuses it (`remeasure_run`)."
+        ),
+    )
+
     @property
     def is_check(self) -> bool:
         """Whether an observation of this measure passes or fails its trial: a boolean or a pass/fail measure with a
@@ -671,6 +700,77 @@ class MetricDescriptor(EvalBaseModel):
                 "explains a movement and has no better end, so either drop the direction or drop `diagnostic`"
             )
         return self
+
+
+#: The descriptor fields that say what a measure IS: what one stored value of it counts, in what unit and over what
+#: values, and which revision of its reader wrote it. Digested by :func:`measure_definition_digest`.
+MEASURE_DEFINITION_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "name",
+        "data_type",
+        "family",
+        "unit",
+        "value_range",
+        "nonnegative",
+        "categories",
+        "formula",
+        "pass_fail",
+        "contained_by",
+        "definition_revision",
+        "shapes_run",
+    }
+)
+
+#: The descriptor fields that say how a stored value is READ, never what it counts: its names and prose
+#: (:data:`MEASURE_PRESENTATION_FIELDS`, its description), its better end, margin, merit axis and population, and how
+#: far it transfers. A reader applies today's to every pooled value alike, so a change to one leaves two runs' stored
+#: values the same quantity, and none is in the definition digest.
+MEASURE_READING_FIELDS: Final[frozenset[str]] = MEASURE_PRESENTATION_FIELDS | frozenset(
+    {
+        "description",
+        "transferability_class",
+        "attribution_scope",
+        "higher_is_better",
+        "materiality_threshold",
+        "merit_axis",
+        "population",
+        "scale",
+        "diagnostic",
+        "subject_spend",
+        "guardrail",
+    }
+)
+
+
+def measure_definition_digest(descriptor: MetricDescriptor) -> str:
+    """Digest what a measure is, so two runs can be shown to have read it under one definition.
+
+    Over :data:`MEASURE_DEFINITION_FIELDS` alone, every one present whatever its value, through
+    :func:`~threetears.evals.schema.hashing.canonical_digest`: the order a store hands the keys back in cannot move
+    it, and neither can a reader name, a description or a better end (:data:`MEASURE_READING_FIELDS`). A change in
+    the host's reading code behind an unchanged descriptor reaches it only through ``definition_revision``, which
+    the host raises.
+
+    :param descriptor: The measure's descriptor, as its host declares it now.
+    :ptype descriptor: MetricDescriptor
+    :return: A 64-character hex digest.
+    :rtype: str
+    """
+    return canonical_digest({name: getattr(descriptor, name) for name in MEASURE_DEFINITION_FIELDS})
+
+
+def measure_definition_digests(descriptors: Iterable[MetricDescriptor]) -> dict[str, str]:
+    """Each measure's definition digest (:func:`measure_definition_digest`), by its key, sorted.
+
+    What a run records as ``EvalRun.measure_definitions``. An empty catalogue gives ``{}``, which is a recording:
+    the host declared no measure of its own.
+
+    :param descriptors: The host's declared measures.
+    :ptype descriptors: Iterable[MetricDescriptor]
+    :return: Measure key to digest.
+    :rtype: dict[str, str]
+    """
+    return dict(sorted((descriptor.name, measure_definition_digest(descriptor)) for descriptor in descriptors))
 
 
 def strictest_class(*classes: TransferabilityClass) -> TransferabilityClass:

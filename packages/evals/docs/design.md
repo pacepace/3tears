@@ -390,8 +390,8 @@ Rules that came with it (`kernel/identity.py`):
   key. Whether a stored run still counts is structural: its variant, its context resolved at today's identity
   version, its template revision, its apparatus and the model that answered. Labels, and how long ago it ran,
   never count. A run kept out of a pool is not counted in the pool's reading: it stands beside it as a cell of
-  its own, named with its reason, never dropped. A record's silence (no template digest frozen, no served model
-  named) is never evidence of a match, so that run is a cell of its own, named with what it did not record. A
+  its own, named with its reason, never dropped. A record's silence (no template digest frozen, no measure
+  definitions recorded, no served model named) is never evidence of a match, so that run is a cell of its own, named with what it did not record. A
   candidate that made no model call recorded that, and its runs pool on everything else. A candidate requested by
   a floating alias the provider echoes back (an OpenRouter `~`, `-latest` or `openrouter/` id), or called through
   a client that reports no served model, leaves the served model silent, so each of its runs stands apart: a host
