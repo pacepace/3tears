@@ -33,6 +33,7 @@ from typing import Any
 from uuid import UUID
 
 from threetears.core.keyed._filters import Fragment, Selected
+from threetears.core.keyed.page import keyset_page
 from threetears.core.keyed.point import read_by
 from threetears.core.keyed.rows import read_joined, read_keyed
 from threetears.interfaces.keyed.page import Sort
@@ -114,9 +115,14 @@ async def read_by_joined(
     where: Sequence[Fragment] = (),
     order: Sequence[Sort] = (),
     batch: int | None = None,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """the rows of ``table`` the pins name, each beside the rows of each joined table it matches: what ``fetch`` of
     the hand-written join answered.
+
+    With ``limit``, the read is the first page of its rows in ``order`` (:func:`~threetears.core.keyed.keyset_page`,
+    a seek past the page before in ``where``): ``... LEFT JOIN ... ORDER BY ... LIMIT n``, each join a ``LEFT`` (or
+    counted) one, so the page holds the rows the statement's did.
 
     :param conn: anything with an asyncpg-shaped ``fetch``
     :ptype conn: Any
@@ -134,9 +140,12 @@ async def read_by_joined(
     :ptype order: Sequence[Sort]
     :param batch: the most values a joined table's statement names; None: the connection's
     :ptype batch: int | None
+    :param limit: the most rows read, the first in ``order``; every row the pins name when None
+    :ptype limit: int | None
     :return: the rows, as dicts: the read's columns, then each join's
     :rtype: list[dict[str, Any]]
-    :raises ValueError: when nothing is joined, a join names nothing to join on, or a counted join widens the row
+    :raises ValueError: when nothing is joined, a join names nothing to join on, a counted join widens the row, or a
+        page has no order or an inner join
     """
     if not joins:
         raise ValueError(f"a joined read of {table} joins at least one table (read_by reads one)")
@@ -145,6 +154,10 @@ async def read_by_joined(
             raise ValueError(f"a join of {join.table} names how it joins the row")
         if join.counts and (join.columns or join.left or join.matched):
             raise ValueError(f"a join of {join.table} that counts keeps each row once: no columns, left or matched")
+    if limit is not None and not order:
+        raise ValueError(f"a page of a joined read of {table} names its order")
+    if limit is not None and any(not (join.left or join.counts) for join in joins):
+        raise ValueError(f"a page of a joined read of {table} joins LEFT only (an inner join drops rows past the page)")
     selected = _names(columns)
     # the columns of the read a join needs and the read does not select: read, then dropped from the rows
     added = [] if selected is None else sorted({column for join in joins for column in join.on.values()} - selected)
@@ -153,7 +166,11 @@ async def read_by_joined(
     }
     hidden = [column for column in added if column not in named]
     read = None if columns is None else [*columns, *hidden]
-    rows: list[dict[str, Any]] = await read_by(conn, table, by=by, columns=read, where=where, order=order)
+    rows: list[dict[str, Any]] = (
+        await read_by(conn, table, by=by, columns=read, where=where, order=order)
+        if limit is None
+        else (await keyset_page(conn, table, columns=read, by=by, order=order, limit=limit, where=where)).rows
+    )
     for join in joins:
         inner = list(join.on)
         # the joined table's columns read under names of their own, so none overwrites the row's before it is placed

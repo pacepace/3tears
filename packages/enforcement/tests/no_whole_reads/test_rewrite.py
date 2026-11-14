@@ -1364,7 +1364,7 @@ def test_a_first_of_read_bound_by_its_guards_alone_is_parsed() -> None:
         guards=True,
     )
     assert isinstance(seek, PointSql) and seek.pins == () and seek.limit == {"param": 3}, seek
-    assert [guard.params for guard in seek.guards] == [(1, 2)], seek.guards
+    assert [(guard.params, guard.compared) for guard in seek.guards] == [((1, 2), ("date_created", "id"))], seek.guards
     newest = parse_first(
         "SELECT * FROM rates WHERE effective_from <= $1 ORDER BY effective_from DESC LIMIT 1", guards=True
     )
@@ -1423,6 +1423,13 @@ def test_a_walk_of_links_written_as_a_recursive_statement_is_parsed() -> None:
 
 _REACHED = (
     """
+    import enum
+
+
+    class Kind(enum.StrEnum):
+        DATASET = "dataset"
+
+
     async def closure(pool, dataset_id):
         rows = await pool.fetch(_CLOSURE, dataset_id)
         return [(row["source_kind"], row["source_id"]) for row in rows]
@@ -1433,8 +1440,8 @@ _REACHED = (
         return tuple(row["dataset_id"] for row in rows)
 
 
-    _CLOSURE = """
-    + repr(_CLOSURE_SQL)
+    _CLOSURE = f"""
+    + repr(_CLOSURE_SQL.replace("'dataset'", "'{Kind.DATASET.value}'"))
     + """
     _DOWNSTREAM = """
     + repr(_DOWNSTREAM_SQL.replace("dataset_sources", "dataset_links"))
@@ -1444,8 +1451,9 @@ _REACHED = (
 
 
 def test_walks_of_links_are_rewritten_onto_read_reached(tmp_path: Path) -> None:
-    """Flips if a closure and a downstream walk sent by ``fetch`` are not rewritten onto ``read_reached`` (its start,
-    ``on``, ``to``, ``follow`` / ``by`` and columns as parsed), each recorded and found by the source check."""
+    """Flips if a closure (a module constant f-string, its literal an enum member's value) and a downstream walk sent
+    by ``fetch`` are not rewritten onto ``read_reached`` (its start, ``on``, ``to``, ``follow`` / ``by`` and columns
+    as parsed), each recorded and found by the source check."""
     config = _config(tmp_path)
     (tmp_path / "src/pkg/tables.py").write_text(
         textwrap.dedent(_TABLES)
@@ -2372,6 +2380,36 @@ def test_a_correlated_count_in_the_select_list_is_a_counted_join() -> None:
             "expression",
         ),
         ("SELECT a.id FROM a WHERE a.id = $1", "JOIN"),
+    ):
+        answer = parse_join(sql, guards=True)
+        assert isinstance(answer, str) and refused in answer, (sql, answer)
+
+
+def test_a_page_of_a_left_joined_read_is_parsed_with_its_limit() -> None:
+    """Flips if a keyset page over LEFT JOINs (``WHERE (a, b) > ($1, $2) ORDER BY a, b LIMIT $3``, each join's match
+    flagged) is not parsed as a joined read with its order and limit, sought by its guard alone; or if a page over an
+    inner join, or a LIMIT whose parameter is not the last, is taken."""
+    page = parse_join(
+        "SELECT e.name, e.pod_id, (n.id IS NOT NULL) AS live FROM exports e LEFT JOIN namespaces n ON n.id = e.ns_id "
+        "WHERE (e.name, e.pod_id) > ($1, $2::uuid) ORDER BY e.name, e.pod_id LIMIT $3",
+        guards=True,
+    )
+    assert isinstance(page, PointSql), page
+    assert page.limit == {"param": 3} and [term["column"] for term in page.order] == ["name", "pod_id"], page
+    assert page.pins == () and [guard.params for guard in page.guards] == [(1, 2)], page
+    (joined,) = page.joins
+    assert joined.left and joined.matched == "live", joined
+    for sql, refused in (
+        (
+            "SELECT e.name, n.id AS ns FROM exports e JOIN namespaces n ON n.id = e.ns_id WHERE e.name > $1 "
+            "ORDER BY e.name LIMIT $2",
+            "inner join",
+        ),
+        (
+            "SELECT e.name, (n.id IS NOT NULL) AS live FROM exports e LEFT JOIN namespaces n ON n.id = e.ns_id "
+            "WHERE e.name > $2 ORDER BY e.name LIMIT $1",
+            "numbered",
+        ),
     ):
         answer = parse_join(sql, guards=True)
         assert isinstance(answer, str) and refused in answer, (sql, answer)

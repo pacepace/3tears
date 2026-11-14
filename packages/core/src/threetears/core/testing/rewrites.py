@@ -862,15 +862,15 @@ def _joined_rows(
             rows.append(made(value, held=False))
     for stray in range(_JOIN_STRAYS):
         rows.append(made([_value(shape.columns[column], 800_000 + stray) for column in on], held=True))
-    # a counted join's counted columns: NULL on every other row where the column takes one, so a count of the rows
-    # where it holds a value differs from a count of every row
+    # a counted join's table: every nullable column it does not join or pin on NULL on every other row (whatever the
+    # entry records it counts), so a count of the rows where a column holds a value differs from a count of every row
     rows = [dict(made_row) for made_row in rows]
-    for column in [column for column in dict(join.get("counts") or {}).values() if column is not None]:
-        if column not in shape.columns:
-            raise AssertionError(f"{join['table']}: the count names {column}, which the table has no column of")
-        for place, made_row in enumerate(rows):
-            nulled = place % 2 == 1 and shape.columns[column].nullable
-            made_row[column] = None if nulled else _value(shape.columns[column], 900_000 + place)
+    if join.get("counts"):
+        for column in shape.columns.values():
+            if column.name in fixed or not column.nullable or column.generated or not _seedable(column):
+                continue
+            for place, made_row in enumerate(rows):
+                made_row[column.name] = None if place % 2 == 1 else _value(column, 900_000 + place)
     return rows
 
 
@@ -907,6 +907,14 @@ async def _assert_join_same(conn: Any, entry: Mapping[str, Any], *, overrides: _
         for join in entry["joins"]:
             await seed_rows(c, join["table"], _joined_rows(joined_shapes[join["table"]], join, seeded))
 
+    # a page (``limit``): its LIMIT bound inside the seeded rows, compared exact before the boundary
+    limit = entry.get("limit")
+    rows: int | None = None
+    if limit is not None:
+        rows = _TOP_N if "param" in limit else int(limit["literal"])
+        if "param" in limit:
+            params = [*params, _TOP_N]
+    own = entry.get("order", ())[: entry["key_from"]] if limit is not None else entry.get("order", ())
     await conn.execute("SET session_replication_role = replica")
     try:
         await assert_same_results(
@@ -915,10 +923,13 @@ async def _assert_join_same(conn: Any, entry: Mapping[str, Any], *, overrides: _
             row=row,
             old_sql=entry["old_sql"],
             params=params,
-            helper=lambda c: read_by_joined(c, table, by=by, columns=columns, joins=joins, where=where, order=order),
-            order_by=[term["shown"] for term in entry.get("order", ())] or None,
+            helper=lambda c: read_by_joined(
+                c, table, by=by, columns=columns, joins=joins, where=where, order=order, limit=rows
+            ),
+            order_by=[term.get("shown", term["column"]) for term in own] or None,
             ordered=bool(order),
             related=related,
+            limited=limit is not None,
         )
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")

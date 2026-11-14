@@ -503,6 +503,11 @@ def test_a_read_with_joins_is_judged_as_its_read_and_each_joined_table_s_keyed_b
     assert list(helper_statements(_call('read_by_joined(c, "grants", by={"who": w}, columns=None, joins=js)')))[
         -1
     ].unseen
+    paged = keyed.replace('by={"who": w}', 'by={}, order=[Sort("who")], limit=n').replace(
+        'by={"kind": "k"})', 'by={"kind": "k"}, left=True)'
+    )
+    assert _judged(paged, schema) == [[], []]
+    assert _judged(paged.replace('Sort("who")', 'Sort("geo")'), schema)[0] != []
 
 
 def test_a_walk_of_links_is_judged_as_its_first_read_and_its_keyed_batch_a_level(schema: SchemaCatalog) -> None:

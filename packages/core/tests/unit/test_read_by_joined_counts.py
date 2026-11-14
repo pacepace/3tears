@@ -9,7 +9,7 @@ from collections.abc import Iterator
 import duckdb
 import pytest
 
-from threetears.core.keyed import InlineDuckDB, Joined, read_by_joined
+from threetears.core.keyed import Fragment, InlineDuckDB, Joined, Sort, read_by_joined
 
 
 @pytest.fixture
@@ -68,4 +68,48 @@ async def test_a_counted_join_takes_no_joined_column() -> None:
             by={"source": "s"},
             columns=None,
             joins=[Joined("columns", on=_ON, columns={"c": "column_name"}, counts={"n": None})],
+        )
+
+
+async def test_a_page_of_a_left_joined_read_is_the_hand_written_page(db: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a joined read with ``limit`` answers other than the hand-written ``LEFT JOIN ... ORDER BY ... LIMIT``:
+    its first rows by the order past a seek, each beside whether a joined row matched it."""
+    old = (
+        "SELECT t.id, t.name, (c.table_name IS NOT NULL) AS documented FROM tables t LEFT JOIN "
+        "(SELECT DISTINCT table_name FROM columns) c ON c.table_name = t.name WHERE t.id > ? ORDER BY t.id LIMIT 2"
+    )
+    rows = await read_by_joined(
+        InlineDuckDB(db),
+        "tables",
+        by={},
+        columns=["id", "name"],
+        joins=[Joined("columns", on={"table_name": "name"}, columns={}, counts={"documented": None})],
+        where=[Fragment('t."id" > $1', ("t1",))],
+        order=[Sort("id")],
+        limit=2,
+    )
+    expected = db.execute(old, ["t1"]).fetchall()
+    assert [(row["id"], row["name"], row["documented"] > 0) for row in rows] == expected
+
+
+async def test_a_page_of_a_joined_read_joins_its_tables_left_and_is_ordered() -> None:
+    """Flips if a page is taken before an inner join (which would drop rows the page counted) or with no order."""
+    with pytest.raises(ValueError, match="LEFT"):
+        await read_by_joined(
+            None,
+            "tables",
+            by={},
+            columns=None,
+            joins=[Joined("columns", on=_ON, columns={"c": "column_name"})],
+            order=[Sort("id")],
+            limit=5,
+        )
+    with pytest.raises(ValueError, match="order"):
+        await read_by_joined(
+            None,
+            "tables",
+            by={},
+            columns=None,
+            joins=[Joined("columns", on=_ON, columns={"c": "column_name"}, left=True)],
+            limit=5,
         )

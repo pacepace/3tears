@@ -712,13 +712,15 @@ def _read_joined(call: ast.Call) -> list[str]:
 
 
 def _read_by_joined(call: ast.Call) -> list[str]:
-    """a read with joins (``read_by_joined``): its read by its pins, as :func:`_read_by` judges one, then each joined
+    """a read with joins (``read_by_joined``): its read by its pins, as :func:`_read_by` judges one (a page of it,
+    ``limit=``, as :func:`_keyset_page` judges one), then each joined
     table's keyed batch by the columns it is joined on and its own pins, as :func:`_read_joined` judges one; joins the
     walk cannot read as a literal list of ``Joined(...)`` are unseen."""
     joins = _argument(call, "joins", None)
     if not isinstance(joins, ast.List | ast.Tuple):
         raise _Unseen("joins")
-    statements = _read_by(call)
+    # a page of it (``limit=``) is read as keyset_page reads one
+    statements = _keyset_page(call) if _argument(call, "limit", None) is not None else _read_by(call)
     for join in joins.elts:
         if not (isinstance(join, ast.Call) and _name(join) == "Joined"):
             raise _Unseen("joins")

@@ -352,7 +352,7 @@ class Rewrite:
         entry = asdict(self)
         for kept_out in ("edits", "repoints", "notes", "imports"):
             entry.pop(kept_out)
-        if self.shape != "first":
+        if self.shape != "first" and not (self.joins and self.limit is not None):
             entry.pop("limit")
             entry.pop("key_from")
         if self.helper != "holds_any":
@@ -1089,6 +1089,13 @@ def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
         return "interpolated"
     if text.startswith("/*") or "--" in text:
         return "a comment or hint in the statement"
+    # a page of it: a trailing LIMIT after its ORDER BY, cut off and kept
+    limit: dict[str, int] | None = None
+    paged = _LIMIT.search(text)
+    if paged is not None and re.search(r"\border\s+by\b", text[: paged.start()], re.IGNORECASE):
+        written = paged.group("limit")
+        limit = {"param": int(written[1:])} if written.startswith("$") else {"literal": int(written)}
+        text = text[: paged.start()]
     masked_text = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", text)
     blanked, depth = [], 0
     for char in masked_text:
@@ -1195,10 +1202,15 @@ def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
         if any(_PARAM_PIN.match(w) or _ANY_PIN.match(w) or _NULLSAFE_PIN.match(w) for w, _ in relation.where)
     ]
     left_joined = any(relation.left for relation in relations)
+    if limit is not None and any(not relation.left for relation in relations[1:]):
+        return "a page (LIMIT) over an inner join (the join drops rows past the page the read takes)"
     if relations[0] in bound_on:
         base = relations[0]
     elif len(bound_on) == 1 and not left_joined and len(relations) == 2:
         base = bound_on[0]
+    elif limit is not None and any("$" in written for written, _ in relations[0].where):
+        # a page sought by its guards alone (a keyset seek past the page before), the FROM table's
+        base = relations[0]
     else:
         return "no parameter pins the FROM table (a joined read is keyed by the table its pins bind)"
     others = [relation for relation in relations if relation is not base]
@@ -1358,8 +1370,13 @@ def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
     numbers = sorted({number for pin in (*base_pins, *base_guards) for number in pin.numbers()})
     if numbers != list(range(1, len(numbers) + 1)):
         return "parameters not numbered $1..$n"
-    if not any(pin.kind in _BOUND_KINDS for pin in base_pins):
+    sought = limit is not None and any(guard.params for guard in base_guards)
+    if not any(pin.kind in _BOUND_KINDS for pin in base_pins) and not sought:
         return "no bound parameter (literals only): a constant read, judged by hand"
+    if limit is not None and not order:
+        return "a LIMIT with no ORDER BY: which rows it keeps is the engine's choice"
+    if limit is not None and "param" in limit and limit["param"] != len(numbers) + 1:
+        return "the LIMIT's parameter is not the statement's last"
     joins = tuple(
         JoinSql(
             table=relation.table,
@@ -1381,6 +1398,7 @@ def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
         order=tuple(order),
         guards=tuple(base_guards),
         joins=joins,
+        limit=limit,
     )
 
 
@@ -1550,8 +1568,19 @@ def _guard(conjunct: str, qualifiers: set[str | None], row: str = "t") -> Pin | 
         if int(number) not in order:
             order.append(int(number))
     renumbered = _PARAMETER.sub(lambda found: f"${order.index(int(found.group(1))) + 1}", text)
+    # a row comparison (a keyset seek, ``(date_created, id) > ($1, $2)``): each parameter compared with the column in
+    # its place
+    in_rows: dict[int, str] = {}
+    for found in _ROW_COMPARISON.finditer(renumbered):
+        columns = [column.strip().lower() for column in found.group("columns").split(",")]
+        numbers = [int(number) for number in re.findall(r"\$(\d+)", found.group("params"))]
+        if len(columns) == len(numbers):
+            in_rows.update(zip(numbers, columns, strict=True))
     compared = []
     for place in range(1, len(order) + 1):
+        if place in in_rows:
+            compared.append(in_rows[place])
+            continue
         parameter = rf"\${place}(?!\d)(?:\s*::\s*{_IDENT}(?:\[\])?)*"
         paired = re.search(
             rf"(?P<column>{_IDENT})\s*{_COMPARISON}\s*{parameter}", renumbered, re.IGNORECASE
@@ -1571,6 +1600,12 @@ def _guard(conjunct: str, qualifiers: set[str | None], row: str = "t") -> Pin | 
     return Pin("", "guard", literal=" ".join(renumbered.split()), params=tuple(order), compared=tuple(compared))
 
 
+#: a row comparison of columns with parameters: ``(a, b) > ($1, $2::uuid)``
+_ROW_COMPARISON: Final[re.Pattern[str]] = re.compile(
+    rf"\(\s*(?P<columns>{_IDENT}(?:\s*,\s*{_IDENT})+)\s*\)\s*(?:<=|>=|<|>|=)\s*\(\s*(?P<params>\$\d+(?:\s*::\s*{_IDENT})?"
+    rf"(?:\s*,\s*\$\d+(?:\s*::\s*{_IDENT})?)+)\s*\)",
+    re.IGNORECASE,
+)
 #: a ``[NOT] EXISTS (SELECT ...)`` conjunct: a guard over the helper's row when correlated through it alone
 _EXISTS_GUARD: Final[re.Pattern[str]] = re.compile(
     r"^(?P<not>not\s+)?exists\s*\(\s*(?P<inner>select\b.+)\)$", re.IGNORECASE | re.DOTALL
@@ -2520,6 +2555,9 @@ def _render_joined(rewrite: Rewrite, receiver: str) -> str:
         parts.append(_where_text(rewrite).removeprefix(", "))
     if rewrite.order:
         parts.append(f"order=[{', '.join(_sort_text(term) for term in rewrite.order)}]")
+    if rewrite.limit is not None:
+        written = rewrite.args[rewrite.limit["param"] - 1] if "param" in rewrite.limit else rewrite.limit["literal"]
+        parts.append(f"limit={written}")
     return f"read_by_joined({', '.join(parts)})"
 
 
@@ -4300,7 +4338,9 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
         if " ".join(old_sql.split()) != " ".join(text.split()):
             refuse("the literal at its line is not the statement the walk found")
             continue
-        if isinstance(literal, ast.JoinedStr) and not isinstance(module.parent(literal), ast.Call):
+        # an f-string whose every interpolation is a constant (an enum member's value) is a constant statement; one
+        # holding a clause builder's clause is sent where it is written
+        if isinstance(literal, ast.JoinedStr) and clauses and not isinstance(module.parent(literal), ast.Call):
             refuse("an interpolated statement not written at the call sending it")
             continue
         held_in = isinstance(literal, ast.Constant) and isinstance(module.parent(literal), ast.Dict)
