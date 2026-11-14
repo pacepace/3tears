@@ -139,6 +139,7 @@ __all__ = [
     "measure_words",
     "misses_line",
     "missing_note",
+    "own_fmt",
     "point_labels",
     "reference_line",
     "separated",
@@ -1071,14 +1072,24 @@ def unit_quantities(context: ChartContext, values: Mapping[str, Sequence[float]]
     alike = {key: forms.chart_quantity(units[key]) for key in values}
     shown: dict[Quantity, list[float]] = {}
     lead: dict[Quantity, str] = {}
-    first: dict[Quantity, str] = {}
+    members: dict[Quantity, list[str]] = {}
     for key, figures in values.items():
         lead.setdefault(alike[key], units[key])
-        first.setdefault(alike[key], key)
+        members.setdefault(alike[key], []).append(key)
         shown.setdefault(alike[key], []).extend(figure * alike[key].factor for figure in figures)
-    # The measures drawn alike share one quantity, decided today over all of their figures and named by the first.
+    # The measures drawn alike share one quantity, decided over all of their figures and named by the finest of the
+    # measures it draws a figure of (:func:`_finest`): every mark carries its own measure's text at its own precision,
+    # and a value the kit draws from the format alone never reads coarser than its measure's form, which a coarser
+    # format would round (``91.5%`` drawn as ``92``). A measure the chart draws no figure of names nothing.
     drawn = {
-        each: forms.chart_quantity(lead[each], shown[each], measure=first[each], kind=kinds[first[each]])
+        each: _finest(
+            [
+                forms.chart_quantity(lead[each], shown[each], measure=key, kind=kinds[key])
+                for key in members[each]
+                if values[key]
+            ]
+            or [forms.chart_quantity(lead[each], shown[each], measure=members[each][0], kind=kinds[members[each][0]])]
+        )
         for each in shown
     }
     # Each figure at its own factor, times what the class's money is drawn at past it (a thousand where some amount is
@@ -1089,6 +1100,41 @@ def unit_quantities(context: ChartContext, values: Mapping[str, Sequence[float]]
         factor = alike[key].factor * drawn[alike[key]].factor / lead_factor
         quantities[key] = dataclasses.replace(drawn[alike[key]], factor=factor)
     return quantities
+
+
+def own_fmt(context: ChartContext, key: str, drawn: Quantity) -> str | None:
+    """The format a panel that draws one measure alone names: its measure's own, where the measures drawn alike on the
+    chart share a finer one (:func:`unit_quantities`), so each panel's axis reads at its measure's precision; None
+    where it is the chart's, for money (one form over every amount) and for a panel of no one measure.
+
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
+    :param key: The one measure the panel draws; empty for none.
+    :ptype key: str
+    :param drawn: The quantity the chart draws it as.
+    :ptype drawn: Quantity
+    :return: The panel's own format, or None.
+    :rtype: str | None
+    """
+    if not key or drawn.unit == MONEY:
+        return None
+    own = context.forms.chart_quantity(
+        figure_unit(context.report_input, key), measure=key, kind=figure_kind(context, key)
+    ).fmt
+    return own if own != drawn.fmt and own.partition(":")[0] == drawn.fmt.partition(":")[0] else None
+
+
+def _finest(candidates: Sequence[Quantity]) -> Quantity:
+    """Of the quantities the measures drawn alike would each name, the one whose format names the most decimals
+    (``pct:1`` before ``pct:0``); the first where none names any (money, whose one form is chosen over every amount).
+
+    :param candidates: Each measure's quantity, in the order the chart reads the measures; at least one.
+    :ptype candidates: Sequence[Quantity]
+    :return: The quantity the axis is named by.
+    :rtype: Quantity
+    """
+    named = [(int(places), at) for at, one in enumerate(candidates) if (places := one.fmt.rpartition(":")[2]).isdigit()]
+    return candidates[max(named, key=lambda one: (one[0], -one[1]))[1]] if named else candidates[0]
 
 
 def _a_panel_per_measure(kind: str, query: ChartQuery) -> bool:

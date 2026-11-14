@@ -90,6 +90,7 @@ from threetears.evals.analysis.report.parts.charting import (
     slice_name,
     stat_interval,
     stat_value,
+    own_fmt,
     unit_quantities,
     unit_refusal,
 )
@@ -595,7 +596,8 @@ def _dot_interval(context: ChartContext) -> Drawn:
                 rows=[_dot_row(context, dot, strip.line) for dot in strip.dots],
                 reference=strip.line,
                 domain=spans[strip.drawn] if several else None,
-                fmt=strip.drawn.fmt if several else None,
+                # A strip of one measure on a shared axis names that measure's own format (:func:`own_fmt`).
+                fmt=strip.drawn.fmt if several else own_fmt(context, strip.key, strip.drawn),
             )
         )
     # A strip of changes names its zero and which way is better once, for every panel: the diverging chart's own.
