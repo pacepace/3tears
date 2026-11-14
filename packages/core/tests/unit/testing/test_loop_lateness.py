@@ -9,15 +9,18 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import itertools
+import os
+import subprocess
+import sys
 import threading
 import time
+import inspect
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 
 import pytest
 
 from threetears.core.testing.loop_lateness import (
-    MEASURE_ATTEMPTS,
     CouldNotMeasure,
     HostTicker,
     Tick,
@@ -25,7 +28,6 @@ from threetears.core.testing.loop_lateness import (
     hold_the_loop,
     host_lateness,
     latest,
-    quietly,
     ticks_while,
     trusted,
 )
@@ -148,7 +150,7 @@ async def test_a_host_busy_in_every_attempt_could_not_measure_never_a_pass_or_a_
 
     with pytest.raises(CouldNotMeasure, match=r"^could not measure: the host's idle loop ran 50\.0 ms late"):
         await trusted(measure, _window, host_may_be_late=_BUDGET)
-    assert len(taken) == MEASURE_ATTEMPTS
+    assert len(taken) == inspect.signature(trusted).parameters["attempts"].default
 
 
 class _ScriptedHost:
@@ -171,47 +173,13 @@ class _ScriptedHost:
 
 @pytest.fixture
 def scripted(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[float]], None]:
-    """script the host's idle loop's lateness over each measurement :func:`quietly` takes."""
+    """script the host's idle loop's lateness over each CPU probe's first take (a session's reference)."""
 
     def script(lates: list[float]) -> None:
         _ScriptedHost.script = iter(lates)
 
     monkeypatch.setattr(loop_lateness, "HostTicker", _ScriptedHost)
     return script
-
-
-def test_a_duration_on_a_quiet_host_is_taken_once(scripted: Callable[[list[float]], None]) -> None:
-    """Flips if a duration measured on a quiet host is retaken, or not handed back as measured."""
-    scripted([0.0])
-    taken: list[int] = []
-
-    def measure() -> float:
-        taken.append(1)
-        return 0.25
-
-    assert quietly(measure, host_may_be_late=_BUDGET) == 0.25
-    assert len(taken) == 1
-
-
-def test_a_duration_on_a_busy_host_is_retaken_and_the_quiet_retake_kept(
-    scripted: Callable[[list[float]], None],
-) -> None:
-    """Flips if a duration the host was busy for is kept (a speed ratio judged on a loaded host), or a quiet retake
-    is not."""
-    scripted([0.05, 0.0])
-    durations = iter([9.0, 0.25])
-
-    assert quietly(lambda: next(durations), host_may_be_late=_BUDGET) == 0.25
-
-
-def test_a_duration_the_host_was_busy_for_every_time_could_not_measure(scripted: Callable[[list[float]], None]) -> None:
-    """Flips if a duration timed on a host busy in every attempt passes, is judged, or retakes without bound."""
-    scripted([0.05] * MEASURE_ATTEMPTS)
-    taken: list[int] = []
-
-    with pytest.raises(CouldNotMeasure, match=r"^could not measure: the host's idle loop ran 50\.0 ms late"):
-        quietly(lambda: taken.append(1), host_may_be_late=_BUDGET)
-    assert len(taken) == MEASURE_ATTEMPTS
 
 
 @pytest.mark.loop_timing
@@ -229,144 +197,172 @@ async def test_a_planted_block_on_a_quiet_host_is_trusted_and_red() -> None:
 
 
 @pytest.fixture
-def crowded(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[float]], list[int]]:
-    """script :func:`cpu_crowding`'s answers, in order; returns the thread counts it was asked for."""
-    asked: list[int] = []
+def spin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Callable[[list[float]], tuple[Callable[[int], float], list[int]]]:
+    """a scripted CPU probe for :func:`trusted`'s ``probe=``: each call makes a new one (a new session's), answering
+    the given seconds take by take, with the host record under ``tmp_path``; returns it and the thread counts it was
+    asked for."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
 
-    def script(answers: list[float]) -> list[int]:
-        scripted = iter(answers)
+    def script(seconds: list[float]) -> tuple[Callable[[int], float], list[int]]:
+        taken = iter(seconds)
+        asked: list[int] = []
 
-        def crowding(threads: int) -> float:
+        def probe(threads: int) -> float:
             asked.append(threads)
-            return next(scripted)
+            return next(taken)
 
-        monkeypatch.setattr(loop_lateness, "_cpu_crowding", crowding)
-        return asked
+        return probe, asked
 
     return script
 
 
-def test_a_ratio_on_crowded_cores_is_retaken_though_the_idle_loop_was_on_time(
-    scripted: Callable[[list[float]], None], crowded: Callable[[list[float]], list[int]]
+def _performance_cores() -> int:
+    """the host's performance cores as its OS reports them: Apple silicon's perflevel0, every usable core elsewhere."""
+    usable = getattr(os, "process_cpu_count", os.cpu_count)() or 1
+    if sys.platform == "darwin":
+        answered = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "hw.perflevel0.logicalcpu"], capture_output=True, text=True, check=False
+        ).stdout.strip()
+        if answered.isdigit():
+            return max(1, min(int(answered), usable))
+    return usable
+
+
+def _on_time(windows: list[tuple[list[Tick], list[Tick]]]) -> Callable[[], Awaitable[tuple[list[Tick], list[Tick]]]]:
+    """a measurement handing back ``windows`` in turn."""
+    handed = iter(windows)
+
+    async def measure() -> tuple[list[Tick], list[Tick]]:
+        return next(handed)
+
+    return measure
+
+
+#: two loop windows the host's idle loop was on time over
+_WINDOWS = [([(0.05, 0.15)], _quiet_host(0.0, 0.2)), ([(0.25, 0.35)], _quiet_host(0.2, 0.4))]
+
+
+async def test_a_window_on_crowded_cores_is_retaken_though_the_idle_loop_was_on_time(
+    scripted: Callable[[list[float]], None],
+    spin: Callable[[list[float]], tuple[Callable[[int], float], list[int]]],
 ) -> None:
     """Flips if a multi-thread measurement whose threads waited for cores is kept because a 1 ms idle loop stayed
     punctual (a real-size serving read went 2.0x on a 10-core host at load ~9), or a retake on free cores is not."""
-    scripted([0.0, 0.0])
-    asked = crowded([1.0, 2.4, 1.0, 1.1])
-    durations = iter([9.0, 0.25])
+    scripted([0.0])
+    probe, asked = spin([0.010, 0.010, 0.024, 0.010, 0.011])
 
-    assert quietly(lambda: next(durations), host_may_be_late=_BUDGET, threads=8) == 0.25
-    assert asked == [8, 8, 8, 8], "the spin runs on the path's threads, before and after each attempt"
+    ticks, _ = await trusted(_on_time(_WINDOWS), _window, host_may_be_late=_BUDGET, threads=2, probe=probe)
+    assert ticks == [(0.25, 0.35)]
+    assert asked == [min(2, _performance_cores())] * 5, "the session's first take, then before and after each attempt"
 
 
-def test_crowded_cores_in_every_attempt_could_not_measure(
-    scripted: Callable[[list[float]], None], crowded: Callable[[list[float]], list[int]]
+async def test_crowded_cores_in_every_attempt_could_not_measure(
+    scripted: Callable[[list[float]], None],
+    spin: Callable[[list[float]], tuple[Callable[[int], float], list[int]]],
 ) -> None:
     """Flips if a multi-thread measurement taken on crowded cores every time passes, is judged, or retakes without
     bound."""
-    scripted([0.0] * MEASURE_ATTEMPTS)
-    crowded([2.0] * (2 * MEASURE_ATTEMPTS))
+    scripted([0.0])
+    probe, _ = spin([0.010, *([0.020] * 6)])
     taken: list[int] = []
 
-    with pytest.raises(CouldNotMeasure, match=r"^could not measure: the path's threads waited for cores"):
-        quietly(lambda: taken.append(1), host_may_be_late=_BUDGET, threads=4)
-    assert len(taken) == MEASURE_ATTEMPTS
-
-
-async def test_a_loop_measurement_on_crowded_cores_is_retaken(
-    crowded: Callable[[list[float]], list[int]],
-) -> None:
-    """Flips if :func:`trusted` keeps a window its path's threads waited for cores over."""
-    crowded([1.0, 3.0, 1.0, 1.0])
-    windows = iter([([(0.05, 0.15)], _quiet_host(0.0, 0.2)), ([(0.25, 0.35)], _quiet_host(0.2, 0.4))])
-
     async def measure() -> tuple[list[Tick], list[Tick]]:
-        return next(windows)
+        taken.append(1)
+        return _WINDOWS[0]
 
-    ticks, _ = await trusted(measure, _window, host_may_be_late=_BUDGET, threads=4)
-    assert ticks == [(0.25, 0.35)]
+    with pytest.raises(CouldNotMeasure, match=r"^could not measure: the path's threads waited for cores"):
+        await trusted(measure, _window, host_may_be_late=_BUDGET, threads=4, attempts=3, probe=probe)
+    assert len(taken) == 3
 
 
-def test_a_measurement_naming_no_threads_spins_nothing_and_one_thread_spins_one(
-    scripted: Callable[[list[float]], None], crowded: Callable[[list[float]], list[int]]
+async def test_a_measurement_naming_no_threads_spins_nothing_and_one_thread_spins_one(
+    scripted: Callable[[list[float]], None],
+    spin: Callable[[list[float]], tuple[Callable[[int], float], list[int]]],
 ) -> None:
     """Flips if a measurement that names no threads pays for the spin, or a one-thread CPU measurement (a thread's
     own CPU time, which a busy sibling core or a throttled one inflates) is not checked on one thread."""
-    scripted([0.0, 0.0])
-    asked = crowded([1.0, 1.0])
+    scripted([0.0])
+    probe, asked = spin([0.010] * 3)
 
-    quietly(lambda: None, host_may_be_late=_BUDGET)
-    quietly(lambda: None, host_may_be_late=_BUDGET, threads=1)
-    assert asked == [1, 1]
-
-
-@pytest.fixture
-def spins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Callable[[list[float]], None]:
-    """script the spin's seconds, take by take, with a fresh session and the host record under ``tmp_path``."""
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    monkeypatch.setattr(loop_lateness, "_SESSION", {})
-    monkeypatch.setattr(loop_lateness, "_performance_cores", lambda: 8)
-
-    def script(seconds: list[float]) -> None:
-        taken = iter(seconds)
-        monkeypatch.setattr(loop_lateness, "_spun", lambda threads: next(taken))
-
-    return script
+    await trusted(_on_time(_WINDOWS), _window, host_may_be_late=_BUDGET, probe=probe)
+    assert asked == []
+    await trusted(_on_time(_WINDOWS), _window, host_may_be_late=_BUDGET, threads=1, probe=probe)
+    assert asked == [1, 1, 1]
 
 
-def _takes(*seconds: float) -> list[float]:
-    """each of ``seconds`` as one spin measurement (its takes all alike)."""
-    return [second for second in seconds for _ in range(loop_lateness._SPIN_TAKES)]  # noqa: SLF001 - the probe's own
-
-
-def test_the_reference_is_the_host_s_fastest_spin_and_a_faster_take_lowers_it(
-    spins: Callable[[list[float]], None], scripted: Callable[[list[float]], None]
+async def test_the_reference_is_the_host_s_fastest_spin_and_a_faster_take_lowers_it(
+    scripted: Callable[[list[float]], None],
+    spin: Callable[[list[float]], tuple[Callable[[int], float], list[int]]],
 ) -> None:
     """Flips if crowding is judged against anything but the lower of the session's first take and the host's record,
-    or a faster take does not lower the record."""
+    or a faster take does not lower the record: first take 10 ms; 12 ms reads 1.20x; 8 ms is the fastest yet, so the
+    next 12 ms reads 1.50x."""
     scripted([0.0])
-    spins(_takes(0.010, 0.012, 0.008, 0.012))
+    probe, _ = spin([0.010, 0.012, 0.008, 0.012, 0.008])
 
-    assert loop_lateness._cpu_crowding(4) == pytest.approx(1.2)  # noqa: SLF001 - the probe itself
-    assert loop_lateness._cpu_crowding(4) == pytest.approx(0.8), "0.008 is the fastest yet"  # noqa: SLF001 - the probe itself
-    assert loop_lateness._cpu_crowding(4) == pytest.approx(1.5), "judged against the faster record"  # noqa: SLF001 - the probe itself
+    with pytest.raises(CouldNotMeasure, match=r"took 1\.20x .*took 1\.50x"):
+        await trusted(
+            _on_time(_WINDOWS),
+            _window,
+            host_may_be_late=_BUDGET,
+            threads=4,
+            attempts=2,
+            cpu_may_be_crowded=0.0,
+            probe=probe,
+        )
 
 
-def test_a_session_busy_from_its_start_judges_against_the_host_s_record(
-    spins: Callable[[list[float]], None], scripted: Callable[[list[float]], None]
+async def test_a_session_busy_from_its_start_judges_against_the_host_s_record(
+    scripted: Callable[[list[float]], None],
+    spin: Callable[[list[float]], tuple[Callable[[int], float], list[int]]],
 ) -> None:
     """Flips if a session busy from start to finish calibrates itself busy: its first take (slow) loses to the
     host's record, so its slow windows read crowded."""
     scripted([0.0])
-    spins(_takes(0.010, 0.010))
-    loop_lateness._cpu_crowding(4)  # noqa: SLF001 - the probe itself
-    loop_lateness._SESSION.clear()  # noqa: SLF001 - a new session on the same host
+    quiet, _ = spin([0.010] * 3)
+    await trusted(_on_time(_WINDOWS), _window, host_may_be_late=_BUDGET, threads=4, probe=quiet)
     scripted([0.0])
-    spins(_takes(0.030, 0.030))
+    busy, _ = spin([0.030] * 3)
 
-    assert loop_lateness._cpu_crowding(4) == pytest.approx(3.0)  # noqa: SLF001 - the probe itself
+    with pytest.raises(CouldNotMeasure, match=r"took 3\.00x"):
+        await trusted(_on_time(_WINDOWS), _window, host_may_be_late=_BUDGET, threads=4, attempts=1, probe=busy)
 
 
-def test_a_host_with_no_record_and_a_busy_start_trusts_nothing(
-    spins: Callable[[list[float]], None], scripted: Callable[[list[float]], None]
+async def test_a_host_with_no_record_and_a_busy_start_trusts_nothing(
+    tmp_path: Path,
+    scripted: Callable[[list[float]], None],
+    spin: Callable[[list[float]], tuple[Callable[[int], float], list[int]]],
 ) -> None:
     """Flips if a host with no record calibrates on a first take its idle loop was late over, or such a session
     trusts any multi-thread window."""
-    scripted([0.05, 0.0])
-    spins(_takes(0.030))
+    scripted([0.05])
+    probe, _ = spin([0.030])
     taken: list[int] = []
 
+    async def measure() -> tuple[list[Tick], list[Tick]]:
+        taken.append(1)
+        return _WINDOWS[0]
+
     with pytest.raises(CouldNotMeasure, match=r"^could not measure: no quiet reference"):
-        quietly(lambda: taken.append(1), host_may_be_late=_BUDGET, threads=4, attempts=1)
+        await trusted(measure, _window, host_may_be_late=_BUDGET, threads=4, attempts=1, probe=probe)
     assert taken == [1]
-    assert not loop_lateness._record_path().exists(), "a busy session's take must never become the host's record"  # noqa: SLF001
+    assert not list(tmp_path.rglob("*.json")), "a busy session's take must never become the host's record"
 
 
-def test_a_spin_runs_on_the_performance_cores_at_most(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_spin_runs_on_the_performance_cores_at_most(
+    scripted: Callable[[list[float]], None],
+    spin: Callable[[list[float]], tuple[Callable[[int], float], list[int]]],
+) -> None:
     """Flips if a path's threads past the host's performance cores spin on its efficiency cores too (an idle Apple
     host of 4 + 6 cores read 2x across all ten)."""
-    monkeypatch.setattr(loop_lateness, "_performance_cores", lambda: 4)
-    assert [loop_lateness._spin_threads(n) for n in (1, 2, 4, 8, 10)] == [1, 2, 4, 4, 4]  # noqa: SLF001 - the probe itself
+    cores = _performance_cores()
+    for path in (1, 2, cores, cores + 1, 64):
+        scripted([0.0])
+        probe, asked = spin([0.010] * 3)
+        await trusted(_on_time(_WINDOWS), _window, host_may_be_late=_BUDGET, threads=path, probe=probe)
+        assert asked == [min(path, cores)] * 3, f"a path on {path} threads"
 
 
 def _hogged(threads: int) -> Callable[[], None]:
@@ -389,8 +385,13 @@ def _hogged(threads: int) -> Callable[[], None]:
     return stopped
 
 
+async def _nothing() -> tuple[list[Tick], list[Tick]]:
+    """a measurement of nothing: no loop ticks, so the host's idle loop is judged over no window."""
+    return [], []
+
+
 @pytest.mark.loop_timing
-def test_a_spin_planted_on_the_path_s_threads_makes_the_window_untrusted_and_a_quiet_one_is_trusted() -> None:
+async def test_a_spin_planted_on_the_path_s_threads_makes_the_window_untrusted_and_a_quiet_one_is_trusted() -> None:
     """Red first: a spin on the path's threads beside the measurement makes it untrusted ("could not measure"); the
     same measurement on a quiet host is trusted -- on a host of fast and slow cores too, asked for more threads than
     it has fast cores (the efficiency cores alone must not trip it). The planted spin takes every core the path's
@@ -398,12 +399,11 @@ def test_a_spin_planted_on_the_path_s_threads_makes_the_window_untrusted_and_a_q
     and slow cores' slow ones free, and the probe's threads only move there (about 1.5x on an Apple 4 + 6, the limit
     itself), which says nothing about a planted crowd."""
     path = 64
-    threads = loop_lateness._spin_threads(path)  # noqa: SLF001 - the probe itself
 
-    assert quietly(lambda: 1, host_may_be_late=0.020, threads=path) == 1
-    stop = _hogged(min(path, loop_lateness._usable_cores()))  # noqa: SLF001 - the probe itself
+    assert await trusted(_nothing, _window, host_may_be_late=0.020, threads=path) == ([], [])
+    stop = _hogged(min(path, getattr(os, "process_cpu_count", os.cpu_count)() or 1))
     try:
         with pytest.raises(CouldNotMeasure, match="waited for cores"):
-            quietly(lambda: None, host_may_be_late=1.0, threads=threads)
+            await trusted(_nothing, _window, host_may_be_late=1.0, threads=path)
     finally:
         stop()

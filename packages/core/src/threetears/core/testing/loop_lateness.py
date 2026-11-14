@@ -22,7 +22,7 @@ this session's first take, the lower of the two. With that many cores free it ta
 free its threads wait their turn, and past :data:`_CPU_MAY_BE_CROWDED` the window is untrusted. A host with no record
 whose idle loop was late over the session's first take has no reference, and nothing in that session is trusted. An
 untrusted measurement is never a pass and never a skip: it is retaken, a bounded number of times
-(:data:`MEASURE_ATTEMPTS`), and when no window is trusted the test fails with :class:`CouldNotMeasure` ("could not
+(:data:`_MEASURE_ATTEMPTS`), and when no window is trusted the test fails with :class:`CouldNotMeasure` ("could not
 measure: the host's idle loop ran X ms late"), which says the host, not the code, was late. A trusted measurement
 over the budget is a real red.
 
@@ -57,8 +57,9 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Final, TypeVar
 
+from threetears.observe import BuildOnce
+
 __all__ = [
-    "MEASURE_ATTEMPTS",
     "CouldNotMeasure",
     "HostTicker",
     "Tick",
@@ -66,7 +67,6 @@ __all__ = [
     "hold_the_loop",
     "host_lateness",
     "latest",
-    "quietly",
     "ticks_while",
     "trusted",
 ]
@@ -76,7 +76,7 @@ _Measured = TypeVar("_Measured")
 #: how many times a measurement the host was too busy for is taken before the test fails as unmeasurable: enough for a
 #: passing burst of load (another batch's import, a GC of a neighbour) to end, few enough that a host busy for the
 #: whole run fails in a bounded time
-MEASURE_ATTEMPTS: Final[int] = 3
+_MEASURE_ATTEMPTS: Final[int] = 3
 
 #: the most a spin on a measured path's threads at once may take over the host's fastest spin on as many for the window
 #: to be trusted: about as long with that many cores free; half again as long means some of them waited for a core
@@ -255,7 +255,7 @@ def _spun(threads: int) -> float:
     return time.perf_counter() - began
 
 
-def _cpu_crowding(threads: int) -> float:
+def _cpu_crowding(threads: int, probe: Callable[[int], float]) -> float:
     """how much longer a fixed spin takes on ``threads`` threads at once now than the fastest this host has ever run it
     on that many: about 1 with that many cores free, more as fewer are.
 
@@ -268,15 +268,17 @@ def _cpu_crowding(threads: int) -> float:
 
     :param threads: the threads the measured path runs on
     :ptype threads: int
+    :param probe: takes the spin on as many threads at once, in seconds (:func:`_taken` on a real host)
+    :ptype probe: Callable[[int], float]
     :return: the spin's seconds now over the reference's
     :rtype: float
     """
     threads = _spin_threads(threads)
-    reference = _reference(threads)
+    reference = _reference(threads, probe)
     if math.isinf(reference):
         # no quiet reference: nothing this session takes is recorded (a busy take must never become the host's)
         return math.inf
-    now = _taken(threads)
+    now = probe(threads)
     _record(threads, now)
     return now / reference
 
@@ -333,7 +335,7 @@ def _cpu_model() -> str:
             for line in cpuinfo:
                 if line.startswith("model name"):
                     return line.split(":", 1)[1].strip()
-    except OSError:
+    except OSError:  # NOSILENT: no /proc/cpuinfo (macOS, a sandbox): the platform's own names below are the model
         pass
     return f"{platform.machine()} {platform.processor()}".strip()
 
@@ -352,7 +354,7 @@ def _stored(threads: int) -> float | None:
     """the host's fastest recorded spin on ``threads`` threads, or None."""
     try:
         held = json.loads(_record_path().read_text(encoding="utf-8"))
-    except OSError, ValueError:
+    except OSError, ValueError:  # NOSILENT: no record yet (or a torn one) is "no record": the session's take stands
         return None
     value = held.get(_record_key(threads)) if isinstance(held, dict) else None
     return float(value) if isinstance(value, (int, float)) and value > 0 else None
@@ -377,31 +379,43 @@ def _record(threads: int, seconds: float) -> None:
     os.replace(scratch, path)
 
 
-#: this session's reference per spin thread count: its first take, or None when no reference could be had
-_SESSION: dict[int, float | None] = {}
+#: this session's reference per probe and spin thread count: its first take, or None when no reference could be had;
+#: taken once per probe and thread count, however many measurements ask first
+_SESSION: Final[BuildOnce[tuple[Callable[[int], float], int], float | None]] = BuildOnce()
 
 
-def _reference(threads: int) -> float:
+def _reference(threads: int, probe: Callable[[int], float]) -> float:
     """the spin on ``threads`` threads a window is compared with: the lower of this session's first take and the
     host's record. A host with no record trusts the first take only when its idle loop was on time over it; else the
     session has no reference (infinite: nothing compares under it)."""
-    if threads not in _SESSION:
-        stored = _stored(threads)
-        with HostTicker() as host:
-            began = time.perf_counter()
-            first = _taken(threads)
-            ended = time.perf_counter()
-        quiet = host_lateness(host.ticks, [(began, ended)]) <= _REFERENCE_HOST_MAY_BE_LATE
-        if stored is None and not quiet:
-            _SESSION[threads] = None
-        else:
-            _SESSION[threads] = first if stored is None else min(first, stored)
-            _record(threads, first)
-    session = _SESSION[threads]
+    session = _SESSION.get((probe, threads), lambda: _first_take(threads, probe))
     stored = _stored(threads)
     if session is None:
         return stored if stored is not None else math.inf
     return session if stored is None else min(session, stored)
+
+
+def _first_take(threads: int, probe: Callable[[int], float]) -> float | None:
+    """this session's first spin on ``threads`` threads, recorded as the host's when the idle loop was on time over it
+    or the host has a record; None when the host has no record and was busy (a busy take never becomes the host's).
+
+    :param threads: the spin's threads
+    :ptype threads: int
+    :param probe: takes the spin
+    :ptype probe: Callable[[int], float]
+    :return: the session's reference, or None
+    :rtype: float | None
+    """
+    stored = _stored(threads)
+    with HostTicker() as host:
+        began = time.perf_counter()
+        first = probe(threads)
+        ended = time.perf_counter()
+    quiet = host_lateness(host.ticks, [(began, ended)]) <= _REFERENCE_HOST_MAY_BE_LATE
+    if stored is None and not quiet:
+        return None
+    _record(threads, first)
+    return first if stored is None else min(first, stored)
 
 
 class CouldNotMeasure(AssertionError):
@@ -430,9 +444,10 @@ async def trusted(
     window: Callable[[_Measured], tuple[list[Tick], list[Tick]]],
     *,
     host_may_be_late: float,
-    attempts: int = MEASURE_ATTEMPTS,
+    attempts: int = _MEASURE_ATTEMPTS,
     threads: int | None = None,
     cpu_may_be_crowded: float = _CPU_MAY_BE_CROWDED,
+    probe: Callable[[int], float] = _taken,
 ) -> _Measured:
     """the first of up to ``attempts`` measurements over which the host's idle loop was late by at most
     ``host_may_be_late`` (and, for a path on ``threads`` threads, its cores were free before and after it).
@@ -451,15 +466,19 @@ async def trusted(
     :ptype threads: int | None
     :param cpu_may_be_crowded: the most :func:`_cpu_crowding` may be
     :ptype cpu_may_be_crowded: float
+    :param probe: takes a fixed spin on as many threads at once and answers its seconds: the host's own spin
+        (:func:`_taken`) unless a test scripts one; each probe has its own session reference, and every probe's takes
+        lower the host's record
+    :ptype probe: Callable[[int], float]
     :return: the trusted measurement
     :rtype: _Measured
     :raises CouldNotMeasure: when the host was too late, or its cores too crowded, in every attempt
     """
     seen: list[str] = []
     for _ in range(attempts):
-        before = _crowding(threads)
+        before = _crowding(threads, probe)
         measured = await measure()
-        after = _crowding(threads)
+        after = _crowding(threads, probe)
         ticks, host = window(measured)
         verdict = _untrusted(host_lateness(host, ticks), (before, after), host_may_be_late, cpu_may_be_crowded)
         if verdict is None:
@@ -468,56 +487,9 @@ async def trusted(
     raise _could_not_measure(seen, attempts)
 
 
-def quietly(
-    measure: Callable[[], _Measured],
-    *,
-    host_may_be_late: float,
-    attempts: int = MEASURE_ATTEMPTS,
-    threads: int | None = None,
-    cpu_may_be_crowded: float = _CPU_MAY_BE_CROWDED,
-) -> _Measured:
-    """the first of up to ``attempts`` runs of ``measure()`` over which the host's idle loop, ticking beside it in a
-    process of its own (:class:`HostTicker`), was late by at most ``host_may_be_late``: :func:`trusted` for a
-    measurement that is no loop's ticks -- a duration, or two timed side by side for a speed ratio -- whose window is
-    the whole call.
-
-    A host too busy to run an idle loop on time stretches whatever a test times there, and stretches the two sides
-    of a ratio unevenly; such a run says nothing about the code. It is retaken, and when no run is trusted the test
-    fails with :class:`CouldNotMeasure`, never a pass and never a skip.
-
-    :param measure: takes one measurement, in full (a ratio: both sides)
-    :ptype measure: Callable[[], _Measured]
-    :param host_may_be_late: the most the host's idle loop may be late over the call
-    :ptype host_may_be_late: float
-    :param attempts: how many measurements to take at most
-    :ptype attempts: int
-    :param threads: the threads the measured path runs on, as :func:`trusted` takes them
-    :ptype threads: int | None
-    :param cpu_may_be_crowded: the most :func:`_cpu_crowding` may be
-    :ptype cpu_may_be_crowded: float
-    :return: the trusted measurement
-    :rtype: _Measured
-    :raises CouldNotMeasure: when the host was too late, or its cores too crowded, in every attempt
-    """
-    seen: list[str] = []
-    for _ in range(attempts):
-        before = _crowding(threads)
-        with HostTicker() as host:
-            began = time.perf_counter()
-            measured = measure()
-            ended = time.perf_counter()
-        after = _crowding(threads)
-        late = host_lateness(host.ticks, [(began, ended)])
-        verdict = _untrusted(late, (before, after), host_may_be_late, cpu_may_be_crowded)
-        if verdict is None:
-            return measured
-        seen.append(verdict)
-    raise _could_not_measure(seen, attempts)
-
-
-def _crowding(threads: int | None) -> float | None:
+def _crowding(threads: int | None, probe: Callable[[int], float]) -> float | None:
     """:func:`_cpu_crowding` on ``threads`` threads; None when the measurement names none (a loop's ticks alone)."""
-    return None if threads is None else _cpu_crowding(threads)
+    return None if threads is None else _cpu_crowding(threads, probe)
 
 
 def _untrusted(
