@@ -830,6 +830,7 @@ class _Level:
         name)``: with a LIMIT, the k nearest rows, which an approximate-nearest-neighbour index of that column serves
     :ivar enclosing: for a subquery, whether the relation an outer row's qualifier names is read by key at the level
         enclosing it (None when no enclosing ``SELECT`` names it, as an ``UPDATE``'s target)
+    :ivar orders: every column it orders by, in order, by name (an expression's place empty)
     """
 
     relations: list[_Relation]
@@ -841,6 +842,7 @@ class _Level:
     correlated: bool = False
     nearest: tuple[str, str] | None = None
     enclosing: Callable[[str], bool | None] | None = None
+    orders: tuple[str, ...] = ()
 
 
 def _owner(level: _Level, qualifier: str) -> list[int]:
@@ -1292,8 +1294,14 @@ def _key_hit(
         bounded_next = prefix < len(columns) and columns[prefix] in bounded
         if _covers(columns, eq | contained, tenants) or ranged_next or bounded_next:
             following = columns[prefix] if prefix < len(columns) else None
+            # the order past its columns bound by equality or a set (``ORDER BY kind, date_created, id`` with ``kind
+            # = ANY``): of two indexes tied on the bound ``kind``, the one followed by ``date_created`` is read
+            unbound = next((column for column in level.orders if column not in eq | contained), None)
             ordered_next = following is not None and (
-                following in ranged or following in bounded or (level.order is not None and following == level.order[1])
+                following in ranged
+                or following in bounded
+                or (level.order is not None and following == level.order[1])
+                or following == unbound
             )
             serving.append(((prefix, ordered_next), name, columns, prefix, ranged_next))
     if serving:
@@ -1372,6 +1380,28 @@ def _order(masked: str, text: str) -> tuple[str, str] | None:
     first = re.sub(r"\s+(ASC|DESC|NULLS\s+(FIRST|LAST)).*$", "", items[0], flags=re.IGNORECASE).strip()
     row = _row(first)
     return row[0] if row else _column(first)
+
+
+def _orders(masked: str, text: str) -> tuple[str, ...]:
+    """every column a level orders by, in order, by name; an item naming no column (an expression) is empty.
+
+    :param masked: the level, deeper levels blanked
+    :ptype masked: str
+    :param text: the same span, cleaned SQL
+    :ptype text: str
+    :return: the columns' names
+    :rtype: tuple[str, ...]
+    """
+    match = _ORDER_BY.search(masked)
+    if match is None:
+        return ()
+    closing = re.compile(r"\b(LIMIT|OFFSET|FOR|FETCH)\b", re.IGNORECASE).search(masked, match.end())
+    names: list[str] = []
+    for item in _split(text[match.end() : closing.start() if closing else len(text)], re.compile(",")):
+        bare = re.sub(r"\s+(ASC|DESC|NULLS\s+(FIRST|LAST)).*$", "", item, flags=re.IGNORECASE).strip()
+        column = _column(bare)
+        names.append(column[1] if column else "")
+    return tuple(names)
 
 
 #: a distance operator of pgvector (L2, inner product, cosine, L1), bare or as ``OPERATOR(<schema>.<op>)``
@@ -1531,6 +1561,7 @@ def _level(
     )
     level.outer = _outer_columns(text, depths, start, depth)
     level.nearest = _nearest_order(masked, text[start : start + len(masked)])
+    level.orders = _orders(masked, text[start : start + len(masked)])
     if depth > 0:
         level.enclosing = lambda qualifier: _enclosing_keyed(text, depths, start, ctes, bound_ctes, reader, qualifier)
     return level

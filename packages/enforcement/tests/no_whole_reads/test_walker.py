@@ -3942,6 +3942,45 @@ def test_a_page_whose_lead_is_a_set_credits_the_index_it_orders_by_after_it(tmp_
     assert not any("index-purpose-unused" in finding for finding in findings), findings
 
 
+_TIED_ON_A_SET_LEAD = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import AnyOf, Sort, keyset_page
+
+    DATASOURCES = TableSchema(
+        name="datasources",
+        primary_key="id",
+        columns=[],
+        indexes=(
+            Index("page_by_name", "kind", "name", "id", purpose=("src/listing.py::name_page", "src/listing.py::source_page")),
+            Index("page_by_date_created", "kind", "date_created", "id", purpose="src/listing.py::source_page"),
+        ),
+    )
+
+    async def source_page(pool, kinds, cols, cursor):
+        return await keyset_page(
+            pool, "datasources", columns=cols, by={"kind": AnyOf(kinds)},
+            order=[Sort("kind"), Sort("date_created"), Sort("id")], limit=50, cursor=cursor,
+        )
+
+    async def name_page(pool, kind, cols):
+        return await keyset_page(pool, "datasources", columns=cols, by={"kind": kind}, order=[Sort("name"), Sort("id")], limit=50)
+"""
+
+
+def test_two_indexes_tied_on_a_set_lead_credit_the_one_the_order_follows(tmp_path: Path) -> None:
+    """Flips if a page ordered ``(kind, date_created, id)`` with ``kind`` bound to a set, beside two indexes both led
+    by ``kind`` (the hub's datasources: ``(kind, name, id)`` and ``(kind, date_created, id)``), credits the first
+    declared rather than the one whose columns after the bound lead follow the order past its bound columns: the
+    ``(kind, date_created, id)`` index was left purpose-unused. The ``(kind, name, id)`` index's purpose naming the
+    page too is then honestly unused: the page never reads it."""
+    findings = no_whole_reads_findings(_config(tmp_path, {"listing.py": _TIED_ON_A_SET_LEAD}))
+    unused = [finding for finding in findings if "index-purpose-unused" in finding]
+    assert not any("page_by_date_created" in finding for finding in unused), unused
+    assert [finding for finding in unused if "page_by_name" in finding and "source_page" in finding], findings
+    found = _symbols(_config(tmp_path, {"listing.py": _TIED_ON_A_SET_LEAD}))
+    assert not any(function in {"source_page", "name_page"} for function, _ in found), found
+
+
 _COPIED = """
     from threetears.core.collections.schema_backed import Index, TableSchema
     from threetears.core.keyed import Sort, copy_keyed
