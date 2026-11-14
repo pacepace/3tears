@@ -1276,6 +1276,22 @@ def _family_level(context: ChartContext) -> str:
     return context.forms.confidence(context.level, families[0] if len(families) == 1 else None).text
 
 
+#: The fewest changes a change chart draws (#1124): one change belongs in a sentence or a table, which state it
+#: with its interval, never in a chart, whose one row compares it with nothing.
+_FEWEST_CHANGES = 2
+
+
+def _refuse_one_change(context: ChartContext, changes: Sequence[_Change]) -> None:
+    """Refuse a change chart that draws a single change (#1124): a structural rule, the count of its rows, so a chart
+    of one row never reaches a page. A judge's preference is no change against an arm: its one dot is a split around
+    even, which the writer eval's page draws for its one pair (:func:`_preference_changes`), so it is drawn."""
+    if context.query.source != "human_pref" and len(changes) < _FEWEST_CHANGES:
+        raise context.refuse(
+            "it draws one change, which a chart compares with nothing: state it in the prose (its key prints the "
+            "change and its interval) or in a table, or select more rows to compare"
+        )
+
+
 def _forest(context: ChartContext) -> Drawn:
     source = context.query.source
     refusal = unit_refusal(context.spec.kind, context.query, context.report_input)
@@ -1290,6 +1306,7 @@ def _forest(context: ChartContext) -> Drawn:
         raise context.refuse("a forest draws readings or contrasts")
     if not context.level:
         raise context.refuse("a forest draws intervals, and the chart states no level for them")
+    _refuse_one_change(context, changes)
     zero = _zero_label(context, changes)
     changes = _baselined(context, changes)
     reference = reference_line(context, drawn)
@@ -1395,6 +1412,7 @@ def _diverging(context: ChartContext) -> Drawn:
         )
     if not changes:
         raise context.refuse("it selects no change to draw")
+    _refuse_one_change(context, changes)
     zero = _zero_label(context, changes)
     if source not in ("strata", "tasks"):
         # Slices are set beside what they are compared with as their changes are read (:func:`_slice_changes`).
