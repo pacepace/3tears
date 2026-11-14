@@ -1,7 +1,7 @@
 """Lever and configuration resolution: each run's effective value for every lever the host declares.
 
-:func:`_effective_config` resolves a run's levers through the host profile, keeping which of them the launch
-engaged (:func:`_resolve_config`), and :func:`_lever_value` reads one lever's level off a run. The rest of the
+:func:`effective_config` resolves a run's levers through the host profile, keeping which of them the launch
+engaged (:func:`resolve_config`), and :func:`lever_value` reads one lever's level off a run. The rest of the
 bundle's derivations read levers only through here.
 """
 
@@ -24,23 +24,22 @@ if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime i
     from threetears.evals.schema.models import EvalRun
 
 
-#: The one name the candidate model answers to, everywhere. The coverage map, the divergence
-#: lens and the effective configuration all reach for this axis, and two of them holding two
-#: names for it would let the bundle report a lever twice — or, worse, report coverage for one
-#: name while the config names the other, which is a bundle disagreeing with itself in one
-#: payload.
-#:
-#: It is the one lever :func:`_lever_value` reads off the OBSERVATION rather than off the run,
-#: because it is a declared coordinate of one (``ScoreRecord.model``): every record knows which
-#: model produced it, including a record whose candidate role left no usage row for the run-level
-#: resolution to recover a model from. **The name's shape has nothing to do with it** — that rule, dotted through
-#: the effective config and plain off the record, is what bound every plain-named host lever to
-#: ``'—'``, which is why it was retired.
-#:
-#: Declared in :mod:`threetears.evals.kernel.host.sweepables`, beside the core declaration that carries it,
-#: so the literal has one owner; :mod:`threetears.evals.kernel.host.profile` re-exports it, and that is
-#: where a host recovery rule claiming the name is refused. Read here.
-_CANDIDATE_MODEL_LEVER = CANDIDATE_MODEL_LEVER
+# CANDIDATE_MODEL_LEVER is the one name the candidate model answers to, everywhere. The coverage map, the divergence
+# lens and the effective configuration all reach for this axis, and two of them holding two
+# names for it would let the bundle report a lever twice — or, worse, report coverage for one
+# name while the config names the other, which is a bundle disagreeing with itself in one
+# payload.
+#
+# It is the one lever :func:`lever_value` reads off the OBSERVATION rather than off the run,
+# because it is a declared coordinate of one (``ScoreRecord.model``): every record knows which
+# model produced it, including a record whose candidate role left no usage row for the run-level
+# resolution to recover a model from. **The name's shape has nothing to do with it** — that rule, dotted through
+# the effective config and plain off the record, is what bound every plain-named host lever to
+# ``'—'``, which is why it was retired.
+#
+# Declared in :mod:`threetears.evals.kernel.host.sweepables`, beside the core declaration that carries it,
+# so the literal has one owner; :mod:`threetears.evals.kernel.host.profile` re-exports it, and that is
+# where a host recovery rule claiming the name is refused, and every bundle module reads it from there.
 
 
 def _observed_model_levers(profile: HostProfile) -> dict[str, str]:
@@ -70,14 +69,14 @@ def _observed_model_levers(profile: HostProfile) -> dict[str, str]:
         refuses it at registration.
     :rtype: dict[str, str]
     """
-    return {**profile.observed_model_levers, _CANDIDATE_MODEL_LEVER: "candidate"}
+    return {**profile.observed_model_levers, CANDIDATE_MODEL_LEVER: "candidate"}
 
 
 #: The level a run sits at for a lever it did not override and that nothing recovers — "ran
 #: at the subject's own setting". A real cohort every un-overriding run shares, NOT a stand-in
 #: for missing data: a lever whose value IS recoverable never lands here, and one that applied
 #: but resolved ambiguously is left out of the lever entirely rather than pooled into it.
-_INHERITED_DEFAULT_LEVEL = "—"
+INHERITED_DEFAULT_LEVEL = "—"
 
 
 @dataclass(frozen=True)
@@ -115,7 +114,7 @@ def _observed_models(results: list[ResultView], role: str) -> set[str]:
 _EXERCISED_ARM_FLOOR = 2
 
 
-def _exercised(
+def exercised(
     runs: list[EvalRun], results_by_run: dict[str, list[ResultView]], *, profile: HostProfile
 ) -> dict[str, dict[str, int]]:
     """How often each lever read off what ran was exercised: lever → run id → that run's results that observed it.
@@ -142,7 +141,7 @@ def _exercised(
     }
 
 
-def _declared_axes(declared: AspectDesign | None) -> frozenset[str]:
+def declared_axis_ids(declared: AspectDesign | None) -> frozenset[str]:
     """The levers a campaign declared as axes: each a level by declaration, whatever its calls."""
     return frozenset(axis.axis_id for axis in declared.axes) if declared is not None else frozenset()
 
@@ -150,13 +149,13 @@ def _declared_axes(declared: AspectDesign | None) -> frozenset[str]:
 def _arm_of_run(runs: list[EvalRun], results_by_run: dict[str, list[ResultView]]) -> dict[str, str]:
     """Each run's arm: the variant key its observations carry, or ``run:<id>`` for a run none resolved a key for.
 
-    The grouping the design lenses use (``_CampaignArms.groups``): an unplaced run cannot pool with any other, so it is
+    The grouping the design lenses use (``CampaignArms.groups``): an unplaced run cannot pool with any other, so it is
     an arm of its own.
     """
     return {run.id: variant_key_of_run(results_by_run.get(run.id, [])) or f"run:{run.id}" for run in runs}
 
 
-def _unexercised_levers(
+def unexercised_levers(
     runs: list[EvalRun],
     results_by_run: dict[str, list[ResultView]],
     *,
@@ -194,7 +193,7 @@ def _unexercised_levers(
     roles = profile.observed_model_levers
     return frozenset(
         lever
-        for lever, by_run in _exercised(runs, results_by_run, profile=profile).items()
+        for lever, by_run in exercised(runs, results_by_run, profile=profile).items()
         if lever not in declared_axes
         and (
             sum(by_run.values()) < _EXERCISED_ARM_FLOOR
@@ -213,14 +212,14 @@ def _run_values(runs: list[EvalRun], results_by_run: dict[str, list[ResultView]]
     return {next(iter(models)) for models in values if len(models) == 1}
 
 
-def _named_levers(effective_by_run: dict[str, dict[str, EffectiveLever]]) -> frozenset[str]:
+def named_levers(effective_by_run: dict[str, dict[str, EffectiveLever]]) -> frozenset[str]:
     """The levers some run NAMED (``overridden``): a launch, a restatement or a declaration's reader set them."""
     return frozenset(
         lever for flat in effective_by_run.values() for lever, eff in flat.items() if eff.provenance == "overridden"
     )
 
 
-def _with_unobserved_unknown(
+def with_unobserved_unknown(
     effective_by_run: dict[str, dict[str, EffectiveLever]],
     *,
     profile: HostProfile,
@@ -228,7 +227,7 @@ def _with_unobserved_unknown(
 ) -> dict[str, dict[str, EffectiveLever]]:
     """``effective_by_run`` with every recovered lever a run never observed marked ``unknown`` rather than absent.
 
-    A lever recovered from a role is absent from a run that never ran the role, and :func:`_lever_value` reads an
+    A lever recovered from a role is absent from a run that never ran the role, and :func:`lever_value` reads an
     absent lever as the inherited default level. For a recovered lever that is wrong: "never observed in this arm" is
     not a level, and not the same answer as "observed at another value". Marked ``value=None``, the run's records
     are dropped from that lever's levels, as an ambiguous run's are.
@@ -247,14 +246,14 @@ def _with_unobserved_unknown(
     :rtype: dict[str, dict[str, EffectiveLever]]
     """
     unobserved = EffectiveLever(None, "unknown")
-    recovered = set(profile.observed_model_levers) - _named_levers(effective_by_run) - set(exempt)
+    recovered = set(profile.observed_model_levers) - named_levers(effective_by_run) - set(exempt)
     return {
         run_id: {**dict.fromkeys(recovered - set(flat), unobserved), **flat}
         for run_id, flat in effective_by_run.items()
     }
 
 
-def _effective_config(run: EvalRun, results: list[ResultView], *, profile: HostProfile) -> dict[str, EffectiveLever]:
+def effective_config(run: EvalRun, results: list[ResultView], *, profile: HostProfile) -> dict[str, EffectiveLever]:
     """Resolve a run's levers to the values it actually ran at, with provenance.
 
     **Read through the host's registry, never off one host's carriers.** The registry is the
@@ -293,7 +292,7 @@ def _effective_config(run: EvalRun, results: list[ResultView], *, profile: HostP
     way. This sentence said ``overridden`` was "reserved for the overlays above, the launch's
     departure from the subject's own configuration"; that was the third site of one correction
     already applied to :class:`EffectiveLever` and to ``RunIndexEntry.config_provenance``, and
-    :func:`_resolve_config` twelve lines below has stated the rule correctly the whole time — a
+    :func:`resolve_config` twelve lines below has stated the rule correctly the whole time — a
     reader who believed this one would have concluded a lever stamped ``overridden`` was a
     departure when it may simply be what the declaration reads.
 
@@ -306,13 +305,13 @@ def _effective_config(run: EvalRun, results: list[ResultView], *, profile: HostP
     :return: Each applicable lever mapped to its :class:`EffectiveLever`.
     :rtype: dict[str, EffectiveLever]
     """
-    return _resolve_config(run, results, profile=profile)[0]
+    return resolve_config(run, results, profile=profile)[0]
 
 
-def _resolve_config(
+def resolve_config(
     run: EvalRun, results: list[ResultView], *, profile: HostProfile
 ) -> tuple[dict[str, EffectiveLever], frozenset[str]]:
-    """:func:`_effective_config`, keeping the ENGAGED set its first two passes already know.
+    """:func:`effective_config`, keeping the ENGAGED set its first two passes already know.
 
     The coverage map needs both: the resolved levers, and which of them the launch named or
     observation recovered — that pair is what :func:`_reportable_levers` decides a row on, and
@@ -369,7 +368,7 @@ def _resolve_config(
     return flat, frozenset(resolution.overlaid | (set(recovery) & set(flat)))
 
 
-def _lever_value(record: ScoreRecord, lever: str, effective_by_run: dict[str, dict[str, EffectiveLever]]) -> str | None:
+def lever_value(record: ScoreRecord, lever: str, effective_by_run: dict[str, dict[str, EffectiveLever]]) -> str | None:
     """Read one lever's value for a score record, resolved the way the run lenses resolve it.
 
     Every lever but one is answered from the record's RUN effective configuration, never from
@@ -378,7 +377,7 @@ def _lever_value(record: ScoreRecord, lever: str, effective_by_run: dict[str, di
     value — the coverage surface reproducing, per record, the defect the run-derived lenses
     were converted to remove.
 
-    The exception is :data:`_CANDIDATE_MODEL_LEVER`, and it is the ONLY one: the engine reserves
+    The exception is :data:`CANDIDATE_MODEL_LEVER`, and it is the ONLY one: the engine reserves
     that name for a declared coordinate of the observation itself, and
     :class:`~threetears.evals.kernel.host.profile.HostProfile` refuses a host recovery rule that claims it.
     Every record knows which model produced it, including one whose candidate role left no usage
@@ -391,7 +390,7 @@ def _lever_value(record: ScoreRecord, lever: str, effective_by_run: dict[str, di
     ``RunSummary.config`` showed its two levels plainly. A lever's name is the host's, and a host
     that spells one without a dot is not thereby making a claim about the observation.
 
-    This and :func:`_lever_levels` agree about every lever but that one, because a coverage entry
+    This and :func:`read_lever_levels` agree about every lever but that one, because a coverage entry
     and a divergence read over disagreeing cohorts cannot both be right about the same lever. On
     the candidate model they read different sources, and that function's docstring says why: it bins
     on the run's DECLARED model so a run whose candidate left no usage row keeps its level, where
@@ -409,12 +408,21 @@ def _lever_value(record: ScoreRecord, lever: str, effective_by_run: dict[str, di
         rather than pooling it into a cohort it cannot support.
     :rtype: str | None
     """
-    if lever == _CANDIDATE_MODEL_LEVER:
-        return _INHERITED_DEFAULT_LEVEL if not record.model else str(record.model)
+    if lever == CANDIDATE_MODEL_LEVER:
+        return INHERITED_DEFAULT_LEVEL if not record.model else str(record.model)
     effective = effective_by_run.get(record.run_id, {}).get(lever)
-    return _INHERITED_DEFAULT_LEVEL if effective is None else effective.value
+    return INHERITED_DEFAULT_LEVEL if effective is None else effective.value
 
 
 __all__ = [
     "EffectiveLever",
+    "INHERITED_DEFAULT_LEVEL",
+    "declared_axis_ids",
+    "effective_config",
+    "exercised",
+    "lever_value",
+    "named_levers",
+    "resolve_config",
+    "unexercised_levers",
+    "with_unobserved_unknown",
 ]

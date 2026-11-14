@@ -93,76 +93,76 @@ from threetears.evals.schema.models import (
     MeasureDeclaration,
 )
 from threetears.evals.analysis.bundle.caps import (
-    _capped,
-    _MAX_NEXT_EXPERIMENTS,
-    _MAX_REFUSED_MERGES,
+    capped,
+    MAX_NEXT_EXPERIMENTS,
+    MAX_REFUSED_MERGES,
 )
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     host_declarations_digest,
 )
 from threetears.evals.analysis.bundle.insights import (
-    _prior_insights,
+    carried_insights,
     retracted_insights,
 )
-from threetears.evals.analysis.bundle.observations import _apparatus_classes, _observations, variant_key_of_run
+from threetears.evals.analysis.bundle.observations import classify_apparatus, observations_of, variant_key_of_run
 from threetears.evals.analysis.bundle.measures import (
-    _failures_as_misses,
+    failures_as_misses,
     goal_check_proofs_of,
     negative_values_of,
-    _measure_walk_memo,
+    measure_walk_memo,
 )
 from threetears.evals.analysis.bundle.design import (
-    _apparatus_levels,
-    _campaign_arms,
-    _campaign_design,
-    _declared_level_names,
-    _lever_levels,
-    _name_arms,
-    _SurfaceFolds,
+    read_apparatus_levels,
+    campaign_arms,
+    campaign_design,
+    declared_level_names,
+    read_lever_levels,
+    name_arms,
+    SurfaceFolds,
 )
-from threetears.evals.analysis.bundle.confounds import _apparatus_confounds, _confound_catalog
+from threetears.evals.analysis.bundle.confounds import apparatus_confounds, confound_catalog
 from threetears.evals.analysis.bundle.mechanisms import (
-    _arm_mechanisms,
-    _arm_production_footings,
-    _arm_served_models,
-    _design_with_mechanism_confounds,
-    _mechanism_observations,
-    _served_models,
+    arm_mechanisms,
+    arm_production_footings,
+    arm_served_models,
+    design_with_mechanism_confounds,
+    mechanism_observations,
+    served_models,
 )
-from threetears.evals.analysis.bundle.config import _declared_axes
-from threetears.evals.analysis.bundle.divergence import _scope_divergences
-from threetears.evals.analysis.bundle.telemetry import _model_versions, _run_summary, _telemetry_rollup
+from threetears.evals.analysis.bundle.config import declared_axis_ids
+from threetears.evals.analysis.bundle.divergence import scope_divergences
+from threetears.evals.analysis.bundle.telemetry import model_versions, run_summary, telemetry_rollup
 from threetears.evals.analysis.bundle.coverage import (
-    _coverage_map,
-    _declared_crossing,
-    _factor_aliasing,
-    _unexercised_factors,
+    coverage_map,
+    declared_crossing,
+    factor_aliasing,
+    unexercised_factors,
 )
 from threetears.evals.analysis.bundle.cell_reads import (
-    _cell_measures,
-    _cell_strata,
-    _judged_measures,
-    _results_by_cell,
-    _arm_exclusions,
-    _differential_exclusions,
+    cell_measures,
+    cell_strata,
+    judged_measures,
+    group_results_by_cell,
+    arm_exclusions,
+    differential_exclusions,
 )
-from threetears.evals.analysis.bundle.bars import _bar_adjudications, _frontier_bar, _verdict_order
+from threetears.evals.analysis.bundle.bars import bar_adjudications, read_frontier_bar, verdict_order
 from threetears.evals.analysis.bundle.cell_notes import (
-    _all_failed,
-    _cost_unmeasured,
-    _held_fixed_reading,
-    _latency_contended,
-    _short_cells,
+    all_failed,
+    cost_unmeasured,
+    held_fixed_reading,
+    latency_contended,
+    short_cells,
 )
 from threetears.evals.analysis.bundle.comparisons import (
-    _multiple_comparisons,
-    _reading_scope,
+    multiple_comparisons,
+    reading_scope,
 )
-from threetears.evals.analysis.bundle.judges import _judge_change
+from threetears.evals.analysis.bundle.judges import judge_change
 from threetears.evals.analysis.bundle.trials import trials_and_census
-from threetears.evals.analysis.bundle.time_axis import _time_axis
-from threetears.evals.analysis.bundle.surface import _measure_catalog
+from threetears.evals.analysis.bundle.time_axis import time_axis
+from threetears.evals.analysis.bundle.surface import measure_catalog
 from threetears.evals.kernel.host.measures import MeasureRegistry
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
@@ -357,7 +357,7 @@ _NARROW_THE_BUNDLE = (
 
 
 # Every fold below pools the same results, so each result's measure walk is read once per assembly.
-@_measure_walk_memo()
+@measure_walk_memo()
 def assemble_context_bundle(
     campaign: EvalCampaign,
     *,
@@ -497,7 +497,7 @@ def assemble_context_bundle(
         run_id: sorted(every_result[run_id], key=lambda r: r.id) for run_id in run_ids
     }
     # Before anything reads them: a classifier's failure is a miss in every rate, not absent from them all.
-    results_by_run = _failures_as_misses(results_by_run)
+    results_by_run = failures_as_misses(results_by_run)
     # Before anything reads them either: latency read under concurrency is left out of every lens, never
     # compared as if it were clean (#701). Which results lost it is kept for the one line that says so.
     contended_ids = {
@@ -521,10 +521,10 @@ def assemble_context_bundle(
     # What the campaign was not tuning, read once and shared by all three surfaces that
     # disclose it — the coverage map (where most findings are formed), the divergences, and
     # the campaign-wide scan that answers even when neither of those exists.
-    apparatus_levels = _apparatus_levels(runs, results_by_run, profile=profile)
+    apparatus_levels = read_apparatus_levels(runs, results_by_run, profile=profile)
     # Derived before the lenses, because it decides which runs each of them compares: the keys that name the
     # declared control's arm under this build — the stored key, which cells stamped under its predicate carry
-    # for good, and the key its lever map re-keys to under this one. `_campaign_design` matches them against
+    # for good, and the key its lever map re-keys to under this one. `campaign_design` matches them against
     # the arms and is the only place that does: every lens below reads its answer (`design.control_arm`),
     # never `declared.control`, so no two of them can disagree about which cell is the control.
     # Read only when a declared control might have been curated out, and only over the archived
@@ -540,15 +540,15 @@ def assemble_context_bundle(
     # One answer, shared by every lens, to "did a resolved surface move on its own" — the design's
     # contrasts, the coverage rows and their confounds, and the divergences all ask it over their
     # own cohorts, and two lenses answering it separately could disagree about one surface.
-    folds = _SurfaceFolds(runs, results_by_run, profile=profile)
-    arms = _campaign_arms(runs, results_by_run, profile=profile)
+    folds = SurfaceFolds(runs, results_by_run, profile=profile)
+    arms = campaign_arms(runs, results_by_run, profile=profile)
     # Every mechanism a lens compares across levels, read once so the coverage rows, the divergences
     # and the arm readings report one set of values.
-    mechanisms = _mechanism_observations(results, profile=profile)
+    mechanisms = mechanism_observations(results, profile=profile)
     # Which model answered each result's candidate calls, read once so every lens that names the served
     # model as a confound and the per-arm readings agree about it.
-    served = _served_models(results)
-    design = _campaign_design(
+    served = served_models(results)
+    design = campaign_design(
         runs,
         declared_control,
         results_by_run=results_by_run,
@@ -556,16 +556,16 @@ def assemble_context_bundle(
         archived_control_variants=archived_control_variants,
         has_unresolved_members=bool(unresolved),
         folds=folds,
-        declared_axes=_declared_axes(declared_design),
+        declared_axes=declared_axis_ids(declared_design),
         profile=profile,
     )
-    design = _design_with_mechanism_confounds(design, results_by_run, mechanisms, served=served, profile=profile)
+    design = design_with_mechanism_confounds(design, results_by_run, mechanisms, served=served, profile=profile)
     # Built before the run summaries, because `RunSummary.config` names the levers this map
-    # names. Both read `_effective_config`, so without that the two disagreed the moment the
+    # names. Both read `effective_config`, so without that the two disagreed the moment the
     # registry became the vocabulary: a summary would carry every contestant property the host
     # declares — ten content hashes apiece, each stamped `overridden`, telling the design lens
     # that every run departed from ten things it never touched.
-    coverage = _coverage_map(
+    coverage = coverage_map(
         runs,
         projection.records,
         apparatus_levels,
@@ -579,37 +579,37 @@ def assemble_context_bundle(
         profile=profile,
     )
     reportable = {entry.name for entry in coverage}
-    axes = _declared_axes(declared_design)
-    aliasing = _factor_aliasing(
-        run_ids, _lever_levels(runs, results_by_run, profile=profile, declared_axes=axes), apparatus_levels
+    axes = declared_axis_ids(declared_design)
+    aliasing = factor_aliasing(
+        run_ids, read_lever_levels(runs, results_by_run, profile=profile, declared_axes=axes), apparatus_levels
     )
 
     # The cell algebra, over observations rather than runs. Independent of `design`, which is
     # the point: a cell is what pools, and pooling must not depend on whether anyone designated
     # a control.
-    apparatus_classes = _apparatus_classes(runs, apparatus_levels)
-    observations, variant_index = _observations(
+    apparatus_classes = classify_apparatus(runs, apparatus_levels)
+    observations, variant_index = observations_of(
         runs, results_by_run, apparatus_classes, scope_id=scope_id, profile=profile
     )
-    variant_index = _name_arms(variant_index, observations, folds, run_ids)
+    variant_index = name_arms(variant_index, observations, folds, run_ids)
     # Each arm as the host displays its levels, which orders the decision surface's arms below: never by a name the
     # declaration gives a level, which is presentation (LEVEL_PRESENTATION_FIELDS) and so moves no fingerprinted order.
     displayed = arm_names(variant_index)
-    variant_index = _declared_level_names(variant_index, declared_design)
+    variant_index = declared_level_names(variant_index, declared_design)
     cells, refused_merges, next_experiments = pool_observations(
         observations, {c.apparatus_class_id: c for c in apparatus_classes.values()}
     )
     # Capped like the divergences, keeping the entries that bear on the most evidence: a refusal by the
     # observations its two cells hold, a recording by the observations it would add.
     held = {(cell.variant_key, cell.apparatus_class_id): cell.n_observations for cell in cells}
-    refused_merges, refused_merges_omitted = _capped(
+    refused_merges, refused_merges_omitted = capped(
         refused_merges,
-        _MAX_REFUSED_MERGES,
+        MAX_REFUSED_MERGES,
         weight=lambda merge: sum(held.get((merge.variant_key, class_id), 0) for class_id in merge.apparatus_class_ids),
     )
-    next_experiments, next_experiments_omitted = _capped(
+    next_experiments, next_experiments_omitted = capped(
         next_experiments,
-        _MAX_NEXT_EXPERIMENTS,
+        MAX_NEXT_EXPERIMENTS,
         weight=lambda entry: entry.n_observations_if_recorded - entry.n_observations_now,
     )
 
@@ -635,12 +635,12 @@ def assemble_context_bundle(
         sorted({insight.source_analysis_id for insight in ledger if insight.source_analysis_id}), scope_id
     )
     retracted = retracted_insights(ledger, standing.get)
-    prior_insights, prior_insights_omitted = _prior_insights(
+    prior_insights, prior_insights_omitted = carried_insights(
         [insight for insight in ledger if insight.id not in retracted]
     )
 
     # The campaign's effective bar on the measure the frontier ranks on, or why it takes none.
-    frontier_bar, frontier_bar_withheld = _frontier_bar(view.behavior, declared_design, profile=profile)
+    frontier_bar, frontier_bar_withheld = read_frontier_bar(view.behavior, declared_design, profile=profile)
     # Ratings are read once, because the agreement and the prediction-powered estimates both pair them with the
     # judge (#598): the members' per run, in run order, then any in the scope labelling an output a member's judge
     # scored (#628), so the unpaired list is deterministic for the fingerprint.
@@ -666,9 +666,9 @@ def assemble_context_bundle(
         run_ids=run_ids,
         unresolved_run_ids=unresolved,
         archived_run_ids=archived,
-        model_versions=_model_versions(runs, projection.records),
+        model_versions=model_versions(runs, projection.records),
         window=derive_window([run.created_at for run in runs]),
-        run_summaries=[_run_summary(run, results_by_run[run.id], reportable, profile=profile) for run in runs],
+        run_summaries=[run_summary(run, results_by_run[run.id], reportable, profile=profile) for run in runs],
         # WITH the results, because the pinned-role badge reads result-level declarations
         # (``judge_config_ids`` is observed ACROSS a run's results, not declared on the run).
         # Called without them, this surface was blind to exactly the difference a judge A/B is
@@ -697,7 +697,7 @@ def assemble_context_bundle(
             ),
         ),
         frontier_bar_withheld=frontier_bar_withheld,
-        telemetry=_telemetry_rollup(runs, results, budget, profile=profile),
+        telemetry=telemetry_rollup(runs, results, budget, profile=profile),
         coverage=coverage,
         declared=declared,
         design=design,
@@ -718,8 +718,8 @@ def assemble_context_bundle(
         # rather than folded into the first — reporting unknown as complete is the same error
         # one layer down.
         completeness_unknown_run_ids=[run.id for run in runs if run.completeness is None],
-        short_cells=_short_cells(cells, declared_design),
-        held_fixed_reading=_held_fixed_reading(runs, declared_design),
+        short_cells=short_cells(cells, declared_design),
+        held_fixed_reading=held_fixed_reading(runs, declared_design),
         # When each run was measured, as data: a fact, never a reason to read runs apart.
         measurement_windows=windows,
         launch_disclosure=_launch_disclosure(runs),
@@ -729,14 +729,14 @@ def assemble_context_bundle(
         # nothing has an empty coverage map and no divergences, and both confound-bearing
         # lenses iterate levers — so without this, a campaign whose template changed
         # underneath it reports that fact nowhere at all.
-        apparatus_confounds=_apparatus_confounds(run_ids, apparatus_levels, profile=profile),
+        apparatus_confounds=apparatus_confounds(run_ids, apparatus_levels, profile=profile),
         aliased_factors=aliasing[0],
-        unexercised_factors=_unexercised_factors(runs, results_by_run, arms, profile=profile, declared_axes=axes),
+        unexercised_factors=unexercised_factors(runs, results_by_run, arms, profile=profile, declared_axes=axes),
         factor_pairs=aliasing[1],
-        declared_crossing=_declared_crossing(declared_design, runs, results_by_run, profile=profile),
-        arm_mechanisms=_arm_mechanisms(arms, results_by_run, mechanisms),
-        arm_served_models=_arm_served_models(arms, results_by_run, served),
-        arm_production_footings=_arm_production_footings(arms, results_by_run, profile=profile),
+        declared_crossing=declared_crossing(declared_design, runs, results_by_run, profile=profile),
+        arm_mechanisms=arm_mechanisms(arms, results_by_run, mechanisms),
+        arm_served_models=arm_served_models(arms, results_by_run, served),
+        arm_production_footings=arm_production_footings(arms, results_by_run, profile=profile),
         cells=cells,
         variant_index=variant_index,
         refused_merges=refused_merges,
@@ -764,14 +764,14 @@ def assemble_context_bundle(
     bundle.judge_evidence_tiers = tiers
     bundle.inter_judge_agreement = inter_judge_agreement(results)
     bundle.judge_drift = judge_drift(results)
-    bundle.judge_change = _judge_change(runs, results_by_run)
+    bundle.judge_change = judge_change(runs, results_by_run)
     bundle.goal_check_proofs = goal_check_proofs_of(runs, results)
     # Judged quality and the bars, per cell. Both read the cell algebra's own grouping, so every
     # per-arm number here describes observations the bundle already calls one arm, and neither
     # enters `measures` or the catalog: judged dimensions stay off the ranking surface, and are
     # carried here so that staying off it is not read as never having been measured.
-    results_by_cell = _results_by_cell(cells, results)
-    bundle.cost_unmeasured_cells, bundle.cost_unmeasured = _cost_unmeasured(results_by_cell)
+    results_by_cell = group_results_by_cell(cells, results)
+    bundle.cost_unmeasured_cells, bundle.cost_unmeasured = cost_unmeasured(results_by_cell)
     by_arm: dict[str, list[ResultView]] = {}
     for (variant_key, _), members in results_by_cell.items():
         by_arm.setdefault(variant_key, []).extend(members)
@@ -788,7 +788,7 @@ def assemble_context_bundle(
             f" (first {len(negative.result_ids)})" if negative.n_results > len(negative.result_ids) else "",
             ", ".join(negative.result_ids),
         )
-    bundle.latency_contended_cells, bundle.latency_contended = _latency_contended(
+    bundle.latency_contended_cells, bundle.latency_contended = latency_contended(
         results_by_cell,
         contended_ids,
         declared=declared_design is not None and declared_design.measure_latency,
@@ -801,7 +801,7 @@ def assemble_context_bundle(
                 ]
             }
         )
-        for measure in _judged_measures(
+        for measure in judged_measures(
             projection.records,
             results_by_cell,
             declared_design,
@@ -809,7 +809,7 @@ def assemble_context_bundle(
             person_scores=person_scores,
         )
     ]
-    bundle.bar_adjudications = _bar_adjudications(
+    bundle.bar_adjudications = bar_adjudications(
         view.behavior,
         declared_design,
         results_by_cell,
@@ -818,7 +818,7 @@ def assemble_context_bundle(
         frontier_bar=frontier_bar,
         profile=profile,
     )
-    bundle.verdict_order = _verdict_order(bundle.bar_adjudications, view.aspect, declared)
+    bundle.verdict_order = verdict_order(bundle.bar_adjudications, view.aspect, declared)
     # One rule across the campaign: every aspect names a lever alike, by the first of the campaign's declared axes to
     # store a name for it, in aspect order, else as the host declares it.
     bundle.lever_names = _lever_names(
@@ -833,13 +833,13 @@ def assemble_context_bundle(
     case_facts = storage.load_case_strata(sorted({result.test_case_id for result in results}), scope_id)
     case_strata = {case.id: case.stratum for case in case_facts}
     case_names = {case.id: case.name for case in case_facts if case.name}
-    bundle.cell_measures = _cell_measures(
+    bundle.cell_measures = cell_measures(
         cells,
         results_by_cell,
         bundle.judged_measures,
         # Each cell again per kind of case, over the same grouping, population and tiers — read only for
         # the cases the results name, and only their strata.
-        strata=_cell_strata(
+        strata=cell_strata(
             results_by_cell,
             case_strata,
             projection.records,
@@ -854,10 +854,10 @@ def assemble_context_bundle(
         control=control,
         names=names,
     )
-    bundle.all_failed_cells, bundle.all_failed = _all_failed(bundle.cell_measures)
+    bundle.all_failed_cells, bundle.all_failed = all_failed(bundle.cell_measures)
     # The time axis, over the same algebra the decision surface was just read with, and before the catalog
     # for the same reason: its cells are measure collections the catalog has to describe.
-    bundle.time_axis, bundle.time_axis_withheld = _time_axis(
+    bundle.time_axis, bundle.time_axis_withheld = time_axis(
         runs,
         results_by_run,
         observations,
@@ -876,12 +876,12 @@ def assemble_context_bundle(
     # spend is the arm's own and not spend on measuring it. Decided from the results' candidate_kind, as the cost
     # measure is; a mixed campaign keeps the measuring-spend label.
     judge_kind = bool(results) and all(result.candidate_kind == JUDGE_KIND for result in results)
-    bundle.measure_catalog = _measure_catalog(bundle, profile=profile, judge_kind=judge_kind)
+    bundle.measure_catalog = measure_catalog(bundle, profile=profile, judge_kind=judge_kind)
     bundle.run_margins, bundle.run_margins_withheld = _run_margins(runs)
     bundle.launch_declarations = launch_declarations
     # After the catalog, which says each measure's better direction and axis: a family is the readings a
     # question's axes name, and a reading with no better end has no verdict to correct.
-    bundle.multiple_comparisons, bundle.guardrails, bundle.floor_contrasts = _multiple_comparisons(
+    bundle.multiple_comparisons, bundle.guardrails, bundle.floor_contrasts = multiple_comparisons(
         view.aspect,
         declared,
         design,
@@ -900,15 +900,15 @@ def assemble_context_bundle(
         # the question's family when one is asked with a margin, and for the floors whatever the family holds.
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
     )
-    bundle.reading_scope = _reading_scope(
+    bundle.reading_scope = reading_scope(
         declared, bundle.measure_catalog, bundle.judged_measures, first_result_at=first_result_at
     ).model_copy(update={"untimed_results": untimed_results})
     # The design froze when the campaign's first run joined it (`update_campaign` refuses a design edit from then on).
     bundle.design_frozen_at = first_run_at
     bundle.first_result_at = first_result_at
     # Over the same grouping every per-arm read uses, so an arm's exclusions describe the trials its readings lost.
-    bundle.exclusions = _arm_exclusions(results_by_cell)
-    bundle.differential_exclusions = _differential_exclusions(bundle.exclusions)
+    bundle.exclusions = arm_exclusions(results_by_cell)
+    bundle.differential_exclusions = differential_exclusions(bundle.exclusions)
     # Every trial and each arm's census of them, after the catalog, which names each check and says which scorers
     # are pass/fail: the countable half of the report, read off the same results every lens above read, each trial
     # lost or not as `trial_exclusion` (the one classification `exclusions` counts) says.
@@ -938,7 +938,7 @@ def assemble_context_bundle(
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
     # after it — and from the same descriptors the writer will read, never a second lookup
     # that could disagree with what the bundle says a measure is.
-    bundle.scope_divergences, bundle.whole_swings, bundle.divergences_omitted, divergence_count = _scope_divergences(
+    bundle.scope_divergences, bundle.whole_swings, bundle.divergences_omitted, divergence_count = scope_divergences(
         runs,
         results_by_run,
         bundle.measure_catalog,
@@ -954,7 +954,7 @@ def assemble_context_bundle(
     # Last, because it reads what both confound-bearing lenses actually emitted rather than
     # what they might have — a catalog built from the declaration would name dimensions no
     # lens reported, and a reader would take that as a claim the campaign made.
-    bundle.confound_catalog = _confound_catalog(bundle, profile=profile)
+    bundle.confound_catalog = confound_catalog(bundle, profile=profile)
     return bundle
 
 

@@ -259,7 +259,7 @@ _PERMANENT: dict[tuple[str, str, str], tuple[int, str]] = {
     ("threetears/evals/actions/analyst.py", "<module>", "group_thousands()"): (1, _TOOL_LIMIT),
     ("threetears/evals/analysis/aspects.py", "_unread_without_control", "format_number()"): (1, _BUNDLE),
     ("threetears/evals/analysis/bundle/assemble.py", "_declared_words", "format_number()"): (3, _BUNDLE),
-    ("threetears/evals/analysis/bundle/bars.py", "_frontier_bar.named", "format_number()"): (1, _BUNDLE),
+    ("threetears/evals/analysis/bundle/bars.py", "read_frontier_bar.named", "format_number()"): (1, _BUNDLE),
     ("threetears/evals/analysis/bundle/comparisons.py", "_family_disclosure", "format_number()"): (3, _BUNDLE),
     ("threetears/evals/analysis/bundle/comparisons.py", "_guardrail_check", "format_number()"): (3, _BUNDLE),
     ("threetears/evals/analysis/bundle/coverage.py", "_within_level_dispersion", "format_number()"): (1, _BUNDLE),

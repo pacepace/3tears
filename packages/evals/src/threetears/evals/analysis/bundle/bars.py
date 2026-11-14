@@ -1,7 +1,7 @@
 """Bar adjudication: every applicable bar decided against every cell, and the order the verdicts are read in.
 
-:func:`_bar_adjudications` reads each bar the way the declaration gate admitted it, :func:`_verdict_order` orders
-the adjudicated bars by the declared merit priority, and :func:`_frontier_bar` decides which bar, if any, the
+:func:`bar_adjudications` reads each bar the way the declaration gate admitted it, :func:`verdict_order` orders
+the adjudicated bars by the declared merit priority, and :func:`read_frontier_bar` decides which bar, if any, the
 frontier lens is handed.
 """
 
@@ -48,20 +48,20 @@ from threetears.evals.analysis.bundle.schema import (
     VerdictOrder,
     question_axes,
 )
-from threetears.evals.analysis.bundle.measures import _measure_collection
+from threetears.evals.analysis.bundle.measures import measure_collection
 from threetears.evals.analysis.bundle.cell_reads import (
-    _cannot_tell_on,
-    _CellKey,
-    _judged_rows,
-    _judged_values,
-    _member_run_ids,
-    _non_faulted,
+    cannot_tell_on,
+    CellKey,
+    judged_rows_with_nulls,
+    judged_values,
+    member_run_ids,
+    non_faulted,
 )
 
 
 #: What the frontier lens's clearing count means when no bar was passed to it — nothing. The
 #: sentence the MCP frontier render states for the same condition, carried on the bundle, and followed by
-#: why no bar was passed (:func:`_frontier_bar`).
+#: why no bar was passed (:func:`read_frontier_bar`).
 _FRONTIER_BAR_WITHHELD = (
     "withheld — no bar was supplied to the frontier lens, so it names no verdict and each subject's "
     "n_cleared_bar is a default of 0, not a count of arms that failed a bar. The bars this campaign is "
@@ -69,7 +69,7 @@ _FRONTIER_BAR_WITHHELD = (
 )
 
 
-def _frontier_bar(
+def read_frontier_bar(
     behavior: str, design: AspectDesign | None, *, profile: HostProfile
 ) -> tuple[float | None, str | None]:
     """The bar the frontier is given, or why it is given none.
@@ -174,7 +174,7 @@ def _bar_reading(
     :param bar: The resolved bar name — its kind says where the value lives.
     :ptype bar: BarName
     :param members: The cell's results, faulted ones included. A measure is read over its own population
-        (:func:`_collect_measures` leaves a fault out of a ``scored`` one); a judged dimension over
+        (:func:`collect_measures` leaves a fault out of a ``scored`` one); a judged dimension over
         the non-faulted results, as every score is.
     :ptype members: list[ResultView]
     :param judged_rows: Projected judged-score rows by result id, for a judged dimension.
@@ -191,7 +191,7 @@ def _bar_reading(
         # A check's rate is the measure the walk publishes for it, read here rather than recomputed,
         # so a bar's value and the cell's measure are one number by construction.
         name = bar.name if bar.kind == "measure" else goal_check_measure(bar.name)
-        collection = _measure_collection(members, profile=profile, undeclared="scored")
+        collection = measure_collection(members, profile=profile, undeclared="scored")
         summary = next((m for m in collection.measures if m.name == name), None)
         if summary is None or summary.mean is None:
             return None
@@ -199,8 +199,8 @@ def _bar_reading(
         return summary.mean, summary.sem, summary.n, summary.n_independent, interval
     rows = [
         (float(record.value), record.test_case_id)
-        for result in _non_faulted(members)
-        for dimension, record in _judged_values(judged_rows.get(result.id, []))
+        for result in non_faulted(members)
+        for dimension, record in judged_values(judged_rows.get(result.id, []))
         if dimension == bar.name and record.value is not None
     ]
     if not rows:
@@ -235,17 +235,17 @@ def _judged_bar_tier(
         return None
     served = [
         judge
-        for result in _non_faulted(members)
-        for dimension, _ in _judged_values(judged_rows.get(result.id, []))
+        for result in non_faulted(members)
+        for dimension, _ in judged_values(judged_rows.get(result.id, []))
         if dimension == bar.name and (judge := judge_key(result, dimension)) is not None
     ]
     return tier_for_judges(tiers, served)
 
 
-def _bar_adjudications(
+def bar_adjudications(
     behavior: str,
     design: AspectDesign | None,
-    results_by_cell: dict[_CellKey, list[ResultView]],
+    results_by_cell: dict[CellKey, list[ResultView]],
     records: list[ScoreRecord],
     *,
     tiers: list[JudgeEvidenceTier],
@@ -270,12 +270,12 @@ def _bar_adjudications(
     :param design: The campaign's declaration.
     :ptype design: AspectDesign | None
     :param results_by_cell: Each cell's results.
-    :ptype results_by_cell: dict[_CellKey, list[ResultView]]
+    :ptype results_by_cell: dict[CellKey, list[ResultView]]
     :param records: The assembly's score projection rows, where a judged dimension's name survives.
     :ptype records: list[ScoreRecord]
     :param tiers: The judges' evidence tiers (``judge_evidence_tiers``).
     :ptype tiers: list[JudgeEvidenceTier]
-    :param frontier_bar: The bar the frontier was given (:func:`_frontier_bar`), or None. A bar on pass^k carries
+    :param frontier_bar: The bar the frontier was given (:func:`read_frontier_bar`), or None. A bar on pass^k carries
         no cell verdict, and its reason says whether the frontier read it.
     :ptype frontier_bar: float | None
     :param profile: The host whose vocabulary this reads.
@@ -288,10 +288,12 @@ def _bar_adjudications(
         judged_rows.setdefault(record.result_id, []).append(record)
     all_results = [result for members in results_by_cell.values() for result in members]
     rubric_dimensions = {
-        dimension: row.rubric_scale for dimension, row in _judged_rows(records) if row.rubric_scale is not None
+        dimension: row.rubric_scale
+        for dimension, row in judged_rows_with_nulls(records)
+        if row.rubric_scale is not None
     }
     goal_state_checks = {outcome.expression for result in all_results for outcome in result.goal_state_outcomes}
-    counted_by_cell = {key: _non_faulted(members) for key, members in results_by_cell.items()}
+    counted_by_cell = {key: non_faulted(members) for key, members in results_by_cell.items()}
 
     adjudications = []
     for measure_id, threshold, higher_is_better, source in _applicable_bars(behavior, design, profile=profile):
@@ -338,13 +340,13 @@ def _bar_adjudications(
                         BarVerdict(
                             variant_key=key[0],
                             apparatus_class_id=key[1],
-                            run_ids=_member_run_ids(members),
+                            run_ids=member_run_ids(members),
                             value=mean,
                             sem=sem,
                             n=n,
                             n_independent=n_independent,
                             n_infra_excluded=0 if keeps_faults else len(members) - len(counted_by_cell[key]),
-                            n_cannot_tell=_cannot_tell_on(resolved, counted_by_cell[key], judged_rows),
+                            n_cannot_tell=cannot_tell_on(resolved, counted_by_cell[key], judged_rows),
                             ci_low=None if interval is None else interval[0],
                             ci_high=None if interval is None else interval[1],
                             margin=margin,
@@ -383,7 +385,7 @@ def _bar_adjudications(
     return adjudications
 
 
-def _verdict_order(
+def verdict_order(
     adjudications: list[BarAdjudication],
     aspect: str,
     declared: AspectDeclaration | None,
@@ -433,4 +435,8 @@ def _verdict_order(
     )
 
 
-__all__: list[str] = []
+__all__ = [
+    "bar_adjudications",
+    "read_frontier_bar",
+    "verdict_order",
+]

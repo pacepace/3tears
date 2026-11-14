@@ -1,7 +1,7 @@
 """The insight ledger as the bundle reads it: which insights stand, which are retracted, which are superseded.
 
 An insight minted by an ARCHIVED analysis is retracted (:func:`retracted_insights`), and a newer insight
-restating an older one supersedes it (:func:`superseding_insights`). :func:`_prior_insights` is the capped,
+restating an older one supersedes it (:func:`superseding_insights`). :func:`carried_insights` is the capped,
 deduplicated list the bundle carries.
 """
 
@@ -12,8 +12,8 @@ from typing import NamedTuple
 
 from threetears.evals.kernel.campaign import EvalInsight
 from threetears.evals.analysis.bundle.caps import (
-    _capped,
-    _MAX_PRIOR_INSIGHTS,
+    capped,
+    MAX_PRIOR_INSIGHTS,
 )
 
 
@@ -157,7 +157,7 @@ def superseding_insights(
     return written
 
 
-def _prior_insights(live: list[EvalInsight]) -> tuple[list[EvalInsight], int]:
+def carried_insights(live: list[EvalInsight]) -> tuple[list[EvalInsight], int]:
     """The live insights a bundle carries — the newest per claim, at most the cap — and how many it leaves out.
 
     :param live: The subject's insights as of the cutoff, less the retracted ones.
@@ -168,7 +168,7 @@ def _prior_insights(live: list[EvalInsight]) -> tuple[list[EvalInsight], int]:
     newest: dict[str, EvalInsight] = {}
     for insight in _sorted_insights(live):
         newest.setdefault(insight_restatement_key(insight.statement), insight)
-    carried, _beyond_cap = _capped(list(newest.values()), _MAX_PRIOR_INSIGHTS, weight=None)
+    carried, _beyond_cap = capped(list(newest.values()), MAX_PRIOR_INSIGHTS, weight=None)
     return carried, len(live) - len(carried)
 
 
@@ -189,9 +189,10 @@ def _sorted_insights(insights: list[EvalInsight]) -> list[EvalInsight]:
 
 
 __all__ = [
+    "InsightStanding",
+    "carried_insights",
     "insight_restatement_key",
     "insight_standing",
-    "InsightStanding",
     "retracted_insights",
     "superseding_insights",
 ]

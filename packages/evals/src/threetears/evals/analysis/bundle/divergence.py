@@ -1,6 +1,6 @@
 """The divergence lens: lever changes where the whole run moved by a different amount than the part under test.
 
-:func:`_scope_divergences` tests each level pair's remainder (whole minus part, per case) between the two levels,
+:func:`scope_divergences` tests each level pair's remainder (whole minus part, per case) between the two levels,
 corrected together by Holm's method; :func:`_comparable_pairs` and :func:`_unsound_subtraction` decide which
 cross-scope measure pairs may be subtracted at all, and say why one is withheld.
 """
@@ -29,7 +29,7 @@ from threetears.evals.kernel.metrics import (
     remainder_withheld_reason,
 )
 from threetears.evals.kernel.result_reading import ResultView
-from threetears.evals.analysis.bundle.caps import _MAX_DIVERGENCES
+from threetears.evals.analysis.bundle.caps import MAX_DIVERGENCES
 from threetears.evals.analysis.bundle.schema import (
     MeasureMovement,
     MovementDirection,
@@ -38,20 +38,20 @@ from threetears.evals.analysis.bundle.schema import (
     WholeSwing,
 )
 from threetears.evals.analysis.bundle.measures import (
-    _collect_measures,
-    _PooledMeasure,
+    collect_measures,
+    PooledMeasure,
 )
 from threetears.evals.analysis.bundle.design import (
-    _lever_cohort,
-    _lever_levels,
-    _SurfaceFolds,
+    lever_cohort,
+    read_lever_levels,
+    SurfaceFolds,
 )
-from threetears.evals.analysis.bundle.confounds import _uncontrolled_dimensions
+from threetears.evals.analysis.bundle.confounds import uncontrolled_dimensions
 from threetears.evals.analysis.bundle.mechanisms import (
-    _MechanismObservations,
-    _observed_mechanism_confounds,
-    _served_model_confounds,
-    _ServedModels,
+    MechanismObservations,
+    observed_mechanism_confounds,
+    served_model_confounds,
+    ServedModels,
 )
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
@@ -81,15 +81,15 @@ WITHHELD_UNKNOWN_POPULATION = "has no observation unit"
 _PerCaseMeasures = dict[str, dict[str, Fraction]]
 
 
-def _per_case_measures(pooled: Mapping[str, _PooledMeasure]) -> _PerCaseMeasures:
+def _per_case_measures(pooled: Mapping[str, PooledMeasure]) -> _PerCaseMeasures:
     """Each numeric measure's per-case means at one level, exact — the unit a between-level test reads.
 
     Repeats of a case are averaged first, so a case repeated three times is one case, and averaged
     exactly (:func:`~threetears.evals.analysis.stats.exact_decimal`) so a constant read at unequal repeats
     stays one constant rather than acquiring a float residue a test would read as spread.
 
-    :param pooled: The level's pooled observations, from :func:`_collect_measures`.
-    :ptype pooled: Mapping[str, _PooledMeasure]
+    :param pooled: The level's pooled observations, from :func:`collect_measures`.
+    :ptype pooled: Mapping[str, PooledMeasure]
     :return: ``{name: {case id: mean}}`` for every numeric measure; text, boolean and categorical measures are absent.
     :rtype: _PerCaseMeasures
     """
@@ -413,16 +413,16 @@ class _Divergences(NamedTuple):
     counted: _DivergenceCount
 
 
-def _scope_divergences(
+def scope_divergences(
     runs: list[EvalRun],
     results_by_run: dict[str, list[ResultView]],
     catalog: dict[str, MetricDescriptor],
     apparatus_levels: dict[str, dict[str, str | None]],
     design: RealizedDesign,
     *,
-    folds: _SurfaceFolds,
-    observations: _MechanismObservations,
-    served: _ServedModels,
+    folds: SurfaceFolds,
+    observations: MechanismObservations,
+    served: ServedModels,
     profile: HostProfile,
     declared_axes: Collection[str],
 ) -> _Divergences:
@@ -458,22 +458,22 @@ def _scope_divergences(
     :ptype results_by_run: dict[str, list[ResultView]]
     :param catalog: Descriptors by measure name, for the unit that makes a pair comparable.
     :ptype catalog: dict[str, MetricDescriptor]
-    :param apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+    :param apparatus_levels: Dimension → run id → level key, from :func:`read_apparatus_levels`.
     :ptype apparatus_levels: dict[str, dict[str, str | None]]
     :param design: The derived design, narrowing each lever's cohort the same way the coverage
         map narrows it — a divergence read over pooled cells would disagree with the
         coverage entry for the same lever, and a reader has no way to tell which is right.
     :ptype design: RealizedDesign
-    :param folds: The campaign's :class:`_SurfaceFolds`. A resolved surface whose movement across
+    :param folds: The campaign's :class:`SurfaceFolds`. A resolved surface whose movement across
         its cohort is its swept members' is not compared as a lever of its own, for the reason
         the coverage map drops its row: its levels are the members' levels under another name,
         so every divergence it produced would restate one a member already reports.
-    :ptype folds: _SurfaceFolds
+    :ptype folds: SurfaceFolds
     :param observations: The campaign's mechanism observations, compared across each divergence's two levels
         for the observed-mechanism confounds it names.
-    :ptype observations: _MechanismObservations
+    :ptype observations: MechanismObservations
     :param served: Which model answered each result's candidate calls, for the served-model confound.
-    :ptype served: _ServedModels
+    :ptype served: ServedModels
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :param declared_axes: The levers the campaign declared as axes, each a lever whatever its calls.
@@ -486,9 +486,9 @@ def _scope_divergences(
     swings: dict[_SwingKey, WholeSwing] = {}
     n_tested = n_untested = 0
     all_run_ids = [run.id for run in runs]
-    lever_levels = _lever_levels(runs, results_by_run, profile=profile, declared_axes=declared_axes)
+    lever_levels = read_lever_levels(runs, results_by_run, profile=profile, declared_axes=declared_axes)
     for lever, campaign_wide in lever_levels.items():
-        cohort = set(_lever_cohort(lever, design, all_run_ids))
+        cohort = set(lever_cohort(lever, design, all_run_ids))
         by_level = {
             level: members for level, raw in campaign_wide.items() if (members := [r for r in raw if r in cohort])
         }
@@ -496,7 +496,7 @@ def _scope_divergences(
             continue
         levels = sorted(by_level)
         collected = {
-            level: _collect_measures(
+            level: collect_measures(
                 [result for run_id in by_level[level] for result in results_by_run.get(run_id, [])],
                 profile=profile,
                 undeclared="all_observed",
@@ -514,17 +514,17 @@ def _scope_divergences(
         family: list[tuple[LevelDifference, dict[str, Any]]] = []
         for index, level_a in enumerate(levels):
             for level_b in levels[index + 1 :]:
-                confounded = _uncontrolled_dimensions(
+                confounded = uncontrolled_dimensions(
                     lever,
                     by_level[level_a] + by_level[level_b],
                     lever_levels,
                     apparatus_levels,
                     folds=folds,
                     profile=profile,
-                ) + _observed_mechanism_confounds(
+                ) + observed_mechanism_confounds(
                     lever, {level: result_ids[level] for level in (level_a, level_b)}, observations, profile=profile
                 )
-                confounded += _served_model_confounds(result_ids[level_a] | result_ids[level_b], served)
+                confounded += served_model_confounds(result_ids[level_a] | result_ids[level_b], served)
                 at_a, at_b = per_case[level_a], per_case[level_b]
                 for unit, e_a, _e_b, s_a, _s_b in _comparable_pairs(
                     collections[level_a], collections[level_b], catalog
@@ -603,22 +603,23 @@ def _scope_divergences(
             item[1].subsystem.name,
         )
     )
-    published = [divergence for _, divergence in found[:_MAX_DIVERGENCES]]
+    published = [divergence for _, divergence in found[:MAX_DIVERGENCES]]
     # A swing is published only beside a divergence it explains: a whole whose every divergence the
     # cap dropped, or that diverged from nothing, has no entry for a reader to join it to.
     explained = {(d.lever, d.level_a, d.level_b, d.end_to_end.name) for d in published}
     return _Divergences(
         published,
         [swings[key] for key in sorted(explained)],
-        max(0, len(found) - _MAX_DIVERGENCES),
+        max(0, len(found) - MAX_DIVERGENCES),
         _DivergenceCount(n_tested, n_untested),
     )
 
 
 __all__ = [
-    "component_carrier",
-    "measure_movement",
     "WITHHELD_DIFFERENT_POPULATIONS",
     "WITHHELD_OPPOSITE_DIRECTIONS",
     "WITHHELD_UNKNOWN_POPULATION",
+    "component_carrier",
+    "measure_movement",
+    "scope_divergences",
 ]

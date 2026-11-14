@@ -547,7 +547,7 @@ class ResolvedControl(EvalBaseModel):
     and the key its lever map re-keys to, which the cells stamped under this one carry. Matching only the
     re-keyed one would read a campaign holding only old cells as stale. Which of them is the control ARM in a
     given campaign is a question about its cells, so it is answered where the cells are (:meth:`matched`,
-    from ``_campaign_design``): the first one any cell carries, in :attr:`variant_keys` order. A campaign
+    from ``campaign_design``): the first one any cell carries, in :attr:`variant_keys` order. A campaign
     carrying both keeps ONE control arm, the re-keyed cells, and names the others as the control under the
     earlier predicate (``RealizedDesign.earlier_control``) — never pooled into the control's numbers, which
     would mix two predicates' keys, and never contrasted with it, which would read the control against

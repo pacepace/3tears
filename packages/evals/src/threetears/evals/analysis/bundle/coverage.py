@@ -1,8 +1,8 @@
 """The coverage map: the per-lever structural coverage the analysis is built on, and the factor-aliasing scan.
 
-:func:`_coverage_map` builds one row per reportable lever (its levels, repeats, k floor, confounds and mechanism
-check), :func:`_declared_crossing` and :func:`_declared_level_coverage` say which declared cells and levels
-were run, and :func:`_factor_aliasing` groups the factors that moved in lockstep.
+:func:`coverage_map` builds one row per reportable lever (its levels, repeats, k floor, confounds and mechanism
+check), :func:`declared_crossing` and :func:`_declared_level_coverage` say which declared cells and levels
+were run, and :func:`factor_aliasing` groups the factors that moved in lockstep.
 """
 
 from __future__ import annotations
@@ -23,14 +23,14 @@ from threetears.evals.kernel.declaration import (
     SweptAxis,
 )
 from threetears.evals.schema.hashing import canonical_digest
-from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER, HostProfile
 from threetears.evals.kernel.metrics import describe_measure
 from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.analysis.bundle.caps import (
-    _capped,
-    _CELL_STATES,
-    _MAX_DECLARED_CELLS,
-    _MAX_FACTOR_PAIR_PIVOTS,
+    capped,
+    CELL_STATES,
+    MAX_DECLARED_CELLS,
+    MAX_FACTOR_PAIR_PIVOTS,
 )
 from threetears.evals.analysis.bundle.schema import (
     AliasedFactors,
@@ -45,31 +45,30 @@ from threetears.evals.analysis.bundle.schema import (
     RealizedDesign,
 )
 from threetears.evals.analysis.bundle.config import (
-    _CANDIDATE_MODEL_LEVER,
-    _lever_value,
-    _exercised,
-    _resolve_config,
-    _declared_axes,
-    _unexercised_levers,
-    _with_unobserved_unknown,
+    lever_value,
+    exercised,
+    resolve_config,
+    declared_axis_ids,
+    unexercised_levers,
+    with_unobserved_unknown,
     EffectiveLever,
 )
 from threetears.evals.analysis.bundle.design import (
-    _arm_repeats,
-    _campaign_arms,
-    _CampaignArms,
-    _is_control_referenced,
-    _lever_cohort,
-    _lever_levels,
-    _SurfaceFolds,
+    arm_repeats,
+    campaign_arms,
+    CampaignArms,
+    is_control_referenced,
+    lever_cohort,
+    read_lever_levels,
+    SurfaceFolds,
 )
-from threetears.evals.analysis.bundle.confounds import _uncontrolled_dimensions
+from threetears.evals.analysis.bundle.confounds import uncontrolled_dimensions
 from threetears.evals.analysis.bundle.mechanisms import (
-    _mechanism_check,
-    _MechanismObservations,
-    _observed_mechanism_confounds,
-    _served_model_confounds,
-    _ServedModels,
+    mechanism_check,
+    MechanismObservations,
+    observed_mechanism_confounds,
+    served_model_confounds,
+    ServedModels,
 )
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
@@ -118,7 +117,7 @@ def _within_level_dispersion(
     by_level: dict[str, tuple[list[float], list[str]]] = {}
     pooled: list[ScoreRecord] = []
     for record in composite_records:
-        if record.value is not None and (level := _lever_value(record, lever, effective_by_run)) is not None:
+        if record.value is not None and (level := lever_value(record, lever, effective_by_run)) is not None:
             values, cases = by_level.setdefault(level, ([], []))
             values.append(record.value)
             cases.append(record.test_case_id)
@@ -143,7 +142,7 @@ def _lever_k_floor(
     Comparing levels needs replication at *each* level, so the weakest level binds the
     comparison; within a level, the best-replicated ARM is what a reader can lean on.
     Hence the minimum, across levels, of the maximum arm ``k`` observed at that level — an arm's
-    repeats per case (:func:`_arm_repeats`), so two runs of one arm over one case set at k=3 are one
+    repeats per case (:func:`arm_repeats`), so two runs of one arm over one case set at k=3 are one
     arm at k=6.
 
     A campaign-wide ``min(k_runs)`` was the earlier answer, and it coupled every lever to
@@ -163,7 +162,7 @@ def _lever_k_floor(
     :ptype lever: str
     :param records: The projected score records (they carry the level and the run).
     :ptype records: list[ScoreRecord]
-    :param k_by_arm: Repeats per case per arm group, keyed as :meth:`_CampaignArms.groups` keys them.
+    :param k_by_arm: Repeats per case per arm group, keyed as :meth:`CampaignArms.groups` keys them.
     :ptype k_by_arm: dict[str, int]
     :param group_of_run: Run id → the arm group it belongs to.
     :ptype group_of_run: dict[str, str]
@@ -174,7 +173,7 @@ def _lever_k_floor(
     """
     best_at_level: dict[str, int] = {}
     for record in records:
-        level = _lever_value(record, lever, effective_by_run)
+        level = lever_value(record, lever, effective_by_run)
         if level is None:
             continue
         k = k_by_arm.get(group_of_run.get(record.run_id, ""), 0)
@@ -201,7 +200,7 @@ def _reportable_levers(
     So a lever is reportable when the campaign **engaged** with it, in any of four ways:
 
     - it **moved** — more than one level across the campaign, read through the same
-      :func:`_lever_value` the row's own ``levels`` are;
+      :func:`lever_value` the row's own ``levels`` are;
     - ``declared_design`` **names it as an axis**;
     - the **launch named it**, as an open family's member;
     - **observation recovered it** — the host declared a recovery rule and the role ran.
@@ -222,7 +221,7 @@ def _reportable_levers(
     to, that never moved. Those are the contestant's own properties — a subject's backstory
     resolves a level on every run and moves only when somebody edits the subject between arms —
     and they are what the campaign held constant rather than measured. They are on NEITHER
-    surface: ``_run_summary`` narrows ``config`` to this same set, deliberately, because ten
+    surface: ``run_summary`` narrows ``config`` to this same set, deliberately, because ten
     content hashes per run each stamped ``overridden`` would tell the design lens every run
     departed from ten things it never touched. They reappear the moment one of them actually
     moves, which is the case worth seeing.
@@ -244,8 +243,7 @@ def _reportable_levers(
     moved = {
         lever
         for lever in resolved
-        if len({level for record in records if (level := _lever_value(record, lever, effective_by_run)) is not None})
-        > 1
+        if len({level for record in records if (level := lever_value(record, lever, effective_by_run)) is not None}) > 1
     }
     return moved | declared | (engaged & resolved)
 
@@ -281,7 +279,7 @@ def _run_axis_identities(
     return {canonical_digest(value), value} if isinstance(value, str) else {canonical_digest(value)}
 
 
-def _declared_crossing(
+def declared_crossing(
     design: AspectDesign | None,
     runs: list[EvalRun],
     results_by_run: dict[str, list[ResultView]],
@@ -341,9 +339,9 @@ def _declared_crossing(
                 state=state,
             )
         )
-    counts = {state: sum(1 for cell in cells if cell.state == state) for state in _CELL_STATES}
-    kept, omitted = _capped(
-        cells, _MAX_DECLARED_CELLS, weight=lambda cell: {"not_run": 2, "undetermined": 1}.get(cell.state, 0)
+    counts = {state: sum(1 for cell in cells if cell.state == state) for state in CELL_STATES}
+    kept, omitted = capped(
+        cells, MAX_DECLARED_CELLS, weight=lambda cell: {"not_run": 2, "undetermined": 1}.get(cell.state, 0)
     )
     planned = len(cells) - counts["skipped_by_design"]
     sentence = (
@@ -416,7 +414,7 @@ def _declared_level_coverage(
     ]
 
 
-def _coverage_map(
+def coverage_map(
     runs: list[EvalRun],
     records: list[ScoreRecord],
     apparatus_levels: dict[str, dict[str, str | None]],
@@ -424,16 +422,16 @@ def _coverage_map(
     results_by_run: dict[str, list[ResultView]],
     declared_design: AspectDesign | None,
     *,
-    folds: _SurfaceFolds,
-    observations: _MechanismObservations,
-    served: _ServedModels,
-    arms: _CampaignArms | None = None,
+    folds: SurfaceFolds,
+    observations: MechanismObservations,
+    served: ServedModels,
+    arms: CampaignArms | None = None,
     profile: HostProfile,
 ) -> list[LeverCoverageInput]:
     """Build the per-lever structural coverage map (the analysis's spine).
 
     A **lever** is whatever the host declares as one, resolved per run through
-    :func:`_effective_config`. Which of them earns a row is :func:`_reportable_levers`: the ones
+    :func:`effective_config`. Which of them earns a row is :func:`_reportable_levers`: the ones
     that moved, plus the ones the campaign declared. A DECLARED axis that nothing resolved still
     gets a row reading ``unswept`` rather than no row at all — "held at one value" and "not a
     lever in this campaign" are different answers, and only the row can say which.
@@ -457,7 +455,7 @@ def _coverage_map(
 
     **Each row states its own cohort in ``cohort_scope``, because the campaign-wide case is
     not simply "no control was designated".** Under a control, a lever some arm moved is read
-    over the control plus those arms (:func:`_lever_cohort` says why pooling the rest
+    over the control plus those arms (:func:`lever_cohort` says why pooling the rest
     manufactures a confound) — but a lever NO arm moved stays campaign-wide even then, since
     there is no contrast to narrow it to. The two rows are the same
     shape and differ only in what they may be read as, which is why the scope is a field
@@ -467,11 +465,11 @@ def _coverage_map(
     identical map (and fingerprint).
 
     :param runs: The campaign's resolved runs (for each run's ``k_runs`` and case set, counted per arm by
-        :func:`_arm_repeats`).
+        :func:`arm_repeats`).
     :ptype runs: list[EvalRun]
     :param records: The projected score records (for levels, n, and composite spread).
     :ptype records: list[ScoreRecord]
-    :param apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+    :param apparatus_levels: Dimension → run id → level key, from :func:`read_apparatus_levels`.
     :ptype apparatus_levels: dict[str, dict[str, str | None]]
     :param design: The derived design — what each lever's comparison is drawn from. Without a
         control every lever is read over the whole campaign, which is the marginal
@@ -483,7 +481,7 @@ def _coverage_map(
     :param declared_design: What the campaign SET OUT to sweep. A declared axis earns a row even
         when nothing resolved it — see :func:`_reportable_levers`.
     :ptype declared_design: AspectDesign | None
-    :param folds: The campaign's :class:`_SurfaceFolds`. A resolved surface earns no row of its own
+    :param folds: The campaign's :class:`SurfaceFolds`. A resolved surface earns no row of its own
         where its movement across its cohort is its swept members' movement — the member rows
         already report that change, and a second row levelled by content hash would count one
         override as two swept levers (and the same for a fixed knob's surface that moved only
@@ -491,14 +489,14 @@ def _coverage_map(
         fixed knob held at one level saw it differ, because then it carries something no knob's
         row does. A declared axis is never
         dropped this way: the completeness check needs its row whatever it resolved to.
-    :ptype folds: _SurfaceFolds
+    :ptype folds: SurfaceFolds
     :param observations: The campaign's mechanism observations, which each row's ``mechanism`` check and its
         observed-mechanism confounds compare across the row's levels.
-    :ptype observations: _MechanismObservations
+    :ptype observations: MechanismObservations
     :param served: Which model answered each result's candidate calls, for the served-model confound.
-    :ptype served: _ServedModels
-    :param arms: :func:`_campaign_arms`'s answer, when the caller already has it; derived otherwise.
-    :ptype arms: _CampaignArms | None
+    :ptype served: ServedModels
+    :param arms: :func:`campaign_arms`'s answer, when the caller already has it; derived otherwise.
+    :ptype arms: CampaignArms | None
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: One :class:`LeverCoverageInput` per reportable lever, sorted by lever name.
@@ -508,16 +506,16 @@ def _coverage_map(
         return []
 
     # k is per ARM: the runs repeating one arm pool their repeats into it.
-    groups = (arms if arms is not None else _campaign_arms(runs, results_by_run, profile=profile)).groups()
+    groups = (arms if arms is not None else campaign_arms(runs, results_by_run, profile=profile)).groups()
     group_of_run = {run.id: key for key, members in groups.items() for run in members}
-    k_by_arm = {key: _arm_repeats(members) for key, members in groups.items()}
-    resolved_by_run = {run.id: _resolve_config(run, results_by_run.get(run.id, []), profile=profile) for run in runs}
+    k_by_arm = {key: arm_repeats(members) for key, members in groups.items()}
+    resolved_by_run = {run.id: resolve_config(run, results_by_run.get(run.id, []), profile=profile) for run in runs}
     effective_by_run = {run_id: flat for run_id, (flat, _engaged) in resolved_by_run.items()}
     # The launch-named and observation-recovered halves of "engaged", carried out of the same pass
     # that resolved the levels rather than re-derived: `overridden` is written both by a family
     # member and by a fixed declaration's own reader, so provenance cannot tell them apart.
     engaged = {name for _flat, names in resolved_by_run.values() for name in names}
-    # The lever set comes from the registry, through `_effective_config`, and never from
+    # The lever set comes from the registry, through `effective_config`, and never from
     # `record.factors`. `factors` is the raw launch-overlay flattening in one host's carrier
     # spelling, so drawing the set from it re-created the second vocabulary that made a
     # declared axis unmatchable to its own coverage row.
@@ -527,16 +525,16 @@ def _coverage_map(
     # still knows which model produced it. `resolved` is a set, so the two sources name one
     # coverage row, never two.
     if len({record.model for record in records}) > 1:
-        resolved.add(_CANDIDATE_MODEL_LEVER)
-    axes = _declared_axes(declared_design)
-    lever_levels = _lever_levels(runs, results_by_run, profile=profile, declared_axes=axes)
+        resolved.add(CANDIDATE_MODEL_LEVER)
+    axes = declared_axis_ids(declared_design)
+    lever_levels = read_lever_levels(runs, results_by_run, profile=profile, declared_axes=axes)
     all_run_ids = [run.id for run in runs]
     # A lever read off what ran that no comparison exercised is no lever, unless the campaign declared it as an axis.
-    unexercised = _unexercised_levers(runs, results_by_run, profile=profile, declared_axes=axes)
+    unexercised = unexercised_levers(runs, results_by_run, profile=profile, declared_axes=axes)
     levers = _reportable_levers(resolved, records, effective_by_run, declared_design, engaged) - unexercised
     # A recovered lever a run never observed is unknown there, not a level of its own: its records leave that lever's
     # levels, cells and k rather than sitting at the inherited default beside the arms that did observe it.
-    effective_by_run = _with_unobserved_unknown(effective_by_run, profile=profile, exempt=axes)
+    effective_by_run = with_unobserved_unknown(effective_by_run, profile=profile, exempt=axes)
 
     coverage: list[LeverCoverageInput] = []
     declared_axes = {axis.axis_id: axis for axis in declared_design.axes} if declared_design else {}
@@ -547,7 +545,7 @@ def _coverage_map(
         # beside a control-vs-cell contrast would describe a comparison that was never made.
         # Usually, not always: a lever no cell moved stays campaign-wide, and cohort_scope below
         # is what tells the reader which of the two this row is.
-        cohort = set(_lever_cohort(lever, design, all_run_ids))
+        cohort = set(lever_cohort(lever, design, all_run_ids))
         if lever not in declared and folds.folds_away(lever, cohort):
             continue
         # A cohort with no records is emitted, not skipped: the lever exists in this campaign,
@@ -556,18 +554,18 @@ def _coverage_map(
         cohort_records = [record for record in records if record.run_id in cohort]
         composite_records = [r for r in cohort_records if r.metric == METRIC_COMPOSITE and r.value is not None]
         levels = sorted(
-            {level for record in cohort_records if (level := _lever_value(record, lever, effective_by_run)) is not None}
+            {level for record in cohort_records if (level := lever_value(record, lever, effective_by_run)) is not None}
         )
         cells = len(levels)
         # Over the records that sit at a level: a run that never observed a recovered lever is not measured on it.
         n_distinct_results = len(
-            {r.result_id for r in cohort_records if _lever_value(r, lever, effective_by_run) is not None}
+            {r.result_id for r in cohort_records if lever_value(r, lever, effective_by_run) is not None}
         )
         # The same records the levels were read from, so a mechanism is compared over exactly the
         # levels and cohort every other number on the row describes.
         result_ids_by_level: dict[str, set[str]] = {}
         for record in cohort_records:
-            if (level := _lever_value(record, lever, effective_by_run)) is not None:
+            if (level := lever_value(record, lever, effective_by_run)) is not None:
                 result_ids_by_level.setdefault(level, set()).add(record.result_id)
         k = _lever_k_floor(lever, cohort_records, k_by_arm, group_of_run, effective_by_run)
         # A declared axis is asked the authoring gate's own question. A campaign stored past that gate, or
@@ -595,7 +593,7 @@ def _coverage_map(
                 # cohort spans every run while still being the contrast the campaign exists to
                 # draw. Sizing it would label that row 'campaign' and tell the writer, two
                 # paragraphs after "compare each cell to the control", that no contrast exists.
-                cohort_scope="control_referenced" if _is_control_referenced(lever, design) else "campaign",
+                cohort_scope="control_referenced" if is_control_referenced(lever, design) else "campaign",
                 declared_levels=(
                     _declared_level_coverage(declared_axes[lever], runs, results_by_run, profile=profile)
                     if lever in declared_axes
@@ -604,12 +602,12 @@ def _coverage_map(
                 cannot_be_an_arm=(
                     controllable.reason if controllable is not None and controllable.state != "covered" else None
                 ),
-                confounded_by=_uncontrolled_dimensions(
+                confounded_by=uncontrolled_dimensions(
                     lever, sorted(cohort), lever_levels, apparatus_levels, folds=folds, profile=profile
                 )
-                + _observed_mechanism_confounds(lever, result_ids_by_level, observations, profile=profile)
-                + _served_model_confounds(chain.from_iterable(result_ids_by_level.values()), served),
-                mechanism=_mechanism_check(
+                + observed_mechanism_confounds(lever, result_ids_by_level, observations, profile=profile)
+                + served_model_confounds(chain.from_iterable(result_ids_by_level.values()), served),
+                mechanism=mechanism_check(
                     acts_on := profile.sweepables.acts_on(lever),
                     result_ids_by_level,
                     observations,
@@ -621,7 +619,7 @@ def _coverage_map(
     return coverage
 
 
-def _factor_aliasing(
+def factor_aliasing(
     run_ids: list[str],
     lever_levels: dict[str, dict[str, list[str]]],
     apparatus_levels: dict[str, dict[str, str | None]],
@@ -629,7 +627,7 @@ def _factor_aliasing(
     """Group the factors that moved in lockstep, and check every pair of factors for co-varying.
 
     A factor is anything that varied across the campaign's runs: a swept lever or the candidate model, as
-    :func:`_lever_levels` reads them, and an apparatus dimension every run recorded at two or more levels (one some
+    :func:`read_lever_levels` reads them, and an apparatus dimension every run recorded at two or more levels (one some
     run never recorded is undecided, not a partition, and is named in ``apparatus_confounds``). Each factor
     splits the runs it was read on into groups, one per level. **Factors whose splits are identical are aliased**
     — the same runs, grouped the same way, whatever the levels are called — and are reported as one group.
@@ -642,9 +640,9 @@ def _factor_aliasing(
 
     :param run_ids: The campaign's resolved runs.
     :ptype run_ids: list[str]
-    :param lever_levels: Lever → level → run ids, from :func:`_lever_levels`.
+    :param lever_levels: Lever → level → run ids, from :func:`read_lever_levels`.
     :ptype lever_levels: dict[str, dict[str, list[str]]]
-    :param apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+    :param apparatus_levels: Dimension → run id → level key, from :func:`read_apparatus_levels`.
     :ptype apparatus_levels: dict[str, dict[str, str | None]]
     :return: The lockstep groups (sorted by their first factor), and the pair scan.
     :rtype: tuple[list[AliasedFactors], FactorPairScan]
@@ -699,9 +697,9 @@ def _factor_aliasing(
             if key not in pivots:
                 pivots[key] = _factor_pair_pivot(key[0], key[1], by_factor, group_of)
     ordered = [pivots[key] for key in sorted(pivots)]
-    kept, omitted = _capped(
+    kept, omitted = capped(
         ordered,
-        _MAX_FACTOR_PAIR_PIVOTS,
+        MAX_FACTOR_PAIR_PIVOTS,
         weight=lambda pivot: sum(1 for cell in pivot.cells if cell.status == "not_run"),
     )
     # Facts only: what was examined and what is shown is worded at render time (the pair scan's completeness).
@@ -715,21 +713,21 @@ def _factor_aliasing(
     )
 
 
-def _unexercised_factors(
+def unexercised_factors(
     runs: list[EvalRun],
     results_by_run: dict[str, list[ResultView]],
-    arms: _CampaignArms,
+    arms: CampaignArms,
     *,
     profile: HostProfile,
     declared_axes: Collection[str],
 ) -> list[UnexercisedFactor]:
     """The levers read off what ran that no comparison exercised, each with the call it saw and the arm it was on.
 
-    The same set :func:`~threetears.evals.analysis.bundle.config._unexercised_levers` leaves out of the lever levels
+    The same set :func:`~threetears.evals.analysis.bundle.config.unexercised_levers` leaves out of the lever levels
     and the coverage map, so the page can say once, under Not tested, why a lever the host declares is not there; a
     declared axis is never in it.
     """
-    unexercised = _unexercised_levers(runs, results_by_run, profile=profile, declared_axes=declared_axes)
+    unexercised = unexercised_levers(runs, results_by_run, profile=profile, declared_axes=declared_axes)
     arm_of = {run.id: key for key, members in arms.groups().items() for run in members}
     return [
         UnexercisedFactor(
@@ -738,7 +736,7 @@ def _unexercised_factors(
             results=sum(by_run.values()),
             arms=sorted({arm_of[run_id] for run_id, count in by_run.items() if count and run_id in arm_of}),
         )
-        for lever, by_run in _exercised(runs, results_by_run, profile=profile).items()
+        for lever, by_run in exercised(runs, results_by_run, profile=profile).items()
         if lever in unexercised
     ]
 
@@ -776,4 +774,9 @@ def _factor_pair_pivot(
     )
 
 
-__all__: list[str] = []
+__all__ = [
+    "coverage_map",
+    "declared_crossing",
+    "factor_aliasing",
+    "unexercised_factors",
+]

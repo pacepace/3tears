@@ -1,8 +1,8 @@
 """Multiple comparisons and guardrails: each contrast tested against the control in the aspect's family, corrected together.
 
-:func:`_multiple_comparisons` builds the aspect's family, tests every contrast (:func:`_compare`), corrects the
+:func:`multiple_comparisons` builds the aspect's family, tests every contrast (:func:`_compare`), corrects the
 family by Holm's method (:func:`_corrected_family`) and decides every guardrail (:func:`_guardrail_check`).
-:func:`planning_readings` and :func:`_reading_scope` read the same families for planning and exploratory labels.
+:func:`planning_readings` and :func:`reading_scope` read the same families for planning and exploratory labels.
 """
 
 from __future__ import annotations
@@ -86,29 +86,29 @@ from threetears.evals.analysis.bundle.schema import (
     question_axes,
 )
 from threetears.evals.analysis.bundle.measures import (
-    _answered_unclassified,
-    _as_miss,
-    _classifies,
-    _grades_otherwise,
-    _measure_walk_memo,
-    _pool_measures,
-    _pooled_means,
-    _pooled_rates,
-    _miss_counts,
+    answered_unclassified,
+    as_miss,
+    classifies,
+    grades_otherwise,
+    measure_walk_memo,
+    pool_measures,
+    pooled_means,
+    pooled_rates,
+    miss_counts,
 )
 from threetears.evals.analysis.bundle.mechanisms import (
-    _MechanismObservations,
-    _model_contrast_confounds,
-    _served_model_confounds,
-    _ServedModels,
+    MechanismObservations,
+    model_contrast_confounds,
+    served_model_confounds,
+    ServedModels,
 )
 from threetears.evals.analysis.bundle.trials import read_trial
 from threetears.evals.analysis.bundle.cell_reads import (
-    _boundary_dimensions,
-    _CellKey,
-    _judged_values,
-    _non_faulted,
-    _took_no_turn,
+    boundary_dimensions,
+    CellKey,
+    judged_values,
+    non_faulted,
+    took_no_turn,
 )
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
@@ -135,9 +135,9 @@ def _per_case_values(
 
     A case is the independent draw (rule: count cases, not attempts), so repeats of one case are
     averaged before any test sees them. A measure's per-case value is read off the same walk the
-    cell's own collection is (:func:`_pool_measures`, each measure over its own population), so the value tested and
-    the value the cell reports are one computation: a numeric measure's is the summary's mean (:func:`_pooled_means`),
-    a boolean's the summary's rate, a share on 0 to 1 (:func:`_pooled_rates`). A judged dimension's is read off the
+    cell's own collection is (:func:`pool_measures`, each measure over its own population), so the value tested and
+    the value the cell reports are one computation: a numeric measure's is the summary's mean (:func:`pooled_means`),
+    a boolean's the summary's rate, a share on 0 to 1 (:func:`pooled_rates`). A judged dimension's is read off the
     non-faulted results' scores, as :func:`_bar_reading` reads one. A text or categorical measure has none.
 
     :param members: One cell's results, faulted ones included.
@@ -157,17 +157,17 @@ def _per_case_values(
         # The candidate's own spend among them (``production_replicating_cost``, which the walk yields over the
         # turns the candidate took and only where a result measured it): a contrast on cost tests it, never
         # ``cost_usd``, which sums the judge's spend too.
-        # Each summary's mean, in the collection's name order, with no summary built (:func:`_pooled_means`).
-        pooled = _pool_measures(by_case[case_id], profile=profile, undeclared="scored")
-        for name, mean in _pooled_means(pooled).items():
+        # Each summary's mean, in the collection's name order, with no summary built (:func:`pooled_means`).
+        pooled = pool_measures(by_case[case_id], profile=profile, undeclared="scored")
+        for name, mean in pooled_means(pooled).items():
             values[("measure", name)][case_id] = mean
         # A boolean's per-case value is its rate, the share of the case's observations held True: the cell's own
-        # ``rate`` over that case alone (:func:`_pooled_rates`), as the pass rate is a case's share of trials passed.
-        for name, rate in _pooled_rates(pooled).items():
+        # ``rate`` over that case alone (:func:`pooled_rates`), as the pass rate is a case's share of trials passed.
+        for name, rate in pooled_rates(pooled).items():
             values[("measure", name)][case_id] = rate
     scores: dict[tuple[str, str], list[float]] = defaultdict(list)
-    for result in _non_faulted(members):
-        for dimension, record in _judged_values(judged_rows.get(result.id, [])):
+    for result in non_faulted(members):
+        for dimension, record in judged_values(judged_rows.get(result.id, [])):
             if record.value is not None:
                 scores[(dimension, result.test_case_id)].append(float(record.value))
     for (dimension, case_id), case_scores in sorted(scores.items()):
@@ -195,14 +195,14 @@ class _KeptResult(NamedTuple):
     #: Its per-case value of each reading (:func:`_per_case_values`).
     values: dict[tuple[ReadingKind, str], dict[str, float]]
     #: Its values read as a miss, when it is a failure that landed no verdict; which of the two counts turns on every
-    #: run's verdicts, known only once all are read (:func:`_miss_counts`).
+    #: run's verdicts, known only once all are read (:func:`miss_counts`).
     as_miss: dict[tuple[ReadingKind, str], dict[str, float]] | None
 
 
 class _RunRepeats(NamedTuple):
     """What :func:`planning_readings` keeps of one run once its results are read."""
 
-    #: The cases the run answered without failing and without landing a verdict (:func:`_grades_otherwise`).
+    #: The cases the run answered without failing and without landing a verdict (:func:`grades_otherwise`).
     answered_unclassified: set[str]
     kept: list[_KeptResult]
 
@@ -224,7 +224,7 @@ def planning_readings(
     :meth:`~threetears.evals.kernel.storage.EvalStorage.iter_result_readings`), a page at a time, and each page's
     results are read run by run. The runs' results may come in any order across runs; within a run, in the store's
     order. What reads across runs (a failure that landed no verdict counts as a miss on a case another run classified,
-    :func:`_failures_as_misses`; a dimension any result scored as a boundary is a guardrail; the scale a dimension was
+    :func:`failures_as_misses`; a dimension any result scored as a boundary is a guardrail; the scale a dimension was
     answered on, the last run in ``runs`` order to answer it deciding) is kept as the few facts it needs and applied
     once every run is read, so the readings are the ones every run's results read at once give. A run none of
     ``results`` belongs to is read as no earlier run: nothing of it, its launch scales included, is planned from.
@@ -257,14 +257,14 @@ def planning_readings(
             run_repeats = kept.setdefault(run_id, _RunRepeats(answered_unclassified=set(), kept=[]))
             run_scales = answered_scales.setdefault(run_id, {})
             for result in members:
-                if _classifies(result):
+                if classifies(result):
                     classified_cases.add(result.test_case_id)
-                if _answered_unclassified(result):
+                if answered_unclassified(result):
                     run_repeats.answered_unclassified.add(result.test_case_id)
-            boundary |= _boundary_dimensions(members)
+            boundary |= boundary_dimensions(members)
             # Latency read under concurrency is in no comparison (#701), so it plans none either.
             read = withhold_contended_latency(members, profile.measures)
-            as_misses = [miss for miss in map(_as_miss, members) if miss is not None]
+            as_misses = [miss for miss in map(as_miss, members) if miss is not None]
             misses = {result.id: result for result in withhold_contended_latency(as_misses, profile.measures)}
             # A judged score is read off the judge's scores, which a verdict read as a miss leaves as they were.
             projection = project_score_records([run], read, known_run_ids=None, archived_run_ids=None, profile=profile)
@@ -275,7 +275,7 @@ def planning_readings(
                     run_scales[record.rubric_dim] = record.rubric_scale
             # One memo per page, not per read: it holds each walked result, so a read-long memo would hold the history
             # the page-at-a-time walk exists not to hold. Within the page, each name is described once.
-            with _measure_walk_memo():
+            with measure_walk_memo():
                 for result in read:
                     miss = misses.get(result.id)
                     run_repeats.kept.append(
@@ -294,10 +294,10 @@ def planning_readings(
     repeats: dict[tuple[ReadingKind, str], dict[str, dict[str, list[float]]]] = {}
     for run in read_runs:
         run_repeats = kept[run.id]
-        grading_otherwise = _grades_otherwise(run_repeats.answered_unclassified, classified_cases)
+        grading_otherwise = grades_otherwise(run_repeats.answered_unclassified, classified_cases)
         for kept_result in sorted(run_repeats.kept, key=lambda one: one.order):
             values = kept_result.values
-            if kept_result.as_miss is not None and _miss_counts(
+            if kept_result.as_miss is not None and miss_counts(
                 kept_result.order[0], classified_cases, grading_otherwise=grading_otherwise
             ):
                 values = kept_result.as_miss
@@ -459,8 +459,8 @@ class _Tested(NamedTuple):
 def _compare(
     reading: tuple[ComparisonReading, str],
     higher_is_better: bool,
-    control: tuple[_CellKey, dict[str, float]],
-    contrast: tuple[_CellKey, dict[str, float]],
+    control: tuple[CellKey, dict[str, float]],
+    contrast: tuple[CellKey, dict[str, float]],
     *,
     threshold: float | None,
     margin_source: Literal["measure", "run"] | None = None,
@@ -485,9 +485,9 @@ def _compare(
     :param higher_is_better: Which way is better on it.
     :ptype higher_is_better: bool
     :param control: The control cell and its per-case values.
-    :ptype control: tuple[_CellKey, dict[str, float]]
+    :ptype control: tuple[CellKey, dict[str, float]]
     :param contrast: The contrast cell and its per-case values.
-    :ptype contrast: tuple[_CellKey, dict[str, float]]
+    :ptype contrast: tuple[CellKey, dict[str, float]]
     :param threshold: The measure's declared materiality threshold, which labels the delta through the one
         predicate every surface uses (:func:`~threetears.evals.kernel.metrics.materiality`) and is the
         equivalence test's margin; None for a measure that declared none and for a judged dimension.
@@ -773,20 +773,20 @@ def _corrected_family(aspect: str | None, axes: list[MeritAxis], tested: list[_T
     )
 
 
-def _multiple_comparisons(
+def multiple_comparisons(
     aspect: str,
     declared: AspectDeclaration | None,
     realized: RealizedDesign,
-    results_by_cell: dict[_CellKey, list[ResultView]],
+    results_by_cell: dict[CellKey, list[ResultView]],
     records: list[ScoreRecord],
     *,
     catalog: dict[str, MetricDescriptor],
     judged_measures: list[JudgedMeasure],
-    observations: _MechanismObservations,
-    served: _ServedModels,
+    observations: MechanismObservations,
+    served: ServedModels,
     profile: HostProfile,
     run_margins: Mapping[str, float] | None = None,
-    contended: Collection[_CellKey] = frozenset(),
+    contended: Collection[CellKey] = frozenset(),
     rubric_threshold: int,
 ) -> tuple[MultipleComparisons, GuardrailReadings, list[FloorContrast]]:
     """Test each contrast against the control in the aspect's one family, decide every guardrail, and carry what the
@@ -821,7 +821,7 @@ def _multiple_comparisons(
     :param realized: The derived design, for the control arm.
     :ptype realized: RealizedDesign
     :param results_by_cell: Each cell's results.
-    :ptype results_by_cell: dict[_CellKey, list[ResultView]]
+    :ptype results_by_cell: dict[CellKey, list[ResultView]]
     :param records: The assembly's score projection rows, where judged scores live.
     :ptype records: list[ScoreRecord]
     :param catalog: The bundle's measure catalog — direction and axis per measure.
@@ -829,9 +829,9 @@ def _multiple_comparisons(
     :param judged_measures: The bundle's judged measures.
     :ptype judged_measures: list[JudgedMeasure]
     :param observations: The campaign's mechanism observations, read for each contrast between two models.
-    :ptype observations: _MechanismObservations
+    :ptype observations: MechanismObservations
     :param served: Which model answered each result's candidate calls, read for every contrast.
-    :ptype served: _ServedModels
+    :ptype served: ServedModels
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :param run_margins: The margins every member run declared alike on a core rate measure (:func:`_run_margins`),
@@ -839,7 +839,7 @@ def _multiple_comparisons(
     :ptype run_margins: Mapping[str, float] | None
     :param contended: The cells holding latency read under concurrency, which the bundle withheld — named as the
         reason a comparison or a guardrail on elapsed time could not be read, where it could not.
-    :ptype contended: Collection[_CellKey]
+    :ptype contended: Collection[CellKey]
     :param rubric_threshold: The 1–5 level a judged dimension must reach for a trial to pass, which the overall pass
         rate's per-case shares read (:func:`_trial_pass_counts`), as the scoreboard does.
     :ptype rubric_threshold: int
@@ -876,10 +876,10 @@ def _multiple_comparisons(
     judged_rows: dict[str, list[ScoreRecord]] = {}
     for record in records:
         judged_rows.setdefault(record.result_id, []).append(record)
-    values: dict[_CellKey, dict[tuple[ComparisonReading, str], dict[str, float]]] = {}
+    values: dict[CellKey, dict[tuple[ComparisonReading, str], dict[str, float]]] = {}
     # Each cell's usable trials per case on the overall pass rate, carried beside its shares so a reading states each
     # side's depth case by case.
-    trials: dict[_CellKey, dict[str, tuple[int, int]]] = {}
+    trials: dict[CellKey, dict[str, tuple[int, int]]] = {}
     for key, members in results_by_cell.items():
         values[key] = {
             reading: by_case for reading, by_case in _per_case_values(members, judged_rows, profile=profile).items()
@@ -898,10 +898,10 @@ def _multiple_comparisons(
     # One answer per pair, stated on every reading the pair is compared on: which pair diverged is a fact
     # about the two arms, and a writer reading one comparison should not have to find it on another.
     pair_confounds = {
-        pair: _model_contrast_confounds(
+        pair: model_contrast_confounds(
             results_by_cell[pair[0]], results_by_cell[pair[1]], observations, profile=profile
         )
-        + _served_model_confounds((result.id for key in pair for result in results_by_cell[key]), served)
+        + served_model_confounds((result.id for key in pair for result in results_by_cell[key]), served)
         for pair in pairs
     }
     # A judged dimension's scale bounds the interval on its delta; it declares no margin, so no equivalence reads it.
@@ -941,7 +941,7 @@ def _multiple_comparisons(
                         for side, key in (("control", control_key), ("arm", contrast_key))
                         if reading[0] == "measure"
                         and summary_population(catalog[reading[1]], "scored") == "delivered"
-                        and _took_no_turn(results_by_cell[key])
+                        and took_no_turn(results_by_cell[key])
                     ),
                     contended=_contended_sides(reading, (control_key, contrast_key), catalog, contended),
                 )
@@ -984,7 +984,7 @@ def _multiple_comparisons(
 
 
 def _choice_contrasts(
-    results_by_cell: dict[_CellKey, list[ResultView]], *, rubric_threshold: int, catalog: dict[str, MetricDescriptor]
+    results_by_cell: dict[CellKey, list[ResultView]], *, rubric_threshold: int, catalog: dict[str, MetricDescriptor]
 ) -> list[FloorContrast]:
     """With no control, every pair of arms under one rig on the overall pass rate, per case: what a choice's pairwise
     readings read. The pair's ``control`` is the arm first in variant-key order, a position and never a role.
@@ -1017,8 +1017,8 @@ def _choice_contrasts(
 
 def _floor_contrast(
     reading: tuple[ComparisonReading, str],
-    control: tuple[_CellKey, dict[str, float]],
-    contrast: tuple[_CellKey, dict[str, float]],
+    control: tuple[CellKey, dict[str, float]],
+    contrast: tuple[CellKey, dict[str, float]],
     *,
     trials: tuple[Mapping[str, tuple[int, int]], Mapping[str, tuple[int, int]]] | None = None,
 ) -> FloorContrast | None:
@@ -1059,7 +1059,7 @@ def _floor_contrast(
     )
 
 
-def _reading_scope(
+def reading_scope(
     declared: AspectDeclaration | None,
     catalog: dict[str, MetricDescriptor],
     judged_measures: list[JudgedMeasure],
@@ -1138,9 +1138,9 @@ def _guardrail_readings(
 
 def _contended_sides(
     reading: tuple[ComparisonReading, str],
-    pair: tuple[_CellKey, _CellKey],
+    pair: tuple[CellKey, CellKey],
     catalog: Mapping[str, MetricDescriptor],
-    contended: Collection[_CellKey],
+    contended: Collection[CellKey],
 ) -> tuple[str, ...]:
     """Which sides of a comparison on ``reading`` held latency read under concurrency: ``control``, ``arm``, both, none.
 
@@ -1154,8 +1154,8 @@ def _contended_sides(
 def _guardrail_check(
     reading: tuple[ReadingKind, str],
     guardrail: _Guardrail,
-    control: tuple[_CellKey, dict[str, float]],
-    contrast: tuple[_CellKey, dict[str, float]],
+    control: tuple[CellKey, dict[str, float]],
+    contrast: tuple[CellKey, dict[str, float]],
     *,
     contended: tuple[str, ...] = (),
 ) -> GuardrailCheck:
@@ -1246,6 +1246,8 @@ def _guardrails_of(
 
 
 __all__ = [
-    "planning_readings",
     "PlanningReading",
+    "multiple_comparisons",
+    "planning_readings",
+    "reading_scope",
 ]

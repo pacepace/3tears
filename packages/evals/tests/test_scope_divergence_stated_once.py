@@ -5,7 +5,7 @@ reached the reader four times, and "contained by ``total_ms``" twice. Two causes
 holds both to account on campaigns built to provoke them.
 
 - **A surface that folds into the lever.** A resolved surface whose movement is its knob's is skipped by the
-  divergence lens (``_SurfaceFolds.folds_away``); compared as a lever of its own it would restate every divergence
+  divergence lens (``SurfaceFolds.folds_away``); compared as a lever of its own it would restate every divergence
   the knob reports. ``TestASurfaceThatFoldsIntoTheLeverAddsNoDivergence`` sweeps a model knob together with the
   surface it is written into, at several runs a level and at three levels, and finds one divergence per lever pair
   and whole-and-part pair. That skip already held: this block is its regression test.
