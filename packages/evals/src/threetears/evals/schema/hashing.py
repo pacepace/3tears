@@ -149,18 +149,13 @@ def identity_digest(payload: Any) -> str:
     return hashlib.sha256(identity_json(payload).encode("utf-8")).hexdigest()
 
 
-#: The largest magnitude below which every whole number is one exact double, so a float holding a whole number and the
-#: integer it equals are one value (:func:`input_json`).
-_EXACT_WHOLE: Final[float] = 2.0**53
-
-
 def _canonical_input(payload: Any) -> Any:
-    """``payload`` as :func:`input_json` writes it: null-valued keys left out, whole floats as integers."""
+    """``payload`` as :func:`input_json` writes it: every whole float as the integer it equals."""
     if isinstance(payload, float):
-        # A whole number is one value however a store types it; -0.0 is 0. NaN and the infinities fail both tests.
-        return int(payload) if payload.is_integer() and abs(payload) < _EXACT_WHOLE else payload
+        # A whole number is one value however a store types it; -0.0 is 0. NaN and the infinities are not whole.
+        return int(payload) if payload.is_integer() else payload
     if isinstance(payload, dict):
-        return {key: _canonical_input(value) for key, value in payload.items() if value is not None}
+        return {key: _canonical_input(value) for key, value in payload.items()}
     if isinstance(payload, list | tuple):
         return [_canonical_input(value) for value in payload]
     return payload
@@ -175,15 +170,24 @@ def input_json(payload: Any) -> str:
 
     - **Key order is not read.** Every mapping's keys are sorted, at every depth, so a store that reorders keys (a
       ``jsonb`` column does) moves nothing. A list keeps its order, as every JSON store keeps it.
-    - **Null and absent are one.** A mapping key whose value is null is left out, so a field a store writes as null
-      and one it leaves out render alike, and an optional field added to a stored shape later moves nothing while it
-      is unset. A null inside a list stays.
-    - **Numbers.** A bool is ``true`` or ``false``, never a number. An integer is written in decimal. A float holding
-      a whole number of magnitude below 2**53 is written as that integer, so ``1`` and ``1.0`` (which a JSON store may
-      hand back for one another) render alike, and ``-0.0`` is ``0``. Any other float is written as Python's
-      ``repr``: the shortest decimal string that parses back to the same IEEE-754 double, which Python computes
-      itself and not through the platform's C library, so it is the same string on every platform. NaN and the
-      infinities, which no JSON store holds, are written as ``NaN``, ``Infinity`` and ``-Infinity``.
+    - **A null is a value.** ``{"a": null}`` and ``{}`` render differently: in a map a host writes, a key's presence
+      can carry meaning. A caller for whom an unset field and an absent one are one value (a typed record, where both
+      hydrate to ``None``) leaves the unset field out before it renders.
+    - **Numbers.** A bool is ``true`` or ``false``, never a number. An integer is written in decimal, at any size.
+      A float holding a whole number is written as the integer it equals, at any magnitude: ``1.0`` is ``1``,
+      ``-0.0`` is ``0``, ``1e22`` is ``10000000000000000000000``. That is how a ``jsonb`` column hands a whole number
+      back whatever it was written as, so a value written as a float and read back as an integer renders alike. Any
+      other finite float is written as Python's ``repr``: the shortest decimal string that parses back to the same
+      IEEE-754 double (``sys.float_repr_style`` is ``short``), which Python computes itself and not through the
+      platform's C library, so it is the same string on every platform.
+    - **NaN and the infinities** are written as the fixed tokens ``NaN``, ``Infinity`` and ``-Infinity``. No JSON
+      store holds one, so they reach here only from a store that keeps Python values; each is one value with one
+      token, so it is rendered and not refused, and an assembly over such a store still fingerprints.
+    - **Strings** are written with every non-ASCII character escaped (``\\uXXXX``), so the bytes do not depend on an
+      encoding. They are **not** Unicode-normalised: two spellings of one visible text (composed and decomposed) are
+      two values, as they are two values in the store.
+    - **Anything JSON cannot encode is refused** (a ``datetime``, a ``Decimal``, a set, an object):
+      :class:`UnhashableContentError`, as :func:`canonical_json` refuses it.
 
     A float **computed** here would carry its platform's last bits into the key, which is what
     :func:`identity_json` rounds away; this function is for values nothing computed.

@@ -193,7 +193,11 @@ def test_every_float_of_a_campaign_bundle_moved_one_ulp_leaves_its_fingerprint(t
     ]
     frame = _nudged(bundle.frame(), toward)
     assert frame != bundle.frame(), "the frame's readings carry floats"
-    assert CampaignBundle.from_frame(frame, bundle.aspects).fingerprint() == bundle.fingerprint()
+    # In version 3 of the campaign's numbering, which hashes the frame with every float rounded; `v4:` is over the
+    # evidence and reads no computed float (`test_evidence_fingerprint.py`).
+    nudged_bundle = CampaignBundle.from_frame(frame, bundle.aspects)
+    assert nudged_bundle.fingerprint(like="v3:") == bundle.fingerprint(like="v3:")
+    assert bundle.fingerprint(like="v3:").startswith("v3:")
 
 
 @pytest.mark.parametrize("toward", [math.inf, -math.inf], ids=["up", "down"])
@@ -325,7 +329,7 @@ for run_id in campaign.run_ids:
             )
 bundle = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
 print(json.dumps({
-    "fingerprint": bundle.fingerprint(),
+    "fingerprint": bundle.fingerprint(like="v3:"),
     "document": bundle.to_dict(),
     "page": campaign_report(host, campaign.id, campaign.scope_id).json_document(),
 }))

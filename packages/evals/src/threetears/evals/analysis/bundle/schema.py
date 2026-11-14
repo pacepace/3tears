@@ -4250,8 +4250,11 @@ def _with_v2_hedges(evidence: dict[str, Any]) -> dict[str, Any]:
 
     A comparison's g is its uncorrected effect times the small-sample factor at its test's degrees of freedom (the
     paired cases less one; unpaired, both sides' cases less two), which a :class:`FamilyComparison` states. So g under
-    the earlier factor is g times the ratio of the two factors, and rounds to the same twelve figures the earlier
-    build's g did, except, as in every version 2 fingerprint, where it falls on a twelfth-figure boundary.
+    the earlier factor is g times the ratio of the two factors. That product is within a few ULP of the earlier
+    build's own g, and a twelfth-figure bucket is about ten thousand ULP wide, so it rounds to the same twelve figures
+    but for about one comparison in ten thousand, whose value sits within those few ULP of a rounding boundary: the
+    exception every version 2 fingerprint already had. Without the put-back the two factors differ past the twelfth
+    figure for about one comparison in twelve at 500 to 2,000 degrees of freedom and four in ten above (#1062).
     Comparisons are the only place a bundle holds a g.
     """
     comparisons = evidence.get("multiple_comparisons")
@@ -4396,7 +4399,9 @@ class BundleInspection(EvalDocumentModel):
             "`schema_version` differs from the recorded one, so this build digests the same evidence differently "
             "(when the host declarations differ too, this still wins); `host_declarations` when the version agrees "
             "and the digest does not; `evidence` when both agree, so the inputs moved, or a host declaration the "
-            "digest does not cover (a measure, a bar, prose) changed. Against a record of a version this build does "
+            "digest does not cover (a measure, a bar, prose) changed, or this build computes a statistic the record "
+            "hashed another way: a `v2:` pre-image is frozen in its fields, not in its formulas, so against a `v2:` "
+            "record `evidence` is not proof that an input moved. Against a record of a version this build does "
             "not compute: `package_shape`."
         ),
     )

@@ -845,8 +845,10 @@ reads as the code-only page, its first screen naming the retired writer and sayi
 `analysis_generate`; `analyses_list` counts no findings for it and marks it to regenerate.
 
 Every stored analysis carries the bundles it was written over (`EvalAnalysis.bundle`). A bundle's fingerprint is `v3:` and the
-sha256 of the evidence it was assembled from: the runs and results read, the declaration, the cases, the ratings, the
-judge profiles consulted and the prior insights, as the bundle's `evidence` manifest digests them. It hashes nothing
+sha256 of the evidence it was assembled from: the runs and results read, the declaration, the host's criteria (its
+pass threshold, registered bars and measure declarations), the cases, the ratings, the judge profiles consulted and
+the prior insights, as the bundle's `evidence` manifest digests them. The campaign's own fingerprint is `v4:`, over
+what it declares and each aspect's fingerprint. It hashes nothing
 the package computes, so the same evidence fingerprints alike on every build and machine, and a statistic computed a
 better way moves no fingerprint. A fingerprint stored before that is `v2:`, the sha256 of the bundle's own JSON with
 every float rounded to twelve significant figures; it is still compared the `v2:` way, so what holds one keeps

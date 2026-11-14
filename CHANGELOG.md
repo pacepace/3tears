@@ -9,13 +9,22 @@ packages (bumped in lock-step).
 ### evals: a bundle's fingerprint is over the evidence it was assembled from, not the statistics computed from it (#1062)
 
 **Changed:** `AnalysisContextBundle.fingerprint()` is `v3:` and the sha256 of the bundle's new `evidence` manifest: one
-digest and one count for each kind of input the assembly read (the declaration, the member runs, every result as the
-readers read it, the cases, the ratings, the judge profiles consulted, the prior insights, and the host declarations
-digest). It hashes nothing the package computes. A better formula, another platform's maths library or a reordered
-sum moves no fingerprint; a changed, added or removed input moves it, and the manifest names which kind moved.
-Stored values are rendered by `schema.hashing.input_json` (new): keys sorted at every depth, null and absent alike, a
-whole float as its integer and any other as Python's shortest round-trip `repr`, so a `jsonb` store that reorders
-keys moves nothing and no platform renders a number another way. Names and pricing stay out, as before.
+digest for each kind of input the assembly read (the declaration, the host's criteria, the member runs, every result
+as the readers read it, the cases, the ratings, the judge profiles consulted, the prior insights, and the host
+declarations digest). It hashes nothing the package computes. A better formula, another platform's maths library or a
+reordered sum moves no fingerprint; a changed, added or removed input moves it, and the manifest names which kind
+moved. Anything that can change a verdict or a printed number is evidence: the host's pass threshold, its registered
+bars and each catalogued measure's declaration are the `criteria` component, and every stored field of a run, a
+result, a rating and an insight is decided as evidence or not, with the reason, when the package is imported.
+Records are built from named fields, so a field a stored record gains later moves no stored fingerprint.
+Stored values are rendered by `schema.hashing.input_json` (new): keys sorted at every depth, a whole float as the
+integer it equals and any other as Python's shortest round-trip `repr`, so a `jsonb` store that reorders keys or
+hands a whole number back as an integer moves nothing and no platform renders a number another way. Names, prose
+and pricing stay out, as before.
+
+**Changed:** `CampaignBundle.fingerprint()` is `v4:` and means the same for a campaign: the digest of what the campaign
+declares and each aspect's `v3:` fingerprint. The campaign's computed readings and stored reasons, which a `v3:`
+campaign fingerprint hashed, are no part of it.
 
 **Fixed:** `hedges_j` is computed without subtracting two large log-gammas (an exact rational product below 100
 degrees of freedom, Stirling's series from there), within 3 ULP of the exact value at every df; the old form was off
@@ -33,8 +42,10 @@ with it. A g shown at its four figures moves only where that error straddled the
   version difference, not moved evidence.
 - `inspect_analysis_bundle` does this already. Its `fingerprint` is in the recorded one's version, and
   `mismatch_cause` is never `package_shape` against a `v3:` record.
-- A new analysis stores `v3:` aspect fingerprints, so the campaign bundle's fingerprint (still `v3:` of its own
-  numbering, over its frame) differs from one generated before over the same evidence; nothing compares the two.
+- A new analysis stores `v3:` aspect fingerprints and a `v4:` campaign fingerprint
+  (`generation.bundle_fingerprint`). A stored `v3:` campaign fingerprint is compared through
+  `campaign_bundle.fingerprint(like=stored)`, which answers the version 3 way (the frame, each aspect named by its
+  `v2:` fingerprint); a campaign bundle frozen before the manifest answers `v3:` whatever is asked.
 - `AnalysisContextBundle` gains `evidence` (`EvidenceManifest`, optional, left out while unset); bundle shape stays 66.
 ### evals: a run that did not finish never opens with a verdict, on any surface (#1173)
 

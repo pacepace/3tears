@@ -252,21 +252,13 @@ def identities(*, named: bool) -> dict[str, str]:
     found["readings"] = _sha(built["readings"].model_dump(mode="json", exclude={"aggregate"}))
     # Version 3, the one computed (no earlier version is: what was taken in one is regenerated), leaves the
     # campaign's name out.
-    # As the build before bundle fingerprint version 3 took it: over a frame naming each aspect by its `v2:`
-    # fingerprint. This build's frame names them by `v3:`, which is all that moved the campaign's fingerprint.
-    earlier = _before_the_manifest(campaign_bundle)
-    found["campaign fingerprint v3"] = earlier.fingerprint()
-    found["campaign document fingerprint v3"] = CampaignBundle.from_dict(earlier.to_dict()).fingerprint()
+    # In version 3 of the campaign's numbering, which every pin below was taken in: the digest of its frame,
+    # readings and all, each aspect named by its `v2:` fingerprint. (`v4:` is over the evidence, #1062.)
+    found["campaign fingerprint v3"] = campaign_bundle.fingerprint(like="v3:")
+    found["campaign document fingerprint v3"] = CampaignBundle.from_dict(campaign_bundle.to_dict()).fingerprint(
+        like="v3:"
+    )
     return found
-
-
-def _before_the_manifest(bundle: CampaignBundle) -> CampaignBundle:
-    """``bundle`` as a build before fingerprint version 3 held it: no aspect carries an evidence manifest, so each is
-    named in the frame by its ``v2:`` fingerprint and the campaign's fingerprint is the one that build took. The
-    manifest and the aspects' ``v3:`` names are all that version 3 moved (#1062)."""
-    document = bundle.to_dict()
-    aspects = [{key: value for key, value in aspect.items() if key != "evidence"} for aspect in document["aspects"]]
-    return CampaignBundle.from_dict({**document, "aspects": aspects})
 
 
 #: The durable minor ``00107a5b7`` stamped on what it wrote. The names are durable v16.3, since 0.78.0 shipped v16.2
@@ -479,7 +471,7 @@ class TestAStoredReasonIsNeverReworded:
         campaign = built["campaign_bundle"]
         # In the versions that hash the bundle's own document, so a reworded reason would move them; a `v3:` bundle
         # fingerprint reads no reason at all.
-        assert _before_the_manifest(campaign).fingerprint() == PINNED["campaign fingerprint v3"], STORED_REASON_MOVED
+        assert campaign.fingerprint(like="v3:") == PINNED["campaign fingerprint v3"], STORED_REASON_MOVED
         for label, bundle in built["bundles"].items():
             assert bundle.fingerprint(like="v2:") == PINNED[f"{label} fingerprint"], STORED_REASON_MOVED
 

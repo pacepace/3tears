@@ -43,7 +43,6 @@ from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.hot_path_support import campaign_id_of, toyhost_from
 
 from threetears.evals.analysis import (
-    CampaignBundle,
     assemble_campaign_bundle,
     campaign_report,
     report_markdown,
@@ -287,16 +286,9 @@ def test_the_bundle_freezes_the_labels_and_fingerprint_it_froze_before() -> None
     bundle = assemble_campaign_bundle(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE)
 
     assert [arm.label for arm in bundle.arms] == _FROZEN_LABELS
-    assert _before_the_manifest(bundle).fingerprint() == _FROZEN_FINGERPRINT
-
-
-def _before_the_manifest(bundle: CampaignBundle) -> CampaignBundle:
-    """``bundle`` as a build before fingerprint version 3 held it: no aspect carries an evidence manifest, so each is
-    named in the frame by its ``v2:`` fingerprint and the campaign's fingerprint is the one that build took. The
-    manifest and the aspects' ``v3:`` names are all that version 3 moved (#1062)."""
-    document = bundle.to_dict()
-    aspects = [{key: value for key, value in aspect.items() if key != "evidence"} for aspect in document["aspects"]]
-    return CampaignBundle.from_dict({**document, "aspects": aspects})
+    # In the version the pin was taken in: the campaign's frame, readings and all, each aspect named by its `v2:`
+    # fingerprint. (`v4:` is over the evidence, #1062.)
+    assert bundle.fingerprint(like="v3:") == _FROZEN_FINGERPRINT
 
 
 def test_no_listing_line_holds_a_cut_of_a_prompt_or_of_the_question() -> None:

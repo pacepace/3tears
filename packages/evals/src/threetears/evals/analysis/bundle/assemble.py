@@ -963,7 +963,10 @@ def assemble_context_bundle(
     # What all of the above was read from, and nothing it computed: the pre-image of the bundle's fingerprint.
     bundle.evidence = evidence_manifest(
         view,
+        # As launched (`_as_launched`): the declarations every lens above read.
+        profile=profile,
         host_declarations=bundle.host_declarations_digest,
+        catalog=bundle.measure_catalog,
         runs=runs,
         archived_run_ids=archived,
         unresolved_run_ids=unresolved,
@@ -971,7 +974,8 @@ def assemble_context_bundle(
         cases=case_facts,
         ratings=ratings,
         tiers=tiers,
-        insights=prior_insights,
+        # Every insight read as of the cutoff, before the cap on how many the bundle carries.
+        insights=ledger,
         retracted_insights=retracted,
     )
     return bundle

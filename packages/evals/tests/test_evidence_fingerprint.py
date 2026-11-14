@@ -2,16 +2,21 @@
 
 Version 2 hashed the bundle's own document, so a better formula, another platform's maths library or a library update
 read as "the evidence moved" and what was stored against the old fingerprint was regenerated. Version 3 hashes the
-manifest of what the assembly read (:mod:`threetears.evals.analysis.bundle.evidence`). What is held here:
+manifest of what the assembly read (:mod:`threetears.evals.analysis.bundle.evidence`). The rule it is held to:
+**anything that can change a verdict or a printed number is evidence**, and leaving evidence out is the dangerous
+direction. What is held here:
 
-- **computing a statistic differently moves no fingerprint**: the small-sample factor swapped for the earlier one, and
-  every computed float of a stored bundle moved, leave ``v3:`` where it was;
-- **changing one piece of evidence moves it**, and the manifest names which kind moved and no other;
+- **computing a statistic differently moves no fingerprint**, the aspect's or the campaign's;
+- **changing one piece of evidence moves it**, and the manifest names which kind moved and no other: a result, a
+  run, the declaration (its question, margin, bars), the host's criteria (its pass threshold, a registered bar, a
+  measure's declaration), a case, a rating, a prior insight;
+- **a name, a label, a description or a rationale moves nothing**;
+- **a field a record gains later moves nothing**, whatever its default, until it is named as evidence;
 - **key order and a store's round trip move nothing**: the same corpus read back from a store that reorders every
   document's keys as ``jsonb`` does and hands whole floats back as integers;
 - **numbers are rendered one way on every platform** (:func:`~threetears.evals.schema.hashing.input_json`);
-- **what was stored under version 2 still reads**: it is compared the version 2 way, is never rewritten to version
-  3, and a fingerprint's version alone is never reported as moved evidence;
+- **what was stored under an earlier version still reads**: it is compared in its own version, is never rewritten,
+  and a fingerprint's version alone is never reported as moved evidence;
 - **the four hot-path campaigns' ``v2:`` fingerprints are reproduced** by this build through ``like=``, pinned as the
   build before it recorded them (``fixtures/hot_path_oracle/fingerprints_v2.json``); their ``v3:`` fingerprints are
   pinned, one value for every platform, by ``test_hot_path_oracle.py``.
@@ -21,6 +26,10 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
+import sys
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -29,11 +38,10 @@ import pytest
 from threetears.evals.analysis import assemble_campaign_bundle
 from threetears.evals.analysis import stats
 from threetears.evals.analysis.bundle.evidence import (
-    RESULT_EVIDENCE,
-    RESULT_NOT_EVIDENCE,
     EvidenceManifest,
     manifest_fingerprint,
     result_evidence,
+    run_evidence,
 )
 from threetears.evals.analysis.bundle.schema import (
     FINGERPRINT_PREFIX,
@@ -42,28 +50,46 @@ from threetears.evals.analysis.bundle.schema import (
     evidence_digest,
 )
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
-from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.analysis.aspects import AspectDeclaration
+from threetears.evals.kernel.campaign import EvalCampaign, EvalInsight
+from threetears.evals.kernel.declaration import BarOverride
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.kernel.result_reading import ResultReading
+from threetears.evals.kernel.host.bars import BarRegistry, PassThreshold
+from threetears.evals.kernel.host.measures import MeasureRegistry
+from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.result_reading import ResultReading, ScoreReading
 from threetears.evals.kernel.storage import EvalStorage
-from threetears.evals.schema.hashing import input_digest, input_json
+from threetears.evals.schema.hashing import UnhashableContentError, input_digest, input_json, round_figures
 from threetears.evals.run.ratings import rate_result
-from threetears.evals.schema.models import EvalResult, EvalTestCase
+from threetears.evals.schema.models import EvalResult, EvalRun, EvalTestCase, RunCompleteness
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.test_hot_path_oracle import WITH_BUNDLES, subject
 from packages.evals.tests.test_result_reading_fields import campaign as reading_fields_campaign
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 #: Every component digest of a manifest: what "which kind of evidence moved" is read off.
-COMPONENTS = ("declaration", "host_declarations", "runs", "results", "cases", "ratings", "judge_profiles", "insights")
+COMPONENTS = (
+    "declaration",
+    "criteria",
+    "host_declarations",
+    "runs",
+    "results",
+    "cases",
+    "ratings",
+    "judge_profiles",
+    "insights",
+)
 
 
-def _corpus_host(storage: EvalStorage | None = None) -> tuple[EvalHost, EvalCampaign]:
-    """The toy host holding its corpus campaign, in ``storage`` when one is given."""
-    host = toyhost_host(storage=storage) if storage is not None else toyhost_host()
+def _corpus_host(
+    storage: EvalStorage | None = None, *, profile: HostProfile | None = None
+) -> tuple[EvalHost, EvalCampaign]:
+    """The toy host holding its corpus campaign, in ``storage`` when one is given, under ``profile`` when one is."""
+    host = toyhost_host(storage=storage, profile=profile)
     campaign, corpus = toyhost_campaign()
     for run in corpus.load_eval_runs(campaign.run_ids, campaign.scope_id):
         host.storage.save_eval_run(run)
@@ -360,15 +386,6 @@ def test_where_a_cost_came_from_moves_no_fingerprint_and_the_cost_does() -> None
     assert _aspect(host, campaign).fingerprint() != before.fingerprint()
 
 
-def test_every_attribute_of_a_reading_is_decided_as_evidence_or_not() -> None:
-    """A new attribute of a result's reading is taken into the fingerprint, or left out with a reason, on purpose."""
-    attributes = {field.name for field in dataclasses.fields(ResultReading)}
-
-    assert set(RESULT_EVIDENCE) | set(RESULT_NOT_EVIDENCE) == attributes
-    assert not set(RESULT_EVIDENCE) & set(RESULT_NOT_EVIDENCE)
-    assert len(RESULT_EVIDENCE) == len(set(RESULT_EVIDENCE))
-
-
 @pytest.mark.parametrize("name", ["enriched", "toyhost", "courierhost"])
 def test_a_result_and_its_reading_are_the_same_evidence(name: str) -> None:
     """A store hands the assembly each result as its reading; a view that is the stored result itself digests alike.
@@ -385,14 +402,9 @@ def test_a_result_and_its_reading_are_the_same_evidence(name: str) -> None:
     for result in results:
         assert input_json(result_evidence(result)) == input_json(result_evidence(ResultReading.of(result))), result.id
     if name == "enriched":
-        filled = {attribute for result in results for attribute in RESULT_EVIDENCE if getattr(result, attribute)}
-        assert {
-            "judge_rescores",
-            "judge_repeats",
-            "judge_seconds",
-            "async_deliveries",
-            "precondition_outcomes",
-        } <= filled
+        lists = ("judge_rescores", "judge_repeats", "judge_seconds", "async_deliveries", "precondition_outcomes")
+        assert all(any(getattr(result, attribute) for result in results) for attribute in lists)
+        assert all(any(attribute in result_evidence(result) for result in results) for attribute in lists)
 
 
 # =============================================================================
@@ -458,9 +470,30 @@ def test_key_order_is_not_read_at_any_depth_and_list_order_is() -> None:
     assert input_json({"b": {"y": 1, "x": 2}, "a": [3, 4]}) == '{"a":[3,4],"b":{"x":2,"y":1}}'
 
 
-def test_null_and_absent_are_one_and_a_null_in_a_list_stays() -> None:
-    assert input_json({"a": 1, "b": None, "c": {"d": None}}) == input_json({"a": 1, "c": {}})
+def test_a_null_is_a_value_in_a_map_as_stored() -> None:
+    """In a map a host writes, a key's presence can carry meaning: a recorded null and a key never written differ."""
+    assert input_json({"a": 1, "b": None}) != input_json({"a": 1})
+    assert input_json({"a": 1, "b": None}) == '{"a":1,"b":null}'
     assert input_json([None, 1]) == "[null,1]"
+
+
+def test_an_unset_field_of_a_record_and_one_never_written_are_one_and_a_null_in_a_host_s_map_is_kept() -> None:
+    """The engine reads a record's stored null and a field never written as one value (both hydrate to ``None``), so
+    evidence leaves an unset field out. A free-form map a host or a kind writes is taken as stored, its nulls kept."""
+    host, campaign = _corpus_host()
+    run = host.storage.load_eval_run(sorted(campaign.run_ids)[0], campaign.scope_id)
+    assert run is not None and run.cassette_corpus_id is None and run.case_set is None
+    evidence = run_evidence(run)
+
+    assert "cassette_corpus_id" not in evidence and "case_set" not in evidence
+    stored = run.to_dict()
+    written = {**stored, "cassette_corpus_id": None}
+    never = {key: value for key, value in stored.items() if key != "cassette_corpus_id"}
+    assert run_evidence(EvalRun.from_dict(written)) == run_evidence(EvalRun.from_dict(never))
+    with_null = run_evidence(run.model_copy(update={"overlays": {"greeting": None}}))
+    without = run_evidence(run.model_copy(update={"overlays": {}}))
+    assert with_null["overlays"] == {"greeting": None}
+    assert input_json(with_null) != input_json(without)
 
 
 @pytest.mark.parametrize(
@@ -478,26 +511,60 @@ def test_null_and_absent_are_one_and_a_null_in_a_list_stays() -> None:
         (1 / 3, "0.3333333333333333"),
         (21.28666989160534, "21.28666989160534"),
         (5e-324, "5e-324"),
-        (1.7976931348623157e308, "1.7976931348623157e+308"),
-        (1e22, "1e+22"),
-        (2.0**53, "9007199254740992.0"),
+        (1.5e-05, "1.5e-05"),
+        (2.0**53, "9007199254740992"),
+        (2.0**53 + 2.0, "9007199254740994"),
         (2**53 + 1, "9007199254740993"),
+        (1e22, "10000000000000000000000"),
+        (-1e22, "-10000000000000000000000"),
         (True, "true"),
         (False, "false"),
+        (math.nan, "NaN"),
+        (math.inf, "Infinity"),
+        (-math.inf, "-Infinity"),
+        ("naïve café", '"na\\u00efve caf\\u00e9"'),
     ],
 )
-def test_a_number_is_rendered_one_way(value: Any, rendered: str) -> None:
-    """A whole float below 2**53 as its integer; any other float as the shortest string that parses back to it,
-    which Python computes itself; a bool never as a number. Pinned as text, so a platform that rendered one another
-    way would fail here."""
+def test_a_value_is_rendered_one_way(value: Any, rendered: str) -> None:
+    """A whole float as the integer it equals, at any magnitude; any other finite float as the shortest string that
+    parses back to it, which Python computes itself; NaN and the infinities as their fixed tokens; a bool never as a
+    number; a string with every non-ASCII character escaped. Pinned as text, so a platform that rendered one
+    another way would fail here."""
+    assert sys.float_repr_style == "short", "Python's own shortest round-trip repr, not the C library's"
     assert input_json(value) == rendered
-    if isinstance(value, float) and not value.is_integer():
+    if isinstance(value, float) and math.isfinite(value) and not value.is_integer():
         assert float(input_json(value)) == value
 
 
-def test_a_whole_number_hashes_alike_as_an_integer_and_as_a_float() -> None:
+@pytest.mark.parametrize("whole", [0.0, 1.0, 2400.0, 2.0**53, 2.0**60, 1e22, 1.7976931348623157e308, -1e300])
+def test_a_whole_float_hashes_as_the_integer_a_jsonb_store_hands_back(whole: float) -> None:
+    """A ``jsonb`` column holds a number as an exact decimal and hands a whole one back as an integer, whatever it was
+    written as and however large. Rendered here as that integer, the value written and the value read back are one."""
+    handed_back = int(whole)
+    assert float(handed_back) == whole
+
+    assert input_json(whole) == input_json(handed_back) == str(handed_back)
+    assert input_digest({"n": whole}) == input_digest({"n": handed_back})
+
+
+def test_a_whole_number_hashes_alike_as_an_integer_and_as_a_float_and_a_bool_is_no_number() -> None:
     assert input_digest({"n": 3, "cost": 2.0}) == input_digest({"n": 3.0, "cost": 2})
     assert input_digest({"passed": True}) != input_digest({"passed": 1})
+
+
+@pytest.mark.parametrize(
+    "unencodable",
+    [datetime(2026, 11, 14, tzinfo=UTC), Decimal("0.1"), {1, 2}, object(), b"bytes"],
+    ids=["datetime", "decimal", "set", "object", "bytes"],
+)
+def test_a_value_json_cannot_encode_is_refused_never_rendered_by_its_repr(unencodable: Any) -> None:
+    with pytest.raises(UnhashableContentError):
+        input_json({"held": unencodable})
+
+
+def test_two_unicode_spellings_of_one_text_are_two_values() -> None:
+    """Strings are not Unicode-normalised: composed and decomposed forms differ, as they differ in the store."""
+    assert input_json("é") != input_json("é")
 
 
 # =============================================================================
@@ -695,3 +762,392 @@ def test_the_stored_version_2_analysis_among_the_fixtures_still_verifies_each_fr
             assert evidence_digest(aspect["bundle"]) == aspect["bundle_fingerprint"]
             bundles.append(AnalysisContextBundle.from_dict(aspect["bundle"]))
         CampaignBundle.from_frame(analysis["campaign_bundle"], bundles)
+
+
+# =============================================================================
+# Criteria are evidence: what a verdict is decided against
+# =============================================================================
+
+
+def _under(profile: HostProfile) -> AnalysisContextBundle:
+    return _aspect(*_corpus_host(profile=profile))
+
+
+def _with_bars(profile: HostProfile, **changed: Any) -> HostProfile:
+    """The profile, its first registered bar changed."""
+    first, *rest = profile.bars.bars
+    return dataclasses.replace(
+        profile,
+        bars=BarRegistry([dataclasses.replace(first, **changed), *rest], pass_thresholds=profile.bars.pass_thresholds),
+    )
+
+
+def test_a_registered_bar_s_threshold_changed_moves_the_fingerprint_and_only_the_criteria() -> None:
+    """A host's registered bar decides a verdict (`bar_adjudications`) with no campaign naming it. Version 2 caught a
+    change to one through the statistics; version 3 holds it as evidence."""
+    base = toyhost_profile()
+    first = base.bars.bars[0]
+    before = _under(base)
+
+    after = _under(_with_bars(base, threshold=first.threshold - 0.25))
+
+    assert [a.model_dump() for a in after.bar_adjudications] != [b.model_dump() for b in before.bar_adjudications]
+    assert after.fingerprint() != before.fingerprint()
+    assert _moved(before, after) == {"criteria"}
+
+
+def test_a_registered_bar_s_rationale_reworded_moves_nothing() -> None:
+    base = toyhost_profile()
+
+    assert _under(_with_bars(base, rationale="said another way")).fingerprint() == _under(base).fingerprint()
+
+
+def test_the_pass_threshold_changed_moves_the_fingerprint_and_only_the_criteria() -> None:
+    """The pass threshold decides whether every judged trial passed."""
+    base = toyhost_profile()
+    behavior = _corpus_host()[1].behavior
+    before = _under(base)
+    raised = dataclasses.replace(
+        base,
+        bars=BarRegistry(
+            base.bars.bars,
+            pass_thresholds=[
+                PassThreshold(behavior=behavior, threshold=base.bars.pass_threshold(behavior) + 1, rationale="stricter")
+            ],
+        ),
+    )
+
+    after = _under(raised)
+    reworded = _under(
+        dataclasses.replace(
+            base,
+            bars=BarRegistry(
+                base.bars.bars,
+                pass_thresholds=[
+                    PassThreshold(
+                        behavior=behavior, threshold=base.bars.pass_threshold(behavior) + 1, rationale="other words"
+                    )
+                ],
+            ),
+        )
+    )
+
+    assert after.fingerprint() != before.fingerprint()
+    assert _moved(before, after) == {"criteria"}
+    assert reworded.fingerprint() == after.fingerprint(), "a threshold's rationale is prose"
+
+
+def _with_measure(profile: HostProfile, name: str, **changed: Any) -> HostProfile:
+    """The profile, one host measure's declaration changed."""
+    descriptors = [
+        descriptor.model_copy(update=changed) if descriptor.name == name else descriptor
+        for descriptor in (profile.measures.get(each) for each in profile.measures.names)
+        if descriptor is not None
+    ]
+    return dataclasses.replace(profile, measures=MeasureRegistry(descriptors, families=profile.measures.families))
+
+
+def test_a_measure_s_declaration_changed_moves_the_fingerprint_and_its_words_do_not() -> None:
+    """What a measure declares decides how it is read and compared: its direction, its range, its materiality
+    threshold. Its description and what a reader calls it are words."""
+    base = toyhost_profile()
+    before = _under(base)
+    measure = base.measures.get("field_accuracy")
+    assert measure is not None and "field_accuracy" in before.measure_catalog
+
+    stricter = _under(_with_measure(base, "field_accuracy", materiality_threshold=0.4321))
+    reworded = _under(
+        _with_measure(base, "field_accuracy", description="Said another way.", reader_name="Fields right")
+    )
+
+    assert before.measure_catalog["field_accuracy"].materiality_threshold != 0.4321
+    assert stricter.measure_catalog["field_accuracy"].materiality_threshold == 0.4321
+    assert _moved(before, stricter) == {"criteria"}
+    assert reworded.measure_catalog["field_accuracy"].reader_name == "Fields right"
+    assert reworded.fingerprint() == before.fingerprint()
+
+
+def _redeclared(campaign: EvalCampaign, **aspect: Any) -> EvalCampaign:
+    (declared,) = campaign.aspects
+    return campaign.model_copy(update={"aspects": [declared.model_copy(update=aspect)]})
+
+
+def test_the_campaign_s_own_criteria_changed_move_the_fingerprint_and_only_the_declaration() -> None:
+    """The question, a bar the campaign declares and the repetitions it intends are what its verdicts are decided
+    against."""
+    host, campaign = _corpus_host()
+    before = _aspect(host, campaign)
+    (aspect,) = campaign.aspects
+    assert aspect.design is not None and aspect.design.bars
+
+    host.storage.save_campaign(campaign.model_copy(update={"question": "is the narrower chunk good enough?"}))
+    asked = _aspect(host, campaign)
+    first, *rest = aspect.design.bars
+    tighter = BarOverride(measure_id=first.measure_id, threshold=first.threshold / 2, direction=first.direction)
+    design = aspect.design.model_copy(update={"bars": [tighter, *rest]})
+    host.storage.save_campaign(_redeclared(campaign, design=design))
+    barred = _aspect(host, campaign)
+    repeated = aspect.design.model_copy(update={"intended_repetitions": (aspect.design.intended_repetitions or 1) + 4})
+    host.storage.save_campaign(_redeclared(campaign, design=repeated))
+    planned = _aspect(host, campaign)
+
+    for changed in (asked, barred, planned):
+        assert changed.fingerprint() != before.fingerprint()
+        assert _moved(before, changed) == {"declaration"}
+    assert len({before.fingerprint(), asked.fingerprint(), barred.fingerprint(), planned.fingerprint()}) == 4
+
+
+def test_a_prior_insight_added_or_restated_moves_the_fingerprint_and_only_the_insights() -> None:
+    host, campaign = _corpus_host()
+    before = _aspect(host, campaign)
+
+    def insight(statement: str) -> EvalInsight:
+        return EvalInsight(
+            id="insight-1",
+            scope_id=campaign.scope_id,
+            subject_id=campaign.subject_id,
+            subject_kind=campaign.subject_kind,
+            statement=statement,
+            scope="the wide chunk",
+            confidence="medium",
+            observed_at="2026-01-01T00:00:00+00:00",
+            invalidation_trigger="a new retriever",
+        )
+
+    host.storage.save_insight(insight("The wide chunk costs more than it returns."))
+    held = _aspect(host, campaign)
+    host.storage.save_insight(insight("The wide chunk returns more than it costs."))
+    restated = _aspect(host, campaign)
+
+    assert _moved(before, held) == {"insights"} and _manifest(held).n_insights == 1
+    assert _moved(held, restated) == {"insights"}
+
+
+# =============================================================================
+# A field a record gains later moves nothing
+# =============================================================================
+
+
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class ScoreReadingAfterALaterBuild(ScoreReading):
+    """A slim score as a later build might carry it: one more field, whose default is not null."""
+
+    added_later: bool = False
+    counted_later: int = 0
+
+
+class CompletenessAfterALaterBuild(RunCompleteness):
+    """A run's completeness as a later build might store it: one more field, whose default is not null."""
+
+    added_later: bool = False
+    listed_later: list[str] = []
+
+
+class RunAfterALaterBuild(EvalRun):
+    """A run as a later build might store it: one more top-level field, whose default is not null, and a
+    completeness that gained fields."""
+
+    added_later: str = "a default"
+    completeness: CompletenessAfterALaterBuild | None = None
+
+
+class DeclarationAfterALaterBuild(AspectDeclaration):
+    """An aspect's declaration as a later build might hold it: one more field, whose default is not null."""
+
+    added_later: bool = False
+
+
+def test_a_field_added_to_a_nested_record_with_a_default_moves_no_stored_fingerprint() -> None:
+    """Records are built from named fields, at every depth, so a later field is in no fingerprint until it is named:
+    a slim score's, a run's completeness's, a run's own. (Each record's fields are all decided, as evidence or not,
+    when the evidence module is imported, so the later build cannot ship without deciding.)"""
+    host, campaign = _corpus_host()
+    result = _first_result(host, campaign)
+    reading = ResultReading.of(result)
+    later_scores = tuple(
+        ScoreReadingAfterALaterBuild(**{f.name: getattr(score, f.name) for f in dataclasses.fields(ScoreReading)})
+        for score in reading.rubric_scores
+    )
+    assert later_scores
+
+    assert result_evidence(reading.model_copy(update={"rubric_scores": later_scores})) == result_evidence(reading)
+
+    run = host.storage.load_eval_run(result.eval_run_id, campaign.scope_id)
+    assert run is not None
+    counted = run.model_copy(
+        update={
+            "completeness": RunCompleteness(
+                expected_cells=4, produced_cells=4, persisted_cells=4, infra_excluded_cells=0, counted_from="run_loop"
+            )
+        }
+    )
+    assert counted.completeness is not None
+    later = RunAfterALaterBuild.model_validate(
+        {
+            **counted.to_dict(),
+            "completeness": CompletenessAfterALaterBuild(**counted.completeness.model_dump()).model_dump(),
+        }
+    )
+    assert later.added_later == "a default" and "added_later" in later.to_dict()["completeness"]
+    assert run_evidence(later) == run_evidence(counted)
+    assert run_evidence(counted) != run_evidence(run), "the completeness itself is evidence"
+
+
+def test_a_field_added_to_the_declaration_with_a_default_moves_no_stored_fingerprint() -> None:
+    """The declaration is rendered without any field that holds its declared default, so a field a later build adds
+    to it is in no fingerprint until a campaign sets it."""
+    host, campaign = _corpus_host()
+    before = _aspect(host, campaign)
+    assert before.declared is not None
+    later = DeclarationAfterALaterBuild.model_validate(before.declared.to_dict())
+
+    def digest(declared: AspectDeclaration) -> str:
+        document = declared.model_dump(mode="json", exclude_defaults=True)
+        return input_digest(document)
+
+    assert "added_later" in later.to_dict()
+    assert digest(later) == digest(before.declared)
+    assert digest(later.model_copy(update={"added_later": True})) != digest(before.declared)
+
+
+# =============================================================================
+# The campaign's fingerprint means what an aspect's does
+# =============================================================================
+
+
+def _nudge(node: Any) -> Any:
+    """``node`` with every float moved in its ninth figure, but the aggregate's weights, which must sum to one."""
+    if isinstance(node, bool):
+        return node
+    if isinstance(node, float):
+        return node * (1 - 1e-9)
+    if isinstance(node, dict):
+        return {key: value if key == "weights" else _nudge(value) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_nudge(value) for value in node]
+    return node
+
+
+def test_a_campaign_s_fingerprint_is_version_4_over_its_declaration_and_its_aspects_evidence() -> None:
+    host, campaign = _corpus_host()
+    bundle = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+
+    fingerprint = bundle.fingerprint()
+
+    assert fingerprint.startswith("v4:") and len(fingerprint) == 3 + 64
+    assert assemble_campaign_bundle(host, campaign.id, campaign.scope_id).fingerprint() == fingerprint
+    assert CampaignBundle.from_dict(bundle.to_dict()).fingerprint() == fingerprint
+
+
+def test_every_computed_reading_of_a_campaign_perturbed_moves_no_campaign_fingerprint() -> None:
+    """The campaign's readings across aspects, with their intervals and reasons, are computed: no part of ``v4:``.
+    They are the whole of what moved a ``v3:`` campaign fingerprint, which hashed them."""
+    host, campaign = _corpus_host()
+    bundle = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+    frame = bundle.frame()
+
+    perturbed = CampaignBundle.from_frame({**frame, "readings": _nudge(frame["readings"])}, bundle.aspects)
+
+    assert perturbed.frame() != frame, "the frame's readings carry floats to perturb"
+    assert perturbed.fingerprint() == bundle.fingerprint()
+    assert perturbed.fingerprint(like="v3:") != bundle.fingerprint(like="v3:")
+
+
+def test_swapping_the_small_sample_factor_moves_no_campaign_fingerprint(monkeypatch: pytest.MonkeyPatch) -> None:
+    read = subject("scaled_two_aspects")
+    exact = assemble_campaign_bundle(read.host, read.campaign_id, read.scope_id)
+    monkeypatch.setattr(stats, "hedges_j", lambda df: None if df < 2 else 1.0 - 3.0 / (4.0 * df - 1.0))
+    approximate = assemble_campaign_bundle(read.host, read.campaign_id, read.scope_id)
+
+    assert [a.to_dict() for a in exact.aspects] != [a.to_dict() for a in approximate.aspects]
+    assert exact.fingerprint() == approximate.fingerprint()
+    assert [a.fingerprint() for a in exact.aspects] == [a.fingerprint() for a in approximate.aspects]
+
+
+def test_evidence_changed_in_an_aspect_or_the_declaration_moves_the_campaign_fingerprint_and_a_name_does_not() -> None:
+    host, campaign = _corpus_host()
+    before = assemble_campaign_bundle(host, campaign.id, campaign.scope_id).fingerprint()
+
+    host.storage.save_campaign(campaign.model_copy(update={"name": "Another name entirely"}))
+    renamed = assemble_campaign_bundle(host, campaign.id, campaign.scope_id).fingerprint()
+    host.storage.save_campaign(campaign.model_copy(update={"question": "is the narrower chunk good enough?"}))
+    asked = assemble_campaign_bundle(host, campaign.id, campaign.scope_id).fingerprint()
+    host.storage.save_campaign(campaign)
+    assert host.storage.delete_eval_result(_first_result(host, campaign).id, campaign.scope_id)
+    fewer = assemble_campaign_bundle(host, campaign.id, campaign.scope_id).fingerprint()
+
+    assert renamed == before
+    assert len({before, asked, fewer}) == 3
+
+
+def test_a_campaign_bundle_frozen_before_the_manifest_keeps_its_version_3_fingerprint() -> None:
+    """A stored ``v3:`` campaign fingerprint was taken over the frame, each aspect named by its ``v2:`` fingerprint.
+    A bundle frozen then answers it whatever is asked, and the same evidence assembled today answers it through
+    ``like``: neither is rewritten, and the version alone moves nothing."""
+    host, campaign = _corpus_host()
+    assembled = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
+    document = assembled.to_dict()
+    frozen_then = CampaignBundle.from_dict(
+        {
+            **document,
+            "aspects": [{k: v for k, v in aspect.items() if k != "evidence"} for aspect in document["aspects"]],
+        }
+    )
+
+    stored = frozen_then.fingerprint()
+
+    assert stored.startswith("v3:")
+    assert frozen_then.fingerprint(like="v4:") == stored
+    assert assembled.fingerprint(like=stored) == stored
+    assert assembled.fingerprint().startswith("v4:")
+
+
+# =============================================================================
+# The small-sample factor put back, where the two factors differ
+# =============================================================================
+
+
+def _factor_as_version_2_took_it(df: int) -> float:
+    """Hedges' factor in its textbook form, which every ``v2:`` fingerprint was taken with."""
+    return math.exp(math.lgamma(df / 2.0) - math.lgamma((df - 1) / 2.0)) / math.sqrt(df / 2.0)
+
+
+def test_a_version_2_record_at_high_degrees_of_freedom_is_matched_only_with_the_earlier_factor_put_back() -> None:
+    """At a few thousand degrees of freedom the exact factor and the earlier one differ past the twelfth figure, so
+    a ``v2:`` fingerprint stored then is matched by the same evidence assembled now only because the version 2
+    pre-image puts the earlier factor back; without that it reads as moved. The hot-path fixtures sit near 128
+    degrees of freedom, where twelve-figure rounding hides the difference, so this is held apart."""
+    effect = 0.3141592653589793
+    exact, df = next(
+        (factor, df)
+        for df in range(3000, 9000)
+        if (factor := stats.hedges_j(df)) is not None
+        and round_figures(effect * factor) != round_figures(effect * _factor_as_version_2_took_it(df))
+    )
+    read = subject("scaled")
+    (bundle,) = assemble_campaign_bundle(read.host, read.campaign_id, read.scope_id).aspects
+    document = bundle.to_dict()
+    family = document["multiple_comparisons"]["families"][0]
+    comparison = next(c for c in family["comparisons"] if c["hedges_g"] is not None and c["test"] == "paired")
+
+    def at_high_df(g: float) -> dict[str, Any]:
+        """The bundle's document, one paired comparison read over ``df + 1`` cases with this effect size."""
+        moved = {
+            **comparison,
+            "hedges_g": g,
+            "control": {**comparison["control"], "n_cases": df + 1},
+            "contrast": {**comparison["contrast"], "n_cases": df + 1},
+        }
+        comparisons = [moved if c is comparison else c for c in family["comparisons"]]
+        families = [{**family, "comparisons": comparisons}, *document["multiple_comparisons"]["families"][1:]]
+        return {**document, "multiple_comparisons": {**document["multiple_comparisons"], "families": families}}
+
+    assembled_now = at_high_df(effect * exact)
+    stored_then = {k: v for k, v in at_high_df(effect * _factor_as_version_2_took_it(df)).items() if k != "evidence"}
+    recorded = evidence_digest(stored_then)
+    assert recorded.startswith("v2:")
+
+    assert evidence_digest(assembled_now, like=recorded) == recorded
+    # Without the put-back (a document carrying no manifest is read as stored, its g untouched) it does not match.
+    without_put_back = {k: v for k, v in assembled_now.items() if k != "evidence"}
+    assert evidence_digest(without_put_back) != recorded
