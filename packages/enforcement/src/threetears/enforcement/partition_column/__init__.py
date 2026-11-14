@@ -2,7 +2,8 @@
 
 A statement written as SQL text touching a partitioned table must carry the table's partition column (or a column a
 declared foreign key ties to it), and so must a keyed helper call (``threetears.core.keyed``: ``read_by``,
-``keyset_page``, ``update_keyed``, ...) naming the table, in its ``by=``. A read across partitions by design says so: an
+``keyset_page``, ``update_keyed``, ...) naming the table, in its ``by=`` (or a whole unique key of the table there: at
+most one row, so one partition; :func:`unique_keys`). A read across partitions by design says so: an
 exempt SQL fragment (:data:`EXEMPT_LITERAL_FRAGMENTS`, or a repo's own), or for a helper call a
 ``__SPANS_PARTITIONS__`` comment above its statement with the reason.
 
@@ -27,6 +28,7 @@ __all__ = [
     "SPANS_PARTITIONS_MARKER",
     "PartitionRule",
     "tied_columns",
+    "unique_keys",
     "violations_in_file",
     "walk_python_files",
 ]
@@ -213,6 +215,34 @@ def tied_columns(catalog: SchemaCatalog, partitioned: Mapping[str, str] | None =
     return {table: columns for table, columns in tied.items() if columns}
 
 
+def unique_keys(
+    catalog: SchemaCatalog, partitioned: Mapping[str, str] | None = None
+) -> dict[str, frozenset[frozenset[str]]]:
+    """each partitioned table's declared unique keys (its primary key and every whole-table ``UNIQUE``): a helper call
+    binding every column of one reads or writes at most one row, so one partition, whatever its partition value.
+
+    A partial unique index is no key of the table (two rows outside its predicate may share the columns), and the
+    catalog leaves it out; an expression key is never a ``by=`` column, so it never matches.
+
+    :param catalog: the schema catalog
+    :ptype catalog: SchemaCatalog
+    :param partitioned: table onto its partition column; None takes :data:`PARTITIONED_TABLES`
+    :ptype partitioned: Mapping[str, str] | None
+    :return: table onto its unique keys (tables with none left out)
+    :rtype: dict[str, frozenset[frozenset[str]]]
+    """
+    tables = PARTITIONED_TABLES if partitioned is None else partitioned
+    found: dict[str, frozenset[frozenset[str]]] = {}
+    for table in tables:
+        entry = catalog.table(table)
+        if entry is None:
+            continue
+        keys = frozenset(frozenset(key) for key in [*entry.primary_keys, *entry.unique_keys] if key)
+        if keys:
+            found[table] = keys
+    return found
+
+
 def _binds(literal: str, column: str) -> bool:
     """whether ``literal`` binds ``column`` to a value: ``column = ...`` (``= $1``, ``= ANY(...)``) or ``column IN``.
 
@@ -287,10 +317,11 @@ def _declared_spanning(node: ast.AST, parents: Mapping[ast.AST, ast.AST], lines:
     return False
 
 
-def _helper_calls(tree: ast.AST, source: str = "") -> list[tuple[str, frozenset[str] | None, int]]:
-    """each keyed helper call naming its table as a literal: ``(table, the columns its literal by= pins, line)``; the
-    columns are None when ``by=`` is built elsewhere (a name, a call, a spread), which the walker treats as opaque, as
-    it does an f-string placeholder. A call with no ``by=`` pins nothing (an empty set).
+def _helper_calls(tree: ast.AST, source: str = "") -> list[tuple[str, frozenset[str] | None, frozenset[str], int]]:
+    """each keyed helper call naming its table as a literal: ``(table, the columns its literal by= pins, the ones it
+    pins to a value other than a literal None, line)``; the columns are None when ``by=`` is built elsewhere (a name, a
+    call, a spread), which the walker treats as opaque, as it does an f-string placeholder. A call with no ``by=`` pins
+    nothing (an empty set). A column pinned to None reads ``IS NULL``, which a unique key does not bound.
 
     A call under a statement declared :data:`SPANS_PARTITIONS_MARKER` (its comment block) is left out: it reads
     across partitions by design, and says why.
@@ -300,9 +331,9 @@ def _helper_calls(tree: ast.AST, source: str = "") -> list[tuple[str, frozenset[
     :param source: the module's source, for the comment blocks
     :ptype source: str
     :return: the calls
-    :rtype: list[tuple[str, frozenset[str] | None, int]]
+    :rtype: list[tuple[str, frozenset[str] | None, frozenset[str], int]]
     """
-    found: list[tuple[str, frozenset[str] | None, int]] = []
+    found: list[tuple[str, frozenset[str] | None, frozenset[str], int]] = []
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     lines = source.splitlines()
     for node in ast.walk(tree):
@@ -318,13 +349,19 @@ def _helper_calls(tree: ast.AST, source: str = "") -> list[tuple[str, frozenset[
             continue
         by = next((keyword.value for keyword in node.keywords if keyword.arg == "by"), None)
         pinned: frozenset[str] | None
+        valued: frozenset[str] = frozenset()
         if by is None or (isinstance(by, ast.Constant) and by.value is None):
             pinned = frozenset()
         elif isinstance(by, ast.Dict) and all(isinstance(key, ast.Constant) for key in by.keys):
             pinned = frozenset(str(key.value) for key in by.keys if isinstance(key, ast.Constant))
+            valued = frozenset(
+                str(key.value)
+                for key, value in zip(by.keys, by.values, strict=True)
+                if isinstance(key, ast.Constant) and not (isinstance(value, ast.Constant) and value.value is None)
+            )
         else:
             pinned = None
-        found.append((table.value.lower(), pinned, node.lineno))
+        found.append((table.value.lower(), pinned, valued, node.lineno))
     return found
 
 
@@ -339,6 +376,8 @@ class PartitionRule:
     :ivar deferred: tables whose hits are reported, not failed, each with the follow-up that clears them
     :ivar exempt_literal: a repo's own check that a ``(literal, table)`` reads one bounded row set (a by-unique-id
         lookup), or None
+    :ivar unique: each table's unique keys (:func:`unique_keys`): a helper call binding every column of one reads or
+        writes at most one row, in one partition
     """
 
     partitioned: Mapping[str, str] = field(default_factory=lambda: dict(PARTITIONED_TABLES))
@@ -346,6 +385,7 @@ class PartitionRule:
     exempt_fragments: tuple[tuple[str, str], ...] = EXEMPT_LITERAL_FRAGMENTS
     deferred: Mapping[str, str] = field(default_factory=dict)
     exempt_literal: Callable[[str, str], bool] | None = None
+    unique: Mapping[str, frozenset[frozenset[str]]] = field(default_factory=dict)
 
 
 def violations_in_file(path: Path, rule: PartitionRule | None = None) -> tuple[list[str], list[str]]:
@@ -427,9 +467,12 @@ def violations_in_file(path: Path, rule: PartitionRule | None = None) -> tuple[l
                 else:
                     strict_violations.append(msg)
     # a keyed helper call is a read or write of its table as much as a statement written as text is
-    for table, pinned, lineno in _helper_calls(tree, source):
+    for table, pinned, valued, lineno in _helper_calls(tree, source):
         partition_col = rule.partitioned.get(table)
         if partition_col is None or pinned is None or ({partition_col} | tied.get(table, frozenset())) & pinned:
+            continue
+        if any(key <= valued for key in rule.unique.get(table, ())):
+            # bound by a whole unique key: at most one row, so one partition
             continue
         msg = (
             f"{path}:{lineno}: keyed helper call on partitioned table {table!r} without its partition column "
