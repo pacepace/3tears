@@ -52,6 +52,8 @@ then never name the host::
   held, since one not known to be safe must not ship as if it were. A verdict left undecided that ``--fail-on``
   does not name exits 0 and is printed as undecided, never as passed. ``--reading`` (repeatable) gates only those
   readings. A campaign with no verdict at all is refused (exit 2): a gate that read nothing passed nothing.
+  A campaign holding a run that did not finish (failed, cancelled, stopped by its budget, still running) is never
+  gated: the command prints what stopped the run and exits 1.
 - ``spend`` prints what the engine spent outside any run in the scope — case generations, rubric
   proposals and analysis generations, call by call, with totals overall, per purpose and per launch
   (:func:`~threetears.evals.analysis.scope_out_of_run_spend`, the read the ``scope_out_of_run_spend`` action
@@ -113,6 +115,7 @@ from threetears.evals.analysis import (
     ReportFormat,
     TrialDetail,
     campaign_report,
+    campaign_stopped_short,
     campaign_verdicts,
     frontier,
     frontier_text,
@@ -644,10 +647,17 @@ async def _judge_temperature(host: EvalHost, args: argparse.Namespace) -> None:
 
 
 def _gate(host: EvalHost, args: argparse.Namespace) -> int:
-    """Gate on the campaign's typed verdicts: print the result, and exit 4 when a named outcome occurred.
+    """Gate on the campaign's typed verdicts: print the result, and exit 4 when a named outcome occurred. Over a
+    campaign holding a run that did not finish, print what stopped it and exit 1, reading no verdict.
 
     :raises _Refused: The campaign has no verdict to gate on, or a ``--reading`` no verdict is on.
     """
+    # A campaign holding a run that did not finish has no verdict to gate on: its contrasts count that run's partial
+    # results. What stopped it is printed, and the exit is a launched run's that did not complete, never a pass.
+    if stopped := campaign_stopped_short(host, args.campaign, args.scope):
+        for line in stopped:
+            _say(line)
+        return EXIT_RUN_DID_NOT_COMPLETE
     verdicts = campaign_verdicts(host, args.campaign, args.scope)
     if not verdicts:
         raise _Refused(

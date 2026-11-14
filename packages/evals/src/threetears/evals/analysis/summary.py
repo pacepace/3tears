@@ -66,6 +66,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, PrivateAttr, compu
 
 from threetears.evals.analysis.agreement import InterJudgeDimension, InterJudgeTally
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
+from threetears.evals.analysis.run_ending import RunEnding
 from threetears.evals.kernel.numbers import UNPRICED
 from threetears.evals.analysis.reporting import (
     ModelIdentityTally,
@@ -1030,18 +1031,20 @@ class EvalSummary(BaseModel):
         return f"stopped: {self.stopped_because}"
 
     @property
-    def failed_text(self) -> str | None:
-        """Why the run failed, in the run's own words, or None: the error a ``failed`` or ``exhausted`` run recorded
-        last (the run's own come after its results' in :attr:`errors`), as its holding's ending reason reads it. A
-        replay miss is one: the line names the call the recording does not hold. A printed result leads with it, so a
-        failed run is never read as a finished one.
+    def ending(self) -> RunEnding:
+        """How the run stood when it was summarised, as the one decision on whether a reading opens with a verdict
+        reads it (:func:`~threetears.evals.analysis.run_ending.stopped_short`): its status, and why it ended in the
+        run's own words. A designed stop's reason is :attr:`stopped_because`; a ``failed`` or ``exhausted`` run's is
+        the error it recorded last (the run's own come after its results' in :attr:`errors`), as its holding's ending
+        reason reads it. A replay miss is one: the line names the call the recording does not hold.
 
-        :return: The line, without indentation, or None for a run that did not fail, or failed recording no error.
-        :rtype: str | None
+        :return: The ending; its reason None for a finished run, and for one whose record gives none.
+        :rtype: RunEnding
         """
-        if self.status not in ("failed", "exhausted") or not self.errors:
-            return None
-        return self.errors[-1]
+        reason = self.stopped_because
+        if self.status in ("failed", "exhausted") and self.errors:
+            reason = self.errors[-1]
+        return RunEnding(run_id=self.run_id, status=self.status, reason=None if self.status == "completed" else reason)
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(

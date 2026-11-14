@@ -7,6 +7,10 @@ the page has or their order.
 
 **Part by part:**
 
+- *Stopped*: where a run the document was written over did not finish, code's line saying what stopped it and that
+  there is no verdict (``ReportInput.caveats.unfinished``), first under the masthead, before a draft's line and the
+  document's headline: the one decision every surface asks
+  (:func:`~threetears.evals.analysis.run_ending.stopped_short`).
 - *Masthead*: code's (GENERATOR §2.1: the campaign's kind, the system under test, the counts and the run date, counts
   and date as figure keys where the input holds the figure), its keys written out. *Draft*: a page its editor's review did not clear says so first, under the masthead, in code's
   one line (:func:`~threetears.evals.analysis.report.doc_page.model.draft_line`), its open findings listed in the
@@ -733,6 +737,9 @@ def build(
         made=made,
         draft=draft,
         checks=_checks(report_input),
+        # Code's, and first under the masthead: a run the document was written over did not finish, so its headline
+        # is no verdict to open with.
+        stopped=" ".join(report_input.caveats.unfinished),
     )
     if reader.degraded:
         return page.model_copy(update={"degraded": DEGRADED_PAGE})
