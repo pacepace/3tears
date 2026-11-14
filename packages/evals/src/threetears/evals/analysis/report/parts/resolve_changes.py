@@ -1280,12 +1280,17 @@ def _family_level(context: ChartContext) -> str:
 #: with its interval, never in a chart, whose one row compares it with nothing.
 _FEWEST_CHANGES = 2
 
+#: The sources a diverging chart draws that are no change across the campaign or over time, so one row of them is
+#: drawn: two arms compared, and a judge's preference.
+_NOT_CHANGES = frozenset({"compare", "human_pref"})
+
 
 def _refuse_one_change(context: ChartContext, changes: Sequence[_Change]) -> None:
     """Refuse a change chart that draws a single change (#1124): a structural rule, the count of its rows, so a chart
-    of one row never reaches a page. A judge's preference is no change against an arm: its one dot is a split around
-    even, which the writer eval's page draws for its one pair (:func:`_preference_changes`), so it is drawn."""
-    if context.query.source != "human_pref" and len(changes) < _FEWEST_CHANGES:
+    of one row never reaches a page. Only a chart of what changed is refused (owner ruling, 2026-11-14): two arms
+    compared on one measure (``compare``) are one difference by what they are, and a judge's preference is a split
+    around even, which the writer eval's page draws for its one pair (:func:`_preference_changes`); both are drawn."""
+    if context.query.source not in _NOT_CHANGES and len(changes) < _FEWEST_CHANGES:
         raise context.refuse(
             "it draws one change, which a chart compares with nothing: state it in the prose (its key prints the "
             "change and its interval) or in a table, or select more rows to compare"

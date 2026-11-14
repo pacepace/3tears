@@ -39,6 +39,7 @@ from threetears.evals.kernel.numbers import format_number, group_thousands, mone
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import BarsChart, ForestChart
 from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.number_forms.policy import policy_level
 from threetears.evals.analysis.report.figure_keys import format_figure, price_frontier, resolve
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_input import Factor, Reading, ReportInput
@@ -74,8 +75,9 @@ def _inputs() -> dict[str, ReportInput]:
 
 
 def _stated(level: float) -> str:
-    """A level, a share, as the input states it: in percent, to every digit the number rule keeps."""
-    return f"{format_number(level * 100)}%"
+    """A level, a share, as a page prints it as text: its distance from 100% to two significant figures (owner ruling,
+    2026-11-14: the figure stays exact, its text rounds), ``98.3%`` for 98.33%."""
+    return policy_level(level * 100)
 
 
 def _drawn(held: ReportInput, kind: str, query: ChartQuery) -> Any:

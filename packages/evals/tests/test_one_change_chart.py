@@ -3,7 +3,8 @@ which state it with its interval, never in a chart whose one row compares it wit
 
 The rule is structural, the count of the rows the chart draws, so it holds for a forest and diverging bars alike, and
 for the dot strips drawn through the diverging bars' rows. Kairo's written page draws its pass-rate contrasts; the same
-chart narrowed to one arm draws one change.
+chart narrowed to one arm draws one change. Only a chart of what changed is refused: two arms compared on one measure
+are one difference by what they are, and stay drawn (owner ruling, 2026-11-14).
 """
 
 from __future__ import annotations
@@ -53,3 +54,9 @@ def test_a_change_chart_of_one_row_is_refused_naming_where_the_change_belongs(ki
     with pytest.raises(UnresolvableReference, match="it draws one change") as refused:
         _page(kind, {**_CONTRASTS, "arms": ["qwen3.8-flash"]})
     assert "in the prose" in str(refused.value) and "in a table" in str(refused.value)
+
+
+@pytest.mark.parametrize("kind", ["diverging_bars", "dot_interval"])
+def test_two_arms_compared_on_one_measure_are_drawn_as_their_one_difference(kind: str) -> None:
+    compare = {"source": "compare", "aspect": "", "measures": ["failed_reply_notices"], "arms": ["1017", "September"]}
+    assert "The chart drawn here." in _page(kind, {**_CONTRASTS, **compare})

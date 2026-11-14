@@ -613,10 +613,13 @@ def held_whole(markup: str) -> str:
 def _id_span(match: re.Match[str]) -> str:
     """One hyphenated word, held on one line where the cap can hold it."""
     word = match.group(0)
+    # The control's mark is no part of the word: it stays before the span, held to it by its no-break space.
+    mark = _CONTROL_MARK_KEPT if word.startswith(_CONTROL_MARK_KEPT) else ""
+    word = word.removeprefix(mark)
     chars = len(html.unescape(word))
     if chars > _ONE_WORD_CHARS:
-        return word
-    return f'<span class="id{" long" if chars > _FLOOR_WORD_CHARS else ""}">{word}</span>'
+        return mark + word
+    return f'{mark}<span class="id{" long" if chars > _FLOOR_WORD_CHARS else ""}">{word}</span>'
 
 
 #: The widths a pinned column is laid out at, estimated from its text, in rem: its floor and its cap; the width a

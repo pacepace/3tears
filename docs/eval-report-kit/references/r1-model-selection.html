@@ -590,9 +590,10 @@ function kNoteWords(t){const s=String(t);if(!s.includes(" · "))return s.split("
 // the words
 function kWrapNote(t,room){const lines=[],wds=kNoteWords(t);let cur="";for(const wd of wds){const nx=cur?cur+" "+wd:wd;
   if(cur&&nx.length*6.4>room){lines.push(cur);cur=wd;}else cur=nx;}lines.push(cur);
-  if(lines.length>2){let at=2,best=Infinity;
-    // two lines at most, split where the longer is shortest, the figure with its unit kept on the first
-    for(let i=2;i<wds.length;i++){const lg=Math.max(wds.slice(0,i).join(" ").length,wds.slice(i).join(" ").length);if(lg<best){best=lg;at=i;}}
+  if(lines.length>2){const first=String(t).includes(" · ")?1:2;let at=first,best=Infinity;
+    // two lines at most, split where the longer is shortest, the figure with its unit kept on the first: its first two
+    // words, or a note's first run, which holds them already
+    for(let i=first;i<wds.length;i++){const lg=Math.max(wds.slice(0,i).join(" ").length,wds.slice(i).join(" ").length);if(lg<best){best=lg;at=i;}}
     return [wds.slice(0,at).join(" "),wds.slice(at).join(" ")];}return lines;}
 // a row label in its column of maxC characters: whole, else wrapped at its spaces onto two lines, else its short label
 // so, else wrapped onto as many lines as it takes; never cut, so no two rows read alike that their labels tell apart.
