@@ -13,10 +13,11 @@ every arm faced the same tool answers. A world with no state (``World(tools=[sea
   which time the cell asked it, so every repeat of a case and every arm is served the same answers in the order they
   were first given.
 - **A miss is the rig's, even when the agent swallows it.** A replay asked something the recording does not hold
-  raises :class:`ToolRecordingMiss`, an :class:`~threetears.evals.kernel.host.ApparatusError`, at the agent's
+  raises :class:`ToolRecordingMiss`, a :class:`~threetears.evals.kernel.host.ReplayMiss`, at the agent's
   ``await``. An agent catching every exception would absorb it into an ordinary answer, so the cell remembers the
-  fault and :meth:`CellTools.raise_any_fault` re-raises it once the agent is done, and the engine excludes the cell
-  rather than scoring the agent's manner toward a broken recording.
+  fault and :meth:`CellTools.raise_any_fault` re-raises it once the agent is done, and the engine records the cell
+  ``apparatus_failed`` and fails the run, rather than scoring the agent's manner toward a recording that cannot
+  serve it.
 
 **A tool that raises records nothing.** A recording keeps what a tool answered; an exception is the agent's to
 handle in the live world, and a replay of that ask is a miss. A tool whose failure the agent should face under
@@ -39,7 +40,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 
 from threetears.evals.kernel.cassettes import Recordable, ToolLike, ToolWrap
-from threetears.evals.kernel.host import ApparatusError
+from threetears.evals.kernel.host import ApparatusError, ReplayMiss
 from threetears.evals.schema import RecordedCall, canonical_digest
 
 #: The environment variable that asks for a recording to be made again rather than replayed.
@@ -106,8 +107,9 @@ class FunctionTool:
             ) from unrecordable
 
 
-class ToolRecordingMiss(ApparatusError, LookupError):
-    """A replay asked a tool something its recording does not hold: the rig's fault, never the agent's."""
+class ToolRecordingMiss(ReplayMiss, LookupError):
+    """A replay asked a tool something its recording does not hold: the rig's fault, never the agent's, and it fails
+    the run (:class:`~threetears.evals.kernel.host.ReplayMiss`)."""
 
 
 class ToolRecording:

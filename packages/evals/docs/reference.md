@@ -190,7 +190,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 16`
+  <br>`= 17`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
@@ -382,6 +382,7 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`MemberActsOn`** · *host contract* · dataclass · Name the measure each listed ENTRY of an overlay map is supposed to move — `ActsOn` per member.
 - **`Ordinal`** · dataclass · Mark a `Literal` or `Enum` field as ordered: its levels rank in the order they are declared.
 - **`PassThreshold`** · *host contract* · dataclass · The 1–5 level a capability criterion must reach for an attempt to pass, for one behavior.
+- **`ReplayMiss`** · *host contract* · exception · A recording that cannot serve this run, so the run fails.
 - **`ResolvesInto`** · dataclass · Name the fixed host lever this overlay knob is WRITTEN INTO — its lever's `resolves_into`.
 - **`RolePins`** · dataclass · One pinned ROLE — who filled a seat in the rig, and the inputs that identify them.
 - **`SeedRefused`** · *host contract* · exception · A seed asked for a write the registry or the subject cannot make.
@@ -697,7 +698,7 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 - **`NegotiationConformanceFailure`** · *host contract* · exception · A host's client mishandled the router's refusals: each mistake it made, named.
 - **`RecordedCompletions`** · *host contract* · class · A completion client that records the calls an inner client answers, or replays a recording of them.
 - **`RecordedPrompt`** · *host contract* · class · One call a recording is expected to serve, as `RecordedCompletions.check_covers` is handed it.
-- **`RecordingRefused`** · *host contract* · exception · A recording cannot serve what was asked of it: a miss, a missing or unreadable file, a newer format.
+- **`RecordingRefused`** · *host contract* · exception · A recording cannot serve what was asked of it: a miss, a missing or unreadable file, a newer format, a call already served to another eval, or a call refused while recording.
 - **`StoreConformanceCase`** · *host contract* · dataclass · One rule of the port, as a check over a store.
 
 **Types**

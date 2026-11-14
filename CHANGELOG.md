@@ -41,7 +41,23 @@ Postgres keyset condition and ordering (`DESC NULLS LAST`, ties by id, one colla
 stores page natively, and now break ties of an ordered read by `id` where they kept insertion order. New provisional
 names in `threetears.evals.schema`: `check_after`, `order_and_page`, `page_by_doc_type`, `takes_after`.
 
-### evals: a judge call its replay does not hold is named, never dropped (#1162)
+### evals: a resumed run is proved under today's goal-check proof rules, and each holding names its rules (#920; core v15.17)
+
+**Changed:** a run taken up across a goal-check proof-rules change, whose checks the current rules prove as its own
+proofs say, now moves its `goal_check_proof_rules` forward to the current rules (owner ruling). A `proven` its launch
+recorded reads as proven again, where it read as unproven under the older rules. Each holding records the rules its
+checks were proved under, in `RunLifetime.goal_check_proof_rules` (core v15.17, new, optional, left out of the
+document when unset, in no identity, key or digest). The first holding carries the launch's rules, and each holding a
+take-up began carries the rules it re-proved under. A holding stored before the field reads as before, its rules not
+recorded. A check proved otherwise still refuses. An edit to a template's `variation_axes`, `tools_required` or
+`universal` still refuses a take-up (owner ruling), and the refusal now says why: such an edit changes what the run
+measures, so the cells left to run would not measure what its stored ones did.
+
+**For hosts:** nothing to change. A host that reads `EvalRun.lifetimes` can show which proof rules proved a run's
+checks in each holding. A host that matched the template refusal's exact text matches the new wording, which still
+opens `its measured content changed since the run started`.
+
+### evals: a call its replay does not hold fails the run, named, never dropped (#1162)
 
 **Fixed:** a replayed judge whose recording held no call for a prompt read the miss as a failed call, its text
 withheld, and judged on the calls it still found. The judge's recordings are keyed on the pages it reads, so a change
@@ -51,10 +67,24 @@ fails at the miss and the eval exits 1. A run's scoring judge that misses fails 
 breaks the protocol does (owner ruling): the cell is recorded `apparatus_failed` naming the call, and the run raises
 the miss. So does a judge kind's run whose judge under test misses on any one trial: that cell is recorded
 `apparatus_failed`, naming the call, and the run raises the miss, where the trial was graded `no_reply` and charged to
-the judge under test, so a campaign never finishes on fewer trials. A miss now names
+the judge under test, so a campaign never finishes on fewer trials. A candidate's replay miss fails the run the
+same way (owner ruling: any miss fails the run), where its cell was excluded and the run went on. `ReplayMiss` (new,
+`threetears.evals.kernel.host`) is a recording that cannot serve this run: a call it does not hold or holds fewer
+times than asked, a file missing, unreadable or corrupt, a format this build does not read, a call already served to
+another eval's run, or a call refused while recording. `RecordingRefused`, `CassetteMiss`, `CassetteExhausted`,
+`CassetteCorrupt` and the quick world's `ToolRecordingMiss` subclass it, and each message keeps its cause's own
+remedy. A recording run (`RECORD=1`) whose recorder refuses a call fails the run the same way, extending the #1162
+ruling to recording runs: a recording missing that call would fail its first replay anyway, and every cell after the
+refusal is spend it cannot keep. A live run with no recording is unaffected. Every other `ApparatusError` still
+excludes its one cell. A miss now names
 the prompt's key and where it parts from the recorded prompts: how many hold the same user message or open on the same
 80 characters, or the nearest recorded key and the character it parts at. Rung 5's recordings README says what to do
 when page text moves.
+
+**For hosts:** `ReplayMiss` is in the host-contract tier (owner ruling; the declared ceiling goes from 498 to 499). A
+host's own replay raises it, or a subclass, when its recording cannot serve a call, so the run fails naming the call;
+any other `ApparatusError` still excludes only its cell. A host test that read a partial miss as a completed run on
+fewer cells now sees the run fail.
 
 ### evals: a request whose connection broke before any response began is sent again once, and counted (#1137; core v15.16)
 
@@ -97,9 +127,8 @@ lacks and what its siblings lack, naming a sibling that differs in a launch cond
 `ArmQuote` gains `overlays` (default empty), which the engine fills from the launch.
 
 **Changed:** `job_resume` takes up a run whose goal-check proof rules moved since it launched when the current rules
-prove the run's own goal checks as its stored proofs say. The run keeps the rules its proofs were derived under, so a
-`proven` from older rules still reads as unproven. A check proved otherwise still refuses, and the refusal names both
-rule versions. The take-up does not yet record the rules change on the run's lifetime (#920 stays open for it).
+prove the run's own goal checks as its stored proofs say. A check proved otherwise still refuses, and the refusal names
+both rule versions. The run then reads as proved under the current rules (#920, above).
 
 **Changed, for callers of `threetears.evals.run.resume`:** the run, launch and sweep take-ups go through one `TakeUp`.
 `take_up_arms` returns a `TakeUp` (its `arms` by label) in place of a dict, and `read_job_to_take_up` reads and
