@@ -3702,6 +3702,9 @@ class _ModuleWalk(ast.NodeVisitor):
                 unique = self._non_unique_order(stepped, self._reader(site))
                 if unique is not None:
                     hits.setdefault(*unique)
+            if self._schema_key_prefix(located):
+                # a read of a TableSchema parameter's table by its own key prefix: keyed whatever table it is
+                continue
             for statement in self._helper_statements(located):
                 if statement.sql is UNSEEN or statement.sql is None:
                     if not self._source_bound(located, statement, site):
@@ -3732,6 +3735,92 @@ class _ModuleWalk(ast.NodeVisitor):
             self.hits.append(
                 WholeReadHit(path, line, function, symbol, _one_line(f"{statement_text} (passed to {self._function})"))
             )
+
+    def _schema_key_prefix(self, call: ast.Call) -> bool:
+        """whether a keyed helper call reads a :class:`TableSchema` parameter's table by that schema's own key prefix,
+        so it is keyed whatever table the caller hands it: its table ``p.name`` for a parameter ``p`` annotated
+        ``TableSchema``, ``column=`` the key column ``p.pk_columns[n]`` and ``by=`` the columns before it,
+        ``dict(zip(p.pk_columns[:n], values, strict=True))`` (``strict``: exactly ``n`` of them pinned; ``or None``
+        beside it, or no ``by=`` when ``n`` is ``0``), ``n`` spelled the same in both. ``p.pk_columns`` may be held
+        in a local the function binds to it once.
+
+        :param call: the helper call, its arguments resolved
+        :ptype call: ast.Call
+        :return: whether it is
+        :rtype: bool
+        """
+        function = self._function_node
+        if function is None or len(call.args) < 2:
+            return False
+        table = call.args[1]
+        if not (isinstance(table, ast.Attribute) and table.attr == "name" and isinstance(table.value, ast.Name)):
+            return False
+        schema = table.value.id
+        arguments = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
+        annotated = [argument.annotation for argument in arguments if argument.arg == schema]
+        if len(annotated) != 1 or annotated[0] is None or _annotated_class(annotated[0]) != "TableSchema":
+            return False
+        held = [
+            node
+            for node in _own_nodes(function.body)
+            if isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign | ast.NamedExpr | ast.For | ast.AsyncFor)
+        ]
+
+        def key_columns(node: ast.expr) -> bool:
+            if isinstance(node, ast.Attribute) and node.attr == "pk_columns":
+                return isinstance(node.value, ast.Name) and node.value.id == schema
+            if not isinstance(node, ast.Name):
+                return False
+            bound = [
+                each
+                for each in held
+                if any(
+                    _target_binds(target, node.id)
+                    for target in (each.targets if isinstance(each, ast.Assign) else [getattr(each, "target", None)])
+                    if target is not None
+                )
+            ]
+            return (
+                len(bound) == 1
+                and isinstance(bound[0], ast.Assign)
+                and len(bound[0].targets) == 1
+                and isinstance(bound[0].targets[0], ast.Name)
+                and key_columns(bound[0].value)
+            )
+
+        keywords = {keyword.arg: keyword.value for keyword in call.keywords if keyword.arg is not None}
+        column = keywords.get("column")
+        if not (
+            isinstance(column, ast.Subscript) and not isinstance(column.slice, ast.Slice) and key_columns(column.value)
+        ):
+            return False
+        place = ast.dump(column.slice)
+        by = keywords.get("by")
+        if by is None or (isinstance(by, ast.Constant) and by.value is None):
+            return isinstance(column.slice, ast.Constant) and column.slice.value == 0
+        if isinstance(by, ast.BoolOp) and isinstance(by.op, ast.Or) and len(by.values) == 2:
+            fallback = by.values[1]
+            if not (isinstance(fallback, ast.Constant) and fallback.value is None):
+                return False
+            by = by.values[0]
+        if not (isinstance(by, ast.Call) and _final(by) == "dict" and len(by.args) == 1 and not by.keywords):
+            return False
+        zipped = by.args[0]
+        if not (isinstance(zipped, ast.Call) and _final(zipped) == "zip" and len(zipped.args) == 2):
+            return False
+        strict = [keyword.value for keyword in zipped.keywords if keyword.arg == "strict"]
+        if len(zipped.keywords) != 1 or not (isinstance(strict[0], ast.Constant) and strict[0].value is True):
+            return False
+        pinned = zipped.args[0]
+        return (
+            isinstance(pinned, ast.Subscript)
+            and isinstance(pinned.slice, ast.Slice)
+            and pinned.slice.lower is None
+            and pinned.slice.step is None
+            and pinned.slice.upper is not None
+            and ast.dump(pinned.slice.upper) == place
+            and key_columns(pinned.value)
+        )
 
     def _source_bound(self, call: ast.Call, statement: HelperStatement, site: ast.Call) -> bool:
         """whether a keyed helper call whose relation is made at run time (a ``Derived`` over a relation's text) reads

@@ -6642,3 +6642,96 @@ def test_renaming_a_column_list_never_changes_a_verdict(tmp_path: Path) -> None:
     before = _symbols(_config(tmp_path / "before", {"store.py": _KEY_BY_PROVENANCE}))
     after = _symbols(_config(tmp_path / "after", {"store.py": renamed}))
     assert {function for function, _ in before} == {function for function, _ in after}, (before, after)
+
+
+_TABLE_PARAMETERS = """
+    from typing import Any
+
+    from threetears.core import keyed
+    from threetears.core.collections.schema_backed import TableSchema
+
+    ROWS_SCHEMA = TableSchema(name="rows", primary_key=("join_state_code", "office_key"), columns=[])
+
+
+    async def prefix_rows(backend, schema: TableSchema, prefix: tuple[Any, ...]) -> int:
+        columns = schema.pk_columns
+        counted = await keyed.counts_by(
+            backend,
+            schema.name,
+            column=columns[len(prefix)],
+            values=keyed.AnyOf([None]),
+            by=dict(zip(columns[: len(prefix)], prefix, strict=True)) or None,
+            batch=1,
+        )
+        return sum(counted.values())
+
+
+    async def first_column(backend, schema: TableSchema, value: Any) -> int:
+        counted = await keyed.counts_by(backend, schema.name, column=schema.pk_columns[0], values=keyed.AnyOf([value]))
+        return sum(counted.values())
+
+
+    async def off_key(backend, schema: TableSchema, kind: str) -> int:
+        counted = await keyed.counts_by(backend, schema.name, column="kind", values=keyed.AnyOf([kind]))
+        return sum(counted.values())
+
+
+    async def maybe_short(backend, schema: TableSchema, prefix: tuple[Any, ...]) -> int:
+        counted = await keyed.counts_by(
+            backend,
+            schema.name,
+            column=schema.pk_columns[len(prefix)],
+            values=keyed.AnyOf([None]),
+            by=dict(zip(schema.pk_columns[: len(prefix)], prefix)),
+        )
+        return sum(counted.values())
+
+
+    async def skips_one(backend, schema: TableSchema, prefix: tuple[Any, ...]) -> int:
+        counted = await keyed.counts_by(
+            backend,
+            schema.name,
+            column=schema.pk_columns[len(prefix) + 1],
+            values=keyed.AnyOf([None]),
+            by=dict(zip(schema.pk_columns[: len(prefix)], prefix, strict=True)),
+        )
+        return sum(counted.values())
+
+
+    async def not_a_schema(backend, schema, prefix: tuple[Any, ...]) -> int:
+        counted = await keyed.counts_by(
+            backend,
+            schema.name,
+            column=schema.pk_columns[len(prefix)],
+            values=keyed.AnyOf([None]),
+            by=dict(zip(schema.pk_columns[: len(prefix)], prefix, strict=True)),
+        )
+        return sum(counted.values())
+
+
+    class CollectionTableStore:
+        def __init__(self, backend):
+            self._backend = backend
+
+        async def _race_counts(self, table: str, state: str) -> dict[Any, int]:
+            return await keyed.counts_by(
+                self._backend, table, column="office_key", by={"join_state_code": state}, batch=100, nullable=False
+            )
+"""
+
+
+def test_a_keyed_helper_over_a_table_schema_parameter_s_key_prefix_is_keyed(tmp_path: Path) -> None:
+    """Flips if a keyed helper reading a ``TableSchema`` parameter's table (``schema.name``) by that schema's own key
+    prefix (``column=pk_columns[n]``, ``by=dict(zip(pk_columns[:n], values, strict=True))``, or ``n`` 0 with no
+    ``by=``) stays unknown; or if one off the key (a literal column), one whose pins may stop short (no ``strict``),
+    one counting a column past the next (``n + 1``), or one over an unannotated parameter is taken as keyed. A ``str``
+    table parameter declared to its family (``declared_parameters``) is judged member by member (reports'
+    ``_race_counts``): keyed by each member's key, and unknown undeclared."""
+    found = _symbols(_config(tmp_path, {"pod/m.py": _TABLE_PARAMETERS}))
+    flagged = {function for function, _ in found}
+    assert not flagged & {"prefix_rows", "first_column"}, found
+    assert {"off_key", "maybe_short", "skips_one", "not_a_schema"} <= flagged, found
+    assert ("CollectionTableStore._race_counts", "unknown-predicate counts_by(table)") in found, found
+    declared = {"CollectionTableStore._race_counts.table": ("rows",)}
+    found = _symbols(_config(tmp_path, {"pod/m.py": _TABLE_PARAMETERS}, declared_parameters=declared))
+    assert not any(function == "CollectionTableStore._race_counts" for function, _ in found), found
