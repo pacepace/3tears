@@ -27,6 +27,7 @@ __all__ = [
     "assigned",
     "batched_join_hint",
     "by_conditions",
+    "clause_guards",
     "narrowing",
     "one_use_each",
     "prefix_conditions",
@@ -205,6 +206,32 @@ class Fragment:
         """
         sql, params = clause
         return cls(sql=sql, params=tuple(params))
+
+
+def clause_guards(build: Callable[..., str], *leading: Any) -> tuple[Fragment, ...]:
+    """a hand-written statement's clause builder, as a keyed helper's ``where=`` guards.
+
+    A clause builder answers `` AND (<boolean>)`` (or ``""`` when nothing restricts the read), binding its values onto
+    the end of the statement's parameter list it is handed last: ``build(*leading, args)``. Built here over an empty
+    list, its placeholders are numbered from ``$1``, so the answer is a :class:`Fragment` the helper renumbers past its
+    pins; the clause is written once, by the builder the statements use.
+
+    :param build: the builder, called as ``build(*leading, args)``
+    :ptype build: Callable[..., str]
+    :param leading: its arguments before the parameter list (the clause's subject, the row it is written over as
+        ``t``)
+    :ptype leading: Any
+    :return: the one guard, or none when the builder answered ``""``
+    :rtype: tuple[Fragment, ...]
+    :raises ValueError: when the builder answers a clause that is not `` AND (...)``
+    """
+    args: list[Any] = []
+    clause = build(*leading, args)
+    if not clause:
+        return ()
+    if not clause.startswith(" AND "):
+        raise ValueError(f"a clause builder answered {clause[:40]!r}, not ' AND (...)'")
+    return (Fragment(clause.removeprefix(" AND "), tuple(args)),)
 
 
 def renumbered(fragment: Fragment, before: int) -> str:

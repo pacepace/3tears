@@ -308,6 +308,12 @@ class Rewrite:
     #: each ``WHERE`` conjunct other than an equality (a ``guard`` :class:`Pin` as a dict): the call's ``where=``
     #: fragments; not recorded when there is none
     where: list[dict[str, Any]] = field(default_factory=list)
+    #: the statement's clause written by a declared clause builder (``NoWholeReadsConfig.clause_builders``): the
+    #: builder and its proof subjects (``module:name`` each), its arguments before the parameter list as the statement
+    #: wrote them (``leading``) and over the helper's row (``respelled``), where in ``old_sql`` its text goes (``at``;
+    #: ``old_sql`` is the statement as sent when the builder answers ``""``) and the ``clause_guards`` call the
+    #: ``where=`` spreads (``call``); not recorded when there is none
+    clauses: list[dict[str, Any]] = field(default_factory=list)
     # the edits that make it, not recorded: (start line, start col, end line, end col, text) in the module's bytes
     edits: list[tuple[int, int, int, int, str]] = field(default_factory=list, repr=False)
     # not recorded: index purpose entries naming the replaced constant, each (repo-relative file, old text, new text)
@@ -333,6 +339,8 @@ class Rewrite:
             entry.pop("walk")
         if not self.where:
             entry.pop("where")
+        if not self.clauses:
+            entry.pop("clauses")
         return entry
 
 
@@ -1487,16 +1495,20 @@ def _unseeded_guard(parsed: PointSql | WriteSql) -> str:
 
 def _where_text(rewrite: Rewrite) -> str:
     """the helper call's ``where=`` argument (`` where=[Fragment(...), ...]``, with its leading ``, ``), or ``""``."""
-    if not rewrite.where:
+    if not rewrite.where and not rewrite.clauses:
         return ""
-    return f", where=[{', '.join(_value_text(guard, rewrite.args) for guard in rewrite.where)}]"
+    listed = [
+        *(_value_text(guard, rewrite.args) for guard in rewrite.where),
+        *(f"*{clause['call']}" for clause in rewrite.clauses),
+    ]
+    return f", where=[{', '.join(listed)}]"
 
 
 def _render(rewrite: Rewrite, receiver: str) -> str:
     """the helper call, written in the statement's call's place."""
     by = "{" + ", ".join(f"{pin['column']!r}: {_value_text(pin, rewrite.args)}" for pin in rewrite.pins) + "}"
     parts = [receiver, repr(rewrite.table), f"by={by}"]
-    if rewrite.where:
+    if rewrite.where or rewrite.clauses:
         parts.append(_where_text(rewrite).removeprefix(", "))
     if rewrite.helper == "read_value":
         assert rewrite.columns is not None
@@ -1671,15 +1683,26 @@ def _module_binding(module: _Module, name: str) -> ast.expr | None:
     return None
 
 
-def _fstring_text(module: _Module, node: ast.JoinedStr) -> tuple[str, str] | str:
+def _fstring_text(
+    module: _Module,
+    node: ast.JoinedStr,
+    clauses: Mapping[str, Any] | None = None,
+    at: list[int] | None = None,
+    either: list[str] | None = None,
+) -> tuple[str, str] | str:
     """an f-string statement whose every interpolation is a module constant of text (:func:`_module_text`), as the
-    statement it sends and as the walk writes it (each interpolation ``{}``); or why it is not one."""
+    statement it sends and as the walk writes it (each interpolation ``{}``); or why it is not one. An interpolated
+    local named in ``clauses`` (:func:`_local_clauses`) is sent as ``""``, its builder's answer with nothing to
+    restrict; where it stood in the sent text is appended to ``at``. ``either`` gathers a pattern of the walk's text,
+    whitespace dropped, that reads each module constant as ``{}`` or as its text (the walk writes some in)."""
     sent: list[str] = []
     walked: list[str] = []
     for part in node.values:
         if isinstance(part, ast.Constant) and isinstance(part.value, str):
             sent.append(part.value)
             walked.append(part.value)
+            if either is not None:
+                either.append(re.escape("".join(part.value.split())))
             continue
         assert isinstance(part, ast.FormattedValue)
         member = _enum_value(module, part.value) if part.conversion == -1 and part.format_spec is None else None
@@ -1687,15 +1710,177 @@ def _fstring_text(module: _Module, node: ast.JoinedStr) -> tuple[str, str] | str
             # a text enum member's value (``{IntentionStatus.OPEN.value}``): the literal the walk writes in
             sent.append(member)
             walked.append(member)
+            if either is not None:
+                either.append(re.escape("".join(member.split())))
             continue
         if part.conversion != -1 or part.format_spec is not None or not isinstance(part.value, ast.Name):
             return f"interpolated: {{{module.segment(part.value)}}} is not a module constant"
+        if clauses is not None and part.value.id in clauses:
+            if at is not None:
+                at.append(len("".join(sent)))
+            walked.append("{}")
+            if either is not None:
+                either.append(re.escape("{}"))
+            continue
         text = _module_text(module, part.value)
         if text is None:
             return f"interpolated: {{{part.value.id}}} is not a module constant of text written in the module"
         sent.append(text)
         walked.append("{}")
+        if either is not None:
+            either.append(f"(?:{re.escape('{}')}|{re.escape(''.join(text.split()))})")
     return "".join(sent), "".join(walked)
+
+
+@dataclass(frozen=True)
+class _Clause:
+    """an f-string statement's interpolated local bound once to a declared clause builder's answer
+    (``allowed = filter_clause(self.read_filter, "memories.tags", args)``) over the parameter list the statement is
+    sent with (``await conn.fetch(f"...{allowed}", *args)``, ``args`` a list literal bound once).
+
+    :ivar build: the builder, ``module:name``
+    :ivar subjects: its proof subjects, ``module:name`` (``NoWholeReadsConfig.clause_builders``)
+    :ivar written: the builder as the module calls it
+    :ivar subject: its first argument (the clause's run-time subject) as written
+    :ivar leading: its text arguments after the subject
+    :ivar arguments: the parameter list's elements, ``$1`` first
+    :ivar spent: the statements binding the clause and the list, which the rewrite leaves unused
+    """
+
+    build: str
+    subjects: str
+    written: str
+    subject: str
+    leading: tuple[str, ...]
+    arguments: tuple[ast.expr, ...]
+    spent: tuple[ast.stmt, ...]
+
+
+def _dotted(module: _Module) -> str:
+    """the module's import name: its path after the last ``src`` directory."""
+    parts = module.path.with_suffix("").parts
+    tail = parts[len(parts) - 1 - parts[::-1].index("src") + 1 :] if "src" in parts else parts[-1:]
+    return ".".join(tail)
+
+
+def _imported_as(module: _Module, name: str) -> str | None:
+    """``module:name`` of a function the module calls by ``name``: defined at its top, or imported by an absolute
+    ``from <module> import <name>``; None otherwise."""
+    for statement in module.tree.body:
+        if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef) and statement.name == name:
+            return f"{_dotted(module)}:{name}"
+        if isinstance(statement, ast.ImportFrom) and statement.module and not statement.level:
+            for alias in statement.names:
+                if (alias.asname or alias.name) == name:
+                    return f"{statement.module}:{alias.name}"
+    return None
+
+
+def _bound_once(scope: ast.AST, name: str) -> ast.Assign | ast.AnnAssign | str:
+    """the one statement binding ``name`` in ``scope`` (one name, one value), or why it is not one."""
+    stores = [
+        node
+        for node in ast.walk(scope)
+        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store)
+    ]
+    if len(stores) != 1:
+        return f"its local {name} is bound {len(stores)} times"
+    for node in ast.walk(scope):
+        if isinstance(node, ast.Assign) and node.targets == [stores[0]]:
+            return node
+        if isinstance(node, ast.AnnAssign) and node.target is stores[0] and node.value is not None:
+            return node
+    return f"its local {name} is bound other than by one assignment"
+
+
+def _local_clauses(config: NoWholeReadsConfig, module: _Module, node: ast.JoinedStr) -> dict[str, _Clause] | str:
+    """the f-string's interpolated locals each bound once to a declared clause builder's answer (:class:`_Clause`),
+    by name; or why one such is not sound. An interpolation that names no declared builder's answer is left to
+    :func:`_fstring_text`.
+
+    The builder must be called ``build(<subject>, "<text>", ..., <list>)``, ``<list>`` a list literal bound once and
+    read only there and spread into the call sending the statement (``*<list>``): its elements are then the
+    statement's parameters in order, and the builder's own binds follow them."""
+    builders = config.clause_builders
+    if not builders:
+        return {}
+    scope = module.scope(node)
+    found: dict[str, _Clause] = {}
+    for part in node.values:
+        if not (isinstance(part, ast.FormattedValue) and isinstance(part.value, ast.Name)):
+            continue
+        name = part.value.id
+        if _module_binding(module, name) is not None or not isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        bound = _bound_once(scope, name)
+        if isinstance(bound, str):
+            continue
+        call = bound.value
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)):
+            continue
+        build = _imported_as(module, call.func.id)
+        if build is None or build not in builders:
+            continue
+        if call.keywords or len(call.args) < 2 or not isinstance(call.args[-1], ast.Name):
+            return f"its clause {name}: not {call.func.id}(<subject>, ..., <list>)"
+        leading = call.args[1:-1]
+        if not all(isinstance(arg, ast.Constant) and isinstance(arg.value, str) for arg in leading):
+            return f"its clause {name}: a builder argument other than text"
+        listed = call.args[-1].id
+        holder = _bound_once(scope, listed)
+        if isinstance(holder, str):
+            return f"its clause {name}: {holder}"
+        if not isinstance(holder.value, ast.List) or any(isinstance(item, ast.Starred) for item in holder.value.elts):
+            return f"its clause {name}: its list {listed} is not a list literal"
+        loads = [
+            use
+            for use in ast.walk(scope)
+            if isinstance(use, ast.Name) and use.id == listed and isinstance(use.ctx, ast.Load)
+        ]
+        spread = [use for use in loads if isinstance(module.parent(use), ast.Starred)]
+        if len(loads) != 2 or call.args[-1] not in loads or len(spread) != 1:
+            return f"its clause {name}: its list {listed} is read other than by the builder and one spread"
+        starred = module.parent(spread[0])
+        sender = None if starred is None else module.parent(starred)
+        if not (isinstance(sender, ast.Call) and sender.args and sender.args[0] is node and len(sender.args) == 2):
+            return f"its clause {name}: its list {listed} is not spread into the call sending the statement"
+        names = [
+            use
+            for use in ast.walk(scope)
+            if isinstance(use, ast.Name) and use.id == name and isinstance(use.ctx, ast.Load)
+        ]
+        if len(names) != 1:
+            return f"its clause {name} is read other than in the statement"
+        found[name] = _Clause(
+            build=build,
+            subjects=builders[build],
+            written=call.func.id,
+            subject=module.segment(call.args[0]),
+            leading=tuple(str(arg.value) for arg in leading if isinstance(arg, ast.Constant)),
+            arguments=tuple(holder.value.elts),
+            spent=(holder, bound),
+        )
+    if len(found) > 1:
+        return "more than one clause builder's answer in the statement"
+    return found
+
+
+def _respelled(leading: Sequence[str], qualifiers: set[str]) -> list[str] | str:
+    """a clause builder's text arguments over the helper's row ``t``: each the statement's table or alias
+    (``mc``), or one of its columns qualified by it (``memories.tags``), respelled ``t`` / ``t.<column>``."""
+    respelled: list[str] = []
+    for text in leading:
+        head, dot, rest = text.partition(".")
+        if head not in qualifiers or (dot and not re.fullmatch(_IDENT, rest)):
+            return f"a clause builder argument {text!r} that is not the read's row or its column"
+        respelled.append(f"t{dot}{rest}")
+    return respelled
+
+
+def _spent_edit(statement: ast.stmt) -> tuple[int, int, int, int, str]:
+    """the edit removing a statement the rewrite leaves unused, its whole lines."""
+    assert statement.end_lineno is not None
+    return (statement.lineno, 0, statement.end_lineno + 1, 0, "")
 
 
 def _enum_value(module: _Module, value: ast.expr) -> str | None:
@@ -1729,12 +1914,14 @@ def _enum_value(module: _Module, value: ast.expr) -> str | None:
     return None
 
 
-def _literal_sent(module: _Module, literal: ast.Constant | ast.JoinedStr) -> str:
-    """the statement a literal sends: its text, or an f-string's with each module constant written in (``""`` when an
-    interpolation is not one, which no walk's text equals)."""
+def _literal_sent(
+    module: _Module, literal: ast.Constant | ast.JoinedStr, clauses: Mapping[str, Any] | None = None
+) -> str:
+    """the statement a literal sends: its text, or an f-string's with each module constant written in and each local
+    clause in ``clauses`` as ``""`` (``""`` when an interpolation is neither, which no walk's text equals)."""
     if isinstance(literal, ast.Constant):
         return str(literal.value)
-    resolved = _fstring_text(module, literal)
+    resolved = _fstring_text(module, literal, clauses)
     return "" if isinstance(resolved, str) else resolved[0]
 
 
@@ -1753,11 +1940,17 @@ def _sent_text(config: NoWholeReadsConfig, modules: dict[str, _Module], statemen
         return f"!{found}"
     if not isinstance(found, ast.JoinedStr):
         return "!interpolated"
-    resolved = _fstring_text(module, found)
+    clauses = _local_clauses(config, module, found)
+    if isinstance(clauses, str):
+        return f"!{clauses}"
+    either: list[str] = []
+    resolved = _fstring_text(module, found, clauses, either=either)
     if isinstance(resolved, str):
         return f"!{resolved}"
     sent, walked = resolved
-    if " ".join(walked.split()) != " ".join(statement.text.split()):
+    if " ".join(walked.split()) != " ".join(statement.text.split()) and not re.fullmatch(
+        "".join(either), "".join(statement.text.split())
+    ):
         return "!the f-string at its line is not the statement the walk found"
     return sent
 
@@ -2532,7 +2725,14 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
         if isinstance(literal, str):
             refuse(literal)
             continue
-        old_sql = _literal_sent(module, literal)
+        clauses: dict[str, _Clause] = {}
+        if isinstance(literal, ast.JoinedStr):
+            local = _local_clauses(config, module, literal)
+            if isinstance(local, str):
+                refuse(local)
+                continue
+            clauses = local
+        old_sql = _literal_sent(module, literal, clauses)
         assert isinstance(old_sql, str)
         if " ".join(old_sql.split()) != " ".join(text.split()):
             refuse("the literal at its line is not the statement the walk found")
@@ -2559,7 +2759,36 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             if isinstance(group, str):
                 refuse(group)
             continue
-        sent = _sent_by(module, literal)
+        recorded: list[dict[str, Any]] = []
+        clause = next(iter(clauses.values()), None)
+        if clause is not None:
+            sender = module.parent(literal)
+            assert isinstance(sender, ast.Call) and isinstance(literal, ast.JoinedStr)
+            if sender.keywords or not isinstance(module.parent(sender), ast.Await):
+                refuse("a clause builder's statement sent with keyword arguments, or not awaited where it is sent")
+                continue
+            selected = _top_select(" ".join(text.split()))
+            assert selected is not None
+            respelled = _respelled(clause.leading, {parsed.table, *filter(None, [selected.group("alias")])})
+            if isinstance(respelled, str):
+                refuse(respelled)
+                continue
+            at: list[int] = []
+            _fstring_text(module, literal, clauses, at)
+            texts = ", ".join([clause.written, clause.subject, *(repr(text) for text in respelled)])
+            recorded = [
+                {
+                    "build": clause.build,
+                    "subjects": clause.subjects,
+                    "leading": list(clause.leading),
+                    "respelled": respelled,
+                    "at": at[0],
+                    "call": f"clause_guards({texts})",
+                }
+            ]
+            sent: tuple[list[ast.Call], ast.Assign | ast.AnnAssign | None] | str = ([sender], None)
+        else:
+            sent = _sent_by(module, literal)
         if isinstance(sent, str):
             refuse(sent)
             continue
@@ -2575,7 +2804,7 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
         uses = Counter(bound)
         planned: list[Rewrite] = []
         for call in calls:
-            arguments = call.args[1:]
+            arguments = list(clause.arguments) if clause is not None else call.args[1:]
             assert isinstance(call.func, ast.Attribute)
             method = call.func.attr
             problem = ""
@@ -2614,6 +2843,7 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 key_from=len(parsed.order) if parsed.limit is not None else None,
                 walk=walk,
                 where=[asdict(guard) for guard in parsed.guards],
+                clauses=recorded,
             )
             spliced: ast.expr = call
             if parsed.aggregate:
@@ -2634,6 +2864,8 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             rewrite.edits.append(
                 (spliced.lineno, spliced.col_offset, spliced.end_lineno, spliced.end_col_offset, rewrite.new_call)
             )
+            if clause is not None:
+                rewrite.edits.extend(_spent_edit(spent) for spent in clause.spent)
             planned.append(rewrite)
         if planned and constant is not None:
             planned[0].edits.append(_constant_edit(module, constant))
@@ -2902,6 +3134,8 @@ def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None
             names.add("Sort")
         if any(not isinstance(column, str) for rewrite in mine for column in rewrite.columns or ()):
             names.add("Selected")
+        if any(rewrite.clauses for rewrite in mine):
+            names.add("clause_guards")
         source = _with_import(source, names)
         for rewrite in mine:
             for imported, wanted in rewrite.imports.items():

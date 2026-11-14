@@ -58,4 +58,14 @@ NO_WHOLE_READS_CONFIG = NoWholeReadsConfig(
     # every shipped migration: its text is never edited again, so an index in one is declared in the ledger
     # (_index_declarations.txt, written by python -m threetears.enforcement.no_whole_reads.index_purposes)
     frozen_migrations=("packages/*/migrations/v*.py", "packages/scrape/src/threetears/scrape/migrations.py"),
+    # memory's read filter, written by its clause builders: the use-the-helper rewrite turns a statement interpolating
+    # one's answer into where=[*clause_guards(<builder>, ...)], proven bound to tests/integration/clause_subjects
+    clause_builders={
+        f"threetears.agent.memory.{builder}": "tests.integration.clause_subjects:read_filters"
+        for builder in (
+            "read_filter:filter_clause",
+            "collections:_chunk_parent_clause",
+            "collections:_media_parent_clause",
+        )
+    },
 )

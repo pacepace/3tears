@@ -1312,7 +1312,12 @@ def _key_hit(
         # are that lead value's, every one answered, as an index on the column alone reads them, though the column is
         # a tenant's (hub #71 spec B: one customer's groups through (customer_id, <sort>, group_id)). Under a LIMIT
         # the order must still come from the index (a page sorting the tenant's every row stays whole).
-        if (prefix > 0 and not level.limited) or _covers(columns, eq | contained, tenants) or ranged_next or bounded_next:
+        if (
+            (prefix > 0 and not level.limited)
+            or _covers(columns, eq | contained, tenants)
+            or ranged_next
+            or bounded_next
+        ):
             following = columns[prefix] if prefix < len(columns) else None
             # the order past its columns bound by equality or a set (``ORDER BY kind, date_created, id`` with ``kind
             # = ANY``): of two indexes tied on the bound ``kind``, the one followed by ``date_created`` is read

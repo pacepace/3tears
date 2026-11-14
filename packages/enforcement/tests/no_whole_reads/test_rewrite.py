@@ -1612,3 +1612,112 @@ def test_a_selected_read_is_rewritten_with_selected_and_its_source_says_so(tmp_p
     (entry,) = json.loads(manifest.read_text(encoding="utf-8"))
     assert entry["columns"] == ["geo_id", {"expr": "lower(name)", "alias": "name"}]
     assert_source_says(tmp_path, entry)
+
+
+_CLAUSE_BUILDERS = """
+    def tag_clause(read_filter, tags, args):
+        if read_filter is None:
+            return ""
+        args.append(read_filter)
+        return f" AND ({tags} ? ${len(args)})"
+
+
+    def other_clause(read_filter, tags, args):
+        return ""
+"""
+
+_CLAUSE_READS = """
+    from pkg.filters import other_clause, tag_clause
+
+
+    async def by_key(conn, read_filter, state, geo):
+        args = [state, geo]
+        allowed = tag_clause(read_filter, "geos.tags", args)
+        return await conn.fetchrow(
+            f"SELECT geo_id, name FROM geos WHERE state = $1 AND geo_id = $2{allowed}",
+            *args,
+        )
+
+
+    async def aliased(conn, read_filter, state):
+        args = [state]
+        allowed = tag_clause(read_filter, "g.tags", args)
+        return await conn.fetch(f"SELECT g.geo_id FROM geos g WHERE g.state = $1{allowed} ORDER BY g.geo_id", *args)
+
+
+    async def list_read_again(conn, read_filter, state):
+        args = [state]
+        allowed = tag_clause(read_filter, "geos.tags", args)
+        rows = await conn.fetch(f"SELECT geo_id FROM geos WHERE state = $1{allowed} ORDER BY geo_id", *args)
+        return rows, len(args)
+
+
+    async def other_row(conn, read_filter, state):
+        args = [state]
+        allowed = tag_clause(read_filter, "parents.tags", args)
+        return await conn.fetch(f"SELECT geo_id FROM geos WHERE state = $1{allowed} ORDER BY geo_id", *args)
+
+
+    async def undeclared(conn, read_filter, state):
+        args = [state]
+        allowed = other_clause(read_filter, "geos.tags", args)
+        return await conn.fetch(f"SELECT geo_id FROM geos WHERE state = $1{allowed} ORDER BY geo_id", *args)
+"""
+
+
+def test_a_declared_clause_builders_answer_is_rewritten_as_its_guards(tmp_path: Path) -> None:
+    """Flips if a statement interpolating a declared clause builder's answer (bound once over a list literal spread
+    into the call) is not rewritten onto its helper with ``where=[*clause_guards(<builder>, <subject>, <row 't'>)]``,
+    its list and clause statements removed and its manifest entry naming the builder, its subjects, its arguments as
+    written and respelled, and where the clause stood; or if the list read elsewhere, a builder over another relation's
+    row, or an undeclared builder is taken."""
+    config = _config(tmp_path)
+    for name, source in {"filters.py": _CLAUSE_BUILDERS, "reads.py": _CLAUSE_READS}.items():
+        (tmp_path / "src/pkg" / name).write_text(textwrap.dedent(source), encoding="utf-8")
+    config = NoWholeReadsConfig(
+        repo_root=tmp_path,
+        src_roots=config.src_roots,
+        ledger_dir=tmp_path,
+        dependency_schema=False,
+        table_lists=(),
+        clause_builders={"pkg.filters:tag_clause": "pkg.filters:subjects"},
+    )
+    rewrites = []
+    refused: dict[str, str] = {}
+    for planner in (plan_point_rewrites, plan_list_rewrites):
+        planned, refusals = planner(config)
+        rewrites.extend(planned)
+        refused.update({refusal.function: refusal.reason for refusal in refusals})
+    assert sorted(rewrite.function for rewrite in rewrites) == ["aliased", "by_key"], refused
+    assert "list_read_again" in refused and "args" in refused["list_read_again"], refused
+    assert "parents.tags" in refused["other_row"], refused
+    assert "{allowed}" in refused["undeclared"], refused
+    planned_by = {rewrite.function: rewrite for rewrite in rewrites}
+    assert planned_by["by_key"].old_sql == "SELECT geo_id, name FROM geos WHERE state = $1 AND geo_id = $2"
+    assert planned_by["by_key"].clauses == [
+        {
+            "build": "pkg.filters:tag_clause",
+            "subjects": "pkg.filters:subjects",
+            "leading": ["geos.tags"],
+            "respelled": ["t.tags"],
+            "at": len("SELECT geo_id, name FROM geos WHERE state = $1 AND geo_id = $2"),
+            "call": "clause_guards(tag_clause, read_filter, 't.tags')",
+        }
+    ]
+    assert planned_by["aliased"].clauses[0]["respelled"] == ["t.tags"]
+
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    text = (tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8")
+    source = " ".join(text.split())
+    assert "from threetears.core.keyed import Sort, clause_guards, read_by, read_row" in source, text
+    assert (
+        "read_row(conn, 'geos', by={'state': state, 'geo_id': geo}, "
+        "where=[*clause_guards(tag_clause, read_filter, 't.tags')], columns=('geo_id', 'name'), records=True)"
+    ) in source, text
+    assert source.count("args = [state, geo]") == 0 and source.count("allowed = tag_clause") == 2, text
+    ast.parse(text)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    for entry in json.loads(manifest.read_text(encoding="utf-8")):
+        assert entry["clauses"][0]["build"] == "pkg.filters:tag_clause"
+        assert_source_says(tmp_path, entry)

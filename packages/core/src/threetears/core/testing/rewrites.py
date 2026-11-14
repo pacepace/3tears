@@ -77,6 +77,7 @@ from threetears.core.keyed import (
     Selected,
     Sort,
     aggregate_keyed,
+    clause_guards,
     delete_before,
     delete_keyed,
     holds_any,
@@ -460,6 +461,55 @@ def _where(entry: Mapping[str, Any], params: Sequence[Any]) -> list[Fragment]:
     ]
 
 
+def _named(spec: str) -> Any:
+    """the object ``module:name`` names."""
+    module, _, name = spec.partition(":")
+    return getattr(importlib.import_module(module), name)
+
+
+@dataclass(frozen=True)
+class _ClauseCase:
+    """one subject of an entry's clause (``clauses``): the old statement with the builder's answer written in, its
+    parameters with the builder's binds after them, and the helper's guards with the clause's after them."""
+
+    subject: Any
+    old_sql: str
+    params: list[Any]
+    where: list[Fragment]
+
+
+def _clause_cases(
+    old_sql: str, params: Sequence[Any], where: Sequence[Fragment], entry: Mapping[str, Any]
+) -> list[_ClauseCase]:
+    """each case an entry's clause is proven in: ``None`` and every subject its builder's proof subjects answer (the
+    statement as sent with nothing restricting it, then restricted); one case, as recorded, when it has no clause.
+
+    :raises AssertionError: when the subjects restrict no seeded statement differently from ``None`` (the builder
+        answered ``""`` for each), which would prove nothing about the clause
+    """
+    clauses = entry.get("clauses") or ()
+    if not clauses:
+        return [_ClauseCase(None, old_sql, list(params), list(where))]
+    (clause,) = clauses
+    build = _named(clause["build"])
+    subjects = [None, *_named(clause["subjects"])()]
+    cases: list[_ClauseCase] = []
+    for subject in subjects:
+        bound = list(params)
+        text = build(subject, *clause["leading"], bound)
+        if subject is not None and not text:
+            raise AssertionError(f"{clause['subjects']}: a subject the builder answers no clause for proves nothing")
+        cases.append(
+            _ClauseCase(
+                subject,
+                old_sql[: clause["at"]] + text + old_sql[clause["at"] :],
+                bound,
+                [*where, *clause_guards(build, subject, *clause["respelled"])],
+            )
+        )
+    return cases
+
+
 def _guard_params(
     shape: CatalogTable,
     entry: Mapping[str, Any],
@@ -564,47 +614,62 @@ async def _assert_point_same(
         if entry.get("shape") == "first":
             await _assert_first_same(conn, entry, row, params, by, order, where)
             return
+        for case in _clause_cases(old_sql, params, where, entry):
+            await _assert_read_case(conn, entry, row, case, by, columns, order)
+    finally:
+        await conn.execute("SET session_replication_role = DEFAULT")
+
+
+async def _assert_read_case(
+    conn: Any,
+    entry: Mapping[str, Any],
+    row: Callable[[Seeded], dict[str, Any]],
+    case: _ClauseCase,
+    by: dict[str, Any],
+    columns: tuple[Any, ...] | None,
+    order: list[Sort],
+) -> None:
+    """one case of a read entry: every row its key names (``read_by``), then the one row or value it read."""
+    table, old_sql, params, where = entry["table"], case.old_sql, case.params, case.where
+    await assert_same_results(
+        conn,
+        table=table,
+        row=row,
+        old_sql=old_sql,
+        params=params,
+        helper=lambda c: read_by(c, table, by=by, columns=columns, records=True, order=order, where=where),
+        order_by=[term["column"] for term in entry.get("order", ())] or None,
+        ordered=bool(order),
+    )
+    if entry["helper"] == "read_row":
+
+        async def one_row(c: Any) -> list[Any]:
+            found = await read_row(c, table, by=by, columns=columns, records=True, where=where)
+            return [] if found is None else [found]
+
         await assert_same_results(
             conn,
             table=table,
             row=row,
-            old_sql=old_sql,
+            old_sql=f"SELECT * FROM ({old_sql}) AS o LIMIT 1",  # noqa: S608 - the manifest's own statement
             params=params,
-            helper=lambda c: read_by(c, table, by=by, columns=columns, records=True, order=order, where=where),
-            order_by=[term["column"] for term in entry.get("order", ())] or None,
-            ordered=bool(order),
+            helper=one_row,
         )
-        if entry["helper"] == "read_row":
+    elif entry["helper"] == "read_value":
+        # a read_value reads one plain column (the codemod refuses an expression there)
+        column: str = entry["columns"][0]
 
-            async def one_row(c: Any) -> list[Any]:
-                found = await read_row(c, table, by=by, columns=columns, records=True, where=where)
-                return [] if found is None else [found]
+        async def one_value(c: Any) -> list[dict[str, Any]]:
+            return [{column: await read_value(c, table, by=by, column=column, where=where)}]
 
-            await assert_same_results(
-                conn,
-                table=table,
-                row=row,
-                old_sql=f"SELECT * FROM ({old_sql}) AS o LIMIT 1",  # noqa: S608 - the manifest's own statement
-                params=params,
-                helper=one_row,
-            )
-        elif entry["helper"] == "read_value":
-            # a read_value reads one plain column (the codemod refuses an expression there)
-            column: str = entry["columns"][0]
-
-            async def one_value(c: Any) -> list[dict[str, Any]]:
-                return [{column: await read_value(c, table, by=by, column=column, where=where)}]
-
-            await assert_same_results(
-                conn,
-                table=table,
-                row=row,
-                old_sql=f'SELECT (SELECT o."{column}" FROM ({old_sql}) AS o LIMIT 1) AS "{column}"',  # noqa: S608
-                params=params,
-                helper=one_value,
-            )
-    finally:
-        await conn.execute("SET session_replication_role = DEFAULT")
+        await assert_same_results(
+            conn,
+            table=table,
+            row=row,
+            old_sql=f'SELECT (SELECT o."{column}" FROM ({old_sql}) AS o LIMIT 1) AS "{column}"',  # noqa: S608
+            params=params,
+            helper=one_value,
+        )
 
 
 async def _assert_count_same(
@@ -619,22 +684,24 @@ async def _assert_count_same(
     by = _by(entry, params)
     where = _where(entry, params)
 
-    async def answered(c: Any) -> list[dict[str, Any]]:
-        if entry["helper"] == "holds_any":
-            return [{"answer": await holds_any(c, table, order=entry["walk"], by=by)}]
-        counted = await aggregate_keyed(c, table, aggregates={"n": Count()}, by=by, where=where)
-        return [{"answer": counted[0]["n"]}]
-
     await conn.execute("SET session_replication_role = replica")
     try:
-        await assert_same_results(
-            conn,
-            table=table,
-            row=row,
-            old_sql=f'SELECT ({entry["old_sql"]}) AS "answer"',  # noqa: S608 - the manifest's own statement
-            params=params,
-            helper=answered,
-        )
+        for case in _clause_cases(entry["old_sql"], params, where, entry):
+
+            async def answered(c: Any, guards: list[Fragment] = case.where) -> list[dict[str, Any]]:
+                if entry["helper"] == "holds_any":
+                    return [{"answer": await holds_any(c, table, order=entry["walk"], by=by)}]
+                counted = await aggregate_keyed(c, table, aggregates={"n": Count()}, by=by, where=guards)
+                return [{"answer": counted[0]["n"]}]
+
+            await assert_same_results(
+                conn,
+                table=table,
+                row=row,
+                old_sql=f'SELECT ({case.old_sql}) AS "answer"',  # noqa: S608 - the manifest's own statement
+                params=case.params,
+                helper=answered,
+            )
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")
 
@@ -664,25 +731,33 @@ async def _assert_first_same(
     else:
         rows = int(limit["literal"])
     own = entry["order"][: entry["key_from"]]
+    for case in _clause_cases(entry["old_sql"], params, where, entry):
 
-    async def first_page(c: Any) -> list[Any]:
-        return (
-            await keyset_page(
-                c, table, columns=_selected(entry["columns"]), by=by, where=where, order=order, limit=rows, records=True
-            )
-        ).rows
+        async def first_page(c: Any, guards: list[Fragment] = case.where) -> list[Any]:
+            return (
+                await keyset_page(
+                    c,
+                    table,
+                    columns=_selected(entry["columns"]),
+                    by=by,
+                    where=guards,
+                    order=order,
+                    limit=rows,
+                    records=True,
+                )
+            ).rows
 
-    await assert_same_results(
-        conn,
-        table=table,
-        row=row,
-        old_sql=entry["old_sql"],
-        params=params,
-        helper=first_page,
-        order_by=[term["column"] for term in own],
-        ordered=True,
-        limited=True,
-    )
+        await assert_same_results(
+            conn,
+            table=table,
+            row=row,
+            old_sql=case.old_sql,
+            params=case.params,
+            helper=first_page,
+            order_by=[term["column"] for term in own],
+            ordered=True,
+            limited=True,
+        )
 
 
 async def _assert_write_same(conn: Any, entry: Mapping[str, Any], *, overrides: _Overrides | None) -> None:
@@ -815,12 +890,19 @@ def _where_says(keywords: Mapping[str | None, ast.expr], entry: Mapping[str, Any
     """whether a helper call's ``where=`` holds the entry's guards, each ``Fragment(<text>, (<arguments>))`` as recorded
     and in order; none written for none recorded."""
     guards = entry.get("where") or ()
+    clauses = entry.get("clauses") or ()
     written = keywords.get("where")
-    if not guards:
+    if not guards and not clauses:
         return written is None
-    if not isinstance(written, ast.List | ast.Tuple) or len(written.elts) != len(guards):
+    if not isinstance(written, ast.List | ast.Tuple) or len(written.elts) != len(guards) + len(clauses):
         return False
-    return all(_pin_says(value, guard, entry["args"]) for value, guard in zip(written.elts, guards, strict=True))
+    spread = written.elts[len(guards) :]
+    return all(
+        _pin_says(value, guard, entry["args"]) for value, guard in zip(written.elts, guards, strict=False)
+    ) and all(
+        isinstance(value, ast.Starred) and _same_expression(value.value, clause["call"])
+        for value, clause in zip(spread, clauses, strict=True)
+    )
 
 
 def _pin_says(value: ast.expr, pin: Mapping[str, Any], args: Sequence[str]) -> bool:
@@ -1079,7 +1161,7 @@ def _count_says(keywords: Mapping[str | None, ast.expr], entry: Mapping[str, Any
     return (
         aggregates is not None
         and _same_expression(aggregates, '{"n": Count()}')
-        and set(keywords) == {"aggregates", "by"} | ({"where"} if entry.get("where") else set())
+        and set(keywords) == {"aggregates", "by"} | ({"where"} if entry.get("where") or entry.get("clauses") else set())
     )
 
 

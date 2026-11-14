@@ -36,9 +36,18 @@ _APPLIES = {
         'filter_clause(self.read_filter, "memories.tags"',
         'filter_clause(self.read_filter, "m.tags"',
         'filter_guards(self.read_filter, "t.tags"',
+        'clause_guards(filter_clause, self.read_filter, "t.tags"',
     ),
-    MemoryChunkCollection: ("_chunk_parent_clause(self.read_filter", "_chunk_parent_guards(self.read_filter"),
-    MediaContentCollection: ("_media_parent_clause(self.read_filter", "_media_parent_guards(self.read_filter"),
+    MemoryChunkCollection: (
+        "_chunk_parent_clause(self.read_filter",
+        "_chunk_parent_guards(self.read_filter",
+        "clause_guards(_chunk_parent_clause, self.read_filter",
+    ),
+    MediaContentCollection: (
+        "_media_parent_clause(self.read_filter",
+        "_media_parent_guards(self.read_filter",
+        "clause_guards(_media_parent_clause, self.read_filter",
+    ),
 }
 
 FILTERED: dict[type, frozenset[str]] = {

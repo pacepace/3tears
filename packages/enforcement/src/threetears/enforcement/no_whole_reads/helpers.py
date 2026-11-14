@@ -445,6 +445,26 @@ def _sort_columns(node: ast.expr | None) -> list[str]:
     return columns
 
 
+def _selected_list(call: ast.Call) -> str:
+    """the select list a read sends: every column, and each ``Selected("<expression>", "<alias>")`` its ``columns=``
+    names as a literal, written over the row ``t`` as the helper writes it, so a sub-select in it (a correlated read
+    of another table, an index it uses) is judged as the hand-written statement's was. A ``columns=`` bound elsewhere
+    reads as every column."""
+    node = _argument(call, "columns", None)
+    listed = ["*"]
+    if isinstance(node, ast.Tuple | ast.List):
+        for element in node.elts:
+            if (
+                isinstance(element, ast.Call)
+                and _name(element) == "Selected"
+                and len(element.args) == 2
+                and all(isinstance(arg, ast.Constant) and isinstance(arg.value, str) for arg in element.args)
+            ):
+                expression, alias = (str(arg.value) for arg in element.args if isinstance(arg, ast.Constant))
+                listed.append(f"{expression} AS {alias}")
+    return ", ".join(listed)
+
+
 def _where(conditions: Sequence[str]) -> str:
     return f" WHERE {' AND '.join(conditions)}" if conditions else ""
 
@@ -482,7 +502,8 @@ def _read_by(call: ast.Call) -> list[str]:
     else:
         table, own = _relation(table_node, "table")
     pinned, _ = _conditions(pins, alias="t")
-    return [f"SELECT * FROM {table} AS t{_where(pinned)}{_written_order(_argument(call, 'order', None))}", *own]
+    order = _written_order(_argument(call, "order", None))
+    return [f"SELECT {_selected_list(call)} FROM {table} AS t{_where(pinned)}{order}", *own]
 
 
 def _written_order(node: ast.expr | None) -> str:
@@ -605,7 +626,11 @@ def _keyset_page(call: ast.Call) -> list[str]:
     filtered, place = _filters(call, place)
     page = [*pinned, *filtered, f"{order[0]} > ${place}"]
     ordered = ", ".join(order)
-    return [f"SELECT * FROM {table} AS t{_where(page)} ORDER BY {ordered} LIMIT {_LIMIT}", *_visible(call), *own]
+    return [
+        f"SELECT {_selected_list(call)} FROM {table} AS t{_where(page)} ORDER BY {ordered} LIMIT {_LIMIT}",
+        *_visible(call),
+        *own,
+    ]
 
 
 def _read_changed(call: ast.Call) -> list[str]:

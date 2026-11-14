@@ -245,6 +245,13 @@ class NoWholeReadsConfig:
         that cut, with no condition of its own. Checked, never trusted: the producer binds the key in every relation
         it returns, every other source of the relations is a snapshot's own or a declared one, and a reader of every
         state is the one place the producer is skipped (:mod:`~threetears.enforcement.no_whole_reads.bounded`)
+    :ivar clause_builders: the repo's clause builders the use-the-helper rewrite turns into a helper's ``where=``
+        (``module:name`` of the builder -> ``module:name`` of its proof subjects): a builder answers `` AND (...)`` or
+        ``""``, called ``build(<subject>, "<text>", ..., <args>)``, binding its values onto the end of ``args``; a
+        statement interpolating its answer is rewritten with ``where=[*clause_guards(build, <subject>, ...)]``. The
+        subjects are a zero-argument callable answering the subjects the generated proof binds the clause to, beside
+        ``None``: each must restrict the seeded rows, or the proof shows nothing about the clause. Not a judging
+        option: the gate's findings are the same with or without it
     """
 
     repo_root: Path
@@ -274,6 +281,7 @@ class NoWholeReadsConfig:
     frozen_migrations: tuple[str, ...] = ()
     bounded_producers: Mapping[str, BoundBy] = field(default_factory=dict)
     local_relations_checked: bool = True
+    clause_builders: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

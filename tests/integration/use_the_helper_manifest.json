@@ -4667,5 +4667,329 @@
   "sets": [],
   "shape": "count",
   "table": "conversations"
+ },
+ {
+  "args": [
+   "agent_id",
+   "user_id",
+   "alias"
+  ],
+  "clauses": [
+   {
+    "at": 683,
+    "build": "threetears.agent.memory.read_filter:filter_clause",
+    "call": "clause_guards(filter_clause, self.read_filter, 't.tags')",
+    "leading": [
+     "memories.tags"
+    ],
+    "respelled": [
+     "t.tags"
+    ],
+    "subjects": "tests.integration.clause_subjects:read_filters"
+   }
+  ],
+  "columns": [
+   "memory_id",
+   "agent_id",
+   "customer_id",
+   "user_id",
+   "conversation_id",
+   "message_id_source",
+   "type_memory",
+   "content",
+   "date_created",
+   "date_updated",
+   "alias",
+   "evergreen",
+   "tags",
+   "superseded_by",
+   {
+    "alias": "superseded_at",
+    "expr": "(SELECT g.date_created FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by)"
+   },
+   {
+    "alias": "corrected_by",
+    "expr": "(SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = t.agent_id AND c.source_memory_id = t.memory_id AND t.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1)"
+   }
+  ],
+  "function": "MemoriesCollection.find_by_alias",
+  "helper": "read_row",
+  "line": 1633,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'memories', by={'agent_id': agent_id, 'user_id': user_id, 'alias': alias}, where=[*clause_guards(filter_clause, self.read_filter, 't.tags')], columns=('memory_id', 'agent_id', 'customer_id', 'user_id', 'conversation_id', 'message_id_source', 'type_memory', 'content', 'date_created', 'date_updated', 'alias', 'evergreen', 'tags', 'superseded_by', Selected('(SELECT g.date_created FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by)', 'superseded_at'), Selected('(SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = t.agent_id AND c.source_memory_id = t.memory_id AND t.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1)', 'corrected_by')), records=True)",
+  "old_sql": "\n            SELECT memory_id, agent_id, customer_id, user_id, conversation_id,\n                   message_id_source, type_memory, content,\n                   date_created, date_updated, alias, evergreen, tags, superseded_by, (SELECT g.date_created FROM memories g WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by) AS superseded_at, (SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = memories.agent_id AND c.source_memory_id = memories.memory_id AND memories.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1) AS corrected_by\n            FROM memories\n            WHERE agent_id = $1 AND user_id = $2 AND alias = $3\n            ",
+  "order": [],
+  "path": "packages/agent/memory/src/threetears/agent/memory/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "user_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "alias",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 3,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "memories"
+ },
+ {
+  "args": [
+   "agent_id",
+   "memory_ids",
+   "user_id"
+  ],
+  "clauses": [
+   {
+    "at": 608,
+    "build": "threetears.agent.memory.read_filter:filter_clause",
+    "call": "clause_guards(filter_clause, self.read_filter, 't.tags')",
+    "leading": [
+     "memories.tags"
+    ],
+    "respelled": [
+     "t.tags"
+    ],
+    "subjects": "tests.integration.clause_subjects:read_filters"
+   }
+  ],
+  "columns": [
+   "memory_id",
+   "type_memory",
+   "content",
+   "date_created",
+   "alias",
+   "evergreen",
+   "tags",
+   "superseded_by",
+   {
+    "alias": "superseded_at",
+    "expr": "(SELECT g.date_created FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by)"
+   },
+   {
+    "alias": "corrected_by",
+    "expr": "(SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = t.agent_id AND c.source_memory_id = t.memory_id AND t.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1)"
+   }
+  ],
+  "function": "MemoriesCollection.search_by_ids",
+  "helper": "read_by",
+  "line": 1992,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'memories', by={'agent_id': agent_id, 'memory_id': AnyOf(memory_ids, cast='uuid'), 'user_id': user_id}, where=[*clause_guards(filter_clause, self.read_filter, 't.tags')], columns=('memory_id', 'type_memory', 'content', 'date_created', 'alias', 'evergreen', 'tags', 'superseded_by', Selected('(SELECT g.date_created FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by)', 'superseded_at'), Selected('(SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = t.agent_id AND c.source_memory_id = t.memory_id AND t.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1)', 'corrected_by')), records=True)",
+  "old_sql": "\n            SELECT memory_id, type_memory, content, date_created, alias, evergreen, tags, superseded_by, (SELECT g.date_created FROM memories g WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by) AS superseded_at, (SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = memories.agent_id AND c.source_memory_id = memories.memory_id AND memories.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1) AS corrected_by\n            FROM memories\n            WHERE agent_id = $1\n              AND memory_id = ANY($2::uuid[])\n              AND user_id = $3\n            ",
+  "order": [],
+  "path": "packages/agent/memory/src/threetears/agent/memory/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": "uuid",
+    "column": "memory_id",
+    "compared": [],
+    "kind": "any",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "user_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 3,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "memories"
+ },
+ {
+  "args": [
+   "agent_id",
+   "memory_id",
+   "user_id"
+  ],
+  "clauses": [
+   {
+    "at": 530,
+    "build": "threetears.agent.memory.read_filter:filter_clause",
+    "call": "clause_guards(filter_clause, self.read_filter, 't.tags')",
+    "leading": [
+     "memories.tags"
+    ],
+    "respelled": [
+     "t.tags"
+    ],
+    "subjects": "tests.integration.clause_subjects:read_filters"
+   }
+  ],
+  "columns": [
+   "memory_id",
+   "type_memory",
+   "content",
+   "date_created",
+   "alias",
+   "evergreen",
+   "tags",
+   "superseded_by",
+   {
+    "alias": "superseded_at",
+    "expr": "(SELECT g.date_created FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by)"
+   },
+   {
+    "alias": "corrected_by",
+    "expr": "(SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = t.agent_id AND c.source_memory_id = t.memory_id AND t.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1)"
+   }
+  ],
+  "function": "MemoriesCollection.find_for_recall",
+  "helper": "read_row",
+  "line": 2256,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'memories', by={'agent_id': agent_id, 'memory_id': memory_id, 'user_id': user_id}, where=[*clause_guards(filter_clause, self.read_filter, 't.tags')], columns=('memory_id', 'type_memory', 'content', 'date_created', 'alias', 'evergreen', 'tags', 'superseded_by', Selected('(SELECT g.date_created FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by)', 'superseded_at'), Selected('(SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = t.agent_id AND c.source_memory_id = t.memory_id AND t.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1)', 'corrected_by')), records=True)",
+  "old_sql": "SELECT memory_id, type_memory, content, date_created, alias, evergreen, tags, superseded_by, (SELECT g.date_created FROM memories g WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by) AS superseded_at, (SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = memories.agent_id AND c.source_memory_id = memories.memory_id AND memories.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1) AS corrected_by FROM memories WHERE agent_id = $1 AND memory_id = $2 AND user_id = $3",
+  "order": [],
+  "path": "packages/agent/memory/src/threetears/agent/memory/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "memory_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "user_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 3,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "memories"
+ },
+ {
+  "args": [
+   "agent_id",
+   "chunk_id",
+   "user_id"
+  ],
+  "clauses": [
+   {
+    "at": 614,
+    "build": "threetears.agent.memory.collections:_chunk_parent_clause",
+    "call": "clause_guards(_chunk_parent_clause, self.read_filter, 't')",
+    "leading": [
+     "mc"
+    ],
+    "respelled": [
+     "t"
+    ],
+    "subjects": "tests.integration.clause_subjects:read_filters"
+   }
+  ],
+  "columns": [
+   "content",
+   "memory_id",
+   "chunk_index",
+   "date_created",
+   "heading_context",
+   "page_number",
+   {
+    "alias": "total",
+    "expr": "(SELECT count(*) FROM memory_chunks s WHERE s.agent_id = t.agent_id AND s.memory_id = t.memory_id AND s.user_id = t.user_id)"
+   },
+   {
+    "alias": "metadata_json",
+    "expr": "(SELECT med.metadata_json FROM media med WHERE med.agent_id = t.agent_id AND med.memory_id = t.memory_id LIMIT 1)"
+   }
+  ],
+  "function": "MemoryChunkCollection.find_for_recall",
+  "helper": "read_row",
+  "line": 4068,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'memory_chunks', by={'agent_id': agent_id, 'chunk_id': chunk_id, 'user_id': user_id}, where=[*clause_guards(_chunk_parent_clause, self.read_filter, 't')], columns=('content', 'memory_id', 'chunk_index', 'date_created', 'heading_context', 'page_number', Selected('(SELECT count(*) FROM memory_chunks s WHERE s.agent_id = t.agent_id AND s.memory_id = t.memory_id AND s.user_id = t.user_id)', 'total'), Selected('(SELECT med.metadata_json FROM media med WHERE med.agent_id = t.agent_id AND med.memory_id = t.memory_id LIMIT 1)', 'metadata_json')), records=True)",
+  "old_sql": "\n            SELECT mc.content, mc.memory_id, mc.chunk_index, mc.date_created,\n                   mc.heading_context, mc.page_number,\n                   (SELECT count(*) FROM memory_chunks s\n                    WHERE s.agent_id = mc.agent_id AND s.memory_id = mc.memory_id\n                      AND s.user_id = mc.user_id) AS total,\n                   (SELECT med.metadata_json FROM media med\n                    WHERE med.agent_id = mc.agent_id AND med.memory_id = mc.memory_id LIMIT 1) AS metadata_json\n            FROM memory_chunks mc\n            WHERE mc.agent_id = $1 AND mc.chunk_id = $2 AND mc.user_id = $3\n            ",
+  "order": [],
+  "path": "packages/agent/memory/src/threetears/agent/memory/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "chunk_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "user_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 3,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "memory_chunks"
  }
 ]

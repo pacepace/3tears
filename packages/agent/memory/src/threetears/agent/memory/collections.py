@@ -41,7 +41,7 @@ from threetears.agent.memory.entities import (
     MemoryEntity,
     MemoryRefEntity,
 )
-from threetears.agent.memory.read_filter import ReadFilter, ReadFiltered, as_guards, filter_clause, filter_guards
+from threetears.agent.memory.read_filter import ReadFilter, ReadFiltered, filter_clause, filter_guards
 from threetears.agent.memory.retrieval_scope import (
     RetrievalScope,
     build_scope_conditions,
@@ -87,6 +87,7 @@ from threetears.core.keyed import (
     Selected,
     Sort,
     aggregate_keyed,
+    clause_guards,
     holds_any,
     keyset_page,
     read_by,
@@ -702,8 +703,7 @@ def _chunk_parent_guards(read_filter: ReadFilter | None) -> tuple[Fragment, ...]
     :return: the guards; none when nothing restricts this read
     :rtype: tuple[Fragment, ...]
     """
-    args: list[Any] = []
-    return as_guards(_chunk_parent_clause(read_filter, "t", args), args)
+    return clause_guards(_chunk_parent_clause, read_filter, "t")
 
 
 def _media_parent_guards(read_filter: ReadFilter | None) -> tuple[Fragment, ...]:
@@ -714,8 +714,7 @@ def _media_parent_guards(read_filter: ReadFilter | None) -> tuple[Fragment, ...]
     :return: the guards; none when nothing restricts this read
     :rtype: tuple[Fragment, ...]
     """
-    args: list[Any] = []
-    return as_guards(_media_parent_clause(read_filter, "t", args), args)
+    return clause_guards(_media_parent_clause, read_filter, "t")
 
 
 def _media_parent_clause(read_filter: ReadFilter | None, content: str, args: list[Any]) -> str:
@@ -1628,17 +1627,36 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         """
         if self.l3_pool is None or not alias:
             return None
-        args: list[Any] = [agent_id, user_id, alias]
-        allowed = filter_clause(self.read_filter, "memories.tags", args)
-        row = await self.l3_pool.fetchrow(
-            f"""
-            SELECT memory_id, agent_id, customer_id, user_id, conversation_id,
-                   message_id_source, type_memory, content,
-                   date_created, date_updated, {_MEMORY_MARK_COLUMNS}
-            FROM memories
-            WHERE agent_id = $1 AND user_id = $2 AND alias = $3{allowed}
-            """,
-            *args,
+        row = await read_row(
+            self.l3_pool,
+            "memories",
+            by={"agent_id": agent_id, "user_id": user_id, "alias": alias},
+            where=[*clause_guards(filter_clause, self.read_filter, "t.tags")],
+            columns=(
+                "memory_id",
+                "agent_id",
+                "customer_id",
+                "user_id",
+                "conversation_id",
+                "message_id_source",
+                "type_memory",
+                "content",
+                "date_created",
+                "date_updated",
+                "alias",
+                "evergreen",
+                "tags",
+                "superseded_by",
+                Selected(
+                    "(SELECT g.date_created FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by)",
+                    "superseded_at",
+                ),
+                Selected(
+                    "(SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = t.agent_id AND c.source_memory_id = t.memory_id AND t.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1)",
+                    "corrected_by",
+                ),
+            ),
+            records=True,
         )
         return dict(row) if row else None
 
@@ -1987,17 +2005,30 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # the batch on the Collection preserves the single entry point
         # + rbac guard; the walker tags this call as inside the
         # Collection class so enforcement test #3 stays clean.
-        args: list[Any] = [agent_id, memory_ids, user_id]
-        allowed = filter_clause(self.read_filter, "memories.tags", args)
-        rows = await self.l3_pool.fetch(
-            f"""
-            SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS}
-            FROM memories
-            WHERE agent_id = $1
-              AND memory_id = ANY($2::uuid[])
-              AND user_id = $3{allowed}
-            """,
-            *args,
+        rows = await read_by(
+            self.l3_pool,
+            "memories",
+            by={"agent_id": agent_id, "memory_id": AnyOf(memory_ids, cast="uuid"), "user_id": user_id},
+            where=[*clause_guards(filter_clause, self.read_filter, "t.tags")],
+            columns=(
+                "memory_id",
+                "type_memory",
+                "content",
+                "date_created",
+                "alias",
+                "evergreen",
+                "tags",
+                "superseded_by",
+                Selected(
+                    "(SELECT g.date_created FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by)",
+                    "superseded_at",
+                ),
+                Selected(
+                    "(SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = t.agent_id AND c.source_memory_id = t.memory_id AND t.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1)",
+                    "corrected_by",
+                ),
+            ),
+            records=True,
         )
         return [dict(row) for row in rows]
 
@@ -2251,12 +2282,30 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             return None
         # cache-bypass: the ``user_id`` guard is a security control the L1
         # row cache cannot enforce, and the marks are computed columns.
-        args: list[Any] = [agent_id, memory_id, user_id]
-        allowed = filter_clause(self.read_filter, "memories.tags", args)
-        row = await self.l3_pool.fetchrow(
-            f"SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS} "
-            f"FROM memories WHERE agent_id = $1 AND memory_id = $2 AND user_id = $3{allowed}",
-            *args,
+        row = await read_row(
+            self.l3_pool,
+            "memories",
+            by={"agent_id": agent_id, "memory_id": memory_id, "user_id": user_id},
+            where=[*clause_guards(filter_clause, self.read_filter, "t.tags")],
+            columns=(
+                "memory_id",
+                "type_memory",
+                "content",
+                "date_created",
+                "alias",
+                "evergreen",
+                "tags",
+                "superseded_by",
+                Selected(
+                    "(SELECT g.date_created FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by)",
+                    "superseded_at",
+                ),
+                Selected(
+                    "(SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = t.agent_id AND c.source_memory_id = t.memory_id AND t.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1)",
+                    "corrected_by",
+                ),
+            ),
+            records=True,
         )
         return dict(row) if row else None
 
@@ -4062,22 +4111,29 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
             return None
         # cache-bypass: by-ID fetch scoped by (agent_id, user_id) -- both are
         # security predicates the L1 cache cannot enforce -- with a sibling count.
-        args: list[Any] = [agent_id, chunk_id, user_id]
-        allowed = _chunk_parent_clause(self.read_filter, "mc", args)
         # ``total`` needs no filter of its own: a passage's siblings share its parent memory
-        row = await self.l3_pool.fetchrow(
-            f"""
-            SELECT mc.content, mc.memory_id, mc.chunk_index, mc.date_created,
-                   mc.heading_context, mc.page_number,
-                   (SELECT count(*) FROM memory_chunks s
-                    WHERE s.agent_id = mc.agent_id AND s.memory_id = mc.memory_id
-                      AND s.user_id = mc.user_id) AS total,
-                   (SELECT med.metadata_json FROM media med
-                    WHERE med.agent_id = mc.agent_id AND med.memory_id = mc.memory_id LIMIT 1) AS metadata_json
-            FROM memory_chunks mc
-            WHERE mc.agent_id = $1 AND mc.chunk_id = $2 AND mc.user_id = $3{allowed}
-            """,
-            *args,
+        row = await read_row(
+            self.l3_pool,
+            "memory_chunks",
+            by={"agent_id": agent_id, "chunk_id": chunk_id, "user_id": user_id},
+            where=[*clause_guards(_chunk_parent_clause, self.read_filter, "t")],
+            columns=(
+                "content",
+                "memory_id",
+                "chunk_index",
+                "date_created",
+                "heading_context",
+                "page_number",
+                Selected(
+                    "(SELECT count(*) FROM memory_chunks s WHERE s.agent_id = t.agent_id AND s.memory_id = t.memory_id AND s.user_id = t.user_id)",
+                    "total",
+                ),
+                Selected(
+                    "(SELECT med.metadata_json FROM media med WHERE med.agent_id = t.agent_id AND med.memory_id = t.memory_id LIMIT 1)",
+                    "metadata_json",
+                ),
+            ),
+            records=True,
         )
         return dict(row) if row else None
 

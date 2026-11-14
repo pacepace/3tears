@@ -646,3 +646,31 @@ def test_a_keyed_aggregate_whose_ranges_the_walk_cannot_read_is_unseen(code: str
     """Flips if ranges named at run time, a run-time range column, or ranges of two columns are passed on a guess."""
     statements = list(helper_statements(_call(code)))
     assert [(statement.sql, statement.unseen) for statement in statements] == [(UNSEEN, "ranges")]
+
+
+@pytest.mark.parametrize(
+    ("code", "found"),
+    [
+        # a correlated read of another table by its key: keyed, as the hand-written select list's was
+        (
+            'read_row(c, "results", by={"state": s, "geo": g, "id": i}, '
+            'columns=("kind", Selected("(SELECT f.run_id FROM fence f WHERE f.signal = t.kind)", "run")))',
+            [],
+        ),
+        # one reading another table by no key: found, as it was in the hand-written statement
+        (
+            'keyset_page(c, "results", by={"state": s}, order=[Sort("geo"), Sort("id")], limit=5, '
+            'columns=("kind", Selected("(SELECT count(*) FROM unindexed u WHERE u.name = t.kind)", "n")))',
+            [("whole-aggregate", "unindexed")],
+        ),
+    ],
+)
+def test_a_selected_sub_select_is_judged_with_its_read(
+    code: str, found: list[tuple[str, str]], schema: SchemaCatalog
+) -> None:
+    """Flips if a ``Selected`` expression in a read's literal ``columns=`` is dropped from the statement judged: a
+    sub-select there reads another table, and the walk must see it (and credit the index it uses) as it saw it in the
+    hand-written statement the helper replaced."""
+    (statement,) = [s.sql for s in helper_statements(_call(code)) if s.sql]
+    assert " AS run" in statement or " AS n" in statement, statement
+    assert _judged(code, schema)[0] == found
