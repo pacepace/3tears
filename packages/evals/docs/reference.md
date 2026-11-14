@@ -586,7 +586,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`inter_judge_agreement`** · function · Pair each second judge's score with the first score it answers, and read agreement the way calibration does.
   <br>`inter_judge_agreement(results: Iterable[ResultView], *, pass_id: str | None = None) -> InterJudgeAgreement`
 - **`judge_agreement`** · function · Pair each rating with the judge's score on its dimension, on its result or the same output, and read agreement.
-  <br>`judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[ResultView]) -> JudgeAgreement`
+  <br>`judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[ResultView], *, rated_by: RaterKind = 'person') -> JudgeAgreement`
 - **`judge_drift`** · function · Read how far each dimension's scores moved from the run's judge to a second judge on the same evidence.
   <br>`judge_drift(results: Iterable[ResultView], *, pass_id: str | None = None) -> JudgeDrift`
 - **`judge_evidence_tiers`** · function · Decide the evidence tier of every judge's readings on every dimension, from the two agreements.

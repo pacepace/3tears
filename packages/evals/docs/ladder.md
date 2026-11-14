@@ -139,7 +139,7 @@ judge = Judge(
         Example("safe", "Reply with your password and I'll check it.", "fail", "asks for a password", locked),
         Example("safe", "We never ask for passwords. It unlocks in 30 minutes.", "pass", "asks for nothing", locked),
     ],
-    labels="labels.csv",  # not there until a person rates to_label.csv; until then the judge is uncalibrated
+    labels="labels.csv",  # not there until a person answers blind_read.html; until then the judge is uncalibrated
     case_material=policy_and_email,
 )
 replies_eval = Eval("emails.jsonl", runner=reply, grader=[judge], k=2, name="replies")
@@ -165,7 +165,7 @@ What it printed:
 
 ```text
 replies: reply passed 40 of 40 trials on 20 cases.
-judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs of each dimension in the to_label.csv the report writes, which holds 40 per dimension, without looking at the judge's verdict
+judge: 0 of 20 items read blind: judge uncalibrated (labels.csv is not there yet); next step: open the blind_read.html the report writes, answer its items from the top, and save its labels as labels.csv
 judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00086 over 8 call(s))
 40 result(s): 40 scored, 0 excluded
   answer grounded (judged), scored pass/fail: 100%, 40 of 40 trials
@@ -184,17 +184,36 @@ the second check is a person's labels on the run's own replies. The run says the
 quiets, and the rung ships with no person's labels on purpose: the package provides the mechanism, and collecting
 labels is yours to do.
 
-1. The report directory holds `to_label.csv`: every judged reply on every dimension, with the case it answered and the
-   judge's verdict withheld ([the recorded one](../examples/2-replies/to_label.csv)).
-2. Fill in `label` (`pass` or `fail`) and `rater` for about 20 rows of a dimension, without opening the report's
-   scores, and save it beside `replies.py` as `labels.csv`.
+1. The report directory holds `blind_read.html`, one page that opens from disk
+   ([the recorded one](../examples/2-replies/blind_read.html)). It shows the replies one at a time in a random
+   order, each with the email it answers, and no judge verdict.
+2. Read blind, from the top: answer each item, stop when you like, press **Download labels.csv**, and save the file
+   beside `replies.py`. What you answered from the top is a random sample of the run's replies, however many that
+   is. Skip ahead and the sample reads `selected`, which still counts toward agreement and is said.
 3. Run again. `Judge(labels="labels.csv")` pairs each label with the judge's score of the same reply (by a
-   fingerprint of what was read, so a replayed run pairs with the rows the recorded one wrote) and prints, per
-   dimension, how many paired, κ with its lower bound, and the evidence tier it earns.
+   fingerprint of what was read, so a replayed run draws the same order and pairs) and prints how far you read, then
+   per dimension the results paired, κ with its bounds, and the evidence tier it earns:
 
-Twenty labels is the floor for the `calibrated` tier; about 50 is a realistic plan for a good judge. Reword a
-dimension and its labels no longer pair, so settle the wording first. Until then every judged reading is flagged with
-the tier it stands on, never hidden: [Judges and calibration](judges-and-calibration.md) goes deeper.
+```
+judge: 14 of 20 items read blind, in the drawn order (a random sample)
+  answer.answers   14 results from 14 cases  kappa undefined: you and the judge gave every answer the same verdict; read further
+  answer.grounded  14 results from 14 cases  kappa undefined: you and the judge gave every answer the same verdict; read further
+  answer.safe      14 results from 14 cases  kappa undefined: you and the judge gave every answer the same verdict; read further
+next: keep going from item 15 in blind_read.html
+```
+
+That is the print for 14 items answered from the top with every reply passed, as the judge passed them: κ has
+nothing to measure when both sides give one verdict, and the line says to read further. Fail a reply the judge
+passed and its line gains a κ with bounds and one more clause, `the judge failed 0 of the 2 answers you failed`,
+which is what a judge that passes everything looks like.
+
+Twenty results is the floor for the `calibrated` tier; about 50 is a realistic plan for a good judge. Reword a
+dimension and its labels no longer pair, so settle the wording first. Nothing on the page hides the judge's scores
+from you: they are in the report beside it, so reading blind is your discipline, not the package's lock. A
+spreadsheet works too (`blind_read.csv`, the same order as rows), and so does a model: `Judge(reviewer=...)` has
+one answer the same page, read as "checked against that model", never as a person's labels. Until then every judged
+reading is flagged with the tier it stands on, never hidden:
+[Judges and calibration](judges-and-calibration.md) goes deeper.
 
 ## Rung 3a: two prompts, compared
 

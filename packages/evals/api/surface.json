@@ -33,7 +33,7 @@
     },
     "threetears.evals.Judge": {
       "kind": "class",
-      "signature": "Judge(model: str | CompletionClient, rubric: Mapping[str, str] | Sequence[RubricDim], *, examples: Sequence[Example] = (), labels: str | os.PathLike[str] | None = None, case_material: Callable[[Mapping[str, Any]], str] | None = None, guard: Mapping[str, float] | None = None) -> None",
+      "signature": "Judge(model: str | CompletionClient, rubric: Mapping[str, str] | Sequence[RubricDim], *, examples: Sequence[Example] = (), labels: str | os.PathLike[str] | None = None, case_material: Callable[[Mapping[str, Any]], str] | None = None, guard: Mapping[str, float] | None = None, reviewer: str | CompletionClient | None = None) -> None",
       "tier": "host-contract"
     },
     "threetears.evals.Log": {
@@ -53,7 +53,7 @@
     },
     "threetears.evals.Result": {
       "kind": "dataclass",
-      "signature": "Result(name: str, scope_id: str, control: str, arms: dict[str, EvalSummary], report: Report, host: EvalHost, campaign_id: str, page: CampaignReport, factors: tuple[str, ...] = ('model',), store: str = '', fields: tuple[str, ...] = (), judge: Judge | None = None, disclosures: tuple[str, ...] = (), calibrations: tuple[JudgeCalibration, ...] = (), judge_examples: JudgeExamples | None = None, to_label: tuple[dict[str, str], ...] = (), contrast_arms: tuple[str | None, ...] = (), contrast_measures: tuple[str | None, ...] = (), kind: str = 'callable', guardrail_readings: GuardrailReadings = GuardrailReadings(), arm_variants: dict[str, str] = dict(), labelled_arms: dict[str, str | None] = dict(), arm_labels: dict[str, str] = dict(), grader_readings: tuple[str, ...] = (), question: str | None = None, margin: float | None = None)",
+      "signature": "Result(name: str, scope_id: str, control: str, arms: dict[str, EvalSummary], report: Report, host: EvalHost, campaign_id: str, page: CampaignReport, factors: tuple[str, ...] = ('model',), store: str = '', fields: tuple[str, ...] = (), judge: Judge | None = None, disclosures: tuple[str, ...] = (), calibrations: tuple[JudgeCalibration, ...] = (), judge_examples: JudgeExamples | None = None, blind_read: BlindRead | None = None, loose_labels: tuple[CalibrationRating, ...] = (), contrast_arms: tuple[str | None, ...] = (), contrast_measures: tuple[str | None, ...] = (), kind: str = 'callable', guardrail_readings: GuardrailReadings = GuardrailReadings(), arm_variants: dict[str, str] = dict(), labelled_arms: dict[str, str | None] = dict(), arm_labels: dict[str, str] = dict(), grader_readings: tuple[str, ...] = (), question: str | None = None, margin: float | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.ROOT_EXTRAS": {
@@ -140,6 +140,116 @@
       "kind": "function",
       "signature": "bind_cell_identity(identity: CellIdentity) -> Iterator[None]",
       "tier": "host-contract"
+    },
+    "threetears.evals.schema.BlindAgreement": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindAnchorCheck": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindAnswer": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindArm": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindAsk": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindDraw": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindItem": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindOutput": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindPreference": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindPreferenceAnswer": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindPreferenceTest": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindPreferenceVerdict": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindRaterKind": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindRead": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindReadReport": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindRefusedAnchor": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindSampleStanding": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindSheet": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindSlot": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindStanding": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindVerdict": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.BlindVerdictTable": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.block_from_json": {
       "kind": "function",
@@ -1071,6 +1181,11 @@
       "signature": "RecordedCall(tool: str, action: str, params: dict[str, Any] = dict())",
       "tier": "stable"
     },
+    "threetears.evals.schema.REFERENCE_RATER_PREFIX": {
+      "kind": "constant (str)",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.referenced_actions": {
       "kind": "function",
       "signature": "",
@@ -1230,6 +1345,31 @@
       "kind": "function",
       "signature": "sent_settings_of(completion: object) -> ClientRequestSettings | None",
       "tier": "host-contract"
+    },
+    "threetears.evals.schema.SheetAsk": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.SheetCriterion": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.SheetItem": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.SheetLevel": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.SheetOutput": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.SIMULATOR_PURPOSES": {
       "kind": "constant (tuple)",
@@ -5958,7 +6098,7 @@
     },
     "threetears.evals.analysis.judge_agreement": {
       "kind": "function",
-      "signature": "judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[ResultView]) -> JudgeAgreement",
+      "signature": "judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[ResultView], *, rated_by: RaterKind = 'person') -> JudgeAgreement",
       "tier": "stable"
     },
     "threetears.evals.analysis.judge_drift": {

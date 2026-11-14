@@ -6,6 +6,34 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a judged run writes a blind read, and a person's labels say whether they are a random sample (#848)
+
+- A judged result's `write()` writes `blind_read.html` and `blind_read.csv` in place of `to_label.csv`: the run's
+  judged answers in one seeded random order, one per case, with no arm, run or result id and no judge score. The page
+  is one static file that opens from disk, loads nothing, and saves `labels.csv`.
+- `Judge(labels=...)` keeps its name and meaning. The print now says how far the person read and whether the answers
+  are the first items of the drawn order (a random sample) or any other set (`selected`), then per dimension the
+  results paired with their cases, kappa with its bounds, the tier, and, where the person failed some answers, how
+  many of those the judge failed. `to_label.csv` listed answers arm by arm in store order, so no prefix of it was a
+  random sample.
+- With two arms each item is a pair in slots A and B, and the person's preference is read by the exact two-sided sign
+  test (ties counted, never split; fewer than 6 non-tie items too few to test). It is given once, when the first 30
+  items (or all of them, where fewer) are answered, and over those items only. Before that the print says how far the
+  read is and no direction or p: a sign test re-read after every item and stopped when it separates is falsely
+  separated about 18% of the time (`tests/test_simulated_blind_read.py`).
+- `Judge(reviewer=...)` and `Result.reviewed_by(model)` have a model answer the same sheet, one call per item: a
+  reference reviewer. Its answers are never a person's. The judge's agreement with it prints as "checked against
+  <model>", it is refused as calibration where it is the judge's own model, and a person's reading decides the tier
+  once it is itself decided.
+- New, provisional: the `BlindRead` shapes and `BlindSheet` on `threetears.evals.schema`; `Result.blind_read` and
+  `Result.loose_labels`. `judge_agreement` and `person_scores_by_result` take `rated_by=` (people by default).
+- Removed: `Result.to_label`. A `to_label.csv` filled in under an earlier version still reads as a labels file, and
+  counts as `selected`.
+
+**For hosts:** nothing stored changes shape and no action is added; the host door for blind reads is a later change.
+A host that read `Result.to_label` or the `to_label` key of `Result.write()` reads `Result.blind_read` and the
+`blind_read` and `blind_read_csv` keys.
+
 ### evals: a definitions reset fills the presentation names a template it leaves current lacks
 
 **Added:** `reset_definitions` runs the definition seed's fill-only presentation-name pass after its writes, on every

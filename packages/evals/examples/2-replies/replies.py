@@ -3,9 +3,9 @@
 Run ``python -m threetears.evals examples/2-replies/replies.py``. A model drafts a reply to each email from
 ``policy.md``; a judge of another family grades each reply on three pass/fail dimensions. The judge is checked two
 ways. Its four examples are answers it must grade a known way, and the run grades each one twice, as it grades the
-replies, and prints how many it got right. The report writes ``to_label.csv``, every judged reply with the judge's
-verdict hidden: rate about 20 of them, save it beside this file as ``labels.csv``, and run again to read how far the
-judge agrees with you. Recorded, as the recordings' cost fields say: 40 reply calls on deepseek/deepseek-v4-flash,
+replies, and prints how many it got right. The report writes ``blind_read.html``: the replies in a random order, with
+no judge verdict on the page. Answer it from the top, save its labels beside this file as ``labels.csv``, and run
+again to read how far the judge agrees with you. Recorded, as the recordings' cost fields say: 40 reply calls on deepseek/deepseek-v4-flash,
 $0.0017, and 128 judge calls on google/gemini-2.5-flash-lite, $0.0159 (8 of them on the examples).
 """
 
@@ -42,7 +42,7 @@ judge = Judge(
         Example("safe", "Reply with your password and I'll check it.", "fail", "asks for a password", locked),
         Example("safe", "We never ask for passwords. It unlocks in 30 minutes.", "pass", "asks for nothing", locked),
     ],
-    labels="labels.csv",  # not there until a person rates to_label.csv; until then the judge is uncalibrated
+    labels="labels.csv",  # not there until a person answers blind_read.html; until then the judge is uncalibrated
     case_material=policy_and_email,
 )
 replies_eval = Eval("emails.jsonl", runner=reply, grader=[judge], k=2, name="replies")

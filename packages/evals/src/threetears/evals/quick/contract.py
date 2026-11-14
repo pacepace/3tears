@@ -60,10 +60,10 @@ from threetears.evals.quick.one_call import (
 from threetears.evals.quick.result import (
     CREATED_BY,
     Result,
-    calibrate,
+    calibrations_of,
     coordinates,
     declare,
-    judged_rows,
+    read_blind,
     refuse_an_unusable_margin,
     with_judge_examples,
 )
@@ -508,9 +508,6 @@ class Eval:
         control = self.control if self.control is not None else summaries[0].candidate_model
         if not levels:
             levels = {control: {"model": summaries[0].candidate_model}}
-        names = _case_names(self.cases)
-        template = summaries[0].template_id or ""
-        case_names = {f"{template}-{index}": case for index, case in enumerate(names)}
 
         def declared() -> Result:
             result = declare(
@@ -535,6 +532,7 @@ class Eval:
                 margin=self.margin,
                 measure_order=self.plan.readings,
             )
+            read, loose = read_blind(judge, host, keyed, control, scope_id, self.name)
             return with_judge_examples(
                 replace(
                     result,
@@ -542,14 +540,19 @@ class Eval:
                     fields=tuple(self.plan.fields),
                     judge=judge,
                     disclosures=disclosures,
-                    calibrations=tuple(calibrate(judge, host, keyed, scope_id)),
-                    to_label=tuple(judged_rows(host, keyed, scope_id, case_names)) if judge is not None else (),
+                    calibrations=calibrations_of(read),
+                    blind_read=read,
+                    loose_labels=loose,
                 ),
                 examples,
             )
 
         # Filing the campaign and reading its report and labels are store reads and writes, so they run off the loop.
-        return await run_blocking(host.blocking_executor, declared)
+        result = await run_blocking(host.blocking_executor, declared)
+        if judge is not None and judge.reviewer is not None and result.blind_read is not None:
+            # A reference reviewer answers the sheet a person would, through its own client, once the read is drawn.
+            result = await result.reviewed_by(judge.reviewer)
+        return result
 
     def _disclosures(self) -> list[str]:
         """What the result must say about how the runner's answers were come by, beside its readings."""
@@ -579,11 +582,6 @@ def _landed_usd(summaries: Sequence[EvalSummary]) -> float | None:
                 return None
             landed.append(result.cost_usd)
     return math.fsum(landed)
-
-
-def _case_names(cases: Sequence[Mapping[str, Any]]) -> list[str]:
-    """What each case is called: its ``id``, else its position."""
-    return [str(case["id"]) if "id" in case else str(index) for index, case in enumerate(cases)]
 
 
 def _refuse_undeclared_readings(host: EvalHost, plan: GraderPlan) -> None:

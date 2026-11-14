@@ -2,9 +2,11 @@
 
 The run grades the judge's four examples as it grades the replies and says how many it got right, from the recording.
 The rung ships with no person's labels, so the run it records says so, by name, with the step that changes it; that
-state is the lesson and is asserted here. The ``to_label.csv`` beside it is what the recorded run wrote, and a run
-replayed from the recordings writes the same rows. One test fills that file in to show ``Judge(labels=...)`` reading
-it back: its labels are a test's, never shipped, and say nothing about how good the judge is.
+state is the lesson and is asserted here. The ``blind_read.html`` and ``blind_read.csv`` beside it are what the
+recorded run wrote: the replies in one seeded random order, with no run, result or judge score on them, and a run
+replayed from the recordings writes the same bytes, since the draw depends on the answers alone. Two tests fill the
+sheet in to show ``Judge(labels=...)`` reading it back, from the top and out of order: their labels are a test's,
+never shipped, and say nothing about how good the judge is.
 """
 
 from __future__ import annotations
@@ -37,17 +39,12 @@ RUNG = EXAMPLES / "2-replies"
 
 #: What the honest first run prints about its judge: no labels, and the step that calibrates it.
 UNCALIBRATED = (
-    "judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs of each "
-    "dimension in the to_label.csv the report writes, which holds 40 per dimension, without looking at the judge's "
-    "verdict"
+    "judge: 0 of 20 items read blind: judge uncalibrated (labels.csv is not there yet); next step: open the "
+    "blind_read.html the report writes, answer its items from the top, and save its labels as labels.csv"
 )
 
 #: What the run prints about the judge's examples: each graded twice, as the recording holds it.
 EXAMPLES_GRADED = "judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00086 over 8 call(s))"
-
-#: The columns of a ``to_label.csv`` row that are the same whichever run wrote it. The ids are each run's own, and a
-#: case's two repeats may take its two recorded replies in either order, so ``repeat`` is left out too.
-_STABLE = ("case", "dimension", "case_material", "answer", "output_fingerprint", "criterion_fingerprint")
 
 
 @pytest.fixture
@@ -71,8 +68,10 @@ def _rows(path: Path) -> list[dict[str, str]]:
 
 def test_no_person_s_labels_ship_with_the_rung() -> None:
     assert not (RUNG / "labels.csv").exists(), "labels are a person's to write; none may ship"
-    assert {row["label"] for row in _rows(RUNG / "to_label.csv")} == {""}
-    assert {row["rater"] for row in _rows(RUNG / "to_label.csv")} == {""}
+    assert not (RUNG / "to_label.csv").exists(), "the sheet in store order is retired"
+    rows = _rows(RUNG / "blind_read.csv")
+    assert {row["label"] for row in rows} == {""} and {row["rater"] for row in rows} == {""}
+    assert {row["prefer"] for row in rows} == {""} and {row["rater_kind"] for row in rows} == {""}
 
 
 def test_the_judge_is_three_pass_fail_dimensions_four_hard_negatives_and_another_family(replies_dir: Path) -> None:
@@ -134,14 +133,18 @@ def test_the_run_replays_offline_and_says_its_judge_is_uncalibrated_with_the_nex
     # The judge is another family, so nothing warns that a model judged its own answers.
     assert "self-judging:" not in printed
 
-    written = replies_dir / ".evals" / "reports" / "replies" / "to_label.csv"
-    rows = _rows(written)
-    assert len(rows) == 120 and {row["label"] for row in rows} == {""}, "the judge's verdict is withheld"
-    shipped = _rows(RUNG / "to_label.csv")
-    # The same rows, in whatever order the store lists its results.
-    assert sorted([row[column] for column in _STABLE] for row in rows) == sorted(
-        [row[column] for column in _STABLE] for row in shipped
-    ), "the shipped to_label.csv is not what a replayed run writes"
+    report_dir = replies_dir / ".evals" / "reports" / "replies"
+    rows = _rows(report_dir / "blind_read.csv")
+    # One reply per email, drawn among its two repeats, on each of the three dimensions: 20 items, in the drawn order.
+    assert len(rows) == 60 and [int(row["position"]) for row in rows[::3]] == list(range(1, 21))
+    assert {row["label"] for row in rows} == {""}, "no verdict is on the sheet"
+    # The draw depends on the answers alone, so a replayed run writes the shipped page and sheet, byte for byte.
+    for name in ("blind_read.html", "blind_read.csv"):
+        written = (report_dir / name).read_bytes()
+        assert written == (RUNG / name).read_bytes(), f"the shipped {name} is not what a replayed run writes"
+        # Neither names a run or a result, and the judge's model and reasons are nowhere on it.
+        for mark in (b"run_id", b"result_id", b"gemini", b"eval_run"):
+            assert mark not in written, f"{name} carries {mark!r}"
 
 
 async def test_the_judge_s_spend_is_its_own_and_its_model_judged_none_of_its_own_answers(replies_dir: Path) -> None:
@@ -172,24 +175,74 @@ async def test_the_judge_s_spend_is_its_own_and_its_model_judged_none_of_its_own
     assert page_violations(result.report) == []
 
 
-def test_a_filled_in_to_label_is_read_back_as_the_judge_s_calibration(
-    replies_dir: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The mechanics only: a test's labels (every reply marked as the judge marked it), never a person's."""
-    rows = _rows(replies_dir / "to_label.csv")
-    for row in rows[:60]:
-        row["label"], row["rater"] = "pass", "this test, not a person"
+def _label(replies_dir: Path, positions: set[int]) -> None:
+    """Save ``labels.csv``: the shipped sheet with every reply at ``positions`` marked as the judge marked it."""
+    rows = _rows(replies_dir / "blind_read.csv")
+    for row in rows:
+        if int(row["position"]) in positions:
+            row["label"], row["rater"] = "pass", "this test, not a person"
     with (replies_dir / "labels.csv").open("w", encoding="utf-8", newline="") as written:
         writer = csv.DictWriter(written, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
 
+
+def test_a_sheet_answered_from_the_top_is_read_back_as_a_random_sample_and_the_judge_s_agreement(
+    replies_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The mechanics only: a test's labels (every reply marked as the judge marked it), never a person's."""
+    _label(replies_dir, set(range(1, 15)))
+
     assert main(["replies.py"]) == 0
 
-    printed = capsys.readouterr().out
-    assert UNCALIBRATED not in printed
-    read = [line for line in printed.splitlines() if line.startswith("judge against labels.csv: answer.")]
-    assert len(read) == 3 and all(" label(s), " in line and "; tier " in line for line in read)
+    lines = capsys.readouterr().out.splitlines()
+    assert UNCALIBRATED not in lines
+    at = lines.index("judge: 14 of 20 items read blind, in the drawn order (a random sample)")
+    # The judge passed every reply and so did the labels, so kappa has nothing to measure: said, with what to do.
+    undefined = (
+        "14 results from 14 cases  kappa undefined: you and the judge gave every answer the same verdict; read further"
+    )
+    assert lines[at + 1 : at + 5] == [
+        f"  answer.answers   {undefined}",
+        f"  answer.grounded  {undefined}",
+        f"  answer.safe      {undefined}",
+        "next: keep going from item 15 in blind_read.html",
+    ]
+    assert lines[at + 5] == EXAMPLES_GRADED
+    # The ladder shows these lines as what a read from the top prints; it is held to them here.
+    ladder = (REPO_ROOT / "packages" / "evals" / "docs" / "ladder.md").read_text(encoding="utf-8")
+    assert "\n".join(lines[at : at + 5]) in ladder, "docs/ladder.md's rung 2 labelled print is not what the run prints"
+    assert not any(line.startswith("preference") for line in lines), "one arm has no pair to prefer between"
+
+
+def test_a_sheet_answered_out_of_order_reads_as_selected(replies_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _label(replies_dir, {2, 5, 11})
+
+    assert main(["replies.py"]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert "judge: 3 of 20 items read blind, out of the drawn order (selected, not a random sample)" in lines
+    assert "next: for a random sample, answer blind_read.html from item 1, in order" in lines
+
+
+async def test_the_result_carries_the_read_and_each_standing(replies_dir: Path) -> None:
+    _label(replies_dir, set(range(1, 21)))
+    module = _load(replies_dir / "replies.py")
+
+    result = await module.replies_eval.run(store=":memory:")
+
+    read = result.blind_read
+    assert read is not None and read.report is not None
+    assert (len(read.items), read.draw.population, read.draw.excluded) == (20, 20, {})
+    assert [arm.role for arm in read.arms] == ["control"] and read.ask == ["verdicts"]
+    (standing,) = read.report.standings
+    assert (standing.standing, standing.answered, standing.items) == ("random", 20, 20)
+    assert [(c.dimension, c.labels, c.kappa) for c in result.calibrations] == [
+        ("answer.answers", 20, None),
+        ("answer.grounded", 20, None),
+        ("answer.safe", 20, None),
+    ]
+    assert not any(line.startswith("next:") for line in result.calibration_lines())
 
 
 def test_the_docstring_states_the_cost_its_recordings_record() -> None:

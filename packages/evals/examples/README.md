@@ -121,19 +121,20 @@ apart is not grading the run's replies right. That takes a person's labels on th
 missing in the line it never quiets:
 
 ```text
-judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs of each dimension in the to_label.csv the report writes, which holds 40 per dimension, without looking at the judge's verdict
+judge: 0 of 20 items read blind: judge uncalibrated (labels.csv is not there yet); next step: open the blind_read.html the report writes, answer its items from the top, and save its labels as labels.csv
 ```
 
 Calibrating it is yours to do; no person's labels ship with the rung.
-1. Run it. The report directory (`.evals/reports/replies/`) holds `to_label.csv`: every judged reply on every
-   dimension, with the case it answered and the judge's verdict withheld. [`to_label.csv`](2-replies/to_label.csv)
-   beside the example is that file, as the recorded run wrote it.
-2. Fill in `label` (`pass` or `fail`), and `rater` with your name, for about 20 rows of each dimension, without
-   opening the report's scores. Save it beside `replies.py` as `labels.csv`.
+1. Run it. The report directory (`.evals/reports/replies/`) holds `blind_read.html`: the replies one at a time in
+   a random order, each with the email it answers, and no judge verdict on the page.
+   [`blind_read.html`](2-replies/blind_read.html) beside the example is that file, as the recorded run wrote it
+   ([`blind_read.csv`](2-replies/blind_read.csv) is the same order as rows, for a spreadsheet).
+2. Open it and answer from the top. Stop when you like, press **Download labels.csv**, and save the file beside
+   `replies.py`. What you answered from the top is a random sample; answers out of order read `selected`.
 3. Run it again. `Judge(labels="labels.csv")` reads your labels back, pairs each with the judge's score of the same
-   reply (by its fingerprint, so a replayed run pairs with the rows the recorded one wrote), and prints, per
-   dimension, how many labels paired, κ with its lower bound, and the evidence tier it earns. Below 20 labels the
-   tier says the judge is not yet calibrated; reword a rubric dimension and its labels no longer pair.
+   reply (by its fingerprint, so a replayed run draws the same order and pairs), and prints how far you read and,
+   per dimension, the results paired, κ with its bounds, and the evidence tier it earns. Below 20 results the tier
+   says the judge is not yet calibrated; reword a rubric dimension and its labels no longer pair.
 
 Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017) and 128 judge calls on
 `google/gemini-2.5-flash-lite` ($0.0159, 8 of them on the examples), the runner's and the judge's in recordings of

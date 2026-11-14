@@ -10,7 +10,7 @@ The quiet print's lines, read through ``render()`` and the files ``write`` leave
 
 - **A miss shows the graded field**, never the whole answer object it was read from: a runner's answer can run to
   hundreds of characters, and the label is what was wrong.
-- **The judge's next step reads the sheet**: how many rows ``to_label.csv`` holds per dimension, and how many more
+- **The judge's next step reads the blind read**: how many judged answers it holds per dimension, and how many more
   judged answers the calibrated tier's floor needs when it holds fewer.
 - **Total spend splits by role** when more than one role spent, each role's dollars read off its usage rows.
 - **A comparison leads on its classifier, else its first grader**, never on a cost alone, with a guardrail not held
@@ -391,11 +391,11 @@ async def priced_hasty(case: Mapping[str, Any]) -> Answer:
 
 
 def _sheet(written: Mapping[str, Path]) -> Counter[str]:
-    with written["to_label"].open(encoding="utf-8", newline="") as read:
+    with written["blind_read_csv"].open(encoding="utf-8", newline="") as read:
         return Counter(row["dimension"] for row in csv.DictReader(read))
 
 
-async def test_the_judge_s_next_step_says_what_the_sheet_holds_and_how_many_more_answers_the_floor_needs(
+async def test_the_judge_s_next_step_says_what_the_read_holds_and_how_many_more_answers_the_floor_needs(
     tmp_path: Path,
 ) -> None:
     labels = tmp_path / "labels.csv"
@@ -403,25 +403,26 @@ async def test_the_judge_s_next_step_says_what_the_sheet_holds_and_how_many_more
         store=":memory:", scope=SCOPE
     )
     sheet = _sheet(result.write(tmp_path / "report"))
-    assert sheet == {"answer.billing": 3, "answer.plain": 3}, "one row per judged answer per dimension"
+    assert sheet == {"answer.billing": 3, "answer.plain": 3}, "one row per drawn answer per dimension"
     needed = CALIBRATION_MIN_RESULTS - 3
     assert result.render().splitlines()[1] == (
-        f"judge: 0 labels: judge uncalibrated ({labels.name} is not there yet); next step: rate every output in the "
-        "to_label.csv the report writes, which holds 3 per dimension, without looking at the judge's verdict; the "
-        f"calibrated tier's floor is {CALIBRATION_MIN_RESULTS} per dimension, so it needs {needed} more judged "
-        "answers per dimension"
+        f"judge: 0 of 3 items read blind: judge uncalibrated ({labels.name} is not there yet); next step: open the "
+        f"blind_read.html the report writes, answer its items from the top, and save its labels as {labels.name}; "
+        f"the calibrated tier's floor is {CALIBRATION_MIN_RESULTS} judged answers per dimension and the read holds 3, "
+        f"so it needs {needed} more"
     )
 
 
-async def test_a_sheet_at_the_floor_asks_for_the_floor_s_ratings_of_each_dimension(tmp_path: Path) -> None:
+async def test_a_read_at_the_floor_asks_only_for_the_read(tmp_path: Path) -> None:
     cases = [{"text": f"refund {n}", "queue": "billing"} for n in range(CALIBRATION_MIN_RESULTS)]
     result = await Eval(cases, hasty, [QUEUE, Judge(FakeJudge(), RUBRIC)], k=1).run(store=":memory:", scope=SCOPE)
     sheet = _sheet(result.write(tmp_path / "report"))
+    # Every case's answer is the one word "billing", so the read holds each case once, as its own item.
     assert set(sheet.values()) == {CALIBRATION_MIN_RESULTS}
     assert result.calibration_lines() == [
-        "judge: 0 labels: judge uncalibrated (Judge(labels=...) names a person's labels); next step: rate about "
-        f"{CALIBRATION_MIN_RESULTS} outputs of each dimension in the to_label.csv the report writes, which holds "
-        f"{CALIBRATION_MIN_RESULTS} per dimension, without looking at the judge's verdict"
+        f"judge: 0 of {CALIBRATION_MIN_RESULTS} items read blind: judge uncalibrated (Judge(labels=...) names the "
+        "labels file); next step: open the blind_read.html the report writes, answer its items from the top, and "
+        "save its labels where Judge(labels=...) names"
     ]
 
 

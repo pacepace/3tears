@@ -380,3 +380,62 @@ def test_the_pooled_tier_from_several_people_holds_its_error_at_the_bar(label: s
         (tier,) = judge_evidence_tiers(judge_agreement(ratings, results), judge_self_agreement([]), {key})
         met += tier.calibration.state == "met"
     assert met / replicates <= at_most(_ONE_SIDED, replicates), f"{label}: met {met / replicates:.3f}"
+
+
+def _two_results_a_case(
+    rng: random.Random, cases: int, agreement: float, scale: str
+) -> tuple[list[CalibrationRating], list[EvalResult]]:
+    """``cases`` cases of two results each, as a blind read's pair items give them, one person rating every result.
+
+    The judge's errors coincide within a case: it gives both of a case's results the true score with probability
+    ``agreement``, and a chance score to both otherwise (a hard case is hard for both arms). Each result's kappa with
+    the person is ``agreement``; the two results of a case are as far from independent as they can be.
+    """
+    categories, marginal = ([0, 1], [1, 1]) if scale == "pass_fail" else (_SCALE, [1, 2, 4, 2, 1])
+    results, ratings = [], []
+    for case in range(cases):
+        right = rng.random() < agreement
+        for arm in range(2):
+            truth = rng.choices(categories, weights=marginal)[0]
+            judge = truth if right else rng.choices(categories, weights=marginal)[0]
+            result = make_eval_result(
+                id=f"result-{case}-{arm}",
+                test_case_id=f"case-{case}",
+                rubric_scores=[
+                    RubricScore(
+                        dim=_DIM,
+                        score=judge,
+                        scale=scale,
+                        served_model=_JUDGE,
+                        axis="capability",
+                        judge_temperature=0.0,
+                    )
+                ],
+            )
+            results.append(result)
+            ratings.append(
+                make_calibration_rating(result_id=result.id, rater="ana", score=truth, rubric_dim=_DIM, scale=scale)
+            )
+    return ratings, results
+
+
+@pytest.mark.parametrize("scale", ["pass_fail", "ordinal"])
+@pytest.mark.parametrize("cases", [10, 30, 60])
+def test_two_results_a_case_with_errors_that_coincide_hold_the_tier_s_error_at_the_bar(scale: str, cases: int) -> None:
+    """A pair item of a blind read gives two results from one case, and the tier's floor and interval count results.
+
+    Held at the worst case, the judge's errors on a case's two results coinciding outright, with the judge at the
+    bar (kappa 0.6): the tier is awarded at most 5% of the time plus four Monte Carlo standard errors. Measured over
+    1,000 reads a row (2026-11-14): awarded 1.5% to 5.9% and shown below the bar 3.1% to 6.1%, against 0.8% to 4.5%
+    and 1.4% to 2.9% with independent errors. So coinciding errors use up the interval's slack and no more; the
+    interval is not recomputed over cases, and a reading states its cases beside its results.
+    """
+    rng = random.Random(f"two-results-a-case-{scale}-{cases}")
+    replicates = 500
+    met = 0
+    key = JudgeKey(_DIM, scale, _JUDGE, None, 0.0)
+    for _ in range(replicates):
+        ratings, results = _two_results_a_case(rng, cases, CALIBRATION_MIN_AGREEMENT, scale)
+        (tier,) = judge_evidence_tiers(judge_agreement(ratings, results), judge_self_agreement([]), {key})
+        met += tier.calibration.state == "met"
+    assert met / replicates <= at_most(_ONE_SIDED, replicates), f"{scale}, {cases} cases: met {met / replicates:.3f}"
