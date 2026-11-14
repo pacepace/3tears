@@ -30,6 +30,11 @@ the prompt's key and where it parts from the recorded prompts: how many hold the
 80 characters, or the nearest recorded key and the character it parts at. Rung 5's recordings README says what to do
 when page text moves.
 
+**For hosts:** `ReplayMiss` is in the host-contract tier (owner ruling; the declared ceiling goes from 498 to 499). A
+host's own replay raises it, or a subclass, when its recording cannot serve a call, so the run fails naming the call;
+any other `ApparatusError` still excludes only its cell. A host test that read a partial miss as a completed run on
+fewer cells now sees the run fail.
+
 ### evals: a request whose connection broke before any response began is sent again once, and counted (#1137; core v15.16)
 
 **Fixed:** a first send whose connection broke before any response began (`httpx.RemoteProtocolError`, "Server

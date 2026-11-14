@@ -714,7 +714,7 @@
 "threetears.evals.kernel.host.ProfileRegistrationError": "provisional",
 "threetears.evals.kernel.host.Qualification": "provisional",
 "threetears.evals.kernel.host.RegistrationError": "provisional",
-"threetears.evals.kernel.host.ReplayMiss": "provisional",
+"threetears.evals.kernel.host.ReplayMiss": "host-contract",
 "threetears.evals.kernel.host.ResidualReader": "provisional",
 "threetears.evals.kernel.host.resolve_preconditions": "provisional",
 "threetears.evals.kernel.host.ResolvedLevers": "provisional",

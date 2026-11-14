@@ -3569,7 +3569,7 @@
     "threetears.evals.kernel.host.ReplayMiss": {
       "kind": "exception",
       "signature": "",
-      "tier": "provisional"
+      "tier": "host-contract"
     },
     "threetears.evals.kernel.host.ResidualReader": {
       "kind": "type alias",

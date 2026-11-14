@@ -4,10 +4,10 @@
 where each is imported from. What a name does is in the [reference](reference.md#public-api), which lists the
 same names; what each tier promises is in [stability tiers](adopting-a-host.md#stability-tiers).
 
-498 names are declared: the `host-contract` and `stable` tiers. A root exports more, as `provisional` names, most of
+499 names are declared: the `host-contract` and `stable` tiers. A root exports more, as `provisional` names, most of
 them the types a declared signature reaches; they import, and nothing about them is promised. The limit on declared
-names is 498: the latest slot is host contract for `failed_call_output`, the one routing of a failed model call that a
-host's own candidate kind uses.
+names is 499: the latest slot is host contract for `ReplayMiss`, which a host's own replay raises so that a recording
+that cannot serve the run fails it.
 
 A declared name goes provisional once nothing outside the package imports it, unless one of these holds:
 
@@ -94,7 +94,7 @@ What a host writes against beyond the rungs: the host and profile, registries, t
 - `threetears.evals`: `__version__`, `PUBLIC_ROOTS`, `ROOT_EXTRAS`, `RootExtra`, `surface_tier`
 - `schema`: `AsyncDocumentStore`, `AsyncStoreClock`, `bind_cell_identity`, `CASSETTE_SCHEMA_VERSION`, `ClientRequestSettings`, `CompletionClient`, `CompletionProtocolDefect`, `CompletionResult`, `CORE_BASELINE_VERSION`, `CORE_SCHEMA_MINOR`, `CORE_SCHEMA_VERSION`, `COST_CAP_ORIGINS`, `current_cell_identity`, `DEFAULT_JOB_LEASE_S`, `DocumentStore`, `DURABLE_BASELINE_VERSION`, `DURABLE_SCHEMA_MINOR`, `DURABLE_SCHEMA_VERSION`, `EvalResult`, `EvalRun`, `EvalTemplate`, `EvalTestCase`, `EvalTrace`, `field_in_values`, `IntervalScale`, `is_builtin_judge_config_id`, `JOB_LEASE_RENEWAL_FRACTION`, `judge_config_of`, `JUDGE_WORDING_CHANGE_SENTENCE`, `JudgedArtifact`, `KnownOutOfRunPurpose`, `KnownRefusalKind`, `KnownSimulatorPurpose`, `KnownUsageRole`, `LEASE_POOL_WORKERS`, `ProviderFailureDescriber`, `REFUSAL_KINDS`, `RefusalKind`, `REGENERABLE_SCHEMA_VERSION`, `RoleUsage`, `sent_settings_of`, `StopReason`, `StoreCalledOnEventLoop`, `StoreClock`, `StoreConflict`, `SubjectSnapshot`, `SweepableValue`, `TraceSink`, `USAGE_ROLES`, `WorldSeed`
 - `kernel`: `AdmissionRefusedError`, `CandidateKind`, `CandidateKindDefect`, `CandidateOutput`, `CandidatePreparationFailed`, `CandidateTelemetry`, `CappedCompletion`, `CassetteStore`, `CellCassettes`, `CellSink`, `CellSpanWindow`, `ConflictError`, `default_job_timeout`, `DefinitionStore`, `EvalCampaign`, `EvalServiceError`, `EvalStorage`, `failed_call_output`, `IDENTITY_VERSION`, `JobStore`, `MetricDescriptor`, `NotFoundError`, `ProviderRefusedError`, `ResultStore`, `RunRecordStore`, `RunStore`, `StorageError`, `strict_response_format`, `UnportableSchema`, `UnreadableRunError`, `ValidationFailedError`, `VariantConfig`, `withhold_failure_detail`, `WorldSession`
-- `kernel.host`: `Bar`, `BarRegistry`, `CompletionClients`, `CompletionRole`, `default_cell_timeout`, `EvalHost`, `HostProfile`, `KindContract`, `load_bar_registry`, `MeasureRegistry`, `MemberActsOn`, `PassThreshold`, `SeedRefused`, `SHARED_CORE`, `Sweepable`, `SweepableRegistry`, `TemplateCaseFields`, `TemplateChecks`, `WorldDimension`, `WorldRegistry`
+- `kernel.host`: `Bar`, `BarRegistry`, `CompletionClients`, `CompletionRole`, `default_cell_timeout`, `EvalHost`, `HostProfile`, `KindContract`, `load_bar_registry`, `MeasureRegistry`, `MemberActsOn`, `PassThreshold`, `ReplayMiss`, `SeedRefused`, `SHARED_CORE`, `Sweepable`, `SweepableRegistry`, `TemplateCaseFields`, `TemplateChecks`, `WorldDimension`, `WorldRegistry`
 - `run`: `admit_template`, `Ceilings`, `corpus_digests`, `definition_drift`, `DefinitionReset`, `execute_run`, `JUDGE_REQUEST_SETTINGS`, `KindFactory`, `KindLauncher`, `KindWiring`, `launch_run`, `LaunchableKind`, `LaunchHost`, `LaunchRequest`, `LaunchSettings`, `load_seed_corpus`, `price_subject_call_floor`, `reset_definitions`, `run_blocking`, `RunnerOptions`, `SeedCaseSet`, `SeedJudgeCase`, `SeedTemplateCase`, `SIMULATOR_REQUEST_SETTINGS`, `start_run`, `SubjectResolver`, `UnknownSubject`, `update_template`
 - `analysis`: `check_names`, `DECLARED_NAME_CHARS`, `GOAL_CHECK`, `host_declarations_digest`, `READ_TIER_ROW_BUDGET`
 - `ops`: `campaign_export`, `CampaignExport`
