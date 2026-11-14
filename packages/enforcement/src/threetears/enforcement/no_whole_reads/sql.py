@@ -1247,8 +1247,12 @@ def _key_hit(
     nearest = _nearest_hit(purposed, level, index, reader, relation)
     eq, ranged, contained, tenants, bounded = bound
     table = bare_table(relation.name)
-    if table is not None and table.startswith(COPY_PREFIX):
-        # on a local copy, a declared key column IS NULL is that key's NULL bucket: keyed
+    declared = None if table is None or table.startswith(COPY_PREFIX) else reader.schema.table(relation.name)
+    if table is not None and (
+        table.startswith(COPY_PREFIX) or (declared is not None and declared.name.startswith(COPY_PREFIX))
+    ):
+        # on a local copy (``copy.<name>``, or the local database's own ``main.<name>`` judged by the copy's declared
+        # keys), a declared key column IS NULL is that key's NULL bucket: keyed
         eq = eq | {column for key in primary for column in key if column in contained}
     covering = [key for key in primary if _covers(key, eq, tenants)]
     if covering:

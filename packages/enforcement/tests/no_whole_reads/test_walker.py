@@ -2026,6 +2026,33 @@ def test_a_copy_s_declared_key_is_null_is_its_null_bucket(tmp_path: Path) -> Non
     assert not any(function == "null_bucket" for function, _ in found), found
 
 
+_COPY_NULL_PINS = """
+    from threetears.core import keyed
+    from threetears.core.keyed import run_inline
+
+    HELD = "lsf_held_runs"
+
+
+    def renew_nameless(conn, table):
+        runs = f"main.{HELD}"
+        run_inline(keyed.delete_keyed(conn, runs, by={"tbl": table, "state": None}))
+
+
+    def renew_by_other(conn, table):
+        runs = f"main.{HELD}"
+        run_inline(keyed.delete_keyed(conn, runs, by={"tbl": None}))
+"""
+
+
+def test_a_none_pin_on_a_local_copy_s_declared_key_is_its_null_bucket(tmp_path: Path) -> None:
+    """Flips if a keyed helper's ``by={<declared key column>: None}`` on a local copy written in the local database's
+    own schema (``main.<name>``) is called a whole read, as the same ``IS NULL`` on a ``copy.`` relation is not; or a
+    None pin on a column no key of the copy names passes (reports #48 item 1)."""
+    found = _symbols(_config(tmp_path, {"held.py": _COPY_NULL_PINS}, local_relations={"lsf_held_runs": ("state",)}))
+    assert not any(function == "renew_nameless" for function, _ in found), found
+    assert any(function == "renew_by_other" for function, _ in found), found
+
+
 def test_a_source_gap_names_its_gap_and_is_announced(tmp_path: Path) -> None:
     """Flips if a whole read kept for an upstream source's missing change record is accepted without its gap id and
     condition, or accepted silently."""
