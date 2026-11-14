@@ -532,7 +532,8 @@ class TestNamespaceListOwnedBy:
         coll = make_collection(NamespaceCollection, l3_pool=pool)
         owned = await coll.list_owned_by("agents.owner")
         assert [entity.id for entity in owned] == [child_id]
-        assert pool.fetch.await_args.args[1] == "agents.owner"
+        # bound after the two row scopes it reads across
+        assert pool.fetch.await_args.args[1:3] == (["platform", "customer"], "agents.owner")
 
     @pytest.mark.asyncio
     async def test_an_empty_owner_owns_nothing_and_asks_nothing(self) -> None:
@@ -557,10 +558,11 @@ class TestNamespaceSchemaInUse:
     @pytest.mark.parametrize("named", [True, False])
     async def test_it_answers_what_the_table_says(self, named: bool) -> None:
         pool = AsyncMock()
-        pool.fetchval.return_value = named
+        # the keyed probe answers one row when a namespace names the schema, none when none does
+        pool.fetch.return_value = [{"held": 1}] if named else []
         coll = make_collection(NamespaceCollection, l3_pool=pool)
         assert await coll.schema_in_use("agent_0123") is named
-        assert pool.fetchval.await_args.args[1] == "agent_0123"
+        assert pool.fetch.await_args.args[2] == "agent_0123"
 
     @pytest.mark.asyncio
     async def test_an_empty_schema_name_is_never_in_use_and_asks_nothing(self) -> None:
@@ -568,6 +570,7 @@ class TestNamespaceSchemaInUse:
         coll = make_collection(NamespaceCollection, l3_pool=pool)
         assert await coll.schema_in_use("") is False
         pool.fetchval.assert_not_awaited()
+        pool.fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_pool_refuses_rather_than_answering_the_schema_is_free(self) -> None:
@@ -585,7 +588,8 @@ class TestEnsureGroupRoleAssignment:
         """existing matching row wins; no INSERT; created=False."""
         existing_id = uuid7()
         pool = AsyncMock()
-        pool.fetchrow.return_value = {"assignment_id": existing_id}
+        # the grant's natural-key read (a keyed first page, through fetch) finds it held
+        pool.fetch.return_value = [{"assignment_id": existing_id}]
         coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         assignment_id, created = await coll.ensure_group_role_assignment(
             group_id=uuid7(),
@@ -608,6 +612,7 @@ class TestEnsureGroupRoleAssignment:
         """missing row triggers INSERT and returns the id it inserted."""
         pool = AsyncMock()
         pool.fetchrow.return_value = None
+        pool.fetch.return_value = []  # no grant held, and the namespace names no customer
         pool.fetchval.side_effect = lambda sql, *args: args[1]
         coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         coll.invalidate_cache_many = AsyncMock()
@@ -633,7 +638,8 @@ class TestEnsureGroupRoleAssignment:
         """the insert absorbed by the natural-key index: the winner is read back, created=False."""
         winner = uuid7()
         pool = AsyncMock()
-        pool.fetchrow.side_effect = [None, {"row_scope": "platform", "assignment_id": winner}]
+        pool.fetch.return_value = []  # the natural-key read finds none held (nor a namespace customer)
+        pool.fetchrow.side_effect = [{"row_scope": "platform", "assignment_id": winner}]
         pool.fetchval.side_effect = [None]
         coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         coll.invalidate_cache_many = AsyncMock()
@@ -646,7 +652,7 @@ class TestEnsureGroupRoleAssignment:
             managed_by="bootstrap",
         )
         assert (assignment_id, created) == (winner, False)
-        reread = pool.fetchrow.await_args_list[1]
+        reread = pool.fetchrow.await_args_list[0]
         assert reread.args[1:] == (group_id, role_id, "namespace", scope_id, "bootstrap")
         assert "WHERE row_scope" not in reread.args[0]
         # through the broker the absorbed insert still advanced the table: the winner is announced
@@ -656,7 +662,8 @@ class TestEnsureGroupRoleAssignment:
     async def test_an_absorbed_insert_with_no_winner_is_not_reported_as_found(self) -> None:
         """a conflict on something other than the grant is raised, never answered as the grant."""
         pool = AsyncMock()
-        pool.fetchrow.side_effect = [None, None]
+        pool.fetch.return_value = []
+        pool.fetchrow.side_effect = [None]
         pool.fetchval.side_effect = [None]
         coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         with pytest.raises(RuntimeError, match="no row holds that grant"):
@@ -933,7 +940,7 @@ class TestNamespaceGetByOwnerAndCustomer:
     async def test_platform_scope_when_customer_none(self) -> None:
         """``customer_id=None`` queries the platform partition."""
         pool = AsyncMock()
-        pool.fetchrow.return_value = None
+        pool.fetch.return_value = []
         coll = make_collection(NamespaceCollection, l3_pool=pool)
         await coll.get_by_owner_and_customer(
             namespace_type="shared",
@@ -941,20 +948,20 @@ class TestNamespaceGetByOwnerAndCustomer:
             customer_id=None,
         )
         # row_scope is the first parameter
-        assert pool.fetchrow.await_args.args[1] == "platform"
+        assert pool.fetch.await_args.args[1] == "platform"
 
     @pytest.mark.asyncio
     async def test_customer_scope_when_customer_set(self) -> None:
         cid = uuid7()
         pool = AsyncMock()
-        pool.fetchrow.return_value = None
+        pool.fetch.return_value = []
         coll = make_collection(NamespaceCollection, l3_pool=pool)
         await coll.get_by_owner_and_customer(
             namespace_type="memory",
             owner_agent_id=uuid7(),
             customer_id=cid,
         )
-        assert pool.fetchrow.await_args.args[1] == "customer"
+        assert pool.fetch.await_args.args[1] == "customer"
 
 
 class TestNamespaceListIdsByCustomerAndType:

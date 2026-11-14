@@ -43,8 +43,10 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.keyed import (
     AnyOf,
     Fragment,
+    Sort,
     TableKey,
     delete_keyed,
+    keyset_page,
     read_row,
     register_table_keys,
     update_keyed,
@@ -306,18 +308,32 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
         # partition-column enforcement walker sees ``partition_key`` as a
         # static literal -- mirroring agent-wake's scan, where the gate
         # is satisfied by the partition column appearing in the SELECT.
-        rows = await self.l3_pool.fetch(
-            "SELECT partition_key, job_id, kind, payload, schedule_type, "
-            "schedule_config, status, next_fire_at, last_fired_at, "
-            "missed_fire_policy, name, date_created, date_updated "
-            "FROM scheduled_jobs "
-            "WHERE status = 'active' AND next_fire_at IS NOT NULL AND next_fire_at <= $1 "
-            "AND kind = ANY($2) "
-            "ORDER BY next_fire_at ASC LIMIT $3",
-            now,
-            list(kinds),
-            limit,
-        )
+        rows = (
+            await keyset_page(
+                self.l3_pool,
+                "scheduled_jobs",
+                columns=(
+                    "partition_key",
+                    "job_id",
+                    "kind",
+                    "payload",
+                    "schedule_type",
+                    "schedule_config",
+                    "status",
+                    "next_fire_at",
+                    "last_fired_at",
+                    "missed_fire_policy",
+                    "name",
+                    "date_created",
+                    "date_updated",
+                ),
+                by={"status": "active", "kind": AnyOf(list(kinds), cast=None)},
+                where=[Fragment("next_fire_at IS NOT NULL", ()), Fragment("next_fire_at <= $1", (now,))],
+                order=[Sort("next_fire_at"), Sort("job_id")],
+                limit=limit,
+                records=True,
+            )
+        ).rows
         return [ScheduledJobEntity(dict(row), is_new=False, collection=self) for row in rows]
 
     async def list_for_partition(self, partition_key: UUID) -> list[ScheduledJobEntity]:

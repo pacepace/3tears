@@ -423,7 +423,8 @@ class TestDueScanFiltersOnKind:
         await collection.list_due_for_tick(now=_now(), kinds=(_BILLING_KIND,))
 
         sql, args = pool.calls[-1]
-        assert "kind = ANY($2)" in sql
+        # the keyed page's pin on the kind (the helper quotes its pinned columns)
+        assert '"kind" = ANY($2)' in sql
         assert args[1] == [_BILLING_KIND]
 
     async def test_no_routed_kinds_scans_nothing(self) -> None:

@@ -301,9 +301,11 @@ class TestListDueForTick:
         assert sched.missed_fire_policy == "coalesce"
         assert sched.next_fire_at == row["next_fire_at"]
         # the due query filters active + non-null next_fire_at
-        sql, _args = pool.calls[-1]
-        assert "status = 'active'" in sql
-        assert "next_fire_at <= $1" in sql
+        # (the keyed page pins the status by a bound value and keeps the window as its guard)
+        sql, args = pool.calls[-1]
+        assert '"status" = $1' in sql and args[0] == "active"
+        assert "next_fire_at IS NOT NULL" in sql
+        assert "next_fire_at <= $3" in sql and args[2] == _now()
 
 
 class TestSaveFetchRoundTrip:

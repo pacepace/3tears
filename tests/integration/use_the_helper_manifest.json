@@ -3712,5 +3712,490 @@
     ]
    }
   ]
+ },
+ {
+  "args": [
+   "now",
+   "list(kinds)",
+   "limit"
+  ],
+  "columns": [
+   "partition_key",
+   "job_id",
+   "kind",
+   "payload",
+   "schedule_type",
+   "schedule_config",
+   "status",
+   "next_fire_at",
+   "last_fired_at",
+   "missed_fire_policy",
+   "name",
+   "date_created",
+   "date_updated"
+  ],
+  "function": "ScheduledJobCollection.list_due_for_tick",
+  "helper": "keyset_page",
+  "key_from": 1,
+  "limit": {
+   "param": 3
+  },
+  "line": 310,
+  "method": "fetch",
+  "new_call": "(await keyset_page(self.l3_pool, 'scheduled_jobs', columns=('partition_key', 'job_id', 'kind', 'payload', 'schedule_type', 'schedule_config', 'status', 'next_fire_at', 'last_fired_at', 'missed_fire_policy', 'name', 'date_created', 'date_updated'), by={'status': 'active', 'kind': AnyOf(list(kinds), cast=None)}, where=[Fragment('next_fire_at IS NOT NULL', ()), Fragment('next_fire_at <= $1', (now,))], order=[Sort('next_fire_at'), Sort('job_id')], limit=limit, records=True)).rows",
+  "old_sql": "SELECT partition_key, job_id, kind, payload, schedule_type, schedule_config, status, next_fire_at, last_fired_at, missed_fire_policy, name, date_created, date_updated FROM scheduled_jobs WHERE status = 'active' AND next_fire_at IS NOT NULL AND next_fire_at <= $1 AND kind = ANY($2) ORDER BY next_fire_at ASC LIMIT $3",
+  "order": [
+   {
+    "column": "next_fire_at",
+    "descending": false,
+    "nulls": null
+   },
+   {
+    "column": "job_id",
+    "descending": false,
+    "nulls": null
+   }
+  ],
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "status",
+    "compared": [],
+    "kind": "literal",
+    "literal": "active",
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "kind",
+    "compared": [],
+    "kind": "any",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "first",
+  "table": "scheduled_jobs",
+  "where": [
+   {
+    "cast": null,
+    "column": "",
+    "compared": [],
+    "kind": "guard",
+    "literal": "next_fire_at IS NOT NULL",
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "",
+    "compared": [
+     "next_fire_at"
+    ],
+    "kind": "guard",
+    "literal": "next_fire_at <= $1",
+    "param": null,
+    "params": [
+     1
+    ]
+   }
+  ]
+ },
+ {
+  "args": [
+   "row_scope",
+   "group_id",
+   "role_id",
+   "scope_type",
+   "scope_id"
+  ],
+  "columns": [
+   "assignment_id"
+  ],
+  "function": "RoleAssignmentCollection.ensure_group_role_assignment",
+  "helper": "keyset_page",
+  "key_from": 1,
+  "limit": {
+   "literal": 1
+  },
+  "line": 116,
+  "method": "fetchrow",
+  "new_call": "next(iter((await keyset_page(self.l3_pool, 'role_assignments', columns=('assignment_id',), by={'row_scope': row_scope, 'group_id': group_id, 'role_id': role_id, 'scope_type': scope_type, 'scope_namespace_id': scope_id}, order=[Sort('assignment_id')], limit=1, records=True)).rows), None)",
+  "old_sql": "SELECT assignment_id FROM role_assignments WHERE row_scope = $1 AND group_id = $2 AND role_id = $3 AND scope_type = $4 AND scope_namespace_id IS NOT DISTINCT FROM $5 ORDER BY assignment_id ASC LIMIT 1",
+  "order": [
+   {
+    "column": "assignment_id",
+    "descending": false,
+    "nulls": null
+   }
+  ],
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "group_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "role_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 3,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "scope_type",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 4,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "scope_namespace_id",
+    "compared": [],
+    "kind": "nullsafe",
+    "literal": null,
+    "param": 5,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "first",
+  "table": "role_assignments"
+ },
+ {
+  "args": [
+   "row_scope",
+   "namespace_type",
+   "owner_agent_id",
+   "customer_id"
+  ],
+  "columns": null,
+  "function": "NamespaceCollection.get_by_owner_and_customer",
+  "helper": "keyset_page",
+  "key_from": 1,
+  "limit": {
+   "literal": 1
+  },
+  "line": 178,
+  "method": "fetchrow",
+  "new_call": "next(iter((await keyset_page(self.l3_pool, 'namespaces', columns=None, by={'row_scope': row_scope, 'namespace_type': namespace_type, 'owner_agent_id': owner_agent_id, 'customer_id': customer_id}, order=[Sort('namespace_id')], limit=1, records=True)).rows), None)",
+  "old_sql": "SELECT * FROM namespaces WHERE row_scope = $1 AND namespace_type = $2 AND owner_agent_id = $3 AND customer_id IS NOT DISTINCT FROM $4 ORDER BY namespace_id ASC LIMIT 1",
+  "order": [
+   {
+    "column": "namespace_id",
+    "descending": false,
+    "nulls": null
+   }
+  ],
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "namespace_type",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "owner_agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 3,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "customer_id",
+    "compared": [],
+    "kind": "nullsafe",
+    "literal": null,
+    "param": 4,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "first",
+  "table": "namespaces"
+ },
+ {
+  "args": [
+   "row_scope",
+   "customer_id",
+   "namespace_type"
+  ],
+  "columns": null,
+  "function": "NamespaceCollection.get_by_owner_and_customer",
+  "helper": "keyset_page",
+  "key_from": 1,
+  "limit": {
+   "literal": 1
+  },
+  "line": 184,
+  "method": "fetchrow",
+  "new_call": "next(iter((await keyset_page(self.l3_pool, 'namespaces', columns=None, by={'row_scope': row_scope, 'customer_id': customer_id, 'namespace_type': namespace_type, 'owner_agent_id': None}, order=[Sort('namespace_id')], limit=1, records=True)).rows), None)",
+  "old_sql": "SELECT * FROM namespaces WHERE row_scope = $1 AND customer_id = $2 AND namespace_type = $3 AND owner_agent_id IS NULL ORDER BY namespace_id ASC LIMIT 1",
+  "order": [
+   {
+    "column": "namespace_id",
+    "descending": false,
+    "nulls": null
+   }
+  ],
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "customer_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "namespace_type",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 3,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "owner_agent_id",
+    "compared": [],
+    "kind": "null",
+    "literal": null,
+    "param": null,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "first",
+  "table": "namespaces"
+ },
+ {
+  "args": [
+   "row_scope",
+   "namespace_type"
+  ],
+  "columns": null,
+  "function": "NamespaceCollection.get_by_owner_and_customer",
+  "helper": "keyset_page",
+  "key_from": 1,
+  "limit": {
+   "literal": 1
+  },
+  "line": 190,
+  "method": "fetchrow",
+  "new_call": "next(iter((await keyset_page(self.l3_pool, 'namespaces', columns=None, by={'row_scope': row_scope, 'customer_id': None, 'namespace_type': namespace_type, 'owner_agent_id': None}, order=[Sort('namespace_id')], limit=1, records=True)).rows), None)",
+  "old_sql": "SELECT * FROM namespaces WHERE row_scope = $1 AND customer_id IS NULL AND namespace_type = $2 AND owner_agent_id IS NULL ORDER BY namespace_id ASC LIMIT 1",
+  "order": [
+   {
+    "column": "namespace_id",
+    "descending": false,
+    "nulls": null
+   }
+  ],
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "customer_id",
+    "compared": [],
+    "kind": "null",
+    "literal": null,
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "namespace_type",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "owner_agent_id",
+    "compared": [],
+    "kind": "null",
+    "literal": null,
+    "param": null,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "first",
+  "table": "namespaces"
+ },
+ {
+  "args": [
+   "owner_name"
+  ],
+  "columns": null,
+  "function": "NamespaceCollection.list_owned_by",
+  "helper": "read_by",
+  "line": 171,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'namespaces', by={'row_scope': AnyOf(('platform', 'customer'), cast=None), 'owner_namespace': owner_name}, where=[Fragment('name <> $1', (owner_name,))], records=True, order=[Sort('namespace_id')])",
+  "old_sql": "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer') AND owner_namespace = $1 AND name <> $1 ORDER BY namespace_id",
+  "order": [
+   {
+    "column": "namespace_id",
+    "descending": false,
+    "nulls": null
+   }
+  ],
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "compared": [],
+    "kind": "anylit",
+    "literal": [
+     "platform",
+     "customer"
+    ],
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "owner_namespace",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "list",
+  "table": "namespaces",
+  "where": [
+   {
+    "cast": null,
+    "column": "",
+    "compared": [
+     "name"
+    ],
+    "kind": "guard",
+    "literal": "name <> $1",
+    "param": null,
+    "params": [
+     1
+    ]
+   }
+  ]
+ },
+ {
+  "args": [
+   "schema_name"
+  ],
+  "columns": null,
+  "function": "NamespaceCollection.schema_in_use",
+  "helper": "holds_any",
+  "line": 172,
+  "method": "fetchval",
+  "new_call": "(await holds_any(self.l3_pool, 'namespaces', order=['row_scope', 'namespace_id'], by={'row_scope': AnyOf(('platform', 'customer'), cast=None), 'schema_name': schema_name}))",
+  "old_sql": "SELECT EXISTS (SELECT 1 FROM namespaces WHERE row_scope IN ('platform', 'customer') AND schema_name = $1)",
+  "order": [],
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "row_scope",
+    "compared": [],
+    "kind": "anylit",
+    "literal": [
+     "platform",
+     "customer"
+    ],
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "schema_name",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "count",
+  "table": "namespaces",
+  "walk": [
+   "row_scope",
+   "namespace_id"
+  ]
  }
 ]

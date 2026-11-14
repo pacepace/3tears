@@ -212,7 +212,9 @@ async def _catalog(conn: Any, table: str) -> CatalogTable:
     for index in await conn.fetch(
         "SELECT pg_get_indexdef(indexrelid) AS definition FROM pg_index WHERE indrelid = $1 AND indisunique", found
     ):
-        body = index["definition"].split(" USING ", 1)[-1]
+        # the key's columns only: a partial index's predicate (`` WHERE namespace_type <> 'workspace'``) keeps rows
+        # out of the key, so a row differing there from another still collides on the key while both are in it
+        body = index["definition"].split(" USING ", 1)[-1].split(" WHERE ", 1)[0]
         named = {name for name in re.findall(r"\b(\w+)\b", body) if name in shape.columns}
         if named:
             shape.unique.append(frozenset(named))
@@ -341,7 +343,7 @@ def row_factory(
     bound = {column for column, pin in pins.items() if pin["kind"] in _BOUND}
     per_row = {column for column in shape.columns if column not in pins}
     for unique in shape.unique:
-        # a unique key (a partial one's predicate columns counted in) holding a bound column: the bound column is
+        # a unique key (a partial one's by its key columns alone) holding a bound column: the bound column is
         # unique a row unless another of its columns already is (a bool, an enum or a pinned column never is)
         apart = [
             column

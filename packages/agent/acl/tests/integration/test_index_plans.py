@@ -175,8 +175,38 @@ async def test_assignments_group_scope(conn: asyncpg.Connection) -> None:
     # nothing faster, which says nothing of the group's reads)
     group = await conn.fetchval("SELECT group_id FROM groups ORDER BY group_id LIMIT 1 OFFSET 250")
     role = await conn.fetchval("SELECT role_id FROM roles")
+    # a group's grant by its natural key, as the idempotent ensure sends it (its first statement; the method stops
+    # there, so what it would write is never sent). On the namespace the seed granted it reads the group's rows by
+    # the index (or the namespace grants' own unique index, led by the group too); on 'all', which the seed grants no
+    # group, the planner may prove it empty another way, so there it is held to reading no more than its page
+    # the ensure reads a namespace grant in the customer row scope: some groups hold one on a customer's namespace
+    held_on = await conn.fetchval(
+        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, customer_id, date_created,"
+        " date_updated) VALUES ('customer', gen_random_uuid(), 'tool.held', 'tool', gen_random_uuid(), now(), now())"
+        " RETURNING namespace_id"
+    )
+    await conn.execute(
+        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id)"
+        " SELECT 'customer', gen_random_uuid(), $2, group_id, 'namespace', $1 FROM groups",
+        held_on,
+        role,
+    )
+    await conn.execute("ANALYZE role_assignments")
+    for scope, namespace in (("namespace", held_on), ("all", None)):
+        plan = await _first_planned(
+            conn,
+            acl.RoleAssignmentCollection,
+            lambda held, scope=scope, namespace=namespace: held.ensure_group_role_assignment(
+                group_id=group, role_id=role, scope_type=scope, scope_id=namespace
+            ),
+        )
+        if scope == "namespace":
+            assert plan_uses_index(plan, "idx_role_assignments_group_scope") or plan_uses_index(
+                plan, "uq_role_assignments_namespace_grant"
+            ), plan.plan
+        else:
+            assert plan.rows_scanned <= 2, plan
     reads = {
-        "GRANT_OF_GROUP_SQL": (acl.GRANT_OF_GROUP_SQL, lambda scope, ns: ("platform", group, role, scope, ns)),
         "GRANT_WINNER_OF_GROUP_SQL": (
             acl.GRANT_WINNER_OF_GROUP_SQL,
             lambda scope, ns: (group, role, scope, ns, "manual"),
@@ -241,7 +271,13 @@ async def test_namespaces_owner_agent_id(conn: asyncpg.Connection) -> None:
     agent = await conn.fetchval("SELECT owner_agent_id FROM namespaces WHERE owner_agent_id IS NOT NULL LIMIT 1")
     plan = await _planned(conn, acl.NamespaceCollection, lambda namespaces: namespaces.get_by_agent_id(agent, "agent"))
     assert plan_uses_index(plan, "idx_namespaces_owner_agent_id"), plan.plan
-    plan = await explain_statement(conn, acl.NAMESPACE_OF_OWNER_SQL, "customer", "agent", agent, uuid.uuid4())
+    plan = await _planned(
+        conn,
+        acl.NamespaceCollection,
+        lambda namespaces: namespaces.get_by_owner_and_customer(
+            namespace_type="agent", owner_agent_id=agent, customer_id=uuid.uuid4()
+        ),
+    )
     assert plan_uses_index(plan, "idx_namespaces_owner_agent_id"), plan.plan
 
 
@@ -280,28 +316,34 @@ async def test_namespaces_customer_type(conn: asyncpg.Connection) -> None:
     ):
         plan = await _planned(conn, acl.NamespaceCollection, read)
         assert plan_uses_index(plan, "idx_namespaces_customer_type"), plan.plan
-    for statement, params in (
-        (acl.OWNERLESS_NAMESPACE_OF_CUSTOMER_SQL, ("customer", customer, "workspace")),
-        (acl.OWNERLESS_PLATFORM_NAMESPACE_SQL, ("platform", "shared")),
-    ):
-        plan = await explain_statement(conn, statement, *params)
+    # a customer's ownerless namespace of a type, and the platform's, as get_by_owner_and_customer sends them
+    for owner_customer, namespace_type in ((customer, "workspace"), (None, "shared")):
+        plan = await _planned(
+            conn,
+            acl.NamespaceCollection,
+            lambda namespaces, owner_customer=owner_customer, namespace_type=namespace_type: (
+                namespaces.get_by_owner_and_customer(
+                    namespace_type=namespace_type, owner_agent_id=None, customer_id=owner_customer
+                )
+            ),
+        )
         # the platform's ownerless namespace of a type is keyed by the type's index too (idx_namespaces_type, v004):
         # PostgreSQL reads it there when the type holds no rows, as "shared" does in this seed
-        by_type = statement is acl.OWNERLESS_PLATFORM_NAMESPACE_SQL and plan_uses_index(plan, "idx_namespaces_type")
-        assert plan_uses_index(plan, "idx_namespaces_customer_type") or by_type, (statement, plan.plan)
+        by_type = owner_customer is None and plan_uses_index(plan, "idx_namespaces_type")
+        assert plan_uses_index(plan, "idx_namespaces_customer_type") or by_type, (namespace_type, plan.plan)
 
 
 async def test_namespaces_owner_namespace(conn: asyncpg.Connection) -> None:
     """Flips if what a namespace owns stops reading idx_namespaces_owner_namespace."""
     await _seed_namespaces(conn)
-    plan = await explain_statement(conn, acl.NAMESPACES_OWNED_BY_SQL, "agent.o17")
+    plan = await _planned(conn, acl.NamespaceCollection, lambda namespaces: namespaces.list_owned_by("agent.o17"))
     assert plan_uses_index(plan, "idx_namespaces_owner_namespace"), plan.plan
 
 
 async def test_namespaces_schema_name(conn: asyncpg.Connection) -> None:
     """Flips if whether a schema is still named stops reading idx_namespaces_schema_name."""
     await _seed_namespaces(conn)
-    plan = await explain_statement(conn, acl.SCHEMA_IN_USE_SQL, "agent_s17")
+    plan = await _planned(conn, acl.NamespaceCollection, lambda namespaces: namespaces.schema_in_use("agent_s17"))
     assert plan_uses_index(plan, "idx_namespaces_schema_name"), plan.plan
 
 
@@ -347,6 +389,48 @@ async def _planned(conn: asyncpg.Connection, cls: type, read: Callable[[Any], Aw
     await read(_collection(cls, recorder))
     assert len(recorder.plans) == 1, [plan.sql for plan in recorder.plans]
     return recorder.plans[0]
+
+
+class _FirstPlanned(Exception):  # noqa: N818 - a control-flow signal carrying the plan, not an error
+    """raised by :class:`_PlanFirst` with the plan of the first statement a method sends."""
+
+    def __init__(self, plan: StatementPlan) -> None:
+        super().__init__("planned")
+        self.plan = plan
+
+
+# parity-with: asyncpg.Connection (fetch / fetchrow / fetchval / execute -- the seams a collection method drives)
+class _PlanFirst:
+    """a connection that plans the first statement asked of it (``EXPLAIN ANALYZE``, rolled back) and stops the
+    method there: what the method would write after it is never sent."""
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
+
+    async def _plan(self, sql: str, *args: Any) -> Any:
+        raise _FirstPlanned(await explain_statement(self._conn, sql, *args))
+
+    fetch = fetchrow = fetchval = execute = _plan
+
+
+async def _first_planned(conn: asyncpg.Connection, cls: type, read: Callable[[Any], Awaitable[Any]]) -> StatementPlan:
+    """the plan of the first statement a collection method sends (a read before the write it decides on); the method
+    stops there, so nothing it would write after is sent.
+
+    :param conn: the connection
+    :ptype conn: asyncpg.Connection
+    :param cls: the collection class
+    :ptype cls: type
+    :param read: the method's call, given the collection
+    :ptype read: Callable[[Any], Awaitable[Any]]
+    :return: the first statement's plan
+    :rtype: StatementPlan
+    """
+    try:
+        await read(_collection(cls, _PlanFirst(conn)))
+    except _FirstPlanned as planned:
+        return planned.plan
+    raise AssertionError("the method sent no statement")
 
 
 def _collection(cls: type, conn: Any) -> Any:

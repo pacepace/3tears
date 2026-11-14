@@ -9,8 +9,9 @@ over a pool that records statements) is asked whether its plan found its rows th
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import asyncpg
 import pytest
@@ -56,7 +57,13 @@ async def conn(pg_schema: tuple[str, str]) -> AsyncIterator[asyncpg.Connection]:
         await connection.close()
 
 
-def _stores(captured: CapturedL3) -> tuple[ScheduledJobCollection, JobFireCollection]:
+def _node_types(node: Mapping[str, Any]) -> Iterator[str]:
+    yield str(node.get("Node Type", ""))
+    for child in node.get("Plans", ()):
+        yield from _node_types(child)
+
+
+def _stores(captured: CapturedL3 | asyncpg.Connection) -> tuple[ScheduledJobCollection, JobFireCollection]:
     registry = CollectionRegistry()
     registry.configure(l3_pool=captured)
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
@@ -67,21 +74,29 @@ def _stores(captured: CapturedL3) -> tuple[ScheduledJobCollection, JobFireCollec
 
 
 async def test_scheduled_jobs_next_fire(conn: asyncpg.Connection) -> None:
-    """Flips if the tick's due scan stops reading idx_scheduled_jobs_next_fire_asc, or if on YugabyteDB a tick past
-    every active job stops reading only its page (a hashed ``next_fire_at`` reads and sorts every active one)."""
+    """Flips if the tick's due scan stops reading idx_scheduled_jobs_next_fire_key in its order (``next_fire_at``
+    completed by ``job_id``) and sorts instead, or if on YugabyteDB a tick past every active job stops reading only
+    its page (a hashed ``next_fire_at``, or an index without the key, reads and sorts every active one)."""
     captured = CapturedL3()
     jobs, _ = _stores(captured)
     await jobs.list_due_for_tick(_NOW, kinds=["k1"], limit=50)
     (sql, args), *_ = captured.asked
     plan = await explain_statement(conn, sql, *args)
-    assert plan_uses_index(plan, "idx_scheduled_jobs_next_fire_asc"), plan.plan
+    assert plan_uses_index(plan, "idx_scheduled_jobs_next_fire_key"), plan.plan
     # a tick after every one of the 500 active jobs (all of kind k0) is due: the page of 50 reads about its own rows
     late = CapturedL3()
     jobs, _ = _stores(late)
     await jobs.list_due_for_tick(datetime.now(UTC) + timedelta(days=30), kinds=["k0"], limit=50)
     (sql, args), *_ = late.asked
     page = await explain_statement(conn, sql, *args)
-    assert page.rows_returned == 50, page
+    # the page of 50 is read with keyset_page's one row past it (whether a next page exists)
+    assert page.rows_returned == 50 + 1, page
+    assert not set(_node_types(page.plan)) & {"Sort", "Incremental Sort"}, page.plan
+    assert page.rows_scanned <= 2 * (50 + 1), page
+    # the answer is the page itself, the row past it left out
+    served, _ = _stores(conn)
+    due = await served.list_due_for_tick(datetime.now(UTC) + timedelta(days=30), kinds=["k0"], limit=50)
+    assert len(due) == 50
     if await on_yugabyte(conn):
         assert page.rows_scanned <= 2 * (50 + 1), page
 

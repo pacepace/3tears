@@ -19,9 +19,8 @@ __all__ = ["range_shard_next_fire_index"]
 
 log = get_logger(__name__)
 
+#: replaced by v004's ``idx_scheduled_jobs_next_fire_key`` (the due scan's order completed by its key), which drops it
 _NEXT_FIRE_ASC_INDEX_SQL = (
-    "-- purpose: packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::ScheduledJobCollection.list_due_for_tick\n"
-    "-- plan_test: packages/scheduled-jobs/tests/integration/test_index_plans.py::test_scheduled_jobs_next_fire\n"
     "CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_next_fire_asc "
     "ON scheduled_jobs (next_fire_at ASC) "
     "WHERE status = 'active' AND next_fire_at IS NOT NULL"

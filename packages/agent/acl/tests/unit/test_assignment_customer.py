@@ -109,7 +109,12 @@ async def test_an_ensured_namespace_grant_records_its_namespaces_customer() -> N
     customer, namespace_id = uuid7(), uuid7()
     pool = AsyncMock()
     pool.fetchrow.return_value = None
-    pool.fetch.return_value = [{"customer_id": customer}]
+
+    async def fetch(sql: str, *args: Any) -> list[dict[str, Any]]:
+        # the grant's natural-key read finds none held; the namespace read answers its customer
+        return [] if '"role_assignments"' in sql else [{"customer_id": customer}]
+
+    pool.fetch.side_effect = fetch
     pool.fetchval.side_effect = lambda sql, *args: args[1]
     collection = make_collection(RoleAssignmentCollection, l3_pool=pool)
     collection.invalidate_cache_many = AsyncMock()
@@ -132,8 +137,9 @@ async def test_an_ensured_all_grant_records_no_customer_and_reads_no_namespace()
     pool.fetchval.side_effect = lambda sql, *args: args[1]
     collection = make_collection(RoleAssignmentCollection, l3_pool=pool)
     collection.invalidate_cache_many = AsyncMock()
+    pool.fetch.return_value = []  # the grant's natural-key read finds none held
     await collection.ensure_group_role_assignment(group_id=uuid7(), role_id=uuid7(), scope_type="all", scope_id=None)
-    pool.fetch.assert_not_awaited()
+    assert not [call for call in pool.fetch.await_args_list if '"namespaces"' in call.args[0]]
     insert = pool.fetchval.await_args
     assert insert is not None
     assert insert.args[-1] is None

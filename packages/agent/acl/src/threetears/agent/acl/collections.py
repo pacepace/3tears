@@ -83,11 +83,13 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.keyed import (
     AnyOf,
+    Fragment,
     KeyPage,
     Pin,
     Selected,
     Sort,
     counts_by,
+    holds_any,
     keyset_page,
     read_by,
     read_row,
@@ -109,13 +111,6 @@ _ACCESS_MACHINERY_TENANCY: Final = no_tenant(
     "read cross-customer by id by every pod's access evaluator, so every follower reads every customer's changes"
 )
 
-
-#: a group's grant by its natural key (row scope, group, role, scope), the oldest first:
-#: ``idx_role_assignments_group_scope`` (group_id, scope_type)
-GRANT_OF_GROUP_SQL: Final[str] = (
-    "SELECT assignment_id FROM role_assignments WHERE row_scope = $1 AND group_id = $2 AND role_id = $3"
-    " AND scope_type = $4 AND scope_namespace_id IS NOT DISTINCT FROM $5 ORDER BY assignment_id ASC LIMIT 1"
-)
 
 #: the grant a concurrent ensure won, in either scope (the natural-key index that absorbed the loser spans both):
 #: ``idx_role_assignments_group_scope`` (group_id, scope_type)
@@ -170,37 +165,6 @@ TOOL_ELIGIBLE_NAMESPACES_SQL: Final[str] = (
 SKILL_ELIGIBLE_NAMESPACES_SQL: Final[str] = (
     "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer') AND namespace_type = 'tool'"
     " AND skill_eligible = TRUE"
-)
-
-
-#: the first namespace of a type an agent owns, in one row scope and customer: ``idx_namespaces_owner_agent_id``
-NAMESPACE_OF_OWNER_SQL: Final[str] = (
-    "SELECT * FROM namespaces WHERE row_scope = $1 AND namespace_type = $2 AND owner_agent_id = $3"
-    " AND customer_id IS NOT DISTINCT FROM $4 ORDER BY namespace_id ASC LIMIT 1"
-)
-
-#: a customer's first ownerless namespace of a type: ``idx_namespaces_customer_type`` (customer_id, namespace_type)
-OWNERLESS_NAMESPACE_OF_CUSTOMER_SQL: Final[str] = (
-    "SELECT * FROM namespaces WHERE row_scope = $1 AND customer_id = $2 AND namespace_type = $3"
-    " AND owner_agent_id IS NULL ORDER BY namespace_id ASC LIMIT 1"
-)
-
-#: the first ownerless platform namespace of a type: ``idx_namespaces_customer_type`` (its NULL customer)
-OWNERLESS_PLATFORM_NAMESPACE_SQL: Final[str] = (
-    "SELECT * FROM namespaces WHERE row_scope = $1 AND customer_id IS NULL AND namespace_type = $2"
-    " AND owner_agent_id IS NULL ORDER BY namespace_id ASC LIMIT 1"
-)
-
-
-#: the namespaces an owner owns, but itself, both row scopes: ``idx_namespaces_owner_namespace`` (owner_namespace)
-NAMESPACES_OWNED_BY_SQL: Final[str] = (
-    "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer') AND owner_namespace = $1 AND name <> $1"
-    " ORDER BY namespace_id"
-)
-
-#: whether any namespace, of either row scope, names a schema: ``idx_namespaces_schema_name`` (schema_name)
-SCHEMA_IN_USE_SQL: Final[str] = (
-    "SELECT EXISTS (SELECT 1 FROM namespaces WHERE row_scope IN ('platform', 'customer') AND schema_name = $1)"
 )
 
 
@@ -1943,13 +1907,27 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             )
 
         row_scope = "platform" if scope_type == "all" else "customer"
-        existing_row = await self.l3_pool.fetchrow(
-            GRANT_OF_GROUP_SQL,
-            row_scope,
-            group_id,
-            role_id,
-            scope_type,
-            scope_id,
+        existing_row = next(
+            iter(
+                (
+                    await keyset_page(
+                        self.l3_pool,
+                        "role_assignments",
+                        columns=("assignment_id",),
+                        by={
+                            "row_scope": row_scope,
+                            "group_id": group_id,
+                            "role_id": role_id,
+                            "scope_type": scope_type,
+                            "scope_namespace_id": scope_id,
+                        },
+                        order=[Sort("assignment_id")],
+                        limit=1,
+                        records=True,
+                    )
+                ).rows
+            ),
+            None,
         )
         result: UUID
         created: bool
@@ -2882,15 +2860,71 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             # one literal statement per shape, each through its index: an owned row by its agent, an ownerless
             # one by its customer and type (``IS NOT DISTINCT FROM`` on a NULL owner reads no index)
             if owner_agent_id is not None:
-                row = await self.l3_pool.fetchrow(
-                    NAMESPACE_OF_OWNER_SQL, row_scope, namespace_type, owner_agent_id, customer_id
+                row = next(
+                    iter(
+                        (
+                            await keyset_page(
+                                self.l3_pool,
+                                "namespaces",
+                                columns=None,
+                                by={
+                                    "row_scope": row_scope,
+                                    "namespace_type": namespace_type,
+                                    "owner_agent_id": owner_agent_id,
+                                    "customer_id": customer_id,
+                                },
+                                order=[Sort("namespace_id")],
+                                limit=1,
+                                records=True,
+                            )
+                        ).rows
+                    ),
+                    None,
                 )
             elif customer_id is not None:
-                row = await self.l3_pool.fetchrow(
-                    OWNERLESS_NAMESPACE_OF_CUSTOMER_SQL, row_scope, customer_id, namespace_type
+                row = next(
+                    iter(
+                        (
+                            await keyset_page(
+                                self.l3_pool,
+                                "namespaces",
+                                columns=None,
+                                by={
+                                    "row_scope": row_scope,
+                                    "customer_id": customer_id,
+                                    "namespace_type": namespace_type,
+                                    "owner_agent_id": None,
+                                },
+                                order=[Sort("namespace_id")],
+                                limit=1,
+                                records=True,
+                            )
+                        ).rows
+                    ),
+                    None,
                 )
             else:
-                row = await self.l3_pool.fetchrow(OWNERLESS_PLATFORM_NAMESPACE_SQL, row_scope, namespace_type)
+                row = next(
+                    iter(
+                        (
+                            await keyset_page(
+                                self.l3_pool,
+                                "namespaces",
+                                columns=None,
+                                by={
+                                    "row_scope": row_scope,
+                                    "customer_id": None,
+                                    "namespace_type": namespace_type,
+                                    "owner_agent_id": None,
+                                },
+                                order=[Sort("namespace_id")],
+                                limit=1,
+                                records=True,
+                            )
+                        ).rows
+                    ),
+                    None,
+                )
             if row is not None:
                 data = self._coerce_row(dict(row))
                 self.write_to_cache_sync(data, read_since=read_ticket)
@@ -3174,7 +3208,14 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
         result: list[NamespaceEntity] = []
         if owner_name:
-            rows = await self.l3_pool.fetch(NAMESPACES_OWNED_BY_SQL, owner_name)
+            rows = await read_by(
+                self.l3_pool,
+                "namespaces",
+                by={"row_scope": AnyOf(("platform", "customer"), cast=None), "owner_namespace": owner_name},
+                where=[Fragment("name <> $1", (owner_name,))],
+                records=True,
+                order=[Sort("namespace_id")],
+            )
             result = [self.entity_class(self._coerce_row(dict(row)), is_new=False, collection=self) for row in rows]
         return result
 
@@ -3205,7 +3246,16 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
         result = False
         if schema_name:
-            result = bool(await self.l3_pool.fetchval(SCHEMA_IN_USE_SQL, schema_name))
+            result = bool(
+                (
+                    await holds_any(
+                        self.l3_pool,
+                        "namespaces",
+                        order=["row_scope", "namespace_id"],
+                        by={"row_scope": AnyOf(("platform", "customer"), cast=None), "schema_name": schema_name},
+                    )
+                )
+            )
         return result
 
     async def list_tool_namespaces_for_actor(

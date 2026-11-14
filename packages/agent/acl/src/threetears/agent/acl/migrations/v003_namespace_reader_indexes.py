@@ -37,23 +37,23 @@ log = get_logger(__name__)
 #: Every statement, in order. Each is safe to run twice.
 _ACL_NAMESPACE_INDEXES_DDL: tuple[str, ...] = (
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.get_by_agent_id;"
-    " packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_OF_OWNER_SQL;"
+    " packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.get_by_owner_and_customer;"
     " src/aibots/hub/broker/namespaces.py::HubNamespaceCollection.list_granted_candidates\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_owner_agent_id\n"
     "-- reason: an agent's own namespaces by its id, on every agent's provisioning and access check\n"
     "CREATE INDEX IF NOT EXISTS idx_namespaces_owner_agent_id ON namespaces (owner_agent_id)",
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.find_by_type_and_customer;"
     " packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.list_ids_by_customer_and_type;"
-    " packages/agent/acl/src/threetears/agent/acl/collections.py::OWNERLESS_NAMESPACE_OF_CUSTOMER_SQL;"
-    " packages/agent/acl/src/threetears/agent/acl/collections.py::OWNERLESS_PLATFORM_NAMESPACE_SQL\n"
+    " packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.get_by_owner_and_customer;"
+    " packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.get_by_owner_and_customer\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_customer_type\n"
     "-- reason: a customer's namespaces of one type, the set a type_customer grant covers\n"
     "CREATE INDEX IF NOT EXISTS idx_namespaces_customer_type ON namespaces (customer_id, namespace_type)",
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACES_OWNED_BY_SQL\n"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.list_owned_by\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_owner_namespace\n"
     "-- reason: what one namespace owns, each step of a namespace teardown's walk\n"
     "CREATE INDEX IF NOT EXISTS idx_namespaces_owner_namespace ON namespaces (owner_namespace)",
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::SCHEMA_IN_USE_SQL\n"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.schema_in_use\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_schema_name\n"
     "-- reason: whether any row of any type still names a schema, before it is dropped\n"
     "CREATE INDEX IF NOT EXISTS idx_namespaces_schema_name ON namespaces (schema_name)",
