@@ -17,7 +17,7 @@ from typing import Any, Self
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from threetears.evals.kernel import OutOfRunBudget, PlannedCall
+from threetears.evals.kernel import CallUsage, OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.eval_scope import eval_running
 from threetears.evals.kernel.host import ApparatusError
 from threetears.evals.providers import describe_failure
@@ -554,6 +554,23 @@ async def test_a_judge_call_its_replay_does_not_hold_raises_rather_than_failing_
             "case-1",
             failure_describer=describe_failure,
         )
+
+
+async def test_a_replayed_completion_names_the_upstream_its_recording_kept_and_its_usage_row_does_too(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "rec.jsonl"
+    await _record(
+        path, ("Served by whom?", _Reply(content="ok")), ("And now?", _Reply(content="ok", served_provider=None))
+    )
+    replay = RecordedCompletions.replay(path, settings=BUDGETED)
+
+    named = await replay.generate(system=SYSTEM, user="Served by whom?")
+    unnamed = await replay.generate(system=SYSTEM, user="And now?")
+
+    assert (named.served_provider, unnamed.served_provider) == ("Acme Cloud", None)  # type: ignore[attr-defined]
+    assert CallUsage.billed(named).served_provider == "Acme Cloud"
+    assert CallUsage.billed(unnamed).served_provider is None
 
 
 async def test_a_replayed_completion_is_the_recorded_ten_members_and_conforms(tmp_path: Path) -> None:

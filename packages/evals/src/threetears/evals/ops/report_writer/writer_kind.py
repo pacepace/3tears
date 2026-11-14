@@ -652,6 +652,10 @@ def _telemetry(tally: Tally, model: str) -> CandidateTelemetry:
     so the result's ``cost_usd`` is the sum of the turns that were priced, those delivered before the failure
     included: a failed write is the candidate's failure, never spend the run cannot count. Only a reply that reported
     usage its client could not price is unpriced spend, which stops a capped run.
+
+    **No row names a served provider, and none is lost.** A tool turn goes to Anthropic's own Messages API alone
+    (``Model.turn`` refuses any other route), and a direct provider's reply names no upstream: ``served_provider``
+    names the provider a router sent a call to, so a turn's row records none, as a direct completion's does.
     """
     ledger = RoleUsageLedger(role="candidate")
     for turn in tally.turns:

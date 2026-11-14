@@ -24,6 +24,11 @@ one such drop ended a live writer run 34 turns in. `Model` now sends it again on
 a completion and a tool turn alike. The provider may have served and billed the first, so a turn's `resent_after`
 names the drop, and the resend is logged at WARNING.
 
+### evals: a replayed completion names the upstream its recording kept (#1161)
+
+**Fixed:** a recording keeps a completion's `served_provider` under `extra`, and a replay did not hand it back, so a
+replayed call's usage row named no upstream. `ReplayedCompletion.served_provider` now reads it from `extra`.
+
 ### evals: a page's forms, arm names and gate checks are worked out once per report input
 
 **Changed:** `PageForms.of`, `page_arm_names` and a `gate_check` read off any page (no `forms`) keep their results per

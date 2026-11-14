@@ -73,8 +73,9 @@ them; the optional ``sent_settings`` member, what the request actually carried, 
 :func:`~threetears.evals.schema.sent_settings_of` reads it (``None`` when the completion has none), so a replayed
 completion reports what the recorded call was sent with, not what a replay is asked under; and every other
 attribute its completion type declares (a dataclass field, a Pydantic field, an instance attribute: a
-``served_provider``, say) under ``extra``. A computed property is not a declared attribute and is not
-kept. A value JSON cannot hold (a non-finite ``cost_usd`` or ``temperature`` included) is refused when it is recorded,
+``served_provider``, say) under ``extra``, and a kept ``served_provider`` is replayed as the completion's own, so a
+replayed call's usage row names the upstream the recorded one did. A computed property is not a declared attribute and
+is not kept. A value JSON cannot hold (a non-finite ``cost_usd`` or ``temperature`` included) is refused when it is recorded,
 as a :class:`~threetears.evals.testing.CompletionConformanceFailure`, not rendered as text. A replayed completion is a
 :class:`ReplayedCompletion`; ``cost_usd`` and ``price_source`` are replayed as recorded, so a replayed price is the
 historical fact of what that call cost when it was made, not a quote at today's rates.
@@ -256,7 +257,7 @@ class ReplayedCompletion:
     :ivar sent_settings: What the recorded call's request actually carried, as its completion reported it, or ``None``
         when it reported nothing: never the settings the replay was asked under.
     :ivar extra: Every other attribute the recorded completion's type declared, by name (a ``served_provider``, say),
-        read-only.
+        read-only. A ``served_provider`` there is read back as :attr:`served_provider` too.
     """
 
     content: str
@@ -271,6 +272,17 @@ class ReplayedCompletion:
     stop_reason: StopReason
     sent_settings: ClientRequestSettings | None
     extra: Mapping[str, Any]
+
+    @property
+    def served_provider(self) -> str | None:
+        """The upstream the recorded call's reply named as serving it, as ``extra`` keeps it, or ``None`` when it named
+        none: so a replayed call's usage row names who served it, as the recorded call's did.
+
+        :return: The provider, or ``None`` when ``extra`` holds no non-empty text under ``served_provider``.
+        :rtype: str | None
+        """
+        said = self.extra.get("served_provider")
+        return said if isinstance(said, str) and said else None
 
 
 #: What a recording holds under one key: the request settings it was recorded under, and its calls in index order.
