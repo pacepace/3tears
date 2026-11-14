@@ -5,11 +5,14 @@ the store. Each now reads one page, newest first by ``(created_at, id)``, and an
 
 - **Every page, every row once.** Passing ``next`` back as ``cursor`` until it is ``None`` reads every run (every
   campaign) once, newest first, ties by id; the default page is 100 rows.
-- **A filtered page is short, and says so.** The label and archive filters run over the page after the read, so a
-  page can list fewer runs than it read: ``filtered`` counts them, and ``next`` is set while rows remain.
+- **Only a labelled page is short, and it says so.** The status and archive filters are in the read, so a default
+  page is full however many recent runs are archived; a document without ``archived`` reads as active. The label
+  filter runs over the page after the read, so a labelled page can list fewer runs than it read: ``filtered`` counts
+  them, and ``next`` is set while rows remain.
 - **What an exploratory campaign feeds is not paged.** It is read among every campaign of the scope, so a declared
   campaign on another page is still named.
-- **A cursor is the listing's own.** One that does not decode, or came from the other listing, is refused as input.
+- **A cursor is the listing's own, under its filters.** One that does not decode, came from the other listing, or is
+  read back with other filters, is refused as input.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.list_pages import LIST_PAGE_SIZE, decode_list_cursor, encode_list_cursor
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import CampaignDefinition, campaign_create, campaigns_list, runs_list
+from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SUBJECT
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
@@ -94,17 +98,41 @@ def test_a_label_filtered_page_is_short_says_so_and_still_names_the_next() -> No
     assert all(page.filtered == 4 - len(page.runs) - page.unreadable for page in short)
 
 
-def test_an_archived_run_is_filtered_from_its_page_and_counted() -> None:
+def test_archived_runs_newer_than_every_active_one_never_shorten_a_default_page() -> None:
     host = ops_fixture().host.eval_host
-    archived = _seed(host, archived=True)
+    active = _seed(host)
+    archived = [
+        make_eval_run(scope_id=TOYHOST_SCOPE, created_at=f"2030-01-01T00:00:{second:02d}+00:00", archived=True)
+        for second in range(12)
+    ]
+    for run in archived:
+        host.storage.save_eval_run(run)
 
     pages = _every_page(host, limit=5)
 
-    assert not {line.id for page in pages for line in page.runs} & set(archived)
-    assert sum(page.filtered for page in pages) == len(archived)
+    listed = [line.id for page in pages for line in page.runs]
+    assert not set(listed) & {run.id for run in archived}
+    assert set(active) <= set(listed)
+    assert all(len(page.runs) == 5 for page in pages[:-1]) and all(page.filtered == 0 for page in pages)
     shown = _every_page(host, limit=5, include_archived=True)
-    assert set(archived) <= {line.id for page in shown for line in page.runs}
+    assert {run.id for run in archived} <= {line.id for page in shown for line in page.runs}
     assert sum(page.filtered for page in shown) == 0
+
+
+def test_a_run_and_a_campaign_stored_without_the_archived_key_are_listed_by_default() -> None:
+    store = InMemoryDocumentStore()
+    fixture = ops_fixture(store=store)
+    host = fixture.host.eval_host
+    run = make_eval_run(scope_id=TOYHOST_SCOPE, created_at="2020-01-01T00:00:00+00:00")
+    host.storage.save_eval_run(run)
+    for doc_id in (run.id, fixture.campaign.id):
+        stored = store.get(doc_id, TOYHOST_SCOPE)
+        assert stored is not None and stored.pop("archived") is False
+        store.upsert(stored)
+
+    assert run.id in {line.id for page in _every_page(host) for line in page.runs}
+    assert fixture.campaign.id in {line.id for line in campaigns_list(host, TOYHOST_SCOPE, archived=False).campaigns}
+    assert fixture.campaign.id not in {line.id for line in campaigns_list(host, TOYHOST_SCOPE, archived=True).campaigns}
 
 
 def test_a_cursor_that_does_not_decode_or_is_another_listings_is_refused() -> None:
@@ -113,14 +141,39 @@ def test_a_cursor_that_does_not_decode_or_is_another_listings_is_refused() -> No
         runs_list(host, TOYHOST_SCOPE, cursor="not-a-cursor")
     assert tuple(garbled.value.parameters) == ("cursor",)
     with pytest.raises(ValidationFailedError, match="campaigns_list"):
-        runs_list(host, TOYHOST_SCOPE, cursor=encode_list_cursor("campaigns_list", "2020-01-01T00:00:00+00:00", "c"))
+        runs_list(
+            host,
+            TOYHOST_SCOPE,
+            cursor=encode_list_cursor("campaigns_list", {"archived": False}, "2020-01-01T00:00:00+00:00", "c"),
+        )
     with pytest.raises(ValidationFailedError):
         runs_list(host, TOYHOST_SCOPE, limit=0)
 
 
+def test_a_cursor_read_back_with_other_filters_is_refused_naming_them() -> None:
+    host = ops_fixture().host.eval_host
+    _seed(host)
+    first = runs_list(host, TOYHOST_SCOPE, limit=2)
+    assert first.next is not None
+    assert runs_list(host, TOYHOST_SCOPE, limit=3, cursor=first.next, status="all").runs, "page size and 'all' ride"
+    for changed, filters in (
+        ("status", {"status": "completed"}),
+        ("label", {"label": "keep"}),
+        ("include_archived", {"include_archived": True}),
+    ):
+        with pytest.raises(ValidationFailedError, match="other filters") as refused:
+            runs_list(host, TOYHOST_SCOPE, limit=2, cursor=first.next, **filters)
+        assert changed in refused.value.parameters
+    campaigns = campaigns_list(host, TOYHOST_SCOPE, limit=1, archived=None)
+    if campaigns.next is not None:
+        with pytest.raises(ValidationFailedError, match="other filters"):
+            campaigns_list(host, TOYHOST_SCOPE, limit=1, cursor=campaigns.next, archived=False)
+
+
 def test_a_cursor_round_trips_the_place_it_names() -> None:
     for value in ("2020-01-01T00:00:00+00:00", None, 3, "ünïcode"):
-        assert decode_list_cursor("runs_list", encode_list_cursor("runs_list", value, "run-é")) == (value, "run-é")
+        cursor = encode_list_cursor("runs_list", {"label": "é", "status": None}, value, "run-é")
+        assert decode_list_cursor("runs_list", {"status": None, "label": "é"}, cursor) == (value, "run-é")
 
 
 def _sweep(host: EvalHost, name: str, run_ids: list[str]) -> str:
@@ -158,4 +211,4 @@ def test_campaign_pages_read_every_campaign_once_and_feeds_reach_across_pages() 
         if line.id in sweeps:
             assert line.feeds == [fixture.campaign.id], "the declared campaign it feeds is on another page"
     with pytest.raises(ValidationFailedError, match="runs_list"):
-        campaigns_list(host, TOYHOST_SCOPE, cursor=encode_list_cursor("runs_list", None, "r"))
+        campaigns_list(host, TOYHOST_SCOPE, cursor=encode_list_cursor("runs_list", {}, None, "r"))

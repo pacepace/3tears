@@ -189,11 +189,12 @@ def list_runs_page(
 ) -> RunsPage:
     """One page of :func:`list_runs_disclosing`: newest first by ``(created_at, id)``, ``limit`` stored rows a page.
 
-    The status is a predicate of the store's read (:meth:`~threetears.evals.kernel.EvalStorage.query_eval_runs_page`);
-    the archive and label filters run in Python over the page, as :func:`list_runs_disclosing` runs them, so a page
-    can list fewer runs than it read: ``rows`` minus the runs and the unreadable rows is how many its filters left
-    out. ``after`` is where the next page starts whether or not this one was narrowed, so a caller reading every page
-    reads every run once.
+    The status and the archive filter are predicates of the store's read
+    (:meth:`~threetears.evals.kernel.EvalStorage.query_eval_runs_page`), so a default listing's pages are full but the
+    last. The label filter runs in Python over the page, as :func:`list_runs_disclosing` runs it, so a labelled page can
+    list fewer runs than it read: ``rows`` minus the runs and the unreadable rows is how many it left out (with any
+    run whose settled status left the listing). ``after`` is where the next page starts whether or not this one was
+    narrowed, so a caller reading every page reads every run once.
 
     :param host: As :func:`list_runs` takes it.
     :ptype host: EvalHost
@@ -209,7 +210,7 @@ def list_runs_page(
     :ptype include_archived: bool
     :param label: As :func:`list_runs` takes it.
     :ptype label: str | None
-    :return: The page, its runs narrowed by the archive and label filters; ``rows`` is what the store returned.
+    :return: The page, its runs narrowed by the label filter; ``rows`` is what the store returned.
     :rtype: RunsPage
     :raises ValidationFailedError: ``status`` is not one a run can carry, nor ``"all"``.
     :raises UnreadableRunError: A run read, but writing it lost was refused by a model.
@@ -219,9 +220,10 @@ def list_runs_page(
         _listing_status_filter(status),
         limit=limit,
         after=after,
+        include_archived=include_archived,
         elide_payload=host.profile.listing_elisions,
     )
-    return page._replace(runs=_narrowed(page.runs, include_archived=include_archived, label=label))
+    return page._replace(runs=_narrowed(page.runs, include_archived=True, label=label))
 
 
 def _narrowed(runs: list[EvalRun], *, include_archived: bool, label: str | None) -> list[EvalRun]:

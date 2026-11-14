@@ -781,17 +781,24 @@ declare it. To page in your backend:
 - **The status filter stays index-friendly.** A single-status listing reads by equality (`status=...`); only the
   `cancelled` listing, which a lapsed `pending` or `running` run joins, reads by `field_in` over the three.
 
-The kit's `page.walk_reads_each_once`, `page.holds_predicates_and_projection` and `page.after_refusals` read your store
-through `page_by_doc_type`, so a store that does not declare `after` passes them through the default, and one that
-does is held to what it declares. The async bridge and the routed store declare `after`, and do the same for the
+**Declaring `after` means honouring it.** A strictly typed adapter must declare it to match the port, but one that
+declares it and drops it hands back the first page again, and a caller reading until `next` is `None` would never
+stop; `page_by_doc_type` refuses such a page with `PageNotPastAfter`, naming your adapter. If your backend cannot page
+yet, declare `after`, call `check_after`, and return `order_and_page(rows, order_by=..., descending=..., after=after,
+limit=limit)` over your own unlimited read: correct, and no dearer than the default.
+
+The kit's `page.walk_reads_each_once`, `page.holds_predicates_and_projection`, `page.after_is_honoured` and
+`page.after_refusals` read your store through `page_by_doc_type`, or ask only a store that declares `after`, so a store
+that does not declare it passes them through the default, and one that does is held to what it declares. The async bridge and the routed store declare `after`, and do the same for the
 stores beneath them: a store beneath one that does not declare it has every ordered read made whole and ordered
 above it, an ordered read with a `limit` included.
 
 **Reading every page of a listing.** `runs_list` and `campaigns_list` (and their actions) return `next`, the cursor
 for the page after, and take it back as `cursor`: call again with `cursor=next` until `next` is `None`. The page is
 100 rows unless `limit` names another (1 to 1000 from Python, 1 to 200 through an action). The cursor is the
-package's own opaque string; hand it through unchanged. A `runs_list` page can list fewer runs than `limit` while
-`next` is set: the archive and label filters run after the read, and `filtered` counts the runs they left out.
+package's own opaque string, bound to the filters it was read with; hand it through unchanged, beside the same
+filters. A `runs_list` page read with a `label` can list fewer runs than `limit` while `next` is set: the label filter
+runs after the read (the status and archive filters are in it), and `filtered` counts the runs it left out.
 
 **Narrowed and grouped reads are optional** (`ResultReadings`, provisional; `RESULT_READINGS_CONFORMANCE_CASES`
 proves a store that offers them). Three of their rules are newer than the capability:

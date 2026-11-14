@@ -1087,14 +1087,14 @@ def campaigns_list(
     page = host.storage.list_campaigns_page(
         scope_id,
         limit=check_page_limit(limit),
-        after=None if cursor is None else decode_list_cursor("campaigns_list", cursor),
+        after=None if cursor is None else decode_list_cursor("campaigns_list", {"archived": archived}, cursor),
         archived=archived,
     )
     explored = [run_id for campaign in page.campaigns if campaign.exploratory for run_id in campaign.run_ids]
     holders = host.storage.declared_campaigns_holding(explored, scope_id)
     return CampaignListing(
         campaigns=[_listed(host, campaign, holders) for campaign in page.campaigns],
-        next=None if page.after is None else encode_list_cursor("campaigns_list", *page.after),
+        next=None if page.after is None else encode_list_cursor("campaigns_list", {"archived": archived}, *page.after),
     )
 
 

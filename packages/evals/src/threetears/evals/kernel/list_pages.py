@@ -5,11 +5,13 @@ A listing (``runs_list``, ``campaigns_list``) reads its scope newest first, by `
 page after it, or ``None`` when no document remains. A caller reads every page by passing ``next`` back as ``cursor``
 until ``next`` is ``None``.
 
-**The cursor is the package's own, and opaque.** It is a short string that names the listing it came from and the
-place in that listing's order the next page starts past: the last document's ``created_at`` and ``id``, as the store
-holds them. It depends on no host's codec, so a host's surface hands it through unchanged, and a caller never builds
-one. A cursor from another listing, or one that does not decode, is refused as caller input, never read as the first
-page: a caller that lost its place is told so, rather than handed the top of the listing again.
+**The cursor is the package's own, and opaque.** It is a short string that names the listing it came from, the
+filters that listing was read with, and the place in that listing's order the next page starts past: the last
+document's ``created_at`` and ``id``, as the store holds them. It depends on no host's codec, so a host's surface hands
+it through unchanged, and a caller never builds one. A cursor from another listing, one read back with other filters,
+or one that does not decode, is refused as caller input, never read as the first page or as a page of another walk: a
+caller that lost its place is told so, rather than handed the top of the listing again. The page size is not bound: a
+walk may change it between pages.
 
 A cursor holds a document's id and time, nothing a caller of the listing could not already read off the page it came
 with, so it is not signed.
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Mapping
 from typing import Any, Final
 
 from threetears.evals.kernel.errors import ValidationFailedError
@@ -45,17 +48,20 @@ NEXT_DESCRIPTION: Final[str] = (
 )
 
 #: The format's version, the cursor's first characters: a later format is told apart rather than misread.
-_FORMAT: Final[str] = "c1."
+_FORMAT: Final[str] = "c2."
 
 #: What a caller does with a cursor that is refused.
 _REMEDY: Final[str] = "pass back the next a page of the same listing returned, or no cursor to read the first page"
 
 
-def encode_list_cursor(listing: str, created_at: Any, doc_id: str) -> str:
-    """The cursor for the page of ``listing`` that starts past the document ``(created_at, doc_id)``.
+def encode_list_cursor(listing: str, filters: Mapping[str, Any], created_at: Any, doc_id: str) -> str:
+    """The cursor for the page of ``listing``, read with ``filters``, that starts past the document ``(created_at,
+    doc_id)``.
 
     :param listing: The listing's name (``"runs_list"``), which :func:`decode_list_cursor` checks.
     :ptype listing: str
+    :param filters: The listing's filters by name, each a JSON scalar, which :func:`decode_list_cursor` checks.
+    :ptype filters: Mapping[str, Any]
     :param created_at: The last document's ``created_at``, as the store holds it (``None`` where it holds none).
     :ptype created_at: Any
     :param doc_id: The last document's id.
@@ -63,20 +69,25 @@ def encode_list_cursor(listing: str, created_at: Any, doc_id: str) -> str:
     :return: The cursor.
     :rtype: str
     """
-    packed = json.dumps([listing, created_at, doc_id], separators=(",", ":"), ensure_ascii=False)
+    packed = json.dumps(
+        [listing, dict(sorted(filters.items())), created_at, doc_id], separators=(",", ":"), ensure_ascii=False
+    )
     return _FORMAT + base64.urlsafe_b64encode(packed.encode("utf-8")).decode("ascii").rstrip("=")
 
 
-def decode_list_cursor(listing: str, cursor: str) -> tuple[Any, str]:
+def decode_list_cursor(listing: str, filters: Mapping[str, Any], cursor: str) -> tuple[Any, str]:
     """The place a cursor from :func:`encode_list_cursor` names in ``listing``'s order: ``(created_at, id)``.
 
     :param listing: The listing reading it.
     :ptype listing: str
+    :param filters: The filters this read of the listing names, as the page that returned the cursor named them.
+    :ptype filters: Mapping[str, Any]
     :param cursor: The cursor, as a page of the listing returned it.
     :ptype cursor: str
     :return: ``(created_at, id)``, for :meth:`~threetears.evals.schema.DocumentStore.by_doc_type`'s ``after``.
     :rtype: tuple[Any, str]
-    :raises ValidationFailedError: The cursor does not decode, or came from another listing.
+    :raises ValidationFailedError: The cursor does not decode, came from another listing, or was returned to a read
+        with other filters.
     """
     text = cursor.strip()
     if not text.startswith(_FORMAT):
@@ -94,9 +105,10 @@ def decode_list_cursor(listing: str, cursor: str) -> tuple[Any, str]:
         ) from unread
     if (
         not isinstance(decoded, list)
-        or len(decoded) != 3
-        or not isinstance(decoded[2], str)
-        or not (decoded[1] is None or isinstance(decoded[1], str | int | float))
+        or len(decoded) != 4
+        or not isinstance(decoded[1], dict)
+        or not isinstance(decoded[3], str)
+        or not (decoded[2] is None or isinstance(decoded[2], str | int | float))
     ):
         raise ValidationFailedError(
             f"cursor {cursor!r} is not a page cursor this build returned", remedy=_REMEDY, parameters=["cursor"]
@@ -105,7 +117,17 @@ def decode_list_cursor(listing: str, cursor: str) -> tuple[Any, str]:
         raise ValidationFailedError(
             f"cursor {cursor!r} is a page of {decoded[0]!r}, not of {listing!r}", remedy=_REMEDY, parameters=["cursor"]
         )
-    return decoded[1], decoded[2]
+    if decoded[1] != dict(filters):
+        changed = sorted(
+            name for name in decoded[1].keys() | filters.keys() if decoded[1].get(name) != filters.get(name)
+        )
+        raise ValidationFailedError(
+            f"cursor {cursor!r} is a page of {listing} read with other filters ({', '.join(changed)}): a page past its "
+            "place under these filters would skip or repeat rows",
+            remedy="pass the filters the walk began with beside its cursor, or no cursor to begin a walk under these",
+            parameters=["cursor", *changed],
+        )
+    return decoded[2], decoded[3]
 
 
 def check_page_limit(limit: int) -> int:

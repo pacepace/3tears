@@ -61,7 +61,13 @@ from typing import Any
 
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.models import EVAL_DOC_TYPES
-from threetears.evals.schema.store_port import DocumentStore, StoreConflict, page_by_doc_type, takes_after
+from threetears.evals.schema.store_port import (
+    DocumentStore,
+    PageNotPastAfter,
+    StoreConflict,
+    page_by_doc_type,
+    takes_after,
+)
 
 log = get_logger(__name__)
 
@@ -585,9 +591,19 @@ def _walk(store: DocumentStore, size: int, *, descending: bool, **predicates: An
     pages: list[list[Any]] = []
     after: tuple[Any, str] | None = None
     for _ in range(len(_PAGED) + 2):
-        page = page_by_doc_type(
-            store, _TYPE, _SCOPE, order_by="created_at", descending=descending, limit=size, after=after, **predicates
-        )
+        try:
+            page = page_by_doc_type(
+                store,
+                _TYPE,
+                _SCOPE,
+                order_by="created_at",
+                descending=descending,
+                limit=size,
+                after=after,
+                **predicates,
+            )
+        except PageNotPastAfter as unpaged:
+            raise StoreConformanceFailure(f"after {after!r}: {unpaged}") from unpaged
         if not page:
             return pages
         pages.append(_ids(page))
@@ -608,6 +624,11 @@ def _a_walk_reads_every_document_once_in_one_order(store: DocumentStore) -> None
         _walk(store, 3, descending=False),
         [["n1", "n2", "e"], ["t1", "t2", "t3"], ["l"]],
         "pages of 3, oldest first, ties by id ascending",
+    )
+    _expect_equal(
+        _walk(store, 2, descending=False),
+        [["n1", "n2"], ["e", "t1"], ["t2", "t3"], ["l"]],
+        "pages of 2, oldest first, the first ending on a null value",
     )
     _expect_equal(_walk(store, 7, descending=True), [_NEWEST_FIRST], "one page holding every document")
 
@@ -643,6 +664,25 @@ def _a_page_holds_its_predicates_and_projection(store: DocumentStore) -> None:
         [_doc("t2", created_at="2026-01-02T00:00:00Z", status="kept")],
         "the page past ('2026-01-02T00:00:00Z', 't3'), excluding 'heavy'",
     )
+
+
+def _after_is_honoured(store: DocumentStore) -> None:
+    for doc_id, fields in _PAGED:
+        store.upsert(_doc(doc_id, **fields))
+    if not takes_after(store.by_doc_type):
+        # A store written before ``after`` is never handed one (page_by_doc_type pages it whole).
+        return
+    for descending, after, expected in (
+        (True, ("2026-01-02T00:00:00Z", "t2"), ["t1", "e"]),
+        (False, ("2026-01-02T00:00:00Z", "t2"), ["t3", "l"]),
+        (True, (None, "n2"), ["n1"]),
+        (False, (None, "n2"), ["e", "t1"]),
+    ):
+        _expect_equal(
+            _ids(store.by_doc_type(_TYPE, _SCOPE, order_by="created_at", descending=descending, limit=2, after=after)),
+            expected,
+            f"by_doc_type(order_by='created_at', descending={descending}, limit=2, after={after!r})",
+        )
 
 
 def _after_without_order_by_is_refused(store: DocumentStore) -> None:
@@ -1043,6 +1083,13 @@ STORE_CONFORMANCE_CASES: tuple[StoreConformanceCase, ...] = (
         "page.holds_predicates_and_projection",
         "a page past after holds the read's scope, type, field_eq, field_in and exclude as an unpaged read does",
         _a_page_holds_its_predicates_and_projection,
+    ),
+    StoreConformanceCase(
+        "page.after_is_honoured",
+        "a store that declares after returns only documents strictly past it, in either direction, a null value's "
+        "place included; one that declares it and ignores it repeats the first page, and page_by_doc_type refuses that "
+        "page (PageNotPastAfter)",
+        _after_is_honoured,
     ),
     StoreConformanceCase(
         "page.after_refusals",

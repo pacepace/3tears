@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.schema import DocumentStore, StoreConflict
+from threetears.evals.schema import DocumentStore, PageNotPastAfter, StoreConflict, page_by_doc_type
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.testing import STORE_CONFORMANCE_CASES, StoreConformanceCase, StoreConformanceFailure
 
@@ -48,6 +48,17 @@ def test_the_reference_store_conforms(case: StoreConformanceCase) -> None:
 def test_an_adapter_written_before_after_conforms(case: StoreConformanceCase) -> None:
     """The paging cases read it through the port's default, which never hands it ``after``."""
     case.run(_PredatesAfter())
+
+
+def test_a_page_from_a_store_ignoring_the_after_it_declares_is_refused_naming_the_mistake() -> None:
+    """A loop reading pages until none remains would read the first page for ever; the default refuses it at once."""
+    store = _IgnoresAfter()
+    for doc_id, at in (("a", "2026-01-01"), ("b", "2026-01-02"), ("c", "2026-01-03")):
+        store.upsert(_doc(doc_id, created_at=at))
+    first = page_by_doc_type(store, "eval_run", _SCOPE, order_by="created_at", limit=2)
+    assert [d["id"] for d in first] == ["c", "b"]
+    with pytest.raises(PageNotPastAfter, match="declares after but returned 'c'.*does not honour it"):
+        page_by_doc_type(store, "eval_run", _SCOPE, order_by="created_at", limit=2, after=("2026-01-02", "b"))
 
 
 def test_case_names_are_unique() -> None:
@@ -800,6 +811,34 @@ class _PredatesAfter(InMemoryDocumentStore):
         return super().by_doc_type(doc_type, scope_id, **kwargs)
 
 
+class _IgnoresAfter(InMemoryDocumentStore):
+    """Declares ``after``, as a strictly typed adapter does to match the port, and drops it: every page is the first."""
+
+    def by_doc_type(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        order_by: str | None = None,
+        descending: bool = True,
+        limit: int | None = None,
+        after: tuple[Any, str] | None = None,
+        exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        return super().by_doc_type(
+            doc_type,
+            scope_id,
+            order_by=order_by,
+            descending=descending,
+            limit=limit,
+            exclude=exclude,
+            field_in=field_in,
+            **field_eq,
+        )
+
+
 class _AfterRefusalsIgnored(InMemoryDocumentStore):
     """``after`` without ``order_by``, or not a pair, is ignored rather than refused."""
 
@@ -893,6 +932,7 @@ _FAULTS: dict[type[DocumentStore], frozenset[str]] = {
     _TiesInInsertionOrder: frozenset({"page.walk_reads_each_once"}),
     _PageDropsItsPredicates: frozenset({"page.holds_predicates_and_projection"}),
     _AfterRefusalsIgnored: frozenset({"page.after_refusals"}),
+    _IgnoresAfter: frozenset({"page.after_is_honoured", "page.walk_reads_each_once"}),
 }
 
 _CASES = {case.name: case for case in STORE_CONFORMANCE_CASES}

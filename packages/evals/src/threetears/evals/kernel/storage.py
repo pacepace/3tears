@@ -295,6 +295,14 @@ def _payload_exclusions(elide_payload: frozenset[str]) -> list[str]:
     return sorted(f"host_payload.{path}" for path in elide_payload)
 
 
+def _archived_predicate(archived: bool | None) -> dict[str, list[Any]] | None:
+    """The ``field_in`` a listing's archive filter reads by: active is ``false``, absent or null, as a model reads a
+    document without the field; archived is ``true``; ``None`` reads both."""
+    if archived is None:
+        return None
+    return {"archived": [True]} if archived else {"archived": [False, None]}
+
+
 def _cut_page(rows: list[dict[str, Any]], limit: int) -> tuple[list[dict[str, Any]], tuple[Any, str] | None]:
     """A page of ``limit`` rows cut from a read of ``limit + 1``, and the next page's ``after``: the page's last row's
     ``(created_at, id)`` when the read found a row past it, else ``None``."""
@@ -1583,15 +1591,21 @@ class EvalStorage:
         :ptype limit: int
         :param after: Where the page starts: the ``after`` of the page before, or ``None`` for the first.
         :ptype after: tuple[Any, str] | None
-        :param archived: Only archived (``True``) or only active (``False``) campaigns; ``None`` for both.
+        :param archived: Only archived (``True``) or only active (``False``) campaigns; ``None`` for both. A campaign
+            stored without the field, or with it null, is active, as its model reads it.
         :ptype archived: bool | None
         :return: The page.
         :rtype: CampaignsPage
         :raises UnreadableRecordError: A campaign on the page does not validate under this build's model.
         """
-        field_eq: dict[str, Any] = {} if archived is None else {"archived": archived}
         rows = page_by_doc_type(
-            self._store, "eval_campaign", scope_id, order_by="created_at", limit=limit + 1, after=after, **field_eq
+            self._store,
+            "eval_campaign",
+            scope_id,
+            order_by="created_at",
+            limit=limit + 1,
+            after=after,
+            field_in=_archived_predicate(archived),
         )
         page, after_page = _cut_page(rows, limit)
         return CampaignsPage(campaigns=self._hydrate_all(EvalCampaign, page), after=after_page)
@@ -2389,6 +2403,7 @@ class EvalStorage:
         *,
         limit: int,
         after: tuple[Any, str] | None = None,
+        include_archived: bool = False,
         elide_payload: frozenset[str] = frozenset(),
     ) -> RunsPage:
         """One page of :meth:`query_eval_runs_isolating`: newest first by ``(created_at, id)``, the status in the read.
@@ -2397,9 +2412,11 @@ class EvalStorage:
         declares ``after`` pages in its backend and one written before it is read whole and paged here. The status
         asked for is a predicate of the read: one status is matched by equality (an index on the field serves it), and
         the ``cancelled`` listing, which a lapsed ``pending`` or ``running`` run joins as it is settled, by membership
-        over the three. The page is then read and settled as :meth:`query_eval_runs_isolating` reads it, and a run
-        whose settled status is not the one asked for leaves the page, which is why a page can hold fewer runs than
-        ``rows``. One row past the page is asked for, so ``after`` is ``None`` exactly when no row remains.
+        over the three. The archive filter is a predicate of the read too, so archived runs never take a page's
+        room: a run stored without ``archived``, or with it null, is not archived, as its model reads it. The page is
+        then read and settled as :meth:`query_eval_runs_isolating` reads it, and a run whose settled status is not the
+        one asked for leaves the page, which is why a page can hold fewer runs than ``rows``. One row past the page is
+        asked for, so ``after`` is ``None`` exactly when no row remains.
 
         :param scope_id: The scope whose runs to read.
         :ptype scope_id: str
@@ -2409,6 +2426,9 @@ class EvalStorage:
         :ptype limit: int
         :param after: Where the page starts: the ``after`` of the page before, or ``None`` for the first.
         :ptype after: tuple[Any, str] | None
+        :param include_archived: Read archived runs too. By default the read leaves them out, unreadable rows
+            included, since the stored flag is matched by the store, not read by the model.
+        :ptype include_archived: bool
         :param elide_payload: As :meth:`query_eval_runs` takes it.
         :ptype elide_payload: frozenset[str]
         :return: The page.
@@ -2416,13 +2436,13 @@ class EvalStorage:
         :raises UnreadableRunError: A run read, but writing it lost was refused by a model.
         """
         field_eq: dict[str, Any] = {}
-        field_in: dict[str, list[str]] | None = None
+        field_in: dict[str, list[Any]] = dict(_archived_predicate(None if include_archived else False) or {})
         if status:
             asked = sorted({status} | (NON_TERMINAL_RUN_STATUSES if status == RUN_LOST_STATUS else set()))
             if len(asked) == 1:
                 field_eq["status"] = asked[0]
             else:
-                field_in = {"status": asked}
+                field_in["status"] = list(asked)
         rows = page_by_doc_type(
             self._store,
             "eval_run",
@@ -2431,7 +2451,7 @@ class EvalStorage:
             limit=limit + 1,
             after=after,
             exclude=_payload_exclusions(elide_payload) if elide_payload else (),
-            field_in=field_in,
+            field_in=field_in or None,
             **field_eq,
         )
         page, after_page = _cut_page(rows, limit)

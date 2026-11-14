@@ -12,11 +12,15 @@ packages (bumped in lock-step).
 `(created_at, id)`, 100 rows unless `limit` names another (1 to 1000 from Python, 1 to 200 through an action), where
 they read and hydrated every run or campaign of the scope on every call. Each answer carries `next`, the cursor for
 the page after, `None` on the last page; pass it back as `cursor`. The cursor is the package's own opaque string
-(`threetears.evals.kernel.list_pages`), and one that does not decode, or came from the other listing, is refused as
-caller input. `runs_list` puts the status filter in the store's read (one status by equality, the `cancelled` listing
-by `field_in` over the statuses a lapsed run settles from); its archive and label filters run over the page, so a page
-can list fewer runs than `limit` while `next` is set, and the new `filtered` says how many it left out. `unreadable`
-now counts the page's unreadable rows. `campaigns_list` reads what an exploratory campaign feeds with its own query
+(`threetears.evals.kernel.list_pages`), bound to the filters it was read with: one that does not decode, came
+from the other listing, or is read back with other filters (`status`, `label`, `include_archived`; `campaigns_list`'s
+archive filter) is refused as caller input, naming them; `limit` may change between pages. `runs_list` puts the status
+filter in the store's read (one status by equality, the `cancelled` listing by `field_in` over the statuses a lapsed
+run settles from), and the archive filter too, so a default page is full however many recent runs are archived. Only
+its label filter runs over the page, so a labelled page can list fewer runs than `limit` while `next` is set, and the
+new `filtered` says how many it left out. `unreadable` now counts the page's unreadable rows, narrowed by their stored
+archive flag as well as their status. In both listings a document stored without `archived`, or with it null, is
+active, as its model reads it. `campaigns_list` reads what an exploratory campaign feeds with its own query
 (`EvalStorage.declared_campaigns_holding`), among every campaign of the scope, so a declared campaign on another page
 is still named; the archive filter is in the read, so its pages are full but the last. New provisional reads:
 `EvalStorage.query_eval_runs_page`, `EvalStorage.list_campaigns_page`, `list_runs_page` (`threetears.evals.run`).
@@ -25,21 +29,29 @@ is still named; the archive filter is in the read, so its pages are full but the
 `next`. To read them all, loop: `page = runs_list(host, scope)`, then while `page.next` is not `None`,
 `page = runs_list(host, scope, cursor=page.next)`, keeping each page's `runs` (`campaigns_list` alike, its
 `campaigns`). Through the actions, call `runs_list` / `campaigns_list` again with `cursor` set to the last `next`.
-Do not stop at a short `runs_list` page: stop when `next` is `None`.
+Pass the same filters with each cursor. Do not stop at a short `runs_list` page: stop when `next` is `None`.
 
 **Changed, for hosts (a `DocumentStore` adapter):** `DocumentStore.by_doc_type` (and `AsyncDocumentStore`'s) takes
 `after=(order_by value, id)`, the last document of the page before, and returns only documents strictly past it; a
-store that declares `after` breaks every ordered read's ties by `id` in the sort direction. An adapter written before
-it keeps working unchanged: the engine never hands `after` to a `by_doc_type` that does not declare it by name
+store that declares `after` breaks every ordered read's ties by `id` in the sort direction. At run time an adapter
+written before it keeps working: the engine never hands `after` to a `by_doc_type` that does not declare it by name
 (`takes_after`), and pages it with `page_by_doc_type`, which reads the whole match and orders and slices it in Python
 (`order_and_page`); the async bridge and the routed store do the same for a store beneath them, ordering every
-ordered read above it. Until it declares `after`, every listing call still reads the scope's whole match, and mypy
-reads the adapter as not matching the port. The store conformance kit gains `page.walk_reads_each_once`,
-`page.holds_predicates_and_projection` and `page.after_refusals`, which read through `page_by_doc_type`, so an
-adapter predating `after` passes them; `docs/adopting-a-host.md` ("`by_doc_type` pages with `after`") gives the
+ordered read above it. Until it declares `after`, every listing call still reads the scope's whole match. **A host
+whose adapter is type-checked against the port has a change to make:** mypy reads a `by_doc_type` without `after` as
+not matching `DocumentStore`. Declaring the parameter is not enough; the adapter must honour it. The least change is
+to declare it, call `check_after(after, order_by)`, and return `order_and_page(rows, order_by=..., descending=...,
+after=after, limit=limit)` over the adapter's own unlimited read; the keyset query in the guide pages in the backend.
+An adapter that declares `after` and drops it would hand back the first page again, and a caller reading until `next`
+is `None` would never stop: `page_by_doc_type` checks the first document of every page past a place and raises
+`PageNotPastAfter` (in `threetears.evals.schema`, provisional), naming the adapter, instead. The store conformance kit
+gains `page.walk_reads_each_once` (oldest-first and newest-first walks, one ending on a null `created_at`),
+`page.holds_predicates_and_projection`, `page.after_is_honoured` and `page.after_refusals`, which read through
+`page_by_doc_type` or ask only a store that declares `after`, so an adapter predating `after` passes them; `docs/adopting-a-host.md` ("`by_doc_type` pages with `after`") gives the
 Postgres keyset condition and ordering (`DESC NULLS LAST`, ties by id, one collation). The in-memory and SQLite
 stores page natively, and now break ties of an ordered read by `id` where they kept insertion order. New provisional
-names in `threetears.evals.schema`: `check_after`, `order_and_page`, `page_by_doc_type`, `takes_after`.
+names in `threetears.evals.schema`: `PageNotPastAfter`, `check_after`, `order_and_page`, `page_by_doc_type`,
+`takes_after`.
 
 ### evals: a resumed run is proved under today's goal-check proof rules, and each holding names its rules (#920; core v15.17)
 

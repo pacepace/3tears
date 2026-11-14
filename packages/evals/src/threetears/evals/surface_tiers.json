@@ -196,6 +196,7 @@
 "threetears.evals.schema.OutOfRunSpend": "stable",
 "threetears.evals.schema.OutOfRunSpendStore": "provisional",
 "threetears.evals.schema.page_by_doc_type": "provisional",
+"threetears.evals.schema.PageNotPastAfter": "provisional",
 "threetears.evals.schema.PASS_ACTION": "provisional",
 "threetears.evals.schema.PASS_TOOL": "provisional",
 "threetears.evals.schema.PooledProductionFooting": "provisional",

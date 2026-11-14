@@ -2024,12 +2024,12 @@ def engine_actions() -> tuple[Action, ...]:
             example={"status": "completed"},
             detail=(
                 "Paged: each call reads limit stored runs (100 unless named) and returns next, the cursor for the "
-                "page after; call again with cursor=next until next is None to read every run. The status filter "
-                "is part of the read; the archive and label filters run over the page, so a page can list fewer "
-                "runs than limit while next is set, and filtered says how many it left out. A stored run this build "
-                "cannot read is left out and counted in unreadable rather than failing the listing; runs_unreadable "
-                "names each with why. Its archive flag and labels cannot be read, so the count is narrowed by status "
-                "alone."
+                "page after; call again with cursor=next, and the same filters, until next is None to read every "
+                "run. The status and archive filters are part of the read; the label filter runs over the page, so a "
+                "labelled page can list fewer runs than limit while next is set, and filtered says how many it left "
+                "out. A stored run this build cannot read is left out and counted in unreadable rather than failing "
+                "the listing; runs_unreadable names each with why. Its labels cannot be read, so the count is not "
+                "narrowed by label."
             ),
         ),
         Action(
@@ -2122,7 +2122,8 @@ def engine_actions() -> tuple[Action, ...]:
             example={},
             detail=(
                 "Paged: each call reads limit campaigns (100 unless named) and returns next, the cursor for the page "
-                "after; call again with cursor=next until next is None to read every campaign. What an exploratory "
+                "after; call again with cursor=next, and the same filter, until next is None to read every "
+                "campaign. What an exploratory "
                 "campaign feeds is read among every campaign of the scope, whatever page it is on."
             ),
         ),

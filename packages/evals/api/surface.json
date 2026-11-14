@@ -976,6 +976,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.PageNotPastAfter": {
+      "kind": "exception",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.PASS_ACTION": {
       "kind": "constant (str)",
       "signature": "",

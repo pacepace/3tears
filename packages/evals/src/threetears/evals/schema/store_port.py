@@ -102,6 +102,16 @@ class StoreConflict(Exception):
     """
 
 
+class PageNotPastAfter(RuntimeError):
+    """A store that declares ``after`` returned a page whose first document is not past it.
+
+    Raised by :func:`page_by_doc_type`, which checks the first document of every page past a place: a store that names
+    ``after`` in its signature (to match the port's type) and drops it hands back the first page again, and a caller
+    reading pages until none remains would read it for ever. Not a backend failure: the adapter's ``by_doc_type`` is
+    wrong, and the message says how to right it.
+    """
+
+
 class StoreCalledOnEventLoop(RuntimeError):
     """A store call was made on a thread that is running an event loop.
 
@@ -963,9 +973,10 @@ def page_by_doc_type(
     :rtype: list[dict[str, Any]]
     :raises ValueError: As :meth:`DocumentStore.by_doc_type`.
     :raises TypeError: As :meth:`DocumentStore.by_doc_type`.
+    :raises PageNotPastAfter: The store declares ``after`` and its page's first document is not past it.
     """
     if takes_after(store.by_doc_type):
-        return store.by_doc_type(
+        page = store.by_doc_type(
             doc_type,
             scope_id,
             order_by=order_by,
@@ -976,6 +987,18 @@ def page_by_doc_type(
             field_in=field_in,
             **field_eq,
         )
+        place = check_after(after, order_by)
+        if place is not None and page:
+            first, mark = _page_key(page[0].get(order_by), str(page[0].get("id"))), _page_key(*place)
+            if not (first < mark if descending else first > mark):
+                raise PageNotPastAfter(
+                    f"{type(store).__name__}.by_doc_type declares after but returned {page[0].get('id')!r} "
+                    f"({order_by}={page[0].get(order_by)!r}) for a page past {place!r}, which is not past it: the store "
+                    "names after in its signature and does not honour it, so a walk of pages would read the same page "
+                    "for ever. Implement after (check_after, then a keyset condition, or order_and_page over the "
+                    "store's own read), or leave it out of the signature and the engine pages the store itself"
+                )
+        return page
     check_after(after, order_by)
     if exclude:
         field_eq = {**field_eq, "exclude": exclude}
@@ -1274,6 +1297,7 @@ __all__ = [
     "AsyncStoreClock",
     "DocumentStore",
     "GroupMeasure",
+    "PageNotPastAfter",
     "ResultReadings",
     "StoreCalledOnEventLoop",
     "StoreClock",
