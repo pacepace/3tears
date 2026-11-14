@@ -14,6 +14,7 @@ import duckdb
 import pytest
 
 from threetears.core.backends.dialect import l3_on_yugabyte
+from threetears.core.backends.protocol import L3Page
 from threetears.core.keyed import ThreadedDuckDB
 from threetears.core.keyset import read_keyset_pages
 
@@ -323,6 +324,51 @@ class TestALeadASetFilterPins:
         ordering = [sql for sql, _ in recorded.statements if "unnest(" in sql]
         assert len(ordering) > 1, recorded.statements
         assert all(sql.endswith("LIMIT 300") for sql in ordering), ordering
+
+
+class _CappedOnYugabyte(_RecordedOnYugabyte):
+    """the same L3 behind a broker that answers pages and announces a reply cap: ``row_bytes`` a row against ``cap``
+    bytes, never cutting (each page fits)."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection, *, cap: int, row_bytes: int) -> None:
+        super().__init__(conn)
+        self._cap = cap
+        self._row_bytes = row_bytes
+
+    async def fetch_page(self, sql: str, *params: Any) -> L3Page:
+        rows = await self.fetch(sql, *params)
+        return L3Page(rows=rows, truncated=False, reply_bytes=len(rows) * self._row_bytes, reply_cap=self._cap)
+
+
+class TestAWalkCarriesItsPageSize:
+    """hub #61: a lead walk on a byte-capped rail sized every lead's first page at ``page_size`` again, so each race
+    took two statements (1,000 rows, then the rest) where the cap held it in one; and it grouped small leads by
+    ``page_size``, not by the rows the cap holds."""
+
+    async def test_leads_after_the_first_are_read_one_statement_each_or_grouped(
+        self, races: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a lead after the first starts again at page_size (two statements a race: 24 for 12 races of 7
+        rows at page_size 5), or the rows differ from the races' in key order."""
+        values = sorted({row[0] for row in races.execute("SELECT race FROM t").fetchall()})
+        # 10 bytes a row under a 1,000-byte cap: 80 rows a page once the first page says how wide a row is
+        l3 = _CappedOnYugabyte(races, cap=1_000, row_bytes=10)
+
+        read = await read_keyset_pages(
+            l3,
+            "SELECT * FROM t",
+            ("race", "geo"),
+            where_any={"race": ("text[]", values)},
+            page_size=5,
+            lead_array="text[]",
+        )
+
+        assert [tuple(row.values()) for row in read.rows] == _pinned(races, values)
+        reads = [sql for sql, _ in l3.statements if " FROM t" in sql]
+        # the first race in two pages (5 rows, then the rest at the cap's size); then the races grouped by the rows
+        # the cap holds: one statement each group, never a second page
+        assert len(reads) <= 5, reads
+        assert all(sql.endswith("LIMIT 6") is (index == 0) for index, sql in enumerate(reads)), reads
 
 
 class TestWhichDatabaseAnL3Is:

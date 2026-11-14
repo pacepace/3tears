@@ -530,8 +530,23 @@ class _ArrowReads:
         return list(answered.column(column).to_pylist())
 
 
+@dataclass
+class _Ask:
+    """the rows the next page asks for, carried across the statements of one read: a lead walk's next lead starts
+    at what the last page learned of the cap (its bytes a row), never at ``page_size`` again (hub #61: every race
+    took two pages, the second costing YugabyteDB its ROW cursor).
+
+    :ivar rows: the rows
+    """
+
+    rows: int
+
+
 async def _cursor_pages(
-    reads: _DictReads | _ArrowReads, statement: _KeysetStatement, cursor: Sequence[Any] | None
+    reads: _DictReads | _ArrowReads,
+    statement: _KeysetStatement,
+    cursor: Sequence[Any] | None,
+    ask: _Ask | None = None,
 ) -> AsyncGenerator[Any, None]:
     """every page of one statement past ``cursor``, each handed over as it is read; the last may be empty.
 
@@ -541,13 +556,16 @@ async def _cursor_pages(
     :ptype statement: _KeysetStatement
     :param cursor: the key the read starts past; the first row when None
     :ptype cursor: Sequence[Any] | None
+    :param ask: the rows a page asks for, shared with the read's other statements and updated by each page; the
+        statement's ``page_size`` when None
+    :ptype ask: _Ask | None
     :return: the pages
     :rtype: AsyncGenerator[Any, None]
     """
-    rows = statement.page_size
+    asked = ask if ask is not None else _Ask(statement.page_size)
     more = True
     while more:
-        kept, more, rows = await reads.page(statement, cursor, rows)
+        kept, more, asked.rows = await reads.page(statement, cursor, asked.rows)
         if more:
             cursor = reads.last(kept, statement.key)
         yield kept
@@ -745,6 +763,9 @@ async def _lead_walk(
     walked = 0
     last_key: tuple[Any, ...] | None = None if after is None else tuple(after)
     handed = False
+    # the rows a page asks for, carried from lead to lead: each lead's statement has the same columns, so the same
+    # bytes a row
+    ask = _Ask(shape.page_size)
     while True:
         values = await leads.take(group)
         if not values:
@@ -753,7 +774,7 @@ async def _lead_walk(
             _logger.warning(
                 "keyset: a hashed lead's walk took %d values of %s; the rest is read by the cursor", walked, lead
             )
-            async for page in _cursor_pages(reads, shape.statement(), last_key):
+            async for page in _cursor_pages(reads, shape.statement(), last_key, ask):
                 yield page
             return
         starts_past = after is not None and walked == 0 and values[0] == after[0]
@@ -768,7 +789,7 @@ async def _lead_walk(
             )
             cursor = tuple(after) if after is not None and starts_past else None
         took = 0
-        async for page in _cursor_pages(reads, statement, cursor):
+        async for page in _cursor_pages(reads, statement, cursor, ask):
             counted = reads.count(page)
             if counted == 0:
                 continue
@@ -777,7 +798,8 @@ async def _lead_walk(
             handed = True
             yield page
         walked += len(values)
-        group = _next_group(len(values), took, shape.page_size)
+        # grouped by the rows a page now holds (the cap-sized ask on a byte-capped rail), not page_size
+        group = _next_group(len(values), took, ask.rows)
     if not handed:
         # no rows: the one empty page a read of none hands over
         async for page in _cursor_pages(reads, shape.statement(), None if after is None else tuple(after)):
