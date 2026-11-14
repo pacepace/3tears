@@ -9,7 +9,11 @@ the statement it was judged through (:attr:`~.schema.SchemaCatalog.matches`). Fo
 finds no purpose for, the tool picks the reads whose statement binds the longest leading run of its columns (then
 orders by the next one): their functions are its purpose. An index no read is credited to, but whose leading columns
 are a declared foreign key's referencing columns, serves the database's lookup of those rows (``fk:<constraint>``).
-An index neither serves is a drop candidate: listed for the owner, never given a purpose.
+A unique index the rule finds no purpose for holds a data rule, so it is never a drop candidate: it is declared
+``purpose=constraint``, its test a generated duplicate insert the database must refuse
+(:func:`threetears.core.testing.rewrites.insert_duplicate` under ``pytest.raises``), a partial one's rows held to its
+``WHERE``'s literals (one it cannot read so is left for a hand-written test). An index neither serves is a drop
+candidate: listed for the owner, never given a purpose.
 
 Its plan test is generated: one test per index in ``tests/integration/test_index_plans_generated.py``, run on
 PostgreSQL and YugabyteDB alike, which seeds the table on the migrated test database and explains the read's shape --
@@ -78,6 +82,8 @@ class IndexDecision:
     :ivar bound: the columns the plan test's read binds, in the index's order
     :ivar ordered: the column it orders by after them, or ""
     :ivar where: the index's partial ``WHERE``, kept in the read so the planner may use it
+    :ivar refuses: a unique index declared by its constraint: its test inserts a duplicate the database must refuse
+    :ivar literals: a partial unique index's ``WHERE`` as ``(column, literal)`` equalities its two rows hold
     """
 
     table: str
@@ -89,6 +95,8 @@ class IndexDecision:
     bound: tuple[str, ...] = ()
     ordered: str = ""
     where: str = ""
+    refuses: bool = False
+    literals: tuple[tuple[str, Any], ...] = ()
 
 
 @dataclass
@@ -168,6 +176,27 @@ def _reason(site: _DeclaredIndex, readers: Sequence[str], bound: Sequence[str], 
     return reason if len(reason) >= MIN_REASON else f"{reason} (no other index leads with these columns)"
 
 
+#: one conjunct of a partial index's ``WHERE`` a seeded row can hold: ``<column> = '<text>'`` or ``= <integer>``
+_LITERAL_EQUALITY: Final = re.compile(
+    r"""^\(*\s*"?(\w+)"?\s*=\s*(?:'((?:[^']|'')*)'|(-?\d+)|(true|false))\s*\)*$""", re.I
+)
+
+
+def _literals(where: str) -> tuple[tuple[str, Any], ...] | None:
+    """a partial index's ``WHERE`` as the column equalities a row holds to be in it; None when it is anything else."""
+    if not where.strip():
+        return ()
+    held: list[tuple[str, Any]] = []
+    for conjunct in re.split(r"\bAND\b", where, flags=re.IGNORECASE):
+        found = _LITERAL_EQUALITY.match(conjunct.strip())
+        if found is None:
+            return None
+        column, text, number, truth = found.groups()
+        value: Any = text.replace("''", "'") if text is not None else int(number) if number is not None else None
+        held.append((column.lower(), truth.lower() == "true" if truth is not None else value))
+    return tuple(held)
+
+
 def _foreign_key(table: _DeclaredTable | None, columns: Sequence[str]) -> tuple[str, tuple[str, ...]] | None:
     """the foreign key whose referencing columns the index leads with, as ``(constraint, columns)``."""
     if table is None:
@@ -177,6 +206,11 @@ def _foreign_key(table: _DeclaredTable | None, columns: Sequence[str]) -> tuple[
         if len(names) >= len(referencing) and set(names[: len(referencing)]) == set(referencing):
             return constraint, tuple(names[: len(referencing)])
     return None
+
+
+def _constraint_reason(columns: Sequence[str]) -> str:
+    """why a unique index stands: the duplicate the database refuses through it."""
+    return f"a unique constraint over ({', '.join(columns)}): the database refuses a duplicate through it"
 
 
 def decide(catalog: SchemaCatalog, module: str = _MODULE) -> Decisions:
@@ -212,11 +246,30 @@ def decide(catalog: SchemaCatalog, module: str = _MODULE) -> Decisions:
             decisions.hand.append((table_name, name, f"a {method} index: its read is no equality/order shape"))
             continue
         credited = catalog.matches.get((table_name, name), {})
-        if purpose.strip() == CONSTRAINT_PURPOSE:
-            reason = (
-                f"a unique constraint over ({', '.join(_column(c) for c in site.columns)}): the database refuses a "
-                "duplicate through it; no read uses it"
+        where = site.where or (merged.where if merged is not None else "")
+        if not purpose and site.unique:
+            # a unique index holds a data rule whether or not a read uses it: its purpose is that rule
+            literals = _literals(where)
+            if literals is None:
+                decisions.hand.append((table_name, name, f"a partial unique index on {where!r}: test it by hand"))
+                continue
+            columns = tuple(_column(column) for column in site.columns)
+            decisions.written.append(
+                IndexDecision(
+                    table_name,
+                    name,
+                    site.origin,
+                    purpose=CONSTRAINT_PURPOSE,
+                    plan_test=f"{module}::{_test_name(name)}",
+                    reason=_constraint_reason(columns) if needs_reason else "",
+                    bound=columns,
+                    refuses=True,
+                    literals=literals,
+                )
             )
+            continue
+        if purpose.strip() == CONSTRAINT_PURPOSE:
+            reason = _constraint_reason(tuple(_column(c) for c in site.columns))
             decisions.written.append(IndexDecision(table_name, name, site.origin, reason=reason))
             continue
         if purpose:
@@ -235,7 +288,6 @@ def decide(catalog: SchemaCatalog, module: str = _MODULE) -> Decisions:
         readers = sorted(
             (reader for reader, shape in scored.items() if (len(shape[0]), bool(shape[1])) == best), key=_preferred
         )
-        where = site.where or (merged.where if merged is not None else "")
         if best[0] > 0 or best[1]:
             chosen = [reader for reader in readers if _preferred(reader)[0] == 0][:_MOST_PURPOSES] or readers[:1]
             bound, ordered = scored[chosen[0]]
@@ -295,6 +347,24 @@ def _manifest(decisions: Decisions) -> list[dict[str, Any]]:
     for decision in sorted(decisions.written, key=lambda d: d.index):
         if not decision.plan_test:
             continue
+        if decision.refuses:
+            pins = [
+                {"column": column, "kind": "param", "param": number, "literal": None}
+                for number, column in enumerate(decision.bound, start=1)
+            ] + [
+                {"column": column, "kind": "literal", "param": None, "literal": value}
+                for column, value in decision.literals
+            ]
+            entries.append(
+                {
+                    "index": decision.index,
+                    "table": decision.table,
+                    "purpose": decision.purpose,
+                    "refuses": True,
+                    "pins": pins,
+                }
+            )
+            continue
         sql, pins = _statement(decision)
         entries.append(
             {"index": decision.index, "table": decision.table, "purpose": decision.purpose, "sql": sql, "pins": pins}
@@ -318,9 +388,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+import asyncpg
 import pytest
 from threetears.core.testing.plans import plan_uses_index
-from threetears.core.testing.rewrites import explain_index_read, load_manifest
+from threetears.core.testing.rewrites import explain_index_read, insert_duplicate, load_manifest
 
 __all__: list[str] = []
 
@@ -341,6 +412,17 @@ def _module(entries: list[dict[str, Any]]) -> str:
     parts = [_HEADER]
     for entry in entries:
         index = entry["index"]
+        if entry.get("refuses"):
+            parts.append(
+                f"""
+
+async def {_test_name(index)}(engine_conn: Any) -> None:
+    \"\"\"Flips if {entry["table"]} may hold two rows alike on {index}'s columns: the index refuses the second.\"\"\"
+    with pytest.raises(asyncpg.UniqueViolationError, match="{index}"):
+        await insert_duplicate(engine_conn, _ENTRIES["{index}"])
+"""
+            )
+            continue
         parts.append(
             f"""
 
@@ -410,6 +492,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="the repo-relative generated plan-test module (its manifest beside it); a repo whose engine fixtures "
         f"(conn, yugabyte_conn) live elsewhere names its own (default {_MODULE})",
     )
+    parser.add_argument(
+        "--index",
+        action="append",
+        default=[],
+        help="write only this index's declaration and test (repeatable); the other verdicts are printed",
+    )
     parser.add_argument("--drop-list", type=Path, help="where to write the drop candidates (default: printed)")
     parser.add_argument(
         "--consumer",
@@ -429,6 +517,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     module = args.module
     manifest_path = str(Path(module).with_name(Path(_MANIFEST).name))
     decisions = decide(scan.schema, module)
+    if args.index:
+        skipped = [d for d in decisions.written if d.index not in args.index]
+        decisions.written = [d for d in decisions.written if d.index in args.index]
+        sys.stdout.write("".join(f"not written (--index): {d.table}.{d.index}\n" for d in skipped))
     lines = _ledger_lines(decisions)
     entries = _manifest(decisions)
     manifest = repo_root / manifest_path

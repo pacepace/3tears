@@ -12,9 +12,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+import asyncpg
 import pytest
 from threetears.core.testing.plans import plan_uses_index
-from threetears.core.testing.rewrites import explain_index_read, load_manifest
+from threetears.core.testing.rewrites import explain_index_read, insert_duplicate, load_manifest
 
 __all__: list[str] = []
 
@@ -46,3 +47,39 @@ async def test_idx_workspace_files_workspace(engine_conn: Any) -> None:
     """Flips if packages/agent/workspace/src/threetears/agent/workspace/collections.py::WorkspaceFileCollection.find_by_workspace; packages/agent/workspace/src/threetears/agent/workspace/collections.py::WorkspaceFileCollection.find_by_workspace_and_relative_path; packages/agent/workspace/src/threetears/agent/workspace/materialize.py::_capture_back's read stops reading idx_workspace_files_workspace."""
     plan = await explain_index_read(engine_conn, _ENTRIES["idx_workspace_files_workspace"])
     assert plan_uses_index(plan, "idx_workspace_files_workspace"), json.dumps(plan.plan)
+
+
+async def test_ix_context_items_agent_tool_result_key(engine_conn: Any) -> None:
+    """Flips if context_items may hold two rows alike on ix_context_items_agent_tool_result_key's columns: the index refuses the second."""
+    with pytest.raises(asyncpg.UniqueViolationError, match="ix_context_items_agent_tool_result_key"):
+        await insert_duplicate(engine_conn, _ENTRIES["ix_context_items_agent_tool_result_key"])
+
+
+async def test_ix_context_items_agent_var_key(engine_conn: Any) -> None:
+    """Flips if context_items may hold two rows alike on ix_context_items_agent_var_key's columns: the index refuses the second."""
+    with pytest.raises(asyncpg.UniqueViolationError, match="ix_context_items_agent_var_key"):
+        await insert_duplicate(engine_conn, _ENTRIES["ix_context_items_agent_var_key"])
+
+
+async def test_uq_folders_agent_user_name(engine_conn: Any) -> None:
+    """Flips if folders may hold two rows alike on uq_folders_agent_user_name's columns: the index refuses the second."""
+    with pytest.raises(asyncpg.UniqueViolationError, match="uq_folders_agent_user_name"):
+        await insert_duplicate(engine_conn, _ENTRIES["uq_folders_agent_user_name"])
+
+
+async def test_uq_folders_folder_id(engine_conn: Any) -> None:
+    """Flips if folders may hold two rows alike on uq_folders_folder_id's columns: the index refuses the second."""
+    with pytest.raises(asyncpg.UniqueViolationError, match="uq_folders_folder_id"):
+        await insert_duplicate(engine_conn, _ENTRIES["uq_folders_folder_id"])
+
+
+async def test_uq_identity_active_per_variant(engine_conn: Any) -> None:
+    """Flips if identity_versions may hold two rows alike on uq_identity_active_per_variant's columns: the index refuses the second."""
+    with pytest.raises(asyncpg.UniqueViolationError, match="uq_identity_active_per_variant"):
+        await insert_duplicate(engine_conn, _ENTRIES["uq_identity_active_per_variant"])
+
+
+async def test_uq_skills_agent_user_name(engine_conn: Any) -> None:
+    """Flips if agent_skills may hold two rows alike on uq_skills_agent_user_name's columns: the index refuses the second."""
+    with pytest.raises(asyncpg.UniqueViolationError, match="uq_skills_agent_user_name"):
+        await insert_duplicate(engine_conn, _ENTRIES["uq_skills_agent_user_name"])

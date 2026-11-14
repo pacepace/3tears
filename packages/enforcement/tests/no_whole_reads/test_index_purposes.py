@@ -20,6 +20,11 @@ _MIGRATION = """
     BY_NOTE = "CREATE INDEX IF NOT EXISTS items_by_note ON items (note)"
 """
 
+#: a unique index no read uses, partial on a literal: its purpose is the rule it enforces
+_UNIQUE = """
+    UQ_REF = "CREATE UNIQUE INDEX IF NOT EXISTS uq_items_ref ON items (owner_id, note) WHERE kind = 'live'"
+"""
+
 _READER = """
     class Items:
         async def latest_of_kind(self, conn, kind):
@@ -111,3 +116,46 @@ def test_a_repo_names_its_own_plan_test_module_and_the_declarations_name_it(tmp_
     assert {e["index"] for e in entries} == {"items_by_kind", "items_by_owner"}
     after = _index(no_whole_reads_findings(config))
     assert [finding for finding in after if "items_by_note" not in finding] == [], after
+
+
+def test_a_unique_index_no_read_uses_is_declared_by_the_rule_it_enforces(tmp_path: Path) -> None:
+    """Flips if a unique index no read uses is listed to drop (it holds a data rule) instead of declared
+    ``purpose=constraint`` with a generated test that inserts a duplicate and asserts the database refuses it (calling
+    ``raises``, partial on its own ``WHERE``'s literal), or if the gate does not accept that declaration."""
+    config = _repo(tmp_path)
+    (tmp_path / "src/versions/v002.py").write_text(textwrap.dedent(_UNIQUE), encoding="utf-8")
+    drops = tmp_path / "drops.txt"
+
+    assert main([str(tmp_path), "support.py", "CONFIG", "--write", "--drop-list", str(drops)]) == 0
+
+    ledger = (tmp_path / "_index_declarations.txt").read_text(encoding="utf-8")
+    assert (
+        "uq_items_ref :: on items :: purpose=constraint :: "
+        "plan_test=tests/integration/test_index_plans_generated.py::test_uq_items_ref"
+    ) in ledger
+    assert "uq_items_ref" not in drops.read_text(encoding="utf-8")
+    entries = {e["index"]: e for e in json.loads((tmp_path / "tests/integration/index_plan_manifest.json").read_text())}
+    assert entries["uq_items_ref"]["refuses"] is True
+    assert {pin["column"]: pin["kind"] for pin in entries["uq_items_ref"]["pins"]} == {
+        "owner_id": "param",
+        "note": "param",
+        "kind": "literal",
+    }
+    module = (tmp_path / "tests/integration/test_index_plans_generated.py").read_text(encoding="utf-8")
+    assert "pytest.raises(" in module and 'insert_duplicate(engine_conn, _ENTRIES["uq_items_ref"])' in module
+    after = _index(no_whole_reads_findings(config))
+    assert [finding for finding in after if "uq_items_ref" in finding] == [], after
+
+
+def test_only_writes_the_named_indexes(tmp_path: Path) -> None:
+    """Flips if ``--index`` does not keep the tool to the indexes it names (the rest of its verdicts printed, not
+    written): an owner applies the proven ones and leaves an engine-red one for its drop proof."""
+    _repo(tmp_path)
+
+    assert main([str(tmp_path), "support.py", "CONFIG", "--write", "--index", "items_by_owner"]) == 0
+
+    ledger = (tmp_path / "_index_declarations.txt").read_text(encoding="utf-8")
+    assert "items_by_owner :: on items" in ledger
+    assert "items_by_kind" not in ledger
+    entries = json.loads((tmp_path / "tests/integration/index_plan_manifest.json").read_text())
+    assert [e["index"] for e in entries] == ["items_by_owner"]

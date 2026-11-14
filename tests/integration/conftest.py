@@ -11,7 +11,7 @@ the PostgreSQL half on every run; the YugabyteDB half runs where a YugabyteDB se
 engine it does not name (PostgreSQL when it names none). Each module marks itself ``integration``.
 
 The schema is built once a session, by each package's own migrations: the agent-scope packages (conversations, memory,
-skills, tools, workspace, langgraph, wake, intention) and the platform-scope ones (acl, audit and the tools columns on its namespaces,
+skills, tools, workspace, langgraph, wake, intention, identity) and the platform-scope ones (acl, audit and the tools columns on its namespaces,
 core's coordination tables, epoch, mcp, scheduled-jobs). The datasources tables and
 ``impersonation_gates`` are created by the hub, not by a 3tears migration, so they are built from their declared
 :class:`TableSchema` (the hub's source too), an enum column's type first.
@@ -36,6 +36,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 from threetears.agent.acl.collections import ImpersonationGateCollection
 from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.audit.migrations import register as register_audit
+from threetears.agent.identity.migrations import register as register_identity
 from threetears.agent.intention.migrations import register as register_intention
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.agent.skills.migrations import register as register_skills
@@ -131,6 +132,7 @@ async def _build(url: str, schema: str) -> bool:
         register_langgraph(agent)
         register_wake(agent)
         register_intention(agent)
+        register_identity(agent)
         await agent.apply_for_agent_schema(_Store(conn))  # type: ignore[arg-type]
         platform = MigrationRunner()
         register_acl(platform)

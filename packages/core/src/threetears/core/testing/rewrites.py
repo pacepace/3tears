@@ -91,6 +91,7 @@ __all__ = [
     "assert_source_says",
     "entry_id",
     "explain_index_read",
+    "insert_duplicate",
     "load_manifest",
     "row_factory",
 ]
@@ -1149,6 +1150,52 @@ async def explain_index_read(conn: Any, entry: Mapping[str, Any]) -> StatementPl
             await conn.execute(f"ANALYZE {table}")
         await conn.execute("SET LOCAL enable_seqscan = off")
         return await explain_statement(conn, entry["sql"], *params, yugabyte=yugabyte)
+    finally:
+        await transaction.rollback()
+
+
+async def insert_duplicate(conn: Any, entry: Mapping[str, Any]) -> None:
+    """insert into the entry's table (an index-purpose manifest entry declaring a unique index's ``constraint``) a
+    row, then a second one equal to it on the index's columns (its ``param`` pins) and on its partial ``WHERE``'s
+    literals (its ``literal`` pins), differing on every other column; everything rolled back after.
+
+    The second insert is the one the unique index refuses: the caller asserts the database raises, naming the index.
+    The table's CHECK constraints are dropped and its triggers off as :func:`explain_index_read`'s seed has them, so
+    only the index stands between the two rows.
+
+    :param conn: an asyncpg connection to a migrated test database, as a superuser
+    :ptype conn: Any
+    :param entry: the manifest entry (its ``table`` and ``pins``)
+    :ptype entry: Mapping[str, Any]
+    :return: nothing; the second insert raises when the index holds
+    :rtype: None
+    """
+    table = entry["table"]
+    transaction = conn.transaction()
+    await transaction.start()
+    try:
+        await _drop_checks(conn, table)
+        shape = await _catalog(conn, table)
+        # each index column held to one value (a literal pin both rows hold), every other column its row's own
+        held = {
+            **entry,
+            "pins": [
+                {**pin, "kind": "literal", "literal": _value(shape.columns[pin["column"]], 0)}
+                if pin["kind"] == "param"
+                else pin
+                for pin in entry["pins"]
+            ],
+        }
+        row, _ = row_factory(shape, held, {})
+        await conn.execute("SET LOCAL session_replication_role = replica")
+        first, second = (
+            row(Seeded(index=index, case="refuses", tenant=index, null=False, tie=index)) for index in (0, 1)
+        )
+        columns = list(first)
+        marks = ", ".join(f"${number}" for number in range(1, len(columns) + 1))
+        insert = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({marks})"  # noqa: S608 - trusted test identifiers
+        await conn.execute(insert, *(first[column] for column in columns))
+        await conn.execute(insert, *(second[column] for column in columns))
     finally:
         await transaction.rollback()
 
