@@ -81,7 +81,7 @@ from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCal
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.analysis.report.blocks import TableBlock, bare_columns
 from threetears.evals.analysis.report.aspect.contrasts import contrast_evidence
-from threetears.evals.analysis.report.verdict import led_sentences
+from threetears.evals.analysis.report.verdict import bundle_stopped_short, led_sentences, unfinished_line
 from threetears.evals.analysis.report.words import heading_case
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 
@@ -223,6 +223,9 @@ def build_campaign_report_in_aspect_forms(
     blocks: list[ReportBlock] = [
         *question_blocks(campaign, compares=kind != "measurement"),
         *_arms_blocks(campaign, readings, arms, bundles),
+        # An aspect with a run that did not finish has no verdict to lead with: what stopped it opens the page, before
+        # code's lead on the aspects that finished and before a caller's own lead.
+        *_stopped_blocks(campaign, readings, reports, names=names),
         *(
             _lead_blocks(campaign, readings, reports, names=names, forms=forms, aspect_forms=aspect_forms)
             if lead is None
@@ -285,6 +288,39 @@ def build_campaign_report_in_aspect_forms(
     )
 
 
+def _stopped_blocks(
+    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
+) -> list[ReportBlock]:
+    """What opens the page in place of a verdict where an aspect's runs did not all finish: for each such aspect, the
+    line its own page opens with (:func:`~threetears.evals.analysis.report.verdict.unfinished_line`, or the failed
+    setup's), named by its aspect where the campaign reads several. Whether an aspect has a verdict to lead with is the
+    one decision every surface asks (:func:`~threetears.evals.analysis.report.verdict.bundle_stopped_short`). Empty
+    where every run of every aspect completed."""
+    several = len(campaign.aspects) > 1
+    labels = readings.arm_labels()
+    said: list[str] = []
+    for aspect in campaign.aspects:
+        report = reports[aspect.label]
+        if bundle_stopped_short(report.bundle) is None:
+            continue
+        opened = next(
+            (
+                block.text
+                for block in report.blocks
+                if isinstance(block, DisclosureBlock) and block.section == "header" and block.source == "verdict"
+            ),
+            None,
+        )
+        if opened is None:
+            line = unfinished_line(report.bundle, lambda key: labels.get(key, key))
+            opened = line.text if line is not None else ""
+        said.append(f"On {names(aspect.label)}: {opened}" if several else opened)
+    if not said:
+        return []
+    tone = DisclosureBlock.verdict_tone("unfinished")
+    return [DisclosureBlock(section="answer", source="verdict", text=" ".join(said), tone=tone)]
+
+
 def _lead_blocks(
     campaign: EvalCampaign,
     readings: CampaignReadings,
@@ -322,6 +358,9 @@ def _lead_blocks(
     for aspect in campaign.aspects:
         on = f" on {names(aspect.label)}" if several else ""
         report = reports[aspect.label]
+        if bundle_stopped_short(report.bundle) is not None:
+            # No verdict over a run that did not finish: the page opened on what stopped it (``_stopped_blocks``).
+            continue
         order = aspect.design.measure_order if aspect.design is not None else []
         # The aspect's own verdict line's sentence, as its page and the quick print say it (verdict.py), in the forms
         # its page was built in.
@@ -366,6 +405,9 @@ def _lead_blocks(
             decision = f"On {names(aspect.label)}, {aspect_shows(readings, aspect.label)}"
             sentences.append(f"{decision}.")
             decisions.append(decision)
+    if not sentences:
+        # Every aspect has a run that did not finish, so the page's opening is all there is to lead with.
+        return []
     text = " ".join(sentences)
     # Where a decision the lead says leaves arms undecided, its words say the evidence cannot tell them apart, and the
     # lead links that phrase's one definition at its first use.

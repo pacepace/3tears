@@ -1317,6 +1317,18 @@ class RunSummary(EvalDocumentModel):
             "assembled before the field existed (its shape names no apparatus, so read it as not carried)."
         ),
     )
+    # Left out of the document when unset, so a run that finished summarises, and is fingerprinted, as one did before
+    # the field existed.
+    ended_because: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Why a run that did not reach 'completed' ended, in its record's own words: its loss's cause, the cancel's "
+            "or the budget stop's reason, or the error a failed or exhausted run recorded last. What a page opens on "
+            "in place of a verdict for such a run. None = the run completed, its record gives no reason, or the "
+            "bundle was assembled before the field existed."
+        ),
+    )
 
 
 class DeclaredLevelCoverage(EvalDocumentModel):

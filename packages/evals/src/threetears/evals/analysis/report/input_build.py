@@ -74,6 +74,7 @@ from threetears.evals.analysis.depth import REPEATS_FLOOR
 from threetears.evals.analysis.depth import Precision as BundlePrecision
 from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
 from threetears.evals.kernel.numbers import format_number
+from threetears.evals.analysis.report.verdict import unfinished_line
 from threetears.evals.analysis.report_input import (
     SHARE_UNIT,
     ANALYST_ASPECT_FIELDS,
@@ -1062,6 +1063,14 @@ class _Builder:
                 )
         for note in self.unreported:
             unreported.setdefault(note)
+        # What stopped each run that did not finish, as the aspect's own page opens with it, named by its aspect
+        # where the campaign reads several.
+        several = len(self.ordered) > 1
+        unfinished = [
+            f"On {aspect.aspect}: {line.text}" if several else line.text
+            for aspect in self.ordered
+            if (line := unfinished_line(aspect, self.arm)) is not None
+        ]
         return Caveats(
             late_criteria=[
                 LateCriterion(criterion=criterion, name=name, set_at=set_at, aspect=aspect, reading=reading)
@@ -1073,6 +1082,7 @@ class _Builder:
             latency=" ".join(latency) or None,
             short_runs=list(short.values()),
             unreported=list(unreported),
+            unfinished=unfinished,
         )
 
 

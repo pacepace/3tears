@@ -232,6 +232,8 @@ replay = await Eval(QUERIES, LOOKUPS(answers_from_search), ["expected"], k=3).ru
 A replay asked something the recording does not hold is a rig failure, never run live: the cell is recorded as one,
 naming the call, and the run fails, since the next cell reads the same recording. Its print opens with that
 failure, naming the call, and prints no verdict: the readings after it cover only the results recorded before it.
+Every run that did not finish reads so, on every surface: a failed, cancelled or budget-stopped run's print, its
+report in Markdown and HTML, and the line its analysis is listed by open on what stopped it, with no verdict.
 `RECORD=1` records the file again. A world with state takes no recording. A host's own kind can wire cassettes for its
 lookups next to a world ([cassettes](adopting-a-host.md#cassettes-recording-and-replaying-tools)).
 
