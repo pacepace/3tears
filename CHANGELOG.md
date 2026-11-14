@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: store reads (#1052, #1057, #1059)
+### evals: store reads (#1052, #1053, #1057, #1059)
 
 **Changed:** `fold_groups` folds each row into its group as it arrives and lets it go, so a fold holds its groups'
 answers, never the rows; a measure refuses a value when the fold reaches it. The engine's grouping of a store without
@@ -36,6 +36,11 @@ readings kit's `grouped.sum_int` and `grouped.values_exact` check it (#1059 item
 it closes the store's rows however it ends; the launch estimate's planning read holds its read in a `with` block.
 `bridge_async_store` closes an abandoned narrowed read's async iterator whenever it has `aclose`, where it closed only
 an async generator, so a driver's cursor class kept its cursor open (#1059 item 3).
+
+**Added (provisional):** `EvalStorage.query_eval_result_keys_by_runs(run_ids, scope_id)` reads several runs' result
+keys in one call: one `by_doc_type` with the runs as a `field_in` predicate, the fields a key read leaves out left
+out, and each row checked as the one-run key read checks it. A host store needs nothing new. `campaign_arms` reads its
+runs' keys through it, one store call where it made one per run (`CampaignStore` gains the method) (#1053 item 2).
 
 ### evals: export, seed and carry follow-ups
 
@@ -88,8 +93,8 @@ now cites it by the listing's key (#1021).
 
 **Changed:** `aspect_pass_rate` reads the trials' pass rate alone rather than every floor reading, and the scorecard
 reads each row's pass rate once. `campaign_arms` loads each member run once and reads every run's first result in one
-call by id, where it loaded each run twice and read each first result on its own; it still reads each run's result
-keys one run at a time, until the batched key read returns (#1053 items 1 and 3; item 2 in part, so #1053 stays open). `editor_rubric` keeps at most 64 editor texts read (#1117). Output is unchanged.
+call by id, where it loaded each run twice and read each first result on its own; it reads every run's result keys in
+one call too (`query_eval_result_keys_by_runs`, under "store reads" above) (#1053). `editor_rubric` keeps at most 64 editor texts read (#1117). Output is unchanged.
 
 ### evals: a page's forms, arm names and gate checks are worked out once per report input
 

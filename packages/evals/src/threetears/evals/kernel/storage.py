@@ -2872,6 +2872,50 @@ class EvalStorage:
             raise StorageError(f"failed to read the results of eval run {run_id!r}: {e}") from e
         return [_result_key(item, run_id) for item in items]
 
+    def query_eval_result_keys_by_runs(self, run_ids: Sequence[str], scope_id: str, /) -> dict[str, list[ResultKey]]:
+        """The key of every result stored for each of several runs, in one read that ships no other field.
+
+        :meth:`query_eval_result_keys_by_run` for many runs at once: one ``by_doc_type`` with the runs as a ``field_in``
+        predicate (which every store answers, so a host store needs nothing new), the same fields left out, and each
+        row read into its key by the same checks. For a reader that needs the keys of every run of a set (a
+        campaign's arms read each run's first result), which otherwise asks the store once per run: a round trip each
+        on a database store. A key row still ships the result's scalars and its score objects, so a caller bounds
+        how many results one call covers.
+
+        **Provisional:** this method may change before it is declared part of the host contract.
+
+        :param run_ids: The runs. Empty asks the store nothing; one named twice is read once.
+        :ptype run_ids: Sequence[str]
+        :param scope_id: The scope they live in.
+        :ptype scope_id: str
+        :return: Each run's keys, in the store's order within the run (the order :meth:`query_eval_result_keys_by_run`
+            gives), under every run asked (an empty list for a run with none stored), in the order first asked.
+        :rtype: dict[str, list[ResultKey]]
+        :raises StorageError: The store failed to answer, or answered with a result of a run not asked for.
+        :raises UnreadableResultKey: A row matched carries no readable key.
+        """
+        keys: dict[str, list[ResultKey]] = {run_id: [] for run_id in run_ids}
+        if not keys:
+            return keys
+        store = self._store
+        try:
+            items = store.by_doc_type(
+                "eval_result", scope_id, exclude=_RESULT_KEY_EXCLUDED, field_in={"eval_run_id": list(keys)}
+            )
+        # prawduct:ok-broad-except — DB read boundary; re-raised as a typed eval error
+        except Exception as e:
+            raise StorageError(f"failed to read the results of eval runs {list(keys)!r}: {e}") from e
+        for item in items:
+            run_id = item.get("eval_run_id")
+            held = keys.get(run_id) if isinstance(run_id, str) else None
+            if held is None:
+                raise StorageError(
+                    f"the store answered a read of eval runs {list(keys)!r} with a result ({item.get('id')!r}) of run "
+                    f"{run_id!r}, none of them"
+                )
+            held.append(_result_key(item, run_id))
+        return keys
+
     def load_eval_results(
         self, result_ids: Sequence[str], scope_id: str, /, *, elide: Sequence[str] = ()
     ) -> list[EvalResult]:
