@@ -61,6 +61,7 @@ from threetears.evals.analysis.lenses.cost_estimate import (
     COST_BAND_SAFETY_MARGIN,
     COST_ESTIMATE_MIN_BASIS,
     CostObservation,
+    compute_borrowed_cost,
     compute_estimate_cost,
 )
 from threetears.evals.analysis.significance import format_significance
@@ -1146,6 +1147,18 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
     only under other launch conditions is named with the conditions that differ. A revision with priced results of its
     own is priced from them alone. This is pricing only: analysis never pools two revisions' results.
 
+    **A template with no priced history, its own or its revisions', borrows from its siblings'.** A sibling is another
+    template in the scope, of the same candidate kind and not a revision of the arm's own. Only its runs launched as
+    the arm will be are drawn on (the same candidate model, cassette mode, judges, simulator and apparatus), and only on
+    the arm's subject. A sibling whose template differs from the arm's in what a run spends (its judged dimensions with
+    their judge pins, conversation shape, world seed or allowed tools) is not drawn on, and is named: the estimate is
+    per case, and a case's cost cannot be scaled across such a change. The price says it is borrowed: its method is
+    ``borrowed-history`` and its basis names each sibling and its result count. Its band is wider than a direct
+    estimate's (:func:`~threetears.evals.analysis.lenses.cost_estimate.compute_borrowed_cost`), and needs results
+    over at least :data:`~threetears.evals.analysis.COST_ESTIMATE_MIN_BASIS` cases. A borrowed figure budgets a
+    launch only; it never enters a reading, a cell, a pool or a recommendation. With no sibling to draw on, the arm
+    reads unpriced, and its basis says what its own history and its siblings each lack.
+
     :param host: The host whose store holds the history and whose vocabulary reads it.
     :ptype host: EvalHost
     :return: The pricer.
@@ -1221,6 +1234,93 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
             ),
         )
 
+    def borrowed(quote: ArmQuote, template: EvalTemplate, launched: str) -> ArmPrice | str:
+        """The arm's price borrowed from its sibling templates' priced results, or why none prices it.
+
+        A sibling is another template in the scope (not a revision of the arm's own) of the same candidate kind, and
+        it is drawn on only through its runs launched as the arm will be, on the arm's subject, and only while its
+        template leaves what a run spends as the arm's does (:func:`_pricing_shape`): the estimate is per case, and
+        a case's cost cannot be scaled across a change there.
+        """
+        runs_by_template: dict[str, list[EvalRun]] = {}
+        for run in list_runs(host, quote.scope_id, include_archived=True):
+            if run.template_id is not None and run.template_id != template.id:
+                runs_by_template.setdefault(run.template_id, []).append(run)
+        reasons: list[str] = []
+        observations: list[CostObservation] = []
+        drawn_on: list[str] = []
+        for sibling_id in sorted(runs_by_template):
+            sibling = host.storage.load_template(sibling_id, quote.scope_id)
+            if sibling is None or sibling.name == template.name or sibling.candidate_kind != template.candidate_kind:
+                continue
+            named = f"template {sibling.name!r} ({sibling.id!r})"
+            matching = [run for run in runs_by_template[sibling_id] if not _sibling_differences(run, quote)]
+            if not matching:
+                if differences := _closest_priced_sibling_differences(host, quote, runs_by_template[sibling_id]):
+                    reasons.append(f"{named}'s priced runs differ in {differences}")
+                continue
+            if changed := _pricing_changes(sibling, template):
+                reasons.append(
+                    f"{named} differs from the arm's in {', '.join(changed)}, across which a case's cost cannot be "
+                    "scaled"
+                )
+                continue
+            # Read a page at a time, and of the arm's model only, as the arm's own history is.
+            its_own = [
+                CostObservation.of(result)
+                for run in matching
+                for result in iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE)
+                if result.model == quote.candidate_model
+            ]
+            n_priced = sum(1 for observation in its_own if observation.cost_usd is not None)
+            if n_priced:
+                observations += its_own
+                drawn_on.append(f"{named}, {n_priced} result(s)")
+        borrowing = compute_borrowed_cost(observations, n_cases=quote.case_count, k_runs=quote.k_runs)
+        if borrowing is None:
+            missing = (
+                f"nor has any other template of kind {template.candidate_kind!r} a priced result on subject "
+                f"{quote.subject_id!r} {launched}"
+            )
+            return "; ".join([missing, *reasons])
+        forms = PageForms.off_page()
+        predicted = borrowing.predicted
+        sources = "; ".join(drawn_on)
+        if predicted.interval_high is None:
+            return (
+                f"the {borrowing.n_historical} priced result(s) of sibling templates ({sources}) cover "
+                f"{borrowing.n_cases} case(s), too few to bound an arm whose cases are new (a borrowed band needs "
+                f"{COST_ESTIMATE_MIN_BASIS} cases and {COST_ESTIMATE_MIN_BASIS} results; their mean alone puts it at "
+                f"{forms.lone(predicted.value, money=True).text})"
+            )
+        cell = CostEstimateCell(
+            model=quote.candidate_model,
+            n_observations=quote.case_count * quote.k_runs,
+            n_historical=borrowing.n_historical,
+            mean_cost_per_observation=borrowing.mean_cost_per_observation,
+            predicted=predicted,
+            basis="historical",
+            band_basis=borrowing.band_basis,
+            n_unpriced_historical=borrowing.n_unpriced_historical,
+        )
+        return priced(
+            cell,
+            predicted,
+            f"sibling templates on subject {quote.subject_id!r} {launched}",
+            drawn_on=f"borrowed from {sources}: template {template.name!r} has no priced result of its own; the "
+            f"same candidate kind, subject, {_PRICING_UNCHANGED}; a budgeting figure only, never a reading; ",
+        )
+
+    def or_borrowed(quote: ArmQuote, template: EvalTemplate | None, launched: str, basis: str) -> ArmPrice:
+        """The arm's price borrowed from its siblings when its own history and its revisions price nothing
+        (``basis`` says why they do not); unpriced, saying what each lacks, when no sibling prices it either."""
+        if template is None:
+            return ArmPrice(predicted_usd=None, basis=basis)
+        sibling = borrowed(quote, template, launched)
+        if isinstance(sibling, ArmPrice):
+            return sibling
+        return ArmPrice(predicted_usd=None, basis=f"{basis}; {sibling}")
+
     def price(quote: ArmQuote) -> ArmPrice:
         judges = dict(quote.judge.effective_judges) if quote.judge is not None else None
         launched = (
@@ -1239,16 +1339,18 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
         basis = f"no priced past result of {condition} is in scope {quote.scope_id!r}{unpriced}"
         template = host.storage.load_template(quote.template_id, quote.scope_id)
         if template is None or template.revision == 1:
-            return ArmPrice(predicted_usd=None, basis=basis)
+            return or_borrowed(quote, template, launched, basis)
         # A revision a reset wrote prices from the one before it while the step leaves what an arm spends alone
         # (_PRICING_UNCHANGED). Its results only predict the cost; analysis never pools two revisions.
         later = template
         mismatched: list[str] = []
         while (earlier := _predecessor(host, later)) is not None:
             if changed := _pricing_changes(earlier, later):
-                return ArmPrice(
-                    predicted_usd=None,
-                    basis=f"{basis}; revision {earlier.revision} of {template.name!r} cannot price it: the step to "
+                return or_borrowed(
+                    quote,
+                    template,
+                    launched,
+                    f"{basis}; revision {earlier.revision} of {template.name!r} cannot price it: the step to "
                     f"revision {later.revision} changed {', '.join(changed)}",
                 )
             earlier_cell = priced_history(quote, earlier.id)
@@ -1264,19 +1366,22 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
                 mismatched.append(f"revision {earlier.revision}'s priced runs differ in {differences}")
             later = earlier
         if later is template:
-            return ArmPrice(
-                predicted_usd=None,
-                basis=f"{basis}; the store holds no one revision {template.revision - 1} of {template.name!r} to "
-                "draw on",
+            return or_borrowed(
+                quote,
+                template,
+                launched,
+                f"{basis}; the store holds no one revision {template.revision - 1} of {template.name!r} to draw on",
             )
         earlier_revisions = (
             f"revision {later.revision}"
             if later.revision == template.revision - 1
             else f"revisions {later.revision}-{template.revision - 1}"
         )
-        return ArmPrice(
-            predicted_usd=None,
-            basis=f"{basis}, nor of {earlier_revisions} of {template.name!r}, which would price it with "
+        return or_borrowed(
+            quote,
+            template,
+            launched,
+            f"{basis}, nor of {earlier_revisions} of {template.name!r}, which would price it with "
             f"{_PRICING_UNCHANGED}" + (f"; {'; '.join(mismatched)}" if mismatched else ""),
         )
 
@@ -1333,6 +1438,39 @@ def _predecessor(host: EvalHost, template: EvalTemplate) -> EvalTemplate | None:
         if stored.name == template.name and stored.revision == template.revision - 1
     ]
     return earlier[0] if len(earlier) == 1 else None
+
+
+def _sibling_differences(run: EvalRun, quote: ArmQuote) -> list[str]:
+    """The launch conditions a sibling template's ``run`` differs from ``quote``'s arm in, its subject among them: a
+    borrowed price crosses templates and nothing else (:func:`_launch_differences`, then the subject).
+
+    :param run: A run of a sibling template.
+    :ptype run: EvalRun
+    :param quote: The arm being priced.
+    :ptype quote: ArmQuote
+    :return: Each condition that differs; empty when the run was launched as the arm will be, on its subject.
+    :rtype: list[str]
+    """
+    differences = _launch_differences(run, quote)
+    subject = run.subject_snapshot.subject_id
+    if subject != quote.subject_id:
+        differences.append(f"subject ({subject!r} there, {quote.subject_id!r} here)")
+    return differences
+
+
+def _closest_priced_sibling_differences(host: EvalHost, quote: ArmQuote, runs: Sequence[EvalRun]) -> str:
+    """What the closest priced run among a sibling template's ``runs`` differs from the arm in; empty for none
+    priced."""
+    closest: list[str] | None = None
+    for run in runs:
+        # Read a page at a time, and only until a priced result is met.
+        pages = iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE)
+        if not any(result.cost_usd is not None for result in pages):
+            continue
+        differences = _sibling_differences(run, quote)
+        if closest is None or len(differences) < len(closest):
+            closest = differences
+    return ", ".join(closest or [])
 
 
 def _closest_priced_differences(host: EvalHost, quote: ArmQuote, template: EvalTemplate) -> str:

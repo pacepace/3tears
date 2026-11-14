@@ -37,17 +37,24 @@ if TYPE_CHECKING:
 #: own per-observation usage history (:func:`compute_estimate_cost`).
 COST_PREDICTION_METHOD = "usage-history"
 
+#: The ``method_id`` of a prediction borrowed from other templates' history (:func:`compute_borrowed_cost`): an arm
+#: whose template has no priced result of its own, priced from sibling templates launched as it will be. A figure for
+#: budgeting a launch, never a reading, a cell, a pool or a recommendation.
+BORROWED_PREDICTION_METHOD = "borrowed-history"
+
 
 @dataclass(frozen=True, slots=True)
 class CostObservation:
     """What the cost estimate reads of one past result, kept in its place by a reader that walks a run's results a page
     at a time (:mod:`~threetears.evals.kernel.run_pages`) rather than holding them: its run, its model, what it cost
-    and which roles that cost sums (``EvalResult.cost_roles``)."""
+    and which roles that cost sums (``EvalResult.cost_roles``), and its case, which a borrowed estimate draws its
+    band over (:func:`compute_borrowed_cost`)."""
 
     eval_run_id: str
     model: str
     cost_usd: float | None
     cost_roles: tuple[str, ...]
+    test_case_id: str = ""
 
     @classmethod
     def of(cls, result: EvalResult) -> CostObservation:
@@ -63,6 +70,7 @@ class CostObservation:
             model=result.model,
             cost_usd=result.cost_usd,
             cost_roles=tuple(result.cost_roles),
+            test_case_id=result.test_case_id,
         )
 
 
@@ -455,6 +463,105 @@ class CostEstimate(EvalBaseModel):
         ]
 
 
+class BorrowedCost(EvalBaseModel):
+    """What other templates' priced results predict for an arm whose template has none
+    (:func:`compute_borrowed_cost`).
+
+    :ivar n_historical: The priced past results drawn on.
+    :ivar n_cases: The distinct cases those results measured.
+    :ivar n_unpriced_historical: The results left out because their spend went unpriced.
+    :ivar mean_cost_per_observation: The results' mean cost, per observation.
+    :ivar predicted: The prediction (``method_id`` :data:`BORROWED_PREDICTION_METHOD`); its band is ``None`` when the
+        results cover fewer than :data:`COST_ESTIMATE_MIN_BASIS` cases.
+    :ivar band_basis: How the band was drawn, and why it is wider than one from the template's own history; ``None``
+        with no band.
+    """
+
+    n_historical: int
+    n_cases: int
+    n_unpriced_historical: int = 0
+    mean_cost_per_observation: float
+    predicted: PredictedValue
+    band_basis: str | None = None
+
+
+def compute_borrowed_cost(
+    observations: Iterable[CostObservation], *, n_cases: int, k_runs: int, computed_at: str | None = None
+) -> BorrowedCost | None:
+    """Predict an arm's cost from other templates' priced results, for an arm whose template has none.
+
+    The point estimate is what a direct estimate makes of the same results: their mean cost per observation times the
+    arm's ``n_cases × k_runs`` observations. The band is wider. The arm's cases are none of the cases those results
+    measured, so what varies is which cases it draws, and repeats of one case move together. So the band reaches the
+    outer ends of two: the prediction band over the results as observations, which is what a direct estimate draws
+    (:func:`_cost_band`), and one over each case's mean cost per observation, each case a draw, the arm's ``n_cases``
+    of them repeated ``k_runs`` times. It brackets the point estimate, as the first band does, and is never narrower
+    than it.
+
+    :param observations: The siblings' results for the arm's model, launched as the arm will be.
+    :ptype observations: Iterable[CostObservation]
+    :param n_cases: The arm's planned cases.
+    :ptype n_cases: int
+    :param k_runs: The arm's repeats of each case.
+    :ptype k_runs: int
+    :param computed_at: The instant stamped on the prediction (ISO-8601); ``None`` stamps now.
+    :ptype computed_at: str | None
+    :return: The prediction, banded when the results cover at least :data:`COST_ESTIMATE_MIN_BASIS` cases; ``None``
+        when no result is priced.
+    :rtype: BorrowedCost | None
+    :raises CostEstimateError: ``n_cases`` or ``k_runs`` is below 1.
+    """
+    if n_cases < 1 or k_runs < 1:
+        raise CostEstimateError("n_cases and k_runs must both be >= 1 to estimate an arm's cost")
+    costs: list[float] = []
+    by_case: dict[str, list[float]] = {}
+    n_unpriced = 0
+    for observation in observations:
+        if observation.cost_usd is None:
+            n_unpriced += 1
+            continue
+        costs.append(observation.cost_usd)
+        by_case.setdefault(observation.test_case_id, []).append(observation.cost_usd)
+    if not costs:
+        return None
+    case_means = [sum(case) / len(case) for case in by_case.values()]
+    n_observations = n_cases * k_runs
+    mean = sum(costs) / len(costs)
+    estimate = n_observations * mean
+    stamp = computed_at if computed_at is not None else utc_now_iso()
+    if len(case_means) < COST_ESTIMATE_MIN_BASIS or len(costs) < COST_ESTIMATE_MIN_BASIS:
+        return BorrowedCost(
+            n_historical=len(costs),
+            n_cases=len(case_means),
+            n_unpriced_historical=n_unpriced,
+            mean_cost_per_observation=mean,
+            predicted=PredictedValue(value=estimate, method_id=BORROWED_PREDICTION_METHOD, computed_at=stamp),
+        )
+    observed_low, observed_high, _observed_basis = _cost_band(costs, n_observations, estimate)
+    case_low, case_high, _case_basis = _cost_band(case_means, n_cases, n_cases * (sum(case_means) / len(case_means)))
+    low, high = min(observed_low, k_runs * case_low), max(observed_high, k_runs * case_high)
+    level = PageForms.off_page().share(INTERVAL_LEVEL).text
+    return BorrowedCost(
+        n_historical=len(costs),
+        n_cases=len(case_means),
+        n_unpriced_historical=n_unpriced,
+        mean_cost_per_observation=mean,
+        predicted=PredictedValue(
+            value=estimate,
+            interval_low=low,
+            interval_high=high,
+            method_id=BORROWED_PREDICTION_METHOD,
+            computed_at=stamp,
+        ),
+        band_basis=(
+            f"At least {level} prediction band, borrowed: the arm's cases are none of the {len(case_means)} its "
+            f"{len(costs)} past observations measured, so the band runs to the outer ends of a band over those "
+            f"observations and one over each case's mean cost, each case a draw and its repeats moving together, "
+            "wider than a band from the template's own history would be."
+        ),
+    )
+
+
 def compute_estimate_cost(
     runs: list[EvalRun],
     results: Iterable[EvalResult] | Iterable[CostObservation],
@@ -696,6 +803,7 @@ def compute_estimate_cost(
 
 
 __all__ = [
+    "compute_borrowed_cost",
     "compute_estimate_cost",
     "COST_ESTIMATE_MIN_BASIS",
     "COST_PREDICTION_METHOD",
