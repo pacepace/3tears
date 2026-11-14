@@ -261,8 +261,8 @@ class TestALeadASetFilterPins:
     ) -> None:
         """Flips if a page past the first on Postgres names the whole set, or all the values it has not passed:
         Postgres 16 then scans the whole table once it estimates a few pages left (6,001 values of two rows in a table
-        of 30,000: 189,008 rows scanned for 12,012). Each later page names a window of the values, put in order once
-        by a statement over the values alone; every row still comes once, in key order."""
+        of 30,000: 189,008 rows scanned for 12,012). Each later page names a window of the values, put in order by
+        statements over the values alone; every row still comes once, in key order."""
         values = [f"r{n:02d}" for n in range(11, -1, -1)]
         recorded = _Recorded(races)
 
@@ -272,8 +272,9 @@ class TestALeadASetFilterPins:
 
         assert [tuple(row.values()) for row in read.rows] == _pinned(races, values)
         reads = [(sql, params) for sql, params in recorded.statements if "version()" not in sql]
-        (first, _), (ordering, _), *later = reads
+        (first, _), (ordering, _), *rest = reads
         assert " FROM t" in first and "unnest($1::text[])" in ordering and " FROM t" not in ordering, reads
+        later = [(sql, params) for sql, params in rest if " FROM t" in sql]
         assert later, reads
         named = [list(params[0]) for _, params in later]
         assert all(len(window) < len(values) and window == sorted(window) for window in named), named
@@ -297,6 +298,31 @@ class TestALeadASetFilterPins:
         _, *later = [params for sql, params in recorded.statements if " FROM many" in sql]
         assert later, recorded.statements
         assert max(len(params[0]) for params in later) <= 200, [len(params[0]) for params in later]
+
+    @pytest.mark.parametrize("l3", [_Recorded, _RecordedOnYugabyte], ids=["postgres", "yugabyte"])
+    async def test_the_set_s_values_are_put_in_order_a_page_of_them_a_statement(
+        self, races: duckdb.DuckDBPyConnection, l3: type[_Recorded]
+    ) -> None:
+        """Flips if one statement orders every value of the set (Postgres sorted 5,502 values in one): each statement
+        over the values asks for at most a page of them, past the last taken, and every row still comes once."""
+        races.execute("CREATE TABLE many (race VARCHAR, geo BIGINT, PRIMARY KEY (race, geo))")
+        races.execute("INSERT INTO many SELECT 'r' || lpad(r::VARCHAR, 4, '0'), 0 FROM range(2000) a(r)")
+        values = [f"r{n:04d}" for n in range(1998, -1, -2)]
+        recorded = l3(races)
+
+        read = await read_keyset_pages(
+            recorded,
+            "SELECT * FROM many",
+            ("race", "geo"),
+            where_any={"race": ("text[]", values)},
+            page_size=300,
+            lead_array="text[]",
+        )
+
+        assert [row["race"] for row in read.rows] == sorted(values)
+        ordering = [sql for sql, _ in recorded.statements if "unnest(" in sql]
+        assert len(ordering) > 1, recorded.statements
+        assert all(sql.endswith("LIMIT 300") for sql in ordering), ordering
 
 
 class TestWhichDatabaseAnL3Is:

@@ -37,8 +37,8 @@ lead of many small values costs a statement a page, not one a value. The rows co
 cursor's form reads them. Postgres pages by the cursor as above: there ``DISTINCT`` reads the whole table.
 
 **A hashed lead a set filter pins** (``where_any`` naming the key's first column, ``lead_array`` named, on
-YugabyteDB): the filter's values are walked the same way, put in the database's order by one statement over the
-values alone (``unnest``, no table read). Paged by the cursor instead, ``lead = ANY(values)`` read every row of
+YugabyteDB): the filter's values are walked the same way, put in the database's order a page of them a statement, by
+statements over the values alone (``unnest``, no table read). Paged by the cursor instead, ``lead = ANY(values)`` read every row of
 every value on every page and sorted them across values (YugabyteDB, 33,528 rows in three pages: 33,528 scanned a
 page, two sorts on disk). An ordered lead -- Postgres, or a lead declared ``ASC`` -- pages by the cursor: its index
 answers ``lead = ANY(values)`` in key order and stops at the page, and a set that fits one page is one statement
@@ -48,7 +48,7 @@ the one Postgres seeks by: beside ``lead = ANY(values)`` the leading bound and t
 estimate until, a few pages from the end, it plans a bitmap scan of every row left in the set and sorts them
 (Postgres 16, ten values of 3,000 rows: 85,019 rows scanned for 30,029; by the row comparison alone, 31,028). And
 past the first page each statement there names a window of the values not yet passed, at most a few hundred, put in
-order once by the same statement over the values alone: with the whole set, or all of the rest, Postgres scans the
+order a page at a time by the same statements over the values alone: with the whole set, or all of the rest, Postgres scans the
 whole table once it estimates a few pages left (6,001 values of two rows in a table of 30,000: 189,008 rows scanned
 for 12,012; windowed, 12,001).
 
@@ -610,8 +610,9 @@ async def _set_pages(
     each after it ``lead = ANY`` a window of the values not yet passed (the module's "A hashed lead a set filter
     pins").
 
-    A set that fits a page is that one statement. Past it, the values are put in the database's order once, by one
-    statement over the values alone (:class:`_GivenLeads`, no table read), from the cursor's lead on; each later
+    A set that fits a page is that one statement. Past it, the values are put in the database's order a page of them
+    at a time, by statements over the values alone (:class:`_GivenLeads`, no table read), from the cursor's lead on;
+    each later
     statement names the next window of them, sized by the rows a value held on the page before to about two pages,
     and at most :data:`_MOST_LEADS_A_SEEK` values, so its index scan stays the plan. Paged with the whole set instead,
     Postgres 16 plans a scan of the whole table once its estimate of the rows left falls to a few pages, and the
@@ -640,15 +641,13 @@ async def _set_pages(
     lead = shape.key[0]
     quoted = shape.quote(lead)
     cursor: tuple[Any, ...] = reads.last(kept, shape.key)
-    leads = await _GivenLeads(reads, shape, array, values, cursor).take(len(values))
+    leads = _GivenLeads(reads, shape, array, values, cursor)
     # each window's statement pins the lead itself; the set filter naming it stays on the first statement alone
     windowed = replace(
         shape, where_any={column: held for column, held in (shape.where_any or {}).items() if column != lead} or None
     )
     held, filled = reads.leads(kept, lead), reads.count(kept)
-    while leads:
-        size = _window(held, filled, shape.page_size)
-        window, leads = leads[:size], leads[size:]
+    while window := await leads.take(_window(held, filled, shape.page_size)):
         statement = windowed.statement(
             conditions=[Fragment(sql=f"{quoted} = ANY($1::{array})", params=(list(window),))], row_seek=True
         )
@@ -709,8 +708,8 @@ async def _lead_walk(
     """the read's rows in key order, a lead value's rows at a time (the module's "A hashed lead").
 
     The lead values come from ``SELECT DISTINCT`` in pages of the read's own size, in the database's order -- or,
-    when a set filter pins the lead (``given``), are that filter's values put in the database's order by one
-    statement over the values alone, never the table (:class:`_GivenLeads`); a value whose rows fill a page is read
+    when a set filter pins the lead (``given``), are that filter's values put in the database's order a page
+    at a time by statements over the values alone, never the table (:class:`_GivenLeads`); a value whose rows fill a page is read
     on its own, seeking the rest of the key inside its bucket; values whose rows are fewer go together, as many a
     statement as about fill one (``= ANY`` the values, ordered by the whole key). Past :data:`_MOST_LEADS` values the
     read goes on by the cursor alone, from the last key it took.
@@ -852,8 +851,10 @@ class _LeadValues:
 
 
 class _GivenLeads:
-    """the values a set filter pins a read's lead to, in the database's order, put so by one statement over the values
-    alone (``unnest``, no table read); from the cursor's lead value on when the read resumes."""
+    """the values a set filter pins a read's lead to, in the database's order, read a page of them at a time by a
+    statement over the values alone (``unnest``, no table read; ``ORDER BY ... LIMIT`` the read's page size past the
+    last value taken, so no statement sorts more than a page of them); from the cursor's lead value on when the read
+    resumes."""
 
     def __init__(
         self,
@@ -867,8 +868,10 @@ class _GivenLeads:
         self._shape = shape
         self._array = array
         self._values = list(values)
-        self._after = after
-        self._held: list[Any] | None = None
+        self._held: list[Any] = []
+        self._ended = not self._values
+        self._past: Any = None if after is None else after[0]
+        self._first = after is not None
 
     async def take(self, count: int) -> list[Any]:
         """the next ``count`` values (fewer at the end; none once every value is taken).
@@ -878,32 +881,32 @@ class _GivenLeads:
         :return: the values
         :rtype: list[Any]
         """
-        if self._held is None:
-            self._held = await self._ordered()
+        while len(self._held) < count and not self._ended:
+            await self._read()
         taken, self._held = self._held[:count], self._held[count:]
         return taken
 
-    async def _ordered(self) -> list[Any]:
-        """the distinct non-NULL values (``= ANY`` never matches a NULL), in the database's order of the lead's type.
-
-        :return: the values
-        :rtype: list[Any]
-        """
-        if not self._values:
-            return []
+    async def _read(self) -> None:
+        """the next page of the distinct non-NULL values (``= ANY`` never matches a NULL), in the database's order of
+        the lead's type."""
         shape = self._shape
         lead = shape.key[0]
         quoted = shape.quote(lead)
         params: list[Any] = [self._values]
         clause = ""
-        if self._after is not None:
-            params.append(self._after[0])
-            clause = f" AND {quoted} >= {shape.placeholder(lead, 2)}"
+        if self._past is not None:
+            params.append(self._past)
+            clause = f" AND {quoted} {'>=' if self._first else '>'} {shape.placeholder(lead, 2)}"
         query = (
             f"SELECT DISTINCT {quoted} FROM unnest($1::{self._array}) AS {shape.quote('_leads')}({quoted}) "
-            f"WHERE {quoted} IS NOT NULL{clause} ORDER BY {quoted}"
+            f"WHERE {quoted} IS NOT NULL{clause} ORDER BY {quoted} LIMIT {shape.page_size}"
         )
-        return await self._reads.values(query, params, lead)
+        values = await self._reads.values(query, params, lead)
+        self._held.extend(values)
+        self._ended = len(values) < shape.page_size
+        if values:
+            self._past = values[-1]
+            self._first = False
 
 
 class _KeysetStatement:
