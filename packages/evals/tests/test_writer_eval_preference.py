@@ -89,12 +89,13 @@ def test_the_readings_table_reads_a_rate_as_a_percent_and_the_count_it_is_of(run
     """Report finished read ``0.43`` and ``0.86``, a rate written as a fraction at two decimals; it reads as a
     percent and the cases it counts, at the precision its row's figures give. A mean that is no rate reads as the
     aspect page prints its arms' levels where that page states a contrast of it (one form per measure, number rule 1:
-    Must-fix findings open reads 0.4 there and here, never 0.43), else at two decimals (Should-fix findings open)."""
+    Must-fix findings open reads 0.43 there and here, never a different form), else at two decimals (Should-fix
+    findings open)."""
     lines = rung5.render().splitlines()
 
     assert "| Report finished | 43% (3 of 7) | 86% (6 of 7) |" in lines
     assert "| Bounces | 0.9 | 1.0 |" in lines
-    assert "| Must-fix findings open | 0.4 | 0.3 |" in lines
+    assert "| Must-fix findings open | 0.43 | 0.29 |" in lines
     assert "| Should-fix findings open | 2.43 | 1.57 |" in lines
 
 

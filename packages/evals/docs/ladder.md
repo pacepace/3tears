@@ -627,7 +627,7 @@ writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gem
 | Report finished | 43% (3 of 7) | 86% (6 of 7) |
 | Bounces | 0.9 | 1.0 |
 ...
-| Must-fix findings open | 0.4 | 0.3 |
+| Must-fix findings open | 0.43 | 0.29 |
 | Should-fix findings open | 2.43 | 1.57 |
 ...
 | Writer turns | 12.57 | 12.29 |
@@ -666,7 +666,7 @@ Further down it reads the two code measures that moved most:
 
 ```text
 | Report finished | 43% (16 to 75) | 86% (49 to 97) | +43 pts | -49 to +100 pts | cannot tell apart | 7 paired |
-| Must-fix findings open | 0.4 (0 to 0.9) | 0.3 (0 to 1.0) | -0.1 | -1.3 to +1.0 | cannot tell apart | 7 paired |
+| Must-fix findings open | 0.43 (0 to 0.92) | 0.29 (0 to 0.98) | -0.14 | -1.31 to +1.03 | cannot tell apart | 7 paired |
 ```
 
 | What | Recorded |
