@@ -7,6 +7,7 @@ from typing import Any
 
 from threetears.core.collections.change_notes import noted_rows_since
 from threetears.core.ddl.change_notes import NOTE_RING_SIZE, change_notes_ddl, note_table
+from threetears.core.ddl.index_health import ddl_body
 
 
 class _Recording:
@@ -22,7 +23,8 @@ class _Recording:
 
 def test_every_note_table_has_a_covering_table_and_time_index() -> None:
     """Flips if a ring table loses the index noted_rows_since is answered from, or it stops carrying what it reads."""
-    statements = change_notes_ddl("platform")
+    # each past the ``-- purpose:`` lines declaring its index: the statement the database runs
+    statements = [ddl_body(statement) for statement in change_notes_ddl("platform")]
     for index in range(NOTE_RING_SIZE):
         wanted = (
             f'CREATE INDEX IF NOT EXISTS "{note_table(index)}_table" ON "platform"."{note_table(index)}" '

@@ -63,3 +63,14 @@ def test_purpose_plan_test_and_reason_never_make_two_indexes_differ() -> None:
     )
     assert noted == Index("datasources_by_kind", "kind")
     assert noted.purpose == "src/hub/schema_digest.py::reconcile_schema_digests"
+
+
+def test_a_partial_index_read_whole_is_its_read_only_when_said_partial() -> None:
+    """Flips if a scan of a partial index with no condition (the planner drops the predicate the index implies) is not
+    its keyed read when the test says the index is partial, or is one when it does not."""
+    counted = {
+        "Node Type": "Aggregate",
+        "Plans": [{"Node Type": "Index Only Scan", "Index Name": "notes_ring_read", "Relation Name": "notes"}],
+    }
+    assert plan_uses_index(counted, "notes_ring_read", partial=True)
+    assert not plan_uses_index(counted, "notes_ring_read")

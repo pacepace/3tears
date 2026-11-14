@@ -429,7 +429,9 @@ def _under_a_limit(plan: Mapping[str, Any], limited: bool = False) -> bool:
     return any(_under_a_limit(child, limited or node == "Limit") for child in plan.get("Plans", ()))
 
 
-def plan_uses_index(plan: StatementPlan | Mapping[str, Any] | Sequence[Any], index: str) -> bool:
+def plan_uses_index(
+    plan: StatementPlan | Mapping[str, Any] | Sequence[Any], index: str, *, partial: bool = False
+) -> bool:
     """whether a statement's plan finds its rows through ``index``: by an index condition, or walking it in order
     under a ``Limit`` (a keyset page's first rows). An index walked whole with nothing to stop it is no keyed read.
 
@@ -443,13 +445,17 @@ def plan_uses_index(plan: StatementPlan | Mapping[str, Any] | Sequence[Any], ind
     :ptype plan: StatementPlan | Mapping[str, Any] | Sequence[Any]
     :param index: the index name
     :ptype index: str
+    :param partial: ``index`` is a partial index (``CREATE INDEX ... WHERE ring_read``) the read states the predicate
+        of: read whole, it holds only the rows the predicate keeps, so a scan of it with no condition (the planner
+        drops a predicate the index implies) is its keyed read too
+    :ptype partial: bool
     :return: whether the plan reads ``index`` as a keyed read
     :rtype: bool
     """
     if isinstance(plan, StatementPlan):
-        return _reads_index(plan.plan, index, limited=False)
+        return _reads_index(plan.plan, index, limited=partial)
     if isinstance(plan, Mapping):
-        return _reads_index(plan, index, limited=False)
+        return _reads_index(plan, index, limited=partial)
     pattern = re.compile(rf"USING (?:COVERING )?INDEX {re.escape(index)}\b")
     details = [
         row.get("detail", "") if isinstance(row, Mapping) else row[-1] if isinstance(row, tuple) else row

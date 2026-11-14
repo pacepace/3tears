@@ -964,6 +964,99 @@ def test_a_table_numbered_at_run_time_is_judged_against_its_template(tmp_path: P
     assert not any(function == "by_id" for function, _ in found), found
 
 
+_RING_METHOD_READS = """
+    from pkg.ring import note_table
+
+    class Keeper:
+        def __init__(self, owner):
+            self._owner = owner
+
+        def _ring_table(self, index):
+            '''the ring's table at ``index``.'''
+            return f"{self._owner}.{quote_identifier(note_table(index))}"
+
+        async def by_id(self, conn, index, note_id):
+            return await conn.fetch(f"SELECT * FROM {self._ring_table(index)} WHERE id = $1", note_id)
+
+        async def by_scope(self, conn, index, scope):
+            table = self._ring_table(index)
+            return await conn.fetch(f"SELECT * FROM {table} WHERE scope = $1", scope)
+
+    async def elsewhere(conn, keeper, index):
+        return await conn.fetch(f"SELECT * FROM {keeper._ring_table(index)} WHERE scope = $1", 1)
+"""
+
+
+def test_a_method_that_only_returns_a_name_reads_as_its_template(tmp_path: Path) -> None:
+    """Flips if a ring table a method only returns (``self._ring_table(index)``) stays unknown when its DDL declares
+    the template, if a non-key read of it passes, or if a call on anything but ``self`` reads as some class's
+    method."""
+    found = _symbols(_config(tmp_path, {"pkg/ring.py": _RING, "pkg/reads.py": _RING_METHOD_READS}))
+    assert ("Keeper.by_scope", "non-key-where {}.threetears_change_notes_{}") in found, found
+    assert not any(function == "Keeper.by_id" for function, _ in found), found
+    assert not any(function == "elsewhere" and "threetears_change_notes" in what for function, what in found), found
+
+
+_SPARSE = """
+    NOTES = (
+        "CREATE TABLE IF NOT EXISTS notes (id UUID PRIMARY KEY, scope TEXT, at TIMESTAMPTZ, flag TEXT, hot BOOLEAN)",
+        "-- purpose: src/sparse.py::by_scope; src/sparse.py::flagged\\n"
+        "-- plan_test: tests/test_plans.py::test_notes_scope_at\\n"
+        "CREATE INDEX IF NOT EXISTS notes_scope_at ON notes (scope, at)",
+        "-- purpose: src/sparse.py::flagged\\n"
+        "-- plan_test: tests/test_plans.py::test_notes_flagged\\n"
+        "CREATE INDEX IF NOT EXISTS notes_flagged ON notes (scope, at) WHERE flag IS NULL",
+        "-- purpose: src/sparse.py::flagged\\n"
+        "-- plan_test: tests/test_plans.py::test_notes_flag_scope\\n"
+        "CREATE INDEX IF NOT EXISTS notes_flag_scope ON notes (flag, scope)",
+        "-- purpose: src/sparse.py::hot_counts; src/sparse.py::cold_counts\\n"
+        "-- plan_test: tests/test_plans.py::test_notes_hot\\n"
+        "CREATE INDEX IF NOT EXISTS notes_hot ON notes (scope) WHERE hot",
+    )
+
+    async def by_scope(conn, scopes):
+        return await conn.fetch("SELECT DISTINCT scope FROM notes WHERE scope = ANY($1::text[])", scopes)
+
+    async def flagged(conn, scopes):
+        return await conn.fetch("SELECT DISTINCT scope FROM notes n WHERE n.flag IS NULL AND scope = ANY($1::text[])", scopes)
+
+    async def hot_counts(conn):
+        return await conn.fetch("SELECT scope, count(*) AS n FROM notes WHERE hot GROUP BY 1")
+
+    async def cold_counts(conn):
+        return await conn.fetch("SELECT scope, count(*) AS n FROM notes WHERE NOT hot GROUP BY 1")
+"""
+
+_SPARSE_PLANS = """
+    from threetears.core.testing.plans import plan_uses_index
+
+    def test_notes_scope_at(plan):
+        assert plan_uses_index(plan, "notes_scope_at")
+
+    def test_notes_flagged(plan):
+        assert plan_uses_index(plan, "notes_flagged")
+
+    def test_notes_hot(plan):
+        assert plan_uses_index(plan, "notes_hot")
+
+    def test_notes_flag_scope(plan):
+        assert plan_uses_index(plan, "notes_flag_scope")
+"""
+
+
+def test_a_partial_index_whose_predicate_the_read_states_is_the_one_it_reads(tmp_path: Path) -> None:
+    """Flips if a read stating a partial index's predicate is not credited to it (tied on the bound lead with a full
+    index, beside a full index its bound columns cover longer, or with nothing of its columns bound), or if a read
+    that does not state it is (partial-index credit, 3tears #79)."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_plans.py").write_text(textwrap.dedent(_SPARSE_PLANS), encoding="utf-8")
+    findings = no_whole_reads_findings(_config(tmp_path, {"sparse.py": _SPARSE}))
+    assert not [f for f in findings if "in flagged:" in f or "in hot_counts:" in f or "in by_scope:" in f], findings
+    assert not [f for f in findings if "notes_flagged on notes: index-purpose-unused" in f], findings
+    assert [f for f in findings if "in cold_counts: whole-aggregate notes" in f], findings
+    assert [f for f in findings if "cold_counts holds no read" in f], findings
+
+
 _DEDUP = """
     from sqlalchemy import Column, Index, MetaData, String, Table
 

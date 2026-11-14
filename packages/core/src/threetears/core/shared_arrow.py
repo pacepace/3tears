@@ -77,6 +77,7 @@ import hashlib
 import json
 import mmap
 import multiprocessing
+import multiprocessing.connection
 import os
 import pickle
 import resource
@@ -86,14 +87,14 @@ import weakref
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType, TracebackType
 from typing import Any, Final
 
 from threetears.core.utils.cpu_quota import effective_cpu_count
 from threetears.observe import contain, get_logger, remove_tree
-from threetears.observe.metrics import gauge
+from threetears.observe.metrics import counter, gauge
 
 
 # pyarrow alone carries the store, its slots and hand-offs, and the pool: a process that never opens DuckDB (the hub,
@@ -127,6 +128,7 @@ __all__ = [
     "MappedTables",
     "MappedVersion",
     "Parts",
+    "PiecedSlot",
     "SegmentSlot",
     "SharedArrowFullError",
     "SharedArrowPool",
@@ -198,6 +200,12 @@ _TABLE_SUFFIX: Final = ".arrow"
 #: holds, so a file names its table unambiguously. The part named ``""`` (``{table}@.arrow``) holds the table's schema
 #: and no rows, so a table of no parts still has its columns.
 _PART_SEPARATOR: Final = "@"
+
+#: between a slot's name and its piece's number, in a piece's directory name (:class:`PiecedSlot`)
+_PIECE_SEPARATOR: Final = ".p"
+
+#: the least room a piece is reserved at when the caller names none: about one part's bound
+_PIECE_MINIMUM_BYTES: Final = 64 << 20
 
 #: what a version's and a table's name may hold: one path segment, never hidden
 _NAME_CHARS: Final = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
@@ -651,6 +659,7 @@ def _write_file(
     *,
     what: str,
     reclaim: Callable[[], object] | None = None,
+    full: Callable[[Path, int, str], Path] | None = None,
 ) -> os.stat_result:
     """write one uncompressed Arrow IPC file, refusing a batch that would pass ``room`` (asked before each batch: a
     store's room shrinks while a publish writes, as results are reserved beside it).
@@ -668,6 +677,10 @@ def _write_file(
     :param reclaim: called once when a batch would pass ``room``, before the batch is refused (a sweep: what a publish
         left to the store's thread may not have gone yet); None to refuse at once
     :ptype reclaim: Callable[[], object] | None
+    :param full: called when a batch would still pass ``room``, with the file's path, the bytes it would then hold
+        and ``what``: it moves the open file where it has more room (a slot's next piece) and returns its new path,
+        or raises; None to refuse at once
+    :ptype full: Callable[[Path, int, str], Path] | None
     :return: the file written, as ``os.stat`` reads it
     :rtype: os.stat_result
     :raises SharedArrowFullError: when it would take more than ``room``
@@ -681,8 +694,11 @@ def _write_file(
             if sink.tell() + batch.nbytes > room():
                 if reclaim is not None:
                     reclaim()
-                if sink.tell() + batch.nbytes > room():
-                    raise SharedArrowFullError(f"{what} would pass the bytes it may take")
+                while sink.tell() + batch.nbytes > room():
+                    if full is None:
+                        raise SharedArrowFullError(f"{what} would pass the bytes it may take")
+                    # the open file moves (a rename keeps the descriptor writing it), the room then is its new place's
+                    path = full(path, sink.tell() + batch.nbytes, what)
             writer.write_batch(batch)
     return os.stat(path)
 
@@ -699,29 +715,76 @@ def _file_schema(path: Path) -> Any:
         return ipc.open_file(mapped).schema
 
 
-def _write_tables(directory: Path, tables: Mapping[str, Any], room: Callable[[], int]) -> int:
-    """write each table as uncompressed Arrow IPC in ``directory`` (a result's or a hand-off's: a directory holding its
-    files itself), refusing a batch that would pass ``room``.
+class _Place:
+    """where a write's files go and the bytes they may take together: one directory under one bound (a result's
+    slot, a hand-off). A slot in pieces is a place of its own (:class:`_Pieces`) whose files move to the next piece.
+
+    :param directory: the directory
+    :ptype directory: Path
+    :param room: the bytes every file written here together may take, now
+    :ptype room: Callable[[], int]
+    """
+
+    #: what moves a file that would pass the room to more of it; None: refused
+    full: Callable[[Path, int, str], Path] | None = None
+
+    def __init__(self, directory: Path, room: Callable[[], int]) -> None:
+        self._directory = directory
+        self._room = room
+        self.written = 0
+
+    def left(self) -> int:
+        """the bytes the next file may take.
+
+        :return: bytes
+        :rtype: int
+        """
+        return self._room() - self.written
+
+    def file(self, file_name: str) -> Path:
+        """the path a new file of the place's takes.
+
+        :param file_name: its name
+        :ptype file_name: str
+        :return: the path
+        :rtype: Path
+        """
+        return self._directory / file_name
+
+    def wrote(self, size: int) -> None:
+        """a file was written whole: its bytes count against the room.
+
+        :param size: its bytes
+        :ptype size: int
+        :return: nothing
+        :rtype: None
+        """
+        self.written += size
+
+
+def _write_tables(place: _Place, tables: Mapping[str, Any]) -> int:
+    """write each table as uncompressed Arrow IPC in ``place`` (a result's or a hand-off's: a directory holding its
+    files itself), refusing a batch that would pass its room.
 
     A table given whole is one file; one given as :class:`Parts` is a schema file and a file per part (a part given as
     None is no file).
 
-    :param directory: where
-    :ptype directory: Path
+    :param place: where, and the bytes its files may take
+    :ptype place: _Place
     :param tables: name -> a table, a reader of its batches, what opens either, or :class:`Parts`
     :ptype tables: Mapping[str, Any]
-    :param room: the bytes every new file together may take, now (asked before each batch)
-    :ptype room: Callable[[], int]
     :return: the bytes written
     :rtype: int
-    :raises SharedArrowFullError: when they would take more than ``room``
+    :raises SharedArrowFullError: when they would take more than the place's room
     :raises ValueError: when a table or part name is not one plain path segment, or a part's columns are not its
         table's
     """
     written = 0
 
-    def left() -> int:
-        return room() - written
+    def wrote(stat: os.stat_result) -> None:
+        nonlocal written
+        written += stat.st_size
+        place.wrote(stat.st_size)
 
     for name, source in tables.items():
         _valid_name(name, "table")
@@ -730,25 +793,28 @@ def _write_tables(directory: Path, tables: Mapping[str, Any], room: Callable[[],
             for part in source.parts:
                 _valid_name(part, "part")
             schema_file = f"{name}{_PART_SEPARATOR}{_TABLE_SUFFIX}"
-            written += _write_file(directory / schema_file, source.schema, iter(()), left, what=name).st_size
+            wrote(_write_file(place.file(schema_file), source.schema, iter(()), place.left, what=name, full=place.full))
             for part, rows in source.parts.items():
                 if rows is None:
                     continue
-                path = directory / f"{name}{_PART_SEPARATOR}{part}{_TABLE_SUFFIX}"
+                file_name = f"{name}{_PART_SEPARATOR}{part}{_TABLE_SUFFIX}"
                 if isinstance(rows, Path):
                     # a file already in the store (a worker's result): linked, its pages never copied
                     if not _file_schema(rows).equals(source.schema):
                         raise ValueError(f"table {name!r} part {part!r}: its columns are not the table's")
-                    os.link(rows, path)
+                    os.link(rows, place.file(file_name))
                     continue
                 part_schema, batches = _batches(rows)
                 if not part_schema.equals(source.schema):
                     raise ValueError(f"table {name!r} part {part!r}: its columns are not the table's")
-                written += _write_file(path, source.schema, batches, left, what=f"table {name!r} part {part!r}").st_size
+                what = f"table {name!r} part {part!r}"
+                wrote(
+                    _write_file(place.file(file_name), source.schema, batches, place.left, what=what, full=place.full)
+                )
         else:
             schema, batches = _batches(source)
-            path = directory / f"{name}{_TABLE_SUFFIX}"
-            written += _write_file(path, schema, batches, left, what=f"table {name!r}").st_size
+            path = place.file(f"{name}{_TABLE_SUFFIX}")
+            wrote(_write_file(path, schema, batches, place.left, what=f"table {name!r}", full=place.full))
     return written
 
 
@@ -1773,7 +1839,7 @@ class SegmentSlot:
         :raises FileExistsError: when the slot was written already
         """
         with self._staged() as (staging, target):
-            written = _write_tables(staging, tables, lambda: self.max_bytes)
+            written = _write_tables(_Place(staging, lambda: self.max_bytes), tables)
             os.rename(staging, target)
         return written
 
@@ -1791,19 +1857,13 @@ class SegmentSlot:
         :raises ValueError: when a step names a table an earlier step wrote
         :raises FileExistsError: when the slot was written already
         """
-        written = 0
         names: set[str] = set()
         with self._staged() as (staging, target):
+            place = _Place(staging, lambda: self.max_bytes)
 
             def step(tables: Mapping[str, Any]) -> int:
-                nonlocal written
-                again = sorted(names & set(tables))
-                if again:
-                    raise ValueError(f"a slot's tables are written once each, and {again} were written already")
-                names.update(tables)
-                made = _write_tables(staging, tables, lambda: self.max_bytes - written)
-                written += made
-                return made
+                _once_each(names, tables)
+                return _write_tables(place, tables)
 
             yield step
             if names:
@@ -1826,19 +1886,265 @@ class SegmentSlot:
         target = segments / self.slot_id
         if target.exists():
             raise FileExistsError(f"slot {self.slot_id} is written once")
-        staging = segments / f"{_STAGING_PREFIX}{self.slot_id}-{uuid.uuid7().hex[-8:]}"
-        staging.mkdir()
-        (staging / _LOCK_FILE).touch()
-        descriptor = _locked(staging, fcntl.LOCK_EX)
-        if descriptor is None:
-            # never written unlocked: a sweep would take it from under the write
-            raise RuntimeError(f"slot {self.slot_id}'s staging directory {staging.name} could not be locked")
+        staging, descriptor = _locked_staging(segments, self.slot_id)
         try:
             yield staging, target
         except BaseException:
             remove_tree(staging, log=log, what="a failed result's staging directory")
             raise
         finally:
+            os.close(descriptor)
+
+
+def _once_each(names: set[str], tables: Mapping[str, Any]) -> None:
+    """record a step's tables among those a slot's earlier steps wrote, refusing one written already.
+
+    :param names: the tables written so far, added to
+    :ptype names: set[str]
+    :param tables: the step's
+    :ptype tables: Mapping[str, Any]
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when the step names a table an earlier step wrote
+    """
+    again = sorted(names & set(tables))
+    if again:
+        raise ValueError(f"a slot's tables are written once each, and {again} were written already")
+    names.update(tables)
+
+
+def _piece_name(slot_id: str, index: int) -> str:
+    """the directory a slot's piece is written as (:class:`PiecedSlot`).
+
+    :param slot_id: the slot
+    :ptype slot_id: str
+    :param index: the piece, from 0
+    :ptype index: int
+    :return: the name
+    :rtype: str
+    """
+    return f"{slot_id}{_PIECE_SEPARATOR}{index}"
+
+
+def _locked_staging(segments: Path, owner: str) -> tuple[Path, int]:
+    """a new staging directory for ``owner`` (a slot or a slot's piece) under ``segments``, with its lock file, held
+    under an exclusive lock: a sweep leaves a locked staging directory alone, and removes it once its writer is gone.
+
+    :param segments: the store's results directory
+    :ptype segments: Path
+    :param owner: the slot or piece it is staged for
+    :ptype owner: str
+    :return: the directory and the lock's descriptor (the caller closes it)
+    :rtype: tuple[Path, int]
+    :raises RuntimeError: when it could not be locked
+    """
+    staging = segments / f"{_STAGING_PREFIX}{owner}-{uuid.uuid7().hex[-8:]}"
+    staging.mkdir()
+    (staging / _LOCK_FILE).touch()
+    descriptor = _locked(staging, fcntl.LOCK_EX)
+    if descriptor is None:
+        # never written unlocked: a sweep would take it from under the write
+        remove_tree(staging, log=log, what="an unlockable staging directory")
+        raise RuntimeError(f"{owner}'s staging directory {staging.name} could not be locked")
+    return staging, descriptor
+
+
+def _ask_store(address: str, authkey: bytes, request: Mapping[str, Any]) -> dict[str, Any]:
+    """ask the serving process's store (its piece server, :meth:`SharedArrowStore.reserve_pieces`), and wait for
+    the answer.
+
+    :param address: the server's socket
+    :ptype address: str
+    :param authkey: the key it takes
+    :ptype authkey: bytes
+    :param request: what is asked
+    :ptype request: Mapping[str, Any]
+    :return: the answer
+    :rtype: dict[str, Any]
+    """
+    with multiprocessing.connection.Client(address, family="AF_UNIX", authkey=authkey) as connection:
+        connection.send(dict(request))
+        answer: dict[str, Any] = connection.recv()
+    return answer
+
+
+@dataclass(frozen=True)
+class PiecedSlot:
+    """a place reserved for one job's result that grows a piece at a time (:meth:`SharedArrowStore.reserve_pieces`):
+    pickled to the worker, which writes into it once, as it writes a :class:`SegmentSlot`. Each piece is reserved
+    against the store's room as the one before it fills, never the whole result's bound at once; the store maps
+    every piece as one result when it is claimed, so a publish of it is one version, never part of one.
+
+    A file that would pass its piece moves, open, to the next piece, which the worker asks the serving process for
+    (``address``): no row is written twice. A file bigger than one piece fails the result; so does a store with no
+    room for the next piece (counted in ``refused``).
+
+    :ivar root: the store's directory
+    :ivar slot_id: the slot
+    :ivar piece_bytes: the most one piece may take
+    :ivar first_bytes: the first piece's bytes (the room there was for it, at most ``piece_bytes``)
+    :ivar address: the serving process's piece server
+    :ivar authkey: the key it takes
+    """
+
+    root: str
+    slot_id: str
+    piece_bytes: int
+    first_bytes: int
+    address: str
+    authkey: bytes = field(repr=False)
+
+    def write(self, tables: Mapping[str, Any]) -> int:
+        """write the result's tables (in the worker), as :meth:`SegmentSlot.write` does, a piece at a time.
+
+        :param tables: name -> a ``pyarrow.Table``, a ``pyarrow.RecordBatchReader``, what opens either, or
+            :class:`Parts`
+        :ptype tables: Mapping[str, Any]
+        :return: the bytes written
+        :rtype: int
+        :raises SharedArrowFullError: when a file is bigger than one piece, or the store has no room for the next
+            piece; nothing is kept
+        """
+        with self.writing() as step:
+            return step(tables)
+
+    @contextlib.contextmanager
+    def writing(self) -> Iterator[Callable[[Mapping[str, Any]], int]]:
+        """write the result's tables in steps (in the worker), as :meth:`SegmentSlot.writing` does, a piece at a time.
+        A block that raises keeps nothing; one whose steps wrote no table leaves the slot unwritten.
+
+        :return: a context manager yielding the step: ``write(tables)``, returning the bytes the step wrote
+        :rtype: Iterator[Callable[[Mapping[str, Any]], int]]
+        :raises SharedArrowFullError: when a file is bigger than one piece, or the store has no room for the next
+            piece; nothing is kept
+        :raises ValueError: when a step names a table an earlier step wrote
+        """
+        _require_arrow()
+        names: set[str] = set()
+        pieces = _Pieces(self)
+        try:
+
+            def step(tables: Mapping[str, Any]) -> int:
+                _once_each(names, tables)
+                return _write_tables(pieces, tables)
+
+            yield step
+            pieces.finish(written=bool(names))
+        except BaseException:
+            pieces.abandon()
+            raise
+
+
+class _Pieces(_Place):
+    """a :class:`PiecedSlot`'s place in the worker: the piece being written, staged under its lock, and the move to
+    the next one when a file would pass it.
+
+    :param slot: the slot
+    :ptype slot: PiecedSlot
+    """
+
+    def __init__(self, slot: PiecedSlot) -> None:
+        self._slot = slot
+        self._segments = Path(slot.root) / _SEGMENTS_DIR
+        self._index = 0
+        self._bytes = slot.first_bytes
+        #: files begun in this piece (the one being written among them)
+        self._begun = 0
+        staging, descriptor = _locked_staging(self._segments, _piece_name(slot.slot_id, 0))
+        self._descriptor: int | None = descriptor
+        super().__init__(staging, lambda: self._bytes)
+        self.full = self._next
+
+    def file(self, file_name: str) -> Path:
+        """the path a new file takes, in the piece being written.
+
+        :param file_name: its name
+        :ptype file_name: str
+        :return: the path
+        :rtype: Path
+        """
+        self._begun += 1
+        return super().file(file_name)
+
+    def _next(self, path: Path, needs: int, what: str) -> Path:
+        """the file at ``path`` would pass the piece: the piece ends without it, the next one is asked for, and the
+        file moves there, open.
+
+        :param path: the file
+        :ptype path: Path
+        :param needs: the bytes it would then hold
+        :ptype needs: int
+        :param what: what it holds
+        :ptype what: str
+        :return: its path in the next piece
+        :rtype: Path
+        :raises SharedArrowFullError: when it is the piece's only file (bigger than a piece, or than the room the
+            store had for this one), or the store has no room for another piece
+        """
+        if self._begun <= 1:
+            if self._bytes >= self._slot.piece_bytes:
+                raise SharedArrowFullError(
+                    f"{what} needs {needs} bytes, more than one piece of {self._slot.piece_bytes} bytes"
+                )
+            raise SharedArrowFullError(
+                f"{what} needs {needs} bytes, more than the {self._bytes} bytes the store had room for"
+            )
+        answer = _ask_store(
+            self._slot.address,
+            self._slot.authkey,
+            {"slot": self._slot.slot_id, "piece": self._index, "staging": self._directory.name, "carried": path.name},
+        )
+        if "piece" not in answer:
+            raise SharedArrowFullError(f"{what}: {answer.get('refused', 'the slot is gone')}")
+        index = self._index + 1
+        staging, descriptor = _locked_staging(self._segments, _piece_name(self._slot.slot_id, index))
+        moved = staging / path.name
+        try:
+            os.rename(path, moved)
+            os.rename(self._directory, self._segments / _piece_name(self._slot.slot_id, self._index))
+        except BaseException:
+            os.close(descriptor)
+            remove_tree(staging, log=log, what="a failed result piece's staging directory")
+            raise
+        self._unlock()
+        self._directory, self._descriptor = staging, descriptor
+        self._index, self._bytes, self._begun = index, int(answer["piece"]), 1
+        self.written = 0
+        return moved
+
+    def finish(self, *, written: bool) -> None:
+        """the block ended: the piece being written takes its name (or, nothing written at all, goes).
+
+        :param written: whether any step wrote a table
+        :ptype written: bool
+        :return: nothing
+        :rtype: None
+        """
+        if written:
+            os.rename(self._directory, self._segments / _piece_name(self._slot.slot_id, self._index))
+        else:
+            remove_tree(self._directory, log=log, what="an empty result's staging directory")
+        self._unlock()
+
+    def abandon(self) -> None:
+        """the block raised: the piece being written goes; the store's discard takes the pieces before it.
+
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            remove_tree(self._directory, log=log, what="a failed result piece's staging directory")
+        finally:
+            self._unlock()
+
+    def _unlock(self) -> None:
+        """let go of the piece's lock, once.
+
+        :return: nothing
+        :rtype: None
+        """
+        descriptor, self._descriptor = self._descriptor, None
+        if descriptor is not None:
             os.close(descriptor)
 
 
@@ -2025,6 +2331,111 @@ def query_batches(
     return opened
 
 
+@dataclass
+class _OpenPieces:
+    """an open slot in pieces, as its store keeps it.
+
+    :ivar piece_bytes: the most one piece may take
+    :ivar minimum: the least room a piece is reserved at
+    :ivar names: its pieces so far, in order
+    """
+
+    piece_bytes: int
+    minimum: int
+    names: list[str]
+
+
+def _serve_pieces(answer: weakref.WeakMethod[Callable[[Mapping[str, Any]], dict[str, Any]]], listener: Any) -> None:
+    """answer workers asking for their slot's next piece (:meth:`SharedArrowStore._next_piece`), one at a time, until
+    the store is gone; on a thread of its own. Each answer is a few dictionary entries under the store's lock.
+
+    :param answer: the store's answer to a request, weakly: the server never keeps the store alive
+    :ptype answer: weakref.WeakMethod[Callable[[Mapping[str, Any]], dict[str, Any]]]
+    :param listener: the listening socket
+    :ptype listener: multiprocessing.connection.Listener
+    :return: nothing
+    :rtype: None
+    """
+    try:
+        while True:
+            try:
+                connection = listener.accept()
+            except (EOFError, multiprocessing.AuthenticationError) as exc:
+                # one caller that failed the handshake: the next is served
+                contain(exc, log=log, what="a shared Arrow piece request could not be accepted", level="warning")
+                continue
+            except OSError as exc:
+                # the socket itself failed: the server stops, and the store's next slot in pieces starts another
+                if answer() is not None:
+                    contain(exc, log=log, what="the shared Arrow piece server stopped")
+                return
+            with connection:
+                answering = answer()
+                if answering is None:
+                    return
+                try:
+                    said = answering(connection.recv())
+                except Exception as exc:  # noqa: BLE001 -- answered, so the worker fails the result instead of waiting
+                    contain(exc, log=log, what="a shared Arrow piece request failed", level="warning")
+                    said = {"refused": f"{type(exc).__name__}: {exc}"}
+                del answering
+                # NOSILENT: a worker gone before its answer has nothing to hear
+                with contextlib.suppress(OSError):
+                    connection.send(said)
+    finally:
+        listener.close()
+
+
+def _stop_serving(address: str, authkey: bytes) -> None:
+    """wake a gone store's piece server so it stops (it finds the store gone).
+
+    :param address: the server's socket
+    :ptype address: str
+    :param authkey: its key
+    :ptype authkey: bytes
+    :return: nothing
+    :rtype: None
+    """
+    # NOSILENT: a server already stopped is what this asks for
+    with contextlib.suppress(OSError, EOFError, multiprocessing.AuthenticationError):
+        multiprocessing.connection.Client(address, family="AF_UNIX", authkey=authkey).close()
+
+
+class _PieceServer:
+    """the serving process's answer to workers writing results in pieces: a Unix socket (multiprocessing's, keyed)
+    a thread of the store's listens on. A worker cannot be handed a pipe through a process pool's call queue, and the
+    store's room book is in this process, so the worker connects here for each next piece.
+
+    :param store: the store
+    :ptype store: SharedArrowStore
+    :param answer: the store's answer to a request (its own bound method, held weakly)
+    :ptype answer: Callable[[Mapping[str, Any]], dict[str, Any]]
+    :ivar address: the socket's path
+    :ivar authkey: the key a worker connects with
+    """
+
+    def __init__(self, store: SharedArrowStore, answer: Callable[[Mapping[str, Any]], dict[str, Any]]) -> None:
+        self.authkey = os.urandom(32)
+        listener = multiprocessing.connection.Listener(family="AF_UNIX", authkey=self.authkey)
+        self.address: str = listener.address
+        self._thread = threading.Thread(
+            target=_serve_pieces, args=(weakref.WeakMethod(answer), listener), name="shared-arrow-pieces", daemon=True
+        )
+        self._thread.start()
+        stopping = weakref.finalize(store, _stop_serving, self.address, self.authkey)
+        # at exit the daemon thread goes with the process; waking it there would only wait on it
+        stopping.atexit = False
+
+    @property
+    def serving(self) -> bool:
+        """whether the server still answers.
+
+        :return: True while its thread runs
+        :rtype: bool
+        """
+        return self._thread.is_alive()
+
+
 class SharedArrowStore:
     """the serving process's shared-memory Arrow: the versions it publishes for workers to read, and the results
     workers hand back. One store per directory, in one process.
@@ -2063,8 +2474,16 @@ class SharedArrowStore:
         self._pending: str | None = None
         #: the serving process's readers of this store (:meth:`reader`), told after each publish
         self._readers: weakref.WeakSet[SharedArrowReader] = weakref.WeakSet()
-        #: slots reserved and not yet claimed or discarded, with the bytes each may take
+        #: slots reserved and not yet claimed or discarded, with the bytes each may take; a slot in pieces
+        #: (:meth:`reserve_pieces`) is here a piece at a time, each written piece at the bytes it holds
         self._slots: dict[str, int] = {}
+        #: each open slot in pieces: its bounds and its pieces, in order (each piece also in ``_slots``)
+        self._pieces: dict[str, _OpenPieces] = {}
+        #: pieces claimed, every result's together
+        self._pieces_used = 0
+        #: what serves a worker the next piece of its slot, started with the first slot in pieces
+        self._piece_server: _PieceServer | None = None
+        self._serving = threading.Lock()
         #: results claimed and not yet closed
         self._claimed: set[str] = set()
         #: each claimed result's bytes, counted once at its claim, until its files are gone (a publish's room)
@@ -2217,6 +2636,8 @@ class SharedArrowStore:
             "current": None if current is None else current.name,
             "versions": list(versions),
             "slots_open": len(self._slots),
+            "pieces_open": sum(len(each.names) for each in self._pieces.values()),
+            "pieces_used": self._pieces_used,
             "segments_claimed": len(self._claimed),
             "handoffs_open": len(self._handing) + len(self._handed),
             # in the directory: the open ones, and those released that a worker still maps
@@ -2429,17 +2850,135 @@ class SharedArrowStore:
             raise SharedArrowFullError(f"no room for a {max_bytes}-byte result in {self._max_bytes} bytes")
         return SegmentSlot(root=str(self._root), slot_id=slot_id, max_bytes=max_bytes)
 
-    def claim(self, slot: SegmentSlot) -> MappedSegment | None:
-        """map a slot's result here, the serving process's from now until it is closed.
+    def reserve_pieces(self, piece_bytes: int, *, minimum: int | None = None) -> PiecedSlot:
+        """reserve a slot for one worker's result that grows a piece at a time: one piece of ``piece_bytes`` (or the
+        room there is, when less) now, each next one as the one before it fills, checked against the store's room
+        then. However big the result, the store is never asked for more than one piece's room at once, and a small
+        result in a store with less room than a piece still lands. Claimed (:meth:`claim`) as one result; discarded
+        (:meth:`discard`) whole.
+
+        :param piece_bytes: the most one piece may take: the bound on one file (a table given whole, or one part)
+        :ptype piece_bytes: int
+        :param minimum: the least room a piece is reserved at; less refuses it (counted in ``refused``). None for
+            64 MiB, or ``piece_bytes`` when that is less
+        :ptype minimum: int | None
+        :return: the slot, to hand to the worker
+        :rtype: PiecedSlot
+        :raises SharedArrowFullError: when the store has less room than ``minimum``, after a sweep
+        :raises ValueError: when ``piece_bytes`` is not positive, or ``minimum`` is not within 1..``piece_bytes``
+        """
+        if piece_bytes <= 0:
+            raise ValueError("a slot's piece_bytes must be positive")
+        least = min(piece_bytes, _PIECE_MINIMUM_BYTES) if minimum is None else minimum
+        if not 0 < least <= piece_bytes:
+            raise ValueError(f"a slot's minimum must be within 1..{piece_bytes} bytes, not {least}")
+        server = self._served()
+        self.sweep()
+        slot_id = f"s-{uuid.uuid7().hex}"
+        with self._state:
+            first = self._piece_room(piece_bytes, least)
+            if first is not None:
+                piece = _piece_name(slot_id, 0)
+                self._slots[piece] = first
+                self._pieces[slot_id] = _OpenPieces(piece_bytes=piece_bytes, minimum=least, names=[piece])
+        if first is None:
+            log.warning(
+                "shared Arrow result slot refused: no room for its first piece",
+                extra={"extra_data": {"minimum_bytes": least, "max_bytes": self._max_bytes}},
+            )
+            raise SharedArrowFullError(f"no room for a {least}-byte piece of a result in {self._max_bytes} bytes")
+        return PiecedSlot(
+            root=str(self._root),
+            slot_id=slot_id,
+            piece_bytes=piece_bytes,
+            first_bytes=first,
+            address=server.address,
+            authkey=server.authkey,
+        )
+
+    def _piece_room(self, piece_bytes: int, least: int) -> int | None:
+        """the bytes a slot's next piece is reserved at: ``piece_bytes``, or the room there is when less; None, and
+        a refusal counted, when the room is under ``least``. Called under ``_state``.
+
+        :param piece_bytes: the most a piece may take
+        :ptype piece_bytes: int
+        :param least: the least it may be reserved at
+        :ptype least: int
+        :return: bytes, or None
+        :rtype: int | None
+        """
+        room = self._max_bytes - self._committed_bytes()
+        if room < least:
+            self._refused += 1
+            return None
+        return min(piece_bytes, room)
+
+    def _served(self) -> _PieceServer:
+        """the store's piece server, started on its first use.
+
+        :return: the server
+        :rtype: _PieceServer
+        """
+        with self._serving:
+            if self._piece_server is None or not self._piece_server.serving:
+                self._piece_server = _PieceServer(self, self._next_piece)
+            return self._piece_server
+
+    def _next_piece(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """a worker's piece is full (:class:`PiecedSlot`): it now holds what its files hold, but the one moving on
+        (``carried``), and the next piece is reserved -- the room checked again -- or refused. On the piece
+        server's thread.
+
+        :param request: ``slot``, ``piece`` (the full one's number), ``staging`` (its staging directory's name) and
+            ``carried`` (the file moving on)
+        :ptype request: Mapping[str, Any]
+        :return: ``{"piece": bytes}``, or ``{"refused": why}``
+        :rtype: dict[str, Any]
+        """
+        slot_id = str(request["slot"])
+        index = int(request["piece"])
+        staging = str(request["staging"])
+        carried = str(request["carried"])
+        self.sweep()
+        with self._state:
+            pieces = self._pieces.get(slot_id)
+            full = _piece_name(slot_id, index)
+            if pieces is None or pieces.names[-1] != full or _slot_of(staging) != full:
+                return {"refused": f"slot {slot_id} piece {index} is not open"}
+            path = self._segments / staging
+            with os.scandir(path) as listing:
+                held = sum(entry.stat().st_size for entry in listing if entry.is_file() and entry.name != carried)
+            self._slots[full] = held
+            least = pieces.minimum
+            room = self._piece_room(pieces.piece_bytes, least)
+            if room is None:
+                answer: dict[str, Any] = {"refused": f"no room for a {least}-byte piece in {self._max_bytes} bytes"}
+            else:
+                following = _piece_name(slot_id, index + 1)
+                self._slots[following] = room
+                pieces.names.append(following)
+                answer = {"piece": room}
+        if room is None:
+            log.warning(
+                "shared Arrow result piece refused: no room for the next piece",
+                extra={"extra_data": {"minimum_bytes": least, "max_bytes": self._max_bytes, "pieces": index + 1}},
+            )
+        return answer
+
+    def claim(self, slot: SegmentSlot | PiecedSlot) -> MappedSegment | None:
+        """map a slot's result here, the serving process's from now until it is closed. A slot in pieces is mapped as
+        one result: every piece's files together.
 
         :param slot: the slot
-        :ptype slot: SegmentSlot
+        :ptype slot: SegmentSlot | PiecedSlot
         :return: the result; None when the worker wrote nothing (the slot is closed)
         :rtype: MappedSegment | None
         :raises KeyError: when the slot is not open (claimed or discarded already)
         """
         with self._state:
-            if self._slots.pop(slot.slot_id, None) is None:
+            if isinstance(slot, PiecedSlot):
+                self._join_pieces(slot.slot_id)
+            elif self._slots.pop(slot.slot_id, None) is None:
                 raise KeyError(f"slot {slot.slot_id} is not open")
             path = self._segments / slot.slot_id
             written = path.is_dir()
@@ -2457,17 +2996,50 @@ class SharedArrowStore:
             self._released(slot.slot_id)
             raise
 
-    def discard(self, slot: SegmentSlot) -> None:
-        """close a slot nobody will claim (its job failed, was abandoned, or its worker died): whatever it holds goes.
-        Harmless on a slot already claimed or discarded.
+    def _join_pieces(self, slot_id: str) -> None:
+        """a slot in pieces is claimed: its pieces' files are joined under the slot's own name (renamed, never
+        copied) and the pieces closed. Called under ``_state``, so no sweep sees a piece between.
+
+        :param slot_id: the slot
+        :ptype slot_id: str
+        :return: nothing
+        :rtype: None
+        :raises KeyError: when the slot is not open
+        """
+        opened = self._pieces.pop(slot_id, None)
+        if opened is None:
+            raise KeyError(f"slot {slot_id} is not open")
+        pieces = opened.names
+        for piece in pieces:
+            self._slots.pop(piece, None)
+        target = self._segments / slot_id
+        written = [self._segments / piece for piece in pieces if (self._segments / piece).is_dir()]
+        if not written:
+            return
+        os.rename(written[0], target)
+        for joined in written[1:]:
+            for entry in joined.iterdir():
+                if entry.name != _LOCK_FILE:
+                    os.rename(entry, target / entry.name)
+            (joined / _LOCK_FILE).unlink(missing_ok=True)
+            joined.rmdir()
+        self._pieces_used += len(pieces)
+        _SLOT_PIECES.inc(len(pieces))
+
+    def discard(self, slot: SegmentSlot | PiecedSlot) -> None:
+        """close a slot nobody will claim (its job failed, was abandoned, or its worker died): whatever it holds goes,
+        every piece of a slot in pieces. Harmless on a slot already claimed or discarded.
 
         :param slot: the slot
-        :ptype slot: SegmentSlot
+        :ptype slot: SegmentSlot | PiecedSlot
         :return: nothing
         :rtype: None
         """
         with self._state:
             self._slots.pop(slot.slot_id, None)
+            opened = self._pieces.pop(slot.slot_id, None)
+            for piece in () if opened is None else opened.names:
+                self._slots.pop(piece, None)
         self.sweep()
 
     def hand(self, tables: Mapping[str, Any], *, max_bytes: int | None = None) -> HandedTables:
@@ -2523,7 +3095,7 @@ class SharedArrowStore:
         staging = self._handoffs / f"{_STAGING_PREFIX}{handoff_id}-{uuid.uuid7().hex[-8:]}"
         try:
             staging.mkdir()
-            written = _write_tables(staging, tables, lambda: bound)
+            written = _write_tables(_Place(staging, lambda: bound), tables)
             (staging / _LOCK_FILE).touch()
             files = _directory_files(staging)
             os.rename(staging, self._handoffs / handoff_id)
@@ -3277,6 +3849,11 @@ _READS_IN_FLIGHT = gauge(
     "threetears_shared_arrow_reads_in_flight",
     description="shared Arrow reads running now, across this process's readers",
 )
+#: the pieces each result in pieces took, counted as it is claimed (:meth:`SharedArrowStore.reserve_pieces`)
+_SLOT_PIECES = counter(
+    "threetears_shared_arrow_slot_pieces",
+    description="pieces the shared Arrow results claimed took, every result's together",
+)
 _READS_QUEUED = gauge(
     "threetears_shared_arrow_reads_queued",
     description="shared Arrow reads waiting for an engine slot, across this process's readers",
@@ -3588,12 +4165,13 @@ class JobContext:
     """what a pool's job is handed beside its own arguments.
 
     :ivar version: the version it reads, mapped; None for a job run with ``read=False``
-    :ivar result: the slot it writes its result tables into; None for a job run with no ``result_bytes``
+    :ivar result: the slot it writes its result tables into; None for a job run with no ``result_bytes`` or
+        ``result_pieces``
     :ivar tables: the tables it was handed (``tables=``), mapped read-only for the job's run; None for none
     """
 
     version: MappedVersion | None
-    result: SegmentSlot | None
+    result: SegmentSlot | PiecedSlot | None
     tables: MappedTables | None = None
 
 
@@ -3650,7 +4228,7 @@ def _sendable(error: BaseException) -> BaseException:
 def _run_job(
     root: str,
     version: str | None,
-    slot: SegmentSlot | None,
+    slot: SegmentSlot | PiecedSlot | None,
     job: Callable[..., Any],
     args: tuple[Any, ...],
     handed: HandedTables | None = None,
@@ -3663,7 +4241,7 @@ def _run_job(
     :param version: the version the serving process leased for the job; None for none
     :ptype version: str | None
     :param slot: the slot reserved for its result; None for none
-    :ptype slot: SegmentSlot | None
+    :ptype slot: SegmentSlot | PiecedSlot | None
     :param job: the job, a module function
     :ptype job: Callable[..., Any]
     :param args: its arguments after the context
@@ -3710,7 +4288,7 @@ class _Run:
     def __init__(self, store: SharedArrowStore, lease: SharedLease | None) -> None:
         self._store = store
         self._lease = lease
-        self.slot: SegmentSlot | None = None
+        self.slot: SegmentSlot | PiecedSlot | None = None
         self.handed: HandedTables | None = None
 
     def worker_done(self, _: Future[Any]) -> None:
@@ -3741,11 +4319,11 @@ class _Run:
         if slot is not None:
             future.add_done_callback(lambda _: self._discard(slot))
 
-    def _discard(self, slot: SegmentSlot) -> None:
+    def _discard(self, slot: SegmentSlot | PiecedSlot) -> None:
         """discard ``slot``, logging a failure: it runs as a future's callback, where a raise would reach no caller.
 
         :param slot: the slot
-        :ptype slot: SegmentSlot
+        :ptype slot: SegmentSlot | PiecedSlot
         :return: nothing
         :rtype: None
         """
@@ -3910,6 +4488,8 @@ class SharedArrowPool:
         result_bytes: int | None = None,
         tables: Mapping[str, Any] | None = None,
         tables_bytes: int | None = None,
+        result_pieces: int | None = None,
+        result_minimum: int | None = None,
     ) -> JobResult:
         """run ``job(context, *args)`` in a worker.
 
@@ -3921,22 +4501,32 @@ class SharedArrowPool:
             none
         :ptype read: bool | str
         :param result_bytes: the most its result tables may take, reserved for it; None for a job that writes none
+            (or writes in pieces)
         :ptype result_bytes: int | None
         :param tables: tables to hand it (:meth:`SharedArrowStore.hand`), mapped read-only as ``context.tables``:
             written on a thread, never pickled; None for none
         :ptype tables: Mapping[str, Any] | None
         :param tables_bytes: the most the handed tables' files may take; None for their bytes and the file's own
         :ptype tables_bytes: int | None
+        :param result_pieces: write its result in pieces of at most this many bytes
+            (:meth:`SharedArrowStore.reserve_pieces`), in place of one slot of ``result_bytes``; None for none
+        :ptype result_pieces: int | None
+        :param result_minimum: the least room a piece is reserved at (``reserve_pieces``' ``minimum``)
+        :ptype result_minimum: int | None
         :return: its value, and its result tables mapped here (the caller closes them)
         :rtype: JobResult
         :raises LookupError: when nothing is published, or the version named is gone
-        :raises SharedArrowFullError: when the store has no room for ``result_bytes`` or the handed tables
+        :raises SharedArrowFullError: when the store has no room for ``result_bytes``, a piece, or the handed tables
+        :raises ValueError: when both ``result_bytes`` and ``result_pieces`` are named
         :raises Exception: what the job raised; ``BrokenProcessPool`` when its worker died (the pool is replaced)
         """
         # leased, reserved and submitted on a thread: a fresh pool spawns its workers there, and a lease waits on a
         # sweep. A caller that stops waiting meanwhile leaves the thread to finish; what it took is let go then
+        if result_bytes is not None and result_pieces is not None:
+            raise ValueError("a job's result is one slot (result_bytes) or pieces (result_pieces), not both")
+        pieces = None if result_pieces is None else (result_pieces, result_minimum)
         submitting = asyncio.ensure_future(
-            asyncio.to_thread(self._submit, read, result_bytes, job, args, tables, tables_bytes)
+            asyncio.to_thread(self._submit, read, result_bytes, job, args, tables, tables_bytes, pieces)
         )
         try:
             run, future = await asyncio.shield(submitting)
@@ -3988,6 +4578,7 @@ class SharedArrowPool:
         args: tuple[Any, ...],
         tables: Mapping[str, Any] | None = None,
         tables_bytes: int | None = None,
+        pieces: tuple[int, int | None] | None = None,
     ) -> tuple[_Run, Future[tuple[Any, BaseException | None, int, int]]]:
         """lease the version, hand the tables over, reserve the slot and submit the job to the current pool, or a
         fresh one; on a thread.
@@ -4004,6 +4595,8 @@ class SharedArrowPool:
         :ptype tables: Mapping[str, Any] | None
         :param tables_bytes: as :meth:`run`
         :ptype tables_bytes: int | None
+        :param pieces: ``result_pieces`` and ``result_minimum`` as :meth:`run`; None for no result in pieces
+        :ptype pieces: tuple[int, int | None] | None
         :return: the run (its lease, hand-off and slot) and the job's future (the lease and the handed tables are released when it is
             done)
         :rtype: tuple[_Run, Future[tuple[Any, BaseException | None, int, int]]]
@@ -4015,6 +4608,8 @@ class SharedArrowPool:
                 run.handed = self._store.hand(tables, max_bytes=tables_bytes)
             if result_bytes is not None:
                 run.slot = self._store.reserve(result_bytes)
+            elif pieces is not None:
+                run.slot = self._store.reserve_pieces(pieces[0], minimum=pieces[1])
             with self._lock:
                 if self._pool is not None and self._stale:
                     self._pool.shutdown(wait=False)

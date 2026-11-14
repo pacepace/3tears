@@ -1277,7 +1277,11 @@ def _key_hit(
     # every purposed index the bound columns key, the one the read uses credited: the longest bound prefix, then of
     # those the index whose bound prefix is followed by the column the read orders or ranges by (of several
     # ``(kind, <sort>, id)`` pages, each its own sort's), then the first declared
-    serving: list[tuple[tuple[int, bool], str, tuple[str, ...], int, bool]] = []
+    serving: list[tuple[tuple[bool, int, bool], str, tuple[str, ...], int, bool]] = []
+    # a partial index whose predicate the read states (``WHERE key_text IS NULL AND table_name = ANY(...)`` over one
+    # ``WHERE key_text IS NULL``) holds only the rows asked for: of the indexes serving the read it is the one read,
+    # before one the bound columns cover longer (``(key_text, table_name)``, holding every note)
+    fits = {name: _partial_fit(reader, relation, name, level.where) for name, _ in purposed}
     for name, columns in purposed:
         prefix = 0
         while prefix < len(columns) and columns[prefix] in eq | contained:
@@ -1303,7 +1307,7 @@ def _key_hit(
                 or (level.order is not None and following == level.order[1])
                 or following == unbound
             )
-            serving.append(((prefix, ordered_next), name, columns, prefix, ranged_next))
+            serving.append(((fits.get(name) is True, prefix, ordered_next), name, columns, prefix, ranged_next))
     if serving:
         best = max(rank for rank, *_ in serving)
         chosen = next(entry for entry in serving if entry[0] == best)
@@ -1321,14 +1325,25 @@ def _key_hit(
         # memories by the owner triple, or by the user and a date range), each index's plan test showing it used;
         # one whose next column the read neither binds, ranges nor orders by serves it no better than its lead
         for entry in serving:
-            (_, ordered), other, other_columns, other_prefix, _ = entry
-            if entry is chosen or not (other_prefix == len(other_columns) or ordered):
+            (fitted, _, ordered), other, other_columns, other_prefix, _ = entry
+            tied_partial = fitted and other_prefix == prefix
+            if entry is chosen or not (other_prefix == len(other_columns) or ordered or tied_partial):
                 continue
             if table is not None:
                 reader.schema.use(table, other, reader.names)
             elif reader.template is not None:
                 reader.schema.use(reader.template.name, other, reader.names)
         return True
+    # a purposed partial index whose predicate the read states, nothing of its columns bound (``SELECT table_name,
+    # count(*) ... WHERE ring_read GROUP BY 1`` over one ``WHERE ring_read``): the read reads that index's rows and no
+    # other -- the predicate is its key, as the purpose declaring the read and its plan test say
+    for name, _ in purposed:
+        if fits.get(name) is True:
+            if table is not None:
+                reader.schema.use(table, name, reader.names)
+            elif reader.template is not None:
+                reader.schema.use(reader.template.name, name, reader.names)
+            return True
     order = level.order
     if level.limited and order is not None and index in _owner(level, order[0]) and not filters:
         for key, name in [*((key, "") for key in primary), *((columns, name) for name, columns in purposed)]:
@@ -1344,6 +1359,43 @@ def _key_hit(
                 return True
     # (d) the k nearest rows through an approximate-nearest-neighbour index of the column it orders by a distance from
     return nearest
+
+
+def _predicate_terms(text: str) -> set[str]:
+    """a condition's ANDed predicates, each as compared: lower-cased, spaces collapsed, outer parentheses and column
+    qualifiers dropped.
+
+    :param text: the condition
+    :ptype text: str
+    :return: the predicates
+    :rtype: set[str]
+    """
+    return {
+        re.sub(r"\s+", " ", re.sub(r"\b[a-z_]\w*\.(?=[a-z_\"])", "", term.strip().strip("()").strip().lower()))
+        for term in _conjuncts(text)
+    }
+
+
+def _partial_fit(reader: Reader, relation: _Relation, name: str, where: str | None) -> bool | None:
+    """whether a read's ``WHERE`` states every predicate of a partial index's (so the index holds every row it asks
+    for); None for an index that is not partial.
+
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :param relation: the relation read
+    :ptype relation: _Relation
+    :param name: the index
+    :ptype name: str
+    :param where: the read's ``WHERE``, None when it has none
+    :ptype where: str | None
+    :return: whether it states them, or None
+    :rtype: bool | None
+    """
+    declared = reader.schema.table(relation.name) if bare_table(relation.name) is not None else reader.template
+    index = declared.indexes.get(name) if declared is not None else None
+    if index is None or not index.partial or not index.where:
+        return None
+    return where is not None and _predicate_terms(index.where) <= _predicate_terms(where)
 
 
 def _local(reader: Reader, table: str) -> bool:

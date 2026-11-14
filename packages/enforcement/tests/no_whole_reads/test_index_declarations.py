@@ -339,3 +339,30 @@ def test_a_consumer_adds_its_read_to_a_dependency_s_index_purpose(tmp_path: Path
     assert keyed is (kind is None), findings
     if kind is not None:
         assert any(kind in f for f in findings), findings
+
+
+_FROZEN_COPY = """
+    CONVERSATIONS_INDEX = "CREATE INDEX IF NOT EXISTS idx_conv_agent_status ON conversations (agent_id, status, conversation_id)"
+"""
+
+
+@pytest.mark.parametrize(("frozen", "refused"), [(("src/versions/v019.py",), False), ((), True)])
+def test_a_consumer_s_frozen_copy_of_a_dependency_s_index_takes_a_purpose_only_line(
+    tmp_path: Path, frozen: tuple[str, ...], refused: bool
+) -> None:
+    """Flips if a purpose-only line is refused for an index the consumer's frozen migration also creates while the
+    dependency declares it inline (hub #62 spec 1, form A), or if it is accepted where the consumer's own copy is not
+    frozen (that one is declared where its DDL is)."""
+    src = tmp_path / "src"
+    (src / "versions").mkdir(parents=True)
+    (src / "versions" / "v019.py").write_text(textwrap.dedent(_FROZEN_COPY), encoding="utf-8")
+    (src / "listing.py").write_text(textwrap.dedent(_CONSUMER), encoding="utf-8")
+    (tmp_path / "_no_whole_reads_exemptions.txt").write_text("", encoding="utf-8")
+    (tmp_path / "_index_declarations.txt").write_text(
+        "idx_conv_agent_status :: on conversations :: purpose=src/listing.py::Listing.open_of_agent\n", encoding="utf-8"
+    )
+    config = NoWholeReadsConfig(repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path, frozen_migrations=frozen)
+    findings = no_whole_reads_findings(config)
+    assert any("index-addition-refused" in f for f in findings) is refused, findings
+    if not refused:
+        assert not any("in Listing.open_of_agent:" in f for f in findings), findings
