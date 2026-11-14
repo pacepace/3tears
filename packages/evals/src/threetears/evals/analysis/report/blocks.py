@@ -1002,6 +1002,14 @@ class ChartBlock(_Block):
             "where it states none, and its intervals are in its table alone."
         ),
     )
+    level_head: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What a cost/quality chart's head prints of its level, where its page decides it (#1128): empty for "
+            "nothing, or the head marking a level other than the page's main one; None for the level's own head."
+        ),
+    )
     data: KitChart | None = Field(
         default=None,
         description=(
@@ -1209,6 +1217,7 @@ class ChartBlock(_Block):
             x_title=f"Cost {per}{unit}",
             y_title="Pass rate",
             level=self.level,
+            level_head=self.level_head,
             legend=legend,
         )
 

@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a page states each interval level once (#1128)
+
+**Changed:** a page of several interval charts printed "95% intervals" over every one. It now states each level once
+(owner ruling, 2026-11-14): the level most of its charts draw (the first met on a tie) heads the first chart that draws
+it and no later one, and a chart at any other level is marked on every chart at it, its head naming the main level's
+figure it is not (`98.3% intervals, not 95%`) or keeping the gloss that sets it apart (`95% intervals (adjusted for 11
+comparisons)`, `95% unpaired intervals`). An aspect's page, a campaign's own charts, each aspect fold of a campaign page
+and a written report's evidence are each one page. A figure's values table keeps its level in its interval column's
+head, and a chart carries its level as before.
+
+**Added:** `level_head` on the kit's `bars`, `diverging_bars`, `forest`, `lines`, `scatter_frontier`, `gate_scatter` and
+`dot_interval` data and on a cost/quality `ChartBlock`: what the chart's head prints of its level, empty for nothing;
+left out, the head is the level's own. The kit reads it (`kHead`), as the static page's drawings do
+(`charts.drawn_head`); `analysis.report.chart_levels.levels_said` sets it over a page's charts in reading order.
+
 ### evals: a change chart of one row is refused (#1124)
 
 **Changed:** a forest, diverging bars or a dot strip of changes that would draw a single change is refused, naming

@@ -79,6 +79,7 @@ from threetears.evals.analysis.report.blocks import (
     TrialBlock,
     fold_anchor,
 )
+from threetears.evals.analysis.report.chart_levels import levels_said
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.html_parts import (
     KIT_JS,
@@ -125,6 +126,7 @@ def report_html(report: Report, *, static: bool = False) -> str:
     :return: The page.
     :rtype: str
     """
+    report = _levels_said(report)
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     parts = [
         *page_head(report.title, static=static),
@@ -175,6 +177,15 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
         if not report.doc_trials:
             return doc_page_html(report.doc_page, static=static)
         return _links_in_sight(doc_page_html(report.doc_page, static=static, record=_appendix(report, static)))
+    # The page's own charts state each level once, and so does each aspect's fold, a page of its own a reader opens
+    # on its own (#1128).
+    before, after = report.headed_sections
+    report = report.model_copy(
+        update={
+            "blocks": _said_in_order(report.blocks, [*before, *after]),
+            "aspects": [fold.model_copy(update={"report": _levels_said(fold.report)}) for fold in report.aspects],
+        }
+    )
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     slugs = report.fold_ids
     parts = [
@@ -189,7 +200,6 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
         "</header>",
     ]
     # What the page reads and the writer says sit before the folds; how the page was made (the methods) after them.
-    before, after = report.headed_sections
     titles = report.section_titles
     # Each nav link names the section itself, whose heading every browser shows, a closed one's included. An aspect's
     # link names it by its declared short name where it has one (its fold's heading keeps the full label); a link is
@@ -456,6 +466,23 @@ def _prefixed(markup: str, prefix: str) -> str:
     for level in (4, 3, 2):
         markup = markup.replace(f"<h{level}>", f"<h{level + 1}>").replace(f"</h{level}>", f"</h{level + 1}>")
     return markup
+
+
+def _said_in_order(blocks: Sequence[ReportBlock], sections: Sequence[str]) -> list[ReportBlock]:
+    """``blocks`` with each chart's head set to state each interval level once
+    (:func:`~threetears.evals.analysis.report.chart_levels.levels_said`, #1128), read as the page lays them out: the
+    first screen, then ``sections`` in order, each section's blocks in their order."""
+    order = [at for at, block in enumerate(blocks) if block.section in FIRST_SCREEN]
+    order += [at for section in sections for at, block in enumerate(blocks) if block.section == section]
+    said = list(blocks)
+    for at, block in zip(order, levels_said([blocks[at] for at in order]), strict=True):
+        said[at] = block
+    return said
+
+
+def _levels_said(report: Report) -> Report:
+    """A report whose charts state each interval level once, read as its page lays them out (:func:`_said_in_order`)."""
+    return report.model_copy(update={"blocks": _said_in_order(report.blocks, _present_sections(report))})
 
 
 def _present_sections(report: Report) -> list[str]:
