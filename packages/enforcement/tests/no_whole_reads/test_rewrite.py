@@ -29,11 +29,14 @@ from threetears.enforcement.no_whole_reads.rewrite import (
     apply_rewrites,
     parse_count,
     parse_first,
+    parse_join,
     parse_list,
     parse_point,
     parse_write,
     plan_count_rewrites,
+    plan_chain_rewrites,
     plan_first_rewrites,
+    plan_join_rewrites,
     plan_list_rewrites,
     plan_point_rewrites,
     plan_write_rewrites,
@@ -1937,3 +1940,279 @@ def test_a_clause_builders_parent_seeder_is_recorded_beside_it(tmp_path: Path) -
 
     assert planned({"pkg.filters:tag_clause": "pkg.filters:parents"})["parents"] == "pkg.filters:parents"
     assert "parents" not in planned({})
+
+
+_JOIN_TABLES = """
+    from threetears.core.collections.schema_backed import TableSchema
+
+    KEYS_SCHEMA = TableSchema(name="api_keys", primary_key="id", columns=[])
+    CUSTOMERS_SCHEMA = TableSchema(name="customers", primary_key="id", columns=[])
+    LINKS_SCHEMA = TableSchema(name="links", primary_key=("ref", "link", "relation_id"), columns=[])
+    RELATIONS_SCHEMA = TableSchema(name="relations", primary_key="id", columns=[])
+"""
+
+_JOINS = """
+    async def with_slug(pool, key_id):
+        row = await pool.fetchrow(
+            "SELECT ak.*, c.slug AS customer_slug FROM api_keys ak JOIN customers c ON c.id = ak.customer_id "
+            "WHERE ak.id = $1",
+            key_id,
+        )
+        return None if row is None else dict(row)
+
+
+    async def relations_of(conn, ref):
+        rows = await conn.fetch(
+            "SELECT r.id, r.name FROM relations r JOIN links l ON l.relation_id = r.id "
+            "WHERE l.ref = $1 AND l.link = 'member' ORDER BY r.id",
+            ref,
+        )
+        return [dict(row) for row in rows]
+
+
+    async def with_template(conn, key_id):
+        row = await conn.fetchrow(
+            "SELECT ak.id, c.name AS template FROM api_keys ak LEFT JOIN customers c ON c.id = ak.customer_id "
+            "WHERE ak.id = $1",
+            key_id,
+        )
+        return row["template"] if row else None
+
+
+    async def by_place(conn, key_id):
+        row = await conn.fetchrow(
+            "SELECT ak.id, c.slug FROM api_keys ak JOIN customers c ON c.id = ak.customer_id WHERE ak.id = $1",
+            key_id,
+        )
+        return row[1]
+
+
+    async def by_slug(conn, slug):
+        return await conn.fetch(
+            "SELECT ak.id FROM api_keys ak JOIN customers c ON c.id = ak.customer_id WHERE c.slug = $1", slug
+        )
+
+
+    async def ordered_by_theirs(conn, key_id):
+        rows = await conn.fetch(
+            "SELECT ak.id, c.name FROM api_keys ak LEFT JOIN customers c ON c.id = ak.customer_id "
+            "WHERE ak.id = $1 ORDER BY c.name",
+            key_id,
+        )
+        return list(rows)
+"""
+
+
+def _join_config(tmp_path: Path) -> NoWholeReadsConfig:
+    src = tmp_path / "src"
+    for name, source in {"pkg/tables.py": _JOIN_TABLES, "pkg/joins.py": _JOINS}.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+    return NoWholeReadsConfig(
+        repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path, dependency_schema=False, table_lists=()
+    )
+
+
+def test_a_point_read_with_joins_is_rewritten_onto_read_by_joined(tmp_path: Path) -> None:
+    """Flips if a keyed read with joins is not rewritten as the read of the table its parameters pin and each other
+    table joined to it (``read_by_joined``: a ``fetchrow`` its first row, a ``LEFT JOIN`` ``left=True``, a table the
+    parameters pin on the other side of a ``JOIN`` read first and the ``FROM`` table joined back, an ``ORDER BY`` of
+    a joined column equal to one of the read's ordered by that one), or if one whose rows are read by position, one
+    ordered by a joined column, or one keyed by nothing is taken; or if the rewrite leaves a finding."""
+    config = _join_config(tmp_path)
+    before_nwr = no_whole_reads_findings(config)
+    rewrites, refusals = plan_join_rewrites(config)
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert sorted(rewrite.function for rewrite in rewrites) == ["relations_of", "with_slug", "with_template"], refused
+    assert "by position" in refused["by_place"], refused
+    assert "ORDER BY of a joined" in refused["ordered_by_theirs"], refused
+    calls = {rewrite.function: rewrite.new_call for rewrite in rewrites}
+    assert calls["with_slug"] == (
+        "next(iter(await read_by_joined(pool, 'api_keys', by={'id': key_id}, columns=None, "
+        "joins=[Joined('customers', on={'id': 'customer_id'}, columns={'customer_slug': 'slug'})])), None)"
+    )
+    assert calls["relations_of"] == (
+        "read_by_joined(conn, 'links', by={'ref': ref, 'link': 'member'}, columns=(), "
+        "joins=[Joined('relations', on={'id': 'relation_id'}, columns={'id': 'id', 'name': 'name'})], "
+        "order=[Sort('relation_id')])"
+    )
+    assert "left=True" in calls["with_template"]
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    source = (tmp_path / "src/pkg/joins.py").read_text(encoding="utf-8")
+    assert "from threetears.core.keyed import Joined, Sort, read_by_joined" in source, source
+    ast.parse(source)
+    remaining = {hit.split(" in ")[1].split(":")[0] for hit in use_the_helper_findings(config) if "joins.py" in hit}
+    assert remaining == {"by_place", "ordered_by_theirs", "by_slug"}, remaining
+    assert _unlined(no_whole_reads_findings(config)) == _unlined(before_nwr)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    entries = {entry["function"]: entry for entry in json.loads(manifest.read_text(encoding="utf-8"))}
+    assert entries["relations_of"]["joins"][0]["on"] == {"id": "relation_id"}
+    for entry in entries.values():
+        assert_source_says(tmp_path, entry)
+
+
+@pytest.mark.parametrize(
+    ("sql", "refused"),
+    [
+        ("SELECT a.id, b.x FROM a JOIN b ON b.id = a.b_id JOIN c ON c.id = b.c_id WHERE a.id = $1", "another joined"),
+        ("SELECT a.id, b.x FROM a LEFT JOIN b ON b.id = a.b_id WHERE a.id = $1 AND b.k = 'z'", "LEFT JOIN's table"),
+        ("SELECT a.id, b.x FROM a JOIN b ON b.id = a.b_id WHERE a.id = $1 AND b.k = $2", "by a parameter"),
+        ("SELECT a.id, upper(b.x) AS x FROM a JOIN b ON b.id = a.b_id WHERE a.id = $1", "an expression"),
+        ("SELECT a.id, b.id FROM a JOIN b ON b.id = a.b_id WHERE a.id = $1", "under one name"),
+        ("SELECT a.id, b.x FROM a JOIN b ON b.id = a.b_id WHERE a.id = $1 LIMIT 5", "LIMIT"),
+        ("SELECT a.id, b.x FROM a RIGHT JOIN b ON b.id = a.b_id WHERE a.id = $1", "RIGHT"),
+        ("SELECT a.id, b.x FROM a JOIN b ON b.id = a.b_id WHERE id = $1", "naming no table"),
+        ("SELECT a.id, b.x FROM a LEFT JOIN b ON b.id = a.b_id WHERE b.k = $1", "no parameter pins the FROM"),
+    ],
+)
+def test_a_joined_read_the_helper_cannot_send_is_refused(sql: str, refused: str) -> None:
+    """Flips if a joined read ``read_by_joined`` would answer otherwise is parsed: a chain of joins, a LEFT JOIN's
+    table pinned in the WHERE, a joined table pinned by a parameter, an expression, two items under one name, a
+    LIMIT, a RIGHT JOIN, an unqualified column, a LEFT JOIN read from its right side."""
+    parsed = parse_join(sql, guards=True)
+    assert isinstance(parsed, str) and refused in parsed, parsed
+
+
+def test_a_correlated_exists_is_kept_as_a_guard_over_the_helper_s_row() -> None:
+    """Flips if a ``[NOT] EXISTS (SELECT ... FROM <table> <alias> WHERE ...)`` conjunct beside the pins is not kept as
+    a guard (the outer table's qualifier respelled ``t.`` in a read, the table's own name in a write, which names it
+    bare; its inner alias kept, parameters renumbered from ``$1``),
+    or if one whose inner table is unaliased, which names an unqualified column, or another relation, is taken; or
+    if a ``DELETE`` under an alias with a ``RETURNING`` of that alias's columns is not parsed as the keyed write."""
+    deleted = parse_write(
+        "DELETE FROM datasource_columns fresh WHERE fresh.datasource_id = ANY($1::uuid[]) AND fresh.schema_name = $2 "
+        "AND fresh.table_name = $4 AND EXISTS ( SELECT 1 FROM datasource_columns kept WHERE kept.datasource_id = "
+        "fresh.datasource_id AND kept.schema_name = $2 AND kept.table_name = $3 AND kept.column_name = "
+        "fresh.column_name ) RETURNING fresh.id",
+        guards=True,
+    )
+    assert isinstance(deleted, WriteSql), deleted
+    assert deleted.table == "datasource_columns" and deleted.returning == ("id",)
+    assert [pin.column for pin in deleted.pins] == ["datasource_id", "schema_name", "table_name"]
+    assert [(guard.literal, guard.params, guard.compared) for guard in deleted.guards] == [
+        (
+            "EXISTS ( SELECT 1 FROM datasource_columns kept WHERE kept.datasource_id = datasource_columns.datasource_id "
+            "AND kept.schema_name = $1 AND kept.table_name = $2 AND kept.column_name = datasource_columns.column_name )",
+            (2, 3),
+            ("schema_name", "table_name"),
+        )
+    ]
+    absent = parse_point(
+        "SELECT id FROM geos g WHERE g.state = $1 AND NOT EXISTS (SELECT 1 FROM grants k WHERE k.geo = g.id)",
+        guards=True,
+    )
+    assert isinstance(absent, PointSql), absent
+    assert [guard.literal for guard in absent.guards] == ["NOT EXISTS (SELECT 1 FROM grants k WHERE k.geo = t.id)"]
+    for refused in (
+        "SELECT id FROM geos g WHERE g.state = $1 AND EXISTS (SELECT 1 FROM grants WHERE grants.geo = g.id)",
+        "SELECT id FROM geos g WHERE g.state = $1 AND EXISTS (SELECT 1 FROM grants k WHERE geo = g.id)",
+        "SELECT id FROM geos g WHERE g.state = $1 AND EXISTS (SELECT 1 FROM grants k WHERE k.geo = x.id)",
+        "SELECT id FROM geos g WHERE g.state = $1 AND EXISTS (SELECT 1 FROM grants g WHERE g.geo = 1)",
+    ):
+        assert isinstance(parse_point(refused, guards=True), str), refused
+
+
+_CHAIN_TABLES = """
+    from threetears.core.collections.schema_backed import TableSchema
+
+    CONCEPTS_SCHEMA = TableSchema(name="concepts", primary_key="id", columns=[])
+"""
+
+_CHAINS = """
+    _MOST = 10_000
+
+    #: the origin chain from one concept, link by link by primary key
+    _ORIGIN_CHAIN_SQL = \"\"\"
+    WITH RECURSIVE chain(id, origin_concept_id, depth) AS (
+        SELECT id, origin_concept_id, 1 FROM concepts WHERE id = $1
+      UNION ALL
+        SELECT c.id, c.origin_concept_id, chain.depth + 1
+          FROM concepts c
+          JOIN chain ON c.id = chain.origin_concept_id
+         WHERE chain.depth < $2
+    )
+    SELECT id, origin_concept_id FROM chain
+    \"\"\"
+
+
+    async def origins(pool, start):
+        links = {}
+        rows = await pool.fetch(_ORIGIN_CHAIN_SQL, start, _MOST)
+        for row in rows:
+            links[row["id"]] = row["origin_concept_id"]
+        return links
+
+
+    async def by_place(pool, start):
+        rows = await pool.fetch(
+            "WITH RECURSIVE chain(id, origin_concept_id, depth) AS ( SELECT id, origin_concept_id, 1 FROM concepts "
+            "WHERE id = $1 UNION ALL SELECT c.id, c.origin_concept_id, chain.depth + 1 FROM concepts c JOIN chain "
+            "ON c.id = chain.origin_concept_id WHERE chain.depth < $2 ) SELECT id FROM chain",
+            start,
+            5,
+        )
+        return [row[0] for row in rows]
+"""
+
+
+def test_a_chain_of_links_is_rewritten_onto_read_link_chain(tmp_path: Path) -> None:
+    """Flips if a recursive statement walking a table's links by its key is not rewritten as ``read_link_chain``
+    (its start, its bound of rows, its columns), its constant dropped, the walk unchanged; or if one whose rows are read
+    by position is taken."""
+    src = tmp_path / "src"
+    for name, source in {"pkg/tables.py": _CHAIN_TABLES, "pkg/chains.py": _CHAINS}.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+    config = NoWholeReadsConfig(
+        repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path, dependency_schema=False, table_lists=()
+    )
+    before = no_whole_reads_findings(config)
+    rewrites, refusals = plan_chain_rewrites(config)
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert [rewrite.function for rewrite in rewrites] == ["origins"], refused
+    assert "by position" in refused["by_place"], refused
+    assert rewrites[0].new_call == (
+        "read_link_chain(pool, 'concepts', key='id', link='origin_concept_id', start=start, most=_MOST, "
+        "columns=('id', 'origin_concept_id'))"
+    )
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    source = (src / "pkg/chains.py").read_text(encoding="utf-8")
+    assert "_ORIGIN_CHAIN_SQL" not in source and "import read_link_chain" in source, source
+    remaining = {hit.split(" in ")[1].split(":")[0] for hit in use_the_helper_findings(config) if "chains.py" in hit}
+    assert remaining == {"by_place"}, remaining
+    assert _unlined(no_whole_reads_findings(config)) == _unlined(before)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    (entry,) = json.loads(manifest.read_text(encoding="utf-8"))
+    assert entry["chain"] == {"key": "id", "link": "origin_concept_id"}
+    assert_source_says(tmp_path, entry)
+
+
+def test_a_constant_another_module_binds_under_the_same_name_is_not_named_elsewhere(tmp_path: Path) -> None:
+    """Flips if a module's own statement constant is refused as "named elsewhere" because another module binds a
+    constant of its own under the same name (the hub's two ``_ORIGIN_CHAIN_SQL``), or if a module importing it is
+    not counted as a use."""
+    src = tmp_path / "src"
+    sources = {
+        "pkg/tables.py": _CHAIN_TABLES,
+        "pkg/chains.py": _CHAINS.replace("    async def by_place", "    async def _unused_by_place"),
+        "pkg/others.py": _CHAINS.replace("concepts", "concepts").replace("async def origins", "async def more_origins"),
+    }
+    for name, source in sources.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+    config = NoWholeReadsConfig(
+        repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path, dependency_schema=False, table_lists=()
+    )
+    rewrites, refusals = plan_chain_rewrites(config)
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert sorted(rewrite.function for rewrite in rewrites) == ["more_origins", "origins"], refused
+    (src / "pkg/user.py").write_text("from pkg.chains import _ORIGIN_CHAIN_SQL\n\nprint(_ORIGIN_CHAIN_SQL)\n")
+    rewrites, refusals = plan_chain_rewrites(config)
+    refused = {refusal.path: refusal.reason for refusal in refusals if refusal.function == "<module>"}
+    assert [rewrite.function for rewrite in rewrites] == ["more_origins"], refused
+    assert "named elsewhere" in refused["src/pkg/chains.py"], refused

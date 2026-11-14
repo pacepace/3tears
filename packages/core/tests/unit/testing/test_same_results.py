@@ -101,6 +101,17 @@ async def test_a_lost_null_is_caught(conn: _Duck) -> None:
         await assert_same_results(conn, table="t", row=_row, old_sql=_OLD, params=["t0"], helper=filled)
 
 
+async def test_rows_differing_by_a_null_beside_a_value_are_reported_not_crashed_on(conn: _Duck) -> None:
+    """Flips if a difference whose rows hold a NULL where others hold a value (a LEFT JOIN's unmatched row) ends in a
+    TypeError from sorting them, not the difference reported: the report sorts the rows by their text."""
+
+    async def a_null_and_a_number(conn: _Duck) -> list[dict[str, Any]]:
+        return [*(await conn.fetch(_OLD, "t0")), {"k": None, "v": None}, {"k": 7, "v": None}]
+
+    with pytest.raises(AssertionError, match="the old statement gave 0 rows, the helper 2"):
+        await assert_same_results(conn, table="t", row=_row, old_sql=_OLD, params=["t0"], helper=a_null_and_a_number)
+
+
 async def test_a_lost_order_is_caught(conn: _Duck) -> None:
     """Flips if the old statement's order is not compared: the same rows reversed pass."""
     reversed_ = _asking("SELECT k, v FROM t WHERE tenant = $1 ORDER BY k DESC", "t0")

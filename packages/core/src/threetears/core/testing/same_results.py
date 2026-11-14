@@ -182,7 +182,7 @@ def _differ(
     if lost or extra:
         return (
             f"{case}: the old statement gave {len(old)} rows, the helper {len(new)}; missing from the helper "
-            f"{sorted(lost.elements())[:3]}, not in the old {sorted(extra.elements())[:3]}"
+            f"{sorted(lost.elements(), key=repr)[:3]}, not in the old {sorted(extra.elements(), key=repr)[:3]}"
         )
     if ordered:
 
@@ -233,7 +233,8 @@ def _differ_limited(
     if before_old != before_new:
         return (
             f"{case}: rows before the LIMIT's boundary differ; missing from the helper "
-            f"{sorted((before_old - before_new).elements())[:3]}, not in the old {sorted((before_new - before_old).elements())[:3]}"
+            f"{sorted((before_old - before_new).elements(), key=repr)[:3]}, not in the old "
+            f"{sorted((before_new - before_old).elements(), key=repr)[:3]}"
         )
     return None
 

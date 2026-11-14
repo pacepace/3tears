@@ -236,6 +236,11 @@ class PointSql:
     #: each ``WHERE`` conjunct other than an equality (a range, ``<>``, an optional pin, ``NOT (...)``), as a ``guard``
     #: pin: the helper's ``where=`` fragments, ANDed beside its ``by=`` pins
     guards: tuple[Pin, ...] = ()
+    #: a joined read's (shape ``join``): each other table, joined to this one (:class:`JoinSql`); none for any other
+    joins: tuple[JoinSql, ...] = ()
+    #: a chain of links's (shape ``chain``): ``{"key", "link"}``, the column a row is named by and the one naming the
+    #: next; None for any other read
+    chain: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -317,6 +322,11 @@ class Rewrite:
     #: ``where=`` spreads (``call``) and, for a clause reading another table's rows, their seeder (``parents``,
     #: ``NoWholeReadsConfig.clause_parents``); not recorded when there is none
     clauses: list[dict[str, Any]] = field(default_factory=list)
+    #: a joined read's (shape ``join``, ``read_by_joined``): each other table (:meth:`JoinSql.record`), joined to
+    #: ``table``; not recorded for any other read
+    joins: list[dict[str, Any]] = field(default_factory=list)
+    #: a chain of links's (shape ``chain``, ``read_link_chain``): ``{"key", "link"}``; not recorded for any other read
+    chain: dict[str, str] | None = None
     # the edits that make it, not recorded: (start line, start col, end line, end col, text) in the module's bytes
     edits: list[tuple[int, int, int, int, str]] = field(default_factory=list, repr=False)
     # not recorded: index purpose entries naming the replaced constant, each (repo-relative file, old text, new text)
@@ -344,6 +354,10 @@ class Rewrite:
             entry.pop("where")
         if not self.clauses:
             entry.pop("clauses")
+        if not self.joins:
+            entry.pop("joins")
+        if self.chain is None:
+            entry.pop("chain")
         return entry
 
 
@@ -638,6 +652,399 @@ def parse_count(sql: str, *, guards: bool = False) -> PointSql | str:
     return replace(parsed, columns=None, aggregate=aggregate)
 
 
+#: a joined read's top level: its select list, the table it reads FROM (and its alias), its joins, its ``WHERE``
+_JOIN_SELECT: Final[re.Pattern[str]] = re.compile(
+    rf"^select\s+(?P<columns>.+?)\s+from\s+(?P<table>{_IDENT}(?:\.{_IDENT})?)"
+    rf"(?:\s+(?:as\s+)?(?!(?:left|inner|join|right|full|cross|natural|where)\b)(?P<alias>{_IDENT}))?"
+    rf"(?P<joins>(?:\s+(?:left\s+(?:outer\s+)?|inner\s+)?join\s+.+?)+?)\s+where\s+(?P<where>.+?)\s*;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+#: one join of a joined read: its kind, its table and alias; its ``ON`` runs to the next join
+_JOIN_CLAUSE: Final[re.Pattern[str]] = re.compile(
+    rf"(?:^|\s+)(?P<kind>(?:left\s+(?:outer\s+)?|inner\s+)?)join\s+(?P<table>{_IDENT}(?:\.{_IDENT})?)"
+    rf"(?:\s+(?:as\s+)?(?!on\b)(?P<alias>{_IDENT}))?\s+on\s+",
+    re.IGNORECASE,
+)
+#: ``a.x = b.y``: two relations' columns equal, the pair a join is matched on
+_COLUMN_PAIR: Final[re.Pattern[str]] = re.compile(
+    rf"^(?P<lq>{_IDENT})\.(?P<lcol>{_IDENT})\s*=\s*(?P<rq>{_IDENT})\.(?P<rcol>{_IDENT})$", re.IGNORECASE
+)
+#: ``(k.col IS NOT NULL) AS name``: whether a left-joined row matched, by a column it is joined on
+_MATCHED_ITEM: Final[re.Pattern[str]] = re.compile(
+    rf"^\(\s*(?P<q>{_IDENT})\.(?P<column>{_IDENT})\s+is\s+not\s+null\s*\)\s+as\s+(?P<name>{_IDENT})$", re.IGNORECASE
+)
+#: a qualified select-list column, maybe renamed: ``q.col [AS name]``; ``q.*``
+_JOIN_ITEM: Final[re.Pattern[str]] = re.compile(
+    rf"^(?P<q>{_IDENT})\.(?P<column>{_IDENT}|\*)(?:\s+as\s+(?P<name>{_IDENT}))?$", re.IGNORECASE
+)
+#: the words an alias never is in a joined read
+_JOIN_WORDS: Final[frozenset[str]] = frozenset({"join", "left", "inner", "outer", "on", "where", "cross", "right"})
+
+
+@dataclass(frozen=True)
+class JoinSql:
+    """one table a joined read joins, as :class:`~threetears.core.keyed.Joined` takes it.
+
+    :ivar table: the joined table, as written
+    :ivar on: each pair it is matched on, ``(its column, the read's column)``
+    :ivar columns: each column it adds to the row, ``(the name in the row, its column)``
+    :ivar left: a ``LEFT JOIN``
+    :ivar pins: its own pins (in its ``ON``, or for a ``JOIN`` the ``WHERE``): literals only
+    :ivar matched: the name a row says whether it matched under (``(k.col IS NOT NULL) AS name``), or ``""``
+    """
+
+    table: str
+    on: tuple[tuple[str, str], ...]
+    columns: tuple[tuple[str, str], ...]
+    left: bool
+    pins: tuple[Pin, ...] = ()
+    matched: str = ""
+
+    def record(self) -> dict[str, Any]:
+        """the join as the manifest records it (``on`` and ``columns`` as mappings).
+
+        :return: the record
+        :rtype: dict[str, Any]
+        """
+        return {
+            "table": self.table,
+            "on": dict(self.on),
+            "columns": dict(self.columns),
+            "left": self.left,
+            "pins": [asdict(pin) for pin in self.pins],
+            "matched": self.matched,
+        }
+
+
+@dataclass
+class _Relation:
+    table: str
+    alias: str
+    left: bool
+    pairs: list[tuple[str, str, str]] = field(default_factory=list)
+    conjuncts: list[tuple[str, str]] = field(default_factory=list)
+    where: list[tuple[str, str]] = field(default_factory=list)
+
+
+def _conjuncts(text: str) -> list[tuple[str, str]] | str:
+    """each top-level ``AND`` conjunct of ``text``, as written and masked; or why the parentheses do not balance."""
+    masked = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", text)
+    ands = _top_level(masked, _AND)
+    if isinstance(ands, str):
+        return ands
+    if _top_level(masked, _TOP_OR):
+        return "an OR outside every parenthesis (the AND beside it binds first)"
+    starts = [0, *(found.end() for found in ands)]
+    ends = [found.start() for found in ands] + [len(text)]
+    return [(text[s:e].strip(), masked[s:e].strip()) for s, e in zip(starts, ends, strict=True)]
+
+
+def _qualifiers(masked: str) -> set[str]:
+    return {found.group("q").lower() for found in _QUALIFIED.finditer(masked)}
+
+
+def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
+    """a joined read: ``SELECT <q.col [AS name] | q.* | (k.col IS NOT NULL) AS name, ...> FROM <table> [alias]
+    [LEFT] JOIN <table> <alias> ON <alias.col = other.col AND alias.col = <literal> ...> ... WHERE <pins> [ORDER BY
+    <columns>]``, as the read of the table its bound pins name and each other table joined to it by equal columns
+    (:func:`~threetears.core.keyed.read_by_joined`); or why it is not one.
+
+    The read's table is the one its ``WHERE`` binds a parameter on: the ``FROM`` table, or, in a read with no ``LEFT
+    JOIN``, the one table the parameters pin (a ``JOIN`` matches the same rows from either side). Every other table is
+    joined to it directly, on pairs of plain columns; its own pins are literals (``ON n.row_scope = 'customer'``, or
+    for a ``JOIN`` in the ``WHERE``). Its ``ORDER BY`` is of the read's columns (a joined column equal to one of the
+    read's is that one), each selected.
+
+    Refused: an expression in the select list (but a left join's match), an unqualified column, a joined table pinned
+    by a parameter or a guard, a joined table matched to another joined table, a ``LEFT JOIN``'s table pinned in the
+    ``WHERE``, a ``RIGHT`` / ``FULL`` / ``CROSS`` join, a ``LIMIT`` / ``OFFSET`` / ``GROUP BY`` / row lock, two names
+    for one output column, and every point-read refusal of the read's own pins.
+
+    :param sql: the statement
+    :ptype sql: str
+    :param guards: as :func:`parse_point`'s
+    :ptype guards: bool
+    :return: the parsed read (``joins`` set), or the refusal's reason
+    :rtype: PointSql | str
+    """
+    text = " ".join(sql.split())
+    if "{" in text or "}" in text:
+        return "interpolated"
+    if text.startswith("/*") or "--" in text:
+        return "a comment or hint in the statement"
+    masked_text = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", text)
+    blanked, depth = [], 0
+    for char in masked_text:
+        if char == ")":
+            depth -= 1
+        blanked.append(char if depth == 0 or char in "()" else "_")
+        if char == "(":
+            depth += 1
+    top = "".join(blanked)
+    if re.search(r"\b(right|full|cross|natural)\s+(outer\s+)?join\b|\busing\s*\(", top, re.IGNORECASE):
+        return "a RIGHT / FULL / CROSS / NATURAL join or USING"
+    if re.search(r"\b(limit|offset|group\s+by|having|distinct|for\s+update|for\s+share|union)\b", top, re.IGNORECASE):
+        return "a LIMIT / OFFSET / GROUP BY / DISTINCT / UNION / row lock in a joined read"
+    found = _JOIN_SELECT.match(top)
+    if found is None:
+        return "not SELECT <columns> FROM <table> [LEFT] JOIN <table> ON ... WHERE ..."
+
+    def part(name: str) -> str:
+        start, end = found.span(name)
+        return text[start:end]
+
+    relations: list[_Relation] = []
+    first_alias = (found.group("alias") or "").lower()
+    if first_alias in _JOIN_WORDS:
+        first_alias = ""
+    relations.append(_Relation(part("table").lower(), first_alias or part("table").split(".")[-1].lower(), False))
+    joins_text, joins_top = part("joins"), top[found.start("joins") : found.end("joins")]
+    clauses = list(_JOIN_CLAUSE.finditer(joins_top))
+    if not clauses or clauses[0].start() != 0:
+        return "not SELECT <columns> FROM <table> [LEFT] JOIN <table> ON ... WHERE ..."
+    for index, clause in enumerate(clauses):
+        alias = (clause.group("alias") or "").lower()
+        if alias in _JOIN_WORDS:
+            return "a joined table with no alias"
+        table = joins_text[clause.start("table") : clause.end("table")].lower()
+        relation = _Relation(
+            table,
+            alias or table.split(".")[-1],
+            clause.group("kind").strip() != "" and clause.group("kind").strip().lower().startswith("left"),
+        )
+        end = clauses[index + 1].start() if index + 1 < len(clauses) else len(joins_text)
+        on = _conjuncts(joins_text[clause.end() : end])
+        if isinstance(on, str):
+            return on
+        relation.conjuncts = on
+        relations.append(relation)
+    by_alias = {relation.alias: relation for relation in relations}
+    if len(by_alias) != len(relations):
+        return "a table read twice under one alias"
+    # each ON conjunct: a pair of columns with an earlier relation, or a pin of its own
+    for place, relation in enumerate(relations[1:], start=1):
+        own: list[tuple[str, str]] = []
+        for written, masked in relation.conjuncts:
+            pair = _COLUMN_PAIR.match(written)
+            if pair is not None:
+                sides = {
+                    pair.group("lq").lower(): pair.group("lcol").lower(),
+                    pair.group("rq").lower(): pair.group("rcol").lower(),
+                }
+                if len(sides) != 2 or relation.alias not in sides:
+                    return f"a join condition not between its table and another: {written!r}"
+                (other,) = set(sides) - {relation.alias}
+                if other not in {r.alias for r in relations[:place]}:
+                    return f"a join condition naming a table not read before it: {written!r}"
+                relation.pairs.append((sides[relation.alias], other, sides[other]))
+                continue
+            if _qualifiers(masked) - {relation.alias}:
+                return f"a join condition of another table's columns: {written!r}"
+            own.append((written, masked))
+        if not relation.pairs:
+            return f"a join of {relation.table} matched on no pair of columns"
+        relation.conjuncts = own
+    # the WHERE, cut from its ORDER BY; each conjunct is one relation's
+    where = part("where")
+    where_masked = _QUOTED.sub(lambda hit: "'" + "x" * (len(hit.group()) - 2) + "'", where)
+    order_terms: list[str] = []
+    sorted_by = _ORDER_BY.search(where_masked)
+    if sorted_by is not None:
+        order_terms = [term.strip() for term in where[sorted_by.start("order") :].split(",")]
+        where = where[: sorted_by.start()]
+    conjuncts = _conjuncts(where)
+    if isinstance(conjuncts, str):
+        return conjuncts
+    for written, masked in conjuncts:
+        pair = _COLUMN_PAIR.match(written)
+        named = _qualifiers(masked)
+        if pair is not None and len(named) == 2:
+            return f"a join condition in the WHERE: {written!r}"
+        if len(named) != 1:
+            return f"a WHERE conjunct naming {'no' if not named else 'more than one'} table's columns: {written!r}"
+        (alias,) = named
+        if alias not in by_alias:
+            return f"a WHERE conjunct of an unknown table {alias!r}: {written!r}"
+        by_alias[alias].where.append((written, masked))
+    bound_on = [
+        relation
+        for relation in relations
+        if any(_PARAM_PIN.match(w) or _ANY_PIN.match(w) or _NULLSAFE_PIN.match(w) for w, _ in relation.where)
+    ]
+    left_joined = any(relation.left for relation in relations)
+    if relations[0] in bound_on:
+        base = relations[0]
+    elif len(bound_on) == 1 and not left_joined and len(relations) == 2:
+        base = bound_on[0]
+    else:
+        return "no parameter pins the FROM table (a joined read is keyed by the table its pins bind)"
+    others = [relation for relation in relations if relation is not base]
+    pins_of: dict[str, list[Pin]] = {}
+    base_guards: list[Pin] = []
+    for relation in relations:
+        texts = [w for w, _ in relation.where] + ([w for w, _ in relation.conjuncts] if relation is not base else [])
+        if relation is base:
+            texts = [w for w, _ in relation.where]
+        if relation is not base and relation.left and relation.where:
+            return f"a LEFT JOIN's table {relation.table} pinned in the WHERE (it would drop the unmatched rows)"
+        if not texts:
+            pins_of[relation.alias] = []
+            continue
+        joined_text = " AND ".join(texts)
+        joined_masked = _QUOTED.sub(lambda hit: "'" + "x" * (len(hit.group()) - 2) + "'", joined_text)
+        kept: list[Pin] = []
+        pinned = _pins(
+            joined_text,
+            joined_masked,
+            {relation.alias, relation.table.split(".")[-1]},
+            kept if (guards and relation is base) else None,
+        )
+        if isinstance(pinned, str):
+            return pinned if relation is base else f"{relation.table}: {pinned}"
+        if relation is not base and any(pin.kind in _BOUND_KINDS for pin in pinned):
+            return f"a joined table {relation.table} pinned by a parameter"
+        pins_of[relation.alias] = pinned
+        if relation is base:
+            base_guards = kept
+    # each other table joined to the read's table directly: a switched read's FROM table is joined back on its pair
+    matched_on: dict[str, list[tuple[str, str]]] = {}
+    for relation in others:
+        pairs = relation.pairs
+        if relation is relations[0]:
+            # the FROM table, joined to the read's table: the read's table's pairs, read from its side
+            pairs = [(col, base.alias, mine) for mine, other, col in base.pairs if other == relation.alias]
+            if len(pairs) != len(base.pairs):
+                return "a joined table matched to another joined table"
+        if any(other != base.alias for _, other, _ in pairs):
+            return "a joined table matched to another joined table"
+        matched_on[relation.alias] = [(theirs, mine) for theirs, _, mine in pairs]
+    if base is not relations[0] and base.conjuncts:
+        # the read's own ON pins, moved to its WHERE (a JOIN matches the same rows)
+        moved = _pins(
+            " AND ".join(w for w, _ in base.conjuncts),
+            _QUOTED.sub(
+                lambda hit: "'" + "x" * (len(hit.group()) - 2) + "'", " AND ".join(w for w, _ in base.conjuncts)
+            ),
+            {base.alias, base.table.split(".")[-1]},
+        )
+        if isinstance(moved, str):
+            return moved
+        pins_of[base.alias] = [*pins_of[base.alias], *moved]
+    # the select list
+    columns_text = part("columns")
+    columns_masked = _QUOTED.sub(lambda hit: "'" + "x" * (len(hit.group()) - 2) + "'", columns_text)
+    cuts = [-1, *_top_level_commas(columns_masked), len(columns_text)]
+    base_columns: list[str | dict[str, str]] | None = []
+    every = False
+    added: dict[str, list[tuple[str, str]]] = {relation.alias: [] for relation in others}
+    matched: dict[str, str] = {}
+    names: list[str] = []
+    for start, end in zip(cuts, cuts[1:], strict=False):
+        item = columns_text[start + 1 : end].strip()
+        flag = _MATCHED_ITEM.match(item)
+        if flag is not None:
+            alias = flag.group("q").lower()
+            flagged = by_alias.get(alias)
+            if (
+                flagged is None
+                or flagged is base
+                or not flagged.left
+                or flag.group("column").lower() not in {theirs for theirs, _ in matched_on[alias]}
+                or alias in matched
+            ):
+                return f"a select-list expression other than a left join's match: {item!r}"
+            matched[alias] = flag.group("name").lower()
+            names.append(matched[alias])
+            continue
+        plain = _JOIN_ITEM.match(item)
+        if plain is None:
+            return f"an expression in a joined read's select list: {item!r}"
+        alias, column = plain.group("q").lower(), plain.group("column").lower()
+        if alias not in by_alias:
+            return f"a select-list column of an unknown table {alias!r}"
+        name = (plain.group("name") or column).lower()
+        if column == "*":
+            if alias != base.alias or plain.group("name") or every or base_columns:
+                return "a * of a joined table, or beside the read's own columns"
+            every = True
+            continue
+        if alias == base.alias:
+            if every:
+                return "a * of a joined table, or beside the read's own columns"
+            assert base_columns is not None
+            base_columns.append(column if name == column else {"expr": f"t.{column}", "alias": name})
+        else:
+            added[alias].append((name, column))
+        names.append(name)
+    if every:
+        base_columns = None
+    if len(set(names)) != len(names):
+        return "two select-list items under one name"
+    # the order: the read's columns, or a joined column equal to one of them
+    order: list[dict[str, Any]] = []
+    for term in order_terms:
+        sort = _ORDER_TERM.match(term)
+        if sort is None or sort.group("q") is None:
+            return "an ORDER BY term other than a qualified plain column [ASC|DESC] [NULLS FIRST|LAST]"
+        alias, column = sort.group("q").lower(), sort.group("column").lower()
+        if alias != base.alias:
+            sorted_on = by_alias.get(alias)
+            equal = [mine for theirs, mine in matched_on.get(alias, ()) if theirs == column]
+            if sorted_on is None or sorted_on.left or not equal:
+                return "an ORDER BY of a joined table's column (no column of the read's equals it)"
+            shown = next((name for name, col in added[alias] if col == column), None)
+            column = equal[0]
+        else:
+            shown = (
+                column
+                if base_columns is None
+                else next(
+                    (
+                        (item if isinstance(item, str) else item["alias"])
+                        for item in base_columns
+                        if (item if isinstance(item, str) else item["expr"].removeprefix("t.")) == column
+                    ),
+                    None,
+                )
+            )
+        if shown is None:
+            return "an ORDER BY column it does not select (the equivalence proof compares the order by its values)"
+        nulls = sort.group("nulls")
+        order.append(
+            {
+                "column": column,
+                "descending": (sort.group("direction") or "asc").lower() == "desc",
+                "nulls": None if nulls is None else nulls.lower(),
+                "shown": shown,
+            }
+        )
+    base_pins = pins_of[base.alias]
+    numbers = sorted({number for pin in (*base_pins, *base_guards) for number in pin.numbers()})
+    if numbers != list(range(1, len(numbers) + 1)):
+        return "parameters not numbered $1..$n"
+    if not any(pin.kind in _BOUND_KINDS for pin in base_pins):
+        return "no bound parameter (literals only): a constant read, judged by hand"
+    joins = tuple(
+        JoinSql(
+            table=relation.table,
+            on=tuple(matched_on[relation.alias]),
+            columns=tuple(added[relation.alias]),
+            left=relation.left,
+            pins=tuple(pins_of[relation.alias]),
+            matched=matched.get(relation.alias, ""),
+        )
+        for relation in others
+    )
+    return PointSql(
+        table=base.table,
+        columns=None if base_columns is None else tuple(base_columns),
+        pins=tuple(base_pins),
+        order=tuple(order),
+        guards=tuple(base_guards),
+        joins=joins,
+    )
+
+
 def _probe_walk(parsed: PointSql, declared: Any) -> list[str] | str:
     """the columns an existence test's probe walks: those of the table's declared key or index whose leading columns
     its pins hold most of (the primary key first among equals, then a unique key, then an index that covers every
@@ -767,7 +1174,7 @@ _BOOL_OPERAND: Final[str] = ":bool"
 _SQL_WORDS: Final[frozenset[str]] = frozenset({"null", "true", "false", "not", "and", "or", "is", "any", "all"})
 
 
-def _guard(conjunct: str, qualifiers: set[str | None]) -> Pin | str:
+def _guard(conjunct: str, qualifiers: set[str | None], row: str = "t") -> Pin | str:
     """a ``WHERE`` conjunct other than an equality as a ``guard`` pin: its qualifiers dropped (the helper reads one
     relation), its parameters renumbered from ``$1``, each paired with the column it is compared with; or why it cannot
     be one (a subquery, a column of another relation, a ``?`` placeholder, an interpolation).
@@ -780,7 +1187,14 @@ def _guard(conjunct: str, qualifiers: set[str | None]) -> Pin | str:
     :rtype: Pin | str
     """
     masked = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", conjunct)
-    if re.search(r"\bselect\b", masked, re.IGNORECASE):
+    exists = _EXISTS_GUARD.match(masked)
+    if exists is not None:
+        respelled, refused = _exists_respelled(conjunct, masked, exists, qualifiers, row)
+        if refused:
+            return refused
+        conjunct, masked = respelled, _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", respelled)
+        qualifiers = {*qualifiers, row, *exists_aliases(masked)}
+    elif re.search(r"\bselect\b", masked, re.IGNORECASE):
         return f"a subquery in a predicate: {conjunct!r}"
     if re.search(r"\?\s*(?:$|[),])", masked):
         # a ? placeholder (SQLite's), not jsonb's ? operator (which a quoted key follows)
@@ -790,7 +1204,8 @@ def _guard(conjunct: str, qualifiers: set[str | None]) -> Pin | str:
     for found in _QUALIFIED.finditer(masked):
         if found.group("q").lower() not in {qualifier.lower() for qualifier in qualifiers if qualifier}:
             return f"a column of another relation: {conjunct!r}"
-    text = "".join(_unqualified(conjunct, masked))
+    # an EXISTS keeps its qualifiers (its own aliases, and ``t.`` for the helper's row); any other guard reads one relation
+    text = conjunct if exists is not None else "".join(_unqualified(conjunct, masked))
     order: list[int] = []
     for number in _PARAMETER.findall(text):
         if int(number) not in order:
@@ -817,6 +1232,102 @@ def _guard(conjunct: str, qualifiers: set[str | None]) -> Pin | str:
     return Pin("", "guard", literal=" ".join(renumbered.split()), params=tuple(order), compared=tuple(compared))
 
 
+#: a ``[NOT] EXISTS (SELECT ...)`` conjunct: a guard over the helper's row when correlated through it alone
+_EXISTS_GUARD: Final[re.Pattern[str]] = re.compile(
+    r"^(?P<not>not\s+)?exists\s*\(\s*(?P<inner>select\b.+)\)$", re.IGNORECASE | re.DOTALL
+)
+#: a relation an ``EXISTS``' select reads, and its alias
+_INNER_RELATION: Final[re.Pattern[str]] = re.compile(
+    rf"\b(?:from|join)\s+(?P<table>{_IDENT}(?:\.{_IDENT})?)(?:\s+(?:as\s+)?(?!(?:where|on|join|left|inner)\b)"
+    rf"(?P<alias>{_IDENT}))?",
+    re.IGNORECASE,
+)
+#: the words an ``EXISTS``' select may hold that are no column
+_INNER_WORDS: Final[frozenset[str]] = frozenset(
+    {
+        "select",
+        "from",
+        "where",
+        "and",
+        "or",
+        "not",
+        "is",
+        "null",
+        "true",
+        "false",
+        "in",
+        "any",
+        "all",
+        "as",
+        "join",
+        "on",
+        "left",
+        "inner",
+        "exists",
+        "distinct",
+        "limit",
+        "like",
+        "ilike",
+        "between",
+        "array",
+        "coalesce",
+        "lower",
+        "upper",
+    }
+)
+
+
+def exists_aliases(masked: str) -> set[str]:
+    """the aliases the relations of an ``EXISTS``' select are read under.
+
+    :param masked: the conjunct, its quoted literals masked
+    :ptype masked: str
+    :return: the aliases, lower-cased
+    :rtype: set[str]
+    """
+    return {(found.group("alias") or "").lower() for found in _INNER_RELATION.finditer(masked)} - {""}
+
+
+def _exists_respelled(
+    conjunct: str, masked: str, exists: re.Match[str], qualifiers: set[str | None], row: str
+) -> tuple[str, str]:
+    """a correlated ``[NOT] EXISTS`` conjunct respelled over the helper's row: each column of the outer table (its
+    qualifier the table's or its alias) written ``t.``, the select's own aliases kept. Refused (the reason, starting
+    ``!``-free text): a relation of the select read with no alias of its own, or under an outer name; a column named
+    with no qualifier; a column of a relation neither the select's nor the outer table's.
+
+    :return: the respelled conjunct and ``""``, or ``""`` and the refusal's reason
+    """
+    inner = masked[exists.start("inner") : exists.end("inner")]
+    relations = list(_INNER_RELATION.finditer(inner))
+    outer = {qualifier.lower() for qualifier in qualifiers if qualifier}
+    aliases: set[str] = set()
+    tables: set[str] = set()
+    for found in relations:
+        alias = (found.group("alias") or "").lower()
+        if not alias or alias in outer or alias == row:
+            return "", f"an EXISTS reading a relation with no alias of its own: {conjunct!r}"
+        aliases.add(alias)
+        tables |= {found.group("table").lower(), found.group("table").split(".")[-1].lower()}
+    if not relations:
+        return "", f"an EXISTS of no relation: {conjunct!r}"
+    for found in _QUALIFIED.finditer(inner):
+        if found.group("q").lower() not in aliases | outer and found.group("q").lower() not in tables:
+            return "", f"a column of another relation in an EXISTS: {conjunct!r}"
+    for word in re.finditer(rf"(?<![\w.$:'])(?P<word>{_IDENT})\b(?!\s*[.(])", inner, re.IGNORECASE):
+        name = word.group("word").lower()
+        if name not in _INNER_WORDS and name not in aliases and name not in tables and not name.isdigit():
+            return "", f"a column named with no qualifier in an EXISTS: {conjunct!r}"
+    pieces: list[str] = []
+    at = 0
+    for found in _QUALIFIED.finditer(masked):
+        if found.group("q").lower() in outer:
+            pieces.append(conjunct[at : found.start()] + f"{row}.")
+            at = found.start("column")
+    pieces.append(conjunct[at:])
+    return "".join(pieces), ""
+
+
 def _unqualified(text: str, masked: str) -> list[str]:
     """``text`` cut around each qualifier :data:`_QUALIFIED` finds in ``masked``, the qualifiers left out."""
     pieces = []
@@ -828,7 +1339,9 @@ def _unqualified(text: str, masked: str) -> list[str]:
     return pieces
 
 
-def _pins(where: str, masked: str, qualifiers: set[str | None], guards: list[Pin] | None = None) -> list[Pin] | str:
+def _pins(
+    where: str, masked: str, qualifiers: set[str | None], guards: list[Pin] | None = None, row: str = "t"
+) -> list[Pin] | str:
     """each column a ``WHERE`` of equalities pins (``= $n``, ``= <literal>``, ``IS NULL``, joined by ``AND``), or why
     it is not one.
 
@@ -873,7 +1386,7 @@ def _pins(where: str, masked: str, qualifiers: set[str | None], guards: list[Pin
         else:
             if guards is None:
                 return f"a predicate other than equality: {conjunct!r}"
-            guard = _guard(conjunct, qualifiers)
+            guard = _guard(conjunct, qualifiers, row)
             if isinstance(guard, str):
                 return guard
             guards.append(guard)
@@ -936,7 +1449,8 @@ _UPDATE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _DELETE: Final[re.Pattern[str]] = re.compile(
-    rf"^delete\s+from\s+(?P<table>{_IDENT}(?:\.{_IDENT})?)\s+where\s+(?P<where>.+?)\s*;?\s*$",
+    rf"^delete\s+from\s+(?P<table>{_IDENT}(?:\.{_IDENT})?)(?:\s+(?:as\s+)?(?!where\b)(?P<alias>{_IDENT}))?"
+    rf"\s+where\s+(?P<where>.+?)\s*;?\s*$",
     re.IGNORECASE | re.DOTALL,
 )
 _SET_PARAM: Final[re.Pattern[str]] = re.compile(rf"^(?P<column>{_IDENT})\s*=\s*\$(?P<n>\d+)$")
@@ -999,10 +1513,11 @@ def _returning(text: str, masked: str) -> tuple[str, tuple[str, ...]] | str:
         return text, ()
     columns = []
     for item in found.group("columns").split(","):
-        column = re.fullmatch(_IDENT, item.strip(), re.IGNORECASE)
+        # a column, or one under the written table's alias (``RETURNING fresh.id``: the caller checks the alias)
+        column = re.fullmatch(rf"(?:{_IDENT}\.)?(?P<column>{_IDENT})", item.strip(), re.IGNORECASE)
         if column is None:
             return f"a RETURNING other than plain columns: {found.group('columns').strip()!r}"
-        columns.append(column.group().lower())
+        columns.append(column.group("column").lower())
     if len(set(columns)) != len(columns):
         return "a column returned twice"
     return text[: found.start()], tuple(columns)
@@ -1026,6 +1541,12 @@ def parse_write(sql: str, *, guards: bool = False) -> WriteSql | str:
     if text.startswith("/*") or "--" in text:
         return "a comment or hint in the statement"
     masked_text = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", text)
+    tail = _RETURNING.search(masked_text)
+    returned_by = (
+        set()
+        if tail is None
+        else {found.group("q").lower() for found in re.finditer(rf"(?P<q>{_IDENT})\.{_IDENT}", tail.group("columns"))}
+    )
     returned = _returning(text, masked_text)
     if isinstance(returned, str):
         return returned
@@ -1033,9 +1554,18 @@ def parse_write(sql: str, *, guards: bool = False) -> WriteSql | str:
     masked_text = masked_text[: len(text)]
     if re.search(r"\breturning\b", masked_text, re.IGNORECASE):
         return "a RETURNING not at the statement's end"
+    # a subquery's own FROM (a guard's EXISTS) is no join: only the statement's top level is looked at
+    blanked, depth = [], 0
+    for char in masked_text:
+        if char == ")":
+            depth -= 1
+        blanked.append(char if depth == 0 or char in "()" else "_")
+        if char == "(":
+            depth += 1
+    top = "".join(blanked)
     if re.search(
         r"(?<!distinct )\b(from|using)\b",
-        masked_text[len("delete from ") :] if masked_text.lower().startswith("delete") else masked_text,
+        top[len("delete from ") :] if top.lower().startswith("delete") else top,
         re.IGNORECASE,
     ):
         return "a join (FROM / USING)"
@@ -1046,10 +1576,16 @@ def parse_write(sql: str, *, guards: bool = False) -> WriteSql | str:
     match = update if update is not None else delete
     assert match is not None
     table = match.group("table")
+    alias = match.groupdict().get("alias")
     where = match.group("where")
     masked = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", where)
     kept: list[Pin] | None = [] if guards else None
-    pins = _pins(where, masked, {None, table.split(".")[-1]}, kept)
+    if returned_by - {table.split(".")[-1].lower(), *([alias.lower()] if alias else [])}:
+        return "a RETURNING of another relation's columns"
+    # a write's statement names its table bare (no ``AS t``): an EXISTS guard reaches its row by the table's name
+    pins = _pins(
+        where, masked, {None, table.split(".")[-1], *([alias.lower()] if alias else [])}, kept, row=table.split(".")[-1]
+    )
     if isinstance(pins, str):
         return pins
     sets: list[Pin] = []
@@ -1617,6 +2153,105 @@ def _render_first(rewrite: Rewrite, receiver: str) -> str:
         return f"next(iter({page}.rows), None)"
     assert rewrite.columns is not None
     return f"next((row[{rewrite.columns[0]!r}] for row in {page}.rows), None)"
+
+
+def _joined_text(join: Mapping[str, Any]) -> str:
+    """one ``Joined(...)`` of a ``read_by_joined`` call, as the manifest records the join."""
+    parts = [repr(join["table"]), f"on={dict(join['on'])!r}", f"columns={dict(join['columns'])!r}"]
+    if join["left"]:
+        parts.append("left=True")
+    if join["pins"]:
+        by = ", ".join(f"{pin['column']!r}: {_value_text(pin, ())}" for pin in join["pins"])
+        parts.append(f"by={{{by}}}")
+    if join["matched"]:
+        parts.append(f"matched={join['matched']!r}")
+    return f"Joined({', '.join(parts)})"
+
+
+def _render_joined(rewrite: Rewrite, receiver: str) -> str:
+    """the ``read_by_joined`` call, written in the ``fetch`` call's place (a ``fetchrow``'s first row is read off it
+    where it is awaited)."""
+    by = "{" + ", ".join(f"{pin['column']!r}: {_value_text(pin, rewrite.args)}" for pin in rewrite.pins) + "}"
+    columns = "None" if rewrite.columns is None else _columns_text(rewrite.columns)
+    parts = [receiver, repr(rewrite.table), f"by={by}", f"columns={columns}"]
+    parts.append(f"joins=[{', '.join(_joined_text(join) for join in rewrite.joins)}]")
+    if rewrite.where:
+        parts.append(_where_text(rewrite).removeprefix(", "))
+    if rewrite.order:
+        parts.append(f"order=[{', '.join(_sort_text(term) for term in rewrite.order)}]")
+    return f"read_by_joined({', '.join(parts)})"
+
+
+def _read_by_position(module: _Module, call: ast.Call) -> bool:
+    """whether the rows ``call`` answers may be read by position (``row[0]``, ``a, b = row``) where it is sent: dicts
+    answer by name only. Its answer must be bound to a name (or iterated by a comprehension) in the function; each row
+    is then followed through the loops and comprehensions over it and the names a row of it is bound to. An answer
+    that leaves the function (returned, passed on) is counted as read by position: the walk cannot see its reader.
+
+    :param module: the module
+    :ptype module: _Module
+    :param call: the ``fetch`` / ``fetchrow`` call
+    :ptype call: ast.Call
+    :return: whether it may be
+    :rtype: bool
+    """
+    scope = module.scope(call)
+    sent: ast.AST = call
+    node = module.parent(call)
+    if isinstance(node, ast.Await):
+        sent, node = node, module.parent(node)
+    lists: set[str] = set()
+    rows: set[str] = set()
+    fetched_rows = call.func.attr == "fetchrow" if isinstance(call.func, ast.Attribute) else False
+    if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+        (rows if fetched_rows else lists).add(node.targets[0].id)
+    elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        (rows if fetched_rows else lists).add(node.target.id)
+    elif isinstance(node, ast.comprehension) and node.iter is sent and isinstance(node.target, ast.Name):
+        rows.add(node.target.id)
+    else:
+        return True
+    grew = True
+    while grew:
+        grew = False
+        for found in ast.walk(scope):
+            if isinstance(found, ast.For | ast.comprehension) and isinstance(found.iter, ast.Name):
+                if found.iter.id in lists and isinstance(found.target, ast.Name) and found.target.id not in rows:
+                    rows.add(found.target.id)
+                    grew = True
+            if (
+                isinstance(found, ast.Assign)
+                and len(found.targets) == 1
+                and isinstance(found.targets[0], ast.Name)
+                and isinstance(found.value, ast.Subscript)
+                and isinstance(found.value.value, ast.Name)
+                and found.value.value.id in lists
+                and found.targets[0].id not in rows
+            ):
+                rows.add(found.targets[0].id)
+                grew = True
+    for found in ast.walk(scope):
+        if (
+            isinstance(found, ast.Subscript)
+            and isinstance(found.value, ast.Name)
+            and found.value.id in rows
+            and isinstance(found.slice, ast.Constant)
+            and isinstance(found.slice.value, int)
+        ):
+            return True
+        unpacked: tuple[ast.expr, ast.expr] | None = None
+        if isinstance(found, ast.Assign):
+            unpacked = (found.value, found.targets[0])
+        elif isinstance(found, ast.For):
+            unpacked = (found.iter, found.target)
+        if (
+            unpacked is not None
+            and isinstance(unpacked[0], ast.Name)
+            and unpacked[0].id in rows
+            and isinstance(unpacked[1], ast.Tuple)
+        ):
+            return True
+    return False
 
 
 def _columns_text(columns: Sequence[str | Mapping[str, str]]) -> str:
@@ -2217,6 +2852,41 @@ def _python_mentions(text: str, name: str, *, mapping: bool) -> tuple[list[int],
     return sorted(set(used)), prose
 
 
+def _names_another(text: str, name: str, stem: str) -> bool:
+    """whether a module's mentions of ``name`` are of another constant than the one module ``stem`` binds: it binds
+    ``name`` at its top level and imports none, or imports ``name`` only from modules of another name.
+
+    :param text: the module's source
+    :ptype text: str
+    :param name: the constant's name
+    :ptype name: str
+    :param stem: the constant's module's own name (its file's stem)
+    :ptype stem: str
+    :return: whether they are
+    :rtype: bool
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:  # NOSILENT: a module that does not parse is judged by its text, as before
+        return False
+    bound = any(
+        isinstance(node, ast.Assign | ast.AnnAssign)
+        and any(
+            isinstance(target, ast.Name) and target.id == name
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        )
+        for node in tree.body
+    )
+    sources = [
+        (node.module or "").split(".")[-1]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and any((alias.asname or alias.name) == name for alias in node.names)
+    ]
+    if bound:
+        return not sources
+    return bool(sources) and stem not in sources and not re.search(rf"\b{re.escape(stem)}\.{re.escape(name)}\b", text)
+
+
 def _mentions(repo_root: Path, path: Path, name: str, *, mapping: bool = False) -> _Mentions:
     """every mention of a constant's name in the repo's other modules, migrations and declaration ledgers, sorted
     into uses, index purpose entries naming it, and prose.
@@ -2254,6 +2924,9 @@ def _mentions(repo_root: Path, path: Path, name: str, *, mapping: bool = False) 
             text = purpose.sub(relative + "::", text)
             if not pattern.search(text):
                 continue
+        if other.suffix == ".py" and _names_another(text, name, path.stem):
+            # a module binding a constant of its own under the same name, or importing one from another module
+            continue
         if other.suffix == ".py":
             used, prose = _python_mentions(text, name, mapping=mapping)
             found.used += [f"{where}:{number}" for number in used]
@@ -2379,6 +3052,8 @@ class _Shape:
     parse: Any
     methods: frozenset[str]
     finds: str = ""
+    #: the word its statements start with
+    verb: str = "select"
 
 
 def _value_sql(value: ast.expr) -> str | None:
@@ -2765,6 +3440,8 @@ _FIRST: Final[_Shape] = _Shape("first", parse_first, frozenset(_HELPER_OF), find
 _WRITE: Final[_Shape] = _Shape("write", parse_write, _WRITE_METHODS)
 #: a count or an existence test is sent by an awaited ``fetchval``: its one value
 _COUNT: Final[_Shape] = _Shape("count", parse_count, frozenset({"fetchval"}))
+#: a joined read (:func:`parse_join`), sent by ``fetch`` (its rows) or ``fetchrow`` (its first row)
+_JOIN: Final[_Shape] = _Shape("join", parse_join, frozenset({"fetch", "fetchrow"}))
 
 
 def plan_point_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
@@ -2802,6 +3479,88 @@ def plan_first_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
     :rtype: tuple[list[Rewrite], list[Refusal]]
     """
     return _plan_reads(config, _FIRST)
+
+
+#: a chain of links within one table, as a recursive statement walks it: the first row by its key (``$1``), each next
+#: by the key the row before links to, at most ``$2`` rows; its rows' key and link answered
+_CHAIN: Final[re.Pattern[str]] = re.compile(
+    rf"^with\s+recursive\s+(?P<cte>{_IDENT})\s*\(\s*(?P<key>{_IDENT})\s*,\s*(?P<link>{_IDENT})\s*,\s*(?P<depth>{_IDENT})\s*\)"
+    rf"\s+as\s*\(\s*select\s+(?P=key)\s*,\s*(?P=link)\s*,\s*1\s+from\s+(?P<table>{_IDENT}(?:\.{_IDENT})?)\s+where\s+"
+    rf"(?P=key)\s*=\s*\$1\s+union\s+all\s+select\s+(?P<a>{_IDENT})\.(?P=key)\s*,\s*(?P=a)\.(?P=link)\s*,\s*"
+    rf"(?P=cte)\.(?P=depth)\s*\+\s*1\s+from\s+(?P=table)\s+(?:as\s+)?(?P=a)\s+join\s+(?P=cte)\s+on\s+(?P=a)\.(?P=key)"
+    rf"\s*=\s*(?P=cte)\.(?P=link)\s+where\s+(?P=cte)\.(?P=depth)\s*<\s*\$2\s*\)\s*select\s+(?P<columns>.+?)\s+from\s+"
+    rf"(?P=cte)\s*;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def parse_chain(sql: str, *, guards: bool = False) -> PointSql | str:
+    """a chain of links within one table, written as its own recursive statement (shape ``chain``)::
+
+        WITH RECURSIVE chain(id, origin_id, depth) AS (
+            SELECT id, origin_id, 1 FROM t WHERE id = $1
+          UNION ALL
+            SELECT c.id, c.origin_id, chain.depth + 1 FROM t c JOIN chain ON c.id = chain.origin_id
+             WHERE chain.depth < $2
+        ) SELECT id, origin_id FROM chain
+
+    as :func:`~threetears.core.keyed.read_link_chain` sends it; or why it is not one.
+
+    :param sql: the statement
+    :ptype sql: str
+    :param guards: unused (a chain has no guard)
+    :ptype guards: bool
+    :return: the parsed read (``chain`` set, ``$1`` the start and ``$2`` the most rows as its pins), or the reason
+    :rtype: PointSql | str
+    """
+    del guards
+    text = " ".join(sql.split())
+    if "{" in text or "}" in text:
+        return "interpolated"
+    found = _CHAIN.match(text)
+    if found is None:
+        return "not a chain of links (WITH RECURSIVE ... a row by its key, each next by the key it links to)"
+    key, link = found.group("key").lower(), found.group("link").lower()
+    columns = [item.strip().lower() for item in found.group("columns").split(",")]
+    if not columns or any(column not in {key, link} for column in columns) or len(set(columns)) != len(columns):
+        return "a chain answering a column other than its key and its link"
+    return PointSql(
+        table=found.group("table").lower(),
+        columns=tuple(columns),
+        pins=(Pin(key, "param", param=1), Pin("", "most", param=2)),
+        chain={"key": key, "link": link},
+    )
+
+
+#: a chain of links (:func:`parse_chain`), a listing finding, sent by ``fetch``
+_CHAIN_SHAPE: Final[_Shape] = _Shape("chain", parse_chain, frozenset({"fetch"}), finds="list", verb="with")
+
+
+def plan_chain_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
+    """every listing finding of the repo that is a chain of links written as its own recursive statement
+    (:func:`parse_chain`), sent by ``fetch``, as the :func:`~threetears.core.keyed.read_link_chain` call it takes, or
+    the refusal it gets.
+
+    :param config: the repo's no-whole-reads config
+    :ptype config: NoWholeReadsConfig
+    :return: the rewrites, and the refusals
+    :rtype: tuple[list[Rewrite], list[Refusal]]
+    """
+    return _plan_reads(config, _CHAIN_SHAPE)
+
+
+def plan_join_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
+    """every join finding of the repo that is a point read with joins (:func:`parse_join`), sent by ``fetch`` or
+    ``fetchrow``, as the :func:`~threetears.core.keyed.read_by_joined` call it takes (the read of the table its
+    parameters pin, then each joined table by the values its rows hold), or the refusal it gets. Its rows are dicts:
+    a read whose rows the function reads by position is refused.
+
+    :param config: the repo's no-whole-reads config
+    :ptype config: NoWholeReadsConfig
+    :return: the rewrites, and the refusals
+    :rtype: tuple[list[Rewrite], list[Refusal]]
+    """
+    return _plan_reads(config, _JOIN)
 
 
 def plan_count_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
@@ -2910,7 +3669,7 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
         module = modules.get(statement.path)
         if module is None:
             module = modules[statement.path] = _Module.read(config.repo_root / statement.path)
-        literal = _statement_literal(module, statement.line, fstrings=True)
+        literal = _statement_literal(module, statement.line, shape.verb, fstrings=True)
         if isinstance(literal, str):
             refuse(literal)
             continue
@@ -2955,6 +3714,10 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             assert isinstance(sender, ast.Call) and isinstance(literal, ast.JoinedStr)
             if sender.keywords or not isinstance(module.parent(sender), ast.Await):
                 refuse("a clause builder's statement sent with keyword arguments, or not awaited where it is sent")
+                continue
+            if parsed.joins or parsed.chain is not None:
+                # a clause over a joined read names which relation's columns it filters: not one row ``t``
+                refuse("a clause builder's statement with joins (its clause is not over one row)")
                 continue
             selected = _top_select(" ".join(text.split()))
             assert selected is not None
@@ -3008,6 +3771,15 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 problem = "fetchval of SELECT *"
             elif method == "fetchval" and not isinstance((parsed.columns or ("",))[0], str):
                 problem = "fetchval of a select-list expression (read_value reads a column)"
+            elif method not in shape.methods and parsed.joins:
+                problem = f"a joined read sent by {method} (its rows are dicts: a fetch or fetchrow only)"
+            elif method not in shape.methods and parsed.chain is not None:
+                problem = f"a chain of links sent by {method} (its rows are dicts: a fetch only)"
+            elif (parsed.joins or parsed.chain is not None) and _read_by_position(module, call):
+                problem = (
+                    "a read whose rows are read by position "
+                    f"({'read_link_chain' if parsed.chain is not None else 'read_by_joined'} answers dicts)"
+                )
             elif method not in shape.methods and parsed.aggregate:
                 problem = f"a count sent by {method}: read by a column name the helper does not answer under"
             elif method not in shape.methods:
@@ -3036,9 +3808,29 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 walk=walk,
                 where=[asdict(guard) for guard in parsed.guards],
                 clauses=recorded,
+                joins=[join.record() for join in parsed.joins],
+                chain=parsed.chain,
             )
             spliced: ast.expr = call
-            if parsed.aggregate:
+            if parsed.chain is not None:
+                rewrite.helper = "read_link_chain"
+                rewrite.new_call = (
+                    f"read_link_chain({module.segment(call.func.value)}, {parsed.table!r}, key={parsed.chain['key']!r}, "
+                    f"link={parsed.chain['link']!r}, start={rewrite.args[0]}, most={rewrite.args[1]}, "
+                    f"columns={_columns_text(parsed.columns or ())})"
+                )
+            elif parsed.joins:
+                rewrite.helper = "read_by_joined"
+                rewrite.new_call = _render_joined(rewrite, module.segment(call.func.value))
+                if method == "fetchrow":
+                    awaited = module.parent(call)
+                    if not isinstance(awaited, ast.Await):
+                        refuse("not awaited where it is sent")
+                        planned = []
+                        break
+                    rewrite.new_call = f"next(iter(await {rewrite.new_call}), None)"
+                    spliced = awaited
+            elif parsed.aggregate:
                 rewrite.helper = "holds_any" if parsed.aggregate == "exists" else "aggregate_keyed"
                 rewrite.new_call = _render_count(rewrite, module.segment(call.func.value))
                 awaited = module.parent(call)
@@ -3334,6 +4126,12 @@ def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None
             names.add("Selected")
         if any(rewrite.clauses for rewrite in mine):
             names.add("clause_guards")
+        if any(rewrite.joins for rewrite in mine):
+            names.add("Joined")
+            if any(
+                pin["kind"] in {"any", "anylit"} for rewrite in mine for join in rewrite.joins for pin in join["pins"]
+            ):
+                names.add("AnyOf")
         source = _with_import(source, names)
         for rewrite in mine:
             for imported, wanted in rewrite.imports.items():
@@ -3487,7 +4285,7 @@ def main(argv: list[str] | None = None) -> int:
     :rtype: int
     """
     parser = argparse.ArgumentParser(prog="threetears.enforcement.no_whole_reads.rewrite")
-    parser.add_argument("shape", choices=["point", "list", "first", "write", "count", "test-module"])
+    parser.add_argument("shape", choices=["point", "list", "first", "write", "count", "join", "chain", "test-module"])
     parser.add_argument("--module", type=Path, help="test-module: where the generated test goes, repo-relative")
     parser.add_argument("--pg-fixture", default="conn")
     parser.add_argument("--yb-fixture", default="yugabyte_conn")
@@ -3519,6 +4317,8 @@ def main(argv: list[str] | None = None) -> int:
         "list": plan_list_rewrites,
         "first": plan_first_rewrites,
         "count": plan_count_rewrites,
+        "join": plan_join_rewrites,
+        "chain": plan_chain_rewrites,
     }.get(options.shape, plan_point_rewrites)
     rewrites, refusals = planner(config)
     reasons = Counter(refusal.reason.split(":")[0].split(" (")[0] for refusal in refusals)
