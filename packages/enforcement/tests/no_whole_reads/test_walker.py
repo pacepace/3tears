@@ -450,6 +450,50 @@ def test_a_module_s_main_guard_is_the_entry_of_a_marked_command(tmp_path: Path) 
     assert [finding.split(" in ", 1)[0] for finding in callers] == ["src/cli.py:14"], callers
 
 
+_MARKED_VACUUM = """
+    import asyncio
+
+    from threetears.core.operator import operator_command, security_backstop
+
+    @operator_command("an operator's hand-run prune, then VACUUM (ANALYZE) of what it freed", proof="tests/test_ops.py::test_vacuum")
+    async def _vacuum(conn):
+        await conn.execute("VACUUM (ANALYZE) state")
+        await conn.execute("ANALYZE state")
+
+    @operator_command("an operator's hand-run prune, then VACUUM (ANALYZE) of what it freed", proof="tests/test_ops.py::test_vacuum")
+    def main(conn=None):
+        return asyncio.run(_vacuum(conn))
+
+    @security_backstop("a backstop pass over every state row", proof="tests/test_ops.py::test_vacuum", speed="tests/test_ops.py::test_vacuum")
+    async def backstop(conn):
+        await conn.execute("VACUUM state")
+
+    if __name__ == "__main__":
+        raise SystemExit(main())
+"""
+
+
+def test_an_operator_command_may_vacuum_and_analyze_and_an_automatic_caller_is_still_reported(tmp_path: Path) -> None:
+    """Flips if a hand-run command's VACUUM (ANALYZE) / ANALYZE (whole-maintenance, which visits every row by design)
+    is still reported inside its @operator_command chain, if another mark (a security backstop) lets it through, or
+    if a caller that runs on its own (a timer's tick) reaches the marked command unreported."""
+    _ops(tmp_path, "def test_vacuum():\n    assert _vacuum and main and backstop\n")
+    timer = """
+        from cli import _vacuum
+
+        async def tick(conn):
+            await _vacuum(conn)
+        """
+    findings = no_whole_reads_findings(_config(tmp_path, {"cli.py": _MARKED_VACUUM, "timer.py": timer}))
+    assert not [finding for finding in findings if "in _vacuum: whole-maintenance" in finding], findings
+    assert any("in backstop: whole-maintenance state" in finding for finding in findings), findings
+    assert any("timer.py:5 in tick" in finding and "@operator_command" in finding for finding in findings), findings
+    alone = no_whole_reads_findings(_config(tmp_path, {"cli.py": _MARKED_VACUUM}))
+    assert [finding for finding in alone if "whole-maintenance" in finding] == [
+        finding for finding in alone if "in backstop: whole-maintenance state" in finding
+    ], alone
+
+
 _MARKED_METHOD = """
     from threetears.core.operator import operator_command
 

@@ -37,7 +37,8 @@ the code writes, judged by :func:`~threetears.enforcement.no_whole_reads.sql.jud
   ``truncate-call`` hits pass; every read in it is judged as anywhere else;
 - ``@operator_command(reason, proof=...)``: an operator's explicit one-off command that must read whole to be
   complete (a restore check over its scratch copy, a person's erasure across every agent), never a load or cache
-  path. Its reads pass.
+  path. Its reads pass, and so does its ``VACUUM`` / ``ANALYZE`` (``whole-maintenance``), which visits every row by
+  design (a hand-run prune's ``--vacuum``); a security backstop's does not.
 
 A mark is checked: every caller of a marked function in the repo must carry the same mark, so the chain ends at an
 entry nothing in the repo calls (a route, a CLI command); ``proof`` names ``<test file>::<test function>``, a test

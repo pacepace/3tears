@@ -67,6 +67,7 @@ from threetears.nats.change_log import ChangeLogEntry, ChangeLogLike, ChangeLogS
 from threetears.nats.errors import KvBucketNotFoundError, KvError, KvFullError
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter, gauge
+from threetears.observe.resilience import retry_until_done
 from uuid_utils import uuid7
 
 
@@ -557,25 +558,53 @@ class _ChangeLogReading:
         :raises GenerationUnavailableError: when the log cannot be read or watched
         :raises KvError: when the connection closes, so nothing can ever be delivered again
         """
-        state = await self._state()
-        if state is None:
-            log.info(
-                "the epoch change log is not declared yet; the table is watched once its first write declares it",
-                extra={"extra_data": {"table": table_name, "poll_seconds": self._absent_log_poll.total_seconds()}},
-            )
-        while state is None:
-            await asyncio.sleep(self._absent_log_poll.total_seconds())
-            if self.closed:
-                # the close the docstring promises as KvError: a read through a closed client would
-                # surface as GenerationUnavailableError, which a caller takes for a log it may retry
-                raise KvError(f"the connection closed while {table_name!r} waited for the change log")
-            state = await self._state()
+        await self._until_declared(table_name)
         async with aclosing(self._watch_keys(table_name)) as updates:
             async for update in updates:
                 # the incarnation is read with each push: a log lost and declared again numbers from
                 # one under a new one, and a push read against the old would look already applied
                 now = await self._state()
                 yield None if now is None else _token(now.incarnation, update.revision)
+
+    async def _until_declared(self, table_name: str) -> None:
+        """return once the broker holds the change log, looking again every ``absent_log_poll`` while it is absent.
+
+        The wait is :func:`~threetears.observe.resilience.retry_until_done` at a fixed pace: it never gives
+        up, since only the first write declares the log, and it ends early only on cancellation or a close.
+
+        :param table_name: the table whose watch waits
+        :ptype table_name: str
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when the log cannot be read
+        :raises KvError: when the connection closes while it waits
+        """
+        poll = self._absent_log_poll.total_seconds()
+        looks = 0
+
+        async def declared() -> bool:
+            nonlocal looks
+            if looks and self.closed:
+                # the close the watch promises as KvError: a read through a closed client would
+                # surface as GenerationUnavailableError, which a caller takes for a log it may retry
+                raise KvError(f"the connection closed while {table_name!r} waited for the change log")
+            looks += 1
+            held = await self._state() is not None
+            if not held and looks == 1:
+                log.info(
+                    "the epoch change log is not declared yet; the table is watched once its first write declares it",
+                    extra={"extra_data": {"table": table_name, "poll_seconds": poll}},
+                )
+            return held
+
+        # #1172 (f96a1a017): before this wait a watch on an undeclared log failed, backed off to a minute and
+        # reported the table unwatched -- metallm's production API logged 968 failures in a row per access table
+        # until a write declared the log. The pace is kept as #1172 tuned it: one look per absent_log_poll (1 s by
+        # default, a follower's first restart delay), first_delay == max_delay so it is NEVER backed off (a backed-off
+        # look would bound a lost broadcast's lateness by the ceiling, not the second); no attempt or time bound, since
+        # only the first write declares the log. retry_until_done is the shared never-give-up loop, so the class
+        # holds no sleep loop of its own (tests/enforcement no_bespoke_reuse); a close still ends it (c3deddf18).
+        await retry_until_done(declared, first_delay=poll, max_delay=poll)
 
     async def _watch_keys(self, table_name: str) -> AsyncGenerator[KvKeyUpdate]:
         """every key this reader reads of ``table_name``, watched together: each one's newest, then each later.

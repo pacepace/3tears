@@ -423,12 +423,16 @@ _OPERATOR_RESET_KINDS: Final[frozenset[str]] = frozenset({"truncate", "truncate-
 #: the kinds an operator's explicit one-off command (``@operator_command``) may hold: the reads its completeness needs
 _OPERATOR_COMMAND_KINDS: Final[frozenset[str]] = _READ_KINDS | frozenset({"calls-whole-read"})
 
+#: what an operator's hand-run command may hold beyond its reads: ``VACUUM`` / ``ANALYZE`` (whole-maintenance), which
+#: visit every row by design (coordinator ruling 2026-11-14, within Pace's marks ruling); a security backstop may not
+_OPERATOR_COMMAND_MAINTENANCE: Final[frozenset[str]] = _OPERATOR_COMMAND_KINDS | frozenset({"whole-maintenance"})
+
 #: the marks, by decorator name, onto the kinds each lets through inside the marked function. A security backstop's
 #: whole pass is accepted (and printed); a source change read lets nothing through by kind: the judge passes only its
 #: reads past the source's own stamps
 _OPERATOR_MARKS: Final[dict[str, frozenset[str]]] = {
     "operator_reset": _OPERATOR_RESET_KINDS,
-    "operator_command": _OPERATOR_COMMAND_KINDS,
+    "operator_command": _OPERATOR_COMMAND_MAINTENANCE,
     "security_backstop": _OPERATOR_COMMAND_KINDS,
     "source_change_read": frozenset(),
 }

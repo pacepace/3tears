@@ -28,6 +28,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.testing.plans import on_yugabyte
 from threetears.langgraph.checkpoint import (
     DELTA_COUNTERS_METADATA_KEY,
     CheckpointPurgeIncompleteError,
@@ -745,6 +746,21 @@ async def _analyze(database: _Database) -> None:
         await conn.close()
 
 
+async def _on_yugabyte(database: _Database) -> bool:
+    """whether the schema is YugabyteDB's.
+
+    :param database: the schema
+    :ptype database: _Database
+    :return: whether the engine is YugabyteDB
+    :rtype: bool
+    """
+    conn = await asyncpg.connect(database.dsn)
+    try:
+        return await on_yugabyte(conn)
+    finally:
+        await conn.close()
+
+
 class TestCheckpointUsage:
     """the report's numbers, on a seeded table."""
 
@@ -758,7 +774,14 @@ class TestCheckpointUsage:
         # the row figures are the statistics' estimates, current after ANALYZE
         assert (usage.checkpoints.rows, usage.writes.rows) == (10, 10)
         assert usage.checkpoints.table == "checkpoints"
-        assert usage.checkpoints.total_bytes >= usage.checkpoints.heap_bytes > 0
+        sizes = (usage.checkpoints.total_bytes, usage.checkpoints.heap_bytes)
+        if await _on_yugabyte(database):
+            # YugabyteDB keeps rows in DocDB, not a Postgres heap: pg_relation_size answers 0 for every relation, and
+            # pg_total_relation_size the tablets' flushed files, 0 until a flush (measured: 0 / 0 on a fresh 10-row
+            # table with an index, 0 / 0 and 2097152 / 0 for this seeded checkpoints table in two runs)
+            assert sizes[0] >= sizes[1] == 0
+        else:
+            assert sizes[0] >= sizes[1] > 0
         assert usage.threads == 3
         assert usage.threads_with_history == 2
         assert (usage.prunable_checkpoint_rows, usage.prunable_write_rows) == (6, 6)
