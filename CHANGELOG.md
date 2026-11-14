@@ -44,6 +44,28 @@ tone meets `unfinished` (tone `failed`). `RunSummary.ended_because`,
 `Caveats.unfinished` and `DocPage.stopped` are new, optional and left out of a document while unset, so nothing stored
 moves; `EvalSummary.ending` replaces `EvalSummary.failed_text`, which no release shipped.
 
+### evals: a mean cost or latency takes an interval that holds 95% on lognormal-like values
+
+**Changed:** the interval on the mean of a spend or a time (a `nonnegative` measure on the cost or latency axis,
+or in dollars, `ms` or `s`) is the union of the t interval over cases, clipped at zero, and a log-scale interval on the case means. The clipped t
+interval alone, labelled 95%, covered a lognormal mean 83% of the time at 10 cases and 91% at 50 (log-SD 1.0), and 72%
+at 10 cases at log-SD 1.5; the new interval covered at least 96% from 5 to 50 cases on the shapes tested: lognormal to log-SD 1.5, gamma,
+exponential, normal, repeated cases, a fifth of cases free (`tests/test_simulated_floored_mean.py`). **It does not
+hold where rare large cases dominate the cost**: with one case in ten 30 times the rest it is the t interval and
+covers as it does, about 40%, 66% and 89% at 5, 10 and 30 cases (pinned there as a strict xfail). It is wider, by about 1.4 times at 10 cases of moderate skew and several
+times on heavy skew, and **under five cases above zero no interval is stated**, every case free included, only the mean, and a bar
+proposal, a readings cell and an evidence row say why and that five cases above zero give one
+(`docs/measuring-soundly.md`, "Variance, k and how many cases"; limits in `docs/open-problems.md`). Measures on a
+declared range, counts, rates and differences between arms are unchanged.
+
+**Changed:** a launch estimate's detectable difference names its test (`paired t-test`) and marks each rate:
+`DetectableEffect.rate` (new, default false), and a rate's printed line says its bounded interval must exclude zero
+too, so a difference that size needs more cases. The figures themselves are unchanged.
+
+**For hosts:** a host pinning a report page, a bundle's `ci_low` / `ci_high` on a spend or a time, or the launch
+estimate's text updates its match; a reader of those intervals must accept none where the arm holds under five
+differing cases. Nothing stored changes shape.
+
 ### evals: a definitions reset fills the presentation names a template it leaves current lacks
 
 **Added:** `reset_definitions` runs the definition seed's fill-only presentation-name pass after its writes, on every

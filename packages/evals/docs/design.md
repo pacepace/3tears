@@ -109,8 +109,11 @@ so a declared rule may stop it early
 **Trust in a judge is measured, not asserted, and nothing waits for calibration.**
 Code assigns every judged reading an [evidence tier](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)
 from its judge's measured agreement with people and with itself. A comparison between arms can stand on a
-lower tier, since bias mostly cancels across arms; an absolute claim needs agreement with people, since
-self-consistency measures precision, not accuracy. The one floor: an improvement whose judge has no calibration
+lower tier on one assumption: that the judge's bias is the same for every arm, so it cancels in the difference. The
+engine cannot test that today (no control scores one arm against itself), and it fails where the arms differ in
+something a judge is known to favour apart from the work: model family (a judge scoring its own family's output),
+verbosity or style. A contrast across such arms carries a judge bias of unknown size. An absolute claim needs
+agreement with people, since self-consistency measures precision, not accuracy. The one floor: an improvement whose judge has no calibration
 evidence at all (`undetermined` or `insufficient`) is shown and set aside, so it makes no option better; a judge
 measured and found short (`separation`, `incidental`) still counts.
 
@@ -559,7 +562,9 @@ Six steps, each fixing the last:
    completing with a page that says "rerun" hid it. A run lost only to judge-call errors completes, since a
    re-judge recovers it; a sweep goes on past an arm that measured nothing. A model's own
    failures stay its outcome, as in step 4: a declined call is the provider declining it, not the model failing
-   it. The lost trials are bounded in every verdict, and an arm
+   it. The lost trials are given their best and worst outcomes where a floor or a campaign
+   reading is decided, and nowhere else (a bar, the frontier's pass^k and an aspect page's contrasts read the trials
+   left; a cell a budget stop never started is in no lost count), and an arm
    that loses more than a tenth of its trials to one cause is flagged (`differential_exclusions`). Rejected: a
    second `rationed` flag beside `account_refused`, two flags for one question that could both be set.
 

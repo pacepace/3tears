@@ -53,6 +53,7 @@ from threetears.evals.kernel.metrics import (
     describe_phase_timing,
     goal_check_measure,
     is_code_graded,
+    is_latency_measure,
     measure_value_misfit,
     summary_population,
     undeclarable_host_measures,
@@ -1320,6 +1321,20 @@ def _classifier_label_summaries(
     return derived
 
 
+#: The unit a spend is stated in.
+_MONEY_UNIT = "usd"
+
+
+def _reads_spend_or_time(descriptor: MetricDescriptor) -> bool:
+    """Whether a measure is a spend or a time: positive, with a long right tail, so the interval on its mean is the
+    one that holds its level on skewed values (:func:`~threetears.evals.analysis.stats.observed_mean_interval`).
+
+    A measure on the ``cost`` or ``latency`` merit axis, or stated in dollars or a unit of time whatever axis it
+    serves (a phase's wall-clock, a judge's spend). A count is not one: its interval stays the clipped t interval.
+    """
+    return descriptor.merit_axis == "cost" or descriptor.unit == _MONEY_UNIT or is_latency_measure(descriptor)
+
+
 def _measure_summary(
     descriptor: MetricDescriptor,
     values: list[float | str],
@@ -1369,7 +1384,11 @@ def _measure_summary(
         mean, numeric = _mean_and_sorted(observed)
         sem = clustered_standard_error(observed, cases)
         interval = observed_mean_interval(
-            observed, cases=cases, value_range=descriptor.value_range, floor=descriptor.interval_floor
+            observed,
+            cases=cases,
+            value_range=descriptor.value_range,
+            floor=descriptor.interval_floor,
+            skewed=_reads_spend_or_time(descriptor),
         )
         shape = {
             "mean": mean,
