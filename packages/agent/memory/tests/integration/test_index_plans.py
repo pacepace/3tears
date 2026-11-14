@@ -272,6 +272,64 @@ async def _only_plan(world: _World, captured: CapturedL3) -> StatementPlan:
     return plan
 
 
+async def _collision_plans(world: _World) -> list[tuple[str, StatementPlan]]:
+    """each statement a user merge's alias-collision step sends, with its plan: a source user of the world's agent
+    whose every named memory the master names too, so the lock finds them all and each child is read by their keys.
+    The reads run (inside a transaction rolled back); the writes are recorded, never run, and planned unrun.
+
+    :param world: the seeded schema
+    :ptype world: _World
+    :return: ``(statement, plan)`` for each statement, in order
+    :rtype: list[tuple[str, StatementPlan]]
+    """
+    source = await world.conn.fetchval(
+        "SELECT user_id FROM memories WHERE agent_id = $1 AND alias IS NOT NULL LIMIT 1", world.agent
+    )
+    master = uuid.uuid4()
+    transaction = world.conn.transaction()
+    await transaction.start()
+    try:
+        await world.conn.execute(
+            "INSERT INTO memories (memory_id, agent_id, customer_id, user_id, conversation_id, type_memory, content,"
+            " date_created, date_updated, tags, alias, embedding)"
+            " SELECT gen_random_uuid(), agent_id, customer_id, $3, conversation_id, type_memory, content, date_created,"
+            " date_updated, tags, alias, embedding FROM memories WHERE agent_id = $1 AND user_id = $2"
+            " AND alias IS NOT NULL",
+            world.agent,
+            source,
+            master,
+        )
+        captured = CapturedL3(real=world.conn, passes=lambda sql: sql.lstrip().upper().startswith("SELECT"))
+        await repoint_user(captured, from_user_id=source, to_user_id=master, agent_id=world.agent)
+        planned: list[tuple[str, StatementPlan]] = []
+        for sql, args in captured.asked:
+            if sql.lstrip().upper().startswith("SELECT"):
+                planned.append((sql, await explain_statement(world.conn, sql, *args)))
+            else:
+                planned.append((sql, await explain_write(world.conn, sql, *args)))
+        return planned
+    finally:
+        await transaction.rollback()
+
+
+def _collision_misses(planned: list[tuple[str, StatementPlan]], reads: str, index: str) -> list[str]:
+    """the collision step's statements reading ``reads`` that do not find their rows through ``index``; fails when
+    the step sent none.
+
+    :param planned: the step's statements and plans (:func:`_collision_plans`)
+    :ptype planned: list[tuple[str, StatementPlan]]
+    :param reads: text naming the statements meant (``FROM "media" AS t``)
+    :ptype reads: str
+    :param index: the index each must read
+    :ptype index: str
+    :return: the outline of each that does not
+    :rtype: list[str]
+    """
+    mine = [plan for sql, plan in planned if reads in sql]
+    assert mine, f"the collision step sent no statement with {reads!r}: {[sql[:80] for sql, _ in planned]}"
+    return [_shape(plan) for plan in mine if not plan_uses_index(plan, index)]
+
+
 async def test_memories_agent_user(world: _World) -> None:
     """Flips if one user's reads by agent and user stop reading ix_memories_agent_user_date."""
     captured = CapturedL3()
@@ -351,11 +409,20 @@ async def test_memories_user_date(world: _World) -> None:
 
 
 async def test_memories_user_alias(world: _World) -> None:
-    """Flips if a memory by its name stops reading ix_memories_user_alias."""
+    """Flips if a memory by its name, or a user merge's alias-collision lock or delete, stops reading
+    ix_memories_user_alias."""
     captured = CapturedL3()
     await world.memories(captured).find_by_alias(user_id=world.user, agent_id=world.agent, alias="a10")
     plan = await _only_plan(world, captured)
     assert plan_uses_index(plan, "ix_memories_user_alias"), _shape(plan)
+    # a user merge's alias collisions: the source's named memories, each against the master's same name, locked and
+    # then deleted by both users' entries in the index
+    planned = await _collision_plans(world)
+    missed = [
+        *_collision_misses(planned, "SELECT m.agent_id, m.memory_id FROM memories m", "ix_memories_user_alias"),
+        *_collision_misses(planned, "DELETE FROM memories m", "ix_memories_user_alias"),
+    ]
+    assert not missed, "\n\n".join(missed)
 
 
 _CHUNK_WEIGHTS = {"semantic": 1.0, "keyword": 1.0}
@@ -415,8 +482,8 @@ async def test_memory_chunks_agent_user(world: _World) -> None:
 
 
 async def test_memory_chunks_memory(world: _World) -> None:
-    """Flips if a memory's chunks by index, its chunk count, or the count a recalled chunk carries stop reading
-    ix_memory_chunks_memory."""
+    """Flips if a memory's chunks by index, its chunk count, the count a recalled chunk carries, or the chunks a user
+    merge's alias collision cascades to stop reading ix_memory_chunks_memory."""
     captured = CapturedL3()
     chunks = world.chunks(captured)
     owner: _Owner = {"user_id": world.user, "agent_id": world.agent, "customer_id": world.customer}
@@ -436,6 +503,8 @@ async def test_memory_chunks_memory(world: _World) -> None:
     missed = [
         _shape(plan) for plan in await world.plans(captured) if not plan_uses_index(plan, "ix_memory_chunks_memory")
     ]
+    # the chunks a user merge's alias collision cascades to, named before the delete
+    missed += _collision_misses(await _collision_plans(world), 'FROM "memory_chunks"', "ix_memory_chunks_memory")
     assert not missed, "\n\n".join(missed)
 
 
@@ -460,7 +529,8 @@ async def test_mem_conversation(world: _World) -> None:
 
 
 async def test_media_memory_id(world: _World) -> None:
-    """Flips if a chunk's file, joined by its memory, stops being found through ix_media_agent_memory."""
+    """Flips if a chunk's file, joined by its memory, or the files a user merge's alias collision cascades to, stop
+    being found through ix_media_agent_memory."""
     captured = CapturedL3()
     chunks = world.chunks(captured)
     await chunks.search_by_ids([world.chunk], world.user, agent_id=world.agent)
@@ -492,6 +562,8 @@ async def test_media_memory_id(world: _World) -> None:
     missed = [
         _shape(plan) for plan in await world.plans(captured) if not plan_uses_index(plan, "ix_media_agent_memory")
     ]
+    # the files a user merge's alias collision cascades to, locked before the delete
+    missed += _collision_misses(await _collision_plans(world), 'FROM "media" AS t', "ix_media_agent_memory")
     assert not missed, "\n\n".join(missed)
 
 
@@ -519,7 +591,8 @@ async def test_repoint_agent_user(world: _World) -> None:
 
 async def test_memory_consolidations_source(world: _World) -> None:
     """Flips if what a source was merged into stops reading idx_memory_consolidations_source: the back edge, and the
-    corrected_by mark each memory read by key selects beside it (a sub-select matched on the outer memory's key)."""
+    corrected_by mark each memory read by key selects beside it (a sub-select matched on the outer memory's key), or the
+    edges a user merge's alias collision cascades to by their source end."""
     captured = CapturedL3()
     await world.consolidations(captured).find_consolidated_into(world.agent, world.memory)
     await world.memories(captured).search_by_ids([world.memory], world.user, agent_id=world.agent)
@@ -530,6 +603,12 @@ async def test_memory_consolidations_source(world: _World) -> None:
         for plan in await world.plans(captured)
         if not plan_uses_index(plan, "idx_memory_consolidations_source")
     ]
+    # the edges a user merge's alias collision cascades to by their source end (by the consolidated end, the key)
+    missed += _collision_misses(
+        [(sql, plan) for sql, plan in await _collision_plans(world) if '"source_memory_id" = ANY' in sql],
+        'FROM "memory_consolidations"',
+        "idx_memory_consolidations_source",
+    )
     assert not missed, "\n\n".join(missed)
 
 
@@ -543,8 +622,8 @@ async def test_conv_mem_refs_conversation_agent_date(world: _World) -> None:
 
 
 async def test_media_content_media_type(world: _World) -> None:
-    """Flips if the contents a search names by file id stop reading ix_media_content_media_type (the content-id
-    branch of the same OR reads the unique content id)."""
+    """Flips if the contents a search names by file id (the content-id branch of the same OR reads the unique content
+    id), or the contents a user merge's alias collision cascades to, stop reading ix_media_content_media_type."""
     file = await world.conn.fetchval(
         "SELECT media_id FROM media_content WHERE agent_id = $1 AND user_id = $2 LIMIT 1", world.agent, world.user
     )
@@ -552,6 +631,9 @@ async def test_media_content_media_type(world: _World) -> None:
     await world.contents(captured).search_by_ids([file], world.user, agent_id=world.agent)
     plan = await _only_plan(world, captured)
     assert plan_uses_index(plan, "ix_media_content_media_type"), _shape(plan)
+    # the contents a user merge's alias collision cascades to, by their files
+    missed = _collision_misses(await _collision_plans(world), 'FROM "media_content"', "ix_media_content_media_type")
+    assert not missed, "\n\n".join(missed)
 
 
 async def test_media_cloud_connection_file(world: _World) -> None:

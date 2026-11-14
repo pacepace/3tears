@@ -975,7 +975,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                 unique=True,
                 where="alias IS NOT NULL",
                 purpose=(
-                    "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_by_alias"
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_by_alias; "
+                    "packages/agent/memory/src/threetears/agent/memory/merge.py::_delete_alias_collisions"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_user_alias",
                 reason="memories carries six indexes: a memory by its name, unique per agent and user",
@@ -2962,7 +2963,8 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MemoryChunkCollection.search_by_semantic; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MemoryChunkCollection.hybrid_search_within_memory"
+                    "::MemoryChunkCollection.hybrid_search_within_memory; "
+                    "packages/agent/memory/src/threetears/agent/memory/merge.py::_delete_alias_collisions"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_memory_id",
                 reason="media carries three indexes: the file a memory wraps, joined to that memory's chunks",
@@ -3111,7 +3113,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
                 "content_type",
                 purpose=(
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MediaContentCollection.search_by_ids"
+                    "::MediaContentCollection.search_by_ids; "
+                    "packages/agent/memory/src/threetears/agent/memory/merge.py::_delete_alias_collisions"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_media_content_media_type",
                 reason="media_content carries three indexes: the contents of the files a search names by file id",
@@ -3703,7 +3706,8 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MemoryChunkCollection.hybrid_search_within_memory; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MemoryChunkCollection.find_by_conversation_id"
+                    "::MemoryChunkCollection.find_by_conversation_id; "
+                    "packages/agent/memory/src/threetears/agent/memory/merge.py::_delete_alias_collisions"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memory_chunks_memory",
                 reason="memory_chunks carries four indexes: one memory's chunks by their index, and their count",
@@ -4975,7 +4979,8 @@ class MemoryConsolidationsCollection(SchemaBackedCollection[MemoryConsolidationE
                     "packages/agent/memory/src/threetears/agent/memory/collections.py::_MEMORY_MARK_COLUMNS; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_by_alias; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.search_by_ids; "
-                    "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_for_recall"
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_for_recall; "
+                    "packages/agent/memory/src/threetears/agent/memory/merge.py::_delete_alias_collisions"
                 ),
                 plan_test=(
                     "packages/agent/memory/tests/integration/test_index_plans.py::test_memory_consolidations_source"
