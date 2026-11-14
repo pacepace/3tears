@@ -82,6 +82,7 @@ from threetears.evals.analysis.report.parts.words import (
 )
 from threetears.evals.analysis.report_input import Cell, ConfusionTable, Stat, Stratum, Task
 from threetears.evals.analysis.style import lever_reader_name
+from threetears.evals.analysis.report.words import label_case
 
 __all__ = ["RESOLVERS"]
 
@@ -316,7 +317,7 @@ def _spot(
     level = context.spec.level
     # The interval's text as the ledger records it, ``low to high``, is the text the tip prints.
     said = context.forms.chart_interval(low, high, drawn, measure=key, kind=figure_kind(context, key)).text
-    return _Spot(shown, n, [*tip, f"{level} interval {said}".strip().capitalize()], low, high)
+    return _Spot(shown, n, [*tip, label_case(f"{level} interval {said}".strip())], low, high)
 
 
 def _heat_rows(matrix: _Matrix) -> list[HeatmapRow]:

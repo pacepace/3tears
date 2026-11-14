@@ -341,8 +341,9 @@ def _judged_label(heading: str) -> str:
 
 def label_case(text: str) -> str:
     """Words as a label prints them, where they are a label rather than words in a sentence (a header, a chart's title,
-    a series, a table's row): the first letter a capital, the rest as written. The one owner of a label's capital:
-    :func:`_judged_label` and :func:`~threetears.evals.analysis.report.parts.charting.measure_words` both take it.
+    a series, a table's row): the first letter a capital, the rest as written (``GPT tone`` stays ``GPT tone``, where
+    ``str.capitalize`` would print ``Gpt tone``). The one owner of a label's capital: :func:`_judged_label`,
+    :func:`heading_case` and :func:`~threetears.evals.analysis.report.parts.charting.measure_words` all take it.
 
     :param text: The words.
     :ptype text: str
@@ -350,6 +351,24 @@ def label_case(text: str) -> str:
     :rtype: str
     """
     return text[:1].upper() + text[1:]
+
+
+#: A heading's first word where it is a plain word, which a heading capitalizes, followed by more words; a heading of
+#: one token (``tpl-support``, ``extract_invoice_fields``) or one led by an identifier (``queue_v5 traffic``) is a name.
+_PLAIN_LEAD = re.compile(r"[a-z]+(?:['-][a-z]+)*\s+\S")
+
+
+def heading_case(heading: str) -> str:
+    """A heading as a label prints it (:func:`label_case`) where it opens on a plain word and runs on in words
+    (``research judgement on SearXNG search`` reads ``Research judgement on SearXNG search``, #1127); a heading that is
+    one token, or opens on an identifier, is a name and keeps its case as written.
+
+    :param heading: The heading, as declared.
+    :ptype heading: str
+    :return: The heading.
+    :rtype: str
+    """
+    return label_case(heading) if _PLAIN_LEAD.match(heading) else heading
 
 
 #: A judged dimension's heading as :func:`judged_heading` writes it, a score's scale or a ruler's words after its mark

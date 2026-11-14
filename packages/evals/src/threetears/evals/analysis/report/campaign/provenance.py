@@ -49,7 +49,7 @@ from threetears.evals.analysis.report.model import (
     TableCell,
     TableColumn,
 )
-from threetears.evals.analysis.report.words import judged_name
+from threetears.evals.analysis.report.words import judged_name, label_case
 from threetears.evals.analysis.style import ArmName
 from threetears.evals.kernel.campaign import EvalCampaign
 
@@ -495,7 +495,7 @@ def provenance_blocks(
 def _label(words: str) -> str:
     """A row's label as a table prints it: its words, starting with a capital (``Latency read under concurrency``,
     ``Aspect; control; margin``); each starts with a word of code's, never a name or an expression."""
-    return words[:1].upper() + words[1:]
+    return label_case(words)
 
 
 def _namer(named: Mapping[str, ArmName]) -> Callable[[str], str]:

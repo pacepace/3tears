@@ -24,7 +24,14 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import ChartBlock, report_html
-from threetears.evals.analysis.report.charts import BarRow, BarsChart
+from threetears.evals.analysis.report.charts import (
+    BarRow,
+    BarsChart,
+    ChartColumn,
+    DiffHeatmapCell,
+    DiffHeatmapChart,
+    DiffHeatmapRow,
+)
 from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE, CHART_STYLE, chart_drawing
 from packages.evals.tests.hostile_page_support import hostile_kit_charts
 from packages.evals.tests.page_contract_support import parsed
@@ -213,3 +220,26 @@ def test_the_default_page_draws_nothing_on_the_server() -> None:
     )
     assert "chart-drawn" not in page and "chart-note" not in page and CHART_STYLE not in page
     assert 'class="chart"' in page
+
+
+def _diff_on_the_neutral_edge(value: float) -> ChartBlock:
+    """A one-cell diff heatmap whose difference sits on its neutral band's edge, 0.5, or a last bit under it."""
+    return ChartBlock(
+        section="memo",
+        chart="diff_heatmap",
+        title="Change by task",
+        data=DiffHeatmapChart(
+            columns=[ChartColumn(label="Single lookup")],
+            rows=[DiffHeatmapRow(label="Brisk-S", cells=[DiffHeatmapCell(value=value, value_text="+0.5")])],
+            fmt="+num:1",
+        ),
+    )
+
+
+def test_a_heat_cell_on_a_boundary_takes_its_shade_from_the_value_as_served() -> None:
+    """The static drawing picked a diff heatmap's shade, ink and bucket from the unrounded value, so a difference a
+    last bit under its neutral edge drew gray where the served value, 0.5 to twelve figures, draws coloured (#1059).
+    The data is rounded once as it enters, as the page serves it to the kit."""
+    edge, under = 0.5, 0.49999999999999994
+    assert under < edge
+    assert chart_drawing(_diff_on_the_neutral_edge(under)) == chart_drawing(_diff_on_the_neutral_edge(edge))

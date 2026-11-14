@@ -30,6 +30,7 @@ import math
 import pytest
 
 from threetears.evals.analysis.report.forms import MeasureForm
+from threetears.evals.analysis.report.number_forms.intervals import interval_level
 from threetears.evals.analysis.report.number_forms.policy import (
     policy_bounded_places,
     policy_declared,
@@ -402,6 +403,15 @@ class TestALevelPrintedAsText:
 
     def test_a_non_finite_level_reads_absent(self):
         assert policy_level(math.nan) == ABSENT
+
+    def test_a_head_with_no_corrected_family_reads_its_stated_level_by_the_one_rule(self):
+        """A contrasts chart's head with no corrected family printed a stored ``98.33%`` as ``98.3%`` by a rounding of
+        its own, untested (#1127 item 2); every level as text now reads through the one rule, a level in no percent's
+        digits as stated."""
+        assert interval_level("98.33%", None) == "98.3%"
+        assert interval_level("99.69%", None) == "99.69%"
+        assert interval_level("95%", None) == "95%"
+        assert interval_level("a one-sided bound", None) == "a one-sided bound"
 
 
 class TestMeasureFormPolicyFields:

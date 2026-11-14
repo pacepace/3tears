@@ -62,6 +62,7 @@ from threetears.evals.analysis.report.charts import (
 )
 from threetears.evals.analysis.report.kit_colours import ink_on
 from threetears.evals.analysis.report.svg import tenth_px
+from threetears.evals.schema.hashing import round_floats
 from threetears.evals.analysis.report.unit_once import interval_beside
 
 #: The widths every chart is drawn at, in the kit's px, each with its class: the narrow one under every narrow rule
@@ -402,9 +403,12 @@ def _wrapped(text: str, room: float) -> list[str]:
     lines.append(current)
     if len(lines) > 2:
         # Two lines at most, so a row's label never reaches the next row, split where the longer is shortest so the
-        # margin sized on them stays narrow; the figure with its unit is kept on the first (``kWrapNote``).
+        # margin sized on them stays narrow; the figure with its unit is kept on the first (``kWrapNote``): its first
+        # two words, or a note's first run, which holds them already, so a note of three runs or more may break after
+        # its first (#1136).
+        first = 1 if " · " in text else 2
         at = min(
-            range(2, len(words)),
+            range(first, len(words)),
             key=lambda i: max(len(" ".join(words[:i])), len(" ".join(words[i:]))),
         )
         return [" ".join(words[:at]), " ".join(words[at:])]
@@ -2069,6 +2073,9 @@ def chart_drawing(block: ChartBlock) -> str | None:
     lattice, example cards, and a chart of rows given none), which the page shows as its table and says so. A small
     multiple given no row is a card saying the same.
 
+    The chart's data is read as the page serves it to the kit, every float to twelve significant figures, so the
+    static drawing and the kit's pick each shade and bucket from the same values.
+
     :param block: The chart.
     :ptype block: ChartBlock
     :return: The drawing's markup, or None.
@@ -2078,7 +2085,10 @@ def chart_drawing(block: ChartBlock) -> str | None:
     if kit is None or kit[0] not in DRAWERS:
         return None
     kind, data = kit
-    chart = KIT_CHARTS[kind].model_validate(data)
+    # The data as the page serves it in ``data-chart``, every float to twelve significant figures (``chart_html``),
+    # rounded once here so a value's last bits, which differ between platforms' maths libraries, never pick a
+    # heatmap's shade, its ink or a tile's bucket when it sits on a boundary (#1059).
+    chart = KIT_CHARTS[kind].model_validate(round_floats(data))
     if _holds_no_row(chart):
         return None
     draw = DRAWERS[kind]

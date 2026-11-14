@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a change chart of one row is refused (#1124)
+
+**Changed:** a forest, diverging bars or a dot strip of changes that would draw a single change is refused, naming
+where the change belongs: in the prose, whose key prints the change with its interval, or in a table (owner ruling,
+2026-11-14). A chart of one row compares the change with nothing. A writer whose draft asks for one is bounced and
+revises.
+
+### evals: report polish (#1117, #1127, #1136, #1059)
+
+**Fixed:** a label that `str.capitalize` capitalised (an interval column's head, a verdict's words, a design line's
+kind, a heat cell's tip) keeps the rest of its letters as written, through the one label rule (`GPT tone`, never
+`Gpt tone`). An aspect fold's heading in words opens on a capital; one that is a single token or opens on an
+identifier keeps its case. Every arm by measure reads an arm's dash by one rule on a one-aspect and a several-aspect
+page: `— (not recorded)` where another arm shows a figure in that place, a bare dash where none does. On an HTML page
+the control's mark stays on its name's line (`▸&nbsp;`), so a narrowed column never sets the mark alone above its
+name. A note of three runs or more may break after its first run, where its longer line is shortest, on the static
+page and in the kit alike. The static page reads a chart's data as the page serves it to the kit, every float to
+twelve significant figures, so a heat cell on a boundary takes the same shade and ink in both.
+
 ### evals: a value and its interval print to the precision the interval justifies (#1127, #1024)
 
 **Changed:** a measure's figures read at two significant figures of the width of its narrowest headline interval

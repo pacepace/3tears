@@ -246,10 +246,18 @@ def code_html(text: str) -> str:
 _EXPRESSION_CHARS = 60
 
 
+#: The mark a table sets before the control's name (``▸ production``), as its cell or header text writes it.
+_CONTROL_MARK = "▸ "
+
+#: The mark as a page's HTML lays it out: a no-break space keeps it on its name's line, so a narrowed column wraps the
+#: name, never the mark alone above it (#1136). The stored text keeps its plain space, which a program reads.
+_CONTROL_MARK_KEPT = "▸&nbsp;"
+
+
 def _cell_code(text: str) -> str:
     """A cell's or a header's text escaped, its code spans set as code, each longer than :data:`_EXPRESSION_CHARS`
     shown by its start and a visible ellipsis, the whole of it in a fold that opens in place. Never shortened silently:
-    the whole expression is in the page."""
+    the whole expression is in the page. A control's mark stays on its name's line (:data:`_CONTROL_MARK_KEPT`)."""
 
     def span(match: re.Match[str]) -> str:
         whole = match.group(1)
@@ -258,7 +266,8 @@ def _cell_code(text: str) -> str:
         start = escape(html.unescape(whole)[:_EXPRESSION_CHARS].rstrip())
         return f'<details class="expr"><summary><code>{start}…</code></summary><code>{whole}</code></details>'
 
-    return _CODE.sub(span, escape(text))
+    shown = _CODE.sub(span, escape(text))
+    return _CONTROL_MARK_KEPT + shown.removeprefix(_CONTROL_MARK) if shown.startswith(_CONTROL_MARK) else shown
 
 
 def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
