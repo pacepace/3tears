@@ -72,7 +72,11 @@ from threetears.evals.kernel.metrics import (
     goal_check_measure,
 )
 from threetears.evals.kernel.identity import StateCoordinateError, resolve_context_identity
-from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
+from threetears.evals.kernel.usage_capture import (
+    count_substituted_deliveries,
+    maybe_billed_usd,
+    production_replicating_cost,
+)
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.profile import HostProfile
@@ -121,6 +125,10 @@ class CellSummary:
     #: this is the one field whose ``False`` a reader cannot recover by loading
     #: the record — there is no record to load.
     persisted: bool
+    #: What the cell's sends that broke before any response began and were sent again may have billed, at their calls'
+    #: own price (:func:`~threetears.evals.kernel.usage_capture.maybe_billed_usd`): no row's cost holds it, and every
+    #: cost cap and every stop total counts it beside ``cost_usd``.
+    maybe_billed_usd: float = 0.0
 
     @classmethod
     def from_result(cls, result: EvalResult, *, persisted: bool) -> CellSummary:
@@ -143,6 +151,7 @@ class CellSummary:
             termination=result.termination,
             cost_usd=result.cost_usd,
             persisted=persisted,
+            maybe_billed_usd=maybe_billed_usd(result.usage, result.cost_roles),
         )
 
 

@@ -41,6 +41,7 @@ from threetears.evals.kernel.errors import StorageError
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.scoring import compute_pass_hat_k
+from threetears.evals.kernel.usage_capture import maybe_billed_usd
 from threetears.evals.ops import OpsHost, job_poll, run_job_id
 from threetears.evals.run import (
     ArmPrice,
@@ -661,6 +662,34 @@ async def test_a_run_its_budget_stopped_is_taken_up_only_under_a_cap_above_its_s
     assert first.budget_stops and first.reason == stopped.budget_stop_reason
     assert (second.status, second.max_cost_usd, second.epoch) == ("budget_stopped", barely, 1)
     assert (third.status, third.max_cost_usd, third.epoch) == ("completed", 2.0, 2)
+
+
+async def test_a_take_up_counts_what_its_rows_dropped_sends_may_have_billed_toward_its_cap() -> None:
+    """A stored row whose calls each met a send that broke before any response began may have been billed twice. The
+    uninterrupted run's cap counted those sends at their calls' price, so a take-up counts them too: a cap above the
+    rows' cost but below it with the dropped sends is refused. Counted from the rows' cost alone, it was admitted and
+    the run went on past what its cap allowed."""
+    store = ClockedStore()
+    holder = _cheaply_priced(off_loop(ops_fixture, store=store).host)
+    run_id = await launched_run(holder, K, max_cost_usd=0.000001)
+    assert (await settled(holder, run_job_id(run_id))).status == "budget_stopped"
+    spent = sum(row.cost_usd or 0.0 for row in _rows(holder, run_id))
+    for (_scope, _doc_id), document in list(store.documents.items()):
+        if document.get("doc_type") != "eval_result" or document.get("eval_run_id") != run_id:
+            continue
+        # Each priced row in the cell's cost as one call that met a drop (the toy's rows count no calls of their own).
+        usage = [
+            row | {"call_count": row.get("call_count") or 1, "maybe_billed_sends": row.get("call_count") or 1}
+            if row.get("cost_usd") and row["role"] in document["cost_roles"]
+            else row
+            for row in document["usage"]
+        ]
+        store.upsert(document | {"usage": usage})
+    dropped = sum(maybe_billed_usd(row.usage, row.cost_roles) for row in _rows(holder, run_id))
+    assert dropped > 0
+
+    with pytest.raises(ValidationFailedError, match="max_cost_usd above"):
+        await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE, max_cost_usd=spent + dropped / 2)
 
 
 # =============================================================================
