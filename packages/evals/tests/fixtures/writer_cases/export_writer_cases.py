@@ -27,7 +27,7 @@ ones). A directory holding a case file this export does not write is refused, na
 before it split into one concept a file (``extract.py``): two prompts, no question, a 5-point margin on ``total`` and
 the ``no_invented_total`` guardrail. No rung-3 file declares that eval now: ``guardrail.py``, which grew from it, asks
 a question and puts no margin on ``total``, so its campaign differs. The case is kept as frozen, because ``--refreeze``
-would strand the $7.53 of rung-5 writer recordings made over it. ``guardrail.py`` is named below only as the nearest
+would strand the $7.18 of rung-5 writer recordings made over it. ``guardrail.py`` is named below only as the nearest
 file, for a case file that is missing; never refreeze this one.
 """
 

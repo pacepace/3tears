@@ -4,11 +4,11 @@
 
 | What | Recorded |
 |---|---|
-| On | 2026-11-03, at head `28efc1fd1`, the writer's turns; the judge's calls on 2026-11-10, over the pages built at `7601153ed` |
+| On | 2026-11-03, at head `28efc1fd1`, the writer's turns; the judge's calls on 2026-11-14, over the pages built at `67c222242` |
 | Reports | 14: 2 arms x 7 held-out cases, once each, about 12.4 writer turns a report |
 | Writer | `claude-sonnet-5-5` at effort `medium`, analyst and editor: $6.90 |
-| Judge | `google/gemini-3.8-flash`: 112 calls, the pairwise pass's 14 among them, $0.63 |
-| Total | $7.53 |
+| Judge | `google/gemini-3.8-flash`: 112 calls, the pairwise pass's 14 among them, $0.28 |
+| Total | $7.18 |
 
 The judge reads each report's page as the package lays it out, so a change to what that page prints (its words, its
 figures' precision) moves every judge call's key: the judge's calls are recorded again with the `RECORD=1` command
