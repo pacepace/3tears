@@ -89,6 +89,7 @@ from packages.evals.tests.report_doc_support import snapshot_of
 from packages.evals.tests.campaign_support import ASSEMBLED_AT
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
+from packages.evals.tests.campaign_page_support import kairo_page
 from packages.evals.tests.report_shapes_support import s1_change, s2_choice, s3_measurement, s4_change
 
 
@@ -560,24 +561,38 @@ def _kairo_pass_rate_places(readings: CampaignReadings) -> int | None:
     return places.change
 
 
+def _kairo_pass_rate_half_width(readings: CampaignReadings) -> float | None:
+    """The half-width Kairo's code page reads the pass rate's decimals from (:attr:`MeasureForm.half_width`), its forms
+    built over ``readings`` and every aspect page's intervals, as the aspect pages' are."""
+    reports = {fold.aspect: fold.report for fold in kairo_page().aspects}
+    return PageForms.of_campaign(readings, reports).measure(TRIAL_PASS_NAME, kind="trial").half_width
+
+
 def test_a_pooled_figure_never_sets_a_measure_s_digits() -> None:
     """Owner ruling, set digits: a measure's digits come from the narrowest interval on a figure a reader compares (an
     arm's level, a comparison's change). The code page's campaign-wide pooled pass rate and its change, cut narrower
-    than every compared interval, still leave Kairo's pass rate in whole points; a compared reading cut as narrow sets
-    a tenth (the control)."""
+    than every compared interval, leave the interval Kairo's pass rate reads its digits from where it was; a compared
+    reading cut as narrow becomes that interval (the control). Under the precision rule (owner ruling, 2026-11-14) the
+    pass rate reads a tenth from its compared intervals already, a rate's most, so the digits alone no longer tell the
+    three apart: the half-width they are read from does."""
     readings = kairo_bundle().readings
-    assert _kairo_pass_rate_places(readings) == 0
-    assert _kairo_pass_rate_places(_pooled_narrowed(readings)) == 0
-    assert _kairo_pass_rate_places(_narrowed_readings(readings)) == 1
+    compared = _kairo_pass_rate_half_width(readings)
+    assert compared is not None and compared > 1
+    assert _kairo_pass_rate_places(readings) == 1
+    assert _kairo_pass_rate_half_width(_pooled_narrowed(readings)) == compared
+    assert _kairo_pass_rate_places(_pooled_narrowed(readings)) == 1
+    assert _kairo_pass_rate_half_width(_narrowed_readings(readings)) == pytest.approx(0.4)
 
 
 def test_a_written_page_reads_each_measure_at_the_precision_its_campaign_s_other_pages_do() -> None:
     """One form per measure across the campaign: Kairo's written page reads the pass rate at the places its aspect's
-    page does, both from the narrowest interval a reader compares, the change 1017 reads at ±3.5 points: whole
-    points (as design.md's table reads it), never the tenth the code page's pooled change (±2.86 points) would set."""
+    page does, both from the narrowest interval a reader compares, the change 1017 reads at ±3.5 points, never the
+    code page's pooled change (±2.86 points). Under the precision rule (owner ruling, 2026-11-14) both read a tenth,
+    two significant figures of a 7-point width."""
     held = report_input(kairo_bundle())
-    assert PageForms.of(held).measure(TRIAL_PASS_NAME, kind="trial").places == 0
-    assert _kairo_pass_rate_places(kairo_bundle().readings) == 0
+    written = PageForms.of(held).measure(TRIAL_PASS_NAME, kind="trial")
+    assert written.places == _kairo_pass_rate_places(kairo_bundle().readings) == 1
+    assert written.half_width == _kairo_pass_rate_half_width(kairo_bundle().readings) == pytest.approx(3.5, abs=0.05)
 
 
 def test_a_judged_bar_reads_alike_on_the_code_page_and_its_aspect_page() -> None:
@@ -1414,7 +1429,7 @@ _MEASURED_KEYS = [
         "$1.76 to $2.03 per 1,000 replies",
         ["$1.76", "$2.03"],
     ),
-    ("contrast.qwen3.8-flash.passed.delta", (TRIAL_PASS_NAME, "trial"), "change", "-8", ["-8"]),
+    ("contrast.qwen3.8-flash.passed.delta", (TRIAL_PASS_NAME, "trial"), "change", "-7.6", ["-7.6"]),
 ]
 
 

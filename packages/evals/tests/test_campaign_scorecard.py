@@ -710,7 +710,9 @@ def test_the_level_lines_are_counted_off_the_page_s_own_arms_and_aspects(build: 
         assert "For any one arm, the chance of being wrongly shown better is at most 2.5%" in said
         assert "not across the" not in said
     else:
-        assert "Each arm's 3 readings are corrected together. So each interval is read at 98.33%, not 95%." in said
+        # A level as text reads its distance from 100% to two significant figures (owner ruling, 2026-11-14): 98.33%
+        # reads 98.3%.
+        assert "Each arm's 3 readings are corrected together. So each interval is read at 98.3%, not 95%." in said
         assert (
             f"not run across the {arms} arms, so the chance that some arm is wrongly shown better is up to 7.5%" in said
         )
@@ -771,7 +773,8 @@ def test_a_contrast_reading_a_row_s_own_values_to_another_verdict_is_reconciled_
         "aspects; the contrast a bounded interval corrected within the aspect's family."
     )
     # What each interval guarantees, never its own adjusted level (owner ruling, level in headings).
-    assert "98.33%" not in line and "99." not in line
+    # 98.33% as a level's text prints it (owner ruling, 2026-11-14), and as the input holds it.
+    assert "98.3" not in line and "99." not in line
     assert line in _scorecard(page)
     (check,) = _on(lines, "On tone, v2's row reads shown better and its contrast on Reply total check")
     assert len(lines) == 2, "no other row and contrast part"
@@ -1008,7 +1011,7 @@ def test_a_choice_s_pairs_state_their_joint_guarantee_never_each_pair_s_own_leve
     level to the Method."""
     said = campaign_report_markdown(s2_choice().page())
     assert "The intervals hold together at 95% (adjusted for 3 comparisons)." in said.splitlines()
-    assert "98.33%" not in said and "tested at, from" not in said
+    assert "98.3" not in said and "tested at, from" not in said
 
 
 def test_a_page_says_what_a_corrected_interval_guarantees_never_its_own_level() -> None:

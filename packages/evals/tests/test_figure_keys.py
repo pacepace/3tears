@@ -149,8 +149,9 @@ class TestTheKairoPlanResolves:
 
     def test_the_lede_prints_the_drop_by_its_interval_ends_in_two_sentences(self):
         lede = _rendered(_plan()["lede"])
-        # Whole points: the pass rate's compared intervals set its digits (owner ruling, set digits), not "3.4 to 10.8".
-        assert lede.startswith("qwen3.8-flash (A) has a lower pass rate, by 3 to 11 points")
+        # A tenth: the pass rate's compared intervals set its digits (owner ruling, set digits), two significant figures
+        # of the narrowest one's 7-point width under the precision rule (owner ruling, 2026-11-14); it read "3 to 11".
+        assert lede.startswith("qwen3.8-flash (A) has a lower pass rate, by 3.4 to 10.8 points")
         assert "neither candidate beats September on anything this campaign measured" in lede
         assert lede.endswith("would change the answer.")
         assert lede.count(". ") == 1
@@ -161,23 +162,27 @@ class TestTheKairoPlanResolves:
         # one (10.8), and the plan page names the interval beside it. Re-pinned again from 12.6 and 2.4: the bounded
         # rate interval (shape 65) moved that corrected bound to 12.85. Then to 13 and 2: the pass rate reads in whole
         # points, its compared intervals' precision (owner ruling, set digits), and 13 + 2 still closes the 15 margin.
+        # Then to 12.8 and 2.2: the precision rule (owner ruling, 2026-11-14) reads the pass rate to a tenth, and
+        # 12.85 rounds half-even to 12.8.
         assert watch.startswith(
-            "The weakest margin: qwen3.8-flash (A)'s worst drop, 13 points, sits 2 points inside the margin on "
+            "The weakest margin: qwen3.8-flash (A)'s worst drop, 12.8 points, sits 2.2 points inside the margin on "
             "character adherence (v2)"
         )
 
     def test_the_recommendation_prints_the_controls_figures(self):
         text = _rendered(_slot("recommendation"))
-        # Each rate at its measure's one precision, read from its uncertainty (number policy, rule 2).
-        assert "the highest pass rate (85%)" in text
-        assert "the highest in-character rate (92%)" in text
+        # Each rate at its measure's one precision, read from its uncertainty (number policy, rule 2): a tenth, under
+        # the precision rule (owner ruling, 2026-11-14).
+        assert "the highest pass rate (85.3%)" in text
+        assert "the highest in-character rate (91.5%)" in text
         assert "the lowest cost ($1.89 per 1,000 replies)" in text
         assert "(deepseek/deepseek-v4.1-flash)" in text
 
     def test_why_not_prints_each_candidates_uplift_and_contrast(self):
         text = _rendered(_slot("why_not"))
-        assert "28% more per reply, in-character -6 points, pass rate -8." in text
-        assert "27% more per reply, in-character -5 points." in text
+        # A tenth for both rates' changes, under the precision rule (owner ruling, 2026-11-14).
+        assert "28% more per reply, in-character -6.0 points, pass rate -7.6." in text
+        assert "27% more per reply, in-character -4.7 points." in text
 
     def test_watch_prints_the_reasoning_shares_in_whole_percents(self):
         assert "spent 55% of its output reasoning against September's 76%" in _rendered(_slot("watch"))
@@ -200,9 +205,18 @@ class TestTheKairoPlanResolves:
         text, errors = rendered(R5_PAGE, "() => document.body.innerText")
         assert not errors
         # The weakest margin is read on the corrected interval, whose bound sits at -12.85. The page prints every
-        # figure at its measure's decimals (the number policy), so the pass rate and its margin read whole, as the
-        # keys do.
-        for figure in ("27 to 28%", "by 3 to 11 points", "2 points inside", "85%", "92%", "$1.89", "55%", "76%"):
+        # figure at its measure's decimals (the number policy), so the pass rate and its margin read to a tenth under
+        # the precision rule (owner ruling, 2026-11-14), as the keys do.
+        for figure in (
+            "27 to 28%",
+            "by 3.4 to 10.8 points",
+            "2.2 points inside",
+            "85.3%",
+            "91.5%",
+            "$1.89",
+            "55%",
+            "76%",
+        ):
             assert figure in text, figure
         assert "about 50%" in text
         assert _figure("cost.uplift_range", "pct") in text
@@ -222,15 +236,15 @@ def _references(chart: dict[str, Any]) -> list[dict[str, Any]]:
 class TestAPathIsMatchedNotSplit:
     def test_an_arm_id_with_dots_resolves(self):
         assert _figure("reasoning_ratio.qwen3.8-flash", "pct") == "68%"
-        assert _figure("reading.qwen3.8-flash.change", "pts") == "-8"
+        assert _figure("reading.qwen3.8-flash.change", "pts") == "-7.6"
 
     def test_a_dimension_key_with_dots_resolves(self):
-        assert _figure("judged.persona.holds_character.1017", "pct") == "87%"
-        assert _figure("contrast.1017.persona.holds_character.delta", "pts") == "-5"
+        assert _figure("judged.persona.holds_character.1017", "pct") == "86.6%"
+        assert _figure("contrast.1017.persona.holds_character.delta", "pts") == "-4.7"
 
     def test_an_aspect_id_with_spaces_and_parentheses_resolves(self):
         assert _figure("aspects.character adherence (v2).margin") == "15"
-        assert _figure("aspects.character adherence (v2).reading.1017.change", "pts") == "-3"
+        assert _figure("aspects.character adherence (v2).reading.1017.change", "pts") == "-3.0"
 
     def test_a_dotted_arm_beside_its_prefix_resolves_to_the_one_reading(self):
         report_input = _small(contrasts=[_contrast("a.b", "q", -0.05), _contrast("a", "b.r", -0.03)])
@@ -311,19 +325,20 @@ class TestAPathIsMatchedNotSplit:
 
 class TestFilters:
     def test_pct_reads_a_share_and_a_percent_alike(self):
-        assert _figure("judged.persona.holds_character.September", "pct") == "92%"
+        assert _figure("judged.persona.holds_character.September", "pct") == "91.5%"
         assert _figure("judged.persona.prod", "pct", name="r4") == "91.7%"
 
     def test_pts_is_signed_and_one_decimal_at_most(self):
-        # Kairo's pass rate reads in whole points: its compared intervals set the measure's digits (owner ruling).
-        assert _figure("reading.qwen3.8-flash.change", "pts") == "-8"
+        # Kairo's pass rate reads to a tenth: its compared intervals set the measure's digits (owner ruling), two
+        # significant figures of the narrowest one's width (owner ruling, 2026-11-14).
+        assert _figure("reading.qwen3.8-flash.change", "pts") == "-7.6"
         # A change in points of a rate the page holds reads at its measure's one decimal, a whole one too.
         assert _figure("contrast.cor.facts.delta", "pts", name="r4") == "+1.0"
         assert _figure("contrast.f64.task.delta", "pts", name="r4") == "+0.2"
 
     def test_abs_drops_the_sign(self):
-        assert _figure("reading.qwen3.8-flash.change", "abs|pts") == "8"
-        assert _figure("reading.qwen3.8-flash.interval", "abs|pts") == "3 to 11"
+        assert _figure("reading.qwen3.8-flash.change", "abs|pts") == "7.6"
+        assert _figure("reading.qwen3.8-flash.interval", "abs|pts") == "3.4 to 10.8"
 
     def test_usd_reads_dollars_and_cents(self):
         assert _figure("cost_per_1k.qwen3.8-flash", "usd") == "$2.43"
@@ -386,7 +401,7 @@ class TestFilters:
         assert _figure("strata.off_lane.loss_share", "pct10") == "50%"
 
     def test_interval_joins_with_to(self):
-        assert _figure("reading.1017.interval", "interval") == "-6 to +1"
+        assert _figure("reading.1017.interval", "interval") == "-5.8 to +1.1"
         ci = _figure("measure.production_replicating_cost.September.ci", "interval|usd_per_1k")
         assert ci.startswith("$1.7") and ci.endswith(" per 1,000 replies to $2.03 per 1,000 replies")
 
@@ -495,9 +510,9 @@ class TestDerivedValues:
         assert resolve("strata.off_lane.loss_share", report_input).value == pytest.approx(per_arm["qwen3.8-flash"])
 
     def test_a_flip_margin_is_the_readings_worst_drop(self):
-        # At the pass rate's whole points (owner ruling, set digits): 10.8 and 5.8 read 11 and 6.
-        assert _figure("flip_margin.qwen3.8-flash") == "11"
-        assert _figure("flip_margin.1017") == "6"
+        # At the pass rate's tenth (owner ruling, set digits; the precision rule, 2026-11-14): 10.8 and 5.8 as they are.
+        assert _figure("flip_margin.qwen3.8-flash") == "10.8"
+        assert _figure("flip_margin.1017") == "5.8"
 
     def test_a_cost_stated_per_million_replies_is_its_cost_per_1k_over_a_thousand(self):
         report_input = _input("r3")

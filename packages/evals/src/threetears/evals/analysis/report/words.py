@@ -360,7 +360,7 @@ _PLAIN_LEAD = re.compile(r"[a-z]+(?:['-][a-z]+)*\s+\S")
 
 def heading_case(heading: str) -> str:
     """A heading as a label prints it (:func:`label_case`) where it opens on a plain word and runs on in words
-    (``research judgement on SearXNG search`` reads ``Research judgement on SearXNG search``, #1127); a heading that is
+    (``tone judgement on GPT replies`` reads ``Tone judgement on GPT replies``, #1127); a heading that is
     one token, or opens on an identifier, is a name and keeps its case as written.
 
     :param heading: The heading, as declared.

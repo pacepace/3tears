@@ -103,10 +103,10 @@ const monthly=c=>c*VOL/1000;
 const usd0=v=>"$"+Math.round(v).toLocaleString();
 const usdK=v=>Math.abs(v)>=1000?"$"+(v/1000).toFixed(1)+"k":usd0(v);
 // The number policy (packages/evals/docs/design.md, The number policy): a measure reads at the decimals its narrowest
-// interval supports (its first significant digit, or its second when that is a 1 or a 2), a rate or a change in
+// interval supports (two significant figures of its width, owner ruling 2026-11-14), a rate or a change in
 // points at one decimal at most, every interval "low to high". Rounding is half-to-even, as the package's.
 const even=(v,d)=>{const r=v*10**d,f=Math.floor(r);const t=Math.abs(r-f-0.5)<1e-9?(f%2===0?f:f+1):Math.round(r);return t/10**d;};
-const placesOf=(halves,cap=1)=>{const h=Math.min(...halves.filter(x=>x>0));if(!isFinite(h))return 0;const e=Math.floor(Math.log10(h)),lead=Math.floor(h/10**e+1e-9);return Math.max(0,Math.min(cap,(lead<=2?1:0)-e));};
+const placesOf=(halves,cap=1)=>{const h=Math.min(...halves.filter(x=>x>0));if(!isFinite(h))return 0;return Math.max(0,Math.min(cap,1-Number((2*h).toExponential(1).split("e")[1])));};
 const at=(v,d,signed)=>{const t=even(v,d);return (signed&&t>0?"+":"")+(t===0?0:t).toFixed(d);};
 // each aspect's decimals, from its changes' intervals; the depth rates' from theirs; the preference's from its own
 const P_ASP=Object.fromEntries(D.aspects.map(x=>[x.id,placesOf(D.arms.filter(a=>a.delta).map(a=>(a.delta[x.id].hi-a.delta[x.id].lo)/2))]));

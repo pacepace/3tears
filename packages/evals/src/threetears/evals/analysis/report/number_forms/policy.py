@@ -139,8 +139,9 @@ def policy_level(percent: float) -> str:
     """An interval's confidence level as text, in percent, rounded as a value is by its interval
     (:func:`policy_places`): its decimals are those that print its distance from 100%, the chance its interval
     misses, to two significant figures, trailing zeros dropped, since a level is no member of a set (``95%``,
-    ``97.5%``, ``99.69%`` for 99.6875%, ``98.3%`` for 98.33%). Owner ruling, 2026-11-14: a level printed as text rounds,
-    so two levels that differ past those figures print alike; the figure keeps the level exact
+    ``97.5%``, ``99.69%`` for 99.6875%, ``98.3%`` for 98.33%). A chance under 50% (a miss rate, ``2.5%``) is that
+    distance itself, so it reads to two significant figures of its own. Owner ruling, 2026-11-14: a level printed as
+    text rounds, so two levels that differ past those figures print alike; the figure keeps the level exact
     (:attr:`~threetears.evals.analysis.report.keys.figure.Figure.level`).
 
     :param percent: The level, in percent (``99.6875``).
@@ -150,7 +151,7 @@ def policy_level(percent: float) -> str:
     """
     if not math.isfinite(percent):
         return _ABSENT_TEXT
-    miss = 100.0 - percent
+    miss = min(100.0 - percent, percent)
     places = set_places([miss], figures=_WIDTH_FIGURES) if abs(miss) >= WRITTEN_FROM else 0
     digits = round_half_even(percent, places)
     if "." in digits:

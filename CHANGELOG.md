@@ -35,8 +35,10 @@ A measure whose narrowest interval is 6 to 10 units wide now reads one decimal m
 decimal. A figure and interval no measure's set holds (a chart a host built with no decided texts, a glyph drawn with
 no table) read at two figures of their own interval's width through one function, so they no longer print at two
 precisions (`-4.2 to +2.0`, never `-4.2 to +2`). A confidence level printed as text reads its distance from 100% to
-two significant figures (`99.69%`, `98.3%` for 98.33%), in a head, a cell and the prose alike; the level a figure
-holds stays exact. Page text moves, so the writer and judge recordings keyed on it are re-recorded.
+two significant figures (`99.69%`, `98.3%` for 98.33%), in a head, a cell and the prose alike, and a chance under
+50% printed the same way (a miss rate) reads two significant figures of itself (`2.5%`, `7.5%`, never `2%`); the level
+a figure holds stays exact. The kit's r4 and r5 reference pages read their measures by the same rule. Page text moves,
+so the writer and judge recordings keyed on it are re-recorded.
 
 ### evals: a judge call its replay does not hold is named, never dropped (#1162)
 
