@@ -271,7 +271,7 @@ one prompt get back what each got, whatever order the cells run in. A recording 
 and is still read: repeat `i` is served the call of index `i`, and otherwise the first call left. A prompt the recording does not hold, or one asked once more than it was, is
 refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
 an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. A judge that meets a
-`RecordingRefused` now raises it too, where it used to record a failed call with its text withheld. To name a
+`RecordingRefused` raises it too, rather than recording a failed call. To name a
 prompt that changed under its recording before a replay starts, hand
 `RecordedCompletions.check_covers(RECORDING, prompts, settings=...)` the prompts your code sends. A file holds one
 model's calls at one temperature, under any number of settings (one model at two efforts), and each client replays
@@ -1971,14 +1971,16 @@ leaves `goal_check_names` and `stratum_names` out, so a name your corpus later d
 already holds would never reach it through a reset. The seed fills it instead, on every boot, into the template's
 current revision: each goal check the stored template holds and names nothing, and each stratum it names nothing, is
 given the corpus's name, unless the stored template already gives that name to another check or stratum. An entry the
-store holds is never overwritten, whoever wrote it, only those two fields are written, and `updated_at` stays where it
-was, so no run reads the template as edited. Each template filled is reported under
+seed reads on the stored template is never overwritten, only those two fields are written, and `updated_at` stays
+where it was, so no run reads the template as edited. Each template filled is reported under
 `SeedOutcome.presentation_named` with the entries written; a write your store refuses is reported under
 `SeedOutcome.presentation_fill_failed` with its reason, logged at WARNING, and tried again on the next boot. A second
-boot writes nothing. A host pass at boot that fills these names through `update_template` can be dropped;
-`update_template` stays the seam for an operator's own names, which the seed then leaves alone. A name holds at most
-`DECLARED_NAME_CHARS` characters, and `check_names(checks, {})` over the host's seeded checks shows which the namer
-leaves `GOAL_CHECK`, the ones worth a declared name.
+boot writes nothing. The template write is not conditional, so a name an operator gives through `update_template`
+between the seed's read and its write can be lost, the same race two `update_template` calls have. A host pass at
+boot that fills these names through `update_template` can be dropped; `update_template` stays the seam for an
+operator's own names, which the seed then leaves alone. A name holds at most `DECLARED_NAME_CHARS` characters, and
+`check_names(checks, {})` over the host's seeded checks shows which the namer leaves `GOAL_CHECK`, the ones worth a
+declared name.
 
 **A corpus edit reaches a seeded scope only through a reset.** The seed fills empty slots and never updates, so a
 template whose cases grew in git stays as first seeded. Every definition the seed writes records the digest of what it
