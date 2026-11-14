@@ -64,8 +64,8 @@ recording made again. It is an
 :class:`~threetears.evals.kernel.host.ApparatusError`: a replay that cannot serve is a fault of the rig, not of the code
 under test, so a candidate that raises it has its cell excluded rather than scored. A judge call that meets one is
 never read as the judge's failed answer: :func:`~threetears.evals.run.run_judge_llm` raises it, so a writer's pairwise
-pass fails at the miss, a run's scoring judge fails the run, and a judge kind's trial is excluded as the rig's
-fault. A page whose text moved under a judge's recording is named, never judged on the calls still found.
+pass fails at the miss, and a run's scoring judge, or a judge kind's judge under test on any one trial, fails the
+run naming the call. A page whose text moved under a judge's recording is named, never judged on the calls still found.
 :meth:`RecordedCompletions.check_covers` asks the same question of a list of prompts before any replay starts, which
 is how a test says by name that a prompt changed under its recording.
 

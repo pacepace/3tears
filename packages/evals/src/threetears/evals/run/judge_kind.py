@@ -94,6 +94,7 @@ from threetears.evals.run.launch import (
     require_candidate_model,
 )
 from threetears.evals.run.rejudge import reproducible_judge_inputs
+from threetears.evals.run.runner import JudgeCallUnserved
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
@@ -992,10 +993,12 @@ class JudgeKind:
     async def invoke(self, instance: PreparedJudge, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Ask the judge under test the case's criterion over the frozen evidence, and grade its answer.
 
-        Raises only what fails the cell or the run outside the judge's answer: an
+        Raises only what fails the run outside the judge's answer: a
+        :class:`~threetears.evals.run.runner.JudgeCallUnserved` carrying the rig's
         :class:`~threetears.evals.kernel.host.ApparatusError` (a replayed judge whose recording holds no call for the
-        prompt, :class:`~threetears.evals.testing.RecordingRefused`), which the runner excludes the cell on as
-        ``apparatus_failed`` naming the call, never a trial graded ``no_reply`` and charged to the judge; and a
+        prompt, :class:`~threetears.evals.testing.RecordingRefused`), on which the runner records the cell
+        ``apparatus_failed`` naming the call and fails the run with the fault, as a scoring judge's miss does, never a
+        trial graded ``no_reply`` and charged to the judge; and a
         :class:`~threetears.evals.schema.completion.CompletionProtocolDefect`, which fails the run. A case that cannot
         be read is the harness's (``infra_errors``, the cell excluded). The judge's
         own call failing is the candidate's (``candidate_errors``) — unless the host's describer says the call was the
@@ -1045,10 +1048,11 @@ class JudgeKind:
             try:
                 with scopes.collecting():
                     outcome = await service.score_request(request, case_id=test_case.id)
-            except ApparatusError:
+            except ApparatusError as fault:
                 # The rig could not serve the judge's call (a replay's miss): no answer of the judge's, so no trial.
-                # Raised through ``invoke`` on purpose, for the runner to exclude the cell as apparatus_failed.
-                raise
+                # A judge call's miss fails the run, never one excluded trial, so a replay never reads on fewer trials
+                # in silence (owner ruling, #1162): carried through ``invoke`` for the runner to fail the run naming it.
+                raise JudgeCallUnserved(fault) from fault
             except CompletionProtocolDefect as defect:
                 # The host's completion type fails the run (raised through ``invoke``), but its billed calls are
                 # added and reported as this cell's spend, so the runner records them.

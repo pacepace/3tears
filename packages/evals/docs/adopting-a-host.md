@@ -272,7 +272,8 @@ and is still read: repeat `i` is served the call of index `i`, and otherwise the
 refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
 an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. A judge that meets a
 `RecordingRefused` raises it too, rather than recording a failed call: a run's scoring judge fails the run, naming the
-call, a writer's pairwise pass fails, and a judge kind's trial is excluded as `apparatus_failed`. To name a
+call, as does a judge kind's judge under test on any one trial (its cell recorded `apparatus_failed`), and a writer's
+pairwise pass fails. To name a
 prompt that changed under its recording before a replay starts, hand
 `RecordedCompletions.check_covers(RECORDING, prompts, settings=...)` the prompts your code sends. A file holds one
 model's calls at one temperature, under any number of settings (one model at two efforts), and each client replays
@@ -2138,7 +2139,9 @@ cell.
 fault of the measuring rig rather than of the world under test is an `ApparatusError`; your kind's
 tool boundary re-raises it instead of turning it into an ordinary tool failure. Out of `prepare` or
 `invoke`, the engine records that cell excluded (termination `apparatus_failed`) with whatever spend
-the kind had reported through its sink, and goes on. A run whose every cell the rig excluded measured
+the kind had reported through its sink, and goes on. A judge call's miss is the one exception: a run's scoring judge,
+or the judge kind's judge under test, that meets one fails the run naming the call, so a replay never reads on fewer
+judgments in silence. A run whose every cell the rig excluded measured
 nothing, and ends `failed` (`EveryCellApparatusFailedError`). So does a run whose every cell was excluded for any
 other fault the harness recorded on the cell (`NothingMeasuredError`): a provider that declined every call, a
 candidate that could not be built. Its reason quotes the cells' own errors, the status and the provider's message

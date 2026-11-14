@@ -14,8 +14,9 @@ to a page's text moved the writer eval's replayed preference from 61/39 to 54/46
 `run_judge_llm` now raises the replay's `RecordingRefused` (any `ApparatusError`) instead. A writer's pairwise pass
 fails at the miss and the eval exits 1. A run's scoring judge that misses fails the run, as a judge completion that
 breaks the protocol does (owner ruling): the cell is recorded `apparatus_failed` naming the call, and the run raises
-the miss. A judge kind's trial whose replayed judge misses leaves `invoke` and is excluded
-`apparatus_failed`, naming the call: it was graded `no_reply` and charged to the judge under test. A miss now names
+the miss. So does a judge kind's run whose judge under test misses on any one trial: that cell is recorded
+`apparatus_failed`, naming the call, and the run raises the miss, where the trial was graded `no_reply` and charged to
+the judge under test, so a campaign never finishes on fewer trials. A miss now names
 the prompt's key and where it parts from the recorded prompts: how many hold the same user message or open on the same
 80 characters, or the nearest recorded key and the character it parts at. Rung 5's recordings README says what to do
 when page text moves.
