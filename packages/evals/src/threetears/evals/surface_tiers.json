@@ -52,6 +52,7 @@
 "threetears.evals.schema.CellTermination": "provisional",
 "threetears.evals.schema.CellTimeoutOrigin": "provisional",
 "threetears.evals.schema.CellTrace": "stable",
+"threetears.evals.schema.check_grouping": "provisional",
 "threetears.evals.schema.ClientRequestSettings": "host-contract",
 "threetears.evals.schema.CompletenessSource": "provisional",
 "threetears.evals.schema.CompletionClient": "host-contract",

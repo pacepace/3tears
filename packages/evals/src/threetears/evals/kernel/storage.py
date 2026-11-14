@@ -107,6 +107,7 @@ from threetears.evals.schema.store_port import (
     ResultReadings,
     StoreClock,
     StoreConflict,
+    check_grouping,
     fold_groups,
     refuse_on_event_loop,
 )
@@ -2983,9 +2984,14 @@ class EvalStorage:
           raised; the read is never retried on the engine's path.
         - ``engine``, otherwise: one key read of the runs (or the scope), in the store's order, then the stored rows by
           id, a page at a time, each kept only as the top-level fields ``by`` and the measures read (``keep``) and
-          then only as their paths, and folded by the reference store's own fold, so every measure means here what it
-          means on a capable store, and ``values`` come in the store's order, as a capable store hands them. A stored
-          row is folded as stored, as a store folds it, not hydrated.
+          then only as their paths, and folded by the port's own fold
+          (:func:`~threetears.evals.schema.store_port.fold_groups`), so every measure means here what it means on a
+          capable store, and ``values`` come in the store's order, as a capable store hands them. A stored row is
+          folded as stored, as a store folds it, not hydrated. Each page's rows are folded into their groups before
+          the next page is read, so the read holds its groups and one page of rows, never every row.
+
+        A grouping the port does not define (:func:`~threetears.evals.schema.store_port.check_grouping`) is refused on
+        either path before the store is asked anything.
 
         :param run_ids: The runs, or ``None`` for every result of the scope. An empty sequence asks the store nothing.
         :ptype run_ids: Sequence[str] | None
@@ -3002,6 +3008,9 @@ class EvalStorage:
         :raises ValueError: The grouping is refused, as a store refuses it.
         :raises TypeError: A measure met a value its kind refuses, as a store refuses it.
         """
+        # Refused before the store is asked anything, on either path: a grouping the port does not define never costs
+        # a read, and the engine's path never reads every page to learn it was refused.
+        check_grouping(by, measures)
         store = self._store
         runs = None if run_ids is None else list(dict.fromkeys(run_ids))
         if isinstance(store, ResultReadings):
@@ -3018,22 +3027,29 @@ class EvalStorage:
         if runs == []:
             served_by("engine", store_calls=0)
             return GroupsRead("engine", 0, [])
-        ids = [key.id for key in self._keys_in_store_order(runs, scope_id)]
-        calls = 1
+        # Each id once, in the keys' order: a result the key read named twice is one row, where it was first seen.
+        ids = list(dict.fromkeys(key.id for key in self._keys_in_store_order(runs, scope_id)))
+        pages = range(0, len(ids), READINGS_PAGE)
         paths = [*by, *(path for _, path in measures.values() if path is not None)]
         kept = tuple(dict.fromkeys(["id", *(path.split(".", 1)[0] for path in paths)]))
-        # Keyed by id, in the keys' order: a result read twice is one row, where it was first seen.
-        folded: dict[Any, dict[str, Any]] = {}
-        for start in range(0, len(ids), READINGS_PAGE):
-            page = ids[start : start + READINGS_PAGE]
-            served_by("engine", store_calls=1)
-            calls += 1
-            with charged("store"), _read_outage("the results to group"):
-                rows = {row.get("id"): row for row in self._store.get_many("eval_result", page, scope_id, keep=kept)}
-            for result_id in page:
-                if (row := rows.get(result_id)) is not None:
-                    folded[row.get("id")] = _projected(row, paths, scope_id)
-        return GroupsRead("engine", calls, fold_groups(folded.values(), by=by, measures=measures))
+
+        def rows() -> Iterator[dict[str, Any]]:
+            # A page at a time, each row folded into its group as it is handed on: the fold holds the groups, never
+            # the rows, so a read of many results holds one page of rows at once.
+            for start in pages:
+                page = ids[start : start + READINGS_PAGE]
+                served_by("engine", store_calls=1)
+                with charged("store"), _read_outage("the results to group"):
+                    read = {
+                        row.get("id"): row for row in self._store.get_many("eval_result", page, scope_id, keep=kept)
+                    }
+                for result_id in page:
+                    if (row := read.get(result_id)) is not None:
+                        yield _projected(row, paths, scope_id)
+                # Let go before the next page is read, so two pages of rows are never held at once.
+                del read, row
+
+        return GroupsRead("engine", 1 + len(pages), fold_groups(rows(), by=by, measures=measures))
 
     def _keys_in_store_order(self, runs: list[str] | None, scope_id: str) -> list[ResultKey]:
         """The keys of the runs' results (or the scope's), in one key read, in the store's own order across them; the

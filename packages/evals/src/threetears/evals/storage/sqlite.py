@@ -57,6 +57,7 @@ from typing import Any
 from threetears.evals.schema.store_port import (
     GroupMeasure,
     StoreConflict,
+    check_grouping,
     field_in_values,
     keep_fields,
     narrow_items,
@@ -70,9 +71,6 @@ SQLITE_STORE_LAYOUT = 1
 
 #: The fields that locate a document, which :meth:`SqliteDocumentStore.merge_fields` refuses to set.
 _LOCATING_FIELDS = frozenset({"id", "scope_id", "doc_type"})
-
-#: The kinds :meth:`SqliteDocumentStore.grouped` computes; ``count`` alone reads no path.
-_MEASURE_KINDS = frozenset({"count", "count_null", "sum_int", "min", "max", "values"})
 
 #: Rows :meth:`SqliteDocumentStore.iter_narrowed` fetches from its one statement at a time, under the lock.
 _STREAM_PAGE = 256
@@ -175,24 +173,6 @@ def _dotted(path: str) -> str:
     if '"' in path:
         raise ValueError(f"a path cannot hold a double quote: {path!r}")
     return "$" + "".join(f'."{key}"' for key in path.split("."))
-
-
-def _check_grouping(by: Sequence[str], measures: Mapping[str, GroupMeasure]) -> None:
-    """Refuse a grouping the port does not define, before SQLite is asked.
-
-    :raises TypeError: ``by`` is a string rather than a sequence of paths.
-    :raises ValueError: A measure's kind is unknown, ``count`` names a path or another kind names none, or a measure
-        name is also a ``by`` path.
-    """
-    if isinstance(by, str):
-        raise TypeError(f"grouped takes a sequence of paths to group by, not a string: by={by!r}")
-    if clash := sorted(set(by) & measures.keys()):
-        raise ValueError(f"a measure name cannot also be a by path: {clash}")
-    for name, (kind, path) in measures.items():
-        if kind not in _MEASURE_KINDS:
-            raise ValueError(f"measure {name!r} has kind {kind!r}; the kinds are {sorted(_MEASURE_KINDS)}")
-        if (kind == "count") != (path is None):
-            raise ValueError(f"measure {name!r}: count reads no path and every other kind reads one, got {path!r}")
 
 
 #: A stored value's JSON type, with absent read as null.
@@ -601,7 +581,7 @@ class SqliteDocumentStore:
         :raises TypeError: A measure met a value its kind refuses, a ``by`` value is an object or a list, or a
             predicate is refused.
         """
-        _check_grouping(by, measures)
+        check_grouping(by, measures)
         where = _where(doc_type, scope_id, field_in, field_eq)
         if where is None:
             return []

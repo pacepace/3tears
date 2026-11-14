@@ -31,9 +31,11 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import re
+import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -349,6 +351,53 @@ class TestOneOutageContract:
 
         with pytest.raises(ValueError, match="kind"):
             storage.result_groups(["run-1"], SCOPE, by=["eval_run_id"], measures=undefined)
+
+    @pytest.mark.parametrize("path", ["store", "engine"])
+    def test_a_refused_grouping_asks_the_store_nothing(self, path: str) -> None:
+        """Refused before any read: the engine's path never reads every page to learn a grouping was refused."""
+        store = _stored(3)
+        storage = EvalStorage(store if path == "store" else EngineOnlyStore(store))
+
+        with pytest.raises(ValueError, match="kind"):
+            storage.result_groups(["run-1"], SCOPE, by=["eval_run_id"], measures={"m": ("mean", "cost_usd")})
+        with pytest.raises(TypeError, match="string"):
+            storage.result_groups(["run-1"], SCOPE, by="eval_run_id", measures={"n": ("count", None)})
+        assert store.calls == []
+
+
+class _PageWatchingStore(CountingStore):
+    """A counting store that records, at each ``get_many``, how many rows it handed out are still alive."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.handed: list[weakref.ref[Any]] = []
+        self.alive_at_each_page: list[int] = []
+
+    def get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        gc.collect()
+        self.alive_at_each_page.append(sum(ref() is not None for ref in self.handed))
+        rows = [_Row(row) for row in super().get_many(doc_type, doc_ids, scope_id, **kwargs)]
+        self.handed += [weakref.ref(row) for row in rows]
+        return rows
+
+
+class _Row(dict[str, Any]):
+    """A stored row a weak reference can watch."""
+
+
+def test_the_engine_s_grouping_holds_one_page_of_rows_at_a_time() -> None:
+    store = _PageWatchingStore()
+    storage = EvalStorage(store)
+    for index in range(2 * READINGS_PAGE + 1):
+        storage.save_eval_result(make_eval_result(id=f"r-{index:05d}", eval_run_id="run-1"))
+
+    grouped = EvalStorage(EngineOnlyStore(store)).result_groups(
+        ["run-1"], SCOPE, by=["eval_run_id"], measures={"n": ("count", None), "cost": ("values", "cost_usd")}
+    )
+
+    assert [(group["n"], len(group["cost"])) for group in grouped.groups] == [(2 * READINGS_PAGE + 1,) * 2]
+    assert (grouped.path, grouped.store_calls) == ("engine", 4)
+    assert store.alive_at_each_page == [0, 0, 0], "a page's rows were still held when the next page was read"
 
 
 class _StrayRows(CountingStore):

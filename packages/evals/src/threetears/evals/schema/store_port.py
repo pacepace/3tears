@@ -552,6 +552,21 @@ GroupMeasure = tuple[Literal["count"], None] | tuple[Literal["count_null", "sum_
 #: The measure kinds :meth:`ResultReadings.grouped` computes; ``count`` alone reads no path.
 _MEASURE_KINDS = frozenset({"count", "count_null", "sum_int", "min", "max", "values"})
 
+#: The JSON scalars a copied value shares rather than copies: nothing can change one in place.
+_SHARED_SCALARS: frozenset[type] = frozenset({str, int, float, bool, type(None)})
+
+
+def _copied(value: Any) -> Any:
+    """``value`` with every object and list in it copied and every JSON scalar shared; any other type deep-copied."""
+    kind = type(value)
+    if kind is dict:
+        return {key: _copied(item) for key, item in value.items()}
+    if kind is list:
+        return [_copied(item) for item in value]
+    if kind in _SHARED_SCALARS:
+        return value
+    return copy.deepcopy(value)
+
 
 def _read_path(document: dict[str, Any], path: str) -> Any:
     """The value at a dotted path through objects; ``None`` when it is absent or runs through a non-object."""
@@ -563,9 +578,17 @@ def _read_path(document: dict[str, Any], path: str) -> Any:
     return node
 
 
-def _check_grouping(by: Sequence[str], measures: Mapping[str, GroupMeasure]) -> None:
-    """Refuse a grouping the port does not define, before any document is read.
+def check_grouping(by: Sequence[str], measures: Mapping[str, GroupMeasure]) -> None:
+    """Refuse a grouping :meth:`ResultReadings.grouped` does not define, before any document is read.
 
+    The one statement in code of which groupings the port defines: :func:`fold_groups` checks through it, and so does
+    a store that groups in its backend, before it asks the backend anything, and so does the engine before its own
+    grouping of a store without the capability reads a row.
+
+    :param by: Dotted paths to group by.
+    :ptype by: Sequence[str]
+    :param measures: Measure name → the measure.
+    :ptype measures: Mapping[str, GroupMeasure]
     :raises TypeError: ``by`` is a string rather than a sequence of paths.
     :raises ValueError: A measure's kind is unknown, ``count`` names a path or another kind names none, or a measure
         name is also a ``by`` path.
@@ -597,32 +620,51 @@ def _group_key(value: Any, path: str) -> tuple[str, Any]:
     raise TypeError(f"grouped groups by scalars, and {path!r} holds {type(value).__name__}: {value!r}")
 
 
-def _measure(rows: list[dict[str, Any]], name: str, kind: str, path: str | None) -> Any:
-    """One measure over one group's rows, in their stored order.
+class _Fold:
+    """One measure over one group, folded a row at a time: what the group's answer needs, never the rows.
 
-    :raises TypeError: ``sum_int`` met a non-integer, or ``min``/``max`` a value that is neither a number nor a
-        string, or both numbers and strings.
+    :ivar answer: The measure's answer over the rows folded so far.
     """
-    if kind == "count" or path is None:
-        return len(rows)
-    values = [_read_path(row, path) for row in rows]
-    if kind == "count_null":
-        return sum(1 for value in values if value is None)
-    if kind == "values":
-        return [[row.get("id"), copy.deepcopy(value)] for row, value in zip(rows, values, strict=True)]
-    present = [value for value in values if value is not None]
-    if kind == "sum_int":
-        if wrong := [value for value in present if isinstance(value, bool) or not isinstance(value, int)]:
-            raise TypeError(f"measure {name!r} sums JSON integers, and {path!r} holds {wrong[0]!r}")
-        return sum(present)
-    if wrong := [value for value in present if isinstance(value, bool) or not isinstance(value, int | float | str)]:
-        raise TypeError(f"measure {name!r} compares numbers or strings, and {path!r} holds {wrong[0]!r}")
-    texts = [value for value in present if isinstance(value, str)]
-    if texts and len(texts) < len(present):
-        raise TypeError(f"measure {name!r} compares numbers or strings, and {path!r} holds both in one group")
-    if not present:
-        return None
-    return min(present) if kind == "min" else max(present)
+
+    __slots__ = ("answer", "_kind", "_name", "_path", "_texts")
+
+    def __init__(self, name: str, kind: str, path: str | None) -> None:
+        self._name, self._kind, self._path = name, kind, path
+        self._texts: bool | None = None
+        self.answer: Any = [] if kind == "values" else 0 if kind in ("count", "count_null", "sum_int") else None
+
+    def add(self, row: dict[str, Any]) -> None:
+        """Fold one row in.
+
+        :raises TypeError: ``sum_int`` met a non-integer, or ``min``/``max`` a value that is neither a number nor a
+            string, or a string after a number (or a number after a string).
+        """
+        kind, path = self._kind, self._path
+        if kind == "count" or path is None:
+            self.answer += 1
+            return
+        value = _read_path(row, path)
+        if kind == "values":
+            self.answer.append([row.get("id"), _copied(value)])
+        elif kind == "count_null":
+            self.answer += value is None
+        elif value is None:
+            return
+        elif kind == "sum_int":
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"measure {self._name!r} sums JSON integers, and {path!r} holds {value!r}")
+            self.answer += value
+        else:
+            if isinstance(value, bool) or not isinstance(value, int | float | str):
+                raise TypeError(f"measure {self._name!r} compares numbers or strings, and {path!r} holds {value!r}")
+            text = isinstance(value, str)
+            if self._texts is not None and self._texts != text:
+                raise TypeError(
+                    f"measure {self._name!r} compares numbers or strings, and {path!r} holds both in one group"
+                )
+            self._texts = text
+            if self.answer is None or (value < self.answer if kind == "min" else value > self.answer):
+                self.answer = value
 
 
 def fold_groups(
@@ -632,7 +674,10 @@ def fold_groups(
 
     The one statement in code of the grouped read's rules, for a store or a reader that groups rows in Python: the
     in-memory store's ``grouped`` and the engine's grouping of a store without the capability both fold through it.
-    The grouping is refused before ``rows`` is iterated, so a lazy iterable is not read for a refused one.
+    The grouping is refused (:func:`check_grouping`) before ``rows`` is iterated, so a lazy iterable is not read for
+    a refused one. Each row is folded into its group's measures as it arrives and then let go, so a lazy iterable is
+    never held whole: what a fold holds is its groups' answers (a ``values`` measure's pairs among them). A measure
+    refuses a value when the fold reaches it.
 
     :param rows: The matching rows, in stored order (the order a group's ``values`` keep). A row is not changed; a
         ``values`` measure hands a copy of each value.
@@ -650,15 +695,20 @@ def fold_groups(
         a value that is neither a number nor a string, or a group holding both; or a ``by`` value is an object or a
         list.
     """
-    _check_grouping(by, measures)
-    groups: dict[tuple[tuple[str, Any], ...], list[dict[str, Any]]] = {}
+    check_grouping(by, measures)
+    groups: dict[tuple[tuple[str, Any], ...], list[_Fold]] = {}
     for row in rows:
-        groups.setdefault(tuple(_group_key(_read_path(row, path), path) for path in by), []).append(row)
+        key = tuple(_group_key(_read_path(row, path), path) for path in by)
+        folds = groups.get(key)
+        if folds is None:
+            folds = groups[key] = [_Fold(name, kind, path) for name, (kind, path) in measures.items()]
+        for fold in folds:
+            fold.add(row)
     answers: list[dict[str, Any]] = []
-    for key, members in groups.items():
+    for key, folds in groups.items():
         answer: dict[str, Any] = {path: value for path, (_, value) in zip(by, key, strict=True)}
-        for name, (kind, path) in measures.items():
-            answer[name] = _measure(members, name, kind, path)
+        for name, fold in zip(measures, folds, strict=True):
+            answer[name] = fold.answer
         answers.append(answer)
     return answers
 
@@ -909,6 +959,7 @@ __all__ = [
     "StoreCalledOnEventLoop",
     "StoreClock",
     "StoreConflict",
+    "check_grouping",
     "field_in_values",
     "fold_groups",
     "keep_fields",

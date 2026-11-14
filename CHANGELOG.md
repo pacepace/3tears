@@ -6,7 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: store reads (#1052)
+### evals: store reads (#1052, #1057, #1059)
+
+**Changed:** `fold_groups` folds each row into its group as it arrives and lets it go, so a fold holds its groups'
+answers, never the rows; a measure refuses a value when the fold reaches it. The engine's grouping of a store without
+`ResultReadings` (`EvalStorage.result_groups`) now hands it each page of rows as the page is read, so a spend read on
+such a store holds one page of rows at a time where it held every row (#1057). `SPEND_READ_BUDGET` is not re-measured
+here.
+
+**Added (provisional):** `check_grouping(by, measures)` in `threetears.evals.schema` is the one statement of which
+groupings `grouped` defines. `fold_groups`, the SQLite store and `result_groups` all refuse through it, and
+`result_groups` refuses before it asks the store anything, on either path, where the engine's path used to read every
+page first (#1059 item 2).
 
 **Changed:** `InMemoryDocumentStore` copies each object and list a caller writes or is handed, and shares strings,
 numbers, booleans and nulls, where it deep-copied every value of every row on each read and write: about a third of

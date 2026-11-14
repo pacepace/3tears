@@ -256,6 +256,11 @@
       "signature": "CellTrace(spans: list[dict[str, Any]] = list(), total_ms: float | None = None, llm_ms: float | None = None, tool_ms: float | None = None)",
       "tier": "stable"
     },
+    "threetears.evals.schema.check_grouping": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ClientRequestSettings": {
       "kind": "model",
       "signature": "ClientRequestSettings(max_tokens: int, reasoning_max_tokens: int | None = None, reasoning_effort: StoredReasoningEffort | None = None, strict_output: bool = False, unsent_reasoning_max_tokens: int | None = None)",
