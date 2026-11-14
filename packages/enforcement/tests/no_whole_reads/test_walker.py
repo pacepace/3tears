@@ -1026,6 +1026,58 @@ def test_a_method_that_only_returns_a_name_reads_as_its_template(tmp_path: Path)
     assert not any(function == "elsewhere" and "threetears_change_notes" in what for function, what in found), found
 
 
+_RING_HANDED_READS = """
+    from pkg.ring import note_table
+
+    class Keeper:
+        def __init__(self, owner):
+            self._owner = owner
+            self._ring = f"{owner}.{quote_identifier(note_table(0))}"
+
+        def _ring_table(self, index):
+            '''the ring's table at ``index``.'''
+            return f"{self._owner}.{quote_identifier(note_table(index))}"
+
+        async def empty(self, conn, index, scope):
+            table = self._ring_table(index)
+            await self._by_scope(conn, table, scope)
+            await self._by_id(conn, self._ring_table(index), 1)
+
+        async def _by_scope(self, conn, table, scope):
+            return await conn.fetch(f"SELECT * FROM {table} WHERE scope = $1", scope)
+
+        async def _by_id(self, conn, table, note_id):
+            return await conn.fetch(f"SELECT * FROM {table} WHERE id = $1", note_id)
+
+        async def held_scope(self, conn, scope):
+            return await conn.fetch(f"SELECT * FROM {self._ring} WHERE scope = $1", scope)
+
+        async def held_id(self, conn, note_id):
+            return await conn.fetch(f"SELECT * FROM {self._ring} WHERE id = $1", note_id)
+
+        async def mixed(self, conn, other, scope):
+            await self._either(conn, other, scope)
+            await self._either(conn, self._ring_table(1), scope)
+
+        async def _either(self, conn, table, scope):
+            return await conn.fetch(f"SELECT * FROM {table} WHERE scope = $1", scope)
+"""
+
+
+def test_a_table_its_class_binds_or_hands_a_method_reads_as_its_template(tmp_path: Path) -> None:
+    """Flips if a ring table bound to an attribute in the class (``self._ring``), or handed to a method as a
+    parameter every call in the class fills with the same name, stays unknown when its DDL declares the template; if
+    a non-key read of it passes; or if a parameter one call fills with something else reads as the template."""
+    found = _symbols(_config(tmp_path, {"pkg/ring.py": _RING, "pkg/reads.py": _RING_HANDED_READS}))
+    ring = "non-key-where {}.threetears_change_notes_{}"
+    assert ("Keeper._by_scope", ring) in found, found
+    assert ("Keeper.held_scope", ring) in found, found
+    assert not any(function in {"Keeper._by_id", "Keeper.held_id"} for function, _ in found), found
+    assert not any(function == "Keeper._either" and "threetears_change_notes" in what for function, what in found), (
+        found
+    )
+
+
 _SPARSE = """
     NOTES = (
         "CREATE TABLE IF NOT EXISTS notes (id UUID PRIMARY KEY, scope TEXT, at TIMESTAMPTZ, flag TEXT, hot BOOLEAN)",

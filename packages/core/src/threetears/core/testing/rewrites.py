@@ -501,8 +501,9 @@ def _clause_cases(
         answered ``""`` for each), which would prove nothing about the clause
     """
     clauses = entry.get("clauses") or ()
+    exists = _exists_guards(entry, old_sql)
     if not clauses:
-        return [_ClauseCase(None, old_sql, list(params), list(where))]
+        return [_ClauseCase(None, old_sql, list(params), list(where), _exists_seeder(entry["table"], exists, params))]
     (clause,) = clauses
     build = _named(clause["build"])
     subjects = [None, *_named(clause["subjects"])()]
@@ -519,7 +520,7 @@ def _clause_cases(
                 old_sql[: clause["at"]] + text + old_sql[clause["at"] :],
                 bound,
                 [*where, *clause_guards(build, subject, *clause["respelled"])],
-                related,
+                _both(related, _exists_seeder(entry["table"], exists, bound)),
             )
         )
     return cases
@@ -568,10 +569,17 @@ async def seed_rows(conn: Any, table: str, rows: Sequence[Mapping[str, Any]]) ->
     :rtype: None
     """
     await _drop_checks(conn, table)
-    shape = await _catalog(conn, table)
     await conn.execute(f"DELETE FROM {table}")  # noqa: S608 - a test's own table, in a transaction rolled back
+    await _insert_filled(conn, table, rows, first=0, beside=False)
+
+
+async def _insert_filled(conn: Any, table: str, rows: Sequence[Mapping[str, Any]], *, first: int, beside: bool) -> None:
+    """insert ``rows`` into ``table``, every column a row does not give filled as the generic seed fills it, unique a
+    row (its position, counted from ``first``); ``beside``: next to rows the table already holds, a row colliding with
+    one on a unique key left out (an ``EXISTS`` over the statement's own table, :func:`_exists_seeder`)."""
     if not rows:
         return
+    shape = await _catalog(conn, table)
     given = list(rows[0])
     filled = [
         column
@@ -580,13 +588,232 @@ async def seed_rows(conn: Any, table: str, rows: Sequence[Mapping[str, Any]]) ->
     ]
     names = [*given, *(column.name for column in filled)]
     marks = ", ".join(f"${index}" for index in range(1, len(names) + 1))
+    conflict = " ON CONFLICT DO NOTHING" if beside else ""
     await conn.executemany(
-        f"INSERT INTO {table} ({', '.join(names)}) VALUES ({marks})",  # noqa: S608 - trusted test identifiers
+        f"INSERT INTO {table} ({', '.join(names)}) VALUES ({marks}){conflict}",  # noqa: S608 - trusted identifiers
         [
-            (*(row[name] for name in given), *(_value(column, index) for column in filled))
+            (*(row[name] for name in given), *(_value(column, first + index) for column in filled))
             for index, row in enumerate(rows)
         ],
     )
+
+
+#: an ``EXISTS (`` in a statement; the sub-select it opens runs to its closing parenthesis
+_EXISTS_OPEN: Final = re.compile(r"\bEXISTS\s*\(", re.IGNORECASE)
+#: the sub-select an ``EXISTS`` guard holds: one table under an alias, matched by equalities
+_EXISTS_SELECT: Final = re.compile(
+    r"^\s*SELECT\s+1\s+FROM\s+(?P<table>[A-Za-z_][\w.]*)\s+(?:AS\s+)?(?P<alias>[A-Za-z_]\w*)\s+WHERE\s+(?P<where>.+?)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+#: one side of an equality in an ``EXISTS`` sub-select: a parameter, a literal, or a qualified column
+_EXISTS_TERM: Final = re.compile(
+    r"^\s*(?:\$(?P<param>\d+)(?:::[\w.]+)?|'(?P<text>(?:[^']|'')*)'|(?P<number>-?\d+)"
+    r"|(?P<qualifier>[A-Za-z_]\w*)\.(?P<column>[A-Za-z_]\w*))\s*$"
+)
+#: where an ``EXISTS`` guard's related rows are numbered from (their columns no equality fixes), past every seeded row
+_EXISTS_ROWS_FROM: Final[int] = 800_000
+
+
+@dataclass(frozen=True)
+class _ExistsGuard:
+    """an ``EXISTS`` sub-select in an entry's statement: where it stands (``EXISTS`` up to its closing parenthesis), the
+    table it reads, and each column of that table it matches with what: the outer row's column (``outer``), a
+    parameter's number (``param``) or a literal (``literal``)."""
+
+    start: int
+    end: int
+    table: str
+    matched: tuple[tuple[str, str, Any], ...]
+
+
+def _closing(sql: str, opened: int) -> int:
+    """the place of the parenthesis closing the one at ``opened`` (quoted text skipped)."""
+    depth, quoted = 0, False
+    for place in range(opened, len(sql)):
+        char = sql[place]
+        if char == "'":
+            quoted = not quoted
+        elif not quoted and char == "(":
+            depth += 1
+        elif not quoted and char == ")":
+            depth -= 1
+            if depth == 0:
+                return place
+    raise AssertionError(f"an EXISTS sub-select is never closed: {sql[opened:]!r}")
+
+
+def _exists_matched(entry: Mapping[str, Any], body: str) -> tuple[str, tuple[tuple[str, str, Any], ...]]:
+    """the table an ``EXISTS`` sub-select reads and what it matches each of its columns with.
+
+    :raises AssertionError: when the sub-select is anything but ``SELECT 1 FROM t a WHERE`` equalities, each between a
+        column of ``a`` and the outer row's column, a parameter or a literal (the proof could not seed its rows)
+    """
+    selected = _EXISTS_SELECT.match(body)
+    conjuncts = re.split(r"\s+AND\s+", selected.group("where"), flags=re.IGNORECASE) if selected else []
+    unread = AssertionError(
+        f"{entry.get('function', entry['table'])}: the proof cannot seed the rows its EXISTS ({' '.join(body.split())}) reads: only "
+        "SELECT 1 FROM <table> <alias> WHERE equalities of the alias's columns with the outer row's, a parameter or a "
+        "literal are seeded"
+    )
+    if selected is None or "(" in selected.group("where") or re.search(r"\bOR\b", selected.group("where"), re.I):
+        raise unread
+    alias = selected.group("alias")
+    matched: list[tuple[str, str, Any]] = []
+    for conjunct in conjuncts:
+        unequal = re.split(r"<>|!=", conjunct)
+        if len(unequal) == 2:
+            # the alias's column apart from the outer row's: every related row's unseeded columns are its own
+            # (numbered past every seeded row), so it holds
+            apart = [_EXISTS_TERM.match(side) for side in unequal]
+            if None in apart or sorted(term.group("qualifier") == alias for term in apart if term) != [False, True]:
+                raise unread
+            continue
+        sides = conjunct.split("=")
+        if len(sides) != 2 or any(mark in conjunct for mark in "<>!"):
+            raise unread
+        terms = [_EXISTS_TERM.match(side) for side in sides]
+        if None in terms:
+            raise unread
+        inner = [term for term in terms if term is not None and term.group("qualifier") == alias]
+        if len(inner) != 1:
+            raise unread
+        (own,) = inner
+        (other,) = [term for term in terms if term is not own and term is not None]
+        if other.group("param"):
+            matched.append((own.group("column"), "param", int(other.group("param"))))
+        elif other.group("text") is not None:
+            matched.append((own.group("column"), "literal", other.group("text").replace("''", "'")))
+        elif other.group("number"):
+            matched.append((own.group("column"), "literal", int(other.group("number"))))
+        else:
+            matched.append((own.group("column"), "outer", other.group("column")))
+    return selected.group("table"), tuple(matched)
+
+
+def _exists_guards(entry: Mapping[str, Any], old_sql: str) -> list[_ExistsGuard]:
+    """each ``EXISTS`` sub-select in ``old_sql`` (one nested in another counts once, the outer), when the entry's
+    guards hold one; none otherwise."""
+    if not any("EXISTS" in (guard.get("literal") or "").upper() for guard in entry.get("where", ())):
+        return []
+    found: list[_ExistsGuard] = []
+    for opened in _EXISTS_OPEN.finditer(old_sql):
+        if found and opened.start() < found[-1].end:
+            continue
+        close = _closing(old_sql, opened.end() - 1)
+        table, matched = _exists_matched(entry, old_sql[opened.end() : close])
+        found.append(_ExistsGuard(opened.start(), close + 1, table, matched))
+    return found
+
+
+async def _as_stored(conn: Any, table: str, outer: Mapping[str, Any], needed: Sequence[str]) -> Mapping[str, Any]:
+    """a seeded row as ``table`` holds it, when the row factory left a column a guard matches on to the table (a
+    generated or defaulted key): found by the plain columns the seed gave it."""
+    if all(name in outer for name in needed):
+        return outer
+    shape = await _catalog(conn, table)
+    given = [
+        (name, value)
+        for name, value in outer.items()
+        if value is not None
+        and name in shape.columns
+        and shape.columns[name].category in {"S", "N", "B", "D", "U"}
+        and shape.columns[name].type not in {"json", "jsonb"}
+    ]
+    if not given:
+        raise AssertionError(f"{table}: no plain seeded column finds a row its EXISTS guard matches on")
+    found = await conn.fetchrow(
+        f"SELECT * FROM {table} WHERE "  # noqa: S608 - the test's own table and columns
+        + " AND ".join(f'"{name}" = ${place}' for place, (name, _) in enumerate(given, 1)),
+        *(value for _, value in given),
+    )
+    if found is None:
+        raise AssertionError(f"{table}: a seeded row is not found by its own seeded columns")
+    return dict(found)
+
+
+def _exists_seeder(
+    table: str, guards: Sequence[_ExistsGuard], params: Sequence[Any]
+) -> Callable[[Any, list[Mapping[str, Any]]], Any] | None:
+    """seeds the rows each ``EXISTS`` guard reads: for every other seeded row, one row of the guard's
+    table matching it (the outer row's columns, the parameters and literals the sub-select names), so the guard holds
+    for some subjects and not for the rest. Beside the table's own rows when the guard reads the statement's table.
+    None when there is no guard."""
+    if not guards:
+        return None
+
+    async def related(conn: Any, seeded: list[Mapping[str, Any]]) -> None:
+        for place, guard in enumerate(guards):
+            rows: list[dict[str, Any]] = []
+            needed = [value for _, kind, value in guard.matched if kind == "outer"]
+            for index, seed in enumerate(seeded):
+                # half the rows, the half alternating with the case's size: a read naming only a few rows (an
+                # ``= ANY`` of two) then sees the guard hold for one of them in some cases and fail in others
+                if (index + len(seeded)) % 2:
+                    continue
+                outer = await _as_stored(conn, table, seed, needed)
+                row = {
+                    column: outer.get(value) if kind == "outer" else params[value - 1] if kind == "param" else value
+                    for column, kind, value in guard.matched
+                }
+                if None not in row.values():
+                    rows.append(row)
+            await _drop_checks(conn, guard.table)
+            await _insert_filled(conn, guard.table, rows, first=_EXISTS_ROWS_FROM + place * 10_000, beside=True)
+
+    return related
+
+
+def _both(
+    first: Callable[[Any, list[Mapping[str, Any]]], Any] | None,
+    then: Callable[[Any, list[Mapping[str, Any]]], Any] | None,
+) -> Callable[[Any, list[Mapping[str, Any]]], Any] | None:
+    """one seeder of related rows running ``first`` then ``then`` (either may be None)."""
+    if first is None or then is None:
+        return first or then
+
+    async def related(conn: Any, seeded: list[Mapping[str, Any]]) -> None:
+        await first(conn, seeded)
+        await then(conn, seeded)
+
+    return related
+
+
+async def _assert_guards_decide(
+    conn: Any,
+    entry: Mapping[str, Any],
+    old_sql: str,
+    params: Sequence[Any],
+    *,
+    wrap: Callable[[str], str] = lambda sql: sql,
+    **same: Any,
+) -> None:
+    """each ``EXISTS`` guard in ``old_sql`` decided some row each way over the seed cases: read as ``FALSE`` the
+    statement gives other rows (it held for a subject that mattered), and read as ``TRUE`` other rows again (it failed
+    for one). Otherwise the two sides agreeing proves nothing about the guard (its related rows unseeded, it is false on
+    both). ``wrap``: the statement as the proof compares it (a count's ``SELECT (...) AS answer``); ``same``: the rest
+    of :func:`~threetears.core.testing.same_results.assert_same_results`' arguments, as the entry's proof gives them.
+
+    :raises AssertionError: naming the guard that never held, or never failed, for a row that mattered
+    """
+    for guard in _exists_guards(entry, old_sql):
+        exists = old_sql[guard.start : guard.end]
+        for stands, never in ((f"(FALSE AND {exists})", "held"), (f"(TRUE OR {exists})", "failed")):
+            # the sub-select kept beside the constant, so each parameter it alone names keeps its type
+            variant = wrap(old_sql[: guard.start] + stands + old_sql[guard.end :])
+
+            async def read_as(c: Any, sql: str = variant) -> list[Any]:
+                return list(await c.fetch(sql, *params))
+
+            try:
+                await assert_same_results(conn, old_sql=wrap(old_sql), params=params, helper=read_as, **same)
+            except AssertionError:  # NOSILENT: a difference is the answer sought: the guard decided a row this way
+                continue
+            constant = stands.split()[0].lstrip("(")
+            raise AssertionError(
+                f"{entry.get('function', entry['table'])}: its EXISTS over {guard.table} never {never} for a row that "
+                f"mattered over the seed cases (read as {constant} the statement gives the same rows), so the proof "
+                "shows nothing about it"
+            )
 
 
 def _guard_params(
@@ -602,9 +829,21 @@ def _guard_params(
     first = Seeded(index=0, case="params", tenant=0, null=False, tie=0)
     total = max([len(params), *(number for guard in entry.get("where", ()) for number in guard["params"])])
     grown = [*params, *([None] * (total - len(params)))]
+    pinned = {pin["column"]: grown[pin["param"] - 1] for pin in entry["pins"] if pin["kind"] in {"param", "nullsafe"}}
     for guard in entry.get("where", ()):
         for number, compared in zip(guard["params"], guard["compared"], strict=True):
             if number in bound:
+                continue
+            if compared in pinned and "EXISTS" in (guard.get("literal") or "").upper():
+                # an EXISTS matching a column the statement also pins, by a parameter of its own (a copy under one
+                # name giving way to a row under another): another value than the pin's, or the row matched is the
+                # pinned row itself and the guard holds for every row
+                kept_apart = shape.columns[compared]
+                apart = (
+                    _value(kept_apart, 1) if _value(kept_apart, 1) != pinned[compared] else _value(kept_apart, 999_999)
+                )
+                grown[number - 1] = apart
+                bound.add(number)
                 continue
             if compared == ":bool":
                 # a truth value standing on its own (``($1 OR col <> 'x')``): False, so the predicate beside it decides
@@ -968,9 +1207,22 @@ async def _assert_point_same(
             await _assert_first_same(conn, entry, row, params, by, order, where)
             return
         answered: dict[Any, list[int]] = {}
-        for case in _clause_cases(old_sql, params, where, entry):
+        cases = _clause_cases(old_sql, params, where, entry)
+        for case in cases:
             answered[case.subject] = await _assert_read_case(conn, entry, row, case, by, columns, order)
         _assert_clause_restricts(entry, answered)
+        await _assert_guards_decide(
+            conn,
+            entry,
+            cases[0].old_sql,
+            cases[0].params,
+            wrap=lambda sql: _widened(sql, columns, entry.get("order", ()))[0],
+            table=table,
+            row=row,
+            order_by=[term["column"] for term in entry.get("order", ())] or None,
+            ordered=bool(order),
+            related=cases[0].related,
+        )
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")
 
@@ -1102,7 +1354,8 @@ async def _assert_count_same(
     await conn.execute("SET session_replication_role = replica")
     try:
         counted_by: dict[Any, list[int]] = {}
-        for case in _clause_cases(entry["old_sql"], params, where, entry):
+        cases = _clause_cases(entry["old_sql"], params, where, entry)
+        for case in cases:
 
             async def answered(c: Any, guards: list[Fragment] = case.where) -> list[dict[str, Any]]:
                 if entry["helper"] == "holds_any":
@@ -1130,6 +1383,16 @@ async def _assert_count_same(
             if not entry.get("items"):
                 counted_by[case.subject] = [int(dict(rows[0])["answer"] or 0) for rows in olds]
         _assert_clause_restricts(entry, counted_by)
+        await _assert_guards_decide(
+            conn,
+            entry,
+            cases[0].old_sql,
+            cases[0].params,
+            wrap=lambda sql: f'SELECT ({sql}) AS "answer"',  # noqa: S608 - the manifest's own statement
+            table=table,
+            row=row,
+            related=cases[0].related,
+        )
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")
 
@@ -1159,7 +1422,8 @@ async def _assert_first_same(
     else:
         rows = int(limit["literal"])
     own = entry["order"][: entry["key_from"]]
-    for case in _clause_cases(entry["old_sql"], params, where, entry):
+    cases = _clause_cases(entry["old_sql"], params, where, entry)
+    for case in cases:
         proof_sql, proof_columns = _widened(case.old_sql, _selected(entry["columns"]), own)
 
         async def first_page(
@@ -1188,7 +1452,21 @@ async def _assert_first_same(
             order_by=[term["column"] for term in own],
             ordered=True,
             limited=True,
+            related=case.related,
         )
+    await _assert_guards_decide(
+        conn,
+        entry,
+        cases[0].old_sql,
+        cases[0].params,
+        wrap=lambda sql: _widened(sql, _selected(entry["columns"]), own)[0],
+        table=table,
+        row=row,
+        order_by=[term["column"] for term in own],
+        ordered=True,
+        limited=True,
+        related=cases[0].related,
+    )
 
 
 def _vector_width(shape: CatalogTable, column: str) -> int:
@@ -1240,7 +1518,8 @@ async def _assert_nearest_same(
     nearest = Nearest(
         near["column"], vector, operator=near["operator"], schema=near["schema"], similarity=near["similarity"]
     )
-    for case in _clause_cases(entry["old_sql"], full, where, entry):
+    cases = _clause_cases(entry["old_sql"], full, where, entry)
+    for case in cases:
 
         async def nearest_rows(c: Any, guards: list[Fragment] = case.where) -> list[Any]:
             return await read_nearest(
@@ -1259,6 +1538,18 @@ async def _assert_nearest_same(
             limited=True,
             related=case.related,
         )
+    await _assert_guards_decide(
+        conn,
+        entry,
+        cases[0].old_sql,
+        cases[0].params,
+        table=entry["table"],
+        row=row,
+        order_by=[near["similarity"]],
+        ordered=True,
+        limited=True,
+        related=cases[0].related,
+    )
 
 
 async def _assert_write_same(conn: Any, entry: Mapping[str, Any], *, overrides: _Overrides | None) -> None:
@@ -1340,6 +1631,8 @@ async def _assert_write_cases(
     kept = [name for name in shape.columns if name not in now_columns]
     listed = ", ".join(f'"{name}"' for name in kept)
     stamped = "".join(f', "{name}" IS NOT NULL AS "{name}__set"' for name in sorted(now_columns))
+    state_sql = f"SELECT {listed}{stamped} FROM {table}"  # noqa: S608 - the test's own table
+    related = _exists_seeder(table, _exists_guards(entry, entry["old_sql"]), params)
     await conn.execute("SET session_replication_role = replica")
     try:
         await assert_same_results(
@@ -1350,7 +1643,19 @@ async def _assert_write_cases(
             params=params,
             helper=helper,
             columns=returning or None,
-            state_sql=f"SELECT {listed}{stamped} FROM {table}",  # noqa: S608 - the test's own table
+            state_sql=state_sql,
+            related=related,
+        )
+        await _assert_guards_decide(
+            conn,
+            entry,
+            entry["old_sql"],
+            params,
+            table=table,
+            row=row,
+            columns=returning or None,
+            state_sql=state_sql,
+            related=related,
         )
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")

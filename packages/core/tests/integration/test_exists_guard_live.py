@@ -126,3 +126,36 @@ async def test_the_proof_sees_a_guard_reaching_the_wrong_row(conn: asyncpg.Conne
     wrong = {**_ALONE, "where": [{**guard, "literal": guard["literal"].replace("o.id <> t.id", "o.id <> o.id")}]}
     with pytest.raises(AssertionError):
         await assert_rewrite_same(conn, wrong, overrides=_PAIRED)
+
+
+#: a read whose EXISTS never decides a row: the guard's other branch holds for every row (ds is NOT NULL)
+_SHADOWED: dict[str, Any] = {
+    **_ALONE,
+    "old_sql": "SELECT id, column_name FROM g_cols c WHERE c.ds = $1 AND (c.ds IS NOT NULL OR EXISTS (SELECT 1 "
+    "FROM g_cols o WHERE o.ds = c.ds AND o.column_name = c.column_name AND o.id <> c.id))",
+    "where": [
+        {
+            "column": "",
+            "kind": "guard",
+            "param": None,
+            "literal": "(t.ds IS NOT NULL OR EXISTS (SELECT 1 FROM g_cols o WHERE o.ds = t.ds AND o.column_name = "
+            "t.column_name AND o.id <> t.id))",
+            "cast": None,
+            "params": [],
+            "compared": [],
+        }
+    ],
+}
+
+
+async def test_the_proof_fails_a_guard_whose_exists_never_decides_a_row(conn: asyncpg.Connection) -> None:
+    """Flips if the proof passes an EXISTS guard that held for no row that mattered (or failed for none): both sides
+    then agree whatever the guard says, which proves nothing about it."""
+    with pytest.raises(AssertionError, match=r"its EXISTS over g_cols never held for a row that mattered"):
+        await assert_rewrite_same(conn, _SHADOWED)
+
+
+async def test_the_proof_seeds_the_rows_a_guard_s_exists_reads(conn: asyncpg.Connection) -> None:
+    """Flips if the proof leaves an EXISTS guard's related rows unseeded: with no row named twice (no override), only
+    the rows the proof seeds for the guard make NOT EXISTS drop some rows and keep others."""
+    await assert_rewrite_same(conn, _ALONE)

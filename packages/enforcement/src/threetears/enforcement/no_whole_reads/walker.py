@@ -1037,6 +1037,14 @@ _TEMPLATE: Final[str] = "{}()"
 #: called on ``self`` or ``cls`` alone, never matched by a module function's name
 _METHOD_TEMPLATE: Final[str] = "self.{}()"
 
+#: the key an instance attribute every assignment in its class binds to one name is kept under
+#: (``self._marks = f"{self._owner}.{quote_identifier(MARKS_TABLE)}"``: :func:`_method_templates`)
+_ATTRIBUTE_TEMPLATE: Final[str] = "self.{}"
+
+#: the key a method's parameter is kept under when every call of the method in its class passes it one name
+#: (``self._delete_band(table, index)`` after ``table = self._ring_table(index)``: :func:`_method_templates`)
+_PARAMETER_TEMPLATE: Final[str] = "self.{}({})"
+
 
 def _constant_text(value: ast.expr, constants: dict[str, str], depth: int = 0) -> str | None:
     """the string a placeholder argument statically is: a literal, a name bound to one (a module constant, an
@@ -1074,6 +1082,15 @@ def _constant_text(value: ast.expr, constants: dict[str, str], depth: int = 0) -
         # a method of the class that only returns a name (``self._ring_table(index)`` ->
         # ``{}.threetears_change_notes_{}``): the name it builds is its template, as a module function's
         text = constants[_METHOD_TEMPLATE.format(value.func.attr)]
+        text = None if is_sql(text) else text
+    elif (
+        isinstance(value, ast.Attribute)
+        and isinstance(value.value, ast.Name)
+        and value.value.id in {"self", "cls"}
+        and _ATTRIBUTE_TEMPLATE.format(value.attr) in constants
+    ):
+        # an attribute its class binds to one name (``{self._marks}``): :func:`_method_templates`
+        text = constants[_ATTRIBUTE_TEMPLATE.format(value.attr)]
         text = None if is_sql(text) else text
     elif isinstance(value, ast.Call) and _TEMPLATE.format(_final(value)) in constants:
         text = constants[_TEMPLATE.format(_final(value))]
@@ -2350,6 +2367,11 @@ class _ModuleWalk(ast.NodeVisitor):
         # its receiver's class, which the function's parameters and assignments say
         self._function_nodes.append(node)
         env = dict(self._envs[-1])
+        for argument in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
+            # a parameter every call of the method in its class passes one name for (:func:`_method_templates`)
+            passed = env.get(_PARAMETER_TEMPLATE.format(node.name, argument.arg))
+            if passed is not None:
+                env[argument.arg] = passed
         branches = self._branch_envs(node.body, env)
         self._bind(node.body, env)
         self._envs.append(env)
@@ -7938,7 +7960,95 @@ def _method_templates(tree: ast.Module, strings: dict[str, str]) -> dict[str, st
             if found.get(key, template) != template:
                 twice.add(key)
             found[key] = template
+    known = {**strings, **{key: template for key, template in found.items() if key not in twice}}
+    for statement in tree.body:
+        if isinstance(statement, ast.ClassDef):
+            _class_templates(statement, known, found, twice)
     return {key: template for key, template in found.items() if key not in twice}
+
+
+def _class_templates(cls: ast.ClassDef, known: dict[str, str], found: dict[str, str], twice: set[str]) -> None:
+    """add to ``found`` the names a class binds an attribute to (every ``self.x = ...`` in it the same name:
+    :data:`_ATTRIBUTE_TEMPLATE`), then each method parameter every call of the method on ``self`` in the class passes
+    the same name for -- a name, an attribute or a method call read so, or a local the calling method binds once to
+    one (:data:`_PARAMETER_TEMPLATE`). A binding or a call passing anything else is no template; ``twice`` collects
+    keys two classes of the module give different names.
+
+    :param cls: the class
+    :ptype cls: ast.ClassDef
+    :param known: the module's strings and method templates
+    :ptype known: dict[str, str]
+    :param found: the templates found so far, added to
+    :ptype found: dict[str, str]
+    :param twice: the keys no template, added to
+    :ptype twice: set[str]
+    :return: nothing
+    :rtype: None
+    """
+
+    def keep(key: str, template: str | None) -> None:
+        if template is None or found.get(key, template) != template:
+            twice.add(key)
+        else:
+            found[key] = template
+
+    methods = [node for node in cls.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    attributes: dict[str, str | None] = {}
+    for method in methods:
+        for node in ast.walk(method):
+            targets = (
+                node.targets
+                if isinstance(node, ast.Assign)
+                else [node.target]
+                if isinstance(node, (ast.AnnAssign, ast.AugAssign))
+                else []
+            )
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                ):
+                    value = node.value if isinstance(node, (ast.Assign, ast.AnnAssign)) else None
+                    text = None if value is None or isinstance(node, ast.AugAssign) else _string_text(value, known)
+                    text = None if text is None or is_sql(text) or text == "{}" else text
+                    seen = attributes.get(target.attr, text)
+                    attributes[target.attr] = text if seen == text else None
+    for attribute, text in attributes.items():
+        keep(_ATTRIBUTE_TEMPLATE.format(attribute), text)
+    known = {**known, **{key: value for key, value in found.items() if key not in twice}}
+    parameters = {
+        method.name: [argument.arg for argument in method.args.args[1:]] for method in methods if method.args.args
+    }
+    passed: dict[str, list[str | None]] = {}
+    for method in methods:
+        once: dict[str, ast.expr | None] = {}
+        for node in ast.walk(method):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                name = node.targets[0].id
+                once[name] = node.value if name not in once else None
+        for node in ast.walk(method):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "self"
+                and node.func.attr in parameters
+            ):
+                continue
+            names = parameters[node.func.attr]
+            given = dict(zip(names, node.args, strict=False))
+            given.update({keyword.arg: keyword.value for keyword in node.keywords if keyword.arg in names})
+            for name, value in given.items():
+                if isinstance(value, ast.Name) and value.id in once:
+                    bound = once[value.id]
+                    text = None if bound is None else _string_text(bound, known)
+                else:
+                    text = _string_text(value, known)
+                text = None if text is None or is_sql(text) or text == "{}" else text
+                passed.setdefault(_PARAMETER_TEMPLATE.format(node.func.attr, name), []).append(text)
+    for key, texts in passed.items():
+        keep(key, texts[0] if len(set(texts)) == 1 else None)
 
 
 def _imported_strings(tree: ast.Module, strings: dict[str, dict[str, str]]) -> dict[str, str]:
