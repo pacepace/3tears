@@ -207,7 +207,8 @@ async def test_a_run_its_ceiling_stopped_reads_the_stop_from_its_records_on_ever
 
 async def test_an_exhausted_run_carrying_the_caps_record_reads_what_gave_out_first() -> None:
     """A run the account's refusal stopped, whose running cell's judging the cost cap then set aside, carries the
-    cap's record: its job status names the refusal first, and the cap's line after it, never in its place."""
+    cap's record as a count beside that stop, never as the stop: its job status is the refusal alone (which names the
+    count), and its summary claims no stop of the cap's, the refusal being among its errors."""
     fixture = off_loop(ops_fixture)
     storage = fixture.host.eval_host.storage
     run = off_loop(storage.load_eval_run, fixture.campaign.run_ids[0], TOYHOST_SCOPE)
@@ -221,7 +222,10 @@ async def test_an_exhausted_run_carrying_the_caps_record_reads_what_gave_out_fir
         cells_not_started=0,
         cells_not_judged=1,
     )
-    refusal = "eval run stopped: the provider account refused a candidate call after 1/2 results"
+    refusal = (
+        "eval run stopped: the provider account refused a candidate call after 1/2 results ($0.5 spent) — refused; "
+        "beside it, the cost cap had too little left to judge 1 cell(s), which a re-judge takes up"
+    )
     update = {
         "status": "exhausted",
         "exhausted_because": "account_refused",
@@ -231,7 +235,12 @@ async def test_an_exhausted_run_carrying_the_caps_record_reads_what_gave_out_fir
     off_loop(storage.save_eval_run, run.model_copy(update=update))
 
     status = await job_poll(fixture.host, run_job_id(run.id), TOYHOST_SCOPE)
-    assert status.detail == f"{refusal}; {budget_stop_line([stop])}"
+    assert status.detail == refusal
+
+    summary = off_loop(run_get, fixture.host.eval_host, run.id, TOYHOST_SCOPE)
+    assert summary.stopped_because is None and summary.stopped_text is None
+    assert refusal in summary.errors
+    assert not any(line.lstrip().startswith("stopped") for line in summary.render().splitlines())
 
 
 async def test_cancelling_a_run_that_has_ended_is_refused() -> None:

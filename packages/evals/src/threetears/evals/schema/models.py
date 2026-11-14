@@ -2466,8 +2466,9 @@ class BudgetStop(EvalBaseModel, CoreShapeModel):
     :ivar landed_final: The landed amount once the cells in flight at the stop had finished and been recorded.
     :ivar cells_in_flight: Cells running when the stop was decided.
     :ivar cells_not_started: Cells of the matrix that never started because of the stop.
-    :ivar cells_not_judged: ``cost_usd`` only: cells that ran but whose judging the cap had too little left for, so
-        nothing judged them. Each is marked (``EvalResult.judging_set_aside``) and left out of the judged readings
+    :ivar cells_not_judged: ``cost_usd`` only: cells that ran but whose judging the cap refused, having too little left
+        for it, so nothing judged them. A cell whose deadline struck while its judging waited for the cap's room is
+        marked the same way but not counted here: the cap's shortage was never established for it. Each is marked (``EvalResult.judging_set_aside``) and left out of the judged readings
         under its own cause (``cost_cap``), never failed; its other readings count it, and a re-judge takes it up. Zero for ``metered_calls``, and on a record stored before the field existed.
     :ivar unpriced_results: ``cost_usd`` only: recorded results whose spend could not be priced. An enforcing
         cap cannot count against what it cannot price, so any of these stops the run on their own, whatever
@@ -3643,7 +3644,8 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
     :ivar reason: Why it ended, when something said: the cancellation's reason, the budget stop's, or the error an
         exhausted or failed holding recorded.
     :ivar lost: The loss, for a holding that was lost.
-    :ivar budget_stops: The per-run ceilings that stopped it, for a holding they stopped.
+    :ivar budget_stops: The per-run ceilings that stopped it, for a holding they stopped; for one that ended exhausted,
+        the cost cap's record of the cells it refused judging beside that stop.
     :ivar completeness: The run's completeness when it ended, over the whole matrix.
     :ivar cells_stored: The result rows stored for the run when it ended.
     :ivar spend_lower_bound: Whether what this holding spent is known only as a lower bound: a holding that was
@@ -3673,7 +3675,12 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
     )
     lost: JobLoss | None = Field(default=None, description="The loss, for a holding that was lost.")
     budget_stops: list[BudgetStop] | None = Field(
-        default=None, description="The per-run ceilings that stopped the holding, for one they stopped."
+        default=None,
+        description=(
+            "The per-run ceilings that stopped the holding, for one they stopped; on a holding that ended exhausted, "
+            "the cost cap's record of the cells whose judging it refused after the account or the model had stopped "
+            "it, which is a count beside that stop, never the stop."
+        ),
     )
     completeness: RunCompleteness | None = Field(
         default=None, description="The run's completeness when the holding ended, over the whole matrix."

@@ -920,7 +920,7 @@ async def test_a_deadline_while_judging_waits_for_the_cap_s_room_sets_the_cell_a
     ceiling, so the cap's shortage was never established."""
     judge = _PricedJudge(cost_usd=0.5, ceiling_usd=0.25, first_hangs=True)
 
-    _host, _run, results, stopped = await _judged_run_kept(
+    host, run, results, stopped = await _judged_run_kept(
         judge, cap_usd=1.25, k=2, width=2, client=_QuarterDollarClient(first_delay_s=0.15), cell_timeout_s=0.5
     )
 
@@ -929,6 +929,7 @@ async def test_a_deadline_while_judging_waits_for_the_cap_s_room_sets_the_cell_a
     (waited,) = [result for result in results if result.judging_set_aside]
     assert classify_result(waited) is ResultOutcome.OK, "its measures count; only its judged readings leave it out"
     assert stopped is None, "a wait the deadline cut short establishes no shortage, so the cap stopped nothing"
+    assert off_loop(summarize_run, host, run.id, run.scope_id).n_not_judged == 1, "its own mark counts it"
 
 
 async def _candidate_spend() -> float:

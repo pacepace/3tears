@@ -11,10 +11,18 @@ packages (bumped in lock-step).
 **Fixed:** a run the account's refusal or the unserved-model circuit stopped first, whose running cell's judging the
 cost cap then set aside, lost the cap's record, so its count of the cells left unjudged was gone. That run still ends
 `exhausted`, and now also carries the cap's record in `EvalRun.budget_stops` (`AccountExhaustedError.stops`,
-`ModelUnservedError.stops`). Its error says how many cells the cap left unjudged, and its job status names what gave
-out first and the cap's line after it. A cell whose deadline strikes while its judging waits for the cap's room is
-still set aside, but it no longer stops the run as cost-capped: the phase waited on a hold that might have billed less,
-so the cap's shortage was never established. In a judge phase that cannot be priced, a cell the judge had already
+`ModelUnservedError.stops`). Its error says how many cells the cap left unjudged, and its job status is that error.
+
+**Changed, for hosts:** `budget_stops` is no longer written only with `budget_stopped`. On an `exhausted` run (and on
+the lifetime entry, `RunLifetime.budget_stops`, of a holding that ended so) it is the cap's count beside the stop,
+never the stop, so read `status` to know what stopped a run. Such a run's summary has `stopped_because` (and
+`stopped_text`) `None`, where it used to be `None` because no record was kept: the refusal is in its `errors` and its
+results line counts the cells not judged.
+
+**Fixed:** a cell whose deadline strikes while its judging waits for the cap's room is still set aside, but it no
+longer stops the run as cost-capped, and the cap's record no longer counts it (`cells_not_judged`): the phase waited on
+a hold that might have billed less, so the cap's shortage was never established. Its own mark counts it, as the
+summary's `n_not_judged` does. In a judge phase that cannot be priced, a cell the judge had already
 failed on one dimension when the cap kept the next one unasked is now excluded as the judge's fault, which a re-judge
 recovers. It is no longer filed under `cost_cap`, and the stop record no longer counts it as set aside.
 

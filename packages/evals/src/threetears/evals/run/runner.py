@@ -4051,9 +4051,9 @@ async def execute_run(
     the cap (a re-judge takes it up from the evidence it stored), and stops the run: no new cell starts, the run ends
     ``budget_stopped``, and its cost-cap record counts the cell (``BudgetStop.cells_not_judged``). The record is kept
     when the account's refusal or the unserved-model circuit stopped the run first: it rides that error, and the run,
-    ``exhausted``, carries it. A cell whose deadline strikes while its judging waits for room is set aside the same way
-    and counted, but stops nothing: it waited on a hold that might have billed less, so the cap's shortage was never
-    established. A phase the
+    ``exhausted``, carries it. A cell whose deadline strikes while its judging waits for room is marked set aside the
+    same way, but the record does not count it and it stops nothing: it waited on a hold that might have billed less,
+    so the cap's shortage was never established; its mark is its count (the summary's ``n_not_judged``). A phase the
     judge cannot price holds the run's judging alone and sends one call at a time while the run is within its cap; when
     the cap refuses its next call after the judge failed it on a dim, the cell is the judge's fault, not a set-aside.
     So judging stays within the cost cap wherever its price ceiling bounds what its calls are billed, and passes it
@@ -4221,8 +4221,9 @@ async def execute_run(
     # capturing at once would interleave their writes. They take turns; cells of different cases do not.
     case_turns: dict[str, asyncio.Lock] | None = {} if run.cassette_mode == "capture" and width > 1 else None
 
-    # The cells whose judging the cost cap set aside, and the stop the first of them decided: the cost cap's own
-    # reading at that moment, counted on the run's cost-cap stop record however the run came to stop.
+    # The cells whose judging the cost cap refused, and the stop the first of them decided: the cost cap's own reading
+    # at that moment, kept as the run's cost-cap record however the run came to stop. A cell whose deadline struck
+    # while its judging waited for room is marked set aside on its row, and is neither counted here nor a stop.
     cells_not_judged = 0
     judging_stop: _CeilingReached | None = None
 
@@ -4269,16 +4270,6 @@ async def execute_run(
             len(in_flight) - 1,
         )
         stop.budget([judging_stop])
-
-    def judging_set_aside_at_deadline() -> None:
-        """Count a cell whose deadline struck while its judging waited for the cap's room.
-
-        The run is not stopped for it. A phase waits only while another phase holds room, and that hold may bill less
-        than its ceiling, so the cap's shortage was never established. The cells still to start are asked of the cap
-        as every cell is, against what has landed and what the running cells hold.
-        """
-        nonlocal cells_not_judged
-        cells_not_judged += 1
 
     # A gate that admits any amount bounds nothing (cost enforcement is off), so its judging is left unasked.
     judging_gate = (
@@ -4473,8 +4464,8 @@ async def execute_run(
                     _unevaluated_goal_checks(template, waiting_on=waiting_on) if charged_to == "candidate" else []
                 ),
             )
-            if sink.awaiting_room:
-                judging_set_aside_at_deadline()
+            # A set-aside here is neither a stop nor counted on the cap's record: a phase waits only while another holds
+            # room it may not bill, so the cap's shortage was never established. The cell's mark is its count.
         except asyncio.CancelledError:
             # NOSILENT: the cell is recorded excluded with what it spent, and the cancel is re-raised once it is saved.
             # The run was cancelled while this cell ran. The cancel still ends the run — it is

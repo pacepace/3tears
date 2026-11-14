@@ -415,9 +415,9 @@ def _run_status(run: EvalRun) -> JobStatus:
     budget_stop = budget_stop_line(run.budget_stops) if run.budget_stops else run.budget_stop_reason
     errors = "; ".join(run.error_details) or None
     if run.status == "exhausted":
-        # What gave out is the account or the model, which its error names; a cost cap record beside it counts the
-        # cells the cap set aside after that, and follows.
-        detail = "; ".join(part for part in (errors, budget_stop) if part) or None
+        # What gave out is the account or the model, which its error names, with the cells the cost cap refused
+        # judging beside it; a cap record the run carries is that count, never its stop, so no stop line is read.
+        detail = errors
     else:
         detail = run.cancellation_reason or budget_stop or errors
     if run.lost is not None:

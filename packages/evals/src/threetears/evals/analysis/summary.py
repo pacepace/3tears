@@ -878,8 +878,10 @@ class EvalSummary(BaseModel):
         operator gave for a cancel, the line written from the run's stop records when a per-run ceiling (its cost
         cap or its metered-call ceiling) stopped it (:func:`budget_stop_line`), or the reason its wall-clock
         budget gave.
-        ``None`` for a run nothing stopped, and for a cancel given no reason. A stop is never one of
-        :attr:`errors`, which are faults.
+        ``None`` for a run nothing stopped, for a cancel given no reason, and for an ``exhausted`` run, whose
+        account or model stopped it as its :attr:`errors` say: a cost cap record such a run carries counts the cells
+        the cap refused judging beside that stop (the results line counts them), and is never read as its stop. A
+        stop is never one of :attr:`errors`, which are faults.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -1546,7 +1548,11 @@ def _summary(
         # Templates are edited in place: one edited since the launch no longer holds what the judge read.
         intent=template.intent if template is not None and template.updated_at <= run.created_at else None,
         errors=errors,
-        stopped_because=run.cancellation_reason
+        # An exhausted run's account or model stopped it, which its errors name; a cost cap record it carries counts
+        # the cells the cap refused judging beside that stop (the results line counts them), and is never its stop.
+        stopped_because=None
+        if run.status == "exhausted"
+        else run.cancellation_reason
         or (budget_stop_line(run.budget_stops) if run.budget_stops else run.budget_stop_reason),
         arm_schedule=run.arm_schedule,
         max_cost_usd=run.max_cost_usd,

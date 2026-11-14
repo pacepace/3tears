@@ -111,7 +111,9 @@ candidate is measured whole or never begun.
   hold reach the cap, reaching it exactly included: such a cell would pay for its candidate and have its judging set
   aside. A cell whose deadline strikes while its judging waits for the cap's room is set aside the same way, but stops
   nothing: a phase waits only while another holds room it may not bill, so the cap's shortage was never established,
-  and the cells after it are asked of the cap as every cell is.
+  and the cells after it are asked of the cap as every cell is. It is not counted on the cap's record either (its
+  mark is its count: the summary's `n_not_judged`). So a hung judge call holding its room can see several cells pay
+  for their candidates and be set aside this way, within the cap.
 - **A cell whose judging was set aside is never scored low.** It asks the judge nothing; it is marked
   (`EvalResult.judging_set_aside`) and left out of the judged readings (its dimensions, pass^k and the composite)
   under its own exclusion cause, `cost_cap` ("cost cap" in a report's loss table), while its measures, checks and cost
@@ -162,8 +164,10 @@ ceiling: 40 of 40 at the stop, 47 once 3 running cells finished (+7); 12 cells n
 not judged, as the cap had too little left for their judging` when the cost cap set any aside; money reads as `$`. A run the wall-clock budget stopped has no
 record, and its `budget_stop_reason` says so. A run the account's refusal or the unserved-model circuit stopped first
 ends `exhausted`, but when the cost cap then set a running cell's judging aside it keeps the cap's record in
-`budget_stops` all the same, so the count of the cells left unjudged is not lost; its job status names what gave out
-first and the cap's line after it. A resume moves the records to the lifetime entry of the holding
+`budget_stops` all the same, so the count of the cells left unjudged is not lost. That record is a count beside the
+stop, never the stop: no stop line is written from it. The run's error names what gave out and how many cells the cap
+left unjudged, its job status is that error, its summary's `stopped_because` is `None`, and its results line counts
+the cells not judged. So `budget_stops` no longer means a ceiling stopped the run; read `status`. A resume moves the records to the lifetime entry of the holding
 they stopped, so the run itself only ever describes its current holding.
 
 **The metered-call ceiling.** `max_metered_calls` bounds the third-party calls a run's tools may make, counted at
