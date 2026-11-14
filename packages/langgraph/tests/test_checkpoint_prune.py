@@ -6,11 +6,14 @@ refusals, which need no database, and the maintenance command line's own refusal
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from threetears.langgraph import checkpoint_maintenance
 from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
 from threetears.langgraph.checkpoint_maintenance.__main__ import main
 from threetears.langgraph.checkpoint_scope import CheckpointScope
@@ -29,6 +32,30 @@ def _executor() -> Any:
     executor.fetchrow = AsyncMock(return_value=None)
     executor.execute = AsyncMock(return_value="DELETE 0")
     return executor
+
+
+def _callers(package: Path, names: set[str]) -> dict[str, set[str]]:
+    """each named function -> the functions of the package's source calling it by name.
+
+    :param package: the package's source directory
+    :ptype package: Path
+    :param names: the callees
+    :ptype names: set[str]
+    :return: callee -> its callers
+    :rtype: dict[str, set[str]]
+    """
+    found: dict[str, set[str]] = {}
+    for source in sorted(package.rglob("*.py")):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for function in ast.walk(tree):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(function):
+                if isinstance(node, ast.Call):
+                    callee = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+                    if callee in names:
+                        found.setdefault(callee, set()).add(function.name)
+    return found
 
 
 def _touched(executor: Any) -> int:
@@ -103,3 +130,23 @@ class TestCommandLine:
 
         assert exit_info.value.code == 2
         assert "--owned-sql" in capsys.readouterr().err
+
+    def test_the_whole_walks_are_reached_only_from_the_operator_s_command_line(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """the walks over every stored thread are an operator's command (``@operator_command``): reached in the
+        package only from ``main``, the command line, which runs a deleting action only with --yes."""
+        package = Path(checkpoint_maintenance.__file__).parents[1]
+        walks = {"_thread_page", "_thread_pages", "checkpoint_usage", "prune_threads", "delete_unowned_threads", "_run"}
+
+        assert _callers(package, walks) == {
+            "_thread_page": {"_thread_pages"},
+            "_thread_pages": {"checkpoint_usage", "prune_threads", "delete_unowned_threads"},
+            "checkpoint_usage": {"_run"},
+            "prune_threads": {"_run"},
+            "delete_unowned_threads": {"_run"},
+            "_run": {"main"},
+        }
+        with pytest.raises(SystemExit):
+            main(["prune", "--dsn", "postgresql://nowhere.invalid/none"])
+        assert "--yes" in capsys.readouterr().err
