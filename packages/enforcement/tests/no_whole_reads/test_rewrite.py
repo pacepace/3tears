@@ -1883,3 +1883,42 @@ def test_a_joined_read_the_helper_cannot_send_is_refused(sql: str, refused: str)
     LIMIT, a RIGHT JOIN, an unqualified column, a LEFT JOIN read from its right side."""
     parsed = parse_join(sql, guards=True)
     assert isinstance(parsed, str) and refused in parsed, parsed
+
+
+def test_a_correlated_exists_is_kept_as_a_guard_over_the_helper_s_row() -> None:
+    """Flips if a ``[NOT] EXISTS (SELECT ... FROM <table> <alias> WHERE ...)`` conjunct beside the pins is not kept as
+    a guard (the outer table's qualifier respelled ``t.`` in a read, the table's own name in a write, which names it
+    bare; its inner alias kept, parameters renumbered from ``$1``),
+    or if one whose inner table is unaliased, which names an unqualified column, or another relation, is taken; or
+    if a ``DELETE`` under an alias with a ``RETURNING`` of that alias's columns is not parsed as the keyed write."""
+    deleted = parse_write(
+        "DELETE FROM datasource_columns fresh WHERE fresh.datasource_id = ANY($1::uuid[]) AND fresh.schema_name = $2 "
+        "AND fresh.table_name = $4 AND EXISTS ( SELECT 1 FROM datasource_columns kept WHERE kept.datasource_id = "
+        "fresh.datasource_id AND kept.schema_name = $2 AND kept.table_name = $3 AND kept.column_name = "
+        "fresh.column_name ) RETURNING fresh.id",
+        guards=True,
+    )
+    assert isinstance(deleted, WriteSql), deleted
+    assert deleted.table == "datasource_columns" and deleted.returning == ("id",)
+    assert [pin.column for pin in deleted.pins] == ["datasource_id", "schema_name", "table_name"]
+    assert [(guard.literal, guard.params, guard.compared) for guard in deleted.guards] == [
+        (
+            "EXISTS ( SELECT 1 FROM datasource_columns kept WHERE kept.datasource_id = datasource_columns.datasource_id "
+            "AND kept.schema_name = $1 AND kept.table_name = $2 AND kept.column_name = datasource_columns.column_name )",
+            (2, 3),
+            ("schema_name", "table_name"),
+        )
+    ]
+    absent = parse_point(
+        "SELECT id FROM geos g WHERE g.state = $1 AND NOT EXISTS (SELECT 1 FROM grants k WHERE k.geo = g.id)",
+        guards=True,
+    )
+    assert isinstance(absent, PointSql), absent
+    assert [guard.literal for guard in absent.guards] == ["NOT EXISTS (SELECT 1 FROM grants k WHERE k.geo = t.id)"]
+    for refused in (
+        "SELECT id FROM geos g WHERE g.state = $1 AND EXISTS (SELECT 1 FROM grants WHERE grants.geo = g.id)",
+        "SELECT id FROM geos g WHERE g.state = $1 AND EXISTS (SELECT 1 FROM grants k WHERE geo = g.id)",
+        "SELECT id FROM geos g WHERE g.state = $1 AND EXISTS (SELECT 1 FROM grants k WHERE k.geo = x.id)",
+        "SELECT id FROM geos g WHERE g.state = $1 AND EXISTS (SELECT 1 FROM grants g WHERE g.geo = 1)",
+    ):
+        assert isinstance(parse_point(refused, guards=True), str), refused

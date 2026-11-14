@@ -1167,7 +1167,7 @@ _BOOL_OPERAND: Final[str] = ":bool"
 _SQL_WORDS: Final[frozenset[str]] = frozenset({"null", "true", "false", "not", "and", "or", "is", "any", "all"})
 
 
-def _guard(conjunct: str, qualifiers: set[str | None]) -> Pin | str:
+def _guard(conjunct: str, qualifiers: set[str | None], row: str = "t") -> Pin | str:
     """a ``WHERE`` conjunct other than an equality as a ``guard`` pin: its qualifiers dropped (the helper reads one
     relation), its parameters renumbered from ``$1``, each paired with the column it is compared with; or why it cannot
     be one (a subquery, a column of another relation, a ``?`` placeholder, an interpolation).
@@ -1180,7 +1180,14 @@ def _guard(conjunct: str, qualifiers: set[str | None]) -> Pin | str:
     :rtype: Pin | str
     """
     masked = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", conjunct)
-    if re.search(r"\bselect\b", masked, re.IGNORECASE):
+    exists = _EXISTS_GUARD.match(masked)
+    if exists is not None:
+        respelled, refused = _exists_respelled(conjunct, masked, exists, qualifiers, row)
+        if refused:
+            return refused
+        conjunct, masked = respelled, _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", respelled)
+        qualifiers = {*qualifiers, row, *exists_aliases(masked)}
+    elif re.search(r"\bselect\b", masked, re.IGNORECASE):
         return f"a subquery in a predicate: {conjunct!r}"
     if re.search(r"\?\s*(?:$|[),])", masked):
         # a ? placeholder (SQLite's), not jsonb's ? operator (which a quoted key follows)
@@ -1190,7 +1197,8 @@ def _guard(conjunct: str, qualifiers: set[str | None]) -> Pin | str:
     for found in _QUALIFIED.finditer(masked):
         if found.group("q").lower() not in {qualifier.lower() for qualifier in qualifiers if qualifier}:
             return f"a column of another relation: {conjunct!r}"
-    text = "".join(_unqualified(conjunct, masked))
+    # an EXISTS keeps its qualifiers (its own aliases, and ``t.`` for the helper's row); any other guard reads one relation
+    text = conjunct if exists is not None else "".join(_unqualified(conjunct, masked))
     order: list[int] = []
     for number in _PARAMETER.findall(text):
         if int(number) not in order:
@@ -1217,6 +1225,102 @@ def _guard(conjunct: str, qualifiers: set[str | None]) -> Pin | str:
     return Pin("", "guard", literal=" ".join(renumbered.split()), params=tuple(order), compared=tuple(compared))
 
 
+#: a ``[NOT] EXISTS (SELECT ...)`` conjunct: a guard over the helper's row when correlated through it alone
+_EXISTS_GUARD: Final[re.Pattern[str]] = re.compile(
+    r"^(?P<not>not\s+)?exists\s*\(\s*(?P<inner>select\b.+)\)$", re.IGNORECASE | re.DOTALL
+)
+#: a relation an ``EXISTS``' select reads, and its alias
+_INNER_RELATION: Final[re.Pattern[str]] = re.compile(
+    rf"\b(?:from|join)\s+(?P<table>{_IDENT}(?:\.{_IDENT})?)(?:\s+(?:as\s+)?(?!(?:where|on|join|left|inner)\b)"
+    rf"(?P<alias>{_IDENT}))?",
+    re.IGNORECASE,
+)
+#: the words an ``EXISTS``' select may hold that are no column
+_INNER_WORDS: Final[frozenset[str]] = frozenset(
+    {
+        "select",
+        "from",
+        "where",
+        "and",
+        "or",
+        "not",
+        "is",
+        "null",
+        "true",
+        "false",
+        "in",
+        "any",
+        "all",
+        "as",
+        "join",
+        "on",
+        "left",
+        "inner",
+        "exists",
+        "distinct",
+        "limit",
+        "like",
+        "ilike",
+        "between",
+        "array",
+        "coalesce",
+        "lower",
+        "upper",
+    }
+)
+
+
+def exists_aliases(masked: str) -> set[str]:
+    """the aliases the relations of an ``EXISTS``' select are read under.
+
+    :param masked: the conjunct, its quoted literals masked
+    :ptype masked: str
+    :return: the aliases, lower-cased
+    :rtype: set[str]
+    """
+    return {(found.group("alias") or "").lower() for found in _INNER_RELATION.finditer(masked)} - {""}
+
+
+def _exists_respelled(
+    conjunct: str, masked: str, exists: re.Match[str], qualifiers: set[str | None], row: str
+) -> tuple[str, str]:
+    """a correlated ``[NOT] EXISTS`` conjunct respelled over the helper's row: each column of the outer table (its
+    qualifier the table's or its alias) written ``t.``, the select's own aliases kept. Refused (the reason, starting
+    ``!``-free text): a relation of the select read with no alias of its own, or under an outer name; a column named
+    with no qualifier; a column of a relation neither the select's nor the outer table's.
+
+    :return: the respelled conjunct and ``""``, or ``""`` and the refusal's reason
+    """
+    inner = masked[exists.start("inner") : exists.end("inner")]
+    relations = list(_INNER_RELATION.finditer(inner))
+    outer = {qualifier.lower() for qualifier in qualifiers if qualifier}
+    aliases: set[str] = set()
+    tables: set[str] = set()
+    for found in relations:
+        alias = (found.group("alias") or "").lower()
+        if not alias or alias in outer or alias == row:
+            return "", f"an EXISTS reading a relation with no alias of its own: {conjunct!r}"
+        aliases.add(alias)
+        tables |= {found.group("table").lower(), found.group("table").split(".")[-1].lower()}
+    if not relations:
+        return "", f"an EXISTS of no relation: {conjunct!r}"
+    for found in _QUALIFIED.finditer(inner):
+        if found.group("q").lower() not in aliases | outer and found.group("q").lower() not in tables:
+            return "", f"a column of another relation in an EXISTS: {conjunct!r}"
+    for word in re.finditer(rf"(?<![\w.$:'])(?P<word>{_IDENT})\b(?!\s*[.(])", inner, re.IGNORECASE):
+        name = word.group("word").lower()
+        if name not in _INNER_WORDS and name not in aliases and name not in tables and not name.isdigit():
+            return "", f"a column named with no qualifier in an EXISTS: {conjunct!r}"
+    pieces: list[str] = []
+    at = 0
+    for found in _QUALIFIED.finditer(masked):
+        if found.group("q").lower() in outer:
+            pieces.append(conjunct[at : found.start()] + f"{row}.")
+            at = found.start("column")
+    pieces.append(conjunct[at:])
+    return "".join(pieces), ""
+
+
 def _unqualified(text: str, masked: str) -> list[str]:
     """``text`` cut around each qualifier :data:`_QUALIFIED` finds in ``masked``, the qualifiers left out."""
     pieces = []
@@ -1228,7 +1332,9 @@ def _unqualified(text: str, masked: str) -> list[str]:
     return pieces
 
 
-def _pins(where: str, masked: str, qualifiers: set[str | None], guards: list[Pin] | None = None) -> list[Pin] | str:
+def _pins(
+    where: str, masked: str, qualifiers: set[str | None], guards: list[Pin] | None = None, row: str = "t"
+) -> list[Pin] | str:
     """each column a ``WHERE`` of equalities pins (``= $n``, ``= <literal>``, ``IS NULL``, joined by ``AND``), or why
     it is not one.
 
@@ -1273,7 +1379,7 @@ def _pins(where: str, masked: str, qualifiers: set[str | None], guards: list[Pin
         else:
             if guards is None:
                 return f"a predicate other than equality: {conjunct!r}"
-            guard = _guard(conjunct, qualifiers)
+            guard = _guard(conjunct, qualifiers, row)
             if isinstance(guard, str):
                 return guard
             guards.append(guard)
@@ -1328,7 +1434,8 @@ _UPDATE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _DELETE: Final[re.Pattern[str]] = re.compile(
-    rf"^delete\s+from\s+(?P<table>{_IDENT}(?:\.{_IDENT})?)\s+where\s+(?P<where>.+?)\s*;?\s*$",
+    rf"^delete\s+from\s+(?P<table>{_IDENT}(?:\.{_IDENT})?)(?:\s+(?:as\s+)?(?!where\b)(?P<alias>{_IDENT}))?"
+    rf"\s+where\s+(?P<where>.+?)\s*;?\s*$",
     re.IGNORECASE | re.DOTALL,
 )
 _SET_PARAM: Final[re.Pattern[str]] = re.compile(rf"^(?P<column>{_IDENT})\s*=\s*\$(?P<n>\d+)$")
@@ -1391,10 +1498,11 @@ def _returning(text: str, masked: str) -> tuple[str, tuple[str, ...]] | str:
         return text, ()
     columns = []
     for item in found.group("columns").split(","):
-        column = re.fullmatch(_IDENT, item.strip(), re.IGNORECASE)
+        # a column, or one under the written table's alias (``RETURNING fresh.id``: the caller checks the alias)
+        column = re.fullmatch(rf"(?:{_IDENT}\.)?(?P<column>{_IDENT})", item.strip(), re.IGNORECASE)
         if column is None:
             return f"a RETURNING other than plain columns: {found.group('columns').strip()!r}"
-        columns.append(column.group().lower())
+        columns.append(column.group("column").lower())
     if len(set(columns)) != len(columns):
         return "a column returned twice"
     return text[: found.start()], tuple(columns)
@@ -1418,6 +1526,12 @@ def parse_write(sql: str, *, guards: bool = False) -> WriteSql | str:
     if text.startswith("/*") or "--" in text:
         return "a comment or hint in the statement"
     masked_text = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", text)
+    tail = _RETURNING.search(masked_text)
+    returned_by = (
+        set()
+        if tail is None
+        else {found.group("q").lower() for found in re.finditer(rf"(?P<q>{_IDENT})\.{_IDENT}", tail.group("columns"))}
+    )
     returned = _returning(text, masked_text)
     if isinstance(returned, str):
         return returned
@@ -1425,9 +1539,18 @@ def parse_write(sql: str, *, guards: bool = False) -> WriteSql | str:
     masked_text = masked_text[: len(text)]
     if re.search(r"\breturning\b", masked_text, re.IGNORECASE):
         return "a RETURNING not at the statement's end"
+    # a subquery's own FROM (a guard's EXISTS) is no join: only the statement's top level is looked at
+    blanked, depth = [], 0
+    for char in masked_text:
+        if char == ")":
+            depth -= 1
+        blanked.append(char if depth == 0 or char in "()" else "_")
+        if char == "(":
+            depth += 1
+    top = "".join(blanked)
     if re.search(
         r"(?<!distinct )\b(from|using)\b",
-        masked_text[len("delete from ") :] if masked_text.lower().startswith("delete") else masked_text,
+        top[len("delete from ") :] if top.lower().startswith("delete") else top,
         re.IGNORECASE,
     ):
         return "a join (FROM / USING)"
@@ -1438,10 +1561,16 @@ def parse_write(sql: str, *, guards: bool = False) -> WriteSql | str:
     match = update if update is not None else delete
     assert match is not None
     table = match.group("table")
+    alias = match.groupdict().get("alias")
     where = match.group("where")
     masked = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", where)
     kept: list[Pin] | None = [] if guards else None
-    pins = _pins(where, masked, {None, table.split(".")[-1]}, kept)
+    if returned_by - {table.split(".")[-1].lower(), *([alias.lower()] if alias else [])}:
+        return "a RETURNING of another relation's columns"
+    # a write's statement names its table bare (no ``AS t``): an EXISTS guard reaches its row by the table's name
+    pins = _pins(
+        where, masked, {None, table.split(".")[-1], *([alias.lower()] if alias else [])}, kept, row=table.split(".")[-1]
+    )
     if isinstance(pins, str):
         return pins
     sets: list[Pin] = []

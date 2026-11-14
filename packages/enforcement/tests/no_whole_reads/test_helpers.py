@@ -694,3 +694,21 @@ def test_a_selected_sub_select_is_judged_with_its_read(
     (statement,) = [s.sql for s in helper_statements(_call(code)) if s.sql]
     assert " AS run" in statement or " AS n" in statement, statement
     assert _judged(code, schema)[0] == found
+
+
+def test_a_correlated_exists_guard_is_judged_through_the_row_it_reaches(schema: SchemaCatalog) -> None:
+    """Flips if a keyed write or read's ``where=`` EXISTS correlated to the helper's row (the codemod's guard: a
+    write names its table bare, a read its row ``t``) is judged unbound, or if one reaching another table's rows by a
+    column no key leads passes."""
+    write = (
+        'delete_keyed(c, "results", by={"state": s, "geo": g}, where=[Fragment("EXISTS (SELECT 1 FROM results k '
+        'WHERE k.state = results.state AND k.geo = results.geo AND k.id = results.id AND k.kind = $1)", (x,))])'
+    )
+    assert _judged(write, schema) == [[]]
+    read = (
+        'read_by(c, "results", by={"state": s}, where=[Fragment("NOT EXISTS (SELECT 1 FROM grants k '
+        'WHERE k.who = $1 AND k.state = t.state)", (w,))])'
+    )
+    assert _judged(read, schema) == [[]]
+    loose = read.replace("k.who = $1 AND ", "")
+    assert _judged(loose, schema) != [[]]
