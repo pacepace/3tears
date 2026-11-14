@@ -101,7 +101,7 @@ async def apply_schema(url: str, schema: str) -> asyncpg.Pool:
     try:
         await setup_conn.execute(f'SET search_path TO "{schema}", public')
         runner = MigrationRunner()
-        register_scheduled_jobs(runner)
+        register_scheduled_jobs(runner, held_contract=True)
         store = AsyncpgStore(setup_conn)
         await runner.apply_for_platform_schema(store)
     finally:

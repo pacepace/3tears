@@ -142,12 +142,12 @@ async def _build(url: str, schema: str) -> bool:
         await agent.apply_for_agent_schema(_Store(conn))  # type: ignore[arg-type]
         platform = MigrationRunner()
         register_acl(platform)
-        register_audit(platform)
+        register_audit(platform, held_contract=True)
         register_tools_platform(platform, depends_on=("agent_acl",))
         register_coordination(platform)
         register_epoch(platform)
         register_mcp(platform, held_contract=True)
-        register_scheduled_jobs(platform)
+        register_scheduled_jobs(platform, held_contract=True)
         register_scrape(platform, held_contract=True)
         await platform.apply_for_platform_schema(_Store(conn))  # type: ignore[arg-type]
         metadata = MetaData()

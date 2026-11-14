@@ -29,6 +29,9 @@ Version history:
   YugabyteDB) beside v001's ``idx_scheduled_jobs_next_fire`` and drops it.
 - v004 builds ``idx_scheduled_jobs_next_fire_key`` (``next_fire_at ASC, job_id ASC``: the due scan's page ordered by
   its time completed by the key) beside v003's ``idx_scheduled_jobs_next_fire_asc`` and drops it.
+- v005 (CONTRACT, held) -- drop ``idx_scheduled_jobs_partition_status`` and ``idx_job_fires_partition_time`` (no read
+  uses them): attached only with ``held_contract=True`` (the test schemas now; every deployment from the release after
+  this one).
 """
 
 from __future__ import annotations
@@ -51,11 +54,14 @@ from threetears.scheduled_jobs.migrations.v003_next_fire_range_index import (
 from threetears.scheduled_jobs.migrations.v004_next_fire_key_index import (
     add_next_fire_key_index,
 )
+from threetears.scheduled_jobs.migrations.v005_contract_unread_indexes_dropped import (
+    drop_unread_scheduled_job_indexes,
+)
 
 PACKAGE_NAME = "scheduled_jobs"
 
 
-def register(runner: MigrationRunner) -> PackageMigrations:
+def register(runner: MigrationRunner, *, held_contract: bool = False) -> PackageMigrations:
     """Register scheduled-jobs migrations with ``runner``.
 
     Produces a platform-scoped :class:`PackageMigrations` with no
@@ -64,6 +70,8 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 
     :param runner: canonical migration runner to register with
     :ptype runner: MigrationRunner
+    :param held_contract: attach v005, the held contract step (drops the two unread indexes)
+    :ptype held_contract: bool
     :return: populated package registration
     :rtype: PackageMigrations
     """
@@ -75,6 +83,8 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(2)(add_dispatching_fires_index)
     pkg.version(3)(range_shard_next_fire_index)
     pkg.version(4)(add_next_fire_key_index)
+    if held_contract:
+        pkg.version(5)(drop_unread_scheduled_job_indexes)
     runner.register(pkg)
     return pkg
 

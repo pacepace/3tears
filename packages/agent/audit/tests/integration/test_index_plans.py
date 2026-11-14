@@ -112,7 +112,7 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
         await connection.execute(f'CREATE SCHEMA "{schema}"')
         await connection.execute(f'SET search_path TO "{schema}"')
         runner = MigrationRunner()
-        register(runner)
+        register(runner, held_contract=True)
         await runner.apply_for_platform_schema(_Store(connection))
         actors = [uuid.uuid4() for _ in range(100)]
         await _seed(connection, "audit_events", actor_user_id="($1::uuid[])[1 + g % 100]", _params=(actors,))

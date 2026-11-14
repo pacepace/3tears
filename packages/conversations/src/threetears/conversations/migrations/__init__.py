@@ -79,8 +79,8 @@ version history:
 - v013 -- a folder's conversations (agent_id, folder_id, date_created,
   conversation_id) and one ref's (agent_id, channel_type,
   conversation_ref, date_created, conversation_id) each read an index.
-- v014 (CONTRACT, held) -- drop ``idx_conv_customer`` and ``idx_conv_parent``
-  (no read uses them): attached only with ``held_contract=True`` (the test
+- v014 (CONTRACT, held) -- drop ``idx_conv_customer``, ``idx_conv_parent`` and
+  ``idx_conv_status`` (no read uses them): attached only with ``held_contract=True`` (the test
   schemas now; every deployment from the release after this one).
 """
 
@@ -147,7 +147,7 @@ def register(runner: MigrationRunner, *, held_contract: bool = False) -> Package
 
     :param runner: canonical migration runner to register with
     :ptype runner: MigrationRunner
-    :param held_contract: attach v014, the held contract step (drops the two unread indexes)
+    :param held_contract: attach v014, the held contract step (drops the three unread indexes)
     :ptype held_contract: bool
     :return: populated package registration
     :rtype: PackageMigrations

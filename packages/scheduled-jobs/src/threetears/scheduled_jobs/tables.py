@@ -147,11 +147,6 @@ def scheduled_jobs_table(metadata: MetaData) -> Table:
                 "plan_test": "packages/scheduled-jobs/tests/integration/test_index_plans.py::test_scheduled_jobs_next_fire",
             },
         ),
-        Index(
-            "idx_scheduled_jobs_partition_status",
-            "partition_key",
-            "status",
-        ),
     )
 
 
@@ -221,11 +216,6 @@ def job_fires_table(metadata: MetaData) -> Table:
                 "purpose": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::JobFireCollection.latest_for_jobs",
                 "plan_test": "packages/scheduled-jobs/tests/integration/test_index_plans.py::test_job_fires_job_time",
             },
-        ),
-        Index(
-            "idx_job_fires_partition_time",
-            "partition_key",
-            sa_text("actual_fired_at DESC"),
         ),
         # v002: the fires in flight, the reaper's sweep
         Index(

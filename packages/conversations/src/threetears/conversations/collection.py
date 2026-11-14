@@ -104,9 +104,10 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
     # immutable, trigger-maintained per v005 migration);
     # ``language`` server default ``'english'`` matches v006
     # migration. Indexes mirror the migrations after the held
-    # contract step (v014 drops v001's ``idx_conv_customer`` and v011's
-    # ``idx_conv_parent``, which no read uses): ``idx_conv_user``
-    # (composite by date_created) + ``idx_conv_status``. There is no GIN over
+    # contract step (v014 drops v001's ``idx_conv_customer`` and
+    # ``idx_conv_status`` and v011's ``idx_conv_parent``, which no read
+    # uses): ``idx_conv_user`` (composite by date_created) and v012/v013's
+    # agent-led indexes. There is no GIN over
     # ``search_vector``: v010 dropped the one v005 created, because
     # :meth:`search` filters through ``gin_filter`` (YugabyteDB's ybgin
     # refuses a multi-entry scan), so the index had no reader.
@@ -170,7 +171,6 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_user",
                 reason="conversations carries twelve indexes: one person's conversations by owner, for an erasure",
             ),
-            SchemaIndex("idx_conv_status", "status"),
             # v012: the listing's sorts (Pace's ruling B). status and date_created under the agent, agent+user and
             # agent+status pins; date_updated under the agent only (a user / status filter walks it and filters);
             # message_count's sort is deprecated and has none. Each ends in the page's tie-break.

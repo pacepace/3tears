@@ -50,7 +50,7 @@ async def world(pg_url: str) -> AsyncIterator[tuple[asyncpg.Connection, uuid.UUI
     await conn.execute(f'CREATE SCHEMA "{schema}"')
     await conn.execute(f'SET search_path TO "{schema}", public')
     runner = MigrationRunner()
-    register_conversations(runner)
+    register_conversations(runner, held_contract=True)
     await runner.apply_for_agent_schema(AsyncpgStore(conn))
     agents = [uuid.uuid4() for _ in range(3)]
     users = [uuid.uuid4() for _ in range(300)]
