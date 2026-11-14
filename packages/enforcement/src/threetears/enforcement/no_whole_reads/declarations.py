@@ -17,6 +17,16 @@ to give (its table grew crowded later), takes that reason from a supplement line
 
     <index> :: on <table> :: reason=<why, 30+ characters>
 
+A consumer reading a dependency's table through the dependency's index adds its own reads to that index's purpose
+with a purpose-only line (coordinator ruling 2026-11-13, for the hub)::
+
+    <index> :: on <table> :: purpose=<path>::<function>[; <path>::<function>]
+
+It re-declares nothing (the dependency keeps the index's DDL, purpose and plan test), so it is never
+``index-declared-twice``; each read it adds is held to a function the walk found whose read uses the index
+(``index-purpose-unknown`` / ``index-purpose-unused``). A purpose-only line for an index the repo declares itself is
+``index-addition-refused``: declare it whole.
+
 The ledger's own findings:
 
 - ``index-ledger-not-frozen``: the index's DDL is in no frozen migration (``NoWholeReadsConfig.frozen_migrations``):
@@ -37,7 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from threetears.enforcement.no_whole_reads.schema import MIN_REASON, SchemaCatalog
+from threetears.enforcement.no_whole_reads.schema import MIN_REASON, SchemaCatalog, purposes
 
 __all__ = ["DECLARATIONS_NAME", "apply_index_declarations"]
 
@@ -72,6 +82,11 @@ class _Declaration:
         """whether the line only adds a reason to an index whose purpose and plan test are inline."""
         return not self.purpose and not self.plan_test
 
+    @property
+    def addition(self) -> bool:
+        """whether the line only adds the repo's own reads to the purpose of an index a dependency declares."""
+        return bool(self.purpose) and not self.plan_test and not self.reason
+
 
 def _parse(path: Path) -> tuple[dict[str, _Declaration], list[str]]:
     """read the ledger: its declarations by index, and each malformed or repeated line.
@@ -100,12 +115,13 @@ def _parse(path: Path) -> tuple[dict[str, _Declaration], list[str]]:
             fields[name.strip()] = value.strip()
         whole = bool(fields.get("purpose")) and bool(fields.get("plan_test"))
         supplement = set(fields) == {"reason"} and bool(fields["reason"])
+        addition = set(fields) == {"purpose"} and bool(fields["purpose"])
         if (
             len(parts) < 3
             or not parts[0]
             or not parts[1].startswith("on ")
             or not parts[1][3:].strip()
-            or not (whole or supplement)
+            or not (whole or supplement or addition)
         ):
             defects.append(
                 f"{where}: index-ledger-malformed -- write <index> :: on <table> :: purpose=<path>::<function> :: "
@@ -154,6 +170,11 @@ def apply_index_declarations(catalog: SchemaCatalog, path: Path, frozen: Sequenc
     declarations, findings = _parse(path)
     for declaration in declarations.values():
         where = f"{DECLARATIONS_NAME}:{declaration.line} index {declaration.index}"
+        if declaration.addition:
+            refusal = _addition_refusal(catalog, declaration, where)
+            if refusal is not None:
+                findings.append(refusal)
+            continue
         sites = [site for site in catalog.sites if site.local and not site.pattern and site.name == declaration.index]
         tables = {site.table for site in sites}
         if not sites:
@@ -202,6 +223,49 @@ def apply_index_declarations(catalog: SchemaCatalog, path: Path, frozen: Sequenc
             index.plan_test = declaration.plan_test
             index.reason = declaration.reason
     return findings
+
+
+def _addition_refusal(catalog: SchemaCatalog, declaration: _Declaration, where: str) -> str | None:
+    """add a purpose-only line's reads to the purpose of the dependency's index it names, or say why it is refused.
+
+    A consumer reads a dependency's table through the dependency's index; the dependency declares the index (its DDL,
+    purpose and plan test) and cannot name every consumer's read. The consumer's line adds its own reads to that
+    index's purpose, so the consumer's gate credits them as keyed by it (each still held to a read that uses it,
+    :attr:`SchemaCatalog.added_purposes`). It re-declares nothing, so it is never ``index-declared-twice``; an index
+    the repo itself declares is declared whole instead.
+
+    :param catalog: the catalog
+    :ptype catalog: SchemaCatalog
+    :param declaration: the purpose-only line
+    :ptype declaration: _Declaration
+    :param where: the line, as a finding names it
+    :ptype where: str
+    :return: the refusal, or None when the reads were added
+    :rtype: str | None
+    """
+    sites = [
+        site
+        for site in catalog.sites
+        if not site.pattern and site.name == declaration.index and site.table == declaration.table
+    ]
+    if not sites:
+        return (
+            f"{where}: index-ledger-stale -- no declaration the walk read creates it on {declaration.table}: delete "
+            "the line"
+        )
+    if any(site.local for site in sites):
+        return (
+            f"{where}: index-addition-refused -- {declaration.index} is the repo's own: a purpose-only line adds a "
+            "consumer's reads to a dependency's index; declare this one whole (purpose= :: plan_test=)"
+        )
+    declared = catalog.tables.get(declaration.table)
+    merged = declared.indexes.get(declaration.index) if declared is not None else None
+    if merged is None:
+        return f"{where}: index-ledger-stale -- {declaration.table} carries no index {declaration.index}"
+    added = purposes(declaration.purpose)
+    merged.purpose = "; ".join(dict.fromkeys([*purposes(merged.purpose), *added]))
+    catalog.added_purposes.extend((where, declaration.table, declaration.index, entry) for entry in added)
+    return None
 
 
 def _supplement_refusal(where: str, reason: str, *, declared: bool, reasoned: bool) -> str | None:

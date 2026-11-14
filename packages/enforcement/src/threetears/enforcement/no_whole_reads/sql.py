@@ -901,7 +901,7 @@ def _keys(
     purposed = [
         (index.name, index.columns)
         for index in declared.indexes.values()
-        if index.columns and set(purposes(index.purpose)) & reader.names
+        if index.columns and (reader.schema.discovering or set(purposes(index.purpose)) & reader.names)
     ]
     keys = [*declared.primary_keys, *declared.unique_keys]
     # a SQLite table's rowid is its own key (the b-tree it is stored in): a cap's trim ordered by it is a keyed range
@@ -1846,6 +1846,23 @@ def judge_sql(sql: str, reader: Reader | None = None) -> list[_SqlFinding]:
     :rtype: list[_SqlFinding]
     """
     reader = reader if reader is not None else Reader()
+    outer, reader.schema.statement = reader.schema.statement, sql
+    try:
+        return _judged(sql, reader)
+    finally:
+        reader.schema.statement = outer
+
+
+def _judged(sql: str, reader: Reader) -> list[_SqlFinding]:
+    """:func:`judge_sql`'s judgement, the statement recorded on the schema for each index use it credits.
+
+    :param sql: the statement, each interpolation as ``{}``
+    :ptype sql: str
+    :param reader: the schema and the code it is written in
+    :ptype reader: Reader
+    :return: the findings in text order
+    :rtype: list[_SqlFinding]
+    """
     text = _clean(sql)
     depths = _depths(text)
     ctes = {match.group(1).strip('"') for match in _CTE.finditer(text) if depths[match.start()] == 0}

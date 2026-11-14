@@ -292,3 +292,50 @@ def test_a_second_declaration_of_an_index_adds_its_purposes(tmp_path: Path) -> N
     findings = _findings(tmp_path, None, migration=_INLINE)
     assert not [finding for finding in findings if "refresh_other" in finding], findings
     assert not _index(findings), findings
+
+
+_CONSUMER = """
+    class Listing:
+        async def open_of_agent(self, conn, agent_id):
+            return await conn.fetch(
+                "SELECT conversation_id FROM conversations WHERE agent_id = $1 AND status = $2", agent_id, "open"
+            )
+
+        async def by_title(self, conn, title):
+            return await conn.fetch("SELECT conversation_id FROM conversations WHERE title = $1", title)
+"""
+
+
+def _consumer_findings(tmp_path: Path, ledger: str) -> list[str]:
+    """the gate's findings over a consumer that reads 3tears' conversations table through its declarations."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "listing.py").write_text(textwrap.dedent(_CONSUMER), encoding="utf-8")
+    (tmp_path / "_no_whole_reads_exemptions.txt").write_text("", encoding="utf-8")
+    (tmp_path / "_index_declarations.txt").write_text(f"{ledger}\n", encoding="utf-8")
+    config = NoWholeReadsConfig(repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path)
+    return [finding for finding in no_whole_reads_findings(config) if "conversations" in finding or "index-" in finding]
+
+
+@pytest.mark.parametrize(
+    ("line", "kind"),
+    [
+        ("idx_conv_agent_status :: on conversations :: purpose=src/listing.py::Listing.open_of_agent", None),
+        (
+            "idx_conv_agent_status :: on conversations :: purpose=src/listing.py::Listing.by_title",
+            "index-purpose-unused",
+        ),
+        ("idx_conv_agent_status :: on conversations :: purpose=src/listing.py::Listing.gone", "index-purpose-unknown"),
+        ("idx_conv_gone :: on conversations :: purpose=src/listing.py::Listing.open_of_agent", "index-ledger-stale"),
+    ],
+)
+def test_a_consumer_adds_its_read_to_a_dependency_s_index_purpose(tmp_path: Path, line: str, kind: str | None) -> None:
+    """Flips if a purpose-only line naming the consumer's own read is refused as a re-declaration of the dependency's
+    index, does not key that read, or adds a read that does not use the index (or names none, or an index the
+    dependency does not declare) without a finding. Coordinator ruling 2026-11-13, for the hub."""
+    findings = _consumer_findings(tmp_path, line)
+    assert not [f for f in findings if "index-declared-twice" in f or "index-ledger-malformed" in f], findings
+    keyed = not any("in Listing.open_of_agent:" in f for f in findings)
+    assert keyed is (kind is None), findings
+    if kind is not None:
+        assert any(kind in f for f in findings), findings

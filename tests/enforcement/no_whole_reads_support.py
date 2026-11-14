@@ -30,4 +30,7 @@ NO_WHOLE_READS_CONFIG = NoWholeReadsConfig(
     # the hub reads 3tears' per-agent tables through their declarations (the admin conversations listing): an index
     # purpose may name its read, which the hub's own gate keys by that index
     consumer_purposes=("src/aibots/hub/",),
+    # every shipped migration: its text is never edited again, so an index in one is declared in the ledger
+    # (_index_declarations.txt, written by python -m threetears.enforcement.no_whole_reads.index_purposes)
+    frozen_migrations=("packages/*/migrations/v*.py", "packages/scrape/src/threetears/scrape/migrations.py"),
 )

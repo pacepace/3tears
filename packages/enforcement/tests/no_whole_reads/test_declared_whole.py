@@ -609,3 +609,45 @@ def test_a_whole_call_into_a_declared_function_is_declared_there_with_the_same_k
     assert any("in rebuild_bare: calls-whole-read duplicates" in finding for finding in findings), findings
     assert not any("in same:" in finding or " same whole_read" in finding for finding in findings), findings
     assert not any("in rebuild_declared:" in finding or "in duplicates:" in finding for finding in findings), findings
+
+
+_MAINTAINED = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.declared import whole_read
+
+    ITEMS = TableSchema(name="items", primary_key="id", columns=[])
+
+    async def refresh_statistics(conn):
+        return await whole_read(
+            conn.execute('STATEMENT'),
+            kind="schema_change",
+            reason="the planner's statistics are gathered again after the table was rebuilt",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_counts_only_in_a_snapshot",
+        )
+"""
+
+
+@pytest.mark.parametrize(
+    ("statement", "accepted"),
+    [
+        ("ANALYZE items", True),
+        ('ANALYZE "items"', True),
+        ("SELECT count(*) FROM items", False),
+        ("SELECT * FROM items", False),
+    ],
+)
+def test_a_schema_change_omits_its_speed_test_only_when_it_is_the_maintenance_operation(
+    tmp_path: Path, statement: str, accepted: bool
+) -> None:
+    """Flips if a schema_change declaration with no speed test is accepted over a read of the table, or refused over a
+    bare ANALYZE of it. Coordinator ruling 2026-11-13: the maintenance operation (ANALYZE, REINDEX) IS the bare
+    operation, as a backup's bare count is; anything richer is timed."""
+    proofs = _PROOFS.replace("assert count_items", "assert refresh_statistics", 1)
+    findings = _findings(tmp_path, {"store.py": _MAINTAINED.replace("STATEMENT", statement)}, proofs)
+    if accepted:
+        assert findings == [], findings
+    else:
+        assert any("refresh_statistics whole_read(kind='schema_change'): names no speed test" in f for f in findings), (
+            findings
+        )

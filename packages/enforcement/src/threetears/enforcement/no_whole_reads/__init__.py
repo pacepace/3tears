@@ -433,14 +433,19 @@ def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
     return catalog
 
 
-def _hits(config: NoWholeReadsConfig) -> tuple[list[WholeReadHit], WholeReadScan]:
+def _hits(config: NoWholeReadsConfig, *, discovering: bool = False) -> tuple[list[WholeReadHit], WholeReadScan]:
     """every hit of the walk, ledger ignored: the repo's list of whole reads.
 
     :param config: the repo's config
     :ptype config: NoWholeReadsConfig
+    :param discovering: the index-purpose tool's walk (:attr:`SchemaCatalog.discovering`): every index counts as
+        purposed, so each read is credited to every index that serves it
+    :ptype discovering: bool
     :return: the hits, and the walk
     :rtype: tuple[list[WholeReadHit], WholeReadScan]
     """
+    schema = _schema_of(config)
+    schema.discovering = discovering
     scan = scan_whole_reads(
         config.repo_root,
         config.src_roots,
@@ -449,7 +454,7 @@ def _hits(config: NoWholeReadsConfig) -> tuple[list[WholeReadHit], WholeReadScan
         narrowing=DEFAULT_NARROWING_KEYWORDS | config.extra_narrowing,
         transient=config.transient_relations,
         verify_prefixes=config.verify_prefixes,
-        schema=_schema_of(config),
+        schema=schema,
         exec_calls=config.extra_exec_calls,
         producers=config.transient_producers,
         view_producers={producer: _keys_of(declared) for producer, declared in config.view_producers.items()},
@@ -577,6 +582,21 @@ _BARE_COUNT: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
+#: the bare operation a schema change maintains a table with: ``ANALYZE`` or ``REINDEX`` of one relation, nothing else
+#: in the statement. A ``schema_change`` declaration whose every statement is this needs no speed test (it IS the
+#: maintenance operation, as a backup's bare count is; coordinator ruling 2026-11-13, for the hub)
+_BARE_MAINTENANCE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:ANALYZE|REINDEX\s+(?:\(\s*\w+\s*\)\s+)?(?:TABLE|INDEX)(?:\s+CONCURRENTLY)?)"
+    r"\s+(?:\"[^\"]*\"|[\w{}]+)(?:\.(?:\"[^\"]*\"|[\w{}]+))?\s*;?\s*$",
+    re.IGNORECASE,
+)
+
+#: each kind whose declaration may omit its speed test when every statement it covers is that kind's bare operation
+_BARE_OPERATIONS: Final[dict[str, re.Pattern[str]]] = {
+    "backup_verification": _BARE_COUNT,
+    "schema_change": _BARE_MAINTENANCE,
+}
+
 #: a ``calls-whole-read`` hit's statement: ``<call> -> <path>:<line> <symbol>``
 _REACHED: Final[re.Pattern[str]] = re.compile(r" -> (?P<path>[^ :]+):\d+ ")
 
@@ -683,8 +703,8 @@ def declaration_defects(repo_root: Path, declared: DeclaredWhole) -> list[str]:
     if proof is not None:
         defects.append(f"the proof {proof}")
     defects.extend(_until_defects(repo_root, declared))
-    if declared.kind in DECLARED_SPEED_KINDS and not (declared.kind == "backup_verification" and not declared.speed):
-        # a backup_verification with no speed test is judged once its statements are known (_bare_only)
+    if declared.kind in DECLARED_SPEED_KINDS and not (declared.kind in _BARE_OPERATIONS and not declared.speed):
+        # a backup_verification or schema_change with no speed test is judged once its statements are known
         speed = _proving_test_defect(repo_root, line, test=declared.speed, calls="budget_problem")
         if speed is not None:
             defects.append(f"the speed test {speed}")
@@ -742,20 +762,26 @@ class _Declared:
                     continue
                 self.covered.add(hit)
                 used.add(index)
-        bare = self._bare_functions(sound, hits)
+        bare = {kind: self._bare_functions(sound, hits, pattern) for kind, pattern in _BARE_OPERATIONS.items()}
         for index, declared in enumerate(sound):
-            if index in used and declared.kind == "backup_verification" and not declared.speed:
+            if index in used and declared.kind in _BARE_OPERATIONS and not declared.speed:
+                pattern = _BARE_OPERATIONS[declared.kind]
                 mine = [hit for hit in self.covered if declared.covers(hit.path, hit.function, hit.line)]
                 if not all(
-                    (hit.kind == "calls-whole-read" and self._target(hit) in bare)
-                    or (hit.kind != "calls-whole-read" and _BARE_COUNT.match(hit.statement) is not None)
+                    (hit.kind == "calls-whole-read" and self._target(hit) in bare[declared.kind])
+                    or (hit.kind != "calls-whole-read" and pattern.match(hit.statement) is not None)
                     for hit in mine
                 ):
                     self.covered.difference_update(mine)
+                    operation = (
+                        "a bare count(*) or row checksum over one table (no join, filter or ordering)"
+                        if declared.kind == "backup_verification"
+                        else "a bare ANALYZE or REINDEX of one relation"
+                    )
                     self.findings.append(
-                        f"{declared.path}:{declared.line} {declared.function} whole_read(kind='backup_verification'): "
-                        "names no speed test, which only a bare count(*) or row checksum over one table (no join, "
-                        "filter or ordering) may omit: give speed=<test file>::<test function> calling budget_problem"
+                        f"{declared.path}:{declared.line} {declared.function} whole_read(kind={declared.kind!r}): "
+                        f"names no speed test, which only {operation} may omit: give speed=<test file>::<test "
+                        "function> calling budget_problem"
                     )
                     continue
             if index in used:
@@ -779,13 +805,18 @@ class _Declared:
         reached = _REACHED.search(hit.statement)
         return (reached.group("path") if reached else "", hit.symbol.split(" ", 1)[-1])
 
-    def _bare_functions(self, sound: list[DeclaredWhole], hits: list[WholeReadHit]) -> set[tuple[str, str]]:
-        """the functions whose every whole read is a declared bare count (:data:`_BARE_COUNT`).
+    def _bare_functions(
+        self, sound: list[DeclaredWhole], hits: list[WholeReadHit], pattern: re.Pattern[str]
+    ) -> set[tuple[str, str]]:
+        """the functions whose every whole read is a declared bare operation (``pattern``: :data:`_BARE_COUNT`,
+        :data:`_BARE_MAINTENANCE`).
 
         :param sound: the sound declarations
         :ptype sound: list[DeclaredWhole]
         :param hits: every hit
         :ptype hits: list[WholeReadHit]
+        :param pattern: the bare operation
+        :ptype pattern: re.Pattern[str]
         :return: their paths and qualified names
         :rtype: set[tuple[str, str]]
         """
@@ -796,7 +827,7 @@ class _Declared:
             owners = [declared for declared in sound if declared.covers(hit.path, hit.function, hit.line)]
             places = {(owner.path, owner.function) for owner in owners} or {(hit.path, hit.function)}
             for place in places:
-                reads.setdefault(place, []).append(bool(owners) and _BARE_COUNT.match(hit.statement) is not None)
+                reads.setdefault(place, []).append(bool(owners) and pattern.match(hit.statement) is not None)
         return {place for place, bare in reads.items() if all(bare)}
 
     @staticmethod

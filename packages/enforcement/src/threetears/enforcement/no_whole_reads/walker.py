@@ -2663,7 +2663,7 @@ class _ModuleWalk(ast.NodeVisitor):
             problem = f"sort {column} names no index"
         elif found is None:
             problem = f"sort {column} names index {index}, which {table} does not declare"
-        elif not set(purposes(found.purpose)) & reader.names:
+        elif not (self._schema.discovering or set(purposes(found.purpose)) & reader.names):
             problem = f"index {index}'s purpose is {found.purpose or 'none'}, not this listing"
         elif column not in found.columns:
             problem = f"index {index} does not order by {column}"

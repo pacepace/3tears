@@ -1,0 +1,44 @@
+[
+ {
+  "index": "idx_audit_events_type",
+  "pins": [
+   {
+    "column": "event_type",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "purpose": "src/aibots/hub/admin/audit.py::AuditEventCollection.page_events; src/aibots/hub/admin/metrics.py::tool_call_counts; src/aibots/hub/admin/metrics_rollup.py::_day_sums",
+  "sql": "SELECT * FROM \"audit_events\" WHERE \"event_type\" = $1",
+  "table": "audit_events"
+ },
+ {
+  "index": "idx_workspace_file_versions_history",
+  "pins": [
+   {
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "purpose": "packages/agent/workspace/src/threetears/agent/workspace/collections.py::WorkspaceFileVersionCollection.find_by_workspace; packages/agent/workspace/src/threetears/agent/workspace/collections.py::WorkspaceFileVersionCollection.find_by_workspace_and_path",
+  "sql": "SELECT * FROM \"workspace_file_versions\" WHERE \"workspace_id\" = $1 ORDER BY \"date_created\" LIMIT 10",
+  "table": "workspace_file_versions"
+ },
+ {
+  "index": "idx_workspace_files_workspace",
+  "pins": [
+   {
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "purpose": "packages/agent/workspace/src/threetears/agent/workspace/collections.py::WorkspaceFileCollection.find_by_workspace; packages/agent/workspace/src/threetears/agent/workspace/collections.py::WorkspaceFileCollection.find_by_workspace_and_relative_path; packages/agent/workspace/src/threetears/agent/workspace/materialize.py::_capture_back",
+  "sql": "SELECT * FROM \"workspace_files\" WHERE \"workspace_id\" = $1",
+  "table": "workspace_files"
+ }
+]

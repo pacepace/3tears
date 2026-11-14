@@ -364,6 +364,17 @@ class SchemaCatalog:
     ledger_findings: list[str] = field(default_factory=list)
     #: while True, every table a declaration touches is marked as 3tears' (:attr:`_DeclaredTable.threetears`)
     marking: bool = False
+    #: the index-purpose tool's walk (:mod:`.index_purposes`): every declared index counts as purposed for every read,
+    #: so each read is credited to every index that would serve it; never set by the gate
+    discovering: bool = False
+    #: ``(table, index)`` onto ``{reader: statement}``: each read credited with using the index, and the statement (as
+    #: judged, each interpolation ``{}``) it was credited through -- what the index-purpose tool writes from
+    matches: dict[tuple[str, str], dict[str, str]] = field(default_factory=dict)
+    #: the statement being judged (:func:`~.sql.judge_sql`), recorded with each use
+    statement: str = ""
+    #: ``(ledger line, table, index, purpose entry)`` of each read a purpose-only ledger line adds to a dependency's
+    #: index (:mod:`.declarations`): each held to a function the walk found whose read uses the index
+    added_purposes: list[tuple[str, str, str, str]] = field(default_factory=list)
 
     def mark_threetears(self, table: str) -> None:
         """mark a table as one 3tears declares, whatever else declares it.
@@ -407,6 +418,9 @@ class SchemaCatalog:
         :return: nothing
         :rtype: None
         """
+        credited = self.matches.setdefault((table, index), {})
+        for reader in readers:
+            credited.setdefault(reader, self.statement)
         # a template's own name (``{}@<path>``) names its template: a table its module builds at run time
         entry = self.tables.get(table) or next(
             (template for template in self.templates.values() if template.name == table), None
@@ -2227,6 +2241,17 @@ def index_findings(
             _index_site_findings(catalog, repo_root, definitions, site, (purpose, plan_test, reason), consumer)
         )
     findings.extend(_template_index_findings(catalog, definitions))
+    for where, table_name, index, entry in catalog.added_purposes:
+        if "::" not in entry or entry not in definitions:
+            findings.append(
+                f"{where}: index-purpose-unknown -- purpose {entry!r} names no function the walk found; give "
+                "<path>::<qualified function>"
+            )
+        elif (table_name, index, entry) not in catalog.used:
+            findings.append(
+                f"{where}: index-purpose-unused -- {entry} holds no read of {table_name} keyed by {index}: each read "
+                "the line adds uses it"
+            )
     return findings
 
 

@@ -75,12 +75,14 @@ from threetears.core.keyed import (
     read_value,
     update_keyed,
 )
+from threetears.core.testing.plans import StatementPlan, explain_statement, on_yugabyte
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
 __all__ = [
     "assert_rewrite_same",
     "assert_source_says",
     "entry_id",
+    "explain_index_read",
     "load_manifest",
     "row_factory",
 ]
@@ -945,3 +947,92 @@ def assert_source_says(repo_root: Path, entry: Mapping[str, Any]) -> None:
         f"{entry['path']}::{entry['function']}: no {entry['helper']} call of {entry['table']} as the manifest records it"
         f" (by {[pin['column'] for pin in entry.get('pins', ())]}, args {entry.get('args')})"
     )
+
+
+#: the rows an index plan's table is seeded with, and the tenants they are split between: a bound value names one
+#: tenant's rows (a twentieth of the table), so reading through the index is the plan's only sensible choice
+_PLAN_ROWS: Final[int] = 400
+_PLAN_TENANTS: Final[int] = 20
+
+
+async def explain_index_read(conn: Any, entry: Mapping[str, Any]) -> StatementPlan:
+    """the plan of an index's read (an index-purpose manifest entry: its ``table``, ``sql`` and ``pins``) over its
+    table seeded on ``conn``'s migrated test database, everything rolled back after.
+
+    The table is seeded as :func:`assert_rewrite_same` seeds it (:func:`row_factory`), :data:`_PLAN_ROWS` rows over
+    :data:`_PLAN_TENANTS` tenants, each pinned column bound to the first tenant's value; PostgreSQL then gathers the
+    table's statistics. A sequential scan is priced out (``enable_seqscan``), so the plan shows which index the read's
+    shape goes through rather than whether a seed this small is worth one: the test asks that it is the entry's.
+
+    Each bound column but the last names :data:`_PLAN_SPREAD` times more rows than the one after it (the last names
+    one tenant's), and a read that orders names :data:`_PLAN_SPREAD` tenants: an index shorter than the read's bound
+    columns (the primary key's lead) finds more rows than the index under test, and a sort a page needs costs more
+    than walking the index in order.
+
+    :param conn: an asyncpg connection to a migrated test database, as a superuser
+    :ptype conn: Any
+    :param entry: the manifest entry
+    :ptype entry: Mapping[str, Any]
+    :return: the read's analysed plan
+    :rtype: StatementPlan
+    """
+    table = entry["table"]
+    yugabyte = await on_yugabyte(conn)
+    transaction = conn.transaction()
+    await transaction.start()
+    try:
+        await _drop_checks(conn, table)
+        shape = await _catalog(conn, table)
+        row, params = row_factory(shape, entry, _coarser_leads(shape, entry))
+        await conn.execute("SET LOCAL session_replication_role = replica")
+        rows = [
+            row(Seeded(index=index, case="plan", tenant=index % _PLAN_TENANTS, null=False, tie=index))
+            for index in range(_PLAN_ROWS)
+        ]
+        await conn.execute(f"DELETE FROM {table}")  # noqa: S608 - a test's own table, in a transaction rolled back
+        columns = list(rows[0])
+        marks = ", ".join(f"${number}" for number in range(1, len(columns) + 1))
+        await conn.executemany(
+            f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({marks})",  # noqa: S608 - trusted test identifiers
+            [tuple(seeded[column] for column in columns) for seeded in rows],
+        )
+        if not yugabyte:
+            await conn.execute(f"ANALYZE {table}")
+        await conn.execute("SET LOCAL enable_seqscan = off")
+        return await explain_statement(conn, entry["sql"], *params, yugabyte=yugabyte)
+    finally:
+        await transaction.rollback()
+
+
+#: how many more rows each leading bound column of an index plan's read names than the column after it
+_PLAN_SPREAD: Final[int] = 5
+
+
+def _coarser_leads(shape: CatalogTable, entry: Mapping[str, Any]) -> dict[str, Callable[[Seeded], Any]]:
+    """the seed values of an index plan's bound columns: each one :data:`_PLAN_SPREAD` times coarser than the next
+    (:func:`explain_index_read`), the last one tenant's, or :data:`_PLAN_SPREAD` tenants' when the read orders.
+
+    :param shape: the table as migrated
+    :ptype shape: CatalogTable
+    :param entry: the manifest entry (its ``pins`` in the index's order, its ``sql``)
+    :ptype entry: Mapping[str, Any]
+    :return: column -> its value of a seed
+    :rtype: dict[str, Callable[[Seeded], Any]]
+    """
+    bound = [pin["column"] for pin in entry["pins"]]
+    last = _PLAN_SPREAD if " ORDER BY " in entry["sql"] else 1
+    overrides: dict[str, Callable[[Seeded], Any]] = {}
+    for place, name in enumerate(bound):
+        coarse = last * _PLAN_SPREAD ** (len(bound) - 1 - place)
+        if coarse > 1:
+            overrides[name] = _coarse_value(shape.columns[name], coarse)
+    return overrides
+
+
+def _coarse_value(column: CatalogColumn, coarse: int) -> Callable[[Seeded], Any]:
+    """a column's seed value shared by ``coarse`` tenants in a row."""
+
+    def value(seed: Seeded) -> Any:
+        return _value(column, seed.tenant // coarse)
+
+    return value
