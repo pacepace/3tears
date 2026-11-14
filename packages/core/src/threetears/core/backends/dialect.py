@@ -16,7 +16,22 @@ from typing import Any, Final
 import asyncpg
 from asyncpg.pool import PoolConnectionProxy
 
-__all__ = ["known_on_yugabyte", "l3_on_yugabyte"]
+from threetears.observe import get_logger
+from threetears.observe.metrics import gauge
+
+__all__ = ["check_index_hints", "known_on_yugabyte", "l3_on_yugabyte"]
+
+log = get_logger(__name__)
+
+#: the gauge saying a YugabyteDB connection has no pg_hint_plan (1) or has it (0): the keyed helpers' index hints
+#: (``yugabyte_index_hint``) are then plain comments and YugabyteDB may plan a page off its declared index
+_INDEX_HINT_UNAVAILABLE: Final = "threetears_yb_index_hint_unavailable"
+
+#: a GUC pg_hint_plan registers when it is loaded (``shared_preload_libraries``); NULL (missing_ok) when it is not
+_HINT_SETTING_SQL: Final = "SELECT current_setting('pg_hint_plan.enable_hint', true) AS enabled"
+
+#: whether this process has logged a missing pg_hint_plan already: one error a process, the gauge every connection
+_HINT_MISSING_LOGGED: list[bool] = [False]
 
 #: the method (``async def answers_from_yugabyte(self) -> bool``) a reader standing in front of another defines to say
 #: which database the one behind it is, so no ``SELECT version()`` passes through it (a recorder would record it)
@@ -80,3 +95,36 @@ async def known_on_yugabyte(l3: Any) -> bool:
     answer = await l3_on_yugabyte(l3)
     _ASKED[l3] = answer
     return answer
+
+
+async def check_index_hints(conn: Any) -> bool | None:
+    """on a new YugabyteDB connection, whether pg_hint_plan is loaded, said by the gauge
+    ``threetears_yb_index_hint_unavailable`` (1 missing, 0 loaded) and, the first time it is missing in a process,
+    an error log.
+
+    Asked once a connection, from the pool's ``init=`` hook (:func:`~threetears.core.collections.init_connection`),
+    never on a read: the keyed helpers keep sending their hints, which a database without pg_hint_plan reads as
+    comments, so a page is still answered, perhaps through another index -- what the gauge lets an alert see. A
+    PostgreSQL connection, or anything with no asyncpg ``get_settings``, is not asked.
+
+    :param conn: the new connection
+    :ptype conn: Any
+    :return: whether the hints are honoured; None when ``conn`` is not a YugabyteDB connection
+    :rtype: bool | None
+    """
+    # looked up on the class: a mock's instance answers any name it is asked
+    settings = getattr(type(conn), "get_settings", None)
+    if not callable(settings) or _YUGABYTE_VERSION_MARK not in str(conn.get_settings().server_version):
+        return None
+    loaded = await conn.fetchval(_HINT_SETTING_SQL) is not None
+    gauge(_INDEX_HINT_UNAVAILABLE, description="1 when a YugabyteDB connection has no pg_hint_plan loaded").set(
+        0 if loaded else 1
+    )
+    if not loaded and not _HINT_MISSING_LOGGED[0]:
+        _HINT_MISSING_LOGGED[0] = True
+        log.error(
+            "pg_hint_plan is not loaded on this YugabyteDB: the keyed helpers' index hints are ignored and a page may "
+            "be planned off its declared index; add pg_hint_plan to ysql_pg_conf shared_preload_libraries",
+            extra={"metric": _INDEX_HINT_UNAVAILABLE},
+        )
+    return loaded

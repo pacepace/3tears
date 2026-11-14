@@ -33,6 +33,7 @@ import json
 from collections.abc import Iterable
 from typing import Any, Final
 
+from threetears.core.backends.dialect import check_index_hints
 from threetears.core.backends.schema_sql import json_default
 
 __all__ = ["init_connection", "register_jsonb_text_codec", "register_vector_text_codec"]
@@ -130,7 +131,8 @@ async def init_connection(conn: Any) -> None:
     """asyncpg pool ``init=`` hook for every 3tears Postgres consumer.
 
     registers the JSONB / JSON text codec and, where the database has one, the ``vector`` text codec
-    (:func:`register_vector_text_codec`); consumers
+    (:func:`register_vector_text_codec`), and on YugabyteDB says whether pg_hint_plan is loaded
+    (:func:`~threetears.core.backends.dialect.check_index_hints`); consumers
     that want additional per-connection setup (statement timeouts,
     application_name, search_path) should compose their own ``init``
     that calls :func:`init_connection` first and then layers their own
@@ -143,3 +145,5 @@ async def init_connection(conn: Any) -> None:
     """
     await register_jsonb_text_codec(conn)
     await register_vector_text_codec(conn)
+    # on YugabyteDB, whether the keyed helpers' index hints are honoured (a gauge, and one error a process if not)
+    await check_index_hints(conn)
