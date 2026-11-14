@@ -285,6 +285,8 @@ class CampaignLine(EvalBaseModel):
             "improved` (a candidate shown worse, or every one shown within its margin). A choice: `<arm> ahead` "
             "where one arm is shown ahead of another and behind none, else `Arms differ` where any pair separates, else `Cannot "
             "tell apart` where the evidence tells no pair apart. A measurement: `Measured`. `No readings yet` where the readings hold no row of their kind. "
+            "`Did not finish` where a run the report was written over did not finish, whatever its readings: its "
+            "headline says what stopped it. "
             "Where the arms the answer names (the improving arms, the leader, the measured arm) broke a floor or "
             "missed a bar it adds `, broke a floor`, `, missed a bar` or `, broke a floor and missed a bar` (floor "
             "first; `Measured, <arm> missed a bar` names the arm; several arms count, `2 candidates improved, 1 broke "
@@ -789,6 +791,10 @@ def _lever_names(campaign: EvalCampaign, frozen: CampaignBundle | None, profile:
     )
 
 
+#: What a listing line says the evidence shows where a run its report was written over did not finish
+#: (:attr:`CampaignLine.outcome_short`): no reading in a few words, since a verdict over such a run is none.
+DID_NOT_FINISH = "Did not finish"
+
 #: The undecided reading as a listing line says it: the glossary's phrase
 #: (:data:`~threetears.evals.analysis.style.CANNOT_TELL_APART`), capitalised.
 _UNDECIDED = CANNOT_TELL_APART.capitalize()
@@ -948,7 +954,12 @@ def _with_report(
             "report_state": "written" if why is None else "needs_regeneration",
             "report": report,
             "outcome_short": (
-                _outcome(read.bundle.readings, _reader_arms(read.bundle)) if read.bundle is not None else None
+                # No reading of the evidence in a few words where a run did not finish: the headline says what stopped it.
+                DID_NOT_FINISH
+                if reading.lead is not None and reading.lead.stopped
+                else _outcome(read.bundle.readings, _reader_arms(read.bundle))
+                if read.bundle is not None
+                else None
             ),
             "verdict_short": line.verdict_short or _drafted(_recommended(analysis, campaign, read.bundle), report),
         }
@@ -972,6 +983,10 @@ def _headline(host: EvalHost, reading: _AnalysisReading) -> tuple[str, str | Non
     is returned, so the line says to regenerate as the report read does. Blocking."""
     code = reading.lead.verdict if reading.lead is not None else reading.line.verdict
     if reading.doc is None or reading.lead is None:
+        return code, None
+    if reading.lead.stopped:
+        # Written over a run that did not finish: listed by what stopped it, in code's words, never by the headline a
+        # writer drew from the results recorded before it stopped.
         return code, None
     try:
         headline = stored_headline(host.storage, reading.doc)

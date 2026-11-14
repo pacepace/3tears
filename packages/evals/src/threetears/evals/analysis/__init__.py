@@ -404,6 +404,7 @@ from threetears.evals.analysis.lenses.frontier import (
 from threetears.evals.kernel.scoring import UnpooledReason
 from threetears.evals.analysis.lenses.history import HistoryResult, MeasureSeries, RegressionFlag, SeriesPoint
 from threetears.evals.analysis.lenses.export import ExportFormat, ExportPage, ScoreExport
+from threetears.evals.analysis.run_ending import RunEnding, StoppedShort, stopped_short
 from threetears.evals.analysis.service import AnalysisReportStore, AnalysisStore
 from threetears.evals.analysis.report.doc_page.store import ReportDocReads
 
@@ -774,7 +775,10 @@ __all__ = [
     "RunLister",
     "RoleUnanswered",
     "RunApparatus",
+    "RunEnding",
     "RunSummary",
+    "StoppedShort",
+    "stopped_short",
     "RemainderState",
     "ScopeDivergence",
     "ShortCell",

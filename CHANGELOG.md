@@ -6,6 +6,32 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a run that did not finish never opens with a verdict, on any surface (#1173)
+
+**Changed:** a failed run's print opened on its failure with no verdict; its HTML and Markdown report, and every
+surface of a cancelled, budget-stopped or exhausted run, still opened with a verdict over the results recorded before
+the stop. Whether a reading may open with a verdict is now one decision (`analysis.run_ending.stopped_short`), read off
+each member run's stored status alone: only `completed` may. Every surface asks it and, where a run did not finish,
+opens on what stopped it, in the run's own words, and says there is no verdict:
+
+| Surface | Opens with |
+|---|---|
+| `Result.render()`, `WriterResult.render()` | `<name>: the run was cancelled, so there is no verdict: <reason>`, then how many results the readings cover |
+| An aspect's page (Markdown, HTML, JSON) | its verdict line, rule `unfinished`, tone `failed`: `<arm>'s run was stopped by its budget, so there is no verdict: <reason>.` |
+| A campaign's page | the same line, before code's lead on the aspects that finished and before a caller's own lead |
+| A written page (Markdown, HTML, text) | code's line first under the masthead, before the document's headline |
+| `analyses_list`, `campaigns_list` | `AnalysisLine.verdict` and `report.headline` lead with it; `outcome_short` reads `Did not finish` |
+
+A run still `running` or `pending` when it is read (one interrupted and never taken up again) reads the same way. A
+failed run that recorded no error, which printed a verdict, prints none. A failed setup keeps its own line, which
+already states no verdict. Pages, inputs and listings over runs that all finished are unchanged.
+
+**For hosts:** a host that pins a page's first line, or shows `report.headline` or `outcome_short`, sees them move for
+a campaign holding a run that did not finish; resume the run (`job_resume`) or archive it to read a verdict. A host
+branching on `VerdictLine.rule` or a verdict block's tone meets `unfinished` (tone `failed`). `RunSummary.ended_because`,
+`Caveats.unfinished` and `DocPage.stopped` are new, optional and left out of a document while unset, so nothing stored
+moves; `EvalSummary.ending` replaces `EvalSummary.failed_text`, which no release shipped.
+
 ### evals: a definitions reset fills the presentation names a template it leaves current lacks
 
 **Added:** `reset_definitions` runs the definition seed's fill-only presentation-name pass after its writes, on every
