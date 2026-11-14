@@ -437,7 +437,7 @@ once and run every arm over the stored cases.
 ## Rig failures that score as candidate failures
 
 Each defect below produced plausible numbers, some for months. A rig fault is excluded, never scored
-([Rig failures](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-a-stale-recording-the-run)); the converse
+([Rig failures](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-a-recording-that-cannot-serve-costs-the-run)); the converse
 matters as much: **a swept lever's own failure is the outcome.** Excluding a swept sub-model's
 timeouts as harness failures dropped 10 of 15 cells and left pass^k at 1.0 over 2 cases. The engine charges a
 candidate for a turn truncated at its output cap, and never excludes a trial a failed check already decided. A call

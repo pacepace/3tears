@@ -30,10 +30,9 @@ entry naming the fault, its spend whatever the kind had reported through the cel
 on to the next cell. A run whose every cell an apparatus fault excluded measured nothing and ends
 ``failed``.
 
-**A replay miss is the exception** (:class:`ReplayMiss`): a replay asked for what its recording does not hold, so the
-recordings are stale, and every later cell reads the same stale recordings. The runner records the cell
-``apparatus_failed`` naming the call, as above, and then fails the run with the miss (owner ruling, #1162): a run that
-went on would read on fewer cells in silence.
+**A recording that cannot serve this run is the exception** (:class:`ReplayMiss`, which lists the causes). The
+runner records the cell ``apparatus_failed`` naming the call, as above, and then fails the run with it (owner ruling,
+#1162): the next cell reads the same recording, and a run that went on would read on fewer cells in silence.
 
 This module imports nothing but ``__future__``, and that is load-bearing rather than incidental: a
 host tool layer importing it acquires this one leaf and nothing behind it, and this leaf reaches
@@ -55,11 +54,24 @@ class ApparatusError(Exception):
 
 
 class ReplayMiss(ApparatusError):
-    """A replay asked for what its recording does not hold: the recordings are stale, and the run fails.
+    """A recording that cannot serve this run, so the run fails.
 
-    Any other rig fault excludes its one cell, since a later cell may meet a working rig. A replay miss does not stay
-    one cell's: every later cell reads the same stale recordings, and a run that went on would read on fewer cells in
-    silence. So wherever the engine meets one (a candidate's call, a scoring judge's, a judge kind's judge under test),
-    the runner records the cell ``apparatus_failed`` naming the call and then fails the run with it (owner ruling,
-    #1162). The remedy is to record again. A host whose own replay misses raises this, or a subclass of it.
+    Its causes:
+
+    * a call the recording does not hold, or holds fewer times than it is asked (a miss, an exhaustion);
+    * a recording file that is missing, unreadable or corrupt;
+    * a recording in a format this build does not read;
+    * a call already served to another eval's run in this process;
+    * a call refused while recording (a second model onto one model's file, a reply a recording cannot keep).
+
+    Each message names what was asked and carries its own remedy: record again, build a client per eval, or record
+    into a file of its own, as the cause asks.
+
+    Any other rig fault excludes its one cell, since a later cell may meet a working rig. This one does not stay one
+    cell's: the next cell reads the same recording. So wherever the engine meets one (a candidate's call, a scoring
+    judge's, a judge kind's judge under test), the runner records the cell ``apparatus_failed`` naming the call and
+    then fails the run with it (owner ruling, #1162). A recording run (``RECORD=1``) fails the same way: a recording
+    missing a call would fail its first replay anyway, and every cell after the refusal is spend it cannot keep. A run
+    that records nothing and replays nothing never meets one. A host whose own recording cannot serve its run raises
+    this, or a subclass of it.
     """

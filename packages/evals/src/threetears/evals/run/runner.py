@@ -1781,7 +1781,7 @@ async def _run_one_result(
             preconditions=failure.preconditions,
         )
     except ReplayMiss:
-        # A replay its recording cannot serve: the recordings are stale for every cell, so it fails the run, its cell
+        # A recording that cannot serve the run: the next cell reads the same recording, so it fails the run, its cell
         # recorded by the run's loop naming the call (owner ruling, #1162).
         raise
     except ApparatusError as fault:
@@ -1820,8 +1820,8 @@ async def _run_one_result(
             world_session.require_schedule_announced(ran_its_course=_ran_its_course(candidate))
             await world_session.end_state()
     except ReplayMiss:
-        # A replay miss under the candidate: its recordings are stale, and every later cell reads them, so it fails
-        # the run rather than reading on fewer cells in silence (owner ruling, #1162). The run's loop records the cell
+        # A recording that cannot serve the candidate: the next cell reads the same recording, so it fails the run
+        # rather than reading on fewer cells in silence (owner ruling, #1162). The run's loop records the cell
         # ``apparatus_failed`` naming the call before it raises the miss.
         raise
     except ApparatusError as fault:
@@ -4122,7 +4122,8 @@ async def execute_run(
 
     Apparatus faults: a cell an :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`
     out of its kind's ``prepare`` or ``invoke`` ended is recorded excluded and the loop goes on. A replay miss
-    (:class:`~threetears.evals.kernel.host.apparatus.ReplayMiss`: the recordings are stale, wherever it is met) is not,
+    (:class:`~threetears.evals.kernel.host.apparatus.ReplayMiss`: a recording that cannot serve the run, wherever it
+    is met) is not,
     nor any rig fault out of a judge call, in its judge phase or out of a judge kind's ``invoke``
     (:class:`JudgeCallUnserved`): the cell is recorded ``apparatus_failed`` naming the call, and the fault fails the
     run, as a judge completion breaking the protocol does. Only when EVERY cell of the run ended that
@@ -4566,7 +4567,8 @@ async def execute_run(
             # NOSILENT: the cell is recorded excluded with what it spent, and the defect is re-raised to fail the run.
             # The host's code — a kind contradicting its declaration, a judge completion short of the protocol —
             # which every cell would meet, so it fails the run; it is re-raised below. So does a replay miss wherever
-            # it is met (a ReplayMiss: stale recordings), and any judge call the rig could not serve, the run's scoring
+            # it is met (a ReplayMiss: a recording that cannot serve the run), and any judge call the rig could not
+            # serve, the run's scoring
             # judge's or, carried out of ``invoke`` as a JudgeCallUnserved, the judge kind's judge under test (a
             # candidate's other rig faults are excluded in their cell and never reach here): a replay must fail at the
             # miss, never read on fewer cells (owner ruling, #1162). Either way the cell and the run name the rig's

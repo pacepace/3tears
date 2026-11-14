@@ -16,7 +16,8 @@ every arm faced the same tool answers. A world with no state (``World(tools=[sea
   raises :class:`ToolRecordingMiss`, a :class:`~threetears.evals.kernel.host.ReplayMiss`, at the agent's
   ``await``. An agent catching every exception would absorb it into an ordinary answer, so the cell remembers the
   fault and :meth:`CellTools.raise_any_fault` re-raises it once the agent is done, and the engine records the cell
-  ``apparatus_failed`` and fails the run, rather than scoring the agent's manner toward a stale recording.
+  ``apparatus_failed`` and fails the run, rather than scoring the agent's manner toward a recording that cannot
+  serve it.
 
 **A tool that raises records nothing.** A recording keeps what a tool answered; an exception is the agent's to
 handle in the live world, and a replay of that ask is a miss. A tool whose failure the agent should face under

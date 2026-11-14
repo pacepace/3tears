@@ -17,10 +17,15 @@ breaks the protocol does (owner ruling): the cell is recorded `apparatus_failed`
 the miss. So does a judge kind's run whose judge under test misses on any one trial: that cell is recorded
 `apparatus_failed`, naming the call, and the run raises the miss, where the trial was graded `no_reply` and charged to
 the judge under test, so a campaign never finishes on fewer trials. A candidate's replay miss fails the run the
-same way (owner ruling: any miss means stale recordings), where its cell was excluded and the run went on.
-`ReplayMiss` (new, `threetears.evals.kernel.host`) is what a replay that cannot serve raises: `RecordingRefused`,
-`CassetteMiss`, `CassetteExhausted` and the quick world's `ToolRecordingMiss` subclass it. Every other
-`ApparatusError` still excludes its one cell. A miss now names
+same way (owner ruling: any miss fails the run), where its cell was excluded and the run went on. `ReplayMiss` (new,
+`threetears.evals.kernel.host`) is a recording that cannot serve this run: a call it does not hold or holds fewer
+times than asked, a file missing, unreadable or corrupt, a format this build does not read, a call already served to
+another eval's run, or a call refused while recording. `RecordingRefused`, `CassetteMiss`, `CassetteExhausted`,
+`CassetteCorrupt` and the quick world's `ToolRecordingMiss` subclass it, and each message keeps its cause's own
+remedy. A recording run (`RECORD=1`) whose recorder refuses a call fails the run the same way, extending the #1162
+ruling to recording runs: a recording missing that call would fail its first replay anyway, and every cell after the
+refusal is spend it cannot keep. A live run with no recording is unaffected. Every other `ApparatusError` still
+excludes its one cell. A miss now names
 the prompt's key and where it parts from the recorded prompts: how many hold the same user message or open on the same
 80 characters, or the nearest recorded key and the character it parts at. Rung 5's recordings README says what to do
 when page text moves.
