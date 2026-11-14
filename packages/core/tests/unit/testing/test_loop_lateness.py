@@ -289,16 +289,17 @@ async def test_a_loop_measurement_on_crowded_cores_is_retaken(
     assert ticks == [(0.25, 0.35)]
 
 
-def test_a_path_on_the_loop_s_thread_alone_spins_nothing(
+def test_a_measurement_naming_no_threads_spins_nothing_and_one_thread_spins_one(
     scripted: Callable[[list[float]], None], crowded: Callable[[list[float]], list[int]]
 ) -> None:
-    """Flips if a measurement that names no threads (or one) pays for the spin."""
+    """Flips if a measurement that names no threads pays for the spin, or a one-thread CPU measurement (a thread's
+    own CPU time, which a busy sibling core or a throttled one inflates) is not checked on one thread."""
     scripted([0.0, 0.0])
-    asked = crowded([])
+    asked = crowded([1.0, 1.0])
 
     quietly(lambda: None, host_may_be_late=_BUDGET)
     quietly(lambda: None, host_may_be_late=_BUDGET, threads=1)
-    assert asked == []
+    assert asked == [1, 1]
 
 
 @pytest.fixture

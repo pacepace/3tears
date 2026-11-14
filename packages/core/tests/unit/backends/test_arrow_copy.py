@@ -58,6 +58,7 @@ from threetears.core.testing.loop_lateness import (
     added_lateness,
     hold_the_loop,
     latest,
+    quietly,
     ticks_while,
     trusted,
 )
@@ -329,9 +330,16 @@ def test_the_build_holds_the_lock_under_1_ms_between_turns() -> None:
     cannot stretch a stretch past its work. The one stretch ending in the IPC write is Arrow's, with the lock
     released (it hands a turn the moment it returns), and is not a hold."""
     records = _wide_records(16_000)
-    loop = _TimedLoop()
-    rows = copy_rows_arrow([f"c{n}" for n in range(42)], records, loop=loop)  # type: ignore[arg-type]
-    assert len(rows.ipc) > 10_000_000
+
+    def measure() -> _TimedLoop:
+        loop = _TimedLoop()
+        rows = copy_rows_arrow([f"c{n}" for n in range(42)], records, loop=loop)  # type: ignore[arg-type]
+        assert len(rows.ipc) > 10_000_000
+        return loop
+
+    # thread CPU time is still stretched by a busy sibling core or a throttled one: judged only when a spin on one
+    # thread ran at the host's best around it
+    loop = quietly(measure, host_may_be_late=0.020, threads=1)
     written = [held for held, step in loop.stretches if step == "_ipc_stream"]
     holds = sorted((held, step) for held, step in loop.stretches if step != "_ipc_stream")
     assert len(written) == 1 and len(holds) > 20

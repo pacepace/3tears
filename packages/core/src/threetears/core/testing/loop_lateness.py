@@ -519,8 +519,8 @@ def quietly(
 
 
 def _crowding(threads: int | None) -> float | None:
-    """:func:`cpu_crowding` on ``threads`` threads; None for a path on the loop's thread alone."""
-    return None if threads is None or threads < 2 else cpu_crowding(threads)
+    """:func:`cpu_crowding` on ``threads`` threads; None when the measurement names none (a loop's ticks alone)."""
+    return None if threads is None else cpu_crowding(threads)
 
 
 def _untrusted(

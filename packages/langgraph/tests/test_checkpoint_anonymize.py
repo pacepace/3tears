@@ -30,6 +30,7 @@ from langgraph.types import Command, interrupt
 
 from threetears.core.keyed import Dialect
 from threetears.core.testing.calibrate import bare_loop_lateness, budget_problem
+from threetears.core.testing.loop_lateness import HostTicker, Tick, trusted
 from threetears.observe.erasure import ANONYMIZED_MARKER
 from threetears.langgraph import anonymize_workers
 from threetears.langgraph import (
@@ -1331,7 +1332,6 @@ class TestARealSizedErasure:
             for type_tag, blob, _is_metadata in blobs:
                 serde.dumps_typed(serde.loads_typed((type_tag, blob)))
 
-        baseline = min(_timed(bare) for _ in range(3))
         classification = metadata_key_classification()
         in_process = min(
             _timed(lambda: anonymize_blobs(UUIDSafeSerializer, classification.identifying, classification.kept, blobs))
@@ -1343,12 +1343,24 @@ class TestARealSizedErasure:
         cold = time.perf_counter() - began
         assert first.checkpoints_rewritten == _REAL_THREADS * _REAL_CHECKPOINTS
         assert first.writes_rewritten == _REAL_THREADS * _REAL_CHECKPOINTS and not _leaks(executor)
-        took = float("inf")
-        for _ in range(3):
-            _restore(executor, snapshot, writes)
-            began = time.perf_counter()
-            await saver.aanonymize_threads(threads)
-            took = min(took, time.perf_counter() - began)
+
+        async def measure() -> tuple[tuple[float, float], list[Tick], list[Tick]]:
+            took = float("inf")
+            with HostTicker() as host:
+                first = time.perf_counter()
+                baseline = min(_timed(bare) for _ in range(3))
+                for _ in range(3):
+                    _restore(executor, snapshot, writes)
+                    began = time.perf_counter()
+                    await saver.aanonymize_threads(threads)
+                    took = min(took, time.perf_counter() - began)
+                last = time.perf_counter()
+            return (baseline, took), [(first, last)], host.ticks
+
+        # judged only on a quiet host whose cores the workers had free (the bare decodes on one thread)
+        (baseline, took), _, _ = await trusted(
+            measure, lambda taken: (taken[1], taken[2]), host_may_be_late=_LOOP_MAY_BE_LATE, threads=ANONYMIZE_WORKERS
+        )
 
         print(
             f"{len(blobs)} blobs, {sum(len(blob) for _t, blob, _m in blobs) / 1e6:.1f} MB: bare decode+encode "
@@ -1361,39 +1373,48 @@ class TestARealSizedErasure:
     async def test_the_loop_is_never_late_while_the_workers_anonymize(self) -> None:
         """a first run (every row rewritten) and a rerun (every row read, none written: a page passes without one
         write to yield on) leave the loop running, and its thread does the I/O, never the decoding."""
-        executor = _YieldingExecutor()
-        blobs = _real_rows(executor)
-        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
-        threads = [f"thread-real-{thread}" for thread in range(_REAL_THREADS)]
-        serde = UUIDSafeSerializer()
-        began_cpu = time.thread_time()
-        for type_tag, blob, _is_metadata in blobs:
-            serde.dumps_typed(serde.loads_typed((type_tag, blob)))
-        bare_cpu = time.thread_time() - began_cpu
-        # warm: the workers spawn at the first run, on a thread; this measures the runs, not the spawn
-        await _graph(saver).ainvoke(_turn(), _config("thread-warm"))
-        await saver.aanonymize_threads(["thread-warm"])
 
-        late = 0.0
-        ticking = True
+        async def measure() -> tuple[Any, ...]:
+            with HostTicker() as host:
+                executor = _YieldingExecutor()
+                blobs = _real_rows(executor)
+                saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+                threads = [f"thread-real-{thread}" for thread in range(_REAL_THREADS)]
+                serde = UUIDSafeSerializer()
+                began_cpu = time.thread_time()
+                for type_tag, blob, _is_metadata in blobs:
+                    serde.dumps_typed(serde.loads_typed((type_tag, blob)))
+                bare_cpu = time.thread_time() - began_cpu
+                # warm: the workers spawn at the first run, on a thread; this measures the runs, not the spawn
+                await _graph(saver).ainvoke(_turn(), _config("thread-warm"))
+                await saver.aanonymize_threads(["thread-warm"])
 
-        async def tick() -> None:
-            nonlocal late
-            while ticking:
-                start = time.perf_counter()
-                await asyncio.sleep(0.002)
-                late = max(late, time.perf_counter() - start - 0.002)
+                late = 0.0
+                ticking = True
 
-        ticker = asyncio.create_task(tick())
-        await asyncio.sleep(0.05)
-        began, began_cpu = time.perf_counter(), time.thread_time()
-        result = await saver.aanonymize_threads(threads)
-        again = await saver.aanonymize_threads(threads)
-        ran, loop_cpu = time.perf_counter() - began, time.thread_time() - began_cpu
-        await asyncio.sleep(0.05)
-        ticking = False
-        await ticker
-        bare = await bare_loop_lateness(ANONYMIZE_WORKERS, max(ran, 0.5))
+                async def tick() -> None:
+                    nonlocal late
+                    while ticking:
+                        start = time.perf_counter()
+                        await asyncio.sleep(0.002)
+                        late = max(late, time.perf_counter() - start - 0.002)
+
+                ticker = asyncio.create_task(tick())
+                await asyncio.sleep(0.05)
+                began, began_cpu = time.perf_counter(), time.thread_time()
+                result = await saver.aanonymize_threads(threads)
+                again = await saver.aanonymize_threads(threads)
+                ran, loop_cpu = time.perf_counter() - began, time.thread_time() - began_cpu
+                await asyncio.sleep(0.05)
+                ticking = False
+                await ticker
+                bare = await bare_loop_lateness(ANONYMIZE_WORKERS, max(ran, 0.5))
+            return (executor, result, again, ran, loop_cpu, bare_cpu, late, bare, [(began, began + ran)], host.ticks)
+
+        # judged only on a quiet host whose cores the workers had free; a retake reseeds the threads
+        executor, result, again, ran, loop_cpu, bare_cpu, late, bare, _, _ = await trusted(
+            measure, lambda taken: (taken[-2], taken[-1]), host_may_be_late=_LOOP_MAY_BE_LATE, threads=ANONYMIZE_WORKERS
+        )
 
         assert result.checkpoints_rewritten == _REAL_THREADS * _REAL_CHECKPOINTS and not _leaks(executor)
         assert (again.checkpoints_rewritten, again.writes_rewritten) == (0, 0)

@@ -28,7 +28,13 @@ from threetears.nats import NatsClient, Subject, set_default_namespace
 from threetears.nats._nats_py_internals import SEND_BOUND_BYTES, bounded_send_buffers, sends_are_bounded
 from threetears.nats.errors import PayloadTooLargeError, PublishError
 
+from threetears.core.testing.loop_lateness import HostTicker, Tick, trusted
+
 from .byte_server import ByteServer, byte_server
+
+#: the most the host's idle loop may be late over the timed rounds: the turn the judgement allows (CPython's switch
+#: interval)
+_HOST_MAY_BE_LATE = 0.005
 
 #: the size of the Arrow copy that showed the stall
 _COPY_BYTES = 12 * 1024 * 1024
@@ -198,18 +204,30 @@ async def test_a_large_request_holds_the_loop_no_longer_than_its_idle_jitter_and
     nats-py's one-``bytes`` copy of 64 MB holds the loop for the whole memcpy in one tick.
     """
     payload = _payload(_TIMED_BYTES)
-    rounds: list[tuple[float, float, float]] = []
-    async with _connected("large-request-loop") as (client, _server):
-        await client.flush()
-        for _ in range(3):
-            before = await _worst_tick(None, 0.2)
-            request = asyncio.ensure_future(
-                client.request_raw(subject=Subject.raw("3tears.copy"), payload=payload, timeout=_REQUEST_TIMEOUT)
-            )
-            during = await _worst_tick(request, 0.0)
-            await request
-            after = await _worst_tick(None, 0.2)
-            rounds.append((before, during, after))
+
+    async def measure() -> tuple[list[tuple[float, float, float]], list[Tick], list[Tick]]:
+        rounds: list[tuple[float, float, float]] = []
+        with HostTicker() as host:
+            first = time.perf_counter()
+            async with _connected("large-request-loop") as (client, _server):
+                await client.flush()
+                for _ in range(3):
+                    before = await _worst_tick(None, 0.2)
+                    request = asyncio.ensure_future(
+                        client.request_raw(
+                            subject=Subject.raw("3tears.copy"), payload=payload, timeout=_REQUEST_TIMEOUT
+                        )
+                    )
+                    during = await _worst_tick(request, 0.0)
+                    await request
+                    after = await _worst_tick(None, 0.2)
+                    rounds.append((before, during, after))
+            last = time.perf_counter()
+        return rounds, [(first, last)], host.ticks
+
+    # judged only when the host's own idle loop, in a process of its own, was on time within the turn the judgement
+    # allows: a host as late as the code may be leaves nothing to judge
+    rounds, _, _ = await trusted(measure, lambda taken: (taken[1], taken[2]), host_may_be_late=_HOST_MAY_BE_LATE)
     held = [
         f"round {index}: {during * 1000:.1f} ms against idle {max(before, after) * 1000:.1f} ms"
         for index, (before, during, after) in enumerate(rounds)
