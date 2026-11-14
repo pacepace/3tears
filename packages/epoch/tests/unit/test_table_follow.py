@@ -139,6 +139,21 @@ async def test_a_watch_on_a_key_never_written_is_watching_but_not_yet_healthy() 
     assert not follower.watching
 
 
+async def test_a_watch_on_a_change_log_not_yet_declared_is_watching_and_does_not_fail() -> None:
+    """a pod starts before any write declares the log: that is a table with no epoch yet, not a failed watch."""
+    from threetears.core.testing.kv import FakeNatsClient
+    from threetears.epoch import EpochGenerationReader
+
+    reader = EpochGenerationReader(FakeNatsClient(), absent_log_poll=timedelta(milliseconds=10))
+    follower = follow_tables(await _listening_registry(), reader, _TABLES)
+    try:
+        await asyncio.sleep(0.1)
+        assert follower.watching
+        assert all(health.consecutive_failures == 0 for health in follower.health.values())
+    finally:
+        await follower.stop()
+
+
 class _FailsWhenTold:
     """stands in for ``follow_generation_key``: watches until told to fail, then fails every time."""
 
