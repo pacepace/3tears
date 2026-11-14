@@ -192,6 +192,47 @@ class TestWhatAProposalReads:
         assert "field_accuracy" not in {proposal.bar.measure for proposal in result.proposals}
         assert "no interval" in result.not_proposed["field_accuracy"]
 
+    def test_a_spend_on_four_cases_is_not_proposed_and_the_reason_is_the_case_count(self) -> None:
+        """Twelve observations of four cases state a standard error and no interval (a spend or a time has none
+        under five cases above zero), so the reason is that, with what would give one, never "a single observation"."""
+        run, results = _measured(256, field_accuracy=0.95)
+        four = sorted({result.test_case_id for result in results})[:4]
+        kept = [
+            result.model_copy(
+                update={
+                    "host_measures": {
+                        **result.host_measures,
+                        "review_spend": 0.01 * (1 + four.index(result.test_case_id)),
+                    }
+                }
+            )
+            for result in results
+            if result.test_case_id in four
+        ]
+        spend = MetricDescriptor.model_validate(
+            {
+                "name": "review_spend",
+                "reader_name": "Review spend",
+                "data_type": "numeric",
+                "family": TOYHOST_EXTRACTION_FAMILY.name,
+                "transferability_class": "mechanical",
+                "attribution_scope": "subsystem",
+                "description": "What the review of one extraction cost.",
+                "higher_is_better": False,
+                "unit": "usd",
+                "nonnegative": True,
+            }
+        )
+
+        result = _proposals(_host([(run, kept)], extra_measures=[spend]))
+
+        assert len(kept) > 4, "several observations of each case"
+        assert result.not_proposed["review_spend"] == (
+            "no interval: a spend or a time states one from 5 cases above zero, and this has fewer (4 cases), so "
+            "nothing would account for the seed's own error"
+        )
+        assert "field_accuracy" in {proposal.bar.measure for proposal in result.proposals}
+
     def test_a_baseline_below_the_registered_bar_is_flagged_as_loosening_it(self) -> None:
         result = _proposals(_host([_measured(256, field_accuracy=0.8)]))
 

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.stats import INTERVAL_LEVEL, bar_seed
+from threetears.evals.analysis.stats import INTERVAL_LEVEL, SKEWED_INTERVAL_WITHHELD, bar_seed
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.bars import BarProposal, no_better_end
 from threetears.evals.schema.logs import get_logger
@@ -87,7 +87,8 @@ def propose_bars(
     it describe one set of observations. A cost or latency measure is over the turns the incumbent took
     (population ``delivered``), as its bar will be read; an incumbent none of whose calls took a turn has
     no such interval, and nothing is proposed on it. Nor is anything proposed on a measure observed fewer
-    than two times: one value has no interval to account for its own error.
+    than two times: one value has no interval to account for its own error; nor on a spend or a time with under
+    five cases above zero, which states none (``stats.SKEWED_INTERVAL_WITHHELD`` is the reason given).
 
     :param host: The host whose measures, bars and storage this reads.
     :ptype host: EvalHost
@@ -137,8 +138,11 @@ def propose_bars(
             continue
         if summary.ci_low is None or summary.ci_high is None:
             not_proposed[summary.name] = (
-                f"it was observed {summary.n} time(s), and a single observation has no interval to seed a threshold "
-                "from — nothing would account for the seed's own error"
+                f"{SKEWED_INTERVAL_WITHHELD} ({summary.n_independent} cases), so nothing would account for the "
+                "seed's own error"
+                if summary.sem is not None
+                else f"it was observed {summary.n} time(s), and a single observation has no interval to seed a "
+                "threshold from — nothing would account for the seed's own error"
             )
             continue
         higher_is_better = bool(descriptor.higher_is_better)

@@ -692,6 +692,13 @@ def _log_scale_mean_bounds(positives: Sequence[float], level: float) -> tuple[fl
     return math.exp(min(low, _LARGEST_EXPONENT)), math.exp(min(high, _LARGEST_EXPONENT))
 
 
+#: Why a spend or a time with a standard error states no interval, and what would give one: the sentence every
+#: surface that meets one says (a bar proposal's refusal, a reading's cell, an evidence row's dispersion).
+SKEWED_INTERVAL_WITHHELD: Final = (
+    f"no interval: a spend or a time states one from {SMALL_N_BAND_FLOOR} cases above zero, and this has fewer"
+)
+
+
 def _floored_mean_interval(
     values: Sequence[float], *, cases: Sequence[Hashable], floor: float = 0.0
 ) -> tuple[float, float] | None:
@@ -705,14 +712,18 @@ def _floored_mean_interval(
     **The interval is the union of two**, each over the cases (a case's repeats are one draw, so each case
     contributes the mean of its observations above the floor):
 
-    - the clipped t interval on the :func:`clustered_standard_error` (:func:`mean_interval`), which is right as
-      the cases grow whatever their distribution, and on symmetric values at any count;
+    - the clipped t interval on the :func:`clustered_standard_error` (:func:`mean_interval`), which is right on
+      symmetric values at any count, and on any values of finite variance only once the cases are many (100 were
+      not enough where one case in twenty cost 50 times the rest);
     - the log-scale interval (:func:`_log_scale_mean_bounds`), which is right on lognormal values at the counts
       an eval has.
 
     A union covers at least as often as either part, so it holds its level where either does. Over 5 to 50 cases
     it covered at least 96% on lognormal values up to log-SD 1.5, on gamma and exponential values, on normal ones,
-    and on cases repeated three times (``tests/test_simulated_floored_mean.py`` checks it on the engine). The
+    and on cases repeated three times. **Those shapes are all it is checked on.** The log-scale interval bounds
+    ``exp(mean of logs + variance of logs / 2)``, which is the mean only of a lognormal; where a few cases are many
+    times dearer than the rest it sits below the mean and the union is the t interval, with the t interval's
+    coverage: 36%, 63% and 86% at 5, 10 and 30 cases where one case in ten costs 30 times the rest (``tests/test_simulated_floored_mean.py`` checks it on the engine). The
     price is width. Against the t interval's, the median width was about 1.4 times at log-SD 0.5 on 10 cases, 2.7
     times at log-SD 1.0 and 10 times at log-SD 1.5, where the t interval's narrowness was the error; at 50 cases,
     1.1, 1.3 and 1.8 times.
@@ -725,11 +736,14 @@ def _floored_mean_interval(
     **Cases at the floor** (a cached call that cost nothing) cannot be read on the log scale. The mean is then
     the share of cases above the floor times their mean, and each factor is bounded at half the tail mass:
     Clopper–Pearson on the share, the log-scale bounds on the cases above the floor, their product united with the
-    t interval. Cases all equal, at the floor or above it, keep an interval of no width, as any equal values do.
+    t interval. **Every case at the floor states no interval**, like any sample with under five above it: a
+    ``[0, 0]`` at 95% says a free call is never followed by a paid one, and with four cases in five free a third of
+    5-case samples are all free. Cases all equal ABOVE the floor keep an interval of no width, as any equal values
+    do; that is a limit, not a claim (``docs/open-problems.md``).
 
     **What it does not hold.** No interval on the mean of an unbounded measure holds its level for every
-    distribution at a fixed count: a tail heavier than lognormal at log-SD 1.5 that the sample has not met can
-    still sit above it. And the log scale reads a case far BELOW the rest as spread, so one near-free case widens
+    distribution at a fixed count: where the cost is dominated by rare large cases the sample may not contain (an
+    agent that occasionally loops), it covers as the t interval does, far under its level. And the log scale reads a case far BELOW the rest as spread, so one near-free case widens
     the upper end well past what the mean could reach; it errs wide, never narrow
     (``docs/open-problems.md``, "An interval on a mean cost").
 
@@ -742,8 +756,9 @@ def _floored_mean_interval(
     :ptype cases: Sequence[Hashable]
     :param floor: The lowest value the measure can take (``MetricDescriptor.interval_floor``).
     :ptype floor: float
-    :return: ``(low, high)`` containing the mean of ``values``, or ``None`` below two cases, or where the cases
-        differ and fewer than :data:`SMALL_N_BAND_FLOOR` of them sit above the floor.
+    :return: ``(low, high)`` containing the mean of ``values``, or ``None`` below two cases, or where fewer than
+        :data:`SMALL_N_BAND_FLOOR` cases sit above the floor, unless every case is equal above it
+        (:data:`SKEWED_INTERVAL_WITHHELD` is the reason a surface gives).
     :rtype: tuple[float, float] | None
     :raises ValueError: ``values`` and ``cases`` differ in length.
     """
@@ -762,7 +777,7 @@ def _floored_mean_interval(
         sums[case] = sums.get(case, 0.0) + (value - floor)
         counts[case] = counts.get(case, 0) + 1
     above = [sums[case] / counts[case] for case in sums if sums[case] > 0.0]
-    if not above or (len(above) == groups and min(above) == max(above)):
+    if len(above) == groups and min(above) == max(above):
         return symmetric
     if len(above) < SMALL_N_BAND_FLOOR:
         return None
@@ -3162,6 +3177,7 @@ __all__ = [
     "PAIRED_TEST_NAME",
     "PPI_MIN_LABELLED_RESULTS",
     "SIGNIFICANCE_ALPHA",
+    "SKEWED_INTERVAL_WITHHELD",
     "SMALL_N_BAND_FLOOR",
     "UNPAIRED_TEST_NAME",
     "ChangeLabel",

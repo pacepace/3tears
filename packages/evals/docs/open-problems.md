@@ -64,14 +64,23 @@ No issue filed yet. The interval on the mean of a spend or a time is the
 union of the clipped t interval and a log-scale interval
 ([measuring soundly](measuring-soundly.md#variance-k-and-how-many-cases)). Three limits come with it.
 
-- **No interval holds for every distribution.** The mean of an unbounded measure can hide a rare large value at
-  any fixed number of cases. The interval is checked on lognormal values up to log-SD 1.5 and on lighter tails; a
-  tail heavier than that which the sample has not met can still sit above it.
+- **No interval on a mean holds its level when the cost is dominated by rare large cases the sample may not
+  contain.** An agent that occasionally loops is that shape. The interval holds on lognormal-like values (tested:
+  lognormal to log-SD 1.5, gamma, exponential, normal). With one case in ten 30 times the rest it is the t interval
+  and covers as it does: 40%, 66%, 89% and 94% at 5, 10, 30 and 100 cases against the 95% it states
+  (`tests/test_simulated_floored_mean.py` pins it as a strict xfail). Nothing on the page says which shape the cases
+  have; a cost's maximum and p95 beside its mean are the reader's only sign.
+- **Cases all equal above zero state an interval of no width.** Ten identical cheap calls say nothing of a dear
+  one: where one case in ten is 30 times the rest, 59% of 5-case samples and 35% of 10-case samples hold only the
+  cheap kind. Every case at zero states no interval; this one was left as every equal sample reads.
+- **Off the lognormal with values near zero it stays wide.** On uniform or exponential values it is about three
+  times the t interval's width at 100 cases, and does not narrow to it.
 - **A case far below the rest widens the upper end.** The log scale reads spread in either direction as skew, so
   one near-free case (a refusal, a cache hit) among ordinary ones gives an upper end well past what the mean could
   reach. It errs wide, never narrow. A fix would read the spread from the upper tail alone; none is built.
-- **Under five differing cases above zero there is no interval**, where a t interval used to be stated. Bounds that
-  hold their level there span orders of magnitude.
+- **Under five cases above zero there is no interval**, where a t interval used to be stated. Bounds that
+  hold their level there span orders of magnitude. A readings cell, an evidence row and a bar proposal say so, and
+  that five cases above zero give one.
 
 **Three intervals beside it are still t intervals, and none is checked on skewed values.** A count's (tokens, turns,
 calls, findings), clipped at zero: counts are skewed too, and one that is zero on most cases has too few cases above

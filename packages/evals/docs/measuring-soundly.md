@@ -312,8 +312,17 @@ k to the depth the question needs first, then add cases
 time are bounded below and right-skewed: a few long conversations cost several times the median, and
 a small sample usually lacks them, so its mean and its standard error both read low. The engine's interval on
 such a mean (a measure on the cost or latency axis, or in dollars or a unit of time) is the union of the t interval over cases, clipped at zero, and a log-scale interval on the case
-means, so it holds 95% where either does: on lognormal values at any count, and on any distribution as cases grow.
-It is wider than the t interval, and how much wider depends on the skew the cases show (median width against the
+means. It holds 95% on lognormal-like values, the shapes it is tested on from 5 to 50 cases: lognormal to
+log-SD 1.5, gamma, exponential, normal, repeated cases, a fifth of cases free. **It does not hold where rare large
+cases dominate the cost** (an agent that occasionally loops): the log-scale interval bounds the mean of a lognormal
+only, so there the union is the t interval and covers as it does.
+
+| One case in ten costs 30× the rest | 5 cases | 10 | 30 | 100 |
+|---|---|---|---|---|
+| Coverage of the stated 95% interval | 40% | 66% | 89% | 94% |
+
+No interval on a mean holds its level on that shape at a fixed count, since the sample may not contain the cases
+that set the mean; read a cost's maximum and p95 beside it. On the shapes it holds, it is wider than the t interval, and how much wider depends on the skew the cases show (median width against the
 t interval's, 2,000 replicates):
 
 | Cases | Log-SD 0.5 | Log-SD 1.0 | Log-SD 1.5 |
@@ -323,13 +332,15 @@ t interval's, 2,000 replicates):
 | 20 | 1.2× | 1.8× | 3.2× |
 | 50 | 1.1× | 1.3× | 1.8× |
 
-At log-SD 1.0 the 95th percentile is five times the median. Under five differing cases above zero no interval is
-stated, only the mean: bounds that hold there span orders of magnitude. The interval reads a case far below the
+At log-SD 1.0 the 95th percentile is five times the median. Under five cases above zero no interval is
+stated, every case free included, only the mean, and the page says so: bounds that hold there span orders of
+magnitude. Off the lognormal with values near zero (uniform, exponential) it stays about three times the t interval's
+width however many cases there are. The interval reads a case far below the
 rest as skew too, so one near-free case widens the upper end; it errs wide
 ([open problems](open-problems.md#an-interval-on-a-mean-cost-is-wide-and-holds-only-up-to-the-skew-tested-accepted-limit)).
 An interval on a difference between two arms' costs is still the paired t interval, and a count's (tokens, turns,
 calls) still the t interval clipped at zero.
-*Evidence:* in simulation (2026-11), the clipped t interval covered a lognormal mean 83% of the time at 10 cases and 91% at 50 (log-SD 1.0), and 72% at 10 cases at log-SD 1.5; the engine's interval covered at least 96% from 5 to 50 cases on lognormal values up to log-SD 1.5, on gamma, exponential and normal values, on cases repeated three times with and without lost repeats, and with a fifth of cases free (`tests/test_simulated_floored_mean.py`, 1,000 replicates each, held to 95% less Monte-Carlo error).
+*Evidence:* in simulation (2026-11), the clipped t interval covered a lognormal mean 83% of the time at 10 cases and 91% at 50 (log-SD 1.0), and 72% at 10 cases at log-SD 1.5; the engine's interval covered at least 96% from 5 to 50 cases on lognormal values up to log-SD 1.5, on gamma, exponential and normal values, on cases repeated three times with and without lost repeats, and with a fifth of cases free (`tests/test_simulated_floored_mean.py`, 1,000 replicates each, held to 95% less Monte-Carlo error and to 95% pooled); with one case in ten 30 times the rest it covered 40%, 66%, 89% and 94% at 5, 10, 30 and 100 cases, the clipped t interval's own coverage (the same file, a strict xfail).
 
 **A small bank misses whole failure classes.** A hand-picked handful covers the cases its author thought of. See
 [How many cases](building-an-inventory.md#how-many-cases).

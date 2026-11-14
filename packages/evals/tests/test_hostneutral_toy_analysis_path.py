@@ -243,22 +243,33 @@ class TestRetractionReadsOnlyTheArchivedFlag:
 class TestEveryIntervalIsAtTheOneLevel:
     """The bundle's intervals are computed at ``stats.INTERVAL_LEVEL``, not a level of its own."""
 
-    @pytest.mark.parametrize("name", ["total_ms", "field_accuracy"])
+    @pytest.mark.parametrize("name", ["total_ms", "cost_usd", "field_accuracy"])
     def test_moving_the_level_moves_every_cell_interval(self, name: str, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A score on a declared range takes the t interval, so its half-width is the multiplier at the moved level
-        times its standard error. A time takes the union of that interval and a log-scale one (2026-11: the t
-        interval alone covered a skewed mean far under its level, ``tests/test_simulated_floored_mean.py``), so
-        its upper end reaches at least that far; both narrow as the level drops."""
+        """A score on a declared range takes the t interval: its half-width is the multiplier at the moved level
+        times its standard error. A time or a spend takes the skewed interval (2026-11: the t interval alone
+        covered a skewed mean far under its level, ``tests/test_simulated_floored_mean.py``): its ends are exactly
+        ``observed_mean_interval(..., skewed=True)``'s over the cell's observations at the moved level, and not the
+        t interval's, so a bundle that stopped asking for it fails here."""
         at_95 = _measure(_bundle().cell_measures[0], name)
         monkeypatch.setattr(stats, "INTERVAL_LEVEL", 0.80)
-        at_80 = _measure(_bundle().cell_measures[0], name)
+        cell = _bundle().cell_measures[0]
+        at_80 = _measure(cell, name)
 
         # The interval is read on the cell's cases, not its observations (#590).
         half = stats.t_critical_two_sided(0.80, at_80.n_independent - 1) * at_80.sem
         if name == "field_accuracy":
             assert at_80.ci_high - at_80.mean == pytest.approx(half)
         else:
-            assert half * (1 - 1e-9) <= at_80.ci_high - at_80.mean < 1.5 * half
+            _, storage = toyhost_campaign()
+            (run_id,) = cell.run_ids
+            results = storage.query_eval_results_by_run(run_id, TOYHOST_SCOPE)
+            values = [result.latency.total_ms if name == "total_ms" else result.cost_usd for result in results]
+            cases = [result.test_case_id for result in results]
+            expected = stats.observed_mean_interval(values, cases=cases, floor=0.0, skewed=True)
+            assert expected is not None
+            assert (at_80.ci_low, at_80.ci_high) == pytest.approx(expected, rel=1e-12)
+            assert at_80.ci_high - at_80.mean > half * (1 + 1e-6), "wider above than the t interval it contains"
+        assert at_95.ci_low <= at_80.ci_low and at_80.ci_high <= at_95.ci_high
         assert at_80.ci_high - at_80.ci_low < at_95.ci_high - at_95.ci_low
 
 

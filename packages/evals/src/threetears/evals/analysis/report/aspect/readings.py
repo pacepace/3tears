@@ -34,7 +34,7 @@ from threetears.evals.analysis.report.words import (
     one_figure_each,
     reading_heading,
 )
-from threetears.evals.analysis.stats import INTERVAL_LEVEL
+from threetears.evals.analysis.stats import INTERVAL_LEVEL, SKEWED_INTERVAL_WITHHELD
 from threetears.evals.analysis.style import ArmName, declared_check_name
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, ClassifierStatistic, classifier_label_of
@@ -153,7 +153,7 @@ def _readings_blocks(
 
 def _value_text(summary: MeasureSummary, ruler: MeasureRuler, forms: PageForms) -> str:
     """One measure's figure as a reading's value cell: a rate as a count under :data:`MIN_CASES` cases, else the
-    figure with its interval (``98.9% [88.1%, 100%]``), or with its spread where no interval was computed."""
+    figure with its interval (``98.9% [88.1%, 100%]``), or alone, with the reason where the engine withheld one."""
     name = summary.name
     if summary.rate is not None:
         if summary.n_independent < MIN_CASES:
@@ -165,7 +165,12 @@ def _value_text(summary: MeasureSummary, ruler: MeasureRuler, forms: PageForms) 
     if summary.ci_low is not None and summary.ci_high is not None:
         mean = _unit_on(forms.ruled_level(ruler, summary.mean, measure=name, kind="measure").text, ruler)
         return f"{mean}{_interval(summary.ci_low, summary.ci_high, ruler, forms, measure=name, kind='measure')}"
-    return _figure_text(summary.mean, summary.sem, ruler, forms, measure=name, kind="measure")
+    if summary.sem is not None:
+        # A standard error and no interval is a spend or a time on too few cases above zero. Its mean ± that error
+        # would read as the interval the engine withheld, so the mean stands alone beside the reason.
+        mean = _unit_on(forms.ruled_level(ruler, summary.mean, measure=name, kind="measure").text, ruler)
+        return f"{mean} ({SKEWED_INTERVAL_WITHHELD})"
+    return _figure_text(summary.mean, None, ruler, forms, measure=name, kind="measure")
 
 
 def _figure_text(
