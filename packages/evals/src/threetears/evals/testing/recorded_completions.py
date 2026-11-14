@@ -62,7 +62,8 @@ one whose every recorded call already went to another eval's run in the process 
 an eval run twice on one) is refused for that cause, naming the eval, and the remedy is a client per eval, never a
 recording made again. It is an
 :class:`~threetears.evals.kernel.host.ReplayMiss`: a replay that cannot serve is a fault of the rig, not of the code
-under test, and its recordings are stale. So a candidate that meets one never has the cell scored: the cell is recorded
+under test, and the recording cannot serve the run. So a candidate that meets one never has the cell scored: the cell is
+recorded
 ``apparatus_failed`` naming the call, and the run fails with the miss. A judge call that meets one is never read as the
 judge's failed answer either: :func:`~threetears.evals.run.run_judge_llm` raises it, so a writer's pairwise pass fails
 at the miss, and a run's scoring judge, or a judge kind's judge under test on any one trial, fails the run naming the
@@ -162,12 +163,13 @@ _APPEND_LOCK = threading.Lock()
 
 
 class RecordingRefused(ReplayMiss):
-    """A recording cannot serve what was asked of it: a miss, a missing or unreadable file, a newer format.
+    """A recording cannot serve what was asked of it: a miss, a missing or unreadable file, a newer format, a call
+    already served to another eval, or a call refused while recording.
 
-    A :class:`~threetears.evals.kernel.host.ReplayMiss`, because a replay that cannot serve a call is the rig's fault
-    rather than the code under test's, and its recordings are stale: wherever it is met, a candidate's call or a judge's,
-    its cell is recorded ``apparatus_failed`` naming the call, never scored, and the run fails with it. The message
-    names what was asked and ends with :attr:`remedy`.
+    A :class:`~threetears.evals.kernel.host.ReplayMiss`, because a recording that cannot serve a call is the rig's fault
+    rather than the code under test's, and cannot serve the run: wherever it is met, a candidate's call or a judge's,
+    replaying or recording, its cell is recorded ``apparatus_failed`` naming the call, never scored, and the run fails
+    with it. The message names what was asked and ends with :attr:`remedy`, the cause's own.
 
     :ivar path: The recording.
     :ivar remedy: What makes a recording that serves it: usually the command that re-records it.

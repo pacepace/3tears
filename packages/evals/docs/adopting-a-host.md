@@ -270,8 +270,9 @@ replay as the `k` answers they were. Inside an eval's cell, each call is also re
 one prompt get back what each got, whatever order the cells run in. A recording made before format 3 noted no cell
 and is still read: repeat `i` is served the call of index `i`, and otherwise the first call left. A prompt the recording does not hold, or one asked once more than it was, is
 refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
-a `ReplayMiss`, so a candidate that meets one never has its cell scored: the cell is recorded `apparatus_failed`,
-naming the call, and the run fails. A judge that meets a `RecordingRefused` raises it too, rather than recording a
+a `ReplayMiss` ([rig failures](#rig-failures-a-broken-rig-costs-one-cell-a-recording-that-cannot-serve-costs-the-run)),
+so a candidate that meets one never has its cell scored: the cell is recorded `apparatus_failed`, naming the call, and
+the run fails; so does a call the recorder refuses while recording. A judge that meets a `RecordingRefused` raises it too, rather than recording a
 failed call: a run's scoring judge fails the run, naming the call, as does a judge kind's judge under test on any one
 trial, and a writer's pairwise pass fails. To name a
 prompt that changed under its recording before a replay starts, hand
@@ -2155,17 +2156,26 @@ cell.
 - **No silent live runs.** A kind that does not wire the handle it was given, or a candidate with no
   seams, is refused rather than run live under a replay.
 
-## Rig failures: a broken rig costs one cell, a stale recording the run
+## Rig failures: a broken rig costs one cell, a recording that cannot serve costs the run
 
-**A broken rig costs one cell; a stale recording costs the run.** A replay miss, a corrupt recording or any other
-fault of the measuring rig rather than of the world under test is an `ApparatusError`; your kind's
-tool boundary re-raises it instead of turning it into an ordinary tool failure. Out of `prepare` or
+**A broken rig costs one cell; a recording that cannot serve costs the run.** A fault of the measuring rig rather than
+of the world under test (a malformed seed, a harness bug, a recording that cannot serve) is an `ApparatusError`; your
+kind's tool boundary re-raises it instead of turning it into an ordinary tool failure. Out of `prepare` or
 `invoke`, the engine records that cell excluded (termination `apparatus_failed`) with whatever spend
-the kind had reported through its sink, and goes on. A replay miss (`ReplayMiss`, from `threetears.evals.kernel.host`:
-`RecordingRefused`, a cassette's miss or exhaustion, a world recording's miss) means the recordings are stale, so it
-fails the run wherever it is met, a candidate's call or a judge's (owner ruling): the cell is recorded the same way,
-naming the call, and the run raises the miss, so a replay never reads on fewer cells in silence. A host whose own
-replay misses raises `ReplayMiss`. A run whose every cell the rig excluded measured
+the kind had reported through its sink, and goes on.
+
+A recording that cannot serve this run is the exception: a `ReplayMiss` (from `threetears.evals.kernel.host`), whose
+causes are a call the recording does not hold or holds fewer times than asked, a recording file missing, unreadable or
+corrupt, a format this build does not read, a call already served to another eval's run, and a call refused while
+recording. `RecordingRefused`, a cassette's `CassetteMiss`, `CassetteExhausted` and `CassetteCorrupt`, and a world
+recording's `ToolRecordingMiss` are each one. It fails the run wherever it is met, a candidate's call or a judge's
+(owner ruling): the cell is recorded the same way, naming the call, and the run raises it, so a replay never reads on
+fewer cells in silence. Each message carries its cause's own remedy. A recording run (`RECORD=1`) fails at a refusal
+the same way, which extends the ruling to recording: a recording missing that call would fail its first replay anyway,
+and every cell after the refusal is spend it cannot keep. A live run with no recording never meets one. A host whose
+own recording cannot serve its run raises `ReplayMiss`.
+
+A run whose every cell the rig excluded measured
 nothing, and ends `failed` (`EveryCellApparatusFailedError`). So does a run whose every cell was excluded for any
 other fault the harness recorded on the cell (`NothingMeasuredError`): a provider that declined every call, a
 candidate that could not be built. Its reason quotes the cells' own errors, the status and the provider's message

@@ -230,7 +230,7 @@ replay = await Eval(QUERIES, LOOKUPS(answers_from_search), ["expected"], k=3).ru
 ```
 
 A replay asked something the recording does not hold is a rig failure, never run live: the cell is recorded as one,
-naming the call, and the run fails, since the recording is stale for every cell.
+naming the call, and the run fails, since the next cell reads the same recording.
 `RECORD=1` records the file again. A world with state takes no recording. A host's own kind can wire cassettes for its
 lookups next to a world ([cassettes](adopting-a-host.md#cassettes-recording-and-replaying-tools)).
 
@@ -371,7 +371,7 @@ for replay). Two lessons from this phase still hold:
   valuable because the model chooses its own query. The first host answered by delivering a seeded payload to
   *whatever* call the subject makes; that is a technique a host builds into its own tools, not an engine feature.
   From this came the split between a rig failure (a replay miss, a malformed seed:
-  [`ApparatusError`](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-a-stale-recording-the-run), never scored) and an
+  [`ApparatusError`](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-a-recording-that-cannot-serve-costs-the-run), never scored) and an
   in-world failure (a rate limit, an item not found: shown to the subject, which may be scored on how it copes).
 
 **Production handlers on seeded production state.** A muted call reported success, so it skipped every refusal

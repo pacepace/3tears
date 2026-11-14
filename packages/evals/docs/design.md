@@ -87,7 +87,7 @@ recommend the arm whatever it gained, and an undecided one is never read as safe
 **A failure of the rig is not a measurement.**
 A rig fault excludes its cell and is counted beside the value, never scored as the subject failing; a
 failure the candidate caused is the candidate's. Unknown is never shown as zero, and a cost nobody could
-price is unpriced, not free. See [rig failures](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-a-stale-recording-the-run).
+price is unpriced, not free. See [rig failures](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-a-recording-that-cannot-serve-costs-the-run).
 
 **Count test cases, not attempts.**
 Five cases run three times are five pieces of evidence, not fifteen: repeats of one case are correlated. So

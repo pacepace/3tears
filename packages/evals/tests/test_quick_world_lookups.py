@@ -4,7 +4,7 @@
 ``recording=``, a file that is not there is recorded — every call live, its first answer kept — and a file that is
 there is replayed, the tool never called; ``RECORD=1`` records it again. An ask the recording does not hold, or holds
 fewer times, is a replay miss — even when the agent catches the miss itself: its cell is recorded as the rig's failure,
-never scored, and the run fails, since the recording is stale for every cell (owner ruling, #1162). Graders read the
+never scored, and the run fails, since the next cell reads the same recording (owner ruling, #1162). Graders read the
 agent's answer, and the calls it made, on the :class:`~threetears.evals.quick.world.WorldOutcome`. Every arm of a
 comparison is served the same recording.
 """
@@ -117,7 +117,7 @@ async def test_an_ask_the_recording_does_not_hold_on_one_case_fails_the_run_nami
 ) -> None:
     """The recording serves two of the three cases, and the third asks what it does not hold. That cell once was
     excluded and the run completed on the two others, so a replay read on fewer cells in silence. A replay miss means
-    the recordings are stale, so the run now fails: the cell is recorded as the rig's failure, naming the call, and
+    the recording cannot serve the run, so the run now fails: the cell is recorded as the rig's failure, naming the call, and
     never scored."""
     dice = Dice()
     world = World(tools=[dice.roll], recording=tmp_path / "rolls.jsonl")
