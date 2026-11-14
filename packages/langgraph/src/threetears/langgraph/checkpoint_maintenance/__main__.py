@@ -40,7 +40,8 @@ from typing import TextIO
 
 import asyncpg
 
-from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
+from threetears.core.operator import operator_command
+from threetears.langgraph.checkpoint import DELTA_COUNTERS_METADATA_KEY, ThreeTierCheckpointSaver
 from threetears.langgraph.checkpoint_maintenance import (
     DEFAULT_BATCH,
     CheckpointSweep,
@@ -160,7 +161,10 @@ def _usage_text(usage: CheckpointUsage) -> str:
         f"{usage.prunable_write_rows} write rows, {_mib(usage.prunable_bytes)} of blobs",
     ]
     if usage.held_namespaces:
-        lines.append(f"  {usage.held_namespaces} namespaces kept whole: their newest checkpoint needs its ancestors")
+        lines.append(
+            f"  {usage.held_namespaces} namespaces kept whole: their newest checkpoint carries "
+            f"{DELTA_COUNTERS_METADATA_KEY!r}, so it needs its ancestors"
+        )
     if usage.unowned is not None:
         lines.append(_unowned_line(usage.unowned))
     lines.append("deleted rows become reusable space after VACUUM; only VACUUM FULL or pg_repack returns it to the OS")
@@ -185,6 +189,10 @@ def _sweep_text(sweep: CheckpointSweep) -> str:
     return text
 
 
+@operator_command(
+    "checkpoint maintenance command line: runs the report, prune or delete-unowned an operator asked for",
+    proof="packages/langgraph/tests/test_checkpoint_prune.py::test_the_whole_walks_are_reached_only_from_the_operator_s_command_line",
+)
 async def _run(args: argparse.Namespace, out: TextIO) -> int:
     """run one action against the database.
 
@@ -228,6 +236,10 @@ async def _run(args: argparse.Namespace, out: TextIO) -> int:
         await pool.close()
 
 
+@operator_command(
+    "checkpoint maintenance command line: the operator's entry, refusing a deleting action without --yes",
+    proof="packages/langgraph/tests/test_checkpoint_prune.py::test_the_whole_walks_are_reached_only_from_the_operator_s_command_line",
+)
 def main(argv: Sequence[str] | None = None) -> int:
     """parse the command line and run the action.
 

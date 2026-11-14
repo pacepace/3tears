@@ -37,15 +37,19 @@ say how much is waiting on that.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
+from threetears.core.operator import operator_command
+from threetears.core.keyed import AnyOf, Count, Fragment, Sort, Sum, aggregate_keyed, keyset_page
 from threetears.langgraph.checkpoint import (
-    DELTA_COUNTERS_METADATA_KEY,
+    CHECKPOINT_BLOB_BYTES,
+    WRITE_BLOB_BYTES,
     CheckpointPruneResult,
+    KeepLatestCounts,
     ThreeTierCheckpointSaver,
-    keep_latest_survivors_sql,
+    keep_latest_counts,
 )
 from threetears.langgraph.protocols import AsyncQueryExecutor
 from threetears.observe import get_logger
@@ -66,8 +70,23 @@ log = get_logger(__name__)
 #: threads named per ``aprune`` call when the caller names no batch size.
 DEFAULT_BATCH: Final = 200
 
-_CHECKPOINT_BYTES = "pg_column_size({a}.checkpoint) + coalesce(pg_column_size({a}.metadata_), 0)"
-_WRITE_BYTES = "pg_column_size({a}.blob)"
+#: ``t`` is its thread's last checkpoint row in the key's order: one row a thread, so a page of them is a page of threads
+_LAST_CHECKPOINT_OF_ITS_THREAD: Final = (
+    "NOT EXISTS (SELECT 1 FROM checkpoints later WHERE later.thread_id = t.thread_id "
+    "AND (later.checkpoint_ns, later.checkpoint_id) > (t.checkpoint_ns, t.checkpoint_id))"
+)
+
+#: ``t`` is the last write row in the key's order of a thread holding writes and no checkpoint
+_LAST_WRITE_OF_A_WRITES_ONLY_THREAD: Final = (
+    "NOT EXISTS (SELECT 1 FROM checkpoints c WHERE c.thread_id = t.thread_id) "
+    "AND NOT EXISTS (SELECT 1 FROM checkpoint_writes later WHERE later.thread_id = t.thread_id "
+    "AND (later.checkpoint_ns, later.checkpoint_id, later.task_id, later.idx) "
+    "> (t.checkpoint_ns, t.checkpoint_id, t.task_id, t.idx))"
+)
+
+#: the two walks that together name every stored thread once: those holding checkpoints, then those holding writes
+#: alone (whether the walk is of the writes)
+_THREAD_WALKS: Final = (False, True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,17 +203,6 @@ def _owned_cte(owned_threads_sql: str) -> str:
     return f"WITH owned AS (SELECT o.thread_id::text AS thread_id FROM ({body}) AS o(thread_id)) "
 
 
-def _not_owned(alias: str) -> str:
-    """the predicate true for a row of ``alias`` whose thread the owned set does not name.
-
-    :param alias: the table alias in the enclosing query
-    :ptype alias: str
-    :return: SQL predicate
-    :rtype: str
-    """
-    return f"NOT EXISTS (SELECT 1 FROM owned WHERE owned.thread_id = {alias}.thread_id)"
-
-
 def _int(row: dict[str, Any] | None, key: str) -> int:
     """an integer column of a row that may be absent or NULL (an aggregate over no rows).
 
@@ -235,49 +243,116 @@ async def _table_usage(executor: AsyncQueryExecutor, table: str) -> TableUsage:
     )
 
 
-async def _prunable(
-    executor: AsyncQueryExecutor, storage_thread_ids: Sequence[str] | None
-) -> tuple[int, int, int, int]:
-    """what ``keep_latest`` would remove, by the predicate the saver's prune runs.
+@operator_command(
+    "checkpoint maintenance (python -m): one page of the walk over every stored thread",
+    proof="packages/langgraph/tests/test_checkpoint_prune.py::test_the_whole_walks_are_reached_only_from_the_operator_s_command_line",
+)
+async def _thread_page(executor: AsyncQueryExecutor, writes_only: bool, after: str, size: int) -> list[str]:
+    """the next ``size`` stored thread ids after ``after``, in the key's order: one keyed page of the threads' last
+    rows by the primary key, of ``checkpoints``, or of ``checkpoint_writes`` for threads holding no checkpoint.
 
     :param executor: the database
     :ptype executor: AsyncQueryExecutor
-    :param storage_thread_ids: the stored thread ids to measure, or None for every thread
-    :ptype storage_thread_ids: Sequence[str] | None
-    :return: checkpoint rows, write rows, blob bytes, and namespaces held whole
-    :rtype: tuple[int, int, int, int]
+    :param writes_only: walk the threads holding writes and no checkpoint
+    :ptype writes_only: bool
+    :param after: the last thread id of the page before; ``""`` for the first
+    :ptype after: str
+    :param size: the most threads
+    :ptype size: int
+    :return: the thread ids, in the key's order
+    :rtype: list[str]
     """
-    marker = DELTA_COUNTERS_METADATA_KEY.encode()
-    args: list[object] = [marker] if storage_thread_ids is None else [marker, list(storage_thread_ids)]
-    threads_param = None if storage_thread_ids is None else 2
-    survivors = keep_latest_survivors_sql(marker_param=1, threads_param=threads_param)
-    match = "p.thread_id = k.thread_id AND p.checkpoint_ns = k.checkpoint_ns AND p.checkpoint_id < k.checkpoint_id"
-    checkpoints = await executor.fetchrow(
-        f"SELECT count(*) AS row_count, sum({_CHECKPOINT_BYTES.format(a='p')}) AS bytes "
-        f"FROM checkpoints p JOIN ({survivors}) k ON {match}",
-        *args,
+    if writes_only:
+        page = await keyset_page(
+            executor,
+            "checkpoint_writes",
+            columns=["thread_id"],
+            by={},
+            order=[Sort("thread_id", cast="text")],
+            limit=size,
+            where=[Fragment("t.thread_id > $1", (after,)), Fragment(_LAST_WRITE_OF_A_WRITES_ONLY_THREAD)],
+        )
+    else:
+        page = await keyset_page(
+            executor,
+            "checkpoints",
+            columns=["thread_id"],
+            by={},
+            order=[Sort("thread_id", cast="text")],
+            limit=size,
+            where=[Fragment("t.thread_id > $1", (after,)), Fragment(_LAST_CHECKPOINT_OF_ITS_THREAD)],
+        )
+    return [str(row["thread_id"]) for row in page.rows]
+
+
+@operator_command(
+    "checkpoint maintenance (python -m): the walk over every stored thread, a keyed page at a time",
+    proof="packages/langgraph/tests/test_checkpoint_prune.py::test_the_whole_walks_are_reached_only_from_the_operator_s_command_line",
+)
+async def _thread_pages(
+    executor: AsyncQueryExecutor, size: int, walks: Sequence[bool] = _THREAD_WALKS
+) -> AsyncIterator[list[str]]:
+    """every stored thread, a page of at most ``size`` at a time, each named once: by key, never in one read.
+
+    Each walk goes on from the last thread of its page before, so rows deleted behind it are never revisited and a
+    thread written during the walk is named when its id is still ahead.
+
+    :param executor: the database
+    :ptype executor: AsyncQueryExecutor
+    :param size: threads a page
+    :ptype size: int
+    :param walks: the walks taken, each whether it is of the threads holding writes alone
+    :ptype walks: Sequence[bool]
+    :return: the pages
+    :rtype: AsyncIterator[list[str]]
+    """
+    for writes_only in walks:
+        after = ""
+        while page := await _thread_page(executor, writes_only, after, size):
+            yield page
+            after = page[-1]
+
+
+async def _with_history(executor: AsyncQueryExecutor, page: Sequence[str]) -> list[str]:
+    """the threads of ``page`` holding more than one checkpoint in some namespace, in the page's order.
+
+    :param executor: the database
+    :ptype executor: AsyncQueryExecutor
+    :param page: stored thread ids
+    :ptype page: Sequence[str]
+    :return: those with history
+    :rtype: list[str]
+    """
+    namespaces = await aggregate_keyed(
+        executor,
+        "checkpoints",
+        aggregates={"checkpoints": Count()},
+        by={"thread_id": AnyOf(list(page))},
+        group=("thread_id", "checkpoint_ns"),
     )
-    writes = await executor.fetchrow(
-        f"SELECT count(*) AS row_count, sum({_WRITE_BYTES.format(a='p')}) AS bytes "
-        f"FROM checkpoint_writes p JOIN ({survivors}) k ON {match}",
-        *args,
-    )
-    held = await executor.fetchrow(
-        "SELECT count(*) AS held FROM ("
-        + keep_latest_survivors_sql(marker_param=1, threads_param=threads_param, held=True)
-        + ") h",
-        *args,
-    )
-    return (
-        _int(checkpoints, "row_count"),
-        _int(writes, "row_count"),
-        _int(checkpoints, "bytes") + _int(writes, "bytes"),
-        _int(held, "held"),
-    )
+    multi = {str(row["thread_id"]) for row in namespaces if int(row["checkpoints"]) > 1}
+    return [thread for thread in page if thread in multi]
+
+
+async def _unowned(executor: AsyncQueryExecutor, owned: str, page: Sequence[str]) -> list[str]:
+    """the threads of ``page`` the app's owned-threads query does not name, in the page's order.
+
+    :param executor: the database
+    :ptype executor: AsyncQueryExecutor
+    :param owned: the ``WITH owned AS (...)`` clause
+    :ptype owned: str
+    :param page: stored thread ids
+    :ptype page: Sequence[str]
+    :return: the unowned
+    :rtype: list[str]
+    """
+    rows = await executor.fetch(f"{owned}SELECT thread_id FROM owned WHERE thread_id = ANY($1::text[])", list(page))
+    named = {str(row["thread_id"]) for row in rows}
+    return [thread for thread in page if thread not in named]
 
 
 async def _thread_rows(executor: AsyncQueryExecutor, storage_thread_ids: Sequence[str]) -> tuple[int, int, int]:
-    """every row the named threads hold, which ``delete`` removes.
+    """every row the named threads hold, which ``delete`` removes, read by thread.
 
     :param executor: the database
     :ptype executor: AsyncQueryExecutor
@@ -286,16 +361,18 @@ async def _thread_rows(executor: AsyncQueryExecutor, storage_thread_ids: Sequenc
     :return: checkpoint rows, write rows, blob bytes
     :rtype: tuple[int, int, int]
     """
-    ids = list(storage_thread_ids)
-    checkpoints = await executor.fetchrow(
-        f"SELECT count(*) AS row_count, sum({_CHECKPOINT_BYTES.format(a='c')}) AS bytes "
-        "FROM checkpoints c WHERE c.thread_id = ANY($1::text[])",
-        ids,
+    threads = {"thread_id": AnyOf(list(storage_thread_ids))}
+    [checkpoints] = await aggregate_keyed(
+        executor,
+        "checkpoints",
+        aggregates={"row_count": Count(), "bytes": Sum(CHECKPOINT_BLOB_BYTES)},
+        by=threads,
     )
-    writes = await executor.fetchrow(
-        f"SELECT count(*) AS row_count, sum({_WRITE_BYTES.format(a='w')}) AS bytes "
-        "FROM checkpoint_writes w WHERE w.thread_id = ANY($1::text[])",
-        ids,
+    [writes] = await aggregate_keyed(
+        executor,
+        "checkpoint_writes",
+        aggregates={"row_count": Count(), "bytes": Sum(WRITE_BLOB_BYTES)},
+        by=threads,
     )
     return (
         _int(checkpoints, "row_count"),
@@ -304,13 +381,17 @@ async def _thread_rows(executor: AsyncQueryExecutor, storage_thread_ids: Sequenc
     )
 
 
+@operator_command(
+    "checkpoint maintenance report: visits every thread, a keyed page at a time, to count it exactly",
+    proof="packages/langgraph/tests/test_checkpoint_prune.py::test_the_whole_walks_are_reached_only_from_the_operator_s_command_line",
+)
 async def checkpoint_usage(executor: AsyncQueryExecutor, *, owned_threads_sql: str | None = None) -> CheckpointUsage:
     """measure the checkpoint tables. Read-only.
 
     Each table's row and dead-tuple figures are the statistics collector's estimates. Everything
     else -- threads, threads with history, prunable and unowned rows and bytes -- is counted
-    exactly, so on a large table this reads all of it; run it when the database can afford a full
-    scan.
+    exactly, a page of threads at a time by key, so on a large table this visits all of it; run it
+    when the database can afford that.
 
     :param executor: the database holding ``checkpoints`` and ``checkpoint_writes`` (on its search path)
     :ptype executor: AsyncQueryExecutor
@@ -321,44 +402,40 @@ async def checkpoint_usage(executor: AsyncQueryExecutor, *, owned_threads_sql: s
     :rtype: CheckpointUsage
     :raises ValueError: when ``owned_threads_sql`` is blank
     """
+    owned = None if owned_threads_sql is None else _owned_cte(owned_threads_sql)
     checkpoints = await _table_usage(executor, "checkpoints")
     writes = await _table_usage(executor, "checkpoint_writes")
-    threads = await executor.fetchrow(
-        "SELECT count(*) AS threads FROM (SELECT thread_id FROM checkpoints UNION SELECT thread_id FROM checkpoint_writes) t"
-    )
-    with_history = await executor.fetchrow(
-        "SELECT count(DISTINCT thread_id) AS threads FROM "
-        "(SELECT thread_id FROM checkpoints GROUP BY thread_id, checkpoint_ns HAVING count(*) > 1) multi"
-    )
-    prunable_checkpoints, prunable_writes, prunable_bytes, held = await _prunable(executor, None)
+    threads = with_history = prunable_checkpoints = prunable_writes = prunable_bytes = held = 0
+    unowned_threads = unowned_checkpoints = unowned_writes = unowned_bytes = 0
+    async for page in _thread_pages(executor, DEFAULT_BATCH):
+        threads += len(page)
+        with_history += len(await _with_history(executor, page))
+        counts: KeepLatestCounts = await keep_latest_counts(executor, page)
+        prunable_checkpoints += counts.checkpoint_rows
+        prunable_writes += counts.write_rows
+        prunable_bytes += counts.bytes
+        held += counts.namespaces_held
+        if owned is not None and (gone := await _unowned(executor, owned, page)):
+            cps, wrs, gone_bytes = await _thread_rows(executor, gone)
+            unowned_threads += len(gone)
+            unowned_checkpoints += cps
+            unowned_writes += wrs
+            unowned_bytes += gone_bytes
     unowned: UnownedUsage | None = None
-    if owned_threads_sql is not None:
-        owned = _owned_cte(owned_threads_sql)
+    if owned is not None:
         owned_count = await executor.fetchrow(f"{owned}SELECT count(*) AS owned FROM owned")
-        unowned_threads = await executor.fetchrow(
-            f"{owned}SELECT count(*) AS threads FROM (SELECT thread_id FROM checkpoints c WHERE {_not_owned('c')} "
-            f"UNION SELECT thread_id FROM checkpoint_writes w WHERE {_not_owned('w')}) t"
-        )
-        unowned_checkpoints = await executor.fetchrow(
-            f"{owned}SELECT count(*) AS row_count, sum({_CHECKPOINT_BYTES.format(a='c')}) AS bytes "
-            f"FROM checkpoints c WHERE {_not_owned('c')}"
-        )
-        unowned_writes = await executor.fetchrow(
-            f"{owned}SELECT count(*) AS row_count, sum({_WRITE_BYTES.format(a='w')}) AS bytes "
-            f"FROM checkpoint_writes w WHERE {_not_owned('w')}"
-        )
         unowned = UnownedUsage(
             owned_threads=_int(owned_count, "owned"),
-            threads=_int(unowned_threads, "threads"),
-            checkpoint_rows=_int(unowned_checkpoints, "row_count"),
-            write_rows=_int(unowned_writes, "row_count"),
-            bytes=_int(unowned_checkpoints, "bytes") + _int(unowned_writes, "bytes"),
+            threads=unowned_threads,
+            checkpoint_rows=unowned_checkpoints,
+            write_rows=unowned_writes,
+            bytes=unowned_bytes,
         )
     return CheckpointUsage(
         checkpoints=checkpoints,
         writes=writes,
-        threads=_int(threads, "threads"),
-        threads_with_history=_int(with_history, "threads"),
+        threads=threads,
+        threads_with_history=with_history,
         prunable_checkpoint_rows=prunable_checkpoints,
         prunable_write_rows=prunable_writes,
         prunable_bytes=prunable_bytes,
@@ -419,6 +496,10 @@ def _page_size(batch: int, limit: int | None, handled: int) -> int:
     return batch if limit is None else min(batch, limit - handled)
 
 
+@operator_command(
+    "checkpoint maintenance prune: keep_latest over every thread holding history, a keyed page at a time",
+    proof="packages/langgraph/tests/test_checkpoint_prune.py::test_the_whole_walks_are_reached_only_from_the_operator_s_command_line",
+)
 async def prune_threads(
     saver: ThreeTierCheckpointSaver,
     executor: AsyncQueryExecutor,
@@ -429,9 +510,10 @@ async def prune_threads(
 ) -> CheckpointSweep:
     """``keep_latest`` over every thread holding more than one checkpoint in some namespace.
 
-    Threads are found ``batch`` at a time in stored-id order, each page starting after the last
-    thread of the one before, so a run never revisits a thread and an interrupted run resumes by
-    running again. Each batch is one :meth:`~ThreeTierCheckpointSaver.aprune` call. A dry run reads
+    Threads are read ``batch`` at a time by key in stored-id order, each page starting after the
+    last thread of the one before, so a run never revisits a thread and an interrupted run resumes
+    by running again; those of a page holding history are one :meth:`~ThreeTierCheckpointSaver.aprune`
+    call. A dry run reads
     each batch's counts by the same predicate the prune runs and deletes nothing, so its totals are
     what a real run over an unchanged table deletes.
 
@@ -458,20 +540,15 @@ async def prune_threads(
     """
     _require_unscoped(saver, "prune_threads")
     _check_batch(batch, limit)
-    cursor = ""
     batches = threads = checkpoint_rows = write_rows = total_bytes = held = 0
-    while (size := _page_size(batch, limit, threads)) > 0:
-        rows = await executor.fetch(
-            "SELECT DISTINCT thread_id FROM (SELECT thread_id FROM checkpoints WHERE thread_id > $1 "
-            "GROUP BY thread_id, checkpoint_ns HAVING count(*) > 1 ORDER BY thread_id LIMIT $2) page "
-            "ORDER BY thread_id",
-            cursor,
-            size,
-        )
-        if not rows:
+    async for found in _thread_pages(executor, batch, _THREAD_WALKS[:1]):
+        if _page_size(batch, limit, threads) == 0:
             break
-        page = [str(row["thread_id"]) for row in rows]
-        cps, wrs, page_bytes, page_held = await _prunable(executor, page)
+        page = (await _with_history(executor, found))[: _page_size(batch, limit, threads)]
+        if not page:
+            continue
+        counts: KeepLatestCounts = await keep_latest_counts(executor, page)
+        cps, wrs, page_held = counts.checkpoint_rows, counts.write_rows, counts.namespaces_held
         if not dry_run:
             result: CheckpointPruneResult = await saver.aprune(page, strategy="keep_latest")
             cps, wrs, page_held = result.checkpoints_deleted, result.writes_deleted, result.namespaces_held
@@ -479,9 +556,8 @@ async def prune_threads(
         threads += len(page)
         checkpoint_rows += cps
         write_rows += wrs
-        total_bytes += page_bytes
+        total_bytes += counts.bytes
         held += page_held
-        cursor = page[-1]
         log.info(
             "checkpoint prune batch",
             extra={"dry_run": dry_run, "threads": len(page), "checkpoint_rows": cps, "write_rows": wrs},
@@ -498,6 +574,10 @@ async def prune_threads(
     )
 
 
+@operator_command(
+    "checkpoint maintenance delete-unowned: every thread the app no longer owns, a keyed page at a time",
+    proof="packages/langgraph/tests/test_checkpoint_prune.py::test_the_whole_walks_are_reached_only_from_the_operator_s_command_line",
+)
 async def delete_unowned_threads(
     saver: ThreeTierCheckpointSaver,
     executor: AsyncQueryExecutor,
@@ -509,7 +589,8 @@ async def delete_unowned_threads(
 ) -> CheckpointSweep:
     """delete every thread, in either table, that the app's owned-threads query does not name.
 
-    Threads are found ``batch`` at a time in stored-id order and each batch is one
+    Threads are read ``batch`` at a time by key in stored-id order (those holding checkpoints, then
+    those holding writes alone), and a page's unowned threads are one
     :meth:`~ThreeTierCheckpointSaver.aprune` call with ``strategy="delete"``. The owned set is
     re-read for every page, so a thread the app creates during the run is not deleted.
 
@@ -547,21 +628,13 @@ async def delete_unowned_threads(
             "owned_threads_sql returned no rows, so every checkpoint would be deleted. Check the query "
             "(schema, filter); an app that owns no thread empties its tables some other way."
         )
-    cursor = ""
     batches = threads = checkpoint_rows = write_rows = total_bytes = 0
-    while (size := _page_size(batch, limit, threads)) > 0:
-        rows = await executor.fetch(
-            f"{owned}SELECT thread_id FROM ("
-            f"(SELECT DISTINCT thread_id FROM checkpoints c WHERE thread_id > $1 AND {_not_owned('c')} "
-            "ORDER BY thread_id LIMIT $2) UNION "
-            f"(SELECT DISTINCT thread_id FROM checkpoint_writes w WHERE thread_id > $1 AND {_not_owned('w')} "
-            "ORDER BY thread_id LIMIT $2)) page ORDER BY thread_id LIMIT $2",
-            cursor,
-            size,
-        )
-        if not rows:
+    async for found in _thread_pages(executor, batch):
+        if _page_size(batch, limit, threads) == 0:
             break
-        page = [str(row["thread_id"]) for row in rows]
+        page = (await _unowned(executor, owned, found))[: _page_size(batch, limit, threads)]
+        if not page:
+            continue
         cps, wrs, page_bytes = await _thread_rows(executor, page)
         if not dry_run:
             result: CheckpointPruneResult = await saver.aprune(page, strategy="delete")
@@ -571,7 +644,6 @@ async def delete_unowned_threads(
         checkpoint_rows += cps
         write_rows += wrs
         total_bytes += page_bytes
-        cursor = page[-1]
         log.info(
             "checkpoint unowned-thread batch",
             extra={"dry_run": dry_run, "threads": len(page), "checkpoint_rows": cps, "write_rows": wrs},

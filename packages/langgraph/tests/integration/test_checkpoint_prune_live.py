@@ -687,10 +687,20 @@ async def _blob_bytes(executor: AsyncpgPoolAdapter, where_checkpoints: str, wher
     :return: the byte total
     :rtype: int
     """
+    # read by thread, as the code reads: YugabyteDB's pg_column_size answers a value's 1-byte varlena header through a
+    # key lookup and a 4-byte one through a sequential scan, so the rows are summed through the key on both engines
+    threads = [
+        row["thread_id"]
+        for row in await executor.fetch(
+            "SELECT thread_id FROM checkpoints UNION SELECT thread_id FROM checkpoint_writes"
+        )
+    ]
     row = await executor.fetchrow(
         "SELECT (SELECT coalesce(sum(pg_column_size(checkpoint) + coalesce(pg_column_size(metadata_), 0)), 0) "
-        f"FROM checkpoints WHERE {where_checkpoints}) + (SELECT coalesce(sum(pg_column_size(blob)), 0) "
-        f"FROM checkpoint_writes WHERE {where_writes}) AS total"
+        f"FROM checkpoints WHERE thread_id = ANY($1::text[]) AND ({where_checkpoints})) + "
+        "(SELECT coalesce(sum(pg_column_size(blob)), 0) "
+        f"FROM checkpoint_writes WHERE thread_id = ANY($1::text[]) AND ({where_writes})) AS total",
+        threads,
     )
     assert row is not None
     return int(row["total"])

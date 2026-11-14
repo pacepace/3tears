@@ -64,8 +64,13 @@ from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
 from threetears.core.keyed import (
+    AnyOf,
+    Count,
     Fragment,
+    KeyBatch,
     Sort,
+    Sum,
+    aggregate_keyed,
     delete_keyed,
     keyset_page,
     keyset_rows,
@@ -107,12 +112,15 @@ from langgraph.checkpoint.base import (
 )
 
 __all__ = [
+    "CHECKPOINT_BLOB_BYTES",
     "DELTA_COUNTERS_METADATA_KEY",
+    "WRITE_BLOB_BYTES",
     "CheckpointCacheError",
     "CheckpointPruneResult",
     "CheckpointPurgeIncompleteError",
+    "KeepLatestCounts",
     "ThreeTierCheckpointSaver",
-    "keep_latest_survivors_sql",
+    "keep_latest_counts",
 ]
 
 log = get_logger(__name__)
@@ -241,42 +249,167 @@ class CheckpointPruneResult:
     namespaces_held: int
 
 
-def keep_latest_survivors_sql(*, marker_param: int, threads_param: int | None = None, held: bool = False) -> str:
-    """the SELECT naming, per thread and namespace, the checkpoint ``keep_latest`` keeps.
+#: a row's blob bytes as stored (after compression), the figure a prune frees inside the table: a checkpoint's
+#: checkpoint and metadata, read as ``t``
+CHECKPOINT_BLOB_BYTES: Final = "pg_column_size(t.checkpoint) + coalesce(pg_column_size(t.metadata_), 0)"
 
-    One row per ``(thread_id, checkpoint_ns)`` with columns ``thread_id``, ``checkpoint_ns`` and
-    ``checkpoint_id``: the namespace's newest checkpoint, decided by ``max(checkpoint_id)`` -- the
-    same column and collation :meth:`ThreeTierCheckpointSaver.aget_tuple` and
-    :meth:`~ThreeTierCheckpointSaver.alist` order by (``ORDER BY checkpoint_id DESC``), so "the one
-    kept" and "the one a resume reads" cannot disagree. Every row of that namespace with a smaller
-    ``checkpoint_id``, in either table, is what ``keep_latest`` removes.
+#: a pending write's blob bytes as stored, read as ``t``
+WRITE_BLOB_BYTES: Final = "pg_column_size(t.blob)"
 
-    By default only namespaces ``keep_latest`` may prune are named: those whose newest checkpoint's
-    metadata does not carry :data:`DELTA_COUNTERS_METADATA_KEY`. With ``held=True`` it names the
-    others instead, the namespaces left whole. One builder serves the saver's prune and the
-    maintenance report, so a report's "would remove" is computed by the predicate the prune runs.
+#: ``kept`` is its namespace's newest checkpoint, which ``keep_latest`` keeps, and carries no
+#: :data:`DELTA_COUNTERS_METADATA_KEY` (``$1``, as bytes), so its ancestors may go. "Newest" is the largest
+#: ``checkpoint_id`` -- the column and collation :meth:`ThreeTierCheckpointSaver.aget_tuple` and
+#: :meth:`~ThreeTierCheckpointSaver.alist` order by (``ORDER BY checkpoint_id DESC``), so "the one kept" and "the one a
+#: resume reads" cannot disagree
+_KEPT_PRUNES: Final = (
+    "(kept.metadata_ IS NULL OR position($1::bytea IN kept.metadata_) = 0) "
+    "AND NOT EXISTS (SELECT 1 FROM checkpoints newer WHERE newer.thread_id = kept.thread_id "
+    "AND newer.checkpoint_ns = kept.checkpoint_ns AND newer.checkpoint_id > kept.checkpoint_id)"
+)
 
-    :param marker_param: the bind position holding ``DELTA_COUNTERS_METADATA_KEY`` as bytes
-    :ptype marker_param: int
-    :param threads_param: the bind position holding the stored thread ids (a text array) to limit
-        to, or None for every thread in the table
-    :ptype threads_param: int | None
-    :param held: name the namespaces kept whole instead of those that may be pruned
-    :ptype held: bool
-    :return: SQL text for use as a subquery
-    :rtype: str
+#: a row ``t`` (of either table) ``keep_latest`` removes: its namespace's kept checkpoint is newer, and lets its
+#: ancestors go. Decided when the statement runs, by the keys of ``t``'s own namespace
+_PRUNED_ROW: Final = (
+    "EXISTS (SELECT 1 FROM checkpoints kept WHERE kept.thread_id = t.thread_id "
+    f"AND kept.checkpoint_ns = t.checkpoint_ns AND kept.checkpoint_id > t.checkpoint_id AND {_KEPT_PRUNES})"
+)
+
+#: the same guard on the deleted ``checkpoints`` row, named by its table as a keyed delete writes it
+_PRUNED_CHECKPOINT: Final = (
+    "EXISTS (SELECT 1 FROM checkpoints kept WHERE kept.thread_id = checkpoints.thread_id "
+    "AND kept.checkpoint_ns = checkpoints.checkpoint_ns AND kept.checkpoint_id > checkpoints.checkpoint_id "
+    f"AND {_KEPT_PRUNES})"
+)
+
+#: the same guard on the deleted ``checkpoint_writes`` row
+_PRUNED_WRITE: Final = (
+    "EXISTS (SELECT 1 FROM checkpoints kept WHERE kept.thread_id = checkpoint_writes.thread_id "
+    "AND kept.checkpoint_ns = checkpoint_writes.checkpoint_ns AND kept.checkpoint_id > checkpoint_writes.checkpoint_id "
+    f"AND {_KEPT_PRUNES})"
+)
+
+#: a namespace ``keep_latest`` leaves whole: ``t`` is its newest checkpoint and carries
+#: :data:`DELTA_COUNTERS_METADATA_KEY` (``$1``, as bytes)
+_HELD_NEWEST: Final = (
+    "position($1::bytea IN t.metadata_) > 0 "
+    "AND NOT EXISTS (SELECT 1 FROM checkpoints newer WHERE newer.thread_id = t.thread_id "
+    "AND newer.checkpoint_ns = t.checkpoint_ns AND newer.checkpoint_id > t.checkpoint_id)"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class KeepLatestCounts:
+    """what ``keep_latest`` would remove from some threads, counted by the guards the prune deletes by.
+
+    :ivar checkpoint_rows: ``checkpoints`` rows it removes
+    :ivar write_rows: ``checkpoint_writes`` rows it removes
+    :ivar bytes: their blob bytes as stored (:data:`CHECKPOINT_BLOB_BYTES`, :data:`WRITE_BLOB_BYTES`)
+    :ivar namespaces_held: namespaces it leaves whole, their newest checkpoint still needing its ancestors
     """
-    thread_filter = f"WHERE thread_id = ANY(${threads_param}::text[]) " if threads_param is not None else ""
-    marker = f"position(${marker_param}::bytea IN c.metadata_)"
-    delta_test = f"{marker} > 0" if held else f"(c.metadata_ IS NULL OR {marker} = 0)"
-    return (
-        "SELECT c.thread_id, c.checkpoint_ns, c.checkpoint_id FROM checkpoints c "
-        "JOIN (SELECT thread_id, checkpoint_ns, max(checkpoint_id) AS checkpoint_id FROM checkpoints "
-        f"{thread_filter}GROUP BY thread_id, checkpoint_ns) newest "
-        "ON c.thread_id = newest.thread_id AND c.checkpoint_ns = newest.checkpoint_ns "
-        "AND c.checkpoint_id = newest.checkpoint_id "
-        f"WHERE {delta_test}"
+
+    checkpoint_rows: int
+    write_rows: int
+    bytes: int
+    namespaces_held: int
+
+
+def _number(value: Any) -> int:
+    """an aggregate's answer as an integer: a sum of no row is None (0), a ``bigint`` sum a ``Decimal``.
+
+    :param value: the answer
+    :ptype value: Any
+    :return: the integer
+    :rtype: int
+    """
+    return 0 if value is None else int(value)
+
+
+async def _held_namespaces(executor: AsyncQueryExecutor, storage_thread_ids: Sequence[str]) -> int:
+    """the namespaces of the named threads that ``keep_latest`` leaves whole, read by thread.
+
+    :param executor: the database
+    :ptype executor: AsyncQueryExecutor
+    :param storage_thread_ids: stored thread ids
+    :ptype storage_thread_ids: Sequence[str]
+    :return: the namespaces held
+    :rtype: int
+    """
+    [held] = await aggregate_keyed(
+        executor,
+        "checkpoints",
+        aggregates={"held": Count()},
+        by={"thread_id": AnyOf(list(storage_thread_ids))},
+        where=[Fragment(_HELD_NEWEST, (DELTA_COUNTERS_METADATA_KEY.encode(),))],
     )
+    return _number(held["held"])
+
+
+async def keep_latest_counts(executor: AsyncQueryExecutor, storage_thread_ids: Sequence[str]) -> KeepLatestCounts:
+    """what :meth:`ThreeTierCheckpointSaver.aprune` with ``keep_latest`` would remove from the named threads.
+
+    Read by thread, with the guards the prune's deletes carry (one definition each), so a report's "would remove" is
+    what the prune removes from an unchanged table.
+
+    :param executor: the database holding the checkpoint tables
+    :ptype executor: AsyncQueryExecutor
+    :param storage_thread_ids: the stored thread ids to measure
+    :ptype storage_thread_ids: Sequence[str]
+    :return: the rows and bytes it removes, and the namespaces it holds
+    :rtype: KeepLatestCounts
+    """
+    if not storage_thread_ids:
+        return KeepLatestCounts(checkpoint_rows=0, write_rows=0, bytes=0, namespaces_held=0)
+    threads = {"thread_id": AnyOf(list(storage_thread_ids))}
+    pruned = [Fragment(_PRUNED_ROW, (DELTA_COUNTERS_METADATA_KEY.encode(),))]
+    [checkpoints] = await aggregate_keyed(
+        executor,
+        "checkpoints",
+        aggregates={"row_count": Count(), "bytes": Sum(CHECKPOINT_BLOB_BYTES)},
+        by=threads,
+        where=pruned,
+    )
+    [writes] = await aggregate_keyed(
+        executor,
+        "checkpoint_writes",
+        aggregates={"row_count": Count(), "bytes": Sum(WRITE_BLOB_BYTES)},
+        by=threads,
+        where=pruned,
+    )
+    return KeepLatestCounts(
+        checkpoint_rows=_number(checkpoints["row_count"]),
+        write_rows=_number(writes["row_count"]),
+        bytes=_number(checkpoints["bytes"]) + _number(writes["bytes"]),
+        namespaces_held=await _held_namespaces(executor, storage_thread_ids),
+    )
+
+
+class _CountedTags:
+    """an executor whose every ``execute`` answer must carry its row count (:func:`_affected_rows`): a keyed delete
+    reads a tag naming no count as 0, and a prune never reports a number it did not read."""
+
+    def __init__(self, executor: AsyncQueryExecutor) -> None:
+        """wrap ``executor``.
+
+        :param executor: the database
+        :ptype executor: AsyncQueryExecutor
+        """
+        self._executor = executor
+        self.binds_native_arrays = getattr(executor, "binds_native_arrays", None)
+
+    async def execute(self, query: str, *args: Any) -> str:
+        """run a statement, refusing an answer that carries no row count.
+
+        :param query: SQL text
+        :ptype query: str
+        :param args: its parameters
+        :ptype args: Any
+        :return: the status tag
+        :rtype: str
+        :raises ValueError: when the tag carries no count
+        """
+        tag = await self._executor.execute(query, *args)
+        _affected_rows(tag)
+        return tag
 
 
 def _affected_rows(tag: str) -> int:
@@ -2102,10 +2235,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         its metadata, and ``keep_latest`` leaves such a namespace whole and counts it in
         ``namespaces_held``. A graph without delta channels never writes the key.
 
-        **Set-based, two statements** (``keep_latest``). The writes go first, then the checkpoints, each one
-        ``DELETE`` over every named thread, matching :meth:`adelete_thread`'s order. Each
-        statement decides "newest" at the moment it runs, so a checkpoint written between the
-        two can only make the second delete a checkpoint whose writes the first kept: those
+        **Keyed, set-based** (``keep_latest``). The writes go first, then the checkpoints, each a keyed
+        ``DELETE`` by thread (a batch of threads a statement), matching :meth:`adelete_thread`'s order. Each
+        statement's guard decides "newest", within the row's own namespace, at the moment it runs,
+        so a checkpoint written between the two can only make the second delete a checkpoint whose writes the first kept: those
         writes then belong to no checkpoint, read by nothing, and the next prune removes them. The
         other order could leave a stored checkpoint without its writes. Plain ``DELETE``
         statements rather than one data-modifying CTE because the executor's proxied transport
@@ -2152,13 +2285,14 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         failures: list[CheckpointCacheError] = []
         if storage_thread_ids and strategy == "delete":
             # counted before the purge, by the same stored ids, so the result says what went
-            counts = await self._exec.fetchrow(
-                "SELECT (SELECT count(*) FROM checkpoints WHERE thread_id = ANY($1::text[])) AS checkpoints, "
-                "(SELECT count(*) FROM checkpoint_writes WHERE thread_id = ANY($1::text[])) AS writes",
-                storage_thread_ids,
+            threads_named = {"thread_id": AnyOf(storage_thread_ids)}
+            [checkpoints] = await aggregate_keyed(
+                self._exec, "checkpoints", aggregates={"rows": Count()}, by=threads_named
             )
-            if counts is not None:
-                checkpoints_deleted, writes_deleted = int(counts["checkpoints"]), int(counts["writes"])
+            [writes] = await aggregate_keyed(
+                self._exec, "checkpoint_writes", aggregates={"rows": Count()}, by=threads_named
+            )
+            checkpoints_deleted, writes_deleted = _number(checkpoints["rows"]), _number(writes["rows"])
             for thread_id in threads:
                 try:
                     await self.adelete_thread(thread_id, customer=resolved)
@@ -2166,34 +2300,26 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                     # every thread is still purged; the cache failures are raised together below
                     failures.extend(exc.failures)
         elif storage_thread_ids:
-            marker = DELTA_COUNTERS_METADATA_KEY.encode()
-            held_row = await self._exec.fetchrow(
-                "SELECT count(*) AS held FROM ("
-                + keep_latest_survivors_sql(threads_param=1, marker_param=2, held=True)
-                + ") held",
-                storage_thread_ids,
-                marker,
-            )
-            held = int(held_row["held"]) if held_row is not None else 0
-            survivors = keep_latest_survivors_sql(threads_param=1, marker_param=2)
-            writes_deleted = _affected_rows(
-                await self._exec.execute(
-                    f"DELETE FROM checkpoint_writes pruned USING ({survivors}) kept "
-                    "WHERE pruned.thread_id = kept.thread_id AND pruned.checkpoint_ns = kept.checkpoint_ns "
-                    "AND pruned.checkpoint_id < kept.checkpoint_id",
-                    storage_thread_ids,
-                    marker,
+            held = await _held_namespaces(self._exec, storage_thread_ids)
+            # by thread, a batch of keys a statement; each row's namespace decided when the statement runs
+            marker = (DELTA_COUNTERS_METADATA_KEY.encode(),)
+            counted = _CountedTags(self._exec)
+            writes_deleted = (
+                await delete_keyed(
+                    counted,
+                    "checkpoint_writes",
+                    keys=KeyBatch(("thread_id",), [(thread,) for thread in storage_thread_ids]),
+                    where=[Fragment(_PRUNED_WRITE, marker)],
                 )
-            )
-            checkpoints_deleted = _affected_rows(
-                await self._exec.execute(
-                    f"DELETE FROM checkpoints pruned USING ({survivors}) kept "
-                    "WHERE pruned.thread_id = kept.thread_id AND pruned.checkpoint_ns = kept.checkpoint_ns "
-                    "AND pruned.checkpoint_id < kept.checkpoint_id",
-                    storage_thread_ids,
-                    marker,
+            ).count
+            checkpoints_deleted = (
+                await delete_keyed(
+                    counted,
+                    "checkpoints",
+                    keys=KeyBatch(("thread_id",), [(thread,) for thread in storage_thread_ids]),
+                    where=[Fragment(_PRUNED_CHECKPOINT, marker)],
                 )
-            )
+            ).count
             swept_all = True
             for thread_id, storage_thread_id in threads.items():
                 swept = await self._evict_thread_caches(
