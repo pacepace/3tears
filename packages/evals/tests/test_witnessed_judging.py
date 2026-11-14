@@ -479,6 +479,31 @@ class TestAJudgedRunIsHeldToItsCeiling:
             await _record(host, stamped, case, _output())
         assert len(judge.calls) == 1, "only the cell inside the ceiling was judged"
 
+    async def test_a_judge_send_that_may_have_been_billed_twice_counts_toward_the_ceiling(self) -> None:
+        """A saved cell's judge call met a send that broke before any response began, and was resent: $0.60 on its
+        row, and as much again the provider may have billed. Counted, $1.20 is past a $1.00 ceiling, so the next cell
+        is refused before its judge; from the row's cost alone, $0.60, it was judged."""
+        judge = _ScriptedJudge()
+        host, template, run, case = off_loop(_setup, judge)
+        stamped = off_loop(_stamped, host, template, run, max_cost_usd=1.0)
+        off_loop(host.storage.save_eval_run, stamped)
+        dropped = make_eval_result(
+            id="dropped",
+            scope_id=_SCOPE,
+            eval_run_id=stamped.id,
+            test_case_id=case.id,
+            usage=[
+                RoleUsage(
+                    role="judge", model=_JUDGE, cost_usd=0.6, price_source="script", call_count=1, maybe_billed_sends=1
+                )
+            ],
+        )
+        off_loop(host.storage.save_eval_result, dropped)
+
+        with pytest.raises(BudgetStoppedError, match=r"\$1\.2000 spent against a \$1\.0000 cap"):
+            await _record(host, stamped, case, _output())
+        assert judge.calls == [], "refused before its judge"
+
     async def test_the_ceiling_reads_the_saved_cells_a_page_at_a_time_and_counts_every_one(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
