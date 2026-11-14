@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: export, seed and carry follow-ups
+
+**Added:** the definition seed gives a stored template the corpus's presentation names it lacks (`goal_check_names`,
+`stratum_names`) on its current revision, fill-only: an entry the seed reads on the stored template is never overwritten, a
+name the stored template gives another entry is not given twice, and `updated_at` is unchanged, so a second boot
+writes nothing. The template write is not conditional, so an `update_template` landing between the seed's read and
+its write can be lost, as between two `update_template` calls.
+`SeedOutcome.presentation_named` reports what was filled and `SeedOutcome.presentation_fill_failed` a write the store
+refused. A host's own boot pass filling these names through `update_template` can be dropped.
+
+**Fixed:** `python -m threetears.evals.harness export` removes its partial directory when interrupted too, not only
+when a write fails, and the directory it writes takes the mode the process's umask gives a new directory rather than
+the owner-only mode of a temporary one, so a mint run as another user can read it. The `campaign_closure` docstring
+says what `closure_keys_digest` detects: a document added, removed or replaced, not one edited in place under its id.
+
+**Changed:** `DefinitionReset.render()` prints each live case a carry copied as `carried <source> -> <copy>`. A reset
+refused for live cases beside a corpus case reading `unknown` (a store seeded before `.30`) names the host's
+`seeded_digests` with the carry, so the first remedy is the call that succeeds, and the carry's own refusal names them
+ahead of the overwrite. A refusal of a template's own case says "its template", not "its judge template"; a host
+matching that text must update the match. A store failing part-way through a carry raises a `StorageError` naming each
+live case not yet carried, which stays only on the archived revision, since a retried reset does not carry it.
+
 ### evals: a page's forms, arm names and gate checks are worked out once per report input
 
 **Changed:** `PageForms.of`, `page_arm_names` and a `gate_check` read off any page (no `forms`) keep their results per

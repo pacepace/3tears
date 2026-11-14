@@ -270,8 +270,9 @@ replay as the `k` answers they were. Inside an eval's cell, each call is also re
 one prompt get back what each got, whatever order the cells run in. A recording made before format 3 noted no cell
 and is still read: repeat `i` is served the call of index `i`, and otherwise the first call left. A prompt the recording does not hold, or one asked once more than it was, is
 refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
-an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. To name a prompt that
-changed under its recording before a replay starts, hand
+an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. A judge that meets a
+`RecordingRefused` raises it too, rather than recording a failed call. To name a
+prompt that changed under its recording before a replay starts, hand
 `RecordedCompletions.check_covers(RECORDING, prompts, settings=...)` the prompts your code sends. A file holds one
 model's calls at one temperature, under any number of settings (one model at two efforts), and each client replays
 its own with `replay(path, settings=...)`; record a second model into a file of its own, since recording it onto
@@ -1965,11 +1966,21 @@ scope holds no version of is minted over their stored ids through `mint_case_set
 and reported under `case_set` as `<name> v1`; a scope holding any version keeps it (the next version is
 `case_set_mint`'s), so a host's own minting script over `case_set_mint` can be dropped.
 
-**A stored template's presentation fields reach it through `update_template`.** The seed fills empty slots only, and
-the template digest a reset reads leaves `goal_check_names` and `stratum_names` out, so `update_template` is the one
-seam that gives a stored template a check's or a stratum's reader name. A name holds at most `DECLARED_NAME_CHARS`
-characters, and `check_names(checks, {})` over the host's seeded checks shows which the namer leaves `GOAL_CHECK`, the
-ones worth a declared name.
+**The seed gives a stored template the corpus's presentation names it lacks.** The template digest a reset reads
+leaves `goal_check_names` and `stratum_names` out, so a name your corpus later declares for a template the store
+already holds would never reach it through a reset. The seed fills it instead, on every boot, into the template's
+current revision: each goal check the stored template holds and names nothing, and each stratum it names nothing, is
+given the corpus's name, unless the stored template already gives that name to another check or stratum. An entry the
+seed reads on the stored template is never overwritten, only those two fields are written, and `updated_at` stays
+where it was, so no run reads the template as edited. Each template filled is reported under
+`SeedOutcome.presentation_named` with the entries written; a write your store refuses is reported under
+`SeedOutcome.presentation_fill_failed` with its reason, logged at WARNING, and tried again on the next boot. A second
+boot writes nothing. The template write is not conditional, so a name an operator gives through `update_template`
+between the seed's read and its write can be lost, the same race two `update_template` calls have. A host pass at
+boot that fills these names through `update_template` can be dropped; `update_template` stays the seam for an
+operator's own names, which the seed then leaves alone. A name holds at most `DECLARED_NAME_CHARS` characters, and
+`check_names(checks, {})` over the host's seeded checks shows which the namer leaves `GOAL_CHECK`, the ones worth a
+declared name.
 
 **A corpus edit reaches a seeded scope only through a reset.** The seed fills empty slots and never updates, so a
 template whose cases grew in git stays as first seeded. Every definition the seed writes records the digest of what it
@@ -1993,23 +2004,25 @@ a row seeded before `.30`) or `absent` (the next boot seeds it).
 
 A reset never edits in place. A template's new content is its next **revision**: a new record under the same name
 (`EvalTemplate.revision`), the old one archived and readable by id, so a run, its results and its cases keep the
-content they ran against, and a launch, the seed and `load_template_by_name` resolve the name to the newest revision,
-which `templates_list` shows beside each template (`revision`). A judge template's new revision holds the corpus's
-whole battery, and the corpus's case sets over it are minted again; a template the corpus gives cases gets every one
-of them in its new revision. The reset refuses `customized` and `unknown` unless `overwrite_customized=True`. It
-refuses a judge template (or a template the corpus gives cases) holding live cases the corpus does not carry, such as
-cases frozen from people's ratings, unless one of two flags says what becomes of them. `carry_live_cases=True` copies
-each into the new revision beside the corpus's cases, content and labels unchanged, the copy naming its source
-(`EvalTestCase.carried_from`) and the source staying on the archived revision with its runs; the template then reads
-`current`, the same reset again writes nothing, and freezing the same labels into the new revision names the copy
-rather than adding the case again. `overwrite_customized=True` leaves them on the archived revision alone. The flags are independent: carrying never accepts a `customized` or `unknown` definition, and both together
-write the corpus over it and carry the cases. A case set outside the corpus over the archived revision is not minted
-again: `DefinitionReset.stranded_case_sets` names each one, and `carried` maps each source case to its copy for its
-next mint. A reset writes nothing when it refuses and names every refusal. Each row of the result (`DefinitionReset.reset`) names what it wrote
-and the stored record it replaced (`replaced_id`), and reads `discarded: true` only where that stored copy read
-`customized` or `unknown` and was written over under the flag. A campaign holding runs of two revisions of one
-template is refused (at creation, adding a run, and its bundle), since their results are two datasets; two templates
-that only share a name at one revision number are not revisions of each other and are not refused.
+content they ran against, and a launch, the seed and `load_template_by_name` resolve the name to the newest
+revision, which `templates_list` shows beside each template (`revision`). A judge template's new revision holds the
+corpus's whole battery, and the corpus's case sets over it are minted again; a template the corpus gives cases gets
+every one of them in its new revision. The reset refuses `customized` and `unknown` unless
+`overwrite_customized=True`. It refuses a judge template (or a template the corpus gives cases) holding live cases
+the corpus does not carry, such as cases frozen from people's ratings, unless one of two flags says what becomes of
+them. `carry_live_cases=True` copies each into the new revision beside the corpus's cases, content and labels
+unchanged, the copy naming its source (`EvalTestCase.carried_from`) and the source staying on the archived revision
+with its runs; the template then reads `current`, the same reset again writes nothing, and freezing the same labels
+into the new revision names the copy rather than adding the case again. `overwrite_customized=True` leaves them on
+the archived revision alone. The flags are independent: carrying never accepts a `customized` or `unknown`
+definition, and both together write the corpus over it and carry the cases. A case set outside the corpus over the
+archived revision is not minted again: `DefinitionReset.stranded_case_sets` names each one, and `carried` maps each
+source case to its copy (`render()` prints each pair) for its next mint. A reset writes nothing when it refuses and
+names every refusal. Each row of the result (`DefinitionReset.reset`) names what it wrote and the stored record it
+replaced (`replaced_id`), and reads `discarded: true` only where that stored copy read `customized` or `unknown` and
+was written over under the flag. A campaign holding runs of two revisions of one template is refused (at creation,
+adding a run, and its bundle), since their results are two datasets; two templates that only share a name at one
+revision number are not revisions of each other and are not refused.
 
 Rows seeded before the seed kept a record read `unknown`: judge cases and templates seeded before `.30`, and template
 cases your own seed wrote before `.32`, unless the corpus still has their content (`current`), and any new one.

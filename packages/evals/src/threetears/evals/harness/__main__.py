@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import math
+import os
 import shutil
 import sys
 import tempfile
@@ -65,7 +66,7 @@ from threetears.evals.ops import campaign_export
 from threetears.evals.quick.cli import EXIT_FAILED, EXIT_OK, EXIT_REFUSED, EXIT_RUN_DID_NOT_COMPLETE
 from threetears.evals.quick.files import EVAL_FILES, AfterRun, RunResult, Runnable, run_file
 from threetears.evals.testing import RecordingRefused
-from threetears.evals.schema.logs import contain, get_logger
+from threetears.evals.schema.logs import contain, contained, get_logger
 
 log = get_logger(__name__)
 
@@ -262,8 +263,10 @@ def _export_parser() -> argparse.ArgumentParser:
 def _write_whole(out: Path, files: Mapping[str, bytes]) -> None:
     """Write ``files`` as the directory ``out``, all of them or none.
 
-    They are written into a new sibling directory, which is then renamed to ``out``: a write failing part-way leaves
-    no ``out`` behind, so the same command can run again. ``out`` does not exist yet, or is empty, and is replaced.
+    They are written into a new sibling directory, which is then renamed to ``out``: a write failing or interrupted
+    part-way leaves neither ``out`` nor the sibling behind, so the same command can run again. ``out`` does not exist
+    yet, or is empty, and is replaced. The directory takes the mode a new directory takes under the process's umask,
+    not the owner-only mode the sibling is created with, so another user can read the export.
 
     :raises RefusedInput: A file or the directory cannot be written; nothing is left at ``out``.
     """
@@ -277,14 +280,29 @@ def _write_whole(out: Path, files: Mapping[str, bytes]) -> None:
     try:
         for name, data in files.items():
             (partial / name).write_bytes(data)
+        partial.chmod(_new_directory_mode())
         if out.is_dir():
             out.rmdir()  # empty, as checked before the export: the rename puts the whole export in its place
         partial.rename(out)
-    except OSError as unwritten:
-        shutil.rmtree(partial)
-        raise RefusedInput(
-            f"--out {out} cannot be written: {unwritten}", remedy="name a writable directory"
-        ) from unwritten
+    except BaseException as unwritten:  # an interrupt too: the sibling is removed, then whatever stopped it goes on
+        if partial.exists() and isinstance(unwritten, OSError):
+            shutil.rmtree(partial)
+        elif partial.exists():
+            # An interrupt stays what goes on: a cleanup that fails under it is recorded, never raised in its place.
+            with contained(f"{PROG} {EXPORT}: {partial} was not removed after an interrupt", log=log):
+                shutil.rmtree(partial)
+        if isinstance(unwritten, OSError):
+            raise RefusedInput(
+                f"--out {out} cannot be written: {unwritten}", remedy="name a writable directory"
+            ) from unwritten
+        raise
+
+
+def _new_directory_mode() -> int:
+    """The mode ``mkdir`` gives a new directory under this process's umask, which can only be read by setting it."""
+    umask = os.umask(0o077)
+    os.umask(umask)
+    return 0o777 & ~umask
 
 
 def _export(argv: Sequence[str]) -> int:

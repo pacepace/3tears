@@ -67,7 +67,7 @@ from typing import Literal
 
 from pydantic import ConfigDict, Field
 
-from threetears.evals.kernel.errors import ConflictError, ValidationFailedError
+from threetears.evals.kernel.errors import ConflictError, StorageError, ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost, TemplateChecks
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredJudgeCase, JudgeCase
@@ -215,8 +215,8 @@ class DefinitionReset(EvalBaseModel):
     )
 
     def render(self) -> str:
-        """A printable account: each definition and what it became, each case set left on an archived revision, then
-        the drift after."""
+        """A printable account: each definition and what it became, each live case carried and its copy, each case
+        set left on an archived revision, then the drift after."""
         lines = []
         for entry in self.reset:
             if not entry.written_id:
@@ -226,6 +226,7 @@ class DefinitionReset(EvalBaseModel):
             if entry.replaced_id:
                 line += f", replacing {entry.replaced_id}{' (discarded)' if entry.discarded else ''}"
             lines.append(line)
+        lines += [f"carried {source} -> {copy}" for source, copy in self.carried.items()]
         return "\n".join([*lines, *self.stranded_case_sets, self.after.summary()])
 
 
@@ -744,11 +745,31 @@ class _Refusal:
     why: str
     kept: bool = False
     uncarried: bool = False
+    #: Corpus cases reading ``unknown``, with no stored copy, beside live cases a carry keeps: refused under the carry,
+    #: since a live case may be an unrecorded seeding of one. The host's ``seeded_digests`` answer them, as the
+    #: overwrite does. On the refusal of such a case, its own key; on its template's refusal for uncarried cases,
+    #: those the carry it names would meet.
+    unrecorded: list[str] = field(default_factory=list)
+
+
+#: How a refusal names the record of what was seeded that a host supplies for a store seeded before ``.30``.
+_SEEDED_DIGESTS_REMEDY = "seeded_digests=run.corpus_digests(host, <the corpus seeded then>)"
+
+
+def _its_template(definition_type: str) -> str:
+    """How a refusal names the template a pulled definition is written with: a judge case's and a case set's is a
+    judge template, a template case's its own template."""
+    return "its template" if definition_type == "template_case" else "its judge template"
 
 
 def _reset_call(keys: Sequence[str], *, carry: bool, overwrite: bool) -> str:
     flags = (", carry_live_cases=True" if carry else "") + (", overwrite_customized=True" if overwrite else "")
     return f"run.reset_definitions(..., [{', '.join(repr(k) for k in keys)}]{flags})"
+
+
+def _with_seeded_digests(call: str) -> str:
+    """A :func:`_reset_call` that also hands the host's record of what it seeded."""
+    return f"{call.removesuffix(')')}, {_SEEDED_DIGESTS_REMEDY})"
 
 
 def reset_definitions(
@@ -794,7 +815,8 @@ def reset_definitions(
         or a judge config contradicts a live config of another name for its dimension; nothing was written, every
         refusal named.
     :raises StorageError: A write failed part-way. Every check ran first, so this is the store failing, and the
-        definitions written before it stand; the drift read says which.
+        definitions written before it stand; the drift read says which. A failure while carrying live cases names
+        each one not yet carried, left only on the archived revision, which a retried reset does not carry.
     :raises RefusedInput: The host supplies no template checks.
     """
     checks = host.checks_for("a definition reset")
@@ -821,9 +843,8 @@ def reset_definitions(
         if name in corpus_templates:
             templates[name] = None
         else:
-            refusals.append(
-                _Refusal(key, f"it resets with its judge template {name!r}, which the seed corpus does not carry")
-            )
+            its = _its_template(readings[key].definition_type)
+            refusals.append(_Refusal(key, f"it resets with {its} {name!r}, which the seed corpus does not carry"))
 
     for key in asked:
         reading = readings[key]
@@ -849,6 +870,7 @@ def reset_definitions(
     # A template's corpus cases, and a judge template's case sets, are written with it.
     pulled: dict[str, str] = {}
     carry: dict[str, list[EvalTestCase]] = {}
+    uncarried_refused: dict[str, _Refusal] = {}
     for name in templates:
         if not survey.holds_cases(corpus_templates[name]):
             continue
@@ -860,16 +882,15 @@ def reset_definitions(
         if carry_live_cases:
             carry[name] = uncarried
         elif not overwrite_customized:
-            refusals.append(
-                _Refusal(
-                    definition_key("eval_template", name),
-                    f"its revision {stored.revision} holds {len(uncarried)} live case(s) the seed corpus does not carry "
-                    f"({', '.join(case.id for case in uncarried)}), which the new revision carries only under "
-                    "carry_live_cases",
-                    kept=True,
-                    uncarried=True,
-                )
+            uncarried_refused[name] = _Refusal(
+                definition_key("eval_template", name),
+                f"its revision {stored.revision} holds {len(uncarried)} live case(s) the seed corpus does not carry "
+                f"({', '.join(case.id for case in uncarried)}), which the new revision carries only under "
+                "carry_live_cases",
+                kept=True,
+                uncarried=True,
             )
+            refusals.append(uncarried_refused[name])
     for key, name in pulled.items():
         reading = readings[key]
         if key in asked or reading.state not in KEPT_STATES or overwrite_customized:
@@ -877,19 +898,22 @@ def reset_definitions(
         # A pulled case reading `unknown` with a stored copy would write over that copy, which may be an operator's.
         # One with none is its template's question, which the template's uncarried cases answer: refused with them,
         # or, when they are carried, here, since a carried case may be an unrecorded seeding of it.
+        its = _its_template(reading.definition_type)
         if reading.definition_type == "case_set" or reading.state == "customized" or reading.stored_id:
-            refusals.append(
-                _Refusal(key, f"it is written with its judge template and reads {reading.state}", kept=True)
-            )
+            refusals.append(_Refusal(key, f"it is written with {its} and reads {reading.state}", kept=True))
         elif name in carry:
             refusals.append(
                 _Refusal(
                     key,
-                    f"it is written with its judge template and reads {reading.state}, and a live case carried beside "
-                    "it may be an unrecorded seeding of it",
+                    f"it is written with {its} and reads {reading.state}, and a live case carried beside it may be an "
+                    "unrecorded seeding of it",
                     kept=True,
+                    unrecorded=[key],
                 )
             )
+        elif name in uncarried_refused:
+            # Refused with its template's live cases; the carry that refusal names would refuse it in turn.
+            uncarried_refused[name].unrecorded.append(key)
     for name in list(sets):
         if corpus_sets[name].template in templates:
             del sets[name]
@@ -1113,12 +1137,21 @@ def _reset_template(
     carrying = f", carrying {len(carry)} live case(s)" if carry else ""
     entries = [_entry(reading, written.id, f"revision {revision}{carrying}")]
     copies: dict[str, str] = {}
-    for source in carry:
+    for done, source in enumerate(carry):
         # Content, payload, labels, stratum, name and seed record are the source's: only where it lives moves.
         copied = source.model_copy(
             update={"id": _new_id(), "template_id": written.id, "carried_from": source.id, "created_at": now}
         )
-        storage.save_test_case(copied)
+        try:
+            storage.save_test_case(copied)
+        except StorageError as failed:
+            # A retried carry reads the new revision, not the archived one, so it never finds the cases left behind.
+            left = [case.id for case in carry[done:]]
+            raise StorageError(
+                f"{failed.message}; {admitted.name!r} revision {revision} ({written.id}) was written and the revision "
+                f"it supersedes archived, and {len(left)} live case(s) not yet carried stay only on the archived "
+                f"revision, which no retried reset carries: {', '.join(left)}"
+            ) from failed
         copies[source.id] = copied.id
     if written.candidate_kind != JUDGE_KIND:
         for case_key, own_case in survey.own_of(admitted.name):
@@ -1156,21 +1189,35 @@ def _refuse(scope: str, refusals: Sequence[_Refusal], *, carry_live_cases: bool)
     """Raise one error naming every refusal: a conflict when each may be an operator's, else a validation failure.
 
     A template refused for live cases the corpus does not carry is answered first by carrying them, which keeps them
-    all, and second by the overwrite, which leaves them on the archived revision alone.
+    all, and second by the overwrite, which leaves them on the archived revision alone. A corpus case reading
+    ``unknown`` beside live cases a carry keeps is answered by the host's ``seeded_digests`` before the overwrite, and
+    the carry a remedy names takes them too when it would meet such a case, so following the first remedy never
+    meets a second refusal it did not name.
     """
     named = "; ".join(f"{refusal.key}: {refusal.why}" for refusal in refusals)
     message = f"nothing was reset in scope {scope!r}: {named}"
-    kept = [refusal.key for refusal in refusals if refusal.kept]
-    if len(kept) == len(refusals):
+    kept = list(dict.fromkeys(refusal.key for refusal in refusals if refusal.kept))
+    unrecorded = [key for refusal in refusals for key in refusal.unrecorded]
+    if all(refusal.kept for refusal in refusals):
         configs = " (a judge config contradicting another stays refused until one is archived)"
-        uncarried = [refusal.key for refusal in refusals if refusal.uncarried]
-        if uncarried and len(uncarried) == len(kept):
+        if all(refusal.uncarried for refusal in refusals):
+            carry_remedy = _reset_call(kept, carry=True, overwrite=False)
+            if unrecorded:
+                carry_remedy = (
+                    f"{_with_seeded_digests(carry_remedy)} carries each live case into the new revision beside the "
+                    f"corpus's cases, keeping every one: without the host's record of what it seeded, "
+                    f"{', '.join(unrecorded)} read unknown, and a carry beside them is refused, since a live case may "
+                    "be an unrecorded seeding of one"
+                )
+            else:
+                carry_remedy += (
+                    " carries each live case into the new revision beside the corpus's cases, keeping every one"
+                )
             remedy = (
-                f"{_reset_call(kept, carry=True, overwrite=False)} carries each live case into the new revision beside "
-                f"the corpus's cases, keeping every one; {_reset_call(kept, carry=False, overwrite=True)} leaves them "
-                "out of it, kept only on the archived revision and readable by id"
+                f"{carry_remedy}; {_reset_call(kept, carry=False, overwrite=True)} leaves them out of it, kept only "
+                "on the archived revision and readable by id"
             )
-        elif uncarried:
+        elif any(refusal.uncarried for refusal in refusals):
             remedy = (
                 f"compare each with the seed corpus; {_reset_call(kept, carry=True, overwrite=True)} replaces them, "
                 "keeping each superseded record archived and readable by id, and carries each live case into the new "
@@ -1182,6 +1229,12 @@ def _refuse(scope: str, refusals: Sequence[_Refusal], *, carry_live_cases: bool)
                 f"compare each with the seed corpus; {_reset_call(kept, carry=carry_live_cases, overwrite=True)} "
                 f"replaces them, keeping each superseded record archived and readable by id{configs}"
             )
+            if unrecorded:
+                again = _with_seeded_digests(_reset_call(kept, carry=carry_live_cases, overwrite=False))
+                remedy = (
+                    f"{again} reads {', '.join(unrecorded)} against what the host seeded, as stale or customized "
+                    f"rather than unknown; or {remedy}"
+                )
         raise ConflictError(message, remedy=remedy)
     raise ValidationFailedError(
         message, remedy="correct each definition the refusals name in the seed corpus, and reset again"
