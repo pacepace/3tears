@@ -103,8 +103,10 @@ corpus's **presentation names** it lacks (``goal_check_names`` and ``stratum_nam
 :data:`~threetears.evals.schema.models.TEMPLATE_PRESENTATION_FIELDS` no digest reads). The second fills, on the
 template's current revision, each entry the stored template holds none for: a goal check the stored template has
 and names nothing, a stratum it names nothing, with a name it gives no other check or stratum. An entry the store
-already holds is never overwritten, whoever wrote it, and ``updated_at`` is left as it is, as ``update_template``
-leaves it for a presentation-only edit; a second pass writes nothing. ``update_template`` stays the seam for an
+holds when the seed reads the template is never overwritten, and ``updated_at`` is left as it is, as
+``update_template`` leaves it for a presentation-only edit; a second pass writes nothing. The write is not
+conditional, so an ``update_template`` landing between the read and the write can be lost, the race two
+``update_template`` calls share. ``update_template`` stays the seam for an
 operator's own names.
 
 **Every definition it writes records what was seeded** (since ``.30``): a template, rubric dim, judge config and case

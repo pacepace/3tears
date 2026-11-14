@@ -288,6 +288,25 @@ def test_an_interrupted_write_leaves_no_directory_and_the_interrupt_goes_on(
     assert list(tmp_path.iterdir()) == [], "neither the export nor its partial directory is left behind"
 
 
+def test_a_cleanup_failing_under_an_interrupt_is_recorded_and_the_interrupt_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    out = tmp_path / "export"
+    args = _export_args(out, host=f"{__name__}:courier_export_host", scope=COURIER_SCOPE, campaign=_courier_campaign())
+
+    def interrupted(path: Path, data: bytes) -> int:
+        raise KeyboardInterrupt
+
+    def unremovable(path: Path) -> None:
+        raise OSError(16, "Device or resource busy")
+
+    monkeypatch.setattr(Path, "write_bytes", interrupted)
+    monkeypatch.setattr("threetears.evals.harness.__main__.shutil.rmtree", unremovable)
+    with pytest.raises(KeyboardInterrupt):
+        main(args)
+    assert any("was not removed after an interrupt" in record.getMessage() for record in caplog.records)
+
+
 def test_the_export_directory_takes_the_umask_mode_not_the_owner_only_one(tmp_path: Path) -> None:
     out = tmp_path / "export"
     umask = os.umask(0o022)
