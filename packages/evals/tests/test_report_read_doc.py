@@ -53,6 +53,7 @@ from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report.doc_page.store import read_report_doc
 from threetears.evals.kernel.campaign import EvalAnalysis
+from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.report_doc import EvalReportSession
 from threetears.evals.kernel.report_snapshot import report_snapshot_id
@@ -319,6 +320,47 @@ async def test_a_document_that_no_longer_reads_gets_the_code_only_page_and_the_l
     (said, *_) = _code_only_with_the_line(fixture, analysis.id, "doc")
 
     assert said.needs_regeneration is not None and _WHY[unread] in said.needs_regeneration
+
+
+async def test_the_listing_marks_a_document_whose_snapshot_is_gone_as_the_report_read_does() -> None:
+    """The listing checks the snapshot is still stored, without reading it, so its line agrees with the page (#1020)."""
+    store = InMemoryDocumentStore()
+    fixture = off_loop(ops_fixture, store=store)
+    analysis = await _generated(fixture)
+    assert analysis.report_doc_id is not None
+    (before,) = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    assert before.needs_regeneration is None and before.findings > 0
+
+    _no_longer_reads(store, fixture, analysis.report_doc_id, "snapshot_gone")
+
+    (line,) = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    (said, *_) = _code_only_with_the_line(fixture, analysis.id, "doc")
+    assert line.needs_regeneration is not None and line.needs_regeneration.startswith(NO_LONGER_READS)
+    assert "which is gone" in line.needs_regeneration and "which is gone" in (said.needs_regeneration or "")
+    assert (line.findings, line.draft) == (0, False)
+
+
+def test_a_snapshot_s_existence_is_read_without_shipping_it() -> None:
+    store = _KeptFieldsRecorded()
+    storage = EvalStorage(store)
+    store.upsert({"id": "snap-1", "scope_id": TOYHOST_SCOPE, "doc_type": "eval_report_snapshot", "heavy": "x" * 100})
+
+    assert off_loop(storage.report_snapshot_stored, "snap-1", TOYHOST_SCOPE)
+    assert not off_loop(storage.report_snapshot_stored, "snap-gone", TOYHOST_SCOPE)
+    assert not off_loop(storage.report_snapshot_stored, "snap-1", "another-scope")
+    assert store.kept == [("id",)] * 3
+
+
+class _KeptFieldsRecorded(InMemoryDocumentStore):
+    """The reference store, recording the ``keep`` of each ``get_many`` it serves."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.kept: list[tuple[str, ...]] = []
+
+    def get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        self.kept.append(tuple(kwargs.get("keep", ())))
+        return super().get_many(doc_type, doc_ids, scope_id, **kwargs)
 
 
 @pytest.mark.parametrize("unread", [name for name in _UNREAD if name != "doc_deleted"])

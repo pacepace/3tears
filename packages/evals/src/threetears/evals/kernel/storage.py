@@ -1681,6 +1681,28 @@ class EvalStorage:
         """
         return self._load(EvalReportSnapshot, snapshot_id, scope_id)
 
+    def report_snapshot_stored(self, snapshot_id: str, scope_id: str, /) -> bool:
+        """Whether a report snapshot is stored under the id in the scope, read without shipping it.
+
+        The cheap form of :meth:`load_report_snapshot` for a reader that only needs to know the snapshot is still
+        there (an analysis listing, which marks a report document whose snapshot is gone): one ``get_many`` that
+        keeps the snapshot's ``id`` alone, so its report input, most of what it weighs, is never shipped. Whether a
+        stored snapshot still reads under this build is not answered; only :meth:`load_report_snapshot` answers that.
+
+        **Provisional:** this method may change before it is declared part of the host contract.
+
+        :param snapshot_id: The snapshot's id.
+        :ptype snapshot_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: ``True`` when a document of the snapshot's type is stored under the id; ``False`` when none is.
+        :rtype: bool
+        :raises StorageError: The store failed to answer.
+        """
+        doc_type = EvalReportSnapshot.model_fields["doc_type"].default
+        with _read_outage(f"report snapshot {snapshot_id!r}"):
+            return bool(self._store.get_many(doc_type, [snapshot_id], scope_id, keep=("id",)))
+
     def delete_report_snapshot(self, snapshot_id: str, scope_id: str) -> bool:
         """Delete a report snapshot by id within a scope, raw, reporting whether there was one.
 

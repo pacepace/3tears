@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: store reads (#1052, #1053, #1057, #1059)
+### evals: store reads (#1020, #1052, #1053, #1057, #1059)
 
 **Changed:** `fold_groups` folds each row into its group as it arrives and lets it go, so a fold holds its groups'
 answers, never the rows; a measure refuses a value when the fold reaches it. The engine's grouping of a store without
@@ -41,6 +41,12 @@ an async generator, so a driver's cursor class kept its cursor open (#1059 item 
 keys in one call: one `by_doc_type` with the runs as a `field_in` predicate, the fields a key read leaves out left
 out, and each row checked as the one-run key read checks it. A host store needs nothing new. `campaign_arms` reads its
 runs' keys through it, one store call where it made one per run (`CampaignStore` gains the method) (#1053 item 2).
+
+**Fixed:** `analyses_list` marks a `doc` analysis whose report document was written from a snapshot that is gone:
+its line leads with the one regenerate line, says the snapshot is gone and counts no findings, as `report_read` renders
+it, where `needs_regeneration` stayed `None`. **Added (provisional):** `EvalStorage.report_snapshot_stored(snapshot_id,
+scope_id)`, the cheap existence read the listing makes: one `get_many` keeping the snapshot's `id` alone, so its report
+input is never shipped. A snapshot stored but no longer reading is still left to the report read (#1020 item 1).
 
 ### evals: export, seed and carry follow-ups
 
