@@ -2455,7 +2455,9 @@ class BudgetStop(EvalBaseModel, CoreShapeModel):
     calls is paid for, so judging stays within it wherever its price ceiling bounds the bill; a cell whose judging
     it could not admit is set
     aside unjudged, and the first such cell stops the run as a crossing does. A run stopped by both ceilings at
-    one boundary carries one record for each (``EvalRun.budget_stops``).
+    one boundary carries one record for each (``EvalRun.budget_stops``). A run the account's refusal or the
+    unserved-model circuit stopped first, whose running cell's judging the cap then set aside, ends ``exhausted`` and
+    carries the cap's record all the same, so its ``cells_not_judged`` is kept.
 
     :ivar currency: What the ceiling counts.
     :ivar ceiling: The ceiling, in the currency.
@@ -4521,8 +4523,10 @@ class EvalRun(CoreDocumentModel):
             "past a ceiling by what they add. The cost cap also admits each cell's judging before it is paid for, "
             "and stops the run at the first cell whose judging it sets aside. Both are recorded when both tripped at "
             "the same boundary. Written with the "
-            "``budget_stopped`` status. None on a run no ceiling stopped, including a run stopped by its wall-clock "
-            "budget (``budget_stop_reason``) and one whose writer predates the field."
+            "``budget_stopped`` status, and with ``exhausted`` when the cost cap set a running cell's judging aside "
+            "after the account's refusal or the unserved-model circuit had stopped the run, so the cells it left "
+            "unjudged are counted however the run stopped. None on a run no ceiling stopped, including a run stopped "
+            "by its wall-clock budget (``budget_stop_reason``) and one whose writer predates the field."
         ),
     )
     failed_because: StoredFailedBecause | None = Field(

@@ -717,6 +717,12 @@ _JUDGING_SET_ASIDE = (
 )
 
 
+class _OnSetAside(Protocol):
+    """What a :class:`_JudgingGate` tells the run when the cap refuses a cell's judging (:meth:`_JudgingGate.set_aside`)."""
+
+    def __call__(self, breach: CapBreach, pending: float | None, *, judge_faulted: bool = False) -> None: ...
+
+
 class _JudgeHold:
     """One cell's judge phase, admitted under the run's cost cap until it is released.
 
@@ -747,11 +753,15 @@ class _JudgeHold:
         billed = self._billed() - self._billed_at_admission if self._billed is not None else 0.0
         return max(self.usd - billed, 0.0)
 
-    def may_send(self) -> bool:
+    def may_send(self, *, judge_faulted: bool = False) -> bool:
         """Whether the next call of a phase holding the judging alone may be sent: the run is within its cap.
 
-        The first refusal sets the cell aside (:meth:`_JudgingGate.set_aside`); the phase sends nothing after it.
+        The first refusal is reported to the gate (:meth:`_JudgingGate.set_aside`), which stops the run; the phase
+        sends nothing after it.
 
+        :param judge_faulted: Whether the judge already failed the phase on a dim it asked, so a refusal leaves the
+            cell the judge's fault rather than one the cap set aside.
+        :ptype judge_faulted: bool
         :return: True while what the run has spent, landed and running, is within its cap.
         :rtype: bool
         """
@@ -759,7 +769,7 @@ class _JudgeHold:
         breach = self.gate.budget_gate(running)
         if breach is None:
             return True
-        self.gate.set_aside(breach, running)
+        self.gate.set_aside(breach, running, judge_faulted=judge_faulted)
         return False
 
     def release(self) -> None:
@@ -789,7 +799,7 @@ class _JudgingGate:
         self,
         budget_gate: Callable[[float | None], CapBreach | None],
         running: Callable[[], float | None],
-        on_set_aside: Callable[[CapBreach, float | None], None],
+        on_set_aside: _OnSetAside,
     ) -> None:
         """Bind the gate to the run's cost cap and to how the run reads its running cells' spend.
 
@@ -798,8 +808,8 @@ class _JudgingGate:
         :param running: What the running cells have spent so far; ``None`` once some of it could not be priced.
         :ptype running: Callable[[], float | None]
         :param on_set_aside: Told once for each cell set aside, with the breach that refused it and the pending
-            amount the breach counted beside what had landed.
-        :ptype on_set_aside: Callable[[CapBreach, float | None], None]
+            amount the breach counted beside what had landed, and whether the judge had already failed the cell.
+        :ptype on_set_aside: _OnSetAside
         """
         self.budget_gate = budget_gate
         self.running = running
@@ -885,15 +895,18 @@ class _JudgingGate:
         released, self._released = self._released, asyncio.Event()
         released.set()
 
-    def set_aside(self, breach: CapBreach, pending: float | None) -> None:
+    def set_aside(self, breach: CapBreach, pending: float | None, *, judge_faulted: bool = False) -> None:
         """Report one cell set aside, with the breach that refused it.
 
         :param breach: The cap's reading that refused the phase or its next call.
         :ptype breach: CapBreach
         :param pending: What the breach counted beside what had landed; ``None`` when it was unpriced spend.
         :ptype pending: float | None
+        :param judge_faulted: Whether the judge already failed the cell on a dim the phase asked first, so the cell
+            is the judge's fault and not one the cap set aside; the run stops on the cap all the same.
+        :ptype judge_faulted: bool
         """
-        self._on_set_aside(breach, pending)
+        self._on_set_aside(breach, pending, judge_faulted=judge_faulted)
 
 
 async def _judging_ceiling(template: EvalTemplate, judge_service: JudgeService, context: JudgeContext) -> float | None:
@@ -2089,8 +2102,11 @@ async def _judge_one_call_at_a_time(
     :rtype: _JudgeRecord
     """
     for dim in phase.dims:
-        if not hold.may_send():
-            return _judge_record(phase, settled, unfinished=_JUDGING_SET_ASIDE, set_aside=True)
+        # A dim the judge already failed makes the cell the judge's fault, which a re-judge recovers; it is excluded
+        # as that, never filed under the cap, though the cap keeps the dims after it unasked and names itself on them.
+        judge_faulted = bool(fold_judge_outcomes(settled).errors)
+        if not hold.may_send(judge_faulted=judge_faulted):
+            return _judge_record(phase, settled, unfinished=_JUDGING_SET_ASIDE, set_aside=not judge_faulted)
         await judge_dims(
             template=template,
             judge_service=judge_service,
@@ -4033,8 +4049,13 @@ async def execute_run(
     fit. A set-aside cell asks the judge nothing, is marked (``EvalResult.judging_set_aside``) and left out of the
     judged readings under its own cause (``cost_cap``), its other readings counting it, its dims' judge errors naming
     the cap (a re-judge takes it up from the evidence it stored), and stops the run: no new cell starts, the run ends
-    ``budget_stopped``, and its cost-cap record counts the cell (``BudgetStop.cells_not_judged``). A phase the
-    judge cannot price holds the run's judging alone and sends one call at a time while the run is within its cap.
+    ``budget_stopped``, and its cost-cap record counts the cell (``BudgetStop.cells_not_judged``). The record is kept
+    when the account's refusal or the unserved-model circuit stopped the run first: it rides that error, and the run,
+    ``exhausted``, carries it. A cell whose deadline strikes while its judging waits for room is set aside the same way
+    and counted, but stops nothing: it waited on a hold that might have billed less, so the cap's shortage was never
+    established. A phase the
+    judge cannot price holds the run's judging alone and sends one call at a time while the run is within its cap; when
+    the cap refuses its next call after the judge failed it on a dim, the cell is the judge's fault, not a set-aside.
     So judging stays within the cost cap wherever its price ceiling bounds what its calls are billed, and passes it
     by one call at most when the judge cannot price its calls. No gate (``budget_gate`` ``None``, or one that admits any amount) asks nothing.
 
@@ -4216,10 +4237,15 @@ async def execute_run(
             amounts.append(amount)
         return math.fsum(amounts)
 
-    def judging_set_aside(breach: CapBreach, pending: float | None) -> None:
-        """Count a cell whose judging the cap set aside, and stop the run at the first: no new cell starts."""
+    def judging_set_aside(breach: CapBreach, pending: float | None, *, judge_faulted: bool = False) -> None:
+        """Count a cell whose judging the cap set aside, and stop the run at the first: no new cell starts.
+
+        A cell whose judge already failed it on a dim of the same phase (``judge_faulted``) is the judge's fault, not
+        a set-aside, so it is not counted; the cap still had too little left for its other dims, so the run stops.
+        """
         nonlocal cells_not_judged, judging_stop
-        cells_not_judged += 1
+        if not judge_faulted:
+            cells_not_judged += 1
         if judging_stop is not None:
             return
         # The breach counted ``pending`` beside what had landed (``EvalRunCostCap.check``); what had landed is what a
@@ -4233,30 +4259,26 @@ async def execute_run(
         )
         log.warning(
             "Eval run %s stopping: its cost cap of %s had too little left for a running cell's judging after %d/%d "
-            "results; that cell is set aside unjudged, no new cell starts, and the %d cell(s) still running are "
-            "judged only as the cap admits",
+            "results; that cell is %s, no new cell starts, and the %d cell(s) still running are judged only as the "
+            "cap admits",
             run.id,
             breach.max_cost_usd,
             done,
             total,
+            "the judge's fault on a dim it asked first" if judge_faulted else "set aside unjudged",
             len(in_flight) - 1,
         )
         stop.budget([judging_stop])
 
     def judging_set_aside_at_deadline() -> None:
-        """Count a cell whose deadline struck while its judging waited for the cap's room, and stop the run there, as
-        a cell the cap refused does; the stop states what had landed then."""
-        nonlocal cells_not_judged, judging_stop
+        """Count a cell whose deadline struck while its judging waited for the cap's room.
+
+        The run is not stopped for it. A phase waits only while another phase holds room, and that hold may bill less
+        than its ceiling, so the cap's shortage was never established. The cells still to start are asked of the cap
+        as every cell is, against what has landed and what the running cells hold.
+        """
+        nonlocal cells_not_judged
         cells_not_judged += 1
-        if judging_stop is not None or judging_gate is None:
-            return
-        reading = landed_reading(judging_gate.ceiling)
-        if reading is None:
-            return
-        judging_stop = _CeilingReached(
-            "cost_usd", reading.max_cost_usd, reading.accumulated_usd, reading.unpriced_results, len(in_flight)
-        )
-        stop.budget([judging_stop])
 
     # A gate that admits any amount bounds nothing (cost enforcement is off), so its judging is left unasked.
     judging_gate = (
@@ -4666,34 +4688,9 @@ async def execute_run(
         if faults:
             await _record_contained_faults(host, run, faults)
 
-    priced = [summary.cost_usd for summary in summaries if summary.cost_usd is not None]
-    accumulated_usd = sum(priced)
-    unpriced_results = len(summaries) - len(priced)
-    if stop.refusal is not None:
-        raise AccountExhaustedError(
-            done, total, accumulated_usd=accumulated_usd, unpriced_results=unpriced_results, detail=stop.refusal
-        )
-    # Stopped by the circuit, or the matrix ran out holding a cell its model was not served for: either way the run
-    # stops resumable, naming the model, so a take-up once the model is served runs those cells, rather than ending
-    # completed with them, or failing as a run that measured nothing.
-    # A ceiling that stopped the run keeps its record whatever else the run met: its stop line, what landed and the
-    # cells it kept from starting or from being judged. Cells the model was not served for beside it are named on the
-    # budget stop, and a take-up runs them again as it runs any such cell, the run being resumable either way.
-    unserved_detail = stop.unserved or (last_unserved if not stop.ceilings else None)
-    if unserved_detail is not None:
-        raise ModelUnservedError(
-            done,
-            total,
-            model=model,
-            accumulated_usd=accumulated_usd,
-            unpriced_results=unpriced_results,
-            detail=unserved_detail,
-        )
-    if stop.ceilings:
-        reached_ceilings = list(stop.ceilings)
-        if judging_stop is not None and not any(reached.currency == "cost_usd" for reached in reached_ceilings):
-            # Another ceiling stopped the run first; the cells the cost cap set aside are still its to state.
-            reached_ceilings.append(judging_stop)
+    def stop_records(reached_ceilings: list[_CeilingReached]) -> tuple[list[BudgetStop], CapBreach | None]:
+        """The typed record of each ceiling reached, read now that every cell has ended and is recorded, and the cost
+        cap's own reading of what landed (``None`` when no cost ceiling is among them, or the gate gives none)."""
         # Every cell has ended and is recorded: what landed now is what the in-flight cells added.
         cost_now = next(
             (landed_reading(float(reached.ceiling)) for reached in reached_ceilings if reached.currency == "cost_usd"),
@@ -4720,6 +4717,46 @@ async def execute_run(
                     unpriced_results=unpriced,
                 )
             )
+        return records, cost_now
+
+    priced = [summary.cost_usd for summary in summaries if summary.cost_usd is not None]
+    accumulated_usd = sum(priced)
+    unpriced_results = len(summaries) - len(priced)
+    # The cost cap's record of the cells whose judging it set aside, when the account's refusal or the model's
+    # provider stopped the run first: the cap reached its own stop beside it, and its count is kept on the run.
+    set_aside_stops = stop_records([judging_stop])[0] if judging_stop is not None and not stop.ceilings else []
+    if stop.refusal is not None:
+        raise AccountExhaustedError(
+            done,
+            total,
+            accumulated_usd=accumulated_usd,
+            unpriced_results=unpriced_results,
+            detail=stop.refusal,
+            stops=set_aside_stops,
+        )
+    # Stopped by the circuit, or the matrix ran out holding a cell its model was not served for: either way the run
+    # stops resumable, naming the model, so a take-up once the model is served runs those cells, rather than ending
+    # completed with them, or failing as a run that measured nothing.
+    # A ceiling that stopped the run keeps its record whatever else the run met: its stop line, what landed and the
+    # cells it kept from starting or from being judged. Cells the model was not served for beside it are named on the
+    # budget stop, and a take-up runs them again as it runs any such cell, the run being resumable either way.
+    unserved_detail = stop.unserved or (last_unserved if not stop.ceilings else None)
+    if unserved_detail is not None:
+        raise ModelUnservedError(
+            done,
+            total,
+            model=model,
+            accumulated_usd=accumulated_usd,
+            unpriced_results=unpriced_results,
+            detail=unserved_detail,
+            stops=set_aside_stops,
+        )
+    if stop.ceilings:
+        reached_ceilings = list(stop.ceilings)
+        if judging_stop is not None and not any(reached.currency == "cost_usd" for reached in reached_ceilings):
+            # Another ceiling stopped the run first; the cells the cost cap set aside are still its to state.
+            reached_ceilings.append(judging_stop)
+        records, cost_now = stop_records(reached_ceilings)
         error = BudgetStoppedError(
             done,
             total,

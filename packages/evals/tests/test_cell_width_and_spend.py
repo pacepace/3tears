@@ -24,7 +24,7 @@ import math
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
@@ -43,7 +43,13 @@ from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.product import ExtractionRequest
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_run, toyhost_template, toyhost_test_cases
 from packages.evals.tests.scripted_table import FakeCellSink, ScriptedResponse, ScriptedTable, actor
-from threetears.evals.analysis.summary import NOT_JUDGED_LINE, CaseResult, budget_stop_line, summarize_run
+from threetears.evals.analysis.summary import (
+    NOT_JUDGED_LINE,
+    CaseOutcome,
+    CaseResult,
+    budget_stop_line,
+    summarize_run,
+)
 from threetears.evals.kernel import CappedCompletion, call_ceiling
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink
 from threetears.evals.kernel.host import EvalHost
@@ -63,7 +69,12 @@ from threetears.evals.run import (
     rejudge_result,
     start_run,
 )
-from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
+from threetears.evals.run.budget import (
+    AccountExhaustedError,
+    BudgetStoppedError,
+    EvalRunCostCap,
+    ModelUnservedError,
+)
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
@@ -599,10 +610,23 @@ class _PricedJudge:
     first_hangs: bool = False
     #: A dim whose first call never answers, so the phase asking it holds its room, its other calls billed.
     hangs_once_on: str | None = None
+    #: The ceiling each phase prices its calls at, in the order the phases price them, in place of ``ceiling_usd``:
+    #: so two cells of one run can be priced apart. The last entry answers every phase after it.
+    ceilings_in_turn: Sequence[float | None] = ()
+    priced: int = 0
+    #: How long each call takes, and the most calls that were in flight at once.
+    call_s: float = 0.0
+    in_flight: int = 0
+    peak: int = 0
+    #: Whether every call on the first dim asked answers with no JSON, so the judge fails that dim, each call billed.
+    first_fails: bool = False
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         del system, user, response_format
-        return self.ceiling_usd
+        if not self.ceilings_in_turn:
+            return self.ceiling_usd
+        self.priced += 1
+        return self.ceilings_in_turn[min(self.priced, len(self.ceilings_in_turn)) - 1]
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
         del user, response_format
@@ -612,8 +636,15 @@ class _PricedJudge:
         self.calls.append(dim)
         if (self.first_hangs and len(self.calls) == 1) or (dim == self.hangs_once_on and self.calls.count(dim) == 1):
             await asyncio.Event().wait()
+        self.in_flight += 1
+        self.peak = max(self.peak, self.in_flight)
+        try:
+            await asyncio.sleep(self.call_s)
+        finally:
+            self.in_flight -= 1
+        fails = self.first_fails and dim == self.calls[0]
         return ToyJudgeCompletion(
-            content=json.dumps({"reasoning": "fine", "criteria_scores": {dim: 4}}),
+            content="no verdict" if fails else json.dumps({"reasoning": "fine", "criteria_scores": {dim: 4}}),
             input_tokens=100,
             output_tokens=40,
             cost_usd=self.cost_usd,
@@ -658,11 +689,36 @@ async def _judged_run_kept(
 ) -> tuple[EvalHost, EvalRun, list[EvalResult], BudgetStoppedError | None]:
     """``k`` judged toy cells of one case under ``cap_usd``, ``width`` at once: the host, the run, its stored results
     and the stop, if one."""
+    host, run, results, stopped = await _judged_run_ended(
+        judge,
+        cap_usd=cap_usd,
+        k=k,
+        width=width,
+        client=client,
+        cell_timeout_s=cell_timeout_s,
+        template=template,
+    )
+    assert stopped is None or isinstance(stopped, BudgetStoppedError), stopped
+    return host, run, results, stopped
+
+
+async def _judged_run_ended(
+    judge: _PricedJudge,
+    *,
+    cap_usd: float,
+    k: int = 1,
+    width: int = 1,
+    client: ScriptedExtractionClient | None = None,
+    cell_timeout_s: float | None = None,
+    template: EvalTemplate | None = None,
+    kind_type: type[ToyExtractorKind] = ToyExtractorKind,
+) -> tuple[EvalHost, EvalRun, list[EvalResult], BudgetStoppedError | AccountExhaustedError | ModelUnservedError | None]:
+    """As :func:`_judged_run_kept`, its cells run by a kind of ``kind_type``, and ended by whichever stop ended it."""
     host = toyhost_host(clients=lambda _role, _model, *, temperature=None: judge)
     world = host.profile.world
     assert world is not None
     template = template or toyhost_judged_template()
-    kind = ToyExtractorKind(
+    kind = kind_type(
         client=client or ScriptedExtractionClient(),
         world=world,
         judged=True,
@@ -683,7 +739,7 @@ async def _judged_run_kept(
     )
     off_loop(host.storage.save_eval_run, run)
     cap = EvalRunCostCap(run.id, cap_usd, enabled=True)
-    stopped: BudgetStoppedError | None = None
+    stopped: BudgetStoppedError | AccountExhaustedError | ModelUnservedError | None = None
     try:
         await execute_run(
             host,
@@ -699,7 +755,7 @@ async def _judged_run_kept(
             budget_gate=cap.check,
             on_cost=cap.record,
         )
-    except BudgetStoppedError as error:
+    except (BudgetStoppedError, AccountExhaustedError, ModelUnservedError) as error:
         stopped = error
     return host, run, off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id), stopped
 
@@ -745,6 +801,15 @@ async def test_the_run_summary_names_a_case_the_cap_set_aside_as_not_judged_with
     assert case.render().splitlines()[0].startswith("case the case (repeat 1, not judged): "), "in words"
     assert "re-judge it" in NOT_JUDGED_LINE
     assert resolve_result_condition(result).judging == "set_aside"
+
+
+@pytest.mark.parametrize("outcome", get_args(CaseOutcome))
+def test_a_case_line_prints_every_case_outcome_in_words(outcome: CaseOutcome) -> None:
+    """Every outcome a case can have has its words on the case line, so an outcome added without them fails here
+    rather than when a run's case is printed."""
+    case = CaseResult(case="c", case_id="c", input=None, repeat=1, outcome=outcome, state="passed")
+
+    assert case.render().startswith(f"case c (repeat 1, {outcome.replace('_', ' ')}): ")
 
 
 async def test_a_re_judge_takes_up_a_cell_the_cap_set_aside_and_clears_its_mark() -> None:
@@ -824,7 +889,9 @@ async def test_a_hold_counts_only_what_its_calls_have_not_billed_so_a_cell_start
     that ($0.75 + $0.25 + $0.50 + $1 = $2.50) and is judged whole. When its slot frees, $1.25 has landed and the running
     cell has spent $0.75 and holds $0.50 more: $2.50, under the cap, so the third cell starts. Counting the hold's whole
     $1 beside the call it already billed would read $3, past the cap: the first cell would never be admitted, and the
-    third never start. The run still ends within its cap."""
+    third never start. The run also ends within its cap, but that check catches only a hold that counts too little
+    to keep the run inside it. A hold that counts nothing also passes it here, since the call it holds for never bills;
+    the deadline-during-wait test below catches that one."""
     judge = _PricedJudge(cost_usd=0.5, ceiling_usd=0.25, hangs_once_on=_VENDOR_DIM)
 
     _host, _run, results, stopped = await _judged_run_kept(
@@ -848,8 +915,9 @@ async def test_a_deadline_while_judging_waits_for_the_cap_s_room_sets_the_cell_a
     """Two cells at once under a $1.25 cap. The cell started second writes first: its judging is admitted and never
     answers, so it holds its room. The cell started first writes slowly, and its judging does not fit beside that hold,
     so it waits, and its deadline, the earlier, strikes while it waits. It never asked the judge, because the cap had
-    no room, so it is set aside under the cap, counted on the stop, and its measures count; the other is cut off in its
-    judge call, a fault of the rig."""
+    no room, so it is set aside under the cap and its measures count; the other is cut off in its judge call, a fault of
+    the rig. The run is not stopped as cost-capped: the phase waited on a hold that might have billed less than its
+    ceiling, so the cap's shortage was never established."""
     judge = _PricedJudge(cost_usd=0.5, ceiling_usd=0.25, first_hangs=True)
 
     _host, _run, results, stopped = await _judged_run_kept(
@@ -860,7 +928,7 @@ async def test_a_deadline_while_judging_waits_for_the_cap_s_room_sets_the_cell_a
     assert sorted(str(trial_exclusion(result)) for result in results) == ["cost_cap", "infra"]
     (waited,) = [result for result in results if result.judging_set_aside]
     assert classify_result(waited) is ResultOutcome.OK, "its measures count; only its judged readings leave it out"
-    assert stopped is not None and stopped.stops[0].cells_not_judged == 1
+    assert stopped is None, "a wait the deadline cut short establishes no shortage, so the cap stopped nothing"
 
 
 async def _candidate_spend() -> float:
@@ -911,6 +979,125 @@ async def test_a_judge_that_cannot_price_its_calls_passes_the_cap_by_one_call_at
     assert len(judge.calls) == 1
     assert result.cost_usd == pytest.approx(candidate + 0.5), "past the cap by the one call"
     assert stopped is None, "the cell was judged; there was no cell left to keep from starting"
+
+
+@pytest.mark.parametrize(
+    "ceilings",
+    [
+        pytest.param((0.25, None), id="the-unpriced-phase-waits-for-the-priced-one-to-release"),
+        pytest.param((None, 0.25), id="the-priced-phase-waits-while-the-unpriced-one-holds-alone"),
+    ],
+)
+async def test_an_unpriced_judge_phase_never_runs_beside_a_priced_one(ceilings: tuple[float | None, ...]) -> None:
+    """Two cells at once under a roomy cap, the judge pricing one phase and not the other. The cell started second
+    reaches its judging first and is admitted. The other's phase waits until the first releases, whichever of the two
+    is the unpriced one: an unpriced phase holds the run's judging alone, so no call of it is ever in flight beside a
+    call of another phase. Both cells are judged."""
+    judge = _PricedJudge(cost_usd=0.0004, ceiling_usd=None, ceilings_in_turn=ceilings, call_s=0.2)
+
+    _host, _run, results, stopped = await _judged_run_kept(
+        judge, cap_usd=10.0, k=2, width=2, client=_QuarterDollarClient(first_delay_s=0.05)
+    )
+
+    assert judge.priced == 2, "each phase was priced once, one with a ceiling and one without"
+    assert len(judge.calls) == 2 and all(result.judge_error is None for result in results)
+    assert judge.peak == 1, "the unpriced phase's call was never in flight beside the priced phase's"
+    assert stopped is None
+
+
+@pytest.mark.parametrize(
+    ("first_fails", "exclusion", "not_judged"),
+    [
+        pytest.param(True, "infra", 0, id="a-judge-fault-first-stays-the-judges"),
+        pytest.param(False, "cost_cap", 1, id="a-score-first-is-set-aside"),
+    ],
+)
+async def test_a_dim_the_judge_failed_before_the_cap_ran_out_leaves_the_cell_the_judges_fault(
+    first_fails: bool, exclusion: str, not_judged: int
+) -> None:
+    """A judge with no ceiling, two dims. Its first call costs $0.50, past what the cap had left, so the cap keeps the
+    second dim unasked and the run stops on its cap. When the judge had failed the first dim, the cell is the judge's
+    fault, excluded as one, which a re-judge recovers, and the cap does not count it as set aside. When the first dim
+    scored, the cell is set aside under the cap and counted, as a phase the cap ran out on is."""
+    candidate = await _candidate_spend()
+    judge = _PricedJudge(cost_usd=0.5, ceiling_usd=None, first_fails=first_fails)
+
+    _host, _run, (result,), stopped = await _judged_run_kept(
+        judge, cap_usd=candidate + 0.1, template=_two_dim_template()
+    )
+
+    assert len(set(judge.calls)) == 1, "the second dim was never asked"
+    assert result.judge_error is not None and "the run's cost cap had too little left" in result.judge_error
+    assert result.judging_set_aside is not first_fails
+    assert trial_exclusion(result) == exclusion
+    assert stopped is not None
+    (stop,) = stopped.stops
+    assert (stop.currency, stop.cells_not_judged) == ("cost_usd", not_judged)
+
+
+class _StopsFirstKind(ToyExtractorKind):
+    """The toy extractor, whose first ``stopping`` cells invoked meet what stops a run at once, with nothing to judge;
+    every later cell extracts a beat later, so it reaches its judging after the stop was decided."""
+
+    stopping = 1
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.invoked = 0
+
+    def stopped(self) -> CandidateOutput:
+        """What a cell that meets the stop returns."""
+        return CandidateOutput(account_refused=True, infra_errors=["apparatus: refused for the calling account"])
+
+    async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
+        self.invoked += 1
+        if self.invoked <= self.stopping:
+            return self.stopped()
+        await asyncio.sleep(0.1)
+        return await super().invoke(instance, test_case, sink)
+
+
+class _UnservedFirstKind(_StopsFirstKind):
+    """The first cells, as many as the unserved-model circuit counts, find the run's model not served."""
+
+    stopping = 3
+
+    def stopped(self) -> CandidateOutput:
+        return CandidateOutput(model_unserved=True, infra_errors=["apparatus: the model is no longer available"])
+
+
+@pytest.mark.parametrize(
+    ("kind_type", "error_type"),
+    [
+        pytest.param(_StopsFirstKind, AccountExhaustedError, id="the-accounts-refusal"),
+        pytest.param(_UnservedFirstKind, ModelUnservedError, id="the-unserved-model-circuit"),
+    ],
+)
+async def test_a_run_another_stop_ended_keeps_the_caps_count_of_the_cells_it_set_aside(
+    kind_type: type[_StopsFirstKind], error_type: type[Exception]
+) -> None:
+    """Every cell starts at once. The first ones meet the account's refusal, or the circuit's count of an unserved
+    model, which stops the run; the last reaches its judging after that, and the $0.60 cap has too little left for it
+    ($0.25 of candidate and a $0.50 ceiling), so it is set aside. The run ends on what gave out, and the error carries
+    the cap's record counting that cell, which the job manager writes on the run."""
+    judge = _PricedJudge(cost_usd=0.5, ceiling_usd=0.25)
+
+    _host, _run, results, stopped = await _judged_run_ended(
+        judge,
+        cap_usd=0.6,
+        k=kind_type.stopping + 1,
+        width=kind_type.stopping + 1,
+        client=_QuarterDollarClient(),
+        kind_type=kind_type,
+    )
+
+    assert isinstance(stopped, error_type)
+    assert isinstance(stopped, AccountExhaustedError | ModelUnservedError)
+    assert judge.calls == []
+    assert sum(result.judging_set_aside for result in results) == 1
+    (stop,) = stopped.stops
+    assert (stop.currency, stop.cells_not_judged) == ("cost_usd", 1)
+    assert "the cost cap had too little left to judge 1 cell(s)" in str(stopped)
 
 
 async def test_a_judge_phase_the_cap_has_room_for_is_judged_and_its_spend_counted() -> None:

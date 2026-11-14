@@ -205,6 +205,35 @@ async def test_a_run_its_ceiling_stopped_reads_the_stop_from_its_records_on_ever
     assert status.detail == summary.stopped_text == budget_stop_line([stop])
 
 
+async def test_an_exhausted_run_carrying_the_caps_record_reads_what_gave_out_first() -> None:
+    """A run the account's refusal stopped, whose running cell's judging the cost cap then set aside, carries the
+    cap's record: its job status names the refusal first, and the cap's line after it, never in its place."""
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+    run = off_loop(storage.load_eval_run, fixture.campaign.run_ids[0], TOYHOST_SCOPE)
+    assert run is not None
+    stop = BudgetStop(
+        currency="cost_usd",
+        ceiling=0.6,
+        landed_at_stop=0.25,
+        landed_final=0.5,
+        cells_in_flight=1,
+        cells_not_started=0,
+        cells_not_judged=1,
+    )
+    refusal = "eval run stopped: the provider account refused a candidate call after 1/2 results"
+    update = {
+        "status": "exhausted",
+        "exhausted_because": "account_refused",
+        "error_details": [refusal],
+        "budget_stops": [stop],
+    }
+    off_loop(storage.save_eval_run, run.model_copy(update=update))
+
+    status = await job_poll(fixture.host, run_job_id(run.id), TOYHOST_SCOPE)
+    assert status.detail == f"{refusal}; {budget_stop_line([stop])}"
+
+
 async def test_cancelling_a_run_that_has_ended_is_refused() -> None:
     fixture = off_loop(ops_fixture)
     with pytest.raises(ValidationFailedError, match="is completed — only pending/running runs can be cancelled"):

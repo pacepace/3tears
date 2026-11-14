@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the cost cap's edge cases hold, and its count of unjudged cells survives another stop (#1161)
+
+**Fixed:** a run the account's refusal or the unserved-model circuit stopped first, whose running cell's judging the
+cost cap then set aside, lost the cap's record, so its count of the cells left unjudged was gone. That run still ends
+`exhausted`, and now also carries the cap's record in `EvalRun.budget_stops` (`AccountExhaustedError.stops`,
+`ModelUnservedError.stops`). Its error says how many cells the cap left unjudged, and its job status names what gave
+out first and the cap's line after it. A cell whose deadline strikes while its judging waits for the cap's room is
+still set aside, but it no longer stops the run as cost-capped: the phase waited on a hold that might have billed less,
+so the cap's shortage was never established. In a judge phase that cannot be priced, a cell the judge had already
+failed on one dimension when the cap kept the next one unasked is now excluded as the judge's fault, which a re-judge
+recovers. It is no longer filed under `cost_cap`, and the stop record no longer counts it as set aside.
+
 ### evals: a page's forms, arm names and gate checks are worked out once per report input
 
 **Changed:** `PageForms.of`, `page_arm_names` and a `gate_check` read off any page (no `forms`) keep their results per
