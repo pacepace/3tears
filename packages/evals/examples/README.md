@@ -285,7 +285,7 @@ promotion is read. `tests/fixtures/writer_cases/export_writer_cases.py` wrote th
 once, since a rung run again is new evidence with a new snapshot id.
 
 It replays its recordings with no key: 14 reports, the judge's scores and its preference between the two arms' pages.
-The read is `Undecided`: the judge gave lead-first's pages a share of 61%, its two reading orders agreeing on 6 of 7
+The read is `Undecided`: the judge gave lead-first's pages a share of 68%, its two reading orders agreeing on 5 of 7
 cases, and 7 held-out cases cannot tell that from an even split. [`recordings/README.md`](5-writer/recordings/README.md) says when each recording was made and what it cost, and
 holds the one command that records them again (both `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY`, under the $39 cap).
 [The ladder](../docs/ladder.md#rung-5-evaluate-the-evaluator) walks it.

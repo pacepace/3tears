@@ -2,9 +2,9 @@
 beside the control's, against even (50%), so a reader sees at once which page is preferred over which, by how much,
 against what, and whether it is settled.
 
-Rung 5's replay, from its recordings (the judge's recorded again on 2026-11-10, over the pages built at ``7601153ed``), with no key: the
-judge gave lead-first 61% of its preference over shipped, so shipped has 39%, and the 95% interval on lead-first's share
-runs 28% to 96% (it is printed on the share, never on the difference of the two shares); its two orders agreed on 6
+Rung 5's replay, from its recordings (the judge's recorded again on 2026-11-14, over the pages built at ``67c222242``), with no key: the
+judge gave lead-first 68% of its preference over shipped, so shipped has 32%, and the 95% interval on lead-first's share
+runs 26% to 98% (it is printed on the share, never on the difference of the two shares); its two orders agreed on 5
 of 7 cases. The judge does not read this page, so its recording keys stand.
 
 Mutations that turn this file red: a Difference column back on the table; the control's share missing, or not 100 less
@@ -55,8 +55,8 @@ def test_the_side_by_side_table_prints_both_shares_and_no_difference(rung5: Writ
     ]
     every = side.values()[0]
     # The two shares as printed sum to 100, and the interval is on the candidate's share, the scale the reader sees.
-    assert (every["share"], every["control_share"], every["interval"]) == (61, 39, "28 to 96")
-    assert "| lead-first | every pair | cannot tell apart | 61 | 39 | 28 to 96 |" in rung5.pairwise_text().splitlines()
+    assert (every["share"], every["control_share"], every["interval"]) == (68, 32, "26 to 98")
+    assert "| lead-first | every pair | cannot tell apart | 68 | 32 | 26 to 98 |" in rung5.pairwise_text().splitlines()
     written = rung5.write(tmp_path / "report")
     for role in ("markdown", "html"):
         page = written[role].read_text(encoding="utf-8")
@@ -69,32 +69,33 @@ def test_the_scorecard_opens_on_the_preference_drawn_against_even(rung5: WriterR
     chart = figure.data
     # One row, the candidate, at the table's figures: its share and the interval on it, on the share scale.
     assert [(row.label, row.value, row.lo, row.hi, row.hollow) for row in chart.rows or []] == [
-        ("lead-first", 61, 28, 96, None)
+        ("lead-first", 68, 26, 98, None)
     ]
     assert (chart.domain, chart.fmt, chart.level) == ((0, 100), "pct:0", "95%")
     # Its mark carries the table's figures as text, so its tooltip and values table print them, not the kit's rule.
-    assert [(row.value_text, row.lo_text, row.hi_text) for row in chart.rows or []] == [("61%", "28", "96")]
+    assert [(row.value_text, row.lo_text, row.hi_text) for row in chart.rows or []] == [("68%", "26", "98")]
     # The baseline is drawn and named: even, at 50.
     assert chart.reference is not None
     assert (chart.reference.value, chart.reference.label) == (50, "even (50%)")
     assert figure.title == "Share of the judge's preference against shipped"
     # Under the figure, one line: the candidate's share, the control's, the even point, the interval and the reading.
     assert isinstance(line, DisclosureBlock)
-    assert line.text == "lead-first 61% · shipped 39% (50% is even), 95% interval 28 to 96%; cannot tell apart."
+    assert line.text == "lead-first 68% · shipped 32% (50% is even), 95% interval 26 to 98%; cannot tell apart."
     html = rung5.write(tmp_path / "report")["html"].read_text(encoding="utf-8")
-    assert "even (50%)" in html and "lead-first 61% · shipped 39% (50% is even)" in html
+    assert "even (50%)" in html and "lead-first 68% · shipped 32% (50% is even)" in html
 
 
 def test_the_readings_table_reads_a_rate_as_a_percent_and_the_count_it_is_of(rung5: WriterResult) -> None:
     """Report finished read ``0.43`` and ``0.86``, a rate written as a fraction at two decimals; it reads as a
     percent and the cases it counts, at the precision its row's figures give. A mean that is no rate reads as the
     aspect page prints its arms' levels where that page states a contrast of it (one form per measure, number rule 1:
-    Must-fix findings open reads 0.4 there and here, never 0.43), else at two decimals (Should-fix findings open)."""
+    Must-fix findings open reads 0.43 there and here, never a different form), else at two decimals (Should-fix
+    findings open)."""
     lines = rung5.render().splitlines()
 
     assert "| Report finished | 43% (3 of 7) | 86% (6 of 7) |" in lines
     assert "| Bounces | 0.9 | 1.0 |" in lines
-    assert "| Must-fix findings open | 0.4 | 0.3 |" in lines
+    assert "| Must-fix findings open | 0.43 | 0.29 |" in lines
     assert "| Should-fix findings open | 2.43 | 1.57 |" in lines
 
 
