@@ -233,6 +233,14 @@ def test_an_email_the_recording_does_not_hold_fails_the_run_naming_its_call_and_
 
     printed = capsys.readouterr().out
     assert attempts == []
+    # The print leads with the failure, naming the call that missed, and prints no verdict: what the cells that
+    # finished first came to is no reading of the eval, so the next line says the readings cover only those.
+    first, second, *_ = printed.splitlines()
+    lead = "emails: the run failed, so there is no verdict: recording recordings/triage.jsonl: "
+    assert first.startswith(lead), first
+    assert "no call is recorded for the prompt" in first and "Is there a student discount" in first, first
+    assert re.fullmatch(r"the readings below cover only the \d+ result\(s\) recorded before it failed", second), second
+    assert "triage passed" not in printed, "a failed run prints no verdict"
     errors = [line for line in printed.splitlines() if line.startswith("  error: ")]
     # The email's cell is recorded as the rig's failure, never scored, and the run's failure names the same call.
     assert any(line.startswith("  error: case new: apparatus: RecordingRefused: ") for line in errors), errors

@@ -643,8 +643,9 @@ class WriterResult:
         return self.render()
 
     def render(self, *, full: bool = False) -> str:
-        """The result as text: the readings table, the pairwise table, each arm's results and spend, the promotion read
-        and disclosures.
+        """The result as text: what failed first, where anything did (an arm's run or a pairwise pass, a replay miss
+        named as the call its recording does not hold), then the readings table, the pairwise table, each arm's
+        results and spend, the promotion read and disclosures.
 
         Each reading is a measure the writer host declares, named as its descriptor names it, then each judged
         dimension of the template's rubric; then the side-by-side tables (:meth:`pairwise_text`). ``full`` adds every
@@ -657,7 +658,18 @@ class WriterResult:
         """
         candidates = " and ".join(arm for arm in self.arms if arm != self.control)
         cases = next(iter(self.arms.values())).n_cases
-        lines = [
+        # What failed leads, named in its own words (a replay miss fails an arm's run or a pairwise pass), so no reader
+        # takes the readings below for a finished run's: a failed arm's cover only the results recorded before it.
+        failed = {arm: text for arm, summary in self.arms.items() if (text := summary.failed_text) is not None}
+        lines = [f"{self.name}: {arm} failed: {one_line(text)}" for arm, text in failed.items()]
+        if failed:
+            recorded = sum(summary.n_results for summary in self.arms.values())
+            lines.append(f"the readings below cover only the {recorded} result(s) recorded before it failed")
+        lines += [
+            f"{self.name}: the pairwise pass of {arm} did not complete: {one_line(why)}"
+            for arm, why in self.pairwise_unread.items()
+        ]
+        lines += [
             f"{self.name}: {candidates} against {self.control}, {cases} {_SIDE_WORDS[self.side]} case(s) x {self.k}, "
             f"judged by {self.judge}"
         ]

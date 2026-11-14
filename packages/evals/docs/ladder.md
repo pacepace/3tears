@@ -19,7 +19,9 @@ The command finds every eval the file defines at module level (an `Eval`, or run
 it quietly, writes its report under `.evals/reports/<name>/`, keeps its runs in `.evals/evals.sqlite` (both under the
 directory you run from), and exits with its code. The report is code's: built from the readings, with no model
 called. A second door, at rung 3f, has a model write one too. Paths a file names (its cases, its recordings) are read
-beside the file. A recording that exists is replayed: no key, no network, no cost. `RECORD=1` with
+beside the file. A recording that exists is replayed: no key, no network, no cost. A call it does not hold is never
+sent live: it fails the run, which exits 1, and the print opens with that failure, naming the call, and no verdict;
+the readings after it cover only the results recorded before it failed. `RECORD=1` with
 `OPENROUTER_API_KEY` set records it again, live. After a pip install, fetch the examples first ([how](../examples/README.md#running-them)).
 
 The ladder's line counts are of non-blank lines: rung 1's program is 15 of them, each rung-3 file stays under 30 (its

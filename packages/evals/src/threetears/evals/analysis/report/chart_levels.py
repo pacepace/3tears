@@ -25,10 +25,10 @@ from typing import cast
 from threetears.evals.analysis.report.blocks import ChartBlock
 from threetears.evals.analysis.report.charts import GateScatterChart, ScatterChart, level_head
 
-__all__ = ["chart_level", "levels_said"]
+__all__ = ["levels_said"]
 
 
-def chart_level(block: ChartBlock) -> str | None:
+def _chart_level(block: ChartBlock) -> str | None:
     """The level a chart's head prints, as the chart carries it; None where its head prints none: a kind with no
     level, a scatter drawing no whisker, a chart whose panels carry levels of their own.
 
@@ -79,7 +79,7 @@ def levels_said[T](blocks: Sequence[T]) -> list[T]:
         chart whose head the rule leaves as it is keeps unset.
     :rtype: list[T]
     """
-    levels = [chart_level(block) if isinstance(block, ChartBlock) else None for block in blocks]
+    levels = [_chart_level(block) if isinstance(block, ChartBlock) else None for block in blocks]
     counted = Counter(level for level in levels if level is not None)
     if sum(counted.values()) < 2:
         return list(blocks)
