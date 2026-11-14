@@ -20,7 +20,7 @@ from typing import Final
 
 import pytest
 
-from packages.evals.tests.offline_support import Connect, refuse_connects
+from packages.evals.tests.offline_support import Connect, assert_no_connects, refuse_connects
 from packages.evals.tests.writer_eval_support import FakeScoringJudge, kairo_case, kairo_report, lay_recording
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.harness import Writer, WriterEval, WriterResult
@@ -132,7 +132,7 @@ async def test_the_editor_s_reviews_run_on_its_own_model_recorded_on_the_run(
     )
     assert campaign is not None and campaign.aspects[0].design is not None
     assert [axis.axis_id for axis in campaign.aspects[0].design.axes] == ["report_writer.editor_model"]
-    assert offline == []
+    assert_no_connects(offline)
 
 
 def test_a_writer_naming_a_blank_editor_is_refused() -> None:

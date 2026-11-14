@@ -6,6 +6,55 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### langgraph: prune checkpoint history, and measure and clean the checkpoint tables
+
+LangGraph writes a full checkpoint after every superstep, and once a run ends only the newest
+checkpoint of each namespace is read again (to resume a paused run, or to read its final state). The
+rest is history nothing reads, and it is most of the `checkpoints` table.
+
+**Added:** `ThreeTierCheckpointSaver.aprune(thread_ids, *, strategy="keep_latest", customer=None)`,
+LangGraph's `aprune` contract on all three tiers. `keep_latest` keeps, in every namespace of each
+thread (the root and each nested subgraph namespace), the checkpoint with the largest `checkpoint_id`
+-- the one `aget_tuple` reads -- and the writes recorded against it, and deletes every older
+checkpoint and its writes in two set-based `DELETE` statements. `delete` calls `adelete_thread` for
+each thread, counting the rows first. A namespace whose newest checkpoint's metadata carries LangGraph's
+`counters_since_delta_snapshot` (a `DeltaChannel` rebuilt from its ancestors) is left whole and
+counted. The `keep_latest` deletes tell no other pod's L1, as `adelete_thread`'s do not; both are on
+the epoch-bypass allowlist with the same fix. The customer is reconciled against the scope as
+`adelete_thread` reconciles it, and every named thread's L1/L2 bundles are evicted afterwards, cache failures raised together as
+`CheckpointPurgeIncompleteError` once every tier was tried. It returns the new
+`threetears.langgraph.CheckpointPruneResult` (rows deleted per table, namespaces held) where
+LangGraph's returns `None`; an unknown strategy raises `ValueError`. Also added:
+`ThreeTierCheckpointSaver.scope`, and in `threetears.langgraph.checkpoint`
+`DELTA_COUNTERS_METADATA_KEY` and `keep_latest_survivors_sql()`, the one predicate the prune and
+the report below share.
+
+**Added:** `threetears.langgraph.checkpoint_maintenance`, generic to any app running the saver:
+`checkpoint_usage(executor, *, owned_threads_sql=None)` (table and heap sizes, live rows and dead
+tuples as the statistics collector's estimates, exact counts of threads, threads with history, what `keep_latest` would remove in rows and stored blob bytes, and the
+threads an app's owned-threads query does not name), `prune_threads(saver, executor, *, batch,
+limit, dry_run)` and `delete_unowned_threads(saver, executor, *, owned_threads_sql, batch, limit,
+dry_run)`. Both work on stored thread ids and take an unscoped saver only; `delete_unowned_threads`
+refuses an owned-threads query that returns no rows. From a shell: `python -m
+threetears.langgraph.checkpoint_maintenance {report,prune,delete-unowned} --dsn DSN [--schema S]
+[--owned-sql SQL] [--batch N] [--limit N] [--dry-run] [--yes] [--vacuum] [--json]`; `prune` and
+`delete-unowned` need `--yes` unless `--dry-run`, and `--vacuum` runs plain `VACUUM (ANALYZE)`, never
+`VACUUM FULL`. The tool writes through an L3-only saver. After `prune` an app's L2 holds nothing stale
+(an L2 key holds the newest checkpoint, the one kept). After `delete-unowned` the deleted threads'
+bundles stay in the app's NATS KV bucket: `NatsCheckpointL2Cache` opens the bucket with no TTL, so they
+expire only if the app declared the bucket with one; an erasure deletes those keys too, or runs
+`aprune(..., strategy="delete")` through the app's own saver.
+
+### enforcement: an epoch-discipline allowlist is debt pinned by count, not a list that only shrinks
+
+**Changed:** the wording of the five `tests/enforcement/_epoch_*_allowlist.txt` headers, the
+`test_epoch_discipline.py` docstring and `threetears.enforcement.epoch_discipline` (config, ratchet
+message, package docstring). A line whose count is above what the code has still fails until it is
+lowered or deleted. A new line is allowed only when the code genuinely needs the violation and its fix
+is not feasible now, and its fix text names what would remove it; the easy way out is never a reason.
+A false positive goes in `_epoch_waivers.txt`, not an allowlist. The gate's behaviour is unchanged: it
+already passed a new site listed at its count and failed an unlisted one.
+
 ### tests wait for events, not fixed sleeps; four production changes came with it
 
 **Added:**

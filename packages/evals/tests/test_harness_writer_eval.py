@@ -29,7 +29,7 @@ import httpx
 import pytest
 
 from packages.evals.tests.analyst_support import fixture_snapshots
-from packages.evals.tests.offline_support import Connect, refuse_connects
+from packages.evals.tests.offline_support import Connect, assert_no_connects, refuse_connects
 from packages.evals.tests.report_writer_support import reply
 from packages.evals.tests.writer_case_support import SEED
 from packages.evals.tests.writer_eval_support import (
@@ -286,7 +286,7 @@ async def test_a_two_arm_replay_mints_launches_files_reads_the_promotion_and_wri
     written = result.write(tmp_path / "report")
     assert written["html"].is_file()
     # Nothing was sent anywhere.
-    assert offline == []
+    assert_no_connects(offline)
 
     text = result.render()
     assert text.startswith("writer: variant against shipped, 4 held-out case(s) x 1, judged by google/gemini-3.8-flash")
@@ -312,7 +312,7 @@ async def test_a_missing_recording_with_no_key_is_refused_before_anything_runs(
 
     with pytest.raises(ValueError, match=f"no turn recording for 3 of 3 case.*{KEY_VARIABLE}"):
         await _eval(tmp_path, arms).run()
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_a_case_withholding_a_note_an_arm_lacks_is_refused_before_anything_is_minted(
@@ -379,7 +379,7 @@ async def test_reports_whose_budgets_could_pass_an_arms_share_are_refused_before
     assert str(refused.value) == expected
     storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
     assert await asyncio.to_thread(storage.query_eval_runs, SCOPE) == [], "no arm was launched"
-    assert offline == []
+    assert_no_connects(offline)
 
 
 #: The judge's rates, per token, as OpenRouter's catalogue lists the rung-5 judge's: prompt, then output.
@@ -481,7 +481,7 @@ async def test_a_judge_whose_calls_at_their_floor_could_pass_a_part_is_refused_b
         assert "the pass's $0.080 part of max_cost_usd $8.00" in str(refused.value)
     storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
     assert await asyncio.to_thread(storage.query_eval_runs, SCOPE) == [], "no arm was launched"
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_a_judge_whose_calls_at_their_floor_fit_every_part_is_admitted(
@@ -498,7 +498,7 @@ async def test_a_judge_whose_calls_at_their_floor_fit_every_part_is_admitted(
 
     assert all(summary.status == "completed" for summary in result.arms.values())
     assert result.pairwise_unread == {}
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_a_held_out_set_listing_a_case_no_file_holds_is_refused(tmp_path: Path, offline: list[Connect]) -> None:
@@ -516,7 +516,7 @@ async def test_a_held_out_set_listing_a_case_no_file_holds_is_refused(tmp_path: 
         f"the held-out set of scope {SCOPE!r} lists 1 case(s) no file in {tmp_path / 'cases'} holds ({gone}); retire "
         "them (writer_case_archive), or run in a fresh scope (scope=)"
     )
-    assert offline == []
+    assert_no_connects(offline)
 
 
 def _the_misfit_case(tmp_path: Path) -> str:
@@ -545,7 +545,7 @@ async def test_a_scope_holding_a_report_writer_template_of_another_kind_is_refus
         f"scope {SCOPE!r} holds a template named 'report writer' of kind 'callable'; run the writer eval in another "
         "scope (scope=)"
     )
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_a_dev_side_run_launches_the_dev_cases_and_reads_no_promotion(
@@ -568,7 +568,7 @@ async def test_a_dev_side_run_launches_the_dev_cases_and_reads_no_promotion(
     assert text.startswith(f"writer: variant against shipped, {len(DEV)} dev case(s) x 1")
     assert "promotion: read on the held-out side only" in text
     assert "promotion of" not in text
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_a_failed_promotion_gate_exits_4_naming_it_and_an_unfinished_arm_exits_1(
@@ -592,7 +592,7 @@ async def test_a_failed_promotion_gate_exits_4_naming_it_and_an_unfinished_arm_e
     # An arm whose run did not complete exits 1, whatever its gates read.
     unfinished = {**result.arms, "variant": result.arms["variant"].model_copy(update={"status": "failed"})}
     assert replace(failing, arms=unfinished).exit_code() == 1
-    assert offline == []
+    assert_no_connects(offline)
 
 
 @pytest.mark.parametrize(
@@ -679,7 +679,7 @@ async def test_a_replay_whose_pages_reach_the_judge_runs_the_pass_in_both_orders
     # A judged score over one case reads a tenth: a hundredth is noise below about 30 cases.
     judged = f"(judged) | {JUDGED_SCORE:.1f} | {JUDGED_SCORE:.1f} |"
     assert any(line.endswith(judged) for line in result.render().splitlines())
-    assert offline == []
+    assert_no_connects(offline)
 
     # The pass: the candidate's page read second, then first, each order scored, under the pass's part of the cap.
     read = result.pairwise["variant"]
@@ -782,7 +782,7 @@ async def test_a_judge_recorded_over_stored_pages_replays_in_a_fresh_store_with_
     # The promotion read took the replayed pass as its primary reading.
     assert read.read_on == read.job_id and replayed.decisions == {"variant": "undecided"}
     assert replayed.exit_code() == 0
-    assert offline == []
+    assert_no_connects(offline)
 
 
 # parity-with: threetears.evals.harness.writer_host.WriterJudge
@@ -820,7 +820,7 @@ async def test_a_pass_stopped_by_an_account_refusal_is_read_said_and_exits_1(
     text = result.render()
     assert any(line.startswith(f"| variant | every pair | untested: {report.stopped} | ") for line in text.splitlines())
     assert f"pairwise pass of variant: stopped before its last pair: {report.stopped}" in text
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_three_arms_split_the_pass_s_reserve_between_the_two_candidates(
@@ -848,7 +848,7 @@ async def test_three_arms_split_the_pass_s_reserve_between_the_two_candidates(
         "| variant",
         "| fewer",
     ]
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_a_pass_its_part_cannot_cover_is_refused_with_nothing_spent_said_and_exits_1(
@@ -880,7 +880,7 @@ async def test_a_pass_its_part_cannot_cover_is_refused_with_nothing_spent_said_a
         EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite")).load_campaign, result.campaign_id, SCOPE
     )
     assert campaign is not None and campaign.question == "Does variant write reports better than shipped?"
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_two_arms_differing_only_in_revisions_each_replay_their_own_recordings(
@@ -909,7 +909,7 @@ async def test_two_arms_differing_only_in_revisions_each_replay_their_own_record
             in text
         )
     assert "unasked" not in text
-    assert offline == []
+    assert_no_connects(offline)
 
 
 def _editor_variant() -> AnalystSkill:
@@ -947,7 +947,7 @@ async def test_a_candidate_runs_the_control_s_editor_only_when_its_editor_md_mod
     assert result.one_editor == {"variant": one_editor}
     if not one_editor:
         assert not any(heading in result.promotion_why["variant"] for heading in _uncompared_headings())
-    assert offline == []
+    assert_no_connects(offline)
 
 
 def _uncompared_headings() -> set[str]:
@@ -994,7 +994,7 @@ async def test_a_candidate_held_at_its_pass_s_stop_is_read_as_running_another_ed
     assert result.launch_line, "the run launched in batches"
     assert result.one_editor == {"variant": False}
     assert not any(heading in result.promotion_why["variant"] for heading in _uncompared_headings())
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_the_action_unsaid_reads_arms_whose_skills_differ_as_two_editors(
@@ -1024,7 +1024,7 @@ async def test_the_action_unsaid_reads_arms_whose_skills_differ_as_two_editors(
     assert read.structured is not None
     assert read.structured["one_editor"] is False
     assert read.structured["decision"] == result.decisions["variant"]
-    assert offline == []
+    assert_no_connects(offline)
 
 
 def _renamed_note() -> AnalystSkill:
@@ -1057,7 +1057,7 @@ async def test_cases_are_minted_against_the_control_arm_s_skill_not_the_shipped_
         assert summary.status == "completed" and summary.n_cases == 2
     origins = await asyncio.to_thread(_origins, tmp_path)
     assert origins == {"r1": control.digest, "r2": control.digest}
-    assert offline == []
+    assert_no_connects(offline)
 
 
 def _origins(tmp_path: Path) -> dict[str, str]:
