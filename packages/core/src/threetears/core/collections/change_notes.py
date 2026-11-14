@@ -138,7 +138,7 @@ from threetears.core.ddl.change_notes import (
     trigger_function_sql,
 )
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
-from threetears.core.ddl.index_health import rebuild_unusable_indexes
+from threetears.core.ddl.index_health import ddl_body, rebuild_unusable_indexes
 from threetears.core.declared import whole_read
 from threetears.core.ddl.errors import DdlLockTimeoutError
 from threetears.core.ddl.session import ConnectionSession
@@ -220,9 +220,11 @@ async def _install_change_notes(
     :raises IndexStillUnusableError: when a ring index is still unusable after it was built again
     """
     statements = change_notes_ddl(schema, fence=fence)
-    # each index's name, as its own statement creates it (CREATE INDEX IF NOT EXISTS "<name>" ON ...)
+    # each index's name, as its own statement creates it (CREATE INDEX IF NOT EXISTS "<name>" ON ...), past the
+    # ``-- purpose:`` lines that declare what reads it
+    bodies = {statement: ddl_body(statement) for statement in statements}
     declared = {
-        statement.split()[5].strip('"'): statement for statement in statements if statement.startswith("CREATE INDEX ")
+        body.split()[5].strip('"'): statement for statement, body in bodies.items() if body.startswith("CREATE INDEX ")
     }
     async with database_ddl_lock(ConnectionSession(conn), policy):
         for statement in statements:

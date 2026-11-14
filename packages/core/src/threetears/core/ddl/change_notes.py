@@ -346,6 +346,9 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         for index in range(NOTE_RING_SIZE)
     )
     indexes = tuple(
+        "-- purpose: packages/core/src/threetears/core/collections/change_notes.py::ChangeNoteKeeper.notes_found\n"
+        "-- plan_test: packages/core/tests/integration/test_change_note_ring_plans.py::test_threetears_change_notes_0_key_reads_the_scrubs_keyed_look\n"
+        "-- reason: the scrub's lookup of the keys an epoch names, led by the joined key, one of the ring's four\n"
         f"CREATE INDEX IF NOT EXISTS {quote_identifier(note_table(index) + '_key')} "
         f"ON {owner}.{quote_identifier(note_table(index))} (key_text, table_name)"
         for index in range(NOTE_RING_SIZE)
@@ -357,6 +360,10 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
     # column is hashed and noted_at a range under it. Created IF NOT EXISTS with the rest, so a ring installed
     # before it gains it at the next install.
     by_table = tuple(
+        "-- purpose: packages/core/src/threetears/core/collections/change_notes.py::ChangeNoteKeeper.notes_found\n"
+        "-- plan_test: packages/core/tests/integration/test_change_note_ring_plans.py::test_threetears_change_notes_0_table_reads_the_scrubs_any_note_look\n"
+        "-- reason: a table's notes since a time, carrying the columns the reconciler's read answers so it never "
+        "visits the table (a second lookup a note on YugabyteDB)\n"
         f"CREATE INDEX IF NOT EXISTS {quote_identifier(note_table(index) + '_table')} "
         f"ON {owner}.{quote_identifier(note_table(index))} (table_name, noted_at) "
         "INCLUDE (key_text, keys, columns, tenant)"
@@ -370,9 +377,16 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         statement
         for index in range(NOTE_RING_SIZE)
         for statement in (
+            "-- purpose: packages/core/src/threetears/core/collections/change_notes.py::ChangeNoteKeeper.notes_found\n"
+            "-- plan_test: packages/core/tests/integration/test_change_note_ring_plans.py::test_threetears_change_notes_0_whole_reads_the_scrubs_whole_table_look\n"
+            "-- reason: partial over the whole-table notes alone, so the scrub's and the restore's look reads those "
+            "and none of the many keyed notes\n"
             f"CREATE INDEX IF NOT EXISTS {quote_identifier(note_table(index) + '_whole')} "
             f"ON {owner}.{quote_identifier(note_table(index))} (table_name, noted_at) INCLUDE (tenant) "
             "WHERE key_text IS NULL",
+            "-- purpose: packages/core/src/threetears/core/collections/change_notes.py::ChangeNoteKeeper.count_ring_reads\n"
+            "-- plan_test: packages/core/tests/integration/test_change_note_ring_plans.py::test_threetears_change_notes_0_ring_read_reads_a_switchs_count\n"
+            "-- reason: partial over the notes written without a cached slot alone, counted at each switch\n"
             f"CREATE INDEX IF NOT EXISTS {quote_identifier(note_table(index) + '_ring_read')} "
             f"ON {owner}.{quote_identifier(note_table(index))} (table_name) WHERE ring_read",
         )

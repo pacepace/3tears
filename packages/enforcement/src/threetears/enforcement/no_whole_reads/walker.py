@@ -979,6 +979,10 @@ _COPY_CALLS: Final[frozenset[str]] = COPY_CALLS
 #: the key under which a function returning a string template is kept beside the names bound to strings
 _TEMPLATE: Final[str] = "{}()"
 
+#: the key a class's method returning a name is kept under among a module's strings (:func:`_method_templates`):
+#: called on ``self`` or ``cls`` alone, never matched by a module function's name
+_METHOD_TEMPLATE: Final[str] = "self.{}()"
+
 
 def _constant_text(value: ast.expr, constants: dict[str, str], depth: int = 0) -> str | None:
     """the string a placeholder argument statically is: a literal, a name bound to one (a module constant, an
@@ -1004,6 +1008,16 @@ def _constant_text(value: ast.expr, constants: dict[str, str], depth: int = 0) -
         text = constants.get(value.id)
     elif isinstance(value, ast.Call) and len(value.args) == 1 and _final(value) in _QUOTERS:
         text = _constant_text(value.args[0], constants, depth + 1)
+    elif (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and dotted(value.func.value) in {"self", "cls"}
+        and _METHOD_TEMPLATE.format(value.func.attr) in constants
+    ):
+        # a method of the class that only returns a name (``self._ring_table(index)`` ->
+        # ``{}.threetears_change_notes_{}``): the name it builds is its template, as a module function's
+        text = constants[_METHOD_TEMPLATE.format(value.func.attr)]
+        text = None if is_sql(text) else text
     elif isinstance(value, ast.Call) and _TEMPLATE.format(_final(value)) in constants:
         text = constants[_TEMPLATE.format(_final(value))]
         # a helper returning a statement is judged once where it is written, with its own module's constants; in its
@@ -1195,6 +1209,14 @@ def _string_text(node: ast.expr, env: dict[str, str], produced: Produced = None,
     elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
         template = _string_text(node.func.value, env, produced, keyed)
         text = None if template is None else _formatted(template, node, env, produced, keyed)
+    elif (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and dotted(node.func.value) in {"self", "cls"}
+        and _METHOD_TEMPLATE.format(node.func.attr) in env
+    ):
+        # ``table = self._ring_table(index)``: the name the method only returns (:func:`_method_templates`)
+        text = _constant_text(node, env)
     elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "strip":
         text = _string_text(node.func.value, env, produced, keyed)
     elif isinstance(node, ast.Call) and node.args and _final(node) in {"dedent", "SQL", "text"}:
@@ -2033,6 +2055,7 @@ class _ModuleWalk(ast.NodeVisitor):
         )
         self._envs[0].update(imported or {})
         self._envs[0].update(_module_strings(tree))
+        self._envs[0].update(_method_templates(tree, self._envs[0]))
         self._bind(tree.body, self._envs[0])
         self._constants_of(tree.body, "")
         self._statement_ctes = _statement_ctes(tree, self._envs[0])
@@ -7307,6 +7330,43 @@ def _module_strings(tree: ast.Module) -> dict[str, str]:
             if text is not None:
                 found[target.id] = text
     return {name: text for name, text in found.items() if name not in twice}
+
+
+def _method_templates(tree: ast.Module, strings: dict[str, str]) -> dict[str, str]:
+    """the names a module's classes' methods build, each method whose body (past its docstring) is one ``return`` of
+    a string expression: ``def _ring_table(self, index): return f"{self._owner}.{quote_identifier(note_table(index))}"``
+    reads as ``{}.threetears_change_notes_{}``, rendered with the module's own and imported strings. A method name two
+    classes return different names under is no template.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param strings: the module's strings and the ones it imports, template functions among them
+    :ptype strings: dict[str, str]
+    :return: :data:`_METHOD_TEMPLATE` keys onto the templates
+    :rtype: dict[str, str]
+    """
+    found: dict[str, str] = {}
+    twice: set[str] = set()
+    for statement in tree.body:
+        if not isinstance(statement, ast.ClassDef):
+            continue
+        for method in statement.body:
+            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            body = method.body[1:] if ast.get_docstring(method) is not None else method.body
+            if len(body) != 1 or not isinstance(body[0], ast.Return):
+                continue
+            returned = body[0].value
+            if not isinstance(returned, (ast.JoinedStr, ast.Constant, ast.BinOp)):
+                continue
+            template = _string_text(returned, strings)
+            key = _METHOD_TEMPLATE.format(method.name)
+            if template is None:
+                continue
+            if found.get(key, template) != template:
+                twice.add(key)
+            found[key] = template
+    return {key: template for key, template in found.items() if key not in twice}
 
 
 def _imported_strings(tree: ast.Module, strings: dict[str, dict[str, str]]) -> dict[str, str]:

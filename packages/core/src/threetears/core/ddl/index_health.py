@@ -37,11 +37,25 @@ __all__ = [
     "IndexDuplicateKeysError",
     "IndexStillUnusableError",
     "UnusableIndex",
+    "ddl_body",
     "rebuild_unusable_indexes",
     "unusable_indexes",
 ]
 
 log = get_logger(__name__)
+
+
+def ddl_body(statement: str) -> str:
+    """a DDL statement past the ``--`` comment lines it opens with (the ``-- purpose:`` / ``-- plan_test:`` /
+    ``-- reason:`` lines declaring what reads an index): the statement the database runs, as it starts.
+
+    :param statement: the statement
+    :ptype statement: str
+    :return: its body
+    :rtype: str
+    """
+    return "\n".join(line for line in statement.splitlines() if not line.lstrip().startswith("--")).lstrip()
+
 
 #: how many duplicate keys a refusal names
 _DUPLICATES_NAMED: Final = 10
@@ -218,7 +232,7 @@ async def rebuild_unusable_indexes(
         declared = definitions or {}
         for index in found:
             unique = (
-                declared[index.name].lstrip().upper().startswith("CREATE UNIQUE ")
+                ddl_body(declared[index.name]).upper().startswith("CREATE UNIQUE ")
                 if index.name in declared
                 else index.unique
             )

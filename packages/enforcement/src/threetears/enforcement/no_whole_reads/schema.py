@@ -1223,7 +1223,7 @@ class _Values:
         :return: the string, or None
         :rtype: str | None
         """
-        if node is None or depth > 5:
+        if node is None or depth > 8:
             return None
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
@@ -2404,8 +2404,11 @@ def _index_site_findings(
     elif plan_test:
         # a constraint's test proves the database refuses a duplicate; a read's, that its plan uses the index
         calls = "raises" if constraint else "plan_uses_index"
-        defect = _test_defect(repo_root, plan_test, names=() if site.pattern else (site.name,), calls=calls)
-        if defect is None and site.pattern and not _names_a_match(repo_root, plan_test, site.pattern):
+        # an index named at run time from a template (``{note_table(index)}_key`` -> ``threetears_change_notes_{}_key``)
+        # is named by its test as one concrete index the template makes, as a pattern-named declaration's is
+        pattern = site.pattern or (re.escape(site.name).replace(r"\{\}", r"\w+") if "{}" in site.name else "")
+        defect = _test_defect(repo_root, plan_test, names=() if pattern else (site.name,), calls=calls)
+        if defect is None and pattern and not _names_a_match(repo_root, plan_test, pattern):
             defect = f"{plan_test} never names an index {site.name} makes: it cannot prove one is used"
         if defect is not None:
             findings.append(f"{where}: index-plan-test -- the plan test {defect}")
