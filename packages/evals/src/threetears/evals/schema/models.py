@@ -4141,8 +4141,10 @@ class EvalRun(CoreDocumentModel):
         ge=1,
         description=(
             "The proof rules `goal_check_proofs` were derived under (`GOAL_CHECK_PROOF_RULES`): set exactly when "
-            "they are. A `proven` recorded under rules older than the current ones reads as unproven "
-            "(`goal_check_proofs_as_read`), and is counted as needing re-proof."
+            "they are. The launch's, or the newer rules a take-up re-proved the run's checks under when they proved "
+            "alike; each holding names its own (`RunLifetime.goal_check_proof_rules`). A `proven` recorded under "
+            "rules older than the current ones reads as unproven (`goal_check_proofs_as_read`), and is counted as "
+            "needing re-proof."
         ),
     )
     refused_goal_checks: dict[str, str] | None = Field(
@@ -4787,7 +4789,9 @@ def goal_check_proofs_as_read(run: EvalRun) -> dict[str, GoalCheckProof] | None:
     in force (:data:`GOAL_CHECK_PROOF_RULES`). A run stamped under older rules may hold a ``proven`` its control
     earned under a rule since found wrong. It cannot be re-derived when read — the controls are editable
     and were not frozen with the run, so a re-derivation would prove the template as it is now, not the one the
-    run graded — so it is read as ``unproven`` until the template is launched again.
+    run graded — so it is read as ``unproven`` until the template is launched again, or the run is taken up again:
+    a take-up goes ahead only while the template's measured content, its controls included, is as the run froze it,
+    re-proves the run's checks under the rules in force, and moves the run to them when they prove alike.
     ``refuted`` and ``unproven`` stand: an older rule never made a check look worse than it is.
 
     :param run: The run.
