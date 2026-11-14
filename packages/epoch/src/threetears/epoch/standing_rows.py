@@ -17,6 +17,11 @@ row judged again so a row that stopped standing since is never answered.
 A cold read taken before :meth:`StandingRows.follow` (a process's start sweeps long before it follows) is followed
 from the generation read just before it (:func:`~threetears.epoch.cold_read_generations`), so no row written between
 the two is missed.
+
+A caller that acts on each row that starts or stops standing (re-enrolling a principal whose membership was deleted,
+removing one whose principal went) passes ``on_change=``: told each followed change to what is held, once the set
+holds it, with the row held before and after. The cold read is no change: such a caller converges its own state
+against :meth:`StandingRows.keys` after it, as it would after a reset.
 """
 
 from __future__ import annotations
@@ -40,6 +45,10 @@ log = get_logger(__name__)
 
 #: the keys :meth:`StandingRows.read` names in one statement
 _READ_PAGE: Final[int] = 500
+
+#: what :class:`StandingRows` tells a caller of one followed change: the row's key, the row held before (None when it
+#: did not stand) and the row held now (None when it stopped standing)
+OnChange = Callable[[tuple[Any, ...], Mapping[str, Any] | None, Mapping[str, Any] | None], Awaitable[None]]
 
 #: how a change note's key value (always text) is made the key column's value, by the column's SQL type
 _PARSE: Final[Mapping[str, Callable[[str], Any]]] = {"uuid": UUID, "text": str, "bigint": int, "integer": int}
@@ -124,6 +133,10 @@ class StandingRows:
     :ptype generations: EpochGenerationReader
     :param name: the set's name, for its follower's tasks and logs
     :ptype name: str
+    :param on_change: told each followed change to what stands (a row held, let go, or held with other columns), as a
+        task once the set holds it, so it may ask the set; a row re-read unchanged and the cold read tell nothing. A
+        failure is logged and contained: the set keeps following
+    :ptype on_change: OnChange | None
     """
 
     def __init__(
@@ -134,6 +147,7 @@ class StandingRows:
         cold: Callable[[], Awaitable[Iterable[Mapping[str, Any]]]],
         generations: EpochGenerationReader,
         name: str,
+        on_change: OnChange | None = None,
     ) -> None:
         """bind the reads; no I/O.
 
@@ -145,6 +159,7 @@ class StandingRows:
         self._cold = cold
         self._generations = generations
         self._name = name
+        self._on_change = on_change
         self._lock = asyncio.Lock()
         self._loaded = False
         self._following = False
@@ -319,10 +334,43 @@ class StandingRows:
             columns=standing.columns,
         )
         stands = [row for row in found if standing.member(row)]
-        if stands:
-            self._held[key] = stands[0]
+        before = self._held.get(key)
+        # what is held is the key and held columns, as the cold read holds them, so a row re-read unchanged is no change
+        after = {column: stands[0][column] for column in standing.columns} if stands else None
+        if after is not None:
+            self._held[key] = after
         else:
             self._held.pop(key, None)
+        if self._on_change is not None and before != after:
+            # a task: it runs once the lock this read holds is let go, so it may ask the set; settled() waits for it
+            self._rows.spawn(self._tell(key, before, after), f"{self._name}-on-change")
+
+    async def _tell(
+        self, key: tuple[Any, ...], before: Mapping[str, Any] | None, after: Mapping[str, Any] | None
+    ) -> None:
+        """tell the caller one change to what stands, containing what it raises.
+
+        :param key: the row's key
+        :ptype key: tuple[Any, ...]
+        :param before: the row held before, or None
+        :ptype before: Mapping[str, Any] | None
+        :param after: the row held now, or None
+        :ptype after: Mapping[str, Any] | None
+        :return: nothing
+        :rtype: None
+        """
+        on_change = self._on_change
+        if on_change is not None:
+            try:
+                await on_change(key, before, after)
+            except Exception as exc:
+                # the set holds the change either way; the caller's own convergence (at its start) repairs what failed
+                contain(
+                    exc,
+                    log=log,
+                    what="a standing change's on_change failed; the set keeps following",
+                    extra={"set": self._name, "table": self._standing.table, "key": [str(part) for part in key]},
+                )
 
     async def _on_key(self, named: tuple[str, ...]) -> None:
         """a row changed: read it by its whole key. Before the cold start nothing is held, and nothing is read (the

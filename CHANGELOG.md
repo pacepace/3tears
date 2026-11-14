@@ -15,6 +15,8 @@ answer; a reset reads cold at the next question.
 **Added:** follow-since: `cold_read_generations(reader, tables)` reads each table's generation just before a cold read,
 and `RowFollower.follow(..., since=...)` (or `follow_since(registry, since)` beside several followers) starts each
 table's mark there, so a row written between a cold read and its follow is read by key, not missed until a restart.
+**Added:** `StandingRows(..., on_change=...)`: told `(key, before, after)` for each followed change to what is held, as
+a task once the set holds it (the hub's rbac readers re-enroll a principal whose membership was deleted, at once).
 
 ### core: `SchemaBackedCollection.truncate()` removed -- an operator's `reset()` is the one whole-table empty
 

@@ -280,3 +280,86 @@ async def test_a_follow_since_naming_a_table_it_does_not_follow_is_refused() -> 
     follower = RowFollower({}, lambda: None, name="test", key_reads={"a": read})
     with pytest.raises(ValueError, match="does not follow"):
         follower.follow(CollectionRegistry(), EpochGenerationReader(FakeNatsClient()), since={"b": None})
+
+
+async def test_each_followed_change_to_what_stands_is_told_once_after_it_is_held() -> None:
+    """Flips if a row that starts or stops standing is not told to ``on_change`` (with what was held before and after),
+    a row re-written unchanged is told, the cold read is told, a missed row's second read is not told, or the change is
+    told before the set holds it (the callback asks the set and must see the change)."""
+    kept, leaving = _agent(), _agent()
+    db = _FakeAgentsDb([kept, leaving])
+    told: list[tuple[tuple[Any, ...], Any, Any, int]] = []
+    rows: StandingRows
+
+    async def on_change(
+        key: tuple[Any, ...], before: Mapping[str, Any] | None, after: Mapping[str, Any] | None
+    ) -> None:
+        told.append((key, before, after, await rows.count()))
+
+    rows = StandingRows(
+        db,
+        _standing(),
+        cold=_Cold(db),
+        generations=EpochGenerationReader(FakeNatsClient()),
+        name="test-agents",
+        on_change=on_change,
+    )
+    assert await rows.count() == 2
+    assert told == [], "the cold read is no change"
+
+    joining = _agent()
+    db.rows[(joining["customer_id"], joining["id"])] = joining
+    db.rows[(leaving["customer_id"], leaving["id"])]["is_deleted"] = True
+    rows.rows.on_row(_TABLE, _changed(joining))
+    rows.rows.on_row(_TABLE, _changed(leaving))
+    rows.rows.on_row(_TABLE, _changed(kept))
+    await rows.settled()
+
+    joining_key = (joining["customer_id"], joining["id"])
+    leaving_key = (leaving["customer_id"], leaving["id"])
+    assert sorted(told, key=lambda t: t[0]) == sorted(
+        [
+            (joining_key, None, {"customer_id": joining["customer_id"], "id": joining["id"], "is_deleted": False}, 2),
+            (leaving_key, {"customer_id": leaving["customer_id"], "id": leaving["id"], "is_deleted": False}, None, 2),
+        ],
+        key=lambda t: t[0],
+    )
+
+    told.clear()
+    db.rows[joining_key]["is_deleted"] = True
+    db.fail_next = 1
+    rows.rows.on_row(_TABLE, _changed(joining))
+    await rows.settled()
+    assert told == []
+    assert await rows.count() == 1, "the missed row is read again first"
+    await rows.settled()
+    assert [(key, after) for key, _before, after, _n in told] == [(joining_key, None)]
+
+
+async def test_a_failing_on_change_is_contained_and_the_set_keeps_following() -> None:
+    """Flips if a raising ``on_change`` stops the set holding later changes or escapes into the follower's task."""
+    db = _FakeAgentsDb([])
+    calls: list[tuple[Any, ...]] = []
+
+    async def on_change(
+        key: tuple[Any, ...], before: Mapping[str, Any] | None, after: Mapping[str, Any] | None
+    ) -> None:
+        calls.append(key)
+        raise RuntimeError("the consumer's write failed")
+
+    rows = StandingRows(
+        db,
+        _standing(),
+        cold=_Cold(db),
+        generations=EpochGenerationReader(FakeNatsClient()),
+        name="test-agents",
+        on_change=on_change,
+    )
+    assert await rows.count() == 0
+    first, second = _agent(), _agent()
+    for row in (first, second):
+        db.rows[(row["customer_id"], row["id"])] = row
+        rows.rows.on_row(_TABLE, _changed(row))
+        await rows.settled()
+    assert await rows.count() == 2
+    assert len(calls) == 2

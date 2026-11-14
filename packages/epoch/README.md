@@ -137,6 +137,13 @@ active.follow(registry, reader)
 ids = await active.keys(where=lambda row: row["status"] == "active")
 ```
 
+A caller that acts on each row that starts or stops standing passes `on_change=`: an async
+callable told `(key, before, after)` for each followed change to what is held (`before` None
+when the row did not stand, `after` None when it stopped), as a task once the set holds it, so
+it may ask the set. A row re-read unchanged and the cold read tell nothing; a caller converges
+its own state against `keys()` after the cold read (and after a reset). A raising `on_change`
+is logged and contained; the set keeps following.
+
 ## Identity
 
 The unit of identity is the **NATS subject path**. Each consumer:
