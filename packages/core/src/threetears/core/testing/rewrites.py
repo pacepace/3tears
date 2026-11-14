@@ -589,7 +589,8 @@ async def _assert_point_same(
                 helper=one_row,
             )
         elif entry["helper"] == "read_value":
-            column = columns[0]
+            # a read_value reads one plain column (the codemod refuses an expression there)
+            column: str = entry["columns"][0]
 
             async def one_value(c: Any) -> list[dict[str, Any]]:
                 return [{column: await read_value(c, table, by=by, column=column, where=where)}]
