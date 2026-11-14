@@ -1822,9 +1822,37 @@ def _joins_say(joins: ast.expr | None, recorded: Sequence[Mapping[str, Any]]) ->
             parts.append(f"matched={join['matched']!r}")
         if join.get("counts"):
             parts.append(f"counts={dict(join['counts'])!r}")
-        if not _same_expression(written, f"Joined({', '.join(parts)})"):
+        # a mapping's order says nothing about the join, and the manifest is written with sorted keys
+        if not _same_expression(
+            _keys_sorted(written), ast.unparse(_keys_sorted(_parsed(f"Joined({', '.join(parts)})")))
+        ):
             return False
     return True
+
+
+def _parsed(text: str) -> ast.expr:
+    """an expression's tree."""
+    return ast.parse(text, mode="eval").body
+
+
+def _keys_sorted(node: ast.expr) -> ast.expr:
+    """``node`` with each dict display whose keys are all string literals written in key order (a copy)."""
+
+    class _Sorting(ast.NodeTransformer):
+        def visit_Dict(self, display: ast.Dict) -> ast.AST:
+            self.generic_visit(display)
+            keys = display.keys
+            if all(isinstance(key, ast.Constant) and isinstance(key.value, str) for key in keys):
+                pairs = sorted(
+                    zip(keys, display.values, strict=True), key=lambda pair: str(getattr(pair[0], "value", ""))
+                )
+                display.keys = [key for key, _ in pairs]
+                display.values = [value for _, value in pairs]
+            return display
+
+    copied = ast.parse(ast.unparse(node), mode="eval").body
+    sorted_node: ast.expr = _Sorting().visit(copied)
+    return sorted_node
 
 
 def _pin_text(pin: Mapping[str, Any]) -> str:

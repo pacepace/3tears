@@ -2373,6 +2373,36 @@ def test_a_point_read_with_joins_is_rewritten_onto_read_by_joined(tmp_path: Path
         assert_source_says(tmp_path, entry)
 
 
+def test_a_join_s_columns_out_of_name_order_are_found_by_the_source_check_after_the_manifest_sorts_them(
+    tmp_path: Path,
+) -> None:
+    """Flips if the source check misses a join whose added columns the code writes out of name order once the
+    manifest (written with sorted keys) has reordered them: a mapping's order says nothing about the join."""
+    config = _join_config(tmp_path)
+    (tmp_path / "src/pkg/joins.py").write_text(
+        textwrap.dedent(
+            """
+            async def two_columns(pool, key_id):
+                rows = await pool.fetch(
+                    "SELECT ak.id, c.slug AS slug, c.name AS customer_name FROM api_keys ak "
+                    "JOIN customers c ON c.id = ak.customer_id WHERE ak.id = $1",
+                    key_id,
+                )
+                return [(row["slug"], row["customer_name"]) for row in rows]
+            """
+        ),
+        encoding="utf-8",
+    )
+    rewrites, refusals = plan_join_rewrites(config)
+    assert [rewrite.function for rewrite in rewrites] == ["two_columns"], refusals
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    (entry,) = json.loads(manifest.read_text(encoding="utf-8"))
+    assert list(entry["joins"][0]["columns"]) == ["customer_name", "slug"], entry
+    assert_source_says(tmp_path, entry)
+
+
 @pytest.mark.parametrize(
     ("sql", "refused"),
     [
