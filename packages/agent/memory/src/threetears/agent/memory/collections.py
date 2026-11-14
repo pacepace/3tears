@@ -4967,10 +4967,15 @@ class MemoryConsolidationsCollection(SchemaBackedCollection[MemoryConsolidationE
                 "idx_memory_consolidations_source",
                 "agent_id",
                 "source_memory_id",
+                # the marks' corrected_by sub-select, matched on the outer memory's key, reads one source's
+                # edges (a source is merged into few gists): those few rows sorted, not the order of an index
                 purpose=(
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MemoryConsolidationsCollection.find_consolidated_into; "
-                    "packages/agent/memory/src/threetears/agent/memory/collections.py::_MEMORY_MARK_COLUMNS"
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py::_MEMORY_MARK_COLUMNS; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_by_alias; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.search_by_ids; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_for_recall"
                 ),
                 plan_test=(
                     "packages/agent/memory/tests/integration/test_index_plans.py::test_memory_consolidations_source"

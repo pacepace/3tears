@@ -518,10 +518,13 @@ async def test_repoint_agent_user(world: _World) -> None:
 
 
 async def test_memory_consolidations_source(world: _World) -> None:
-    """Flips if what a source was merged into stops reading idx_memory_consolidations_source."""
+    """Flips if what a source was merged into stops reading idx_memory_consolidations_source: the back edge, and the
+    corrected_by mark each memory read by key selects beside it (a sub-select matched on the outer memory's key)."""
     captured = CapturedL3()
     await world.consolidations(captured).find_consolidated_into(world.agent, world.memory)
     await world.memories(captured).search_by_ids([world.memory], world.user, agent_id=world.agent)
+    await world.memories(captured).find_by_alias(user_id=world.user, agent_id=world.agent, alias="a10")
+    await world.memories(captured).find_for_recall(memory_id=world.memory, user_id=world.user, agent_id=world.agent)
     missed = [
         _shape(plan)
         for plan in await world.plans(captured)
