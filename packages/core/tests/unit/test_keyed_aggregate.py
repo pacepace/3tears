@@ -10,7 +10,7 @@ from typing import Any
 import duckdb
 import pytest
 
-from threetears.core.keyed import AnyOf, Count, Fragment, InlineDuckDB, Range, Selected, Sum, aggregate_keyed
+from threetears.core.keyed import AnyOf, Count, Fragment, InlineDuckDB, Max, Min, Range, Selected, Sum, aggregate_keyed
 
 _START = datetime(2026, 11, 1)
 
@@ -97,6 +97,36 @@ async def test_an_ungrouped_aggregate_is_one_row_even_of_no_rows_and_of_no_value
         reader, "events", aggregates={"n": Count(), "s": Sum('t."input_tokens"')}, by={"customer_id": AnyOf([])}
     )
     assert empty == {"n": 0, "s": None} and len(reader.statements) == sent
+
+
+async def test_largest_and_smallest_merge_across_batches_as_the_hand_written_max_and_min(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if a MAX or MIN differs from the hand-written aggregate over the same pins, grouped or not, a batch's
+    answer replaces a larger (smaller) one when merged, or a MAX of no row is other than None, as SQL's."""
+    customers = ["c0", "c1", "c3", "c4", "c9"]
+    reader = _Recording(db)
+    aggregates = {"newest": Max('t."created"'), "fewest": Min('t."input_tokens"'), "n": Count('t."agent_id"')}
+    grouped = await aggregate_keyed(
+        reader, "events", aggregates=aggregates, by={"customer_id": AnyOf(customers)}, group=["kind"], batch=2
+    )
+    assert len(reader.statements) == 3
+    expected = _plain(
+        db,
+        "SELECT kind, max(created), min(input_tokens), count(agent_id) FROM events "
+        "WHERE customer_id IN ('c0', 'c1', 'c3', 'c4', 'c9') GROUP BY kind",
+    )
+    assert sorted((row["kind"], row["newest"], row["fewest"], row["n"]) for row in grouped) == sorted(expected)
+    (whole,) = await aggregate_keyed(
+        reader, "events", aggregates=aggregates, by={"customer_id": AnyOf(customers)}, batch=2
+    )
+    assert (whole["newest"], whole["fewest"], whole["n"]) == _plain(
+        db,
+        "SELECT max(created), min(input_tokens), count(agent_id) FROM events "
+        "WHERE customer_id IN ('c0', 'c1', 'c3', 'c4', 'c9')",
+    )[0]
+    (none,) = await aggregate_keyed(reader, "events", aggregates=aggregates, by={"customer_id": "nobody"})
+    assert none == {"newest": None, "fewest": None, "n": 0}
 
 
 async def test_two_ranges_on_one_column_are_or_ed_and_an_inclusive_edge_kept(db: duckdb.DuckDBPyConnection) -> None:

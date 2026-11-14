@@ -13,6 +13,10 @@ and answered once for each, as the join answers it: a row no joined row matches 
 with every joined column None (``LEFT JOIN``); a NULL value matches nothing, as ``=`` matches nothing. The rows come in
 the read's ``order``; the rows one read row matches, in no promised order, as the join left them.
 
+A correlated count in the select list (``(SELECT COUNT(*) FROM datasource_columns dc WHERE dc.table_id = dt.id AND
+dc.description IS NOT NULL) AS described``) is a counted join (:class:`Joined` with ``counts``): the joined table read
+by the same keyed batch, and each read row kept once beside how many of its rows match it (0 when none does).
+
 The no-whole-reads rule judges a call by the statements it sends (the read by its pins, each joined table by the
 columns it is joined on), each keyed only as the hand-written join's tables were.
 
@@ -61,6 +65,10 @@ class Joined:
     :param casts: each ``on`` column's SQL type; read from the row's value when absent (a ``UUID`` is ``uuid``, an
         ``int`` ``bigint``, a ``str`` ``text``)
     :ptype casts: Mapping[str, str]
+    :param counts: a counted join's: each name the row says a count under -> the joined column a matching row is
+        counted by when it is not NULL (``COUNT(dc.description)``), or None to count every matching row
+        (``COUNT(*)``); every read row is then kept once, with no joined column (``columns`` empty)
+    :ptype counts: Mapping[str, str | None]
     """
 
     table: str
@@ -70,6 +78,7 @@ class Joined:
     by: Mapping[str, Any] | None = None
     matched: str | None = None
     casts: Mapping[str, str] = field(default_factory=dict)
+    counts: Mapping[str, str | None] = field(default_factory=dict)
 
 
 #: a Python value's SQL type, for an ``on`` column given no cast
@@ -125,24 +134,29 @@ async def read_by_joined(
     :ptype batch: int | None
     :return: the rows, as dicts: the read's columns, then each join's
     :rtype: list[dict[str, Any]]
-    :raises ValueError: when nothing is joined, or a join names no column or nothing to join on
+    :raises ValueError: when nothing is joined, a join names nothing to join on, or a counted join widens the row
     """
     if not joins:
         raise ValueError(f"a joined read of {table} joins at least one table (read_by reads one)")
     for join in joins:
         if not join.on:
             raise ValueError(f"a join of {join.table} names how it joins the row")
+        if join.counts and (join.columns or join.left or join.matched):
+            raise ValueError(f"a join of {join.table} that counts keeps each row once: no columns, left or matched")
     selected = _names(columns)
     # the columns of the read a join needs and the read does not select: read, then dropped from the rows
     added = [] if selected is None else sorted({column for join in joins for column in join.on.values()} - selected)
-    named: set[str] = set(selected or ()) | {name for join in joins for name in (*join.columns, join.matched) if name}
+    named: set[str] = set(selected or ()) | {
+        name for join in joins for name in (*join.columns, *join.counts, join.matched) if name
+    }
     hidden = [column for column in added if column not in named]
     read = None if columns is None else [*columns, *hidden]
     rows: list[dict[str, Any]] = await read_by(conn, table, by=by, columns=read, where=where, order=order)
     for join in joins:
         inner = list(join.on)
         # the joined table's columns read under names of their own, so none overwrites the row's before it is placed
-        wanted = list(dict.fromkeys([*inner, *join.columns.values()]))
+        counted = [column for column in join.counts.values() if column is not None]
+        wanted = list(dict.fromkeys([*inner, *join.columns.values(), *counted]))
         casts = {column: join.casts.get(column) or _cast_of([row[join.on[column]] for row in rows]) for column in inner}
         matches = (
             await read_joined(
@@ -155,7 +169,18 @@ async def read_by_joined(
         for row in rows:
             value = tuple(row[join.on[column]] for column in inner)
             found = matches.get(value) if all(part is not None for part in value) else None
-            if found:
+            if join.counts:
+                held = found or []
+                joined.append(
+                    {
+                        **row,
+                        **{
+                            name: sum(1 for other in held if column is None or other[column] is not None)
+                            for name, column in join.counts.items()
+                        },
+                    }
+                )
+            elif found:
                 for other in found:
                     widened = {**row, **{name: other[column] for name, column in join.columns.items()}}
                     if join.matched:

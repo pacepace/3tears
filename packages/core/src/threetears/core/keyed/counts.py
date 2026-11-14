@@ -50,6 +50,8 @@ from threetears.interfaces.keyed.counts import (
     Count,
     Dialect,
     MarkedCount,
+    Max,
+    Min,
     Range,
     Sum,
     rows_affected,
@@ -224,15 +226,15 @@ async def aggregate_keyed(
     conn: Any,
     table: str | Derived,
     *,
-    aggregates: Mapping[str, Count | Sum],
+    aggregates: Mapping[str, Count | Sum | Max | Min],
     by: Mapping[str, Any] | None = None,
     ranges: Sequence[Range] = (),
     where: Sequence[Fragment] = (),
     group: Sequence[str | Selected] = (),
     batch: int = 999,
 ) -> list[dict[str, Any]]:
-    """counts and sums of the rows of ``table`` that ``by`` pins and ``ranges`` bound, grouped by ``group`` or not:
-    :func:`counts_by`'s keyed ``GROUP BY`` with any counts and sums, a window and any group::
+    """counts, sums, largest and smallest values of the rows of ``table`` that ``by`` pins and ``ranges`` bound,
+    grouped by ``group`` or not: :func:`counts_by`'s keyed ``GROUP BY`` with any aggregates, a window and any group::
 
         SELECT <group>, count(*) AS "requests", SUM(<expr>) AS "tokens" FROM <table> AS t
          WHERE <by> AND (t."created" >= $lo AND t."created" < $hi) AND <where> GROUP BY <group>
@@ -240,15 +242,16 @@ async def aggregate_keyed(
     ``by`` and the range's column together must be a leading part of the key (or of an index declared for the
     caller's read), the range's column last: each statement reads only the rows they name. An :class:`AnyOf` in
     ``by`` (a tenant set) is named ``batch`` values a statement (the largest when several), and the statements'
-    answers merged: a group's counts and sums added. With ``group`` and no aggregate it is the keyed distinct values
+    answers merged: a group's counts and sums added, the larger :class:`Max` and the smaller :class:`Min` kept. With ``group`` and no aggregate it is the keyed distinct values
     of the group, each once however many batches hold it.
 
     :param conn: anything with an asyncpg-shaped ``fetch``
     :ptype conn: Any
     :param table: the table (``schema.table``), or a derived relation
     :ptype table: str | Derived
-    :param aggregates: each answer's name, a TRUSTED identifier -> its :class:`Count` or :class:`Sum`
-    :ptype aggregates: Mapping[str, Count | Sum]
+    :param aggregates: each answer's name, a TRUSTED identifier -> its :class:`Count`, :class:`Sum`, :class:`Max` or
+        :class:`Min`
+    :ptype aggregates: Mapping[str, Count | Sum | Max | Min]
     :param by: the prefix pinned (a value, None, or an :class:`AnyOf` of values)
     :ptype by: Mapping[str, Any] | None
     :param ranges: ranges of ONE column, the column after the prefix, OR-ed
@@ -261,7 +264,7 @@ async def aggregate_keyed(
     :param batch: the most values of the batched :class:`AnyOf` a statement names
     :ptype batch: int
     :return: one row a group (its group values and aggregates by name); ungrouped, exactly one row (a count of no
-        row is 0, a sum of none None)
+        row is 0, a sum, largest or smallest of none None)
     :rtype: list[dict[str, Any]]
     :raises ValueError: when neither ``by`` nor ``ranges`` names the rows (the whole table), the ranges name more
         than one column, nothing is answered (no aggregate and no group), or ``batch`` is under one
@@ -285,8 +288,16 @@ async def aggregate_keyed(
                 value = row[name]
                 if isinstance(aggregate, Count):
                     held[name] += int(value)
-                elif value is not None:
-                    held[name] = value if held[name] is None else held[name] + value
+                elif value is None:
+                    continue
+                elif held[name] is None:
+                    held[name] = value
+                elif isinstance(aggregate, Sum):
+                    held[name] += value
+                elif isinstance(aggregate, Max):
+                    held[name] = max(held[name], value)
+                else:
+                    held[name] = min(held[name], value)
     if not group and not merged:
         return [dict(empty)]
     return list(merged.values())
@@ -309,7 +320,7 @@ def _value_chunks(pinned: Mapping[str, Any], batch: int) -> list[dict[str, Any]]
 
 def _aggregate_statement(
     table: str | Derived,
-    aggregates: Mapping[str, Count | Sum],
+    aggregates: Mapping[str, Count | Sum | Max | Min],
     pinned: Mapping[str, Any],
     ranges: Sequence[Range],
     where: Sequence[Fragment],
@@ -341,7 +352,8 @@ def _aggregate_statement(
             counted = "*" if aggregate.expression is None else aggregate.expression
             items.append(f"count({counted}) AS {quote_identifier(name)}")
         else:
-            items.append(f"SUM({aggregate.expression}) AS {quote_identifier(name)}")
+            function = "SUM" if isinstance(aggregate, Sum) else "MAX" if isinstance(aggregate, Max) else "MIN"
+            items.append(f"{function}({aggregate.expression}) AS {quote_identifier(name)}")
     clause = f" GROUP BY {', '.join(grouped)}" if grouped else ""
     sql = f"SELECT {', '.join(items)} FROM {relation(table, 't')} WHERE {' AND '.join(conditions)}{clause}"
     return (sql, *params)

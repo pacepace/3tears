@@ -74,6 +74,9 @@ from threetears.core.keyed import (
     Fragment,
     Increment,
     Joined,
+    Max,
+    Min,
+    Sum,
     keyset_page,
     Selected,
     Sort,
@@ -653,6 +656,14 @@ async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides:
     if entry.get("shape") == "write":
         await _assert_write_same(conn, entry, overrides=overrides)
         return
+    if entry.get("shape") == "aggregate":
+        for part in entry["parts"]:
+            sub = _part_entry(entry, part)
+            if sub["helper"] == "aggregate_keyed":
+                await _assert_count_same(conn, sub, overrides=overrides, nulled=False)
+            else:
+                await _assert_point_same(conn, sub, overrides=overrides, nulled=False)
+        return
     if entry.get("shape") == "count":
         await _assert_count_same(conn, entry, overrides=overrides, nulled=False)
         if any(pin["kind"] == "nullsafe" for pin in entry["pins"]):
@@ -772,6 +783,15 @@ def _joined_rows(
             rows.append(made(value, held=False))
     for stray in range(_JOIN_STRAYS):
         rows.append(made([_value(shape.columns[column], 800_000 + stray) for column in on], held=True))
+    # a counted join's counted columns: NULL on every other row where the column takes one, so a count of the rows
+    # where it holds a value differs from a count of every row
+    rows = [dict(made_row) for made_row in rows]
+    for column in [column for column in dict(join.get("counts") or {}).values() if column is not None]:
+        if column not in shape.columns:
+            raise AssertionError(f"{join['table']}: the count names {column}, which the table has no column of")
+        for place, made_row in enumerate(rows):
+            nulled = place % 2 == 1 and shape.columns[column].nullable
+            made_row[column] = None if nulled else _value(shape.columns[column], 900_000 + place)
     return rows
 
 
@@ -799,6 +819,7 @@ async def _assert_join_same(conn: Any, entry: Mapping[str, Any], *, overrides: _
             left=join["left"],
             by=_by({"pins": join["pins"]}, ()) or None,
             matched=join["matched"] or None,
+            counts=dict(join.get("counts") or {}),
         )
         for join in entry["joins"]
     ]
@@ -914,6 +935,60 @@ async def _assert_read_case(
     return [len(rows) for rows in answered]
 
 
+#: an aggregate's class, by its SQL function
+_AGGREGATES: Final[dict[str, Any]] = {"count": Count, "max": Max, "min": Min, "sum": Sum}
+
+
+def _aggregate_of(item: Mapping[str, Any]) -> Any:
+    """one aggregate item of an aggregate entry's part as ``aggregate_keyed`` takes it."""
+    column = item["column"]
+    made = _AGGREGATES[item["function"]]
+    return made() if column is None else made(f't."{column}"')
+
+
+def _aggregate_text(item: Mapping[str, Any]) -> str:
+    """one aggregate item as the codemod writes it: ``Count()``, ``Max('t."col"')``."""
+    made = _AGGREGATES[item["function"]].__name__
+    if item["column"] is None:
+        return f"{made}()"
+    expression = 't."' + item["column"] + '"'
+    return f"{made}({expression!r})"
+
+
+def _renumbered_pin(pin: Mapping[str, Any], place: Mapping[int, int]) -> dict[str, Any]:
+    return {
+        **pin,
+        "param": None if pin.get("param") is None else place[pin["param"]],
+        "params": [place[number] for number in pin.get("params") or ()],
+    }
+
+
+def _part_entry(entry: Mapping[str, Any], part: Mapping[str, Any]) -> dict[str, Any]:
+    """one part of an aggregate entry as an entry of its own: its statement (``sql``, numbered from ``$1``), its pins
+    and guards numbered as it is, its arguments; a count entry of its aggregates (``items``), or a ``read_row`` point
+    entry of its columns."""
+    numbers = sorted(
+        {
+            number
+            for pin in (*part["pins"], *part["guards"])
+            for number in ([pin["param"]] if pin.get("param") is not None else list(pin.get("params") or ()))
+        }
+    )
+    place = {number: index for index, number in enumerate(numbers, start=1)}
+    sub: dict[str, Any] = {
+        "path": entry.get("path"),
+        "function": entry.get("function"),
+        "table": part["table"],
+        "old_sql": part["sql"],
+        "pins": [_renumbered_pin(pin, place) for pin in part["pins"]],
+        "where": [_renumbered_pin(guard, place) for guard in part["guards"]],
+        "args": [entry["args"][number - 1] for number in numbers],
+    }
+    if part["items"][0]["function"] == "value":
+        return {**sub, "shape": "point", "helper": "read_row", "columns": [item["column"] for item in part["items"]]}
+    return {**sub, "shape": "count", "helper": "aggregate_keyed", "columns": None, "items": list(part["items"])}
+
+
 async def _assert_count_same(
     conn: Any, entry: Mapping[str, Any], *, overrides: _Overrides | None, nulled: bool
 ) -> None:
@@ -934,6 +1009,9 @@ async def _assert_count_same(
             async def answered(c: Any, guards: list[Fragment] = case.where) -> list[dict[str, Any]]:
                 if entry["helper"] == "holds_any":
                     return [{"answer": await holds_any(c, table, order=entry["walk"], by=by)}]
+                if entry.get("items"):
+                    aggregates = {item["name"]: _aggregate_of(item) for item in entry["items"]}
+                    return await aggregate_keyed(c, table, aggregates=aggregates, by=by, where=guards)
                 counted = await aggregate_keyed(c, table, aggregates={"n": Count()}, by=by, where=guards)
                 return [{"answer": counted[0]["n"]}]
 
@@ -941,12 +1019,18 @@ async def _assert_count_same(
                 conn,
                 table=table,
                 row=row,
-                old_sql=f'SELECT ({case.old_sql}) AS "answer"',  # noqa: S608 - the manifest's own statement
+                # the manifest's own statement: an aggregate entry's one row as it is, a count's one value
+                old_sql=(
+                    f"SELECT * FROM ({case.old_sql}) AS o"  # noqa: S608
+                    if entry.get("items")
+                    else f'SELECT ({case.old_sql}) AS "answer"'  # noqa: S608
+                ),
                 params=case.params,
                 helper=answered,
                 related=case.related,
             )
-            counted_by[case.subject] = [int(dict(rows[0])["answer"] or 0) for rows in olds]
+            if not entry.get("items"):
+                counted_by[case.subject] = [int(dict(rows[0])["answer"] or 0) for rows in olds]
         _assert_clause_restricts(entry, counted_by)
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")
@@ -1442,6 +1526,41 @@ def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
     return written is not None and written == list(entry["columns"])
 
 
+def _part_says(call: ast.Call, entry: Mapping[str, Any], part: Mapping[str, Any]) -> bool:
+    """whether a helper call is an aggregate entry's part: of its table, pinned and guarded as recorded, asking its
+    aggregates under their names (``aggregate_keyed``) or its columns (``read_row``; ``read_value`` its one column),
+    and nothing else."""
+    if len(call.args) != 2 or not (isinstance(call.args[1], ast.Constant) and call.args[1].value == part["table"]):
+        return False
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    by = keywords.get("by")
+    if not isinstance(by, ast.Dict) or len(by.keys) != len(part["pins"]):
+        return False
+    for key, value, pin in zip(by.keys, by.values, part["pins"], strict=True):
+        if not (isinstance(key, ast.Constant) and key.value == pin["column"]) or not _pin_says(
+            value, pin, entry["args"]
+        ):
+            return False
+    if not _where_says(keywords, {"where": part["guards"], "args": entry["args"]}):
+        return False
+    items = part["items"]
+    asked = set(keywords) - {"by", "where"}
+    assert isinstance(call.func, ast.Name)
+    if call.func.id == "aggregate_keyed":
+        aggregates = keywords.get("aggregates")
+        written = "{" + ", ".join(f"{item['name']!r}: {_aggregate_text(item)}" for item in items) + "}"
+        return asked == {"aggregates"} and aggregates is not None and _same_expression(aggregates, written)
+    if call.func.id == "read_value":
+        column = keywords.get("column")
+        return asked == {"column"} and isinstance(column, ast.Constant) and column.value == items[0]["column"]
+    columns = keywords.get("columns")
+    return (
+        asked == {"columns"}
+        and columns is not None
+        and _same_expression(columns, repr(tuple(item["column"] for item in items)))
+    )
+
+
 def _count_says(keywords: Mapping[str | None, ast.expr], entry: Mapping[str, Any]) -> bool:
     """whether a count's helper call walks the entry's ``walk`` (``holds_any``) or counts every row
     (``aggregate_keyed(aggregates={"n": Count()})``), and asks nothing else."""
@@ -1485,6 +1604,8 @@ def _joins_say(joins: ast.expr | None, recorded: Sequence[Mapping[str, Any]]) ->
             parts.append("by={" + pinned + "}")
         if join["matched"]:
             parts.append(f"matched={join['matched']!r}")
+        if join.get("counts"):
+            parts.append(f"counts={dict(join['counts'])!r}")
         if not _same_expression(written, f"Joined({', '.join(parts)})"):
             return False
     return True
@@ -1531,6 +1652,18 @@ def assert_source_says(repo_root: Path, entry: Mapping[str, Any]) -> None:
     tree = ast.parse((repo_root / entry["path"]).read_text(encoding="utf-8"))
     function = _function(tree, entry["function"])
     assert function is not None, f"{entry['path']}: no function {entry['function']}"
+    if entry.get("shape") == "aggregate":
+        for part in entry["parts"]:
+            helpers = {"aggregate_keyed"} if part["items"][0]["function"] != "value" else {"read_row", "read_value"}
+            sent = [
+                node
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in helpers
+            ]
+            assert any(_part_says(call, entry, part) for call in sent), (
+                f"{entry['path']}::{entry['function']}: no call of {part['table']} as the manifest's part records it"
+            )
+        return
     calls = [
         node
         for node in ast.walk(function)

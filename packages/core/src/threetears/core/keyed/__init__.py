@@ -95,7 +95,7 @@ from threetears.core.keyed.counts import (
     read_packed,
     rows_affected,
 )
-from threetears.interfaces.keyed.counts import Count, Range, Sum
+from threetears.interfaces.keyed.counts import Count, Max, Min, Range, Sum
 from threetears.core.keyed.deletes import SweptRows, delete_before, delete_oldest, update_before
 from threetears.core.keyed.inline import InlineDuckDB, InlineTransaction, run_inline
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
@@ -204,6 +204,8 @@ __all__ = [
     "AnyOf",
     "BoundedCount",
     "Count",
+    "Max",
+    "Min",
     "DeclaredIndex",
     "Derived",
     "Dialect",

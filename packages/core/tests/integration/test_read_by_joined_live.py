@@ -30,7 +30,7 @@ _DDL = (
     "PRIMARY KEY (ref, link, relation_id))",
     "CREATE TABLE j_relations (id uuid PRIMARY KEY, name text NOT NULL)",
     "CREATE TABLE j_columns (table_id uuid NOT NULL, position integer NOT NULL, column_name text NOT NULL, "
-    "PRIMARY KEY (table_id, position))",
+    "note text, PRIMARY KEY (table_id, position))",
 )
 
 
@@ -110,6 +110,16 @@ _MANY = _entry(
     columns=["id"],
 )
 
+#: correlated counts beside every column of the read: how many joined rows match it, and how many with a note
+_COUNTED = _entry(
+    "SELECT ak.*, (SELECT COUNT(*) FROM j_columns cl WHERE cl.table_id = ak.customer_id) AS column_count, "
+    "(SELECT COUNT(*) FROM j_columns cl WHERE cl.table_id = ak.customer_id AND cl.note IS NOT NULL) AS noted "
+    "FROM j_keys ak WHERE ak.label = $1",
+    "j_keys",
+    [_pin("label", "param", param=1)],
+    [_join("j_columns", {"table_id": "customer_id"}, {}, counts={"column_count": None, "noted": "note"})],
+)
+
 
 @pytest.fixture
 async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
@@ -128,7 +138,9 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
 
 
 @pytest.mark.parametrize(
-    "entry", [_WITH_SLUG, _LEFT_MATCHED, _SWITCHED, _MANY], ids=["star", "left-matched", "switched", "one-to-many"]
+    "entry",
+    [_WITH_SLUG, _LEFT_MATCHED, _SWITCHED, _MANY, _COUNTED],
+    ids=["star", "left-matched", "switched", "one-to-many", "counted"],
 )
 async def test_a_joined_read_gives_what_its_join_gave(conn: asyncpg.Connection, entry: dict[str, Any]) -> None:
     """Flips if ``read_by_joined`` answers any seed case otherwise than the hand-written join: a row a JOIN drops
@@ -139,10 +151,14 @@ async def test_a_joined_read_gives_what_its_join_gave(conn: asyncpg.Connection, 
 
 async def test_the_proof_sees_a_join_answered_otherwise(conn: asyncpg.Connection) -> None:
     """Flips if the generated proof passes a joined read answered otherwise than its statement: a LEFT JOIN's
-    unmatched rows dropped (recorded as a JOIN), a JOIN's unmatched rows kept (recorded as a LEFT JOIN)."""
+    unmatched rows dropped (recorded as a JOIN), a JOIN's unmatched rows kept (recorded as a LEFT JOIN), a count of the
+    rows holding a note answered as a count of every row."""
     as_inner = {**_MANY, "joins": [{**_MANY["joins"][0], "left": False}]}
     with pytest.raises(AssertionError):
         await assert_rewrite_same(conn, as_inner)
     as_left = {**_WITH_SLUG, "joins": [{**_WITH_SLUG["joins"][0], "left": True}]}
     with pytest.raises(AssertionError):
         await assert_rewrite_same(conn, as_left)
+    every_row = {**_COUNTED, "joins": [{**_COUNTED["joins"][0], "counts": {"column_count": None, "noted": None}}]}
+    with pytest.raises(AssertionError):
+        await assert_rewrite_same(conn, every_row)
