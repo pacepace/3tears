@@ -5014,7 +5014,7 @@
     "threetears.evals.analysis.BORROWED_PREDICTION_METHOD": {
       "kind": "constant (str)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "stable"
     },
     "threetears.evals.analysis.build_campaign_report": {
       "kind": "function",

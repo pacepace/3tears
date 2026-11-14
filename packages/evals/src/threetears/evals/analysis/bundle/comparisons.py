@@ -90,7 +90,7 @@ from threetears.evals.analysis.bundle.measures import (
     as_miss,
     classifies,
     grades_otherwise,
-    measure_walk_memo,
+    measures_walked_once,
     pool_measures,
     pooled_means,
     pooled_rates,
@@ -275,7 +275,7 @@ def planning_readings(
                     run_scales[record.rubric_dim] = record.rubric_scale
             # One memo per page, not per read: it holds each walked result, so a read-long memo would hold the history
             # the page-at-a-time walk exists not to hold. Within the page, each name is described once.
-            with measure_walk_memo():
+            with measures_walked_once():
                 for result in read:
                     miss = misses.get(result.id)
                     run_repeats.kept.append(

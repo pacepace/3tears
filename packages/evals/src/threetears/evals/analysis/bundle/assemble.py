@@ -110,7 +110,7 @@ from threetears.evals.analysis.bundle.measures import (
     failures_as_misses,
     goal_check_proofs_of,
     negative_values_of,
-    measure_walk_memo,
+    measures_walked_once,
 )
 from threetears.evals.analysis.bundle.design import (
     read_apparatus_levels,
@@ -357,7 +357,7 @@ _NARROW_THE_BUNDLE = (
 
 
 # Every fold below pools the same results, so each result's measure walk is read once per assembly.
-@measure_walk_memo()
+@measures_walked_once()
 def assemble_context_bundle(
     campaign: EvalCampaign,
     *,
