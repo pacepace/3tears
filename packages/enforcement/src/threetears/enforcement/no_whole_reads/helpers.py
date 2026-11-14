@@ -329,6 +329,10 @@ def _by(node: ast.expr | None, argument: str = "by") -> list[tuple[str, str]]:
             pinned.append((column, "any"))
         elif isinstance(value, ast.Constant) and value.value is None:
             pinned.append((column, "null"))
+        elif argument == "by" and isinstance(value, ast.Constant) and isinstance(value.value, bool):
+            # a boolean pin is sent as its literal (``threetears.interfaces.keyed.filters.by_conditions``), so it
+            # states a partial index's ``WHERE flag = false`` under any plan
+            pinned.append((column, _LITERAL + ("TRUE" if value.value else "FALSE")))
         elif argument == "by" and isinstance(value, ast.Constant) and isinstance(value.value, str):
             # a literal pin (``by={"status": "proposed"}``) is the literal the statement compares: a partial index
             # whose predicate names it (``WHERE status = 'proposed'``) holds the rows asked for
@@ -492,8 +496,8 @@ def _read_keyed(call: ast.Call) -> list[str]:
 
 
 def _read_by(call: ast.Call) -> list[str]:
-    """a point read (``read_by``, ``read_row``, ``read_value``): the rows its ``by`` pins, each ``= $n``; one pinning
-    nothing is the whole read it is. A table the code names at run time read by columns it also names at run time
+    """a point read (``read_by``, ``read_row``, ``read_value``): the rows its ``by`` pins, each ``= $n``, and its
+    ``where=`` fragments after them; one pinning nothing is the whole read it is. A table the code names at run time read by columns it also names at run time
     (``by=dict(pk)``, ``by={pk_column: i}``) is a generic reader's, judged as the interpolated SQL it would write
     (``FROM {table} WHERE {pk} = $1``), as :func:`_read_keyed` judges one; by literal columns, the walk cannot match
     them to any table's key."""
@@ -504,9 +508,12 @@ def _read_by(call: ast.Call) -> list[str]:
         table = _named(table_node, "table")
     else:
         table, own = _relation(table_node, "table")
-    pinned, _ = _conditions(pins, alias="t")
+    pinned, place = _conditions(pins, alias="t")
+    # its ``where=`` fragments, ANDed after the pins as the helper sends them: a partial index's predicate a fragment
+    # states (``where=[Fragment("kind = 'live'")]``) is stated by the read
+    filtered, _ = _filters(call, place)
     order = _written_order(_argument(call, "order", None))
-    return [f"SELECT {_selected_list(call)} FROM {table} AS t{_where(pinned)}{order}", *own]
+    return [f"SELECT {_selected_list(call)} FROM {table} AS t{_where([*pinned, *filtered])}{order}", *own]
 
 
 def _written_order(node: ast.expr | None) -> str:

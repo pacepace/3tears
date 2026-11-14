@@ -79,10 +79,18 @@ async def test_none_pins_is_null_and_anyof_a_set(db: duckdb.DuckDBPyConnection) 
 
 
 async def test_each_pin_is_bound_as_the_hand_written_statement_bound_it(db: duckdb.DuckDBPyConnection) -> None:
-    """Flips if a pin is sent other than ``= $n`` with its value as the parameter (the column types it, as before)."""
+    """Flips if a pin is sent other than the hand-written statement sent it: a value as ``= $n`` with the value as the
+    parameter (the column types it, as before), a boolean as its literal (the hand-written ``flag = FALSE``: a bound
+    ``flag = $2`` cannot prove a partial index's ``WHERE flag = false`` under a generic plan, which PostgreSQL
+    switches a prepared statement to after five runs). The rows are the same either way."""
     reader = _Recording(db)
-    await read_by(reader, "t", by={"a": "k1", "flag": False}, columns=("b",), records=True)
-    assert reader.statements == [('SELECT t."b" FROM "t" AS t WHERE t."a" = $1 AND t."flag" = $2', ("k1", False))]
+    rows = await read_by(reader, "t", by={"a": "k1", "flag": False, "b": 5}, columns=("b",), records=True)
+    assert [row["b"] for row in rows] == [5]
+    await read_by(reader, "t", by={"flag": True, "a": "k0"}, columns=("b",), records=True)
+    assert reader.statements == [
+        ('SELECT t."b" FROM "t" AS t WHERE t."a" = $1 AND t."flag" = FALSE AND t."b" = $2', ("k1", 5)),
+        ('SELECT t."b" FROM "t" AS t WHERE t."flag" = TRUE AND t."a" = $1', ("k0",)),
+    ]
 
 
 async def test_read_row_asks_for_one_row_and_answers_none_for_none(db: duckdb.DuckDBPyConnection) -> None:

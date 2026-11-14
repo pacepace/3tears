@@ -3267,6 +3267,16 @@ class _ModuleWalk(ast.NodeVisitor):
                 is not None
             ):
                 return ast.Call(func=value.func, args=[ast.Constant(text), *value.args[1:]], keywords=value.keywords)
+            # a fragment over a string constant (``Fragment(_DRAFT_STATUS_SQL, ())``, the constant the module's or an
+            # imported one): its text, as a fragment written with it is read
+            if (
+                isinstance(value, ast.Call)
+                and _final(value) == "Fragment"
+                and value.args
+                and isinstance(value.args[0], ast.Name | ast.Attribute)
+                and (text := _constant_text(value.args[0], self._envs[-1])) is not None
+            ):
+                return ast.Call(func=value.func, args=[ast.Constant(text), *value.args[1:]], keywords=value.keywords)
             # a fragment over a local the function binds only to f-strings or strings, one per branch (``chosen =
             # f"run_id IN ({ids})"`` or ``f"run_id IN (SELECT ...)"``, reports #55 ask 4): each text, judged in turn
             if (
@@ -3290,6 +3300,15 @@ class _ModuleWalk(ast.NodeVisitor):
                 return ast.Call(
                     func=value.func, args=[self._key_column(value.args[0]), *value.args[1:]], keywords=value.keywords
                 )
+            # a filter held in a module constant (``_LIVE: Final = Fragment('t."is_deleted" = false')``, or an f-string
+            # of module constants): the fragment itself, its text resolved as a written one is, so the predicate it
+            # states reaches the judged statement (a partial index keys only a read stating its predicate)
+            if (
+                isinstance(value, ast.Name)
+                and isinstance(declared := self._module_values.get(value.id), ast.Call)
+                and _final(declared) == "Fragment"
+            ):
+                return literal(declared)
             # a module constant holding the argument's shape (``_NEWEST_FIRST = (Sort("date_started"), ...)``)
             if isinstance(value, ast.Name) and isinstance(
                 self._module_values.get(value.id), (ast.Tuple, ast.List, ast.Dict)

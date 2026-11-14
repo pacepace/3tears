@@ -220,8 +220,8 @@
  ],
  "read_value": [
   [
-   "SELECT t.\"v\" FROM \"t\" AS t WHERE t.\"id\" = $1 AND t.\"flag\" = $2 LIMIT 1",
-   "(1, True)"
+   "SELECT t.\"v\" FROM \"t\" AS t WHERE t.\"id\" = $1 AND t.\"flag\" = TRUE LIMIT 1",
+   "(1,)"
   ]
  ],
  "update_before.pages": [
