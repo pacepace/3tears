@@ -7,6 +7,7 @@ These exercise the real streaming/error paths (a subprocess is spawned) without 
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -25,6 +26,19 @@ from threetears.backup.process import (
 async def _emit(data: bytes, *, chunk: int = 4) -> AsyncIterator[bytes]:
     for i in range(0, len(data), chunk):
         yield data[i : i + chunk]
+
+
+def _open_pipes() -> set[str]:
+    """This process's open pipe descriptors, each with the pipe it reads or writes."""
+    pipes = set()
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+        except FileNotFoundError:  # the descriptor listdir itself held, closed once the listing ended
+            continue
+        if target.startswith("pipe:"):
+            pipes.add(f"{fd} {target}")
+    return pipes
 
 
 async def _collect(stream: AsyncIterator[bytes]) -> bytes:
@@ -272,6 +286,31 @@ class TestPipeThrough:
         gen = pipe_through(["cat"], _emit(b"y" * (50 * 1024 * 1024), chunk=64 * 1024))
         assert await anext(gen)
         await asyncio.wait_for(gen.aclose(), timeout=5)
+
+    async def test_a_consumer_that_stops_after_the_source_failed_gets_the_failure_and_leaves_no_pipe_open(
+        self,
+    ) -> None:
+        """The source's failure was raised before the killed child was drained or waited on, so its stdout, paused
+        on a full buffer, stayed open behind the error."""
+        stopped, failed = asyncio.Event(), asyncio.Event()
+
+        async def failing_once_the_consumer_stops() -> AsyncIterator[bytes]:
+            yield b"start of an archive"
+            await stopped.wait()
+            failed.set()
+            raise RuntimeError("object store read failed")
+
+        before = _open_pipes()
+        # a megabyte on stdout at once, so its reader is paused on a full buffer when the consumer stops
+        gen = pipe_through(["sh", "-c", "head -c 1048576 /dev/zero; cat >/dev/null"], failing_once_the_consumer_stops())
+        assert await anext(gen)
+        stopped.set()
+        await failed.wait()
+        # the hazard, not a wait for an outcome: the pump takes the failure and kills the child
+        await asyncio.sleep(0.1)
+        with pytest.raises(RuntimeError, match="object store read failed"):
+            await asyncio.wait_for(gen.aclose(), timeout=5)
+        assert _open_pipes() - before == set()
 
     async def test_a_consumer_that_stops_early_does_not_hang_when_the_child_s_exit_is_seen_late(self) -> None:
         """#1168, as ``stream_stdout``'s abort: the child's exit is seen only after the wait on it began."""

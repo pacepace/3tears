@@ -273,9 +273,15 @@ async def pipe_through(
             # the consumer stopped, or the read timed out: the child may be blocked on a full
             # stdout pipe and the pump on a full stdin one, so neither would ever finish alone.
             _kill(proc)
-            # a source failure the pump already hit is raised from here rather than lost.
-            await cancel_and_wait(pump)
-            await _discard_to_eof(proc.stdout)
+            try:
+                # a source failure the pump already hit is raised from here rather than lost.
+                await cancel_and_wait(pump)
+            finally:
+                # and the killed child is still drained and waited on when it is, so neither its pipes
+                # nor its transport are left open behind the error.
+                await _discard_to_eof(proc.stdout)
+                await stderr_task
+                await proc.wait()
         stderr_final = (await stderr_task).decode(errors="replace")
         returncode = await proc.wait()
     # the child closed stdout, so the pump has written all it ever will; a source failure is
