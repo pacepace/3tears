@@ -18,6 +18,7 @@ another Python version (``python -I``), without this workspace's packages.
 from __future__ import annotations
 
 import json
+import sys
 from asyncio import selector_events
 from types import ModuleType
 
@@ -68,4 +69,5 @@ def send_path_gaps(module: ModuleType = selector_events) -> list[str]:
 
 
 if __name__ == "__main__":
-    print(json.dumps(send_path_gaps()))
+    # the command's product (a checker run under another interpreter reads it), a stream write, not a log record
+    sys.stdout.write(json.dumps(send_path_gaps()) + "\n")
