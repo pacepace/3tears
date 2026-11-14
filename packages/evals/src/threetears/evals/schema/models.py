@@ -3656,6 +3656,12 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
     :ivar template_edited_at: When the run's template was last edited, for a holding that began after an edit made
         after the run was created: an edit in nothing the run froze of it, which measures alike and is disclosed here
         rather than refused. ``None`` when the template was not edited since the run was created.
+    :ivar goal_check_proof_rules: The goal-check proof rules (``GOAL_CHECK_PROOF_RULES``) the run's goal checks were
+        proved under for this holding: the launch's, on the run's first holding, and the rules a take-up re-proved the
+        run's own checks under, on each holding a take-up began. A take-up whose re-proof under newer rules matched
+        the run's own proofs moves the run's ``goal_check_proof_rules`` forward to them, so a ``proven`` the launch
+        recorded reads as proven again, and its lifetimes say which rules proved the checks in which holding.
+        ``None`` when the run recorded no proofs, or the holding was recorded before holdings recorded their rules.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -3705,6 +3711,16 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
         description=(
             "When the run's template was last edited, for a holding that began after an edit made after the run was "
             "created — an edit in nothing the run froze of it, disclosed rather than refused; None when it was not."
+        ),
+    )
+    goal_check_proof_rules: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The goal-check proof rules the run's goal checks were proved under for this holding: the launch's on "
+            "the first holding, the rules a take-up re-proved them under on each later one. None when the run "
+            "recorded no proofs, or the holding was recorded before holdings recorded their rules."
         ),
     )
 

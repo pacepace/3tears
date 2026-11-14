@@ -29,8 +29,10 @@ the first stays short on its own record. :func:`resume_run` continues the run it
   records none (``RunLifetime``). So a resumed run can span engine builds, and the framing its judge is sent may
   change between holdings with no judge-prompt digest recording it. Nor is the version of the goal-check proof rules
   (``EvalRun.goal_check_proof_rules``): the launch re-proves the run's own goal checks under the rules in force, and
-  only a check proved otherwise than the run's proof refuses. The run keeps the rules its proofs were derived under,
-  so a ``proven`` from older rules still reads as unproven.
+  only a check proved otherwise than the run's proof refuses. A re-proof that matches moves the run's rules forward
+  to the ones it was made under, so a ``proven`` its launch recorded reads as proven under today's rules, and each
+  holding records the rules its checks were proved under (``RunLifetime.goal_check_proof_rules``): the launch's on
+  the first, the take-up's on each later one.
 - **One holding at a time.** The run is reopened under its lease's next epoch, conditionally on the record as read,
   so two take-ups of one run cannot both win, and a holding the run has passed from writes nothing more into it.
 - **Its spend counts.** What its stored rows spent seeds its cost cap, and the metered calls they landed seed its
@@ -120,8 +122,8 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
         "template_digest",
         # Held by its outcome, never its number: the take-up's launch re-proves the run's own goal checks under the
         # proof rules in force (``goal_check_proofs``, pinned), so a rules change that proves them as the run's own
-        # proofs did is taken up. The run keeps the rules its proofs were derived under, so a ``proven`` from older
-        # rules still reads as unproven (``goal_check_proofs_as_read``).
+        # proofs did is taken up. The run then reads as proved under the newer rules, and each holding records the
+        # rules it proved the checks under (``RunLifetime.goal_check_proof_rules``).
         "goal_check_proof_rules",
         # Replayed as the run recorded them by the take-up's launch (``admit_resumed_run``), so equal by construction:
         # its template, its candidate, its repeats, its margins, its latency declaration and its arm order. The case
@@ -390,9 +392,11 @@ def _resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profi
         differences.append(f"test_case_ids ({_case_set_drift(stored.test_case_ids, fresh.test_case_ids)})")
     if stored.template_digest is not None and stored.template_digest != fresh.template_digest:
         differences.append(
-            f"template {template.id!r}: its measured content changed since the run started (its intent, rubric, "
-            "conversation, preconditions, goal checks, world seed, tool bounds, kind spec or another field a run "
-            "measures; its name and description are not)"
+            f"template {template.id!r}: its measured content changed since the run started, and such an edit "
+            "changes what the run measures, so the cells left to run would not measure what its stored ones did "
+            "(its intent, rubric, conversation, preconditions, goal checks, world seed, tool bounds, kind spec, "
+            "variation axes, required tools, universal flag or another field a run measures; its name and "
+            "description are not)"
         )
     elif stored.template_digest is None and _edited_since(template, stored):
         differences.append(
@@ -413,6 +417,22 @@ def _proof_rules_moved(name: str, stored: EvalRun, fresh: EvalRun) -> str:
         f", re-proved under proof rules {fresh.goal_check_proof_rules}; the run's were derived under "
         f"{stored.goal_check_proof_rules}"
     )
+
+
+def _proof_rules_after(stored: EvalRun, fresh: EvalRun) -> int | None:
+    """The proof rules a run taken up reads as proved under: the newer of the run's own and those its take-up re-proved
+    its checks under, the two having proved them alike; the run's own when either recorded none.
+
+    :param stored: The stored run.
+    :ptype stored: EvalRun
+    :param fresh: What its take-up's launch assembled.
+    :ptype fresh: EvalRun
+    :return: The rules version, or None when the run recorded no proofs.
+    :rtype: int | None
+    """
+    if stored.goal_check_proof_rules is None or fresh.goal_check_proof_rules is None:
+        return stored.goal_check_proof_rules
+    return max(stored.goal_check_proof_rules, fresh.goal_check_proof_rules)
 
 
 def _case_set_drift(was: Sequence[str], now: Sequence[str]) -> str:
@@ -488,7 +508,10 @@ class RunResumption:
         now, for a run never taken up before), and a new holding opens: this process, at :attr:`epoch`, under the
         labels the host captured now and the cost cap the launch resolved, which the run records as its own. A
         template edited after the run was created in nothing it measures (its digest unmoved) is disclosed on the new
-        holding. The host's disclosure and the engine's build are never compared, so a moved one refuses nothing,
+        holding. A re-proof of the run's goal checks under newer proof rules that matched the run's own proofs moves
+        the run's ``goal_check_proof_rules`` forward, and the new holding records the rules it re-proved under (the
+        first holding's entry, written now, the launch's). The host's disclosure and the engine's build are never
+        compared, so a moved one refuses nothing,
         and the run keeps the ones its launch stated: a holding records neither. The run reads admitted on estimated
         rates (``cap_checked_on_estimates``) when either its launch or this take-up was, and records none when the take-up
         drops the cap.
@@ -527,6 +550,7 @@ class RunResumption:
             labels=dict(stored.subject_snapshot.labels),
             run_labels=list(stored.labels),
             max_cost_usd=stored.max_cost_usd,
+            goal_check_proof_rules=stored.goal_check_proof_rules,
         )
         ended = ended_lifetimes(
             stored.lifetimes or [first],
@@ -546,6 +570,7 @@ class RunResumption:
             run_labels=list(stored.labels),
             max_cost_usd=fresh.max_cost_usd,
             template_edited_at=template.updated_at if _edited_since(template, stored) else None,
+            goal_check_proof_rules=fresh.goal_check_proof_rules,
         )
         reopened = stored.model_copy(
             update={
@@ -574,6 +599,9 @@ class RunResumption:
                 # A run stored before runs froze their template's measured content passed only with its template
                 # unedited since it began, so what the template measures now is what it measured: frozen from here.
                 "template_digest": stored.template_digest or fresh.template_digest,
+                # The checks were re-proved alike under the rules in force (`goal_check_proofs` is pinned), so the run
+                # reads as proved under the newer of its own rules and those; never moved back by an older build.
+                "goal_check_proof_rules": _proof_rules_after(stored, fresh),
                 # Admitted on estimated rates in any holding is admitted on an estimate: the flag stays set once set. A
                 # take-up that drops the cap leaves nothing to read against an estimate, and the field is not recorded
                 # for a run with no cap.
