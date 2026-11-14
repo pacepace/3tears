@@ -44,7 +44,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 import inspect
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator, Mapping, Sequence
 from datetime import datetime
 from functools import partial
 from types import MappingProxyType
@@ -55,7 +55,12 @@ from threetears.evals.schema.store_port import (
     AsyncResultReadings,
     AsyncStoreClock,
     GroupMeasure,
+    check_after,
+    narrow_groups,
+    order_and_page,
     refuse_on_event_loop,
+    takes_after,
+    takes_exclude_in_items,
 )
 
 __all__ = ["AsyncStoreBridge", "bridge_async_store"]
@@ -152,11 +157,28 @@ class AsyncStoreBridge:
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = None,
+        after: tuple[Any, str] | None = None,
         exclude: Sequence[str] = (),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
-        """See :meth:`~threetears.evals.schema.DocumentStore.by_doc_type`."""
+        """See :meth:`~threetears.evals.schema.DocumentStore.by_doc_type`.
+
+        ``after`` is passed on to a store whose ``by_doc_type`` declares it
+        (:func:`~threetears.evals.schema.store_port.takes_after`). A store written before it is asked an ordered read
+        as the whole match, which is ordered and paged here
+        (:func:`~threetears.evals.schema.store_port.order_and_page`), ties by ``id``, as the port promises of a store
+        that declares ``after``, which the bridge does.
+        """
+        if takes_after(self.store.by_doc_type):
+            field_eq = {**field_eq, "after": after}
+        else:
+            check_after(after, order_by)
+            if order_by is not None:
+                rows = self._call(
+                    partial(self.store.by_doc_type, doc_type, scope_id, exclude=exclude, field_in=field_in, **field_eq)
+                )
+                return order_and_page(rows, order_by=order_by, descending=descending, after=after, limit=limit)
         return self._call(
             partial(
                 self.store.by_doc_type,
@@ -272,8 +294,11 @@ class _ReadingAsyncStoreBridge(AsyncStoreBridge):
                 exhausted = True
                 batch, exhausted = self._call(partial(_take, rows, _ROWS_PER_HOP))
         finally:
-            if not exhausted and isinstance(rows, AsyncGenerator):
-                self._call(rows.aclose)
+            # Any async iterator that can be closed is closed, not only an async generator: a store's own cursor class
+            # releases its cursor in ``aclose`` as a generator does.
+            aclose = getattr(rows, "aclose", None)
+            if not exhausted and callable(aclose):
+                self._call(aclose)
 
     def grouped(
         self,
@@ -282,15 +307,33 @@ class _ReadingAsyncStoreBridge(AsyncStoreBridge):
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
-        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`: the async store's ``grouped``, on its loop."""
-        return self._call(
-            partial(
-                self._readings().grouped, doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq
+        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`: the async store's ``grouped``, on its loop.
+
+        ``exclude_in_items`` is passed on to a store whose ``grouped`` declares it; one written before it is asked
+        without it, and its values are narrowed here (:func:`~threetears.evals.schema.store_port.narrow_groups`).
+        """
+        grouped = self._readings().grouped
+        if exclude_in_items and takes_exclude_in_items(grouped):
+            return self._call(
+                partial(
+                    grouped,
+                    doc_type,
+                    scope_id,
+                    by=by,
+                    measures=measures,
+                    exclude_in_items=exclude_in_items,
+                    field_in=field_in,
+                    **field_eq,
+                )
             )
+        groups = self._call(
+            partial(grouped, doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
         )
+        return narrow_groups(groups, measures, exclude_in_items)
 
 
 class _ClockedReadingAsyncStoreBridge(ClockedAsyncStoreBridge, _ReadingAsyncStoreBridge):

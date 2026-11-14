@@ -460,6 +460,8 @@ class ArmQuote:
         kind with no simulator.
     :ivar apparatus_settings: The apparatus values the arm's rig is set up with, resolved — every setting its
         kind honours, defaults filled in, as its run will record them.
+    :ivar overlays: The knobs the arm's launch turns, as its run will record them (``EvalRun.overlays``); empty for
+        none. A history pricer borrowing across templates matches them, since a knob can move what a cell spends.
     """
 
     scope_id: str
@@ -473,6 +475,7 @@ class ArmQuote:
     judge: PlannedJudge | None
     simulator_model: str | None
     apparatus_settings: Mapping[str, ApparatusSettingValue]
+    overlays: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def case_source(self) -> Literal["stored", "generated"]:
@@ -3137,6 +3140,7 @@ async def _arm_price(host: LaunchHost, request: LaunchRequest) -> ArmPrice:
             judge=plan.judge,
             simulator_model=plan.simulator_model,
             apparatus_settings=request.apparatus_settings,
+            overlays=freeze(request.overlays),
         ),
     )
 

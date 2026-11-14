@@ -33,14 +33,17 @@ which also catches a validator tightening the JSON schema cannot show (the goal 
   its v15 fixture moved out of this released corpus the same way, unedited, its digest with it. A move is the one
   change a released corpus takes: the file leaves with its bytes, and no other frozen file is touched.
 
-The v15 corpus is the baseline of a release that has not been published: no store a released build wrote holds a
-v15 document yet, so while that is true a baseline change regenerates it in place rather than copying it. (The v14
-corpus it replaced was the pre-release baseline of ``.21`` to ``.24``, dropped with no upgrader when ``.25`` reset
-the baseline, since no release reads a pre-release store.) **A
-released version's corpus is never regenerated**: it is what an old store holds, and rewriting it would make the test
-that reads it vouch for the current build instead of for the stored past.
+The v15 corpus shipped: v0.93.0 and v0.94.0 hold it, so a store those releases wrote holds v15 documents, and it is
+frozen. (The v14 corpus it replaced was the pre-release baseline of ``.21`` to ``.24``, dropped with no upgrader when
+``.25`` reset the baseline, since no release reads a pre-release store.) **A released version's corpus is never
+regenerated**: it is what an old store holds, and rewriting it would make the test that reads it vouch for the current
+build instead of for the stored past. So an additive change (a minor) writes no fixture: bump the minor, re-pin the
+digests and ``PINNED_CORE_SCHEMA_MINOR`` here by hand (:func:`core_shape_digest` computes each), and the frozen
+corpus must still read. Only a major rebuilds the fixtures, and a major deletes every stored core document of the old
+version.
 
-**Regenerating the current corpus** is one command, from the repo root, which writes
+**Regenerating the current corpus** (after a major, or for a version no release shipped) is one command, from the
+repo root, which writes
 ``tests/fixtures/core_documents/v{CORE_SCHEMA_VERSION}/`` from :func:`~packages.evals.tests.stored_models.stored_sample`
 and re-pins ``CORE_SHAPE_DIGESTS`` and ``FIXTURE_DIGESTS`` below (it leaves ``PINNED_CORE_SCHEMA_VERSION`` and
 ``PINNED_CORE_SCHEMA_MINOR`` to the author)::
@@ -81,21 +84,21 @@ from threetears.evals.schema.versioning import (
 PINNED_CORE_SCHEMA_VERSION = 15
 
 #: The ``CORE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_CORE_SCHEMA_MINOR = 16
+PINNED_CORE_SCHEMA_MINOR = 17
 
 #: Each core type's validation JSON schema, normalised (:func:`core_shape_digest`), by ``doc_type``.
 CORE_SHAPE_DIGESTS: dict[str, str] = {
-    "eval_action_job": "f3c63715dd5001cb65bf0fc7b9e21b99bb4e3fc2f93c4d839023521b67be551d",
-    "eval_analysis_attempt": "229d5089921dffebf6a58fa958754388cee52ad34ce9cf53d30d59c5688339fa",
-    "eval_generation_slot": "6cb133147677a63de4aae4bb547f913289acbc2d59b2228893e0f9c0aa02de83",
-    "eval_judge_temperature_check": "41373bf257dd0edfa0fa8523c6595568a48331f05c4fde3271e848e9dfc0f995",
-    "eval_launch": "25780d4a5e7b04a4292cb8401427c5dcb074ddb1e4bc05b3d5ef5a9be6ed1767",
-    "eval_out_of_run_spend": "9a1ba9abf7f702a54d7170da4a7e1c6c3df2aad11e363ad548b7dda9d5b69d0a",
-    "eval_result": "6d0975d04cface0cf96b48a0a2ecb988cc500bb564489a1c79dd08df1c65429e",
-    "eval_run": "418f81e9e6ed6edae24833ac130f64ca84df1729e3babafed1b20ad75a5405c7",
-    "eval_second_judge_pass": "5c08565cf694966d263bdd4b9f80e1966e56068a72afe83e8b7d8f264d62b765",
-    "eval_sweep": "c7c9b4d2cb33bb76d070ea1f6f40d33bdb952c9c237fa826bd68c29115305f66",
-    "eval_trace": "9b210124e83a42e1be92505f538939d2a52ba14c16218e1529ae2854dc740d72",
+    "eval_action_job": "8604635eddceade0fa625c55c54367f0f42730e751b6631125d422779740910c",
+    "eval_analysis_attempt": "cccec46b874cee468ad550391c61f3111870b4be58de8c527b745ea3b1931762",
+    "eval_generation_slot": "9508399a1c4794a104f73bb2a42757a8ef36f6f51dfbb4fb05fd7faaf2f18fc0",
+    "eval_judge_temperature_check": "6894744c1d99ef9d7fcbb9c428b6273ba15d7e3f4b2b7eb9a1eb6710dcae6394",
+    "eval_launch": "f67f85fde741cab25245601c143025468d1f3759b11db6cd4432670b6f5ce669",
+    "eval_out_of_run_spend": "a95b5e007167b7abbae14f4b0e760586675bcb7122795fe9910073babfd82d58",
+    "eval_result": "0ef690066647c90c8f646bc387cf0a3bb06de67f90216af62dd7675398ab6cc5",
+    "eval_run": "549c75d4d7031041fb27fad0c625a1b576e3a696219b350612246e7e2d851804",
+    "eval_second_judge_pass": "03727ca245877747d673cafdcd838553f4864d43337213925a17120e38ebe5e7",
+    "eval_sweep": "4498d3f92e829ea0dca0707be0a2a39e7a34885c4ba142966098b01cb48290e9",
+    "eval_trace": "981088f15618f3979e42a3c0e0fdd361c657c7cd9f249ac9b73792654a7065ca",
 }
 
 #: The fields the store addresses each core type by, pinned: a step may never touch one, so the set moving

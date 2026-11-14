@@ -270,9 +270,11 @@ replay as the `k` answers they were. Inside an eval's cell, each call is also re
 one prompt get back what each got, whatever order the cells run in. A recording made before format 3 noted no cell
 and is still read: repeat `i` is served the call of index `i`, and otherwise the first call left. A prompt the recording does not hold, or one asked once more than it was, is
 refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
-an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. A judge that meets a
-`RecordingRefused` raises it too, rather than recording a failed call: a run's scoring judge fails the run, naming the
-call, a writer's pairwise pass fails, and a judge kind's trial is excluded as `apparatus_failed`. To name a
+a `ReplayMiss` ([rig failures](#rig-failures-a-broken-rig-costs-one-cell-a-recording-that-cannot-serve-costs-the-run)),
+so a candidate that meets one never has its cell scored: the cell is recorded `apparatus_failed`, naming the call, and
+the run fails; so does a call the recorder refuses while recording. A judge that meets a `RecordingRefused` raises it too, rather than recording a
+failed call: a run's scoring judge fails the run, naming the call, as does a judge kind's judge under test on any one
+trial, and a writer's pairwise pass fails. To name a
 prompt that changed under its recording before a replay starts, hand
 `RecordedCompletions.check_covers(RECORDING, prompts, settings=...)` the prompts your code sends. A file holds one
 model's calls at one temperature, under any number of settings (one model at two efforts), and each client replays
@@ -737,7 +739,7 @@ because every stored model reads strictly.
 
 **Prove your store with the conformance kit.** `threetears.evals.testing.STORE_CONFORMANCE_CASES`
 states every rule of the port — scoping, the strip on read, `exclude`/`keep` projection, `by_doc_type`'s
-equality and membership (`field_in`) predicates, ordering, etag conflicts and the re-read that recovers one, create-only writes, merge and delete — as a case you
+equality and membership (`field_in`) predicates, ordering, paging (`after`), etag conflicts and the re-read that recovers one, create-only writes, merge and delete — as a case you
 hand a fresh, empty store. Every case is mandatory: in particular a store must implement both write
 preconditions — `if_match` (the stored document still carries this etag), because several writers share a
 run document as it finishes, and `create_only` (nothing is stored under this scope and id, of any type),
@@ -755,6 +757,69 @@ drops repeated values. Parametrise your test runner over it:
 def test_my_store_conforms(case: StoreConformanceCase, tmp_path: Path) -> None:
     case.run(MyDocumentStore(tmp_path / "evals.sqlite"))
 ```
+
+**`by_doc_type` pages with `after`.** The run and campaign listings (`runs_list`, `campaigns_list`) read a page at a
+time, newest first by `(created_at, id)`: `by_doc_type(..., order_by="created_at", limit=101, after=(created_at,
+id))`, where `after` is the last document of the page before and the read returns only documents strictly past it.
+Your store need not do anything to keep working. A `by_doc_type` that does not declare `after` by name is never handed
+one: the engine reads it with `page_by_doc_type`, the port's default (provisional), which asks your store for
+the whole match and orders and slices it in Python, so every listing call reads the scope's whole match until you
+declare it. To page in your backend:
+
+- **Declare `after` by name**, keyword-only, as `exclude_in_items` is declared (`takes_after` is the probe;
+  `**field_eq` does not count, because an old store reads `after=` as an equality predicate and answers nothing).
+  Call `check_after(after, order_by)` first: it refuses what the port refuses (`after` without `order_by`, a pair
+  that is not a scalar and a string id).
+- **Break every ordered read's ties by `id`**, in the sort direction, the first page's included: a page cut where
+  several documents share a `created_at` must end where the next one starts. On Postgres, descending:
+  `ORDER BY data->>'created_at' DESC NULLS LAST, id DESC` (Postgres puts nulls first descending unless told; the
+  port puts a missing or null value lowest), and the keyset condition `(data->>'created_at' < $1 OR
+  (data->>'created_at' = $1 AND id < $2) OR data->>'created_at' IS NULL)`; a null `after` value names a place among
+  the documents without the field (`data->>'created_at' IS NULL AND id < $2`). Compare under one collation in the
+  `ORDER BY` and the condition (`COLLATE "C"` on both is the port's code-point order). `order_and_page` is the port's
+  meaning in Python, to compare against.
+- **The status filter stays index-friendly.** A single-status listing reads by equality (`status=...`); only the
+  `cancelled` listing, which a lapsed `pending` or `running` run joins, reads by `field_in` over the three.
+
+**Declaring `after` means honouring it.** A strictly typed adapter must declare it to match the port, but one that
+declares it and drops it hands back the first page again, and a caller reading until `next` is `None` would never
+stop; `page_by_doc_type` refuses such a page with `PageNotPastAfter`, naming your adapter. If your backend cannot page
+yet, declare `after`, call `check_after`, and return `order_and_page(rows, order_by=..., descending=..., after=after,
+limit=limit)` over your own unlimited read: correct, and no dearer than the default.
+
+The kit's `page.walk_reads_each_once`, `page.holds_predicates_and_projection`, `page.after_is_honoured` and
+`page.after_refusals` read your store through `page_by_doc_type`, or ask only a store that declares `after`, so a store
+that does not declare it passes them through the default, and one that does is held to what it declares. The async bridge and the routed store declare `after`, and do the same for the
+stores beneath them: a store beneath one that does not declare it has every ordered read made whole and ordered
+above it, an ordered read with a `limit` included.
+
+**Reading every page of a listing.** `runs_list` and `campaigns_list` (and their actions) return `next`, the cursor
+for the page after, and take it back as `cursor`: call again with `cursor=next` until `next` is `None`. The page is
+100 rows unless `limit` names another (1 to 1000 from Python, 1 to 200 through an action). The cursor is the
+package's own opaque string, bound to the filters it was read with; hand it through unchanged, beside the same
+filters. A `runs_list` page read with a `label` can list fewer runs than `limit` while `next` is set: the label filter
+runs after the read (the status and archive filters are in it), and `filtered` counts the runs it left out.
+
+**Narrowed and grouped reads are optional** (`ResultReadings`, provisional; `RESULT_READINGS_CONFORMANCE_CASES`
+proves a store that offers them). Three of their rules are newer than the capability:
+
+- **`grouped` takes `exclude_in_items`**, with `iter_narrowed`'s meaning, applied to every `values` value: the spend
+  lenses ask to leave each re-judge's `cannot_tell` and `errors` prose out. Declare it by name and narrow before you
+  ship a value; a backend that cannot narrow inside an extracted value narrows each `values` value in Python as
+  `iter_narrowed` narrows a row, before it hands the groups back. A `grouped` that does not declare it keeps working: the engine, the routed
+  store and the async bridge ask it without the parameter and narrow its values themselves (`grouped_narrowed`), and
+  the kit's `grouped.values_narrowed_in_items` reads it the same way. It ships the items whole until it declares the
+  parameter, and mypy reads it as not matching `ResultReadings` until then.
+- **`sum_int` is exact past 64 bits, or refused with `TypeError`**, never wrapped, rounded or failed as a backend
+  error: the kit's `grouped.sum_int` sums integers past a signed 64-bit range. On Postgres, sum through `numeric`
+  (`sum((data #>> '{path}')::numeric)`, which is exact at any width) and hand back a Python `int`; a store that sums
+  through `bigint` raises `bigint out of range`, which reads as an outage, so catch it and raise `TypeError`
+  instead, or do not sum through `bigint`. `values` must return an integer of 2**63 or more whole, as your own reads do
+  (`grouped.values_exact`): a `jsonb` number read through the JSON text keeps it.
+- **A narrowed read is closed when abandoned.** A walk the engine leaves part way closes your `iter_narrowed` iterator
+  (`close()`, or `aclose()` through the async bridge, which now closes any async iterator that has one, not only an
+  async generator): release your cursor there. A reader holding `EvalStorage.iter_result_readings`'s read can close it
+  at once with `close()`, or hold it in a `with` block.
 
 **The store is called off the event loop.** The port is synchronous and the engine is async: every store call
 the engine makes runs on the host's `blocking_executor`, never on the loop, and `EvalStorage` refuses a call made
@@ -860,7 +925,8 @@ measured on the paths a host runs (constants of `threetears.evals.analysis.reads
 (28,116, 1 GiB) for a campaign's bundle; `PLANNING_READ_BUDGET` (37,010, 256 MiB) for a launch estimate's planning
 block; `SPEND_READ_BUDGET` (105,196, 1 GiB) for `program_budget` and `orphaned_runs`, which read each result's
 spend figures off one grouped read, never a result, but hold that read whole before folding it (1,683 bytes a result
-on a store offering grouped reads, 10,207 on a store without them, whose rows the engine groups). They take no
+on a store offering grouped reads; on a store without them the engine groups its rows a page at a time, holding the
+groups and one page, not every row, and the budget is not yet re-measured for that path). They take no
 filter, so past it they are refused, the remedy naming where to read the spend a page at a time.
 
 - **A scope within the budget** is read whole, as before.
@@ -2132,13 +2198,26 @@ cell.
 - **No silent live runs.** A kind that does not wire the handle it was given, or a candidate with no
   seams, is refused rather than run live under a replay.
 
-## Rig failures: a broken rig costs one cell, never the run
+## Rig failures: a broken rig costs one cell, a recording that cannot serve costs the run
 
-**A broken rig costs one cell, never the run.** A replay miss, a corrupt recording or any other
-fault of the measuring rig rather than of the world under test is an `ApparatusError`; your kind's
-tool boundary re-raises it instead of turning it into an ordinary tool failure. Out of `prepare` or
+**A broken rig costs one cell; a recording that cannot serve costs the run.** A fault of the measuring rig rather than
+of the world under test (a malformed seed, a harness bug, a recording that cannot serve) is an `ApparatusError`; your
+kind's tool boundary re-raises it instead of turning it into an ordinary tool failure. Out of `prepare` or
 `invoke`, the engine records that cell excluded (termination `apparatus_failed`) with whatever spend
-the kind had reported through its sink, and goes on. A run whose every cell the rig excluded measured
+the kind had reported through its sink, and goes on.
+
+A recording that cannot serve this run is the exception: a `ReplayMiss` (from `threetears.evals.kernel.host`), whose
+causes are a call the recording does not hold or holds fewer times than asked, a recording file missing, unreadable or
+corrupt, a format this build does not read, a call already served to another eval's run, and a call refused while
+recording. `RecordingRefused`, a cassette's `CassetteMiss`, `CassetteExhausted` and `CassetteCorrupt`, and a world
+recording's `ToolRecordingMiss` are each one. It fails the run wherever it is met, a candidate's call or a judge's
+(owner ruling): the cell is recorded the same way, naming the call, and the run raises it, so a replay never reads on
+fewer cells in silence. Each message carries its cause's own remedy. A recording run (`RECORD=1`) fails at a refusal
+the same way, which extends the ruling to recording: a recording missing that call would fail its first replay anyway,
+and every cell after the refusal is spend it cannot keep. A live run with no recording never meets one. A host whose
+own recording cannot serve its run raises `ReplayMiss`.
+
+A run whose every cell the rig excluded measured
 nothing, and ends `failed` (`EveryCellApparatusFailedError`). So does a run whose every cell was excluded for any
 other fault the harness recorded on the cell (`NothingMeasuredError`): a provider that declined every call, a
 candidate that could not be built. Its reason quotes the cells' own errors, the status and the provider's message

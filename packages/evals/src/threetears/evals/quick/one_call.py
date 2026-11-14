@@ -912,7 +912,7 @@ class CallableKind:
                 answer, telemetry = unwrap_answer(await _call_candidate(self._candidate, case, instance.tools))
             telemetry = spent(ledger, telemetry)
         except ApparatusError:
-            raise  # the rig's fault under the candidate — a replay miss — is the engine's to exclude the cell on
+            raise  # the rig's fault under the candidate (a replay miss fails the run) is the engine's to record
         # prawduct:ok-broad-except — the candidate is the caller's code under test: whatever it raises is its failure, recorded on the cell, unless the provider's answer says the account was refused or the provider declined the call
         except Exception as raised:
             owner = _owner_of(raised)

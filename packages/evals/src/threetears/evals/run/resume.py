@@ -27,7 +27,12 @@ the first stays short on its own record. :func:`resume_run` continues the run it
   the run keeps the launch's. Nor is the engine's build (``EvalRun.package_version``, ``package_rev``): a run taken
   up across an engine upgrade goes ahead, and keeps the launch's build, the only one it records, since a holding
   records none (``RunLifetime``). So a resumed run can span engine builds, and the framing its judge is sent may
-  change between holdings with no judge-prompt digest recording it.
+  change between holdings with no judge-prompt digest recording it. Nor is the version of the goal-check proof rules
+  (``EvalRun.goal_check_proof_rules``): the launch re-proves the run's own goal checks under the rules in force, and
+  only a check proved otherwise than the run's proof refuses. A re-proof that matches moves the run's rules forward
+  to the ones it was made under, so a ``proven`` its launch recorded reads as proven under today's rules, and each
+  holding records the rules its checks were proved under (``RunLifetime.goal_check_proof_rules``): the launch's on
+  the first, the take-up's on each later one.
 - **One holding at a time.** The run is reopened under its lease's next epoch, conditionally on the record as read,
   so two take-ups of one run cannot both win, and a holding the run has passed from writes nothing more into it.
 - **Its spend counts.** What its stored rows spent seeds its cost cap, and the metered calls they landed seed its
@@ -51,7 +56,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, Protocol, cast
 
 from pydantic import Field
 
@@ -62,6 +67,7 @@ from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.identity import LeverCoordinateError, resolve_context_identity, resolve_variant_identity
 from threetears.evals.kernel.job_leases import (
     RUN_JOB,
+    LeasedJobKind,
     read_to_take_up,
     reopened_job_fields,
     taken_up_meanwhile,
@@ -77,7 +83,7 @@ from threetears.evals.run.launch import LaunchGroup, LaunchHost, admit_group, ad
 from threetears.evals.run.launch_job import LAUNCH_JOB, EvalLaunch, resumed_launch_work
 from threetears.evals.run.metering import MeteredCallLedger
 from threetears.evals.run.runner import StoredCell, StoredCells
-from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.schema.job_lease import JobLease, JobLoss
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import (
@@ -114,6 +120,11 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
         "variant_levers",
         "test_case_ids",
         "template_digest",
+        # Held by its outcome, never its number: the take-up's launch re-proves the run's own goal checks under the
+        # proof rules in force (``goal_check_proofs``, pinned), so a rules change that proves them as the run's own
+        # proofs did is taken up. The run then reads as proved under the newer rules, and each holding records the
+        # rules it proved the checks under (``RunLifetime.goal_check_proof_rules``).
+        "goal_check_proof_rules",
         # Replayed as the run recorded them by the take-up's launch (``admit_resumed_run``), so equal by construction:
         # its template, its candidate, its repeats, its margins, its latency declaration and its arm order. The case
         # set's name is a label on the case ids, which are held.
@@ -276,7 +287,8 @@ def _counted_spend(rows: Sequence[StoredCell]) -> list[float | None]:
     """
     spend: list[float | None] = []
     for row in rows:
-        spend.append(row.summary.cost_usd)
+        # Beside its cost, what its dropped sends may have billed, as the uninterrupted run's cap counted it.
+        spend.append(None if row.summary.cost_usd is None else row.summary.cost_usd + row.summary.maybe_billed_usd)
         if row.superseded_spend_usd != 0.0:
             spend.append(row.superseded_spend_usd)
     return spend
@@ -372,7 +384,7 @@ def _resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profi
     for name in _PINNED_FIELDS:
         before, after = getattr(stored, name), getattr(fresh, name)
         if before != after:
-            differences.append(f"{name} ({_shown(before)} -> {_shown(after)})")
+            differences.append(f"{name} ({_shown(before)} -> {_shown(after)}{_proof_rules_moved(name, stored, fresh)})")
     # The case set reaches no key, so it is held here: a take-up runs the cases the run froze, never others. Compared
     # over the sorted ids, as `case_set_fingerprint` compares them, so the same cases in another order are no change;
     # the template that fingerprint also digests is named by the context component that holds it.
@@ -380,9 +392,11 @@ def _resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profi
         differences.append(f"test_case_ids ({_case_set_drift(stored.test_case_ids, fresh.test_case_ids)})")
     if stored.template_digest is not None and stored.template_digest != fresh.template_digest:
         differences.append(
-            f"template {template.id!r}: its measured content changed since the run started (its intent, rubric, "
-            "conversation, preconditions, goal checks, world seed, tool bounds, kind spec or another field a run "
-            "measures; its name and description are not)"
+            f"template {template.id!r}: its measured content changed since the run started, and such an edit "
+            "changes what the run measures, so the cells left to run would not measure what its stored ones did "
+            "(its intent, rubric, conversation, preconditions, goal checks, world seed, tool bounds, kind spec, "
+            "variation axes, required tools, universal flag or another field a run measures; its name and "
+            "description are not)"
         )
     elif stored.template_digest is None and _edited_since(template, stored):
         differences.append(
@@ -391,6 +405,34 @@ def _resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profi
             "the edit changed the measurement cannot be told"
         )
     return differences
+
+
+def _proof_rules_moved(name: str, stored: EvalRun, fresh: EvalRun) -> str:
+    """What a refusal adds to a goal-check proof difference when the proof rules moved too: the two rule versions,
+    so an operator reads that the current rules prove the run's own checks otherwise; empty for any other field, or
+    when the rules did not move."""
+    if name != "goal_check_proofs" or stored.goal_check_proof_rules == fresh.goal_check_proof_rules:
+        return ""
+    return (
+        f", re-proved under proof rules {fresh.goal_check_proof_rules}; the run's were derived under "
+        f"{stored.goal_check_proof_rules}"
+    )
+
+
+def _proof_rules_after(stored: EvalRun, fresh: EvalRun) -> int | None:
+    """The proof rules a run taken up reads as proved under: the newer of the run's own and those its take-up re-proved
+    its checks under, the two having proved them alike; the run's own when either recorded none.
+
+    :param stored: The stored run.
+    :ptype stored: EvalRun
+    :param fresh: What its take-up's launch assembled.
+    :ptype fresh: EvalRun
+    :return: The rules version, or None when the run recorded no proofs.
+    :rtype: int | None
+    """
+    if stored.goal_check_proof_rules is None or fresh.goal_check_proof_rules is None:
+        return stored.goal_check_proof_rules
+    return max(stored.goal_check_proof_rules, fresh.goal_check_proof_rules)
 
 
 def _case_set_drift(was: Sequence[str], now: Sequence[str]) -> str:
@@ -466,7 +508,10 @@ class RunResumption:
         now, for a run never taken up before), and a new holding opens: this process, at :attr:`epoch`, under the
         labels the host captured now and the cost cap the launch resolved, which the run records as its own. A
         template edited after the run was created in nothing it measures (its digest unmoved) is disclosed on the new
-        holding. The host's disclosure and the engine's build are never compared, so a moved one refuses nothing,
+        holding. A re-proof of the run's goal checks under newer proof rules that matched the run's own proofs moves
+        the run's ``goal_check_proof_rules`` forward, and the new holding records the rules it re-proved under (the
+        first holding's entry, written now, the launch's). The host's disclosure and the engine's build are never
+        compared, so a moved one refuses nothing,
         and the run keeps the ones its launch stated: a holding records neither. The run reads admitted on estimated
         rates (``cap_checked_on_estimates``) when either its launch or this take-up was, and records none when the take-up
         drops the cap.
@@ -505,6 +550,7 @@ class RunResumption:
             labels=dict(stored.subject_snapshot.labels),
             run_labels=list(stored.labels),
             max_cost_usd=stored.max_cost_usd,
+            goal_check_proof_rules=stored.goal_check_proof_rules,
         )
         ended = ended_lifetimes(
             stored.lifetimes or [first],
@@ -524,6 +570,7 @@ class RunResumption:
             run_labels=list(stored.labels),
             max_cost_usd=fresh.max_cost_usd,
             template_edited_at=template.updated_at if _edited_since(template, stored) else None,
+            goal_check_proof_rules=fresh.goal_check_proof_rules,
         )
         reopened = stored.model_copy(
             update={
@@ -552,6 +599,9 @@ class RunResumption:
                 # A run stored before runs froze their template's measured content passed only with its template
                 # unedited since it began, so what the template measures now is what it measured: frozen from here.
                 "template_digest": stored.template_digest or fresh.template_digest,
+                # The checks were re-proved alike under the rules in force (`goal_check_proofs` is pinned), so the run
+                # reads as proved under the newer of its own rules and those; never moved back by an older build.
+                "goal_check_proof_rules": _proof_rules_after(stored, fresh),
                 # Admitted on estimated rates in any holding is admitted on an estimate: the flag stays set once set. A
                 # take-up that drops the cap leaves nothing to read against an estimate, and the field is not recorded
                 # for a run with no cap.
@@ -804,37 +854,107 @@ class TakenUp[R](NamedTuple):
     notices: tuple[str, ...]
 
 
-async def start_take_up(host: LaunchHost, resuming: RunResumption) -> TakenUp[EvalRun]:
-    """Take a planned run up again in a group of its own: its launch replayed and compared, the run reopened, started.
+@dataclass(frozen=True)
+class TakeUp:
+    """Runs taken up again together, as every take-up takes them up: one run's (:func:`take_up_run`), a launch's
+    (:func:`resume_launch`) and a sweep's arms' (:func:`~threetears.evals.ops.sweeps.sweep_resume`).
 
-    :param host: The host, whose launcher wires the run and whose job manager holds it.
-    :ptype host: LaunchHost
-    :param resuming: The run, as :func:`_run_resumption` planned it.
-    :ptype resuming: RunResumption
-    :return: The run, reopened and started, and what its admission told the caller (:attr:`AdmittedLaunch.notices
-        <threetears.evals.run.launch.AdmittedLaunch.notices>`).
-    :rtype: TakenUp[EvalRun]
-    :raises ValidationFailedError: It would measure otherwise now (every difference named), or a launch of it would be
-        refused now.
-    :raises NotFoundError: Its template is gone.
-    :raises ConflictError: Another take-up of it won, or another writer moved it; nothing was started.
-    :raises AdmissionRefusedError: The host has no room for another run.
+    Each run was settled, refused when it cannot be taken up, and planned (:func:`_run_resumption`); a take-up of
+    several runs also replayed and compared each one's launch in the call (:func:`take_up_arms`), so one that would
+    measure otherwise refused them all before any was started. Here each is handed to a group: prepared into one its
+    caller starts (:meth:`prepare`), its reopened record written as that group starts (:meth:`reopen`), or started in
+    a group of its own (:meth:`start`).
+
+    :ivar host: The host, whose launcher wires each run and whose job manager holds it.
+    :ivar arms: Each run's take-up, as planned and checked, by its arm's label, in arm order.
     """
 
-    async def reopen(runs: list[EvalRun]) -> None:
-        await write_taken_up(host, [resuming], runs)
+    host: LaunchHost
+    arms: Mapping[str, RunResumption]
 
-    admitted = await admit_resumed_run(host, resuming, attach=reopen)
-    (started,) = await admitted.start()
-    log.info(
-        "eval.resume_run run=%s scope=%s taken up at epoch %d: %d cell(s) done, %d to run again over their rows",
-        started.id,
-        started.scope_id,
-        resuming.epoch,
-        len(resuming.stored.done),
-        len(resuming.stored.replaced),
-    )
-    return TakenUp(started, admitted.notices)
+    @property
+    def resumptions(self) -> list[RunResumption]:
+        """Every run's take-up, in arm order.
+
+        :return: The take-ups.
+        :rtype: list[RunResumption]
+        """
+        return list(self.arms.values())
+
+    @property
+    def notices(self) -> tuple[str, ...]:
+        """What checking every run's take-up told the caller beside admitting it, each once, in arm order.
+
+        :return: The notices; empty when there was nothing to tell.
+        :rtype: tuple[str, ...]
+        """
+        return tuple(dict.fromkeys(notice for resuming in self.arms.values() for notice in resuming.notices))
+
+    async def prepare(self, label: str, group: LaunchGroup) -> list[EvalRun]:
+        """Prepare one arm's run into ``group``, its launch replayed and compared, beside the other arms its caller
+        takes up or launches with it; the caller admits and starts the group, reopening the run as it starts
+        (:meth:`reopen`).
+
+        :param label: The arm's label.
+        :ptype label: str
+        :param group: The group its caller starts.
+        :ptype group: LaunchGroup
+        :return: The run, prepared.
+        :rtype: list[EvalRun]
+        :raises ValidationFailedError: It would measure otherwise now (every difference named), or a launch of it would
+            be refused now.
+        :raises NotFoundError: Its template is gone.
+        """
+        return await (await admit_resumed_run(self.host, self.arms[label], launch_group=group)).start()
+
+    async def reopen(self, runs: Sequence[EvalRun]) -> None:
+        """Write each run of ``runs`` that is taken up again, reopened, under its next epoch, conditionally on the
+        record its take-up read; a run launched beside them is written by its group's start, and is left alone here.
+
+        :param runs: The prepared runs of the group about to start.
+        :ptype runs: Sequence[EvalRun]
+        :raises ConflictError: A run's record moved since it was read: another take-up won, or another writer wrote it.
+        """
+        eval_host = self.host.eval_host
+        leases = self.host.job_manager.leases
+        by_run = {resuming.run.id: resuming for resuming in self.arms.values()}
+
+        def write() -> None:
+            for run in runs:
+                if (resuming := by_run.get(run.id)) is not None:
+                    write_reopened(
+                        eval_host.storage, RUN_JOB, run, leases=leases, etag=resuming.etag, epoch=resuming.epoch
+                    )
+
+        await run_blocking(eval_host.blocking_executor, write)
+
+    async def start(self, label: str) -> TakenUp[EvalRun]:
+        """Take one arm's run up again in a group of its own: its launch replayed and compared, the run reopened,
+        started.
+
+        :param label: The arm's label.
+        :ptype label: str
+        :return: The run, reopened and started, and what its admission told the caller
+            (:attr:`AdmittedLaunch.notices <threetears.evals.run.launch.AdmittedLaunch.notices>`).
+        :rtype: TakenUp[EvalRun]
+        :raises ValidationFailedError: It would measure otherwise now (every difference named), or a launch of it would
+            be refused now.
+        :raises NotFoundError: Its template is gone.
+        :raises ConflictError: Another take-up of it won, or another writer moved it; nothing was started.
+        :raises AdmissionRefusedError: The host has no room for another run.
+        """
+        resuming = self.arms[label]
+        admitted = await admit_resumed_run(self.host, resuming, attach=self.reopen)
+        (started,) = await admitted.start()
+        log.info(
+            "eval.resume_run run=%s scope=%s taken up at epoch %d: %d cell(s) done, %d to run again over their rows",
+            started.id,
+            started.scope_id,
+            resuming.epoch,
+            len(resuming.stored.done),
+            len(resuming.stored.replaced),
+        )
+        return TakenUp(started, admitted.notices)
 
 
 async def resume_run(host: LaunchHost, run_id: str, scope_id: str, *, max_cost_usd: float | None = None) -> EvalRun:
@@ -851,7 +971,7 @@ async def resume_run(host: LaunchHost, run_id: str, scope_id: str, *, max_cost_u
     its kind's launcher (:func:`~threetears.evals.run.launch.admit_resumed_run`), and refused when what that launch
     assembles would measure otherwise (:func:`_resume_drift`); reopened under its lease's next epoch, conditionally on
     the record as read; and started in a group of its own, ordered as it was — by its launch's group when that
-    interleaved several arms, else by its own id (:func:`start_take_up`).
+    interleaved several arms, else by its own id (:meth:`TakeUp.start`).
 
     :param host: The host, whose launcher wires the run and whose job manager holds it.
     :ptype host: LaunchHost
@@ -899,7 +1019,8 @@ async def take_up_run(
     :raises ConflictError: As :func:`resume_run` raises it.
     :raises AdmissionRefusedError: As :func:`resume_run` raises it.
     """
-    return await start_take_up(host, await _run_resumption(host, run_id, scope_id, max_cost_usd=max_cost_usd))
+    resuming = await _run_resumption(host, run_id, scope_id, max_cost_usd=max_cost_usd)
+    return await TakeUp(host, {run_id: resuming}).start(run_id)
 
 
 async def _check_take_up(host: LaunchHost, resuming: RunResumption) -> tuple[str, ...]:
@@ -930,7 +1051,7 @@ async def _check_take_up(host: LaunchHost, resuming: RunResumption) -> tuple[str
 
 async def take_up_arms(
     host: LaunchHost, arms: Sequence[tuple[str, str]], scope_id: str, *, max_cost_usd: float | None = None
-) -> tuple[dict[str, RunResumption], list[ValidationFailedError]]:
+) -> tuple[TakeUp, list[ValidationFailedError]]:
     """Plan and check the take-up of every arm's run of a sweep or a launch, collecting each arm's refusal.
 
     Each run is planned (:func:`_run_resumption`) and its launch replayed and compared (:func:`_check_take_up`), so a
@@ -944,9 +1065,9 @@ async def take_up_arms(
     :ptype scope_id: str
     :param max_cost_usd: The cost cap each run is taken up under; ``None`` keeps each run's own.
     :ptype max_cost_usd: float | None
-    :return: Each arm's planned take-up by label, carrying what checking it told the caller
+    :return: The take-up of every arm that passed, each carrying what checking it told the caller
         (:attr:`RunResumption.notices`), and each arm's refusal, its message naming the arm.
-    :rtype: tuple[dict[str, RunResumption], list[ValidationFailedError]]
+    :rtype: tuple[TakeUp, list[ValidationFailedError]]
     :raises NotFoundError: A run is gone, or its template is.
     """
     planned: dict[str, RunResumption] = {}
@@ -959,7 +1080,7 @@ async def take_up_arms(
             refusals.append(ValidationFailedError(f"arm {label!r}: {refused.message}", remedy=refused.remedy))
             continue
         planned[label] = replace(resuming, notices=notices)
-    return planned, refusals
+    return TakeUp(host, planned), refusals
 
 
 def refused_as_one(job: str, refusals: Sequence[ValidationFailedError]) -> ValidationFailedError:
@@ -978,31 +1099,7 @@ def refused_as_one(job: str, refusals: Sequence[ValidationFailedError]) -> Valid
     )
 
 
-async def write_taken_up(host: LaunchHost, resumptions: Sequence[RunResumption], runs: Sequence[EvalRun]) -> None:
-    """Write each run of ``runs`` that is taken up again, reopened, under its next epoch, conditionally on the record
-    its take-up read; a run launched beside them is written by its group's start, and is left alone here.
-
-    :param host: The host, whose leases grant each run's next lease.
-    :ptype host: LaunchHost
-    :param resumptions: The take-ups, as planned.
-    :ptype resumptions: Sequence[RunResumption]
-    :param runs: The prepared runs of the group about to start.
-    :ptype runs: Sequence[EvalRun]
-    :raises ConflictError: A run's record moved since it was read: another take-up won, or another writer wrote it.
-    """
-    eval_host = host.eval_host
-    leases = host.job_manager.leases
-    by_run = {resuming.run.id: resuming for resuming in resumptions}
-
-    def write() -> None:
-        for run in runs:
-            if (resuming := by_run.get(run.id)) is not None:
-                write_reopened(eval_host.storage, RUN_JOB, run, leases=leases, etag=resuming.etag, epoch=resuming.epoch)
-
-    await run_blocking(eval_host.blocking_executor, write)
-
-
-def refuse_a_job_not_taken_up(
+def _refuse_a_job_not_taken_up(
     kind: str, record_id: str, outcome: str, detail: str | None, *, live_here: bool, start_again: str
 ) -> None:
     """Refuse a take-up of a sweep's or a launch's job that has not ended, or ended with nothing to take up.
@@ -1048,6 +1145,64 @@ def refuse_a_job_not_taken_up(
         )
 
 
+class _JobEnding(Protocol):
+    """A sweep's or a launch's record, as a take-up of its job reads how it ended."""
+
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def outcome(self) -> str: ...
+
+    @property
+    def detail(self) -> str | None: ...
+
+
+async def read_job_to_take_up[R: EvalDocumentModel](
+    host: LaunchHost, kind: LeasedJobKind[R], record_id: str, scope_id: str, *, start_again: str
+) -> tuple[R, str | None]:
+    """Read a sweep's or a launch's record as a take-up of its job reads it, refusing one that cannot be taken up.
+
+    The record is settled as every reader settles it (:func:`~threetears.evals.kernel.job_leases.read_to_take_up`),
+    then read with the token its reopen is written conditionally on. Taken up: a job lost (its process gone), one
+    cancelled by an operator, and one whose own budget ran out (``timed_out``), which is a ceiling, not a defect. Not:
+    one still running, one whose job in this process is still unwinding, one that completed, and one that failed,
+    which would fail again.
+
+    :param host: The host, whose job manager would hold the job.
+    :ptype host: LaunchHost
+    :param kind: The record's type: :data:`~threetears.evals.kernel.job_leases.SWEEP_JOB` or
+        :data:`~threetears.evals.run.launch_job.LAUNCH_JOB`.
+    :ptype kind: LeasedJobKind[R]
+    :param record_id: The record.
+    :ptype record_id: str
+    :param scope_id: Its scope.
+    :ptype scope_id: str
+    :param start_again: The action that starts the work again, named in a remedy.
+    :ptype start_again: str
+    :return: The record, settled, and its token.
+    :rtype: tuple[R, str | None]
+    :raises NotFoundError: There is no such record in the scope.
+    :raises ValidationFailedError: Its job cannot be taken up.
+    """
+    eval_host = host.eval_host
+    record, etag = await run_blocking(
+        eval_host.blocking_executor, read_to_take_up, eval_host.storage, kind, record_id, scope_id
+    )
+    if record is None:
+        raise NotFoundError(kind.name, record_id, remedy=FIND_JOB)
+    job = cast(_JobEnding, record)
+    _refuse_a_job_not_taken_up(
+        kind.name,
+        job.id,
+        job.outcome,
+        job.detail,
+        live_here=host.job_manager.is_task_active(job.id),
+        start_again=start_again,
+    )
+    return record, etag
+
+
 async def resume_launch(
     host: LaunchHost, launch_id: str, scope_id: str, *, max_cost_usd: float | None = None
 ) -> TakenUp[EvalLaunch]:
@@ -1083,19 +1238,7 @@ async def resume_launch(
     """
     eval_host, manager = host.eval_host, host.job_manager
     storage = eval_host.storage
-    launch, etag = await run_blocking(
-        eval_host.blocking_executor, read_to_take_up, storage, LAUNCH_JOB, launch_id, scope_id
-    )
-    if launch is None:
-        raise NotFoundError("launch", launch_id, remedy=FIND_JOB)
-    refuse_a_job_not_taken_up(
-        "launch",
-        launch.id,
-        launch.outcome,
-        launch.detail,
-        live_here=manager.is_task_active(launch.id),
-        start_again="run_launch",
-    )
+    launch, etag = await read_job_to_take_up(host, LAUNCH_JOB, launch_id, scope_id, start_again="run_launch")
     if not launch.run_ids:
         raise ValidationFailedError(
             f"launch '{launch.id}' ended before it started any run ({launch.detail}), so there is nothing to take up",
@@ -1113,13 +1256,12 @@ async def resume_launch(
             f"every run launch '{launch.id}' started has ended completed or failed, so there is nothing to take up",
             remedy="read each run with run_get",
         )
-    planned, refusals = await take_up_arms(host, unfinished, scope_id, max_cost_usd=max_cost_usd)
+    take_up, refusals = await take_up_arms(host, unfinished, scope_id, max_cost_usd=max_cost_usd)
     if refusals:
         raise refused_as_one(f"launch '{launch.id}'", refusals)
-    taking_up = list(planned.values())
     # The launch's own id orders the runs' cells as it always did, and an interleaved launch takes them in turn.
     group = LaunchGroup(
-        candidate_models=[resuming.run.candidate_model for resuming in taking_up],
+        candidate_models=[resuming.run.candidate_model for resuming in take_up.resumptions],
         arm_schedule=launch.arm_schedule,
         group_id=launch.id,
     )
@@ -1129,21 +1271,18 @@ async def resume_launch(
 
     async def prepare(group: LaunchGroup, _formed: None) -> list[EvalRun]:
         prepared: list[EvalRun] = []
-        for resuming in taking_up:
-            prepared += await (await admit_resumed_run(host, resuming, launch_group=group)).start()
+        for label in take_up.arms:
+            prepared += await take_up.prepare(label, group)
         return prepared
-
-    async def reopen(runs: list[EvalRun]) -> None:
-        await write_taken_up(host, taking_up, runs)
 
     admitted = await admit_group(
         host,
-        len(taking_up),
+        len(take_up.arms),
         settings=host.settings(),
         form=form,
         prepare=prepare,
         event="eval.resume_launch",
-        attach=reopen,
+        attach=take_up.reopen,
     )
     reopened = launch.model_copy(update=reopened_job_fields())
     epoch = next_epoch(launch.lease, launch.lost)
@@ -1157,9 +1296,9 @@ async def resume_launch(
         launch.id,
         scope_id,
         epoch,
-        len(taking_up),
+        len(take_up.arms),
     )
-    return TakenUp(started, tuple(dict.fromkeys(notice for resuming in taking_up for notice in resuming.notices)))
+    return TakenUp(started, take_up.notices)
 
 
 #: The statuses a run :func:`resume_run` takes up has ended with: ``cancelled`` (lost, or cancelled by an operator),
@@ -1433,14 +1572,13 @@ __all__ = [
     "ResumableJob",
     "ResumableJobs",
     "RunResumption",
+    "TakeUp",
     "next_epoch",
-    "refuse_a_job_not_taken_up",
+    "read_job_to_take_up",
     "refused_as_one",
     "resumable_jobs",
     "resume_launch",
     "resume_run",
-    "start_take_up",
     "take_up_arms",
     "take_up_run",
-    "write_taken_up",
 ]

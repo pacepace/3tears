@@ -266,6 +266,20 @@ declaration, so it stays, and no between-cells stop is read from it.
    changed, as does an earlier revision priced only under another judge, simulator, rig or model. The case
    count is not compared: the price scales per-observation cost to the arm's own cases. This is pricing only;
    analysis never pools two revisions.
+   A template with no priced result of its own or of an earlier revision borrows from its siblings: other
+   templates in the scope of the same candidate kind (not revisions of its own), drawing only on their runs
+   launched as the arm will be (model, cassette mode, judges, simulator, apparatus and overlays) on the arm's
+   subject. A sibling whose judged dimensions with their judge pins, conversation shape, world seed, allowed tools
+   or kind spec differ is not drawn on, and is named: the price is per case, and a case's cost is not scaled across
+   such a change. The price's `method_id` is `borrowed-history`, where a template's own history reads
+   `usage-history`; its basis opens `borrowed from template '<name>' ('<id>'), <n> result(s): ...`,
+   and a capped launch admits against it as against any price. Its band holds only if the arm's cases cost as the
+   siblings' do, and the basis says so. It runs to the outer ends of a band over the siblings' observations and
+   one over each case's mean cost, never nearer its centre than 3% either side, so it is never narrower than a
+   direct estimate from the same results. It needs results over at least three cases. A borrowed figure budgets a
+   launch only; nothing pools it into a reading. An arm with neither its own nor a sibling's priced history reads
+   unpriced, and its basis says what each lacks, naming a sibling that differs in a launch condition, its subject
+   or its template.
 3. **Refuse.** First, whatever the cap, it refuses an arm naming a model its provider's list does not name
    (`ArmPlan.served_checks`). Under a cap, it refuses an arm whose largest call cannot be priced
    (`ArmPlan.call_unpriced`, an `UnpricedCall` naming the call and why): unknown is not $0, and that one call

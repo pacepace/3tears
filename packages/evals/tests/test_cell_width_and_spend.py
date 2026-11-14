@@ -59,7 +59,7 @@ from threetears.evals.kernel.result_condition import (
     resolve_result_condition,
     trial_exclusion,
 )
-from threetears.evals.kernel.usage_capture import RoleUsageLedger
+from threetears.evals.kernel.usage_capture import RoleUsageLedger, maybe_billed_usd
 from threetears.evals.run import (
     KindWiring,
     LaunchHost,
@@ -1099,6 +1099,59 @@ async def test_a_run_another_stop_ended_keeps_the_caps_count_of_the_cells_it_set
     (stop,) = stopped.stops
     assert (stop.currency, stop.cells_not_judged) == ("cost_usd", 1)
     assert "the cost cap had too little left to judge 1 cell(s)" in str(stopped)
+
+
+@dataclass(frozen=True)
+class _ResentJudgeCompletion(ToyJudgeCompletion):
+    """A judge reply whose first send broke before any response began and was resent: the provider may have billed
+    that send too, as the shipped client counts it."""
+
+    maybe_billed_sends: int = 1
+
+
+@dataclass
+class _ResendingPricedJudge(_PricedJudge):
+    """The priced judge, every call's first send dropped before a response, then answered."""
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        reply = await super().generate(system=system, user=user, response_format=response_format)
+        return _ResentJudgeCompletion(**vars(reply))
+
+
+@pytest.mark.parametrize(
+    ("kind_type", "error_type"),
+    [
+        pytest.param(_StopsFirstKind, AccountExhaustedError, id="the-accounts-refusal"),
+        pytest.param(_UnservedFirstKind, ModelUnservedError, id="the-unserved-model-circuit"),
+    ],
+)
+async def test_a_stop_s_spend_counts_what_the_judged_cells_dropped_sends_may_have_billed_as_the_cap_did(
+    kind_type: type[_StopsFirstKind], error_type: type[Exception]
+) -> None:
+    """The first cells meet the stop; the last is judged after it, each of its judge calls resent after a drop. The
+    cap counted each dropped send at its call's price as the cell landed, and the stop's spend is the cap's: its
+    rows' cost and those sends, never the rows' cost alone."""
+    judge = _ResendingPricedJudge(cost_usd=0.05, ceiling_usd=0.05)
+
+    _host, _run, results, stopped = await _judged_run_ended(
+        judge,
+        cap_usd=10.0,
+        k=kind_type.stopping + 1,
+        width=kind_type.stopping + 1,
+        client=_QuarterDollarClient(),
+        kind_type=kind_type,
+    )
+
+    assert isinstance(stopped, error_type)
+    assert isinstance(stopped, AccountExhaustedError | ModelUnservedError)
+    judged = [result for result in results if result.rubric_scores]
+    assert judged, "a cell was judged after the stop"
+    dropped = sum(
+        maybe_billed_usd(result.usage, result.cost_roles) for result in results if result.cost_usd is not None
+    )
+    assert dropped > 0
+    rows_cost = sum(result.cost_usd for result in results if result.cost_usd is not None)
+    assert stopped.accumulated_usd == pytest.approx(rows_cost + dropped)
 
 
 async def test_a_judge_phase_the_cap_has_room_for_is_judged_and_its_spend_counted() -> None:

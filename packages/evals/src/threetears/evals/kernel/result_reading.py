@@ -22,7 +22,7 @@ fails loudly (an ``AttributeError`` at run time, a type error under mypy), never
 from __future__ import annotations
 
 import copy
-from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Collection, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, cast
 
@@ -912,7 +912,7 @@ class ReadingsRead:
     :ivar store_calls: The store calls made so far.
     """
 
-    __slots__ = ("path", "store_calls", "_pages", "_walked")
+    __slots__ = ("path", "store_calls", "_pages", "_walk")
 
     def __init__(self, path: ReadPath, *, store_calls: int, pages: Iterator[tuple[int, list[ResultReading]]]) -> None:
         """Hold a read.
@@ -927,20 +927,53 @@ class ReadingsRead:
         self.path = path
         self.store_calls = store_calls
         self._pages = pages
-        self._walked = False
+        self._walk: Generator[ResultReading] | None = None
 
     def __iter__(self) -> Iterator[ResultReading]:
         """Each reading, in the read's order.
 
-        :raises RuntimeError: The read was walked before: its pages are read once, and a second walk would hand out
-            nothing as though nothing were stored.
+        :raises RuntimeError: The read was walked, or closed, before: its pages are read once, and a second walk would
+            hand out nothing as though nothing were stored.
         """
-        if self._walked:
+        if self._walk is not None:
             raise RuntimeError("a read of readings is walked once; read again for a second walk")
-        self._walked = True
-        for calls, page in self._pages:
-            self.store_calls += calls
-            yield from page
+        self._walk = self._walked()
+        return self._walk
+
+    def _walked(self) -> Generator[ResultReading]:
+        """The one walk of the pages; however it ends, it closes them."""
+        try:
+            for calls, page in self._pages:
+                self.store_calls += calls
+                yield from page
+        finally:
+            self._close_pages()
+
+    def _close_pages(self) -> None:
+        close = getattr(self._pages, "close", None)
+        if callable(close):
+            close()
+
+    def close(self) -> None:
+        """Close the read: the store's rows it holds open are released now, and nothing more is handed out.
+
+        A walk left part way (a ``break``, or an exception in the reader) otherwise holds the store's rows open until
+        it is collected. A reader that may stop part way holds the read in a ``with`` block, which closes it however
+        the block ends. A read walked to its end has closed itself; closing it again does nothing.
+        """
+        if self._walk is None:
+            # Never walked: no walk will be, so the pages are closed here.
+            self._walk = self._walked()
+        self._walk.close()
+        self._close_pages()
+
+    def __enter__(self) -> ReadingsRead:
+        """The read, closed when the ``with`` block ends."""
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        """Close the read (:meth:`close`)."""
+        self.close()
 
 
 @dataclass(frozen=True, slots=True)

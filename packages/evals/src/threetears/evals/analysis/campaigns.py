@@ -138,6 +138,10 @@ class CampaignStore(Protocol):
         """The key of every result of one run within a scope, in one read that ships no other field."""
         ...
 
+    def query_eval_result_keys_by_runs(self, run_ids: Sequence[str], scope_id: str, /) -> dict[str, list[ResultKey]]:
+        """The key of every result of each of several runs within a scope, in one read that ships no other field."""
+        ...
+
     def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
         """The named results within a scope, in one read by id."""
         ...
@@ -2015,16 +2019,17 @@ def _address_arm(storage: CampaignStore, scope_id: str, run_id: str, *, profile:
 def _address_runs(
     storage: CampaignStore, scope_id: str, runs: Sequence[EvalRun], *, profile: HostProfile
 ) -> list[_AddressedArm]:
-    """Each run's arm as :func:`_address_arm` reads it, in the runs' order: each run's identity, then its keys, and
-    every run's first result in one read by id.
+    """Each run's arm as :func:`_address_arm` reads it, in the runs' order: each run's identity, then every run's keys
+    in one read, and every run's first result in one read by id.
 
     :raises LeverCoordinateError: A run recorded no lever map, and the host's variant map disagrees with its own
         registry; the first such run in order is named.
     """
     identities = [resolve_variant_identity(run=run, profile=profile) for run in runs]
-    # The key is the first result's (`variant_key_of_run`), so each run's keys are read and that one result by id:
-    # never a run's results, and every run's first result in one read.
-    firsts = [storage.query_eval_result_keys_by_run(run.id, scope_id)[:1] for run in runs]
+    # The key is the first result's (`variant_key_of_run`), so every run's keys are read in one call and each run's
+    # first result by id: never a run's results, and every run's first result in one read.
+    every = storage.query_eval_result_keys_by_runs([run.id for run in runs], scope_id) if runs else {}
+    firsts = [every.get(run.id, [])[:1] for run in runs]
     by_id = {result.id: result for result in read_results(storage, scope_id, [key for keys in firsts for key in keys])}
     addressed: list[_AddressedArm] = []
     for run, identity, keys in zip(runs, identities, firsts, strict=True):

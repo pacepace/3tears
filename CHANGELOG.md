@@ -57,7 +57,70 @@ family heads and guardrail interval header included, and a chance under 50% prin
 two significant figures of itself (`2.5%`, `7.5%`, never `2%`); the level a figure holds stays exact. The kit's r4 and
 r5 reference pages read their measures by the same rule. No recording was re-recorded with this change.
 
-### evals: a judge call its replay does not hold is named, never dropped (#1162)
+### evals: the run and campaign listings read a page at a time (#1145)
+
+**Changed:** `runs_list` and `campaigns_list` (the operations and their actions) read one page, newest first by
+`(created_at, id)`, 100 rows unless `limit` names another (1 to 1000 from Python, 1 to 200 through an action), where
+they read and hydrated every run or campaign of the scope on every call. Each answer carries `next`, the cursor for
+the page after, `None` on the last page; pass it back as `cursor`. The cursor is the package's own opaque string
+(`threetears.evals.kernel.list_pages`), bound to the filters it was read with: one that does not decode, came
+from the other listing, or is read back with other filters (`status`, `label`, `include_archived`; `campaigns_list`'s
+archive filter) is refused as caller input, naming them; `limit` may change between pages. `runs_list` puts the status
+filter in the store's read (one status by equality, the `cancelled` listing by `field_in` over the statuses a lapsed
+run settles from), and the archive filter too, so a default page is full however many recent runs are archived. Only
+its label filter runs over the page, so a labelled page can list fewer runs than `limit` while `next` is set, and the
+new `filtered` says how many it left out. `unreadable` now counts the page's unreadable rows, narrowed by their stored
+archive flag as well as their status. In both listings a document stored without `archived`, or with it null, is
+active, as its model reads it. `campaigns_list` reads what an exploratory campaign feeds with its own query
+(`EvalStorage.declared_campaigns_holding`), among every campaign of the scope, so a declared campaign on another page
+is still named; the archive filter is in the read, so its pages are full but the last. New provisional reads:
+`EvalStorage.query_eval_runs_page`, `EvalStorage.list_campaigns_page`, `list_runs_page` (`threetears.evals.run`).
+
+**For hosts (a caller of the listings):** a caller that expected every run or campaign gets the first 100 and a
+`next`. To read them all, loop: `page = runs_list(host, scope)`, then while `page.next` is not `None`,
+`page = runs_list(host, scope, cursor=page.next)`, keeping each page's `runs` (`campaigns_list` alike, its
+`campaigns`). Through the actions, call `runs_list` / `campaigns_list` again with `cursor` set to the last `next`.
+Pass the same filters with each cursor. Do not stop at a short `runs_list` page: stop when `next` is `None`.
+
+**Changed, for hosts (a `DocumentStore` adapter):** `DocumentStore.by_doc_type` (and `AsyncDocumentStore`'s) takes
+`after=(order_by value, id)`, the last document of the page before, and returns only documents strictly past it; a
+store that declares `after` breaks every ordered read's ties by `id` in the sort direction. At run time an adapter
+written before it keeps working: the engine never hands `after` to a `by_doc_type` that does not declare it by name
+(`takes_after`), and pages it with `page_by_doc_type`, which reads the whole match and orders and slices it in Python
+(`order_and_page`); the async bridge and the routed store do the same for a store beneath them, ordering every
+ordered read above it. Until it declares `after`, every listing call still reads the scope's whole match. **A host
+whose adapter is type-checked against the port has a change to make:** mypy reads a `by_doc_type` without `after` as
+not matching `DocumentStore`. Declaring the parameter is not enough; the adapter must honour it. The least change is
+to declare it, call `check_after(after, order_by)`, and return `order_and_page(rows, order_by=..., descending=...,
+after=after, limit=limit)` over the adapter's own unlimited read; the keyset query in the guide pages in the backend.
+An adapter that declares `after` and drops it would hand back the first page again, and a caller reading until `next`
+is `None` would never stop: `page_by_doc_type` checks the first document of every page past a place and raises
+`PageNotPastAfter` (in `threetears.evals.schema`, provisional), naming the adapter, instead. The store conformance kit
+gains `page.walk_reads_each_once` (oldest-first and newest-first walks, one ending on a null `created_at`),
+`page.holds_predicates_and_projection`, `page.after_is_honoured` and `page.after_refusals`, which read through
+`page_by_doc_type` or ask only a store that declares `after`, so an adapter predating `after` passes them; `docs/adopting-a-host.md` ("`by_doc_type` pages with `after`") gives the
+Postgres keyset condition and ordering (`DESC NULLS LAST`, ties by id, one collation). The in-memory and SQLite
+stores page natively, and now break ties of an ordered read by `id` where they kept insertion order. New provisional
+names in `threetears.evals.schema`: `PageNotPastAfter`, `check_after`, `order_and_page`, `page_by_doc_type`,
+`takes_after`.
+
+### evals: a resumed run is proved under today's goal-check proof rules, and each holding names its rules (#920; core v15.17)
+
+**Changed:** a run taken up across a goal-check proof-rules change, whose checks the current rules prove as its own
+proofs say, now moves its `goal_check_proof_rules` forward to the current rules (owner ruling). A `proven` its launch
+recorded reads as proven again, where it read as unproven under the older rules. Each holding records the rules its
+checks were proved under, in `RunLifetime.goal_check_proof_rules` (core v15.17, new, optional, left out of the
+document when unset, in no identity, key or digest). The first holding carries the launch's rules, and each holding a
+take-up began carries the rules it re-proved under. A holding stored before the field reads as before, its rules not
+recorded. A check proved otherwise still refuses. An edit to a template's `variation_axes`, `tools_required` or
+`universal` still refuses a take-up (owner ruling), and the refusal now says why: such an edit changes what the run
+measures, so the cells left to run would not measure what its stored ones did.
+
+**For hosts:** nothing to change. A host that reads `EvalRun.lifetimes` can show which proof rules proved a run's
+checks in each holding. A host that matched the template refusal's exact text matches the new wording, which still
+opens `its measured content changed since the run started`.
+
+### evals: a call its replay does not hold fails the run, named, never dropped (#1162)
 
 **Fixed:** a replayed judge whose recording held no call for a prompt read the miss as a failed call, its text
 withheld, and judged on the calls it still found. The judge's recordings are keyed on the pages it reads, so a change
@@ -65,11 +128,26 @@ to a page's text moved the writer eval's replayed preference from 61/39 to 54/46
 `run_judge_llm` now raises the replay's `RecordingRefused` (any `ApparatusError`) instead. A writer's pairwise pass
 fails at the miss and the eval exits 1. A run's scoring judge that misses fails the run, as a judge completion that
 breaks the protocol does (owner ruling): the cell is recorded `apparatus_failed` naming the call, and the run raises
-the miss. A judge kind's trial whose replayed judge misses leaves `invoke` and is excluded
-`apparatus_failed`, naming the call: it was graded `no_reply` and charged to the judge under test. A miss now names
+the miss. So does a judge kind's run whose judge under test misses on any one trial: that cell is recorded
+`apparatus_failed`, naming the call, and the run raises the miss, where the trial was graded `no_reply` and charged to
+the judge under test, so a campaign never finishes on fewer trials. A candidate's replay miss fails the run the
+same way (owner ruling: any miss fails the run), where its cell was excluded and the run went on. `ReplayMiss` (new,
+`threetears.evals.kernel.host`) is a recording that cannot serve this run: a call it does not hold or holds fewer
+times than asked, a file missing, unreadable or corrupt, a format this build does not read, a call already served to
+another eval's run, or a call refused while recording. `RecordingRefused`, `CassetteMiss`, `CassetteExhausted`,
+`CassetteCorrupt` and the quick world's `ToolRecordingMiss` subclass it, and each message keeps its cause's own
+remedy. A recording run (`RECORD=1`) whose recorder refuses a call fails the run the same way, extending the #1162
+ruling to recording runs: a recording missing that call would fail its first replay anyway, and every cell after the
+refusal is spend it cannot keep. A live run with no recording is unaffected. Every other `ApparatusError` still
+excludes its one cell. A miss now names
 the prompt's key and where it parts from the recorded prompts: how many hold the same user message or open on the same
 80 characters, or the nearest recorded key and the character it parts at. Rung 5's recordings README says what to do
 when page text moves.
+
+**For hosts:** `ReplayMiss` is in the host-contract tier (owner ruling; the declared ceiling goes from 498 to 499). A
+host's own replay raises it, or a subclass, when its recording cannot serve a call, so the run fails naming the call;
+any other `ApparatusError` still excludes only its cell. A host test that read a partial miss as a completed run on
+fewer cells now sees the run fail.
 
 ### evals: a request whose connection broke before any response began is sent again once, and counted (#1137; core v15.16)
 
@@ -78,11 +156,15 @@ disconnected without sending a response") was raised unretried, and one such dro
 in. `Model` now sends it again once, after the first backoff wait, for a completion and a tool turn alike (owner
 ruling). The first send is read streamed, so a response that began and was cut short while its body was read, which
 was served and billed, is raised as before and never sent again. The provider may have served and billed the dropped
-send, so the resend says so, with the error's own text: a turn's `resent_after`, and a completion's new
-`resent_after` and `maybe_billed_sends`. A usage row counts those sends as `RoleUsage.maybe_billed_sends` (new,
-optional, left out while none is counted), beside `call_count` and never in its cost. A run's cost cap counts each
-at its row's price per call (`kernel.usage_capture.maybe_billed_usd`), so a run never ends past its cap by what no
-row states.
+send, so the resend says so, with the error's own text, and counts it: a turn's `resent_after` and new
+`maybe_billed_sends` (kept in a turn recording only when set), and a completion's new `resent_after` and
+`maybe_billed_sends`. A usage row counts those sends as `RoleUsage.maybe_billed_sends` (new, optional, left out while
+none is counted), beside `call_count` and never in its cost; the report writer's candidate row counts its turns'. A
+run's cost cap counts each at its row's price per call (`kernel.usage_capture.maybe_billed_usd`, carried on
+`CellSummary.maybe_billed_usd`) on every path: as a cell lands, when a run is taken up again (its starting spend and
+the spend a replaced row moves onto the row written over it), in a witnessed run's judge cap (a judgement a
+protocol defect stopped included), in a stop's totals, and in a batched writer eval's spend per arm, which the next
+batch's cap is what is left of. So a run never ends past its cap by what no row states.
 
 ### evals: a replayed completion names the upstream its recording kept (#1161)
 
@@ -91,6 +173,112 @@ replayed call's usage row named no upstream. `ReplayedCompletion.served_provider
 background delivery can name the upstream that served its calls: `AsyncDelivery.served_provider` (core v15.16, new,
 optional, never on a substituted entry), which the host fills and the engine folds into the `inner_agent` usage row
 (`RoleUsage.served_provider`, a key of the row); left unset it reads as not recorded.
+
+### evals: a new template borrows its launch price from its siblings, and a resume crosses a proof-rules change (#948, #920, #921)
+
+**Added:** `launch_estimate` and every launch priced by `history_launch_pricer` price an arm whose template has no
+priced history (its own or an earlier revision's) from sibling templates. A sibling has the same candidate kind, and
+only its runs on the same subject, model, cassette mode, judges, simulator, apparatus and overlays are drawn on. Its
+template must also leave what a run spends as the arm's does: judged dimensions and judge pins, conversation shape,
+world seed, allowed tools and kind spec. The price's `method_id` is `borrowed-history`
+(`threetears.evals.analysis.BORROWED_PREDICTION_METHOD`). Its basis names each sibling and its result count, and says
+the band holds only if the arm's cases cost as the siblings' do. The band is never narrower than a direct estimate's
+from the same results: it runs to the outer ends of the band over the observations and the band over each case's
+mean cost, never nearer its centre than 3% either side, and needs results over at least three cases
+(`compute_borrowed_cost`). A borrowed figure budgets a launch only. An arm still unpriced says what its own history
+lacks and what its siblings lack, naming a sibling that differs in a launch condition, its subject or its template.
+`ArmQuote` gains `overlays` (default empty), which the engine fills from the launch.
+
+**Changed:** `job_resume` takes up a run whose goal-check proof rules moved since it launched when the current rules
+prove the run's own goal checks as its stored proofs say. A check proved otherwise still refuses, and the refusal names
+both rule versions. The run then reads as proved under the current rules (#920, above).
+
+**Changed, for callers of `threetears.evals.run.resume`:** the run, launch and sweep take-ups go through one `TakeUp`.
+`take_up_arms` returns a `TakeUp` (its `arms` by label) in place of a dict, and `read_job_to_take_up` reads and
+refuses a sweep's or a launch's record. `start_take_up` and `write_taken_up` are gone, replaced by `TakeUp.start` and
+`TakeUp.reopen`; `refuse_a_job_not_taken_up` is private. None of these was re-exported from `threetears.evals.run`.
+
+### evals: store reads (#1020, #1052, #1053, #1057, #1058, #1059)
+
+**Changed, for hosts (a store offering `ResultReadings`):** the readings conformance kit holds four rules it did not
+before; `docs/adopting-a-host.md` ("Narrowed and grouped reads are optional") says what each asks of an adapter.
+`grouped.sum_int` sums integers past a signed 64-bit range and accepts only the exact sum or a `TypeError`: a Postgres
+adapter summing through `bigint` raises a driver error (`bigint out of range`) and goes red, so sum through `numeric`
+and return an `int`, or raise `TypeError`. `grouped.values_exact` reads integers of 2**63 and wider, which `values`
+returns whole, as your own reads do. `grouped.values_narrowed_in_items` is new; it reads a `grouped` that does not
+declare `exclude_in_items` without it and narrows the values after (`grouped_narrowed`), so an adapter written before
+the parameter passes it and keeps working, only shipping whole items, though mypy reads it as not matching
+`ResultReadings` until it declares the parameter. `reads.copied_out` is new: a narrowed row or a grouped value handed
+out must not share the stored document. A narrowed read the engine abandons is closed (`close()`, or `aclose()` through
+the bridge): release the cursor there.
+
+**Changed:** `fold_groups` folds each row into its group as it arrives and lets it go, so a fold holds its groups'
+answers, never the rows; a measure refuses a value when the fold reaches it. The engine's grouping of a store without
+`ResultReadings` (`EvalStorage.result_groups`) now hands it each page of rows as the page is read, so a spend read on
+such a store holds one page of rows at a time where it held every row (#1057). `SPEND_READ_BUDGET` is not re-measured
+here.
+
+**Added (provisional):** `check_grouping(by, measures)` in `threetears.evals.schema` is the one statement of which
+groupings `grouped` defines. `fold_groups`, the SQLite store and `result_groups` all refuse through it, and
+`result_groups` refuses before it asks the store anything, on either path, where the engine's path used to read every
+page first (#1059 item 2).
+
+**Changed:** `InMemoryDocumentStore` copies each object and list a caller writes or is handed, and shares strings,
+numbers, booleans and nulls, where it deep-copied every value of every row on each read and write: about a third of
+the copy time, which inflated every profile run on it. The store conformance kit's `write.copied_in_and_out` now
+checks every read and `merge_fields`, at every depth, inside objects and list items, and the readings kit gains
+`reads.copied_out` (a narrowed row, a grouped value); a host store that hands out what it holds fails them. The
+copy is `copy_json` in `threetears.evals.schema` (provisional), which `fold_groups` copies each `values` value with too
+(#1052).
+
+**Changed, for hosts:** the port states that a `sum_int` past 64 bits is exact or refused with `TypeError`, never
+wrapped, rounded or failed as a backend error, and the readings kit's `grouped.sum_int` and `grouped.values_exact`
+check it (see the first paragraph). The SQLite store's `grouped` now sums `sum_int` exactly at any width, in its one
+statement: a sum past a signed 64-bit integer raised SQLite's `integer overflow`, and an integer wider than 64 bits was
+summed as a rounded real. Its `values` hand such an integer back whole, as its own reads do, closing the gap the
+docstrings stated (#1059 item 1).
+
+**Fixed:** a read abandoned part way closes the store's rows when it is closed, not when it is collected.
+`ReadingsRead` (what `EvalStorage.iter_result_readings` returns) has `close()` and is a context manager, and a walk of
+it closes the store's rows however it ends; the launch estimate's planning read holds its read in a `with` block.
+`bridge_async_store` closes an abandoned narrowed read's async iterator whenever it has `aclose`, where it closed only
+an async generator, so a driver's cursor class kept its cursor open (#1059 item 3).
+
+**Added (provisional):** `EvalStorage.query_eval_result_keys_by_runs(run_ids, scope_id)` reads several runs' result
+keys in one call: one `by_doc_type` with the runs as a `field_in` predicate, the fields a key read leaves out left
+out, and each row checked as the one-run key read checks it. A host store needs nothing new. `campaign_arms` reads its
+runs' keys through it, one store call where it made one per run (`CampaignStore` gains the method) (#1053 item 2).
+
+**Fixed:** `analyses_list` marks a `doc` analysis whose report document was written from a snapshot that is gone:
+its line leads with the one regenerate line, says the snapshot is gone and counts no findings, as `report_read` renders
+it, where `needs_regeneration` stayed `None`. **Added (provisional):** `EvalStorage.report_snapshot_stored(snapshot_id,
+scope_id)`, the cheap existence read the listing makes: one `get_many` keeping the snapshot's `id` alone, so its report
+input is never shipped. A snapshot stored but no longer reading is still left to the report read (#1020 item 1).
+
+**Changed:** `analysis_report` lays a `doc` analysis out as its stored report document's page on the document's own
+snapshot (`basis="analysis"`), as `campaign_report` lays out the campaign's reported one, where it laid out the
+interim code-only page whose first screen said "This page is the code-only page over the same evidence". Where this
+version no longer reads the document (its record, its snapshot, or its snapshot's bundle), the page is code's over the
+bundles frozen with the analysis, never the campaign's evidence now; its first screen carries the regenerate line
+naming the analysis (`unread_analysis_id`), and `needs_regeneration` adds why and that the page lays out the evidence
+frozen with the analysis. Over frozen bundles this build no longer reads, it is refused as before. That interim line
+(`DOC_WRITTEN`) and `report_doc_blocks` are removed, and so is the `report_doc_id` parameter of the provisional
+`build_campaign_report` and `build_campaign_report_in_aspect_forms`, which printed it and which nothing passed.
+**For hosts:**
+`analysis_report` takes an `AnalysisReportStore`: `AnalysisStore` and the new `ReportDocReads` (`load_report_doc`,
+`load_report_snapshot`), both in `threetears.evals.analysis` (provisional). `EvalStorage` satisfies both; a host
+passing its own `AnalysisStore` adds the two reads. `read_report_doc` and `stored_headline` take `ReportDocReads`
+(#1020 item 2).
+
+**Added (provisional):** `ResultReadings.grouped` (and `AsyncResultReadings.grouped`) takes `exclude_in_items`, with
+`iter_narrowed`'s meaning, applied to every `values` value: the spend lenses' grouped read leaves each re-judge's
+`cannot_tell` and `errors` prose out, where it shipped every re-judge whole although they read only its `cost_usd`
+(#1058). The in-memory, SQLite and routed stores and `bridge_async_store` take it, and the readings kit gains
+`grouped.values_narrowed_in_items`. A host store whose `grouped` predates the parameter keeps working: the engine
+asks it without the parameter and narrows the values itself (`grouped_narrowed`, `narrow_groups` in
+`threetears.evals.schema`), so it ships the items whole until it declares `exclude_in_items`. Whether a `grouped`
+declares it is decided by one rule, `takes_exclude_in_items` (provisional): by name, never through `**kwargs`.
+`EvalStorage.result_groups` and `LensStore.result_groups` take `exclude_in_items` too.
 
 ### evals: export, seed and carry follow-ups
 
@@ -143,8 +331,8 @@ now cites it by the listing's key (#1021).
 
 **Changed:** `aspect_pass_rate` reads the trials' pass rate alone rather than every floor reading, and the scorecard
 reads each row's pass rate once. `campaign_arms` loads each member run once and reads every run's first result in one
-call by id, where it loaded each run twice and read each first result on its own; it still reads each run's result
-keys one run at a time, until the batched key read returns (#1053 items 1 and 3; item 2 in part, so #1053 stays open). `editor_rubric` keeps at most 64 editor texts read (#1117). Output is unchanged.
+call by id, where it loaded each run twice and read each first result on its own; it reads every run's result keys in
+one call too (`query_eval_result_keys_by_runs`, under "store reads" above) (#1053). `editor_rubric` keeps at most 64 editor texts read (#1117). Output is unchanged.
 
 ### evals: a page's forms, arm names and gate checks are worked out once per report input
 

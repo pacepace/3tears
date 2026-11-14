@@ -1,9 +1,8 @@
 """The lines on a campaign's page that say what became of its analysis, and the person's call.
 
-Code's page says where the campaign's report is, where it has one: one line naming the report document it is stored
-as (:func:`report_doc_blocks`); one line where the analysis it stands in for is one this version no longer reads or
-a retired writer wrote (:func:`unread_analysis_blocks`, :func:`retired_generation`). With neither, the page says
-nothing of a report: it is code's page, and says what code read. Then **the person's call**, once one is recorded; a
+Code's page says what became of the campaign's report where it stands in for one: one line where the analysis it
+stands in for is one this version no longer reads or a retired writer wrote (:func:`unread_analysis_blocks`,
+:func:`retired_generation`). Otherwise the page says nothing of a report: it is code's page, and says what code read. Then **the person's call**, once one is recorded; a
 call adopting an arm past a broken floor says which floor it overrides (:func:`call_blocks`).
 """
 
@@ -25,17 +24,9 @@ from threetears.evals.kernel.metrics import goal_check_of
 __all__ = [
     "NO_LONGER_READS",
     "call_blocks",
-    "report_doc_blocks",
     "retired_generation",
     "unread_analysis_blocks",
 ]
-
-#: The first screen's line where the analysis laid out is a report document's (``EvalAnalysis.report_doc_id``): the
-#: report is stored apart, and this page is code's over the same evidence.
-DOC_WRITTEN = (
-    "A report was written over this campaign's evidence and is stored as report document {report_doc_id}. This page "
-    "is the code-only page over the same evidence."
-)
 
 #: The one line every surface prints where the campaign's reported analysis is one this version no longer reads: a
 #: report document that no longer validates, whose snapshot
@@ -62,19 +53,6 @@ _UNREAD_ANALYSIS = "This campaign's analysis {analysis_id} was {line}."
 
 #: The same line where the code-only page stands in for one report document read by its id.
 _UNREAD_REPORT_DOC = "Report document {report_doc_id} was " + NO_LONGER_READS + "."
-
-
-def report_doc_blocks(report_doc_id: str | None) -> list[ReportBlock]:
-    """The one line saying a report document was written and where it is stored; nothing for any other page.
-
-    :param report_doc_id: The report document the analysis laid out names (``EvalAnalysis.report_doc_id``), or None.
-    :ptype report_doc_id: str | None
-    :return: The line, or nothing.
-    :rtype: list[ReportBlock]
-    """
-    if report_doc_id is None:
-        return []
-    return [DisclosureBlock(section="answer", source="memo", text=DOC_WRITTEN.format(report_doc_id=report_doc_id))]
 
 
 def retired_generation(basis: str) -> str | None:

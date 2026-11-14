@@ -257,6 +257,12 @@ class Completion:
 _DROPPED_BEFORE_RESPONSE: Final = "the connection broke before any response began"
 
 
+def _dropped(resent_after: Sequence[str]) -> int:
+    """How many of a call's resends followed a send that broke before any response began: the sends the provider may
+    have billed, which no reply's cost holds."""
+    return sum(1 for after in resent_after if after.startswith(_DROPPED_BEFORE_RESPONSE))
+
+
 #: What :meth:`Model.refresh_prices` answers while replaying, and for a model its pricer prices: no catalogue is read,
 #: and none needs to be.
 _NOTHING_READ: Final = PriceRefresh(refreshed=False, fetched_at=None, failure=None)
@@ -808,7 +814,7 @@ class _Live:
             pricing_failure=price.unpriced_reason,
             pricing_stale_since=price.stale_since,
             resent_after=tuple(resent),
-            maybe_billed_sends=sum(1 for after in resent if after.startswith(_DROPPED_BEFORE_RESPONSE)),
+            maybe_billed_sends=_dropped(resent),
         )
 
     async def turn(
@@ -870,6 +876,7 @@ class _Live:
             sent_binding=body.get("thinking", {}).get("block_binding", {}).get("prefix_mismatch_behavior"),
             input_transformations=turned.input_transformations,
             resent_after=resent_after,
+            maybe_billed_sends=_dropped(resent_after),
         )
 
     def turn_price_ceiling(

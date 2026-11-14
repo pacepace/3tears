@@ -12,7 +12,8 @@ kit (``threetears.evals.testing``) proves it case by case:
   the document, never in it, so a read has nothing to strip.
 - **Predicates and ordering run in SQLite**, on the stored JSON type: ``json_type`` tells ``true`` from
   ``1`` and a number from its text, as the port requires, and a document without the order field (or
-  with it null) sorts below every document that has it. A projection (``exclude``, ``keep``) is applied
+  with it null) sorts below every document that has it, ties by ``id``. A page past ``after`` is a keyset
+  condition in the same statement. A projection (``exclude``, ``keep``) is applied
   on the way out with the port's own :func:`~threetears.evals.schema.store_port.omit_paths` and
   :func:`~threetears.evals.schema.store_port.keep_fields`.
 - **Optimistic concurrency** is one statement: a conditional write is an ``UPDATE ... WHERE etag = ?``
@@ -57,8 +58,11 @@ from typing import Any
 from threetears.evals.schema.store_port import (
     GroupMeasure,
     StoreConflict,
+    check_after,
+    check_grouping,
     field_in_values,
     keep_fields,
+    narrow_groups,
     narrow_items,
     omit_paths,
 )
@@ -70,9 +74,6 @@ SQLITE_STORE_LAYOUT = 1
 
 #: The fields that locate a document, which :meth:`SqliteDocumentStore.merge_fields` refuses to set.
 _LOCATING_FIELDS = frozenset({"id", "scope_id", "doc_type"})
-
-#: The kinds :meth:`SqliteDocumentStore.grouped` computes; ``count`` alone reads no path.
-_MEASURE_KINDS = frozenset({"count", "count_null", "sum_int", "min", "max", "values"})
 
 #: Rows :meth:`SqliteDocumentStore.iter_narrowed` fetches from its one statement at a time, under the lock.
 _STREAM_PAGE = 256
@@ -170,6 +171,28 @@ def _where(
     return " AND ".join(clauses), params
 
 
+def _past(order_by: str, descending: bool, after: tuple[Any, str]) -> tuple[str, list[Any]]:
+    """The clause keeping the documents strictly past ``after`` in ``(order_by, id)`` order, and its parameters.
+
+    The order is the one :meth:`SqliteDocumentStore.by_doc_type` sorts by: the field's ``json_extract`` value, NULL
+    (absent or JSON null) lowest, then ``id``, both in the direction read.
+    """
+    value, doc_id = after
+    field = "json_extract(body, ?)"
+    path = _path(order_by)
+    if value is None:
+        if descending:
+            return f"({field} IS NULL AND id < ?)", [path, doc_id]
+        return f"(({field} IS NULL AND id > ?) OR {field} IS NOT NULL)", [path, doc_id, path]
+    past = "<" if descending else ">"
+    clause = f"({field} {past} ? OR ({field} = ? AND id {past} ?)"
+    params: list[Any] = [path, value, path, value, doc_id]
+    if descending:
+        clause += f" OR {field} IS NULL"
+        params.append(path)
+    return clause + ")", params
+
+
 def _dotted(path: str) -> str:
     """The SQLite JSON path naming a dotted path through objects, each key quoted as :func:`_path` quotes one."""
     if '"' in path:
@@ -177,26 +200,23 @@ def _dotted(path: str) -> str:
     return "$" + "".join(f'."{key}"' for key in path.split("."))
 
 
-def _check_grouping(by: Sequence[str], measures: Mapping[str, GroupMeasure]) -> None:
-    """Refuse a grouping the port does not define, before SQLite is asked.
-
-    :raises TypeError: ``by`` is a string rather than a sequence of paths.
-    :raises ValueError: A measure's kind is unknown, ``count`` names a path or another kind names none, or a measure
-        name is also a ``by`` path.
-    """
-    if isinstance(by, str):
-        raise TypeError(f"grouped takes a sequence of paths to group by, not a string: by={by!r}")
-    if clash := sorted(set(by) & measures.keys()):
-        raise ValueError(f"a measure name cannot also be a by path: {clash}")
-    for name, (kind, path) in measures.items():
-        if kind not in _MEASURE_KINDS:
-            raise ValueError(f"measure {name!r} has kind {kind!r}; the kinds are {sorted(_MEASURE_KINDS)}")
-        if (kind == "count") != (path is None):
-            raise ValueError(f"measure {name!r}: count reads no path and every other kind reads one, got {path!r}")
-
-
 #: A stored value's JSON type, with absent read as null.
 _TYPE = "coalesce(json_type(body, ?), 'null')"
+
+#: A stored JSON integer outside SQLite's 64-bit integers, which ``json_extract`` reads back as a real.
+_WIDE = f"({_TYPE} = 'integer' AND typeof(json_extract(body, ?)) = 'real')"
+
+#: A stored JSON integer that ``json_extract`` reads back as the integer it is.
+_NARROW = f"({_TYPE} = 'integer' AND typeof(json_extract(body, ?)) = 'integer')"
+
+#: The exact JSON text of a value: ``json_extract`` over two paths answers a JSON array of both values, written from
+#: the stored text, so an integer of any width comes back whole where one path would read it as a real.
+_EXACT = "json_extract(body, ?, ?)"
+
+
+def _exact(texts: str | None) -> list[int]:
+    """The integers in a space-joined run of :data:`_EXACT` texts, each ``[n,n]``, read whole."""
+    return [json.loads(text)[0] for text in texts.split(" ")] if texts else []
 
 
 def _measure_columns(kind: str, path: str | None) -> tuple[list[str], list[Any]]:
@@ -211,12 +231,16 @@ def _measure_columns(kind: str, path: str | None) -> tuple[list[str], list[Any]]
     if kind == "count_null":
         return [f"count(*) FILTER (WHERE {_TYPE} = 'null')"], [json_path]
     if kind == "sum_int":
+        # Exact at any width, in the one statement: each 64-bit integer summed as its high and low 32 bits, whose sums
+        # cannot overflow (SQLite's sum raises on overflow rather than widening), and each wider one read as its text.
         return (
             [
-                f"coalesce(sum(json_extract(body, ?)) FILTER (WHERE {_TYPE} = 'integer'), 0)",
+                f"sum(json_extract(body, ?) >> 32) FILTER (WHERE {_NARROW})",
+                f"sum(json_extract(body, ?) & 4294967295) FILTER (WHERE {_NARROW})",
+                f"group_concat({_EXACT}, ' ') FILTER (WHERE {_WIDE})",
                 f"count(*) FILTER (WHERE {_TYPE} NOT IN ('integer', 'null'))",
             ],
-            [json_path, json_path, json_path],
+            [*[json_path] * 3, *[json_path] * 3, *[json_path] * 2, *[json_path] * 2, json_path],
         )
     extreme = "min" if kind == "min" else "max"
     return (
@@ -229,12 +253,15 @@ def _measure_columns(kind: str, path: str | None) -> tuple[list[str], list[Any]]
     )
 
 
-def _stored_value(json_type: str | None, value: Any) -> Any:
+def _stored_value(json_type: str | None, value: Any, exact: str | None = None) -> Any:
     """A value as stored, from its JSON type (``None`` when absent) and what ``json_extract`` read.
 
     ``json_extract`` reads ``true`` as ``1`` and an object or a list as its JSON text; a real comes back as the stored
-    double exactly, and an integer as an integer.
+    double exactly, and an integer as an integer, except one wider than 64 bits, which it reads as a real: ``exact``
+    is that integer's :data:`_EXACT` text, and ``None`` for every other value.
     """
+    if exact is not None:
+        return _exact(exact)[0]
     if json_type == "true":
         return True
     if json_type == "false":
@@ -253,10 +280,10 @@ def _measure_answer(name: str, kind: str, path: str | None, columns: Sequence[An
     if kind in ("count", "count_null"):
         return columns[0]
     if kind == "sum_int":
-        total, refused = columns
+        high, low, wide, refused = columns
         if refused:
             raise TypeError(f"measure {name!r} sums JSON integers, and {path!r} holds {refused} value(s) that are not")
-        return total
+        return ((high or 0) << 32) + (low or 0) + sum(_exact(wide))
     numbers, texts, refused = columns
     if refused:
         raise TypeError(
@@ -438,6 +465,7 @@ class SqliteDocumentStore:
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = None,
+        after: tuple[Any, str] | None = None,
         exclude: Sequence[str] = (),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
@@ -448,7 +476,8 @@ class SqliteDocumentStore:
         never matches its text. A ``None`` predicate matches a field that is absent or null. A membership predicate
         (``field_in``) matches a field equal, by the same comparison, to any of its values; one with no values matches
         nothing, and SQLite is not asked. Under ``order_by``, documents without the field (or with it null) sort as
-        lower than every document that has it.
+        lower than every document that has it, and ties sort by ``id`` in the same direction. ``after`` is a keyset
+        condition in the same statement, so a page past it is read as the first page is, never by skipping rows.
 
         :param doc_type: The discriminator to select on.
         :ptype doc_type: str
@@ -460,6 +489,9 @@ class SqliteDocumentStore:
         :ptype descending: bool
         :param limit: Maximum documents to return; ``None`` is unbounded.
         :ptype limit: int | None
+        :param after: The last document of the page before, as ``(its order_by value, its id)``; ``None`` reads from
+            the start. Only with ``order_by``.
+        :ptype after: tuple[Any, str] | None
         :param exclude: Dotted paths left out of every returned document.
         :ptype exclude: Sequence[str]
         :param field_in: Field-membership predicates: field → the values it may equal.
@@ -468,19 +500,26 @@ class SqliteDocumentStore:
         :ptype field_eq: Any
         :return: The matching documents.
         :rtype: list[dict[str, Any]]
-        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``, or ``after`` is given without
+            ``order_by``.
         :raises TypeError: A predicate's value is not a scalar, or a ``field_in`` entry is a string rather than a
-            sequence of values.
+            sequence of values; or ``after`` is not a pair of a scalar and a string id.
         """
+        place = check_after(after, order_by)
         where = _where(doc_type, scope_id, field_in, field_eq)
         if where is None:
             return []
         clause, params = where
+        if place is not None and order_by is not None:
+            past, past_params = _past(order_by, descending, place)
+            clause += f" AND {past}"
+            params += past_params
         sql = f"SELECT body FROM documents WHERE {clause}"  # noqa: S608
         if order_by is not None:
             # SQLite sorts NULL lowest: first ascending, last descending, which is the port's rule for a
-            # missing or null order field. Ties keep insertion order.
-            sql += f" ORDER BY json_extract(body, ?) {'DESC' if descending else 'ASC'}, seq"
+            # missing or null order field. Ties sort by id in the same direction, the order ``after`` pages.
+            direction = "DESC" if descending else "ASC"
+            sql += f" ORDER BY json_extract(body, ?) {direction}, id {direction}"
             params.append(_path(order_by))
         else:
             sql += " ORDER BY seq"
@@ -567,6 +606,7 @@ class SqliteDocumentStore:
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
@@ -574,13 +614,13 @@ class SqliteDocumentStore:
 
         SQLite groups and aggregates: each ``by`` path by its JSON type and its value (``json_extract`` reads
         ``true`` as ``1``, so the type keeps them apart), ``sum_int`` over values whose ``json_type`` is
-        ``integer``, and ``min``/``max`` with the binary collation (code-point order for text). The refusals are
+        ``integer`` (each 64-bit one as its high and low 32 bits, whose sums cannot overflow, and each wider one read
+        whole from its JSON text, so the sum is exact at any width), and ``min``/``max`` with the binary collation (code-point order for text). The refusals are
         counted in the same statement and raised here. ``values`` rides the same statement as a ``UNION ALL`` of one
         row per matching document (its seq, id, group key, and each path's ``json_type`` and ``json_extract``),
         ordered by seq and grouped here: never through SQLite's JSON text, which writes a real at 15 significant
-        digits, so every double comes back to its last bit. One known exception: an integer of 2**63 or more comes
-        back from ``values`` as a float, though this store's own reads (``by_doc_type``, ``iter_narrowed``) return it
-        exactly, because ``json_extract`` reads it as a real.
+        digits, so every double comes back to its last bit. An integer wider than 64 bits, which ``json_extract``
+        reads as a real, comes back whole, read from its JSON text, as this store's own reads return it.
         See :meth:`~threetears.evals.schema.ResultReadings.grouped`.
 
         :param doc_type: The discriminator to select on.
@@ -591,6 +631,10 @@ class SqliteDocumentStore:
         :ptype by: Sequence[str]
         :param measures: Measure name → the measure.
         :ptype measures: Mapping[str, GroupMeasure]
+        :param exclude_in_items: List-field path → dotted paths left out of each object item of that list, in every
+            ``values`` value: applied in Python as each value is read back (:func:`~threetears.evals.schema.store_port.
+            narrow_groups`), since the file is in this process and nothing is shipped.
+        :ptype exclude_in_items: Mapping[str, Sequence[str]]
         :param field_in: Field-membership predicates: field → the values it may equal.
         :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates.
@@ -601,7 +645,7 @@ class SqliteDocumentStore:
         :raises TypeError: A measure met a value its kind refuses, a ``by`` value is an object or a list, or a
             predicate is refused.
         """
-        _check_grouping(by, measures)
+        check_grouping(by, measures)
         where = _where(doc_type, scope_id, field_in, field_eq)
         if where is None:
             return []
@@ -631,7 +675,7 @@ class SqliteDocumentStore:
             spans.append((name, kind, measure_path, len(measure_columns)))
             aggregates += measure_columns
             aggregate_params += measure_params
-        listed_padding = ["NULL"] * (2 * len(listed))
+        listed_padding = ["NULL"] * (3 * len(listed))
         sql = (
             f"SELECT 'group', count(*), NULL, {', '.join([*key_columns, *aggregates, *listed_padding]) or 'NULL'} "  # noqa: S608
             f"FROM documents WHERE {clause}"
@@ -642,13 +686,17 @@ class SqliteDocumentStore:
         if listed:
             # Each value as a row of its own, never through SQLite's JSON text, which writes a real at 15 digits:
             # json_extract hands back the stored double exactly, and the seq puts the rows in insertion order here.
-            value_columns = [f"{column}(body, ?)" for _, _ in listed for column in ("json_type", "json_extract")]
+            value_columns = [
+                column
+                for _, _ in listed
+                for column in ("json_type(body, ?)", "json_extract(body, ?)", f"CASE WHEN {_WIDE} THEN {_EXACT} END")
+            ]
             sql += (
                 f" UNION ALL SELECT 'value', seq, id, "  # noqa: S608
                 f"{', '.join([*key_columns, *(['NULL'] * len(aggregates)), *value_columns])} "
                 f"FROM documents WHERE {clause}"
             )
-            params += [*key_params, *[path for _, path in listed for _ in range(2)], *where_params]
+            params += [*key_params, *[path for _, path in listed for _ in range(6)], *where_params]
         with self._lock:
             rows = self._db.execute(sql, params).fetchall()
         answers: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -675,9 +723,10 @@ class SqliteDocumentStore:
         for row in sorted(listed_rows, key=lambda listed_row: listed_row[1]):
             answer = answers[tuple(row[3 : 3 + 2 * len(by)])]
             for index, (name, _) in enumerate(listed):
-                json_type, value = row[at_values + 2 * index], row[at_values + 2 * index + 1]
-                answer[name].append([row[2], _stored_value(json_type, value)])
-        return [{name: answer[name] for name in [*by, *measures]} for answer in answers.values()]
+                json_type, value, exact = row[at_values + 3 * index : at_values + 3 * index + 3]
+                answer[name].append([row[2], _stored_value(json_type, value, exact)])
+        groups = [{name: answer[name] for name in [*by, *measures]} for answer in answers.values()]
+        return narrow_groups(groups, measures, exclude_in_items)
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
         """Yield the id of every document of one type within a scope.

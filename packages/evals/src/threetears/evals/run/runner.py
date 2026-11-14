@@ -39,7 +39,9 @@ For each cell:
    the candidate's own failures and the rig's apart — and, through the cell's sink, what it is waiting
    on and how to read what it has spent so far, so a cell its deadline cancels is still recorded.
    An :class:`~threetears.evals.kernel.host.apparatus.ApparatusError` out of ``prepare`` or
-   ``invoke`` is recorded the same way, as that one cell excluded, and the run goes on.
+   ``invoke`` is recorded the same way, as that one cell excluded, and the run goes on. A replay miss
+   (:class:`~threetears.evals.kernel.host.apparatus.ReplayMiss`), or a judge call's rig fault out of ``invoke``
+   (:class:`JudgeCallUnserved`), is recorded the same way and then fails the run, as one in step 4 does.
 4. Run the rubric judge, when a judge service is wired and the cell produced something to judge.
 5. Build one :class:`~threetears.evals.schema.models.EvalResult`, and one trace document beside it.
 
@@ -87,7 +89,7 @@ from threetears.evals.kernel.covariates import (
 )
 from threetears.evals.kernel.dsl import evaluate_with_detail
 from threetears.evals.kernel.errors import JobFenced, StorageError
-from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.kernel.host.apparatus import ApparatusError, ReplayMiss
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.schema.completion import CompletionProtocolDefect
 from threetears.evals.run.judge import defect_usage
@@ -371,6 +373,30 @@ class EveryCellApparatusFailedError(RuntimeError):
             f"the eval apparatus failed every one of the run's {total} cell(s), so the run measured nothing — "
             f"repair the rig before relaunching: {shown}"
         )
+
+
+class JudgeCallUnserved(Exception):
+    """A judge call the rig could not serve, raised out of ``invoke`` by a kind whose candidate is itself a judge.
+
+    An :class:`~threetears.evals.kernel.host.apparatus.ApparatusError` out of ``invoke`` excludes that one cell and the
+    run goes on: a later cell may meet a working rig. A judge call's is not a cell's alone. A replayed judge whose
+    recording holds no call for the prompt (its prompt moved since it was recorded) fails the run naming the call
+    wherever it is asked (owner ruling, #1162), so a replay never reads on fewer judgments in silence: the run's scoring
+    judge fails it in the judge phase, and the judge kind, whose trial asks the judge under test, wraps the fault in
+    this. It is not itself an ``ApparatusError``, so the exclusion around ``invoke`` lets it pass; :func:`execute_run`
+    records the cell ``apparatus_failed`` naming :attr:`fault`, and raises the fault, as it raises the scoring judge's.
+
+    :ivar fault: What the rig raised, naming the call it could not serve.
+    """
+
+    def __init__(self, fault: ApparatusError) -> None:
+        """Carry the rig's fault.
+
+        :param fault: What the judge's client raised.
+        :ptype fault: ApparatusError
+        """
+        self.fault = fault
+        super().__init__(f"{type(fault).__name__}: {fault}")
 
 
 #: How many cells in a row, as a run records them, must find its candidate's model not served before the run stops
@@ -1754,6 +1780,10 @@ async def _run_one_result(
             termination=failure.termination,
             preconditions=failure.preconditions,
         )
+    except ReplayMiss:
+        # A recording that cannot serve the run: the next cell reads the same recording, so it fails the run, its cell
+        # recorded by the run's loop naming the call (owner ruling, #1162).
+        raise
     except ApparatusError as fault:
         return _apparatus_cell(fault, during="prepare")
     if cell_cassettes is not None and not cell_cassettes.wired:
@@ -1789,11 +1819,16 @@ async def _run_one_result(
             # perturbed with nothing perturbed: the kind's code, so refused here rather than recorded.
             world_session.require_schedule_announced(ran_its_course=_ran_its_course(candidate))
             await world_session.end_state()
+    except ReplayMiss:
+        # A recording that cannot serve the candidate: the next cell reads the same recording, so it fails the run
+        # rather than reading on fewer cells in silence (owner ruling, #1162). The run's loop records the cell
+        # ``apparatus_failed`` naming the call before it raises the miss.
+        raise
     except ApparatusError as fault:
-        # The rig broke under the candidate — a replay miss, a corrupt recording, a harness fault
-        # a kind's tool boundary re-raised as the seam tells it to. That is THIS cell's exclusion,
-        # never the run's: every later cell may meet a working rig. The cell's record is built
-        # from its sink, which closes the cassette handle and folds its background work's spend.
+        # The rig broke under the candidate — a corrupt recording, a harness fault a kind's tool boundary
+        # re-raised as the seam tells it to. That is THIS cell's exclusion, never the run's: every later
+        # cell may meet a working rig. The cell's record is built from its sink, which closes the cassette
+        # handle and folds its background work's spend.
         return _apparatus_cell(fault, during="invoke")
     finally:
         # However ``invoke`` ended — returned, raised, or cancelled by the deadline — the capture's
@@ -2011,7 +2046,9 @@ async def _run_judge_phase(
     :return: What the phase leaves on the result, and its wall clock in milliseconds.
     :rtype: tuple[_JudgeRecord, float]
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol. Every other failure of the phase
-        is folded into the record; this one is the host's code, which every cell would meet, so it fails the run.
+        is folded into the record but the next; this one is the host's code, which every cell would meet, so it fails
+        the run.
+    :raises ApparatusError: The rig could not serve a judge call (a replayed judge's miss): it fails the run too.
     """
     judge_started = time.monotonic()
     context = build_judge_context(
@@ -3666,6 +3703,10 @@ async def judge_dims(
     completion breaking the protocol** (:class:`~threetears.evals.schema.completion.CompletionProtocolDefect`):
     that is the host's code, which every call would meet, so it is raised — what its calls were billed counted in
     the cell's spend, every sibling call still in flight cancelled — and fails whatever is judging, a run included.
+    **Nor a call the rig could not serve** (:class:`~threetears.evals.kernel.host.apparatus.ApparatusError`: a replayed
+    judge's recording holding no call for the prompt): it is no judging outcome, so it is raised the same way and fails
+    whatever is judging (a run, a re-judge, a second judge, a quick judged eval), naming the call, rather than letting
+    a replay read on fewer judgments.
 
     :param template: The run's template, whose ``rubric`` names the per-dim calls.
     :ptype template: EvalTemplate
@@ -3689,6 +3730,8 @@ async def judge_dims(
     :return: ``(dim_id, outcome)`` for every call made, in dimension order.
     :rtype: list[tuple[str, JudgeOutcome]]
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol; the other calls are cancelled
+        first.
+    :raises ApparatusError: The rig could not serve a judge call (a replay's miss); the other calls are cancelled
         first.
     """
     gate = asyncio.Semaphore(concurrency)
@@ -4078,7 +4121,12 @@ async def execute_run(
     recording) — the pure-function contract for tests and cap-disabled contexts.
 
     Apparatus faults: a cell an :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`
-    ended is recorded excluded and the loop goes on. Only when EVERY cell of the run ended that
+    out of its kind's ``prepare`` or ``invoke`` ended is recorded excluded and the loop goes on. A replay miss
+    (:class:`~threetears.evals.kernel.host.apparatus.ReplayMiss`: a recording that cannot serve the run, wherever it
+    is met) is not,
+    nor any rig fault out of a judge call, in its judge phase or out of a judge kind's ``invoke``
+    (:class:`JudgeCallUnserved`): the cell is recorded ``apparatus_failed`` naming the call, and the fault fails the
+    run, as a judge completion breaking the protocol does. Only when EVERY cell of the run ended that
     way does the loop raise :class:`EveryCellApparatusFailedError`, after the last cell is saved:
     the rig never worked, so the run measured nothing, and the job manager files it ``failed``. When every
     cell was excluded for an ``infra`` fault the harness recorded on it but not all by the rig (a provider that
@@ -4121,6 +4169,9 @@ async def execute_run(
     :raises AccountExhaustedError: A cell's call was refused for the calling account.
     :raises ModelUnservedError: The provider does not serve the run's model, as the circuit counts it.
     :raises EveryCellApparatusFailedError: An apparatus fault excluded every cell the run produced.
+    :raises ApparatusError: A replay miss wherever it is met (:class:`~threetears.evals.kernel.host.apparatus.ReplayMiss`),
+        or a judge call the rig could not serve (the run's scoring judge's or a judge kind's judge under test's),
+        naming the call; its cell is recorded first.
     :raises NothingMeasuredError: Every cell was excluded for an ``infra`` fault the harness recorded on it, not every
         one by an apparatus fault.
     :raises asyncio.CancelledError: The run was cancelled; the cell it struck is recorded first, unless the run is
@@ -4512,14 +4563,19 @@ async def execute_run(
                 unfinished_judging=f"did not finish: {msg}",
             )
             cancelled_in_cell = True
-        except (CandidateKindDefect, CompletionProtocolDefect, ApparatusError) as defect:
+        except (CandidateKindDefect, CompletionProtocolDefect, ApparatusError, JudgeCallUnserved) as raised:
             # NOSILENT: the cell is recorded excluded with what it spent, and the defect is re-raised to fail the run.
             # The host's code — a kind contradicting its declaration, a judge completion short of the protocol —
-            # which every cell would meet, so it fails the run; it is re-raised below. So does a judge call the rig
-            # could not serve (a replayed judge's miss; a candidate's is excluded in its cell and never reaches here):
-            # a replay must fail at the miss, never read on fewer judgments (owner ruling, #1162). But what the cell was billed
+            # which every cell would meet, so it fails the run; it is re-raised below. So does a replay miss wherever
+            # it is met (a ReplayMiss: a recording that cannot serve the run), and any judge call the rig could not
+            # serve, the run's scoring
+            # judge's or, carried out of ``invoke`` as a JudgeCallUnserved, the judge kind's judge under test (a
+            # candidate's other rig faults are excluded in their cell and never reach here): a replay must fail at the
+            # miss, never read on fewer cells (owner ruling, #1162). Either way the cell and the run name the rig's
+            # own fault. But what the cell was billed
             # before it was found is real spend, and lives only on this sink: the cell is recorded excluded first,
             # so the run's totals and its cost cap count it, as a cancelled cell's are.
+            defect = raised.fault if isinstance(raised, JudgeCallUnserved) else raised
             log.error(
                 "Eval cell hit %s, which fails its run (test_case=%s model=%s k=%s run=%s); recording what it spent",
                 type(defect).__name__,
@@ -4571,7 +4627,8 @@ async def execute_run(
             superseded = (
                 None
                 if over.summary.cost_usd is None or over.superseded_spend_usd is None
-                else over.summary.cost_usd + over.superseded_spend_usd
+                # The replaced row's dropped sends move with its spend, so its next take-up's cap still counts them.
+                else over.summary.cost_usd + over.summary.maybe_billed_usd + over.superseded_spend_usd
             )
             result = result.model_copy(
                 update={
@@ -4727,7 +4784,10 @@ async def execute_run(
         return records, cost_now
 
     priced = [summary.cost_usd for summary in summaries if summary.cost_usd is not None]
-    accumulated_usd = sum(priced)
+    # What each priced cell's dropped sends may have billed counts too, as the cap counted it as the cells landed.
+    accumulated_usd = sum(priced) + sum(
+        summary.maybe_billed_usd for summary in summaries if summary.cost_usd is not None
+    )
     unpriced_results = len(summaries) - len(priced)
     # The cost cap's record of the cells whose judging it set aside, when the account's refusal or the model's
     # provider stopped the run first: the cap reached its own stop beside it, and its count is kept on the run.
@@ -4799,6 +4859,7 @@ __all__ = [
     "ErrorLedger",
     "EveryCellApparatusFailedError",
     "GoalCheckUnevaluable",
+    "JudgeCallUnserved",
     "NOTHING_MEASURED_FAULT",
     "NothingMeasuredError",
     "template_as_graded",

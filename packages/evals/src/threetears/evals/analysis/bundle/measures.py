@@ -930,7 +930,7 @@ _WALK_MEMO: ContextVar[_WalkMemo | None] = ContextVar("bundle_measure_walk_memo"
 
 
 @contextmanager
-def measure_walk_memo() -> Iterator[None]:
+def measures_walked_once() -> Iterator[None]:
     """Resolve each measure name once, and walk each result once, however many surfaces of one assembly pool it.
 
     A bundle's folds pool the same results many times over (per cell, per stratum, per run, per level, per case),
@@ -1466,7 +1466,7 @@ __all__ = [
     "grades_otherwise",
     "in_population",
     "measure_collection",
-    "measure_walk_memo",
+    "measures_walked_once",
     "miss_counts",
     "negative_values_of",
     "pool_measures",

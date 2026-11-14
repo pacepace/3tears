@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 
 from threetears.evals.kernel import CallUsage, OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.eval_scope import eval_running
-from threetears.evals.kernel.host import ApparatusError
+from threetears.evals.kernel.host import ReplayMiss
 from threetears.evals.providers import describe_failure
 from threetears.evals.run import run_judge_llm
 from threetears.evals.schema import (
@@ -506,7 +506,7 @@ async def test_a_prompt_the_recording_does_not_hold_is_refused_by_name(tmp_path:
     message = str(refused.value)
     assert repr(long_user[:80] + "…") in message, "the prompt is named by its first 80 characters"
     assert "call 0" in message and "`RECORD=1 python llm_judge.py`" in message
-    assert isinstance(refused.value, ApparatusError), "a replay miss is the rig's fault, so a cell is excluded on it"
+    assert isinstance(refused.value, ReplayMiss), "a replay miss is the rig's fault, so the run fails naming it"
 
     for changed in ({"system": "Another system prompt."}, {"response_format": SCHEMA}):
         with pytest.raises(RecordingRefused, match="no call is recorded for the prompt 'My order never came.'"):

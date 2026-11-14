@@ -102,6 +102,16 @@ class StoreConflict(Exception):
     """
 
 
+class PageNotPastAfter(RuntimeError):
+    """A store that declares ``after`` returned a page whose first document is not past it.
+
+    Raised by :func:`page_by_doc_type`, which checks the first document of every page past a place: a store that names
+    ``after`` in its signature (to match the port's type) and drops it hands back the first page again, and a caller
+    reading pages until none remains would read it for ever. Not a backend failure: the adapter's ``by_doc_type`` is
+    wrong, and the message says how to right it.
+    """
+
+
 class StoreCalledOnEventLoop(RuntimeError):
     """A store call was made on a thread that is running an event loop.
 
@@ -290,6 +300,88 @@ def field_in_values(field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapp
     return checked
 
 
+def check_after(after: Any, order_by: str | None) -> tuple[Any, str] | None:
+    """Return :meth:`DocumentStore.by_doc_type`'s ``after`` checked, as a pair — the calls every implementation refuses.
+
+    Defined beside the port for the reason :func:`omit_paths` is: every implementation refuses the same calls.
+
+    :param after: The call's ``after``: ``None``, or a pair of the ``order_by`` field's stored value and an ``id``.
+    :ptype after: Any
+    :param order_by: The same call's ``order_by``.
+    :ptype order_by: str | None
+    :return: ``(value, id)``, or ``None`` when ``after`` is ``None``.
+    :rtype: tuple[Any, str] | None
+    :raises ValueError: ``after`` is given with no ``order_by``: a place is a place in an order.
+    :raises TypeError: ``after`` is not a pair, its id is not a string, or its value is not a scalar.
+    """
+    if after is None:
+        return None
+    if order_by is None:
+        raise ValueError("by_doc_type's after names a place in order_by's order, and no order_by was given")
+    if not isinstance(after, tuple | list) or len(after) != 2:
+        raise TypeError(f"by_doc_type's after is a pair, (the order field's value, an id), not {after!r}")
+    value, doc_id = after
+    if not isinstance(doc_id, str):
+        raise TypeError(f"by_doc_type's after names a document by its id, a string, not {type(doc_id).__name__}")
+    if value is not None and not isinstance(value, str | int | float):
+        raise TypeError(
+            f"by_doc_type's after holds the order field's value, a scalar (str, int, float, bool, None), not "
+            f"{type(value).__name__}: {value!r}"
+        )
+    return value, doc_id
+
+
+def _page_key(value: Any, doc_id: str) -> tuple[bool, Any, str]:
+    """A document's place in ``(order_by, id)`` order: a missing or null value below every value, then the id."""
+    return value is not None, value, doc_id
+
+
+def order_and_page(
+    rows: Iterable[dict[str, Any]],
+    *,
+    order_by: str,
+    descending: bool = True,
+    after: tuple[Any, str] | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Return ``rows`` in ``(order_by, id)`` order, the ones past ``after``, at most ``limit`` — the meaning of ``after``.
+
+    The order is :meth:`DocumentStore.by_doc_type`'s under ``order_by``, its ties broken by ``id`` in the same
+    direction, so it is one order however the rows arrived, and a place in it (``after``) names where the next page
+    starts. A row without the field, or with it null, sorts below every row that has it. A row is past ``after`` when
+    it sorts strictly after it in the direction read, so the row ``after`` names is never read twice.
+
+    Defined beside the port for the reason :func:`omit_paths` is: an implementation that cannot page in its backend
+    pages through it, and :func:`page_by_doc_type` pages a store written before ``after`` with it.
+
+    :param rows: The rows, in any order. Not mutated.
+    :ptype rows: Iterable[dict[str, Any]]
+    :param order_by: The field to order by.
+    :ptype order_by: str
+    :param descending: The direction, as on :meth:`DocumentStore.by_doc_type`.
+    :ptype descending: bool
+    :param after: The place to start past (:func:`check_after`), or ``None`` for the first page.
+    :ptype after: tuple[Any, str] | None
+    :param limit: The most rows returned; ``None`` is every row past ``after``.
+    :ptype limit: int | None
+    :return: The page.
+    :rtype: list[dict[str, Any]]
+    :raises ValueError: As :func:`check_after`.
+    :raises TypeError: As :func:`check_after`.
+    """
+    place = check_after(after, order_by)
+    keyed = sorted(
+        ((_page_key(row.get(order_by), str(row.get("id"))), row) for row in rows),
+        key=lambda pair: pair[0],
+        reverse=descending,
+    )
+    if place is not None:
+        mark = _page_key(*place)
+        keyed = [(key, row) for key, row in keyed if (key < mark if descending else key > mark)]
+    page = [row for _, row in keyed]
+    return page if limit is None else page[:limit]
+
+
 class DocumentStore(Protocol):
     """A narrow document store over one ``(scope_id, doc_type, id)``-keyed collection.
 
@@ -389,11 +481,20 @@ class DocumentStore(Protocol):
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = None,
+        after: tuple[Any, str] | None = None,
         exclude: Sequence[str] = (),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
         """Return documents of one type within a scope, matching ANDed equality and membership predicates.
+
+        **Paging.** ``order_by`` with ``limit`` reads one page and ``after`` the next: pass the last document's
+        ``(order_by value, id)`` back as ``after``, and the read starts strictly past it. A store that declares
+        ``after`` breaks ties of ``order_by`` by ``id`` in the same direction on every ordered read, the first page's
+        included, so a walk of pages reads every matching document once, in one order, however many share a value. A
+        store written before ``after`` keeps working: the engine pages it through :func:`page_by_doc_type`, which
+        reads every matching document and orders and slices them itself (:func:`order_and_page`), so a store declares
+        ``after`` to page in its backend. Whether it does is decided by :func:`takes_after`.
 
         :param doc_type: The discriminator to select on.
         :ptype doc_type: str
@@ -403,12 +504,19 @@ class DocumentStore(Protocol):
             store. Sorting is by the field's stored type, so a number orders
             numerically and an ISO-8601 timestamp lexicographically. A document
             without the field, or with it null, sorts below every document that
-            has it — first ascending, last descending.
+            has it — first ascending, last descending. In a store that declares
+            ``after``, ties sort by ``id``, in the same direction.
         :ptype order_by: str | None
         :param descending: Sort direction when ``order_by`` is given.
         :ptype descending: bool
         :param limit: Maximum documents to return; ``None`` is unbounded.
         :ptype limit: int | None
+        :param after: A place in the ``order_by`` order, as ``(the field's stored value, id)`` — the last document of
+            the page before — and only documents strictly past it in the direction read are returned, with
+            :func:`order_and_page`'s meaning. A null value names a place among the documents without the field.
+            ``None`` reads from the start. Only with ``order_by``. :func:`check_after` checks a call as every
+            implementation must.
+        :ptype after: tuple[Any, str] | None
         :param exclude: Dotted paths the store leaves out of every returned document, with the
             meaning :func:`omit_paths` gives them. For a bulk read whose consumer needs
             the documents but not a heavy value inside them; the store drops it before
@@ -435,9 +543,11 @@ class DocumentStore(Protocol):
         :ptype field_eq: Any
         :return: The matching documents.
         :rtype: list[dict[str, Any]]
-        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``, or ``after`` is given without
+            ``order_by``.
         :raises TypeError: A ``field_in`` entry is a string rather than a sequence of values
-            (``{"run": "r1"}`` would read as the values ``"r"`` and ``"1"``), or one of its values is not a scalar.
+            (``{"run": "r1"}`` would read as the values ``"r"`` and ``"1"``), or one of its values is not a scalar;
+            or ``after`` is not a pair of a scalar and a string id.
         """
         ...
 
@@ -552,6 +662,33 @@ GroupMeasure = tuple[Literal["count"], None] | tuple[Literal["count_null", "sum_
 #: The measure kinds :meth:`ResultReadings.grouped` computes; ``count`` alone reads no path.
 _MEASURE_KINDS = frozenset({"count", "count_null", "sum_int", "min", "max", "values"})
 
+#: The JSON scalars a copied value shares rather than copies: nothing can change one in place.
+_SHARED_SCALARS: frozenset[type] = frozenset({str, int, float, bool, type(None)})
+
+
+def copy_json(value: Any) -> Any:
+    """``value`` with every object and list in it copied, and every JSON scalar in it shared.
+
+    The copy a caller's isolation from a store needs and no more: a caller can change a dict or a list it was handed,
+    and never a string or a number. Several times cheaper than :func:`copy.deepcopy`, which records every object it
+    visits. A value of any other type (a tuple, a set, a model a test wrote) is deep-copied, so nothing mutable is ever
+    shared. The in-memory store copies every document in and out through it, and :func:`fold_groups` each ``values``
+    value.
+
+    :param value: The value. Not mutated.
+    :ptype value: Any
+    :return: The copy.
+    :rtype: Any
+    """
+    kind = type(value)
+    if kind is dict:
+        return {key: copy_json(item) for key, item in value.items()}
+    if kind is list:
+        return [copy_json(item) for item in value]
+    if kind in _SHARED_SCALARS:
+        return value
+    return copy.deepcopy(value)
+
 
 def _read_path(document: dict[str, Any], path: str) -> Any:
     """The value at a dotted path through objects; ``None`` when it is absent or runs through a non-object."""
@@ -563,9 +700,17 @@ def _read_path(document: dict[str, Any], path: str) -> Any:
     return node
 
 
-def _check_grouping(by: Sequence[str], measures: Mapping[str, GroupMeasure]) -> None:
-    """Refuse a grouping the port does not define, before any document is read.
+def check_grouping(by: Sequence[str], measures: Mapping[str, GroupMeasure]) -> None:
+    """Refuse a grouping :meth:`ResultReadings.grouped` does not define, before any document is read.
 
+    The one statement in code of which groupings the port defines: :func:`fold_groups` checks through it, and so does
+    a store that groups in its backend, before it asks the backend anything, and so does the engine before its own
+    grouping of a store without the capability reads a row.
+
+    :param by: Dotted paths to group by.
+    :ptype by: Sequence[str]
+    :param measures: Measure name → the measure.
+    :ptype measures: Mapping[str, GroupMeasure]
     :raises TypeError: ``by`` is a string rather than a sequence of paths.
     :raises ValueError: A measure's kind is unknown, ``count`` names a path or another kind names none, or a measure
         name is also a ``by`` path.
@@ -597,32 +742,51 @@ def _group_key(value: Any, path: str) -> tuple[str, Any]:
     raise TypeError(f"grouped groups by scalars, and {path!r} holds {type(value).__name__}: {value!r}")
 
 
-def _measure(rows: list[dict[str, Any]], name: str, kind: str, path: str | None) -> Any:
-    """One measure over one group's rows, in their stored order.
+class _Fold:
+    """One measure over one group, folded a row at a time: what the group's answer needs, never the rows.
 
-    :raises TypeError: ``sum_int`` met a non-integer, or ``min``/``max`` a value that is neither a number nor a
-        string, or both numbers and strings.
+    :ivar answer: The measure's answer over the rows folded so far.
     """
-    if kind == "count" or path is None:
-        return len(rows)
-    values = [_read_path(row, path) for row in rows]
-    if kind == "count_null":
-        return sum(1 for value in values if value is None)
-    if kind == "values":
-        return [[row.get("id"), copy.deepcopy(value)] for row, value in zip(rows, values, strict=True)]
-    present = [value for value in values if value is not None]
-    if kind == "sum_int":
-        if wrong := [value for value in present if isinstance(value, bool) or not isinstance(value, int)]:
-            raise TypeError(f"measure {name!r} sums JSON integers, and {path!r} holds {wrong[0]!r}")
-        return sum(present)
-    if wrong := [value for value in present if isinstance(value, bool) or not isinstance(value, int | float | str)]:
-        raise TypeError(f"measure {name!r} compares numbers or strings, and {path!r} holds {wrong[0]!r}")
-    texts = [value for value in present if isinstance(value, str)]
-    if texts and len(texts) < len(present):
-        raise TypeError(f"measure {name!r} compares numbers or strings, and {path!r} holds both in one group")
-    if not present:
-        return None
-    return min(present) if kind == "min" else max(present)
+
+    __slots__ = ("answer", "_kind", "_name", "_path", "_texts")
+
+    def __init__(self, name: str, kind: str, path: str | None) -> None:
+        self._name, self._kind, self._path = name, kind, path
+        self._texts: bool | None = None
+        self.answer: Any = [] if kind == "values" else 0 if kind in ("count", "count_null", "sum_int") else None
+
+    def add(self, row: dict[str, Any]) -> None:
+        """Fold one row in.
+
+        :raises TypeError: ``sum_int`` met a non-integer, or ``min``/``max`` a value that is neither a number nor a
+            string, or a string after a number (or a number after a string).
+        """
+        kind, path = self._kind, self._path
+        if kind == "count" or path is None:
+            self.answer += 1
+            return
+        value = _read_path(row, path)
+        if kind == "values":
+            self.answer.append([row.get("id"), copy_json(value)])
+        elif kind == "count_null":
+            self.answer += value is None
+        elif value is None:
+            return
+        elif kind == "sum_int":
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"measure {self._name!r} sums JSON integers, and {path!r} holds {value!r}")
+            self.answer += value
+        else:
+            if isinstance(value, bool) or not isinstance(value, int | float | str):
+                raise TypeError(f"measure {self._name!r} compares numbers or strings, and {path!r} holds {value!r}")
+            text = isinstance(value, str)
+            if self._texts is not None and self._texts != text:
+                raise TypeError(
+                    f"measure {self._name!r} compares numbers or strings, and {path!r} holds both in one group"
+                )
+            self._texts = text
+            if self.answer is None or (value < self.answer if kind == "min" else value > self.answer):
+                self.answer = value
 
 
 def fold_groups(
@@ -632,7 +796,10 @@ def fold_groups(
 
     The one statement in code of the grouped read's rules, for a store or a reader that groups rows in Python: the
     in-memory store's ``grouped`` and the engine's grouping of a store without the capability both fold through it.
-    The grouping is refused before ``rows`` is iterated, so a lazy iterable is not read for a refused one.
+    The grouping is refused (:func:`check_grouping`) before ``rows`` is iterated, so a lazy iterable is not read for
+    a refused one. Each row is folded into its group's measures as it arrives and then let go, so a lazy iterable is
+    never held whole: what a fold holds is its groups' answers (a ``values`` measure's pairs among them). A measure
+    refuses a value when the fold reaches it.
 
     :param rows: The matching rows, in stored order (the order a group's ``values`` keep). A row is not changed; a
         ``values`` measure hands a copy of each value.
@@ -650,17 +817,233 @@ def fold_groups(
         a value that is neither a number nor a string, or a group holding both; or a ``by`` value is an object or a
         list.
     """
-    _check_grouping(by, measures)
-    groups: dict[tuple[tuple[str, Any], ...], list[dict[str, Any]]] = {}
+    check_grouping(by, measures)
+    groups: dict[tuple[tuple[str, Any], ...], list[_Fold]] = {}
     for row in rows:
-        groups.setdefault(tuple(_group_key(_read_path(row, path), path) for path in by), []).append(row)
+        key = tuple(_group_key(_read_path(row, path), path) for path in by)
+        folds = groups.get(key)
+        if folds is None:
+            folds = groups[key] = [_Fold(name, kind, path) for name, (kind, path) in measures.items()]
+        for fold in folds:
+            fold.add(row)
     answers: list[dict[str, Any]] = []
-    for key, members in groups.items():
+    for key, folds in groups.items():
         answer: dict[str, Any] = {path: value for path, (_, value) in zip(by, key, strict=True)}
-        for name, (kind, path) in measures.items():
-            answer[name] = _measure(members, name, kind, path)
+        for name, fold in zip(measures, folds, strict=True):
+            answer[name] = fold.answer
         answers.append(answer)
     return answers
+
+
+def narrow_groups(
+    groups: list[dict[str, Any]],
+    measures: Mapping[str, GroupMeasure],
+    exclude_in_items: Mapping[str, Sequence[str]],
+) -> list[dict[str, Any]]:
+    """``groups`` with each ``values`` measure's values narrowed inside their list items — the meaning of ``grouped``'s
+    ``exclude_in_items`` on values already read.
+
+    A value is narrowed as :func:`narrow_items` narrows the row holding it: a list field ``exclude_in_items`` names at
+    the value's path, or under it, has the named paths dropped from each object item. Every other measure reads a
+    scalar or counts, so ``exclude_in_items`` changes no other answer. For a store whose backend cannot narrow inside a
+    value it extracts (it narrows here, after the read), and for the engine reading a store whose ``grouped`` does not
+    take ``exclude_in_items`` (:func:`grouped_narrowed`).
+
+    :param groups: The groups, as :meth:`ResultReadings.grouped` answered them. Not mutated.
+    :ptype groups: list[dict[str, Any]]
+    :param measures: The measures they were read with.
+    :ptype measures: Mapping[str, GroupMeasure]
+    :param exclude_in_items: List-field path → the dotted paths dropped from each object item of that list.
+    :ptype exclude_in_items: Mapping[str, Sequence[str]]
+    :return: The groups, each ``values`` measure narrowed; the same list when there is nothing to narrow.
+    :rtype: list[dict[str, Any]]
+    """
+    listed = {name: path for name, (kind, path) in measures.items() if kind == "values" and path is not None}
+    if not exclude_in_items or not listed:
+        return groups
+    narrowed: list[dict[str, Any]] = []
+    for group in groups:
+        group = dict(group)
+        for name, path in listed.items():
+            group[name] = [[row_id, _narrowed_value(value, path, exclude_in_items)] for row_id, value in group[name]]
+        narrowed.append(group)
+    return narrowed
+
+
+def _narrowed_value(value: Any, path: str, exclude_in_items: Mapping[str, Sequence[str]]) -> Any:
+    """The value at ``path`` narrowed as :func:`narrow_items` narrows the row holding it."""
+    if not isinstance(value, dict | list):
+        return value
+    *owners, leaf = path.split(".")
+    row: dict[str, Any] = {}
+    node = row
+    for owner in owners:
+        node = node.setdefault(owner, {})
+    node[leaf] = value
+    return _read_path(narrow_items(row, exclude_in_items), path)
+
+
+def takes_exclude_in_items(grouped: Any) -> bool:
+    """Whether a ``grouped`` (:meth:`ResultReadings.grouped`, or an async store's) declares ``exclude_in_items``.
+
+    The one rule for deciding whether a store is asked with the parameter: it is declared by name, keyword-only or
+    positional-or-keyword; ``**kwargs`` does not count, since a store that takes it only that way cannot be told from
+    one that drops it. A callable whose signature cannot be read is read as not taking it.
+
+    :param grouped: The store's ``grouped`` method.
+    :ptype grouped: Any
+    :return: Whether it declares the parameter.
+    :rtype: bool
+    """
+    return _declares(grouped, "exclude_in_items")
+
+
+def takes_after(by_doc_type: Any) -> bool:
+    """Whether a ``by_doc_type`` (:meth:`DocumentStore.by_doc_type`, or an async store's) declares ``after``.
+
+    :func:`takes_exclude_in_items`'s rule: declared by name, keyword-only or positional-or-keyword. ``**field_eq``
+    does not count, and must not: a store written before ``after`` reads ``after=`` as an equality predicate on a field
+    named ``after``, and answers no documents at all.
+
+    :param by_doc_type: The store's ``by_doc_type`` method.
+    :ptype by_doc_type: Any
+    :return: Whether it declares the parameter.
+    :rtype: bool
+    """
+    return _declares(by_doc_type, "after")
+
+
+def _declares(method: Any, name: str) -> bool:
+    """Whether ``method`` declares the keyword ``name`` by name; one whose signature cannot be read does not."""
+    try:
+        declared = inspect.signature(method).parameters.get(name)
+    except TypeError, ValueError:
+        # NOSILENT: the answer, not a failure: a callable with no signature to read is read as not taking the
+        # parameter, and the caller then does without it (narrows the values itself, or pages the rows itself), which
+        # gives the same answer.
+        return False
+    return declared is not None and declared.kind in (
+        inspect.Parameter.KEYWORD_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    )
+
+
+def page_by_doc_type(
+    store: DocumentStore,
+    doc_type: str,
+    scope_id: str,
+    *,
+    order_by: str,
+    descending: bool = True,
+    limit: int | None = None,
+    after: tuple[Any, str] | None = None,
+    exclude: Sequence[str] = (),
+    field_in: Mapping[str, Sequence[Any]] | None = None,
+    **field_eq: Any,
+) -> list[dict[str, Any]]:
+    """One page of ``store.by_doc_type`` in ``(order_by, id)`` order, from a store that takes ``after`` or one before it.
+
+    The port's default for paging. A store whose ``by_doc_type`` declares ``after`` (:func:`takes_after`) is asked
+    for the page, and pages in its backend. One written before the parameter is asked for every matching document,
+    unordered and unlimited, and the page is cut from them here (:func:`order_and_page`): the same page, at the cost
+    of reading the whole match, until the store declares ``after``.
+
+    :param store: The store.
+    :ptype store: DocumentStore
+    :param doc_type: As :meth:`DocumentStore.by_doc_type` takes it.
+    :ptype doc_type: str
+    :param scope_id: As :meth:`DocumentStore.by_doc_type` takes it.
+    :ptype scope_id: str
+    :param order_by: The field the pages are ordered by; ties by ``id``.
+    :ptype order_by: str
+    :param descending: The direction.
+    :ptype descending: bool
+    :param limit: The page's size; ``None`` reads every document past ``after``.
+    :ptype limit: int | None
+    :param after: Where the page starts (:meth:`DocumentStore.by_doc_type`), or ``None`` for the first page.
+    :ptype after: tuple[Any, str] | None
+    :param exclude: As :meth:`DocumentStore.by_doc_type` takes it. Passed to a store written before ``after`` only
+        when it names a path, so a store older still, written before ``exclude``, is never handed it as a predicate.
+    :ptype exclude: Sequence[str]
+    :param field_in: As :meth:`DocumentStore.by_doc_type` takes it.
+    :ptype field_in: Mapping[str, Sequence[Any]] | None
+    :param **field_eq: As :meth:`DocumentStore.by_doc_type` takes them.
+    :ptype field_eq: Any
+    :return: The page.
+    :rtype: list[dict[str, Any]]
+    :raises ValueError: As :meth:`DocumentStore.by_doc_type`.
+    :raises TypeError: As :meth:`DocumentStore.by_doc_type`.
+    :raises PageNotPastAfter: The store declares ``after`` and its page's first document is not past it.
+    """
+    if takes_after(store.by_doc_type):
+        page = store.by_doc_type(
+            doc_type,
+            scope_id,
+            order_by=order_by,
+            descending=descending,
+            limit=limit,
+            after=after,
+            exclude=exclude,
+            field_in=field_in,
+            **field_eq,
+        )
+        place = check_after(after, order_by)
+        if place is not None and page:
+            first, mark = _page_key(page[0].get(order_by), str(page[0].get("id"))), _page_key(*place)
+            if not (first < mark if descending else first > mark):
+                raise PageNotPastAfter(
+                    f"{type(store).__name__}.by_doc_type declares after but returned {page[0].get('id')!r} "
+                    f"({order_by}={page[0].get(order_by)!r}) for a page past {place!r}, which is not past it: the store "
+                    "names after in its signature and does not honour it, so a walk of pages would read the same page "
+                    "for ever. Implement after (check_after, then a keyset condition, or order_and_page over the "
+                    "store's own read), or leave it out of the signature and the engine pages the store itself"
+                )
+        return page
+    check_after(after, order_by)
+    if exclude:
+        field_eq = {**field_eq, "exclude": exclude}
+    rows = store.by_doc_type(doc_type, scope_id, field_in=field_in, **field_eq)
+    return order_and_page(rows, order_by=order_by, descending=descending, after=after, limit=limit)
+
+
+def grouped_narrowed(
+    readings: ResultReadings,
+    doc_type: str,
+    scope_id: str,
+    *,
+    by: Sequence[str],
+    measures: Mapping[str, GroupMeasure],
+    exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
+    field_in: Mapping[str, Sequence[Any]] | None = None,
+    **field_eq: Any,
+) -> list[dict[str, Any]]:
+    """``readings.grouped`` with ``exclude_in_items``, from a store whose ``grouped`` takes it or one written before it.
+
+    A store whose ``grouped`` declares ``exclude_in_items`` is asked with it, so it narrows before it ships a value. One
+    that does not (written to the port before the parameter) is asked without it, and its values are narrowed here
+    (:func:`narrow_groups`): the same groups, only with the whole items shipped. With no ``exclude_in_items``, the
+    parameter is never passed.
+
+    :param readings: The store.
+    :ptype readings: ResultReadings
+    :return: The groups, as :meth:`ResultReadings.grouped` answers them.
+    :rtype: list[dict[str, Any]]
+    :raises: What ``grouped`` raises.
+    """
+    if not exclude_in_items:
+        return readings.grouped(doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
+    if takes_exclude_in_items(readings.grouped):
+        return readings.grouped(
+            doc_type,
+            scope_id,
+            by=by,
+            measures=measures,
+            exclude_in_items=exclude_in_items,
+            field_in=field_in,
+            **field_eq,
+        )
+    groups = readings.grouped(doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
+    return narrow_groups(groups, measures, exclude_in_items)
 
 
 @runtime_checkable
@@ -735,6 +1118,7 @@ class ResultReadings(Protocol):
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
@@ -746,15 +1130,15 @@ class ResultReadings(Protocol):
 
         * ``("count", None)``: the rows in the group.
         * ``("count_null", path)``: the rows whose value is absent or null.
-        * ``("sum_int", path)``: the sum of the JSON integers, skipping absent and null values. A boolean is not an
+        * ``("sum_int", path)``: the exact sum of the JSON integers, skipping absent and null values; a sum or a
+          value past 64 bits is exact or refused with ``TypeError``, never wrapped or rounded. A boolean is not an
           integer. A group with no integers sums to ``0``.
         * ``("min", path)``, ``("max", path)``: the least or greatest value, skipping absent and null values. Numbers
           compare as numbers and strings by code point (binary collation). A group with no values gives ``None``.
         * ``("values", path)``: ``[[row_id, value], ...]``, one pair per row, in :meth:`iter_narrowed`'s order, with
           ``None`` for an absent value, each value exactly as this store's own reads return it (every double to its
-          last bit; a store may normalise a value as it writes it, as jsonb stores ``-0.0`` as ``0.0``). The SQLite
-          store has one known gap: an integer of 2**63 or more comes back from ``values`` as a float, though its own
-          reads return it exactly. ``row_id`` is the row's ``id``. The reader folds a float from these, in this
+          last bit, and every integer whole at any width; a store may normalise a value as it writes it, as jsonb
+          stores ``-0.0`` as ``0.0``). ``row_id`` is the row's ``id``. The reader folds a float from these, in this
           order, so its answer does not depend on how the store adds.
 
         :param doc_type: The discriminator to select on.
@@ -765,6 +1149,12 @@ class ResultReadings(Protocol):
         :ptype by: Sequence[str]
         :param measures: Measure name → the measure. A name is never one of the ``by`` paths.
         :ptype measures: Mapping[str, GroupMeasure]
+        :param exclude_in_items: List-field path → dotted paths left out of each object item of that list, with
+            :func:`narrow_items`'s meaning, in every ``values`` value (:func:`narrow_groups`): for a reader of one
+            figure of each item, which need not ship the items' prose. No other measure's answer changes. Provisional,
+            and newer than the method: the engine reads a store whose ``grouped`` does not declare it through
+            :func:`grouped_narrowed`, which narrows the values itself.
+        :ptype exclude_in_items: Mapping[str, Sequence[str]]
         :param field_in: Field-membership predicates, as on :meth:`DocumentStore.by_doc_type`.
         :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates, as on :meth:`DocumentStore.by_doc_type`.
@@ -822,6 +1212,7 @@ class AsyncDocumentStore(Protocol):
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = None,
+        after: tuple[Any, str] | None = None,
         exclude: Sequence[str] = (),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
@@ -892,6 +1283,7 @@ class AsyncResultReadings(Protocol):
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
@@ -905,14 +1297,24 @@ __all__ = [
     "AsyncStoreClock",
     "DocumentStore",
     "GroupMeasure",
+    "PageNotPastAfter",
     "ResultReadings",
     "StoreCalledOnEventLoop",
     "StoreClock",
     "StoreConflict",
+    "check_after",
+    "check_grouping",
+    "copy_json",
     "field_in_values",
     "fold_groups",
+    "grouped_narrowed",
     "keep_fields",
+    "narrow_groups",
     "narrow_items",
     "omit_paths",
+    "order_and_page",
+    "page_by_doc_type",
     "refuse_on_event_loop",
+    "takes_after",
+    "takes_exclude_in_items",
 ]
