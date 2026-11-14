@@ -62,10 +62,19 @@ class _StubPool:
 
     async def fetchval(self, query: str, *args: Any) -> int:
         """Return the next queued value; record the call for assertion."""
-        self.calls.append((query, args))
+        self.calls.append((_plain(query), args))
         if not self._values:
             return 0
         return self._values.pop(0)
+
+    async def fetch(self, query: str, *args: Any) -> list[dict[str, int]]:
+        """A keyed count (``aggregate_keyed``): the next queued value as its one row's ``n``; record the call."""
+        return [{"n": await self.fetchval(query, *args)}]
+
+
+def _plain(query: str) -> str:
+    """a statement as the hand-written SQL spelled it: a keyed helper's ``t."col"`` read as ``col``."""
+    return query.replace('t."', "").replace('"', "")
 
 
 # parity-with: threetears.agent.wake.config.WakeConfig (minimal in-memory impl)
@@ -285,8 +294,11 @@ async def test_check_fire_limits_counts_silent_fires() -> None:
     """Silent fires ran, so both counts include them."""
     pool = _StubPool([0, 0])
     await check_fire_limits(_trigger(), pool, FireLimits(per_wake=48, per_agent=500))
-    for sql, _args in pool.calls:
-        assert "'fired', 'fired_silent'" in sql
+    for sql, args in pool.calls:
+        # the keyed count binds the statuses (status = ANY($n)); the agent's hand-written count spells them
+        assert "'fired', 'fired_silent'" in sql or ["fired", "fired_silent"] in [
+            list(arg) for arg in args if isinstance(arg, list | tuple)
+        ]
 
 
 @pytest.mark.asyncio

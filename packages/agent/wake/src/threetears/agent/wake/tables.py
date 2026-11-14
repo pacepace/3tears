@@ -417,7 +417,7 @@ def wake_fires_table(metadata: MetaData) -> Table:
             sa_text("actual_fired_at DESC"),
             postgresql_where=sa_text("schedule_id IS NOT NULL"),
             info={
-                "purpose": "packages/agent/wake/src/threetears/agent/wake/rate_limit.py::_COUNT_WAKE_FIRES_SQL; packages/agent/wake/src/threetears/agent/wake/collections.py::WakeFireCollection.list_for_schedule",
+                "purpose": "packages/agent/wake/src/threetears/agent/wake/rate_limit.py::check_fire_limits; packages/agent/wake/src/threetears/agent/wake/collections.py::WakeFireCollection.list_for_schedule",
                 "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_fires_schedule_time",
                 "reason": "wake_fires carries five indexes: one schedule's recent fires, its rate limit and its history",
             },
@@ -428,7 +428,7 @@ def wake_fires_table(metadata: MetaData) -> Table:
             sa_text("actual_fired_at DESC"),
             postgresql_where=sa_text("webhook_subscription_id IS NOT NULL"),
             info={
-                "purpose": "packages/agent/wake/src/threetears/agent/wake/rate_limit.py::_COUNT_SUBSCRIPTION_FIRES_SQL; packages/agent/wake/src/threetears/agent/wake/collections.py::WakeFireCollection.list_for_subscription",
+                "purpose": "packages/agent/wake/src/threetears/agent/wake/rate_limit.py::check_fire_limits; packages/agent/wake/src/threetears/agent/wake/collections.py::WakeFireCollection.list_for_subscription",
                 "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_fires_webhook_time",
                 "reason": "wake_fires carries five indexes: one subscription's recent fires, its rate limit and its history",
             },

@@ -40,13 +40,20 @@ from threetears.core.collections.schema_backed import (
     Column,
     TableSchema,
 )
-from threetears.core.keyed import AnyOf, Fragment, delete_keyed, read_row, update_keyed
+from threetears.core.keyed import (
+    AnyOf,
+    Fragment,
+    TableKey,
+    delete_keyed,
+    read_row,
+    register_table_keys,
+    update_keyed,
+)
 from threetears.core.tenancy import no_tenant
 from threetears.observe import get_logger
 from threetears.scheduled_jobs.entities import JobFireEntity, ScheduledJobEntity
 from threetears.scheduled_jobs.reschedule import compute_next_fire_at
 from threetears.scheduled_jobs.types import ScheduleStatus
-from threetears.core.keyed import TableKey, register_table_keys
 
 __all__ = [
     "REAPED_DISPATCH_ERROR",
@@ -713,21 +720,22 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
             # cache-bypass: atomic CAS UPDATE; the row is evicted from every tier once it lands, and
             # an undo the row has moved past changed nothing and evicts nothing.
             async with self.bypassing_write((partition_key, job_id)) as write:
-                undone = await self.l3_pool.fetchval(
-                    "UPDATE scheduled_jobs "
-                    "SET next_fire_at = $1, status = 'active', date_updated = $2 "
-                    "WHERE partition_key = $3 AND job_id = $4 AND status = $5 "
-                    "AND next_fire_at IS NOT DISTINCT FROM $6::timestamptz "
-                    "AND last_fired_at = $7 AND date_updated = $7 "
-                    "RETURNING job_id",
-                    scheduled_fire_at,
-                    now,
-                    partition_key,
-                    job_id,
-                    claimed_status,
-                    claimed_next_fire_at,
-                    claimed_at,
-                )
+                undone = (
+                    await update_keyed(
+                        self.l3_pool,
+                        "scheduled_jobs",
+                        values={"next_fire_at": scheduled_fire_at, "status": "active", "date_updated": now},
+                        by={
+                            "partition_key": partition_key,
+                            "job_id": job_id,
+                            "status": claimed_status,
+                            "last_fired_at": claimed_at,
+                            "date_updated": claimed_at,
+                        },
+                        where=[Fragment("next_fire_at IS NOT DISTINCT FROM $1::timestamptz", (claimed_next_fire_at,))],
+                        returning=("job_id",),
+                    )
+                ).value
                 if undone is None:
                     write.unchanged()
         return undone is not None

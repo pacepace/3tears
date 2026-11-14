@@ -6,7 +6,7 @@ updates a schedule's ``conversation_id``. ``wake_fires_schedule_conversation_fk`
 ``(conversation_id, schedule_id)`` references ``agent_wake_schedules``' primary key, so every fire of one schedule
 holds that schedule's conversation. A read bound by ``schedule_id`` (unique on ``agent_wake_schedules``) reads one
 conversation's fires, which the per-wake fire count
-(:data:`~threetears.agent.wake.rate_limit._COUNT_WAKE_FIRES_SQL`) relies on. Deleting a schedule cascades, as
+(:func:`~threetears.agent.wake.rate_limit.check_fire_limits`) relies on. Deleting a schedule cascades, as
 ``wake_fires_schedule_fk`` does.
 
 This is the EXPAND step: the key is added ``NOT VALID``, so it holds for every row written from now on and the add

@@ -12,8 +12,9 @@ engine it does not name (PostgreSQL when it names none). Each module marks itsel
 
 The schema is built once a session, by each package's own migrations: the agent-scope packages (conversations, memory,
 skills, tools, workspace, langgraph, wake, intention) and the platform-scope ones (acl, audit and the tools columns on its namespaces,
-core's coordination tables, epoch, mcp, scheduled-jobs). The datasources tables are created by
-the hub, not by a 3tears migration, so they are built from their declared :class:`TableSchema` (the hub's source too).
+core's coordination tables, epoch, mcp, scheduled-jobs). The datasources tables and
+``impersonation_gates`` are created by the hub, not by a 3tears migration, so they are built from their declared
+:class:`TableSchema` (the hub's source too), an enum column's type first.
 The schema is dropped when the session ends.
 """
 
@@ -27,10 +28,12 @@ from typing import Any
 
 import asyncpg
 import pytest
-from sqlalchemy import MetaData
+from sqlalchemy import Enum, MetaData
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql import CreateEnumType
 from sqlalchemy.schema import CreateIndex, CreateTable
 
+from threetears.agent.acl.collections import ImpersonationGateCollection
 from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.audit.migrations import register as register_audit
 from threetears.agent.intention.migrations import register as register_intention
@@ -64,6 +67,7 @@ _DECLARED = (
     DataSourceSchemaDigestCollection.schema,
     DataSourceRelationCollection.schema,
     TableTemplateCollection.schema,
+    ImpersonationGateCollection.schema,
 )
 
 #: what marks a server's version string as YugabyteDB's
@@ -140,6 +144,10 @@ async def _build(url: str, schema: str) -> bool:
         metadata = MetaData()
         for declared in _DECLARED:
             table = declared.to_sqlalchemy_table(metadata)
+            for column in table.columns:
+                # an enum column's type is the hub's to create, beside its table
+                if isinstance(column.type, Enum) and column.type.name:
+                    await conn.execute(str(CreateEnumType(column.type).compile(dialect=postgresql.dialect())))
             await conn.execute(str(CreateTable(table).compile(dialect=postgresql.dialect())))
             for index in table.indexes:
                 await conn.execute(str(CreateIndex(index).compile(dialect=postgresql.dialect())))

@@ -27,11 +27,11 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
-from threetears.core.collections import CallerTransaction
-from threetears.observe import get_logger
-
 from threetears.agent.wake.config import WakeConfig
 from threetears.agent.wake.types import FireLimits
+from threetears.core.collections import CallerTransaction
+from threetears.core.keyed import AnyOf, Count, Fragment, aggregate_keyed
+from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.agent.wake.collections import WakeScheduleCollection
@@ -78,25 +78,6 @@ COUNT_ACTIVE_EXCLUDING_SQL = (
 # COMMIT/ROLLBACK, so a crashed or rolled-back create never strands it.
 _ADVISORY_XACT_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)"
 
-
-# Fires that ran, silent ones included, for one schedule / one webhook
-# subscription since a point in time. Both are keyed by the wake's own
-# conversation, the fire rows' partition.
-# A wake's fires are found by its schedule alone: schedule_id is unique (agent_wake_schedules UNIQUE (schedule_id)), and
-# v014's wake_fires_schedule_conversation_fk ties a fire's (conversation_id, schedule_id) to its schedule's primary key
-# (every writer takes the pair from the schedule row), so one schedule's fires are one conversation's and binding the
-# conversation too selects the same rows. Bound, YugabyteDB's planner reads the conversation's every fire through the
-# hashed primary key prefix instead of this wake's day.
-_COUNT_WAKE_FIRES_SQL = (
-    "SELECT COUNT(*) FROM wake_fires "
-    "WHERE schedule_id = $1 AND actual_fired_at > $2 "
-    "AND status IN ('fired', 'fired_silent') AND ($3 OR fire_source <> 'manual')"
-)
-_COUNT_SUBSCRIPTION_FIRES_SQL = (
-    "SELECT COUNT(*) FROM wake_fires "
-    "WHERE conversation_id = $1 AND webhook_subscription_id = $2 AND actual_fired_at > $3 "
-    "AND status IN ('fired', 'fired_silent')"
-)
 
 # Fires that ran for every wake and subscription of one agent, protected
 # wakes left out. The agent's wakes live in several conversations, so the
@@ -187,11 +168,15 @@ async def check_rate_limit(
     # rate-limited row already advanced its next_fire_at past the window, OBS-14). The
     # helper takes a bare pool by contract -- the consumer owns the pool and no Collection
     # reaches this call path.
-    conv_count = await pool.fetchval(
-        "SELECT COUNT(*) FROM wake_fires WHERE conversation_id = $1 AND actual_fired_at > $2 AND status = 'fired'",
-        trigger.conversation_id,
-        since,
-    )
+    conv_count = (
+        await aggregate_keyed(
+            pool,
+            "wake_fires",
+            aggregates={"n": Count()},
+            by={"conversation_id": trigger.conversation_id, "status": "fired"},
+            where=[Fragment("actual_fired_at > $1", (since,))],
+        )
+    )[0]["n"]
     conv_count_int = int(conv_count or 0)
     if conv_count_int >= config.max_fires_per_conv_per_day:
         log.info(
@@ -296,15 +281,39 @@ async def check_fire_limits(
     since = datetime.now(UTC) - timedelta(hours=RATE_LIMIT_WINDOW_HOURS)
     # cache-bypass: aggregate COUNTs over a rolling window must read committed
     # state at fire time; a cached count is a limit that silently over-fires.
+    # Fires that ran, silent ones included, for one schedule / one webhook subscription since a point in time.
+    # A wake's fires are found by its schedule alone: schedule_id is unique (agent_wake_schedules UNIQUE
+    # (schedule_id)), and v014's wake_fires_schedule_conversation_fk ties a fire's (conversation_id, schedule_id) to
+    # its schedule's primary key (every writer takes the pair from the schedule row), so one schedule's fires are one
+    # conversation's and binding the conversation too would select the same rows. Bound, YugabyteDB's planner reads the
+    # conversation's every fire through the hashed primary key prefix instead of this wake's day.
     if trigger.schedule_id is not None:
-        wake_count = await pool.fetchval(_COUNT_WAKE_FIRES_SQL, trigger.schedule_id, since, count_manual)
+        wake_count = (
+            await aggregate_keyed(
+                pool,
+                "wake_fires",
+                aggregates={"n": Count()},
+                by={"schedule_id": trigger.schedule_id, "status": AnyOf(("fired", "fired_silent"), cast=None)},
+                where=[
+                    Fragment("actual_fired_at > $1", (since,)),
+                    Fragment("($1 OR fire_source <> 'manual')", (count_manual,)),
+                ],
+            )
+        )[0]["n"]
     else:
-        wake_count = await pool.fetchval(
-            _COUNT_SUBSCRIPTION_FIRES_SQL,
-            trigger.conversation_id,
-            trigger.webhook_subscription_id,
-            since,
-        )
+        wake_count = (
+            await aggregate_keyed(
+                pool,
+                "wake_fires",
+                aggregates={"n": Count()},
+                by={
+                    "conversation_id": trigger.conversation_id,
+                    "webhook_subscription_id": trigger.webhook_subscription_id,
+                    "status": AnyOf(("fired", "fired_silent"), cast=None),
+                },
+                where=[Fragment("actual_fired_at > $1", (since,))],
+            )
+        )[0]["n"]
     if int(wake_count or 0) >= limits.per_wake:
         _log_limit_reached(trigger, "wake", int(wake_count or 0), limits.per_wake)
         return "wake"

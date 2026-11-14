@@ -49,8 +49,10 @@ from threetears.core.keyed import (
     Count,
     Fragment,
     Increment,
+    Sort,
     aggregate_keyed,
     delete_keyed,
+    keyset_page,
     narrowing,
     read_row,
     update_keyed,
@@ -1087,14 +1089,17 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
             return []
         # cache-bypass: per-conversation scan is not primary-key
         # addressable.
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_INVOCATION_SELECT_LIST} FROM agent_skill_invocations "
-            "WHERE agent_id = $1 AND conversation_id = $2 "
-            "ORDER BY invoked_at DESC LIMIT $3",
-            agent_id,
-            conversation_id,
-            limit,
-        )
+        rows = (
+            await keyset_page(
+                self.l3_pool,
+                "agent_skill_invocations",
+                columns=_INVOCATION_INSERT_COLUMNS,
+                by={"agent_id": agent_id, "conversation_id": conversation_id},
+                order=[Sort("invoked_at", descending=True), Sort("invocation_id")],
+                limit=limit,
+                records=True,
+            )
+        ).rows
         return [AgentSkillInvocationEntity(dict(row), is_new=False, collection=self) for row in rows]
 
     async def set_message_id(

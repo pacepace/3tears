@@ -3235,5 +3235,482 @@
   "sets": [],
   "shape": "first",
   "table": "workspace_file_versions"
+ },
+ {
+  "args": [
+   "trigger.schedule_id",
+   "since",
+   "count_manual"
+  ],
+  "columns": null,
+  "function": "check_fire_limits",
+  "helper": "aggregate_keyed",
+  "line": 91,
+  "method": "fetchval",
+  "new_call": "(await aggregate_keyed(pool, 'wake_fires', aggregates={'n': Count()}, by={'schedule_id': trigger.schedule_id, 'status': AnyOf(('fired', 'fired_silent'), cast=None)}, where=[Fragment('actual_fired_at > $1', (since,)), Fragment(\"($1 OR fire_source <> 'manual')\", (count_manual,))]))[0]['n']",
+  "old_sql": "SELECT COUNT(*) FROM wake_fires WHERE schedule_id = $1 AND actual_fired_at > $2 AND status IN ('fired', 'fired_silent') AND ($3 OR fire_source <> 'manual')",
+  "order": [],
+  "path": "packages/agent/wake/src/threetears/agent/wake/rate_limit.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "schedule_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "status",
+    "compared": [],
+    "kind": "anylit",
+    "literal": [
+     "fired",
+     "fired_silent"
+    ],
+    "param": null,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "count",
+  "table": "wake_fires",
+  "where": [
+   {
+    "cast": null,
+    "column": "",
+    "compared": [
+     "actual_fired_at"
+    ],
+    "kind": "guard",
+    "literal": "actual_fired_at > $1",
+    "param": null,
+    "params": [
+     2
+    ]
+   },
+   {
+    "cast": null,
+    "column": "",
+    "compared": [
+     ":bool"
+    ],
+    "kind": "guard",
+    "literal": "($1 OR fire_source <> 'manual')",
+    "param": null,
+    "params": [
+     3
+    ]
+   }
+  ]
+ },
+ {
+  "args": [
+   "trigger.conversation_id",
+   "trigger.webhook_subscription_id",
+   "since"
+  ],
+  "columns": null,
+  "function": "check_fire_limits",
+  "helper": "aggregate_keyed",
+  "line": 96,
+  "method": "fetchval",
+  "new_call": "(await aggregate_keyed(pool, 'wake_fires', aggregates={'n': Count()}, by={'conversation_id': trigger.conversation_id, 'webhook_subscription_id': trigger.webhook_subscription_id, 'status': AnyOf(('fired', 'fired_silent'), cast=None)}, where=[Fragment('actual_fired_at > $1', (since,))]))[0]['n']",
+  "old_sql": "SELECT COUNT(*) FROM wake_fires WHERE conversation_id = $1 AND webhook_subscription_id = $2 AND actual_fired_at > $3 AND status IN ('fired', 'fired_silent')",
+  "order": [],
+  "path": "packages/agent/wake/src/threetears/agent/wake/rate_limit.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "conversation_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "webhook_subscription_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "status",
+    "compared": [],
+    "kind": "anylit",
+    "literal": [
+     "fired",
+     "fired_silent"
+    ],
+    "param": null,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "count",
+  "table": "wake_fires",
+  "where": [
+   {
+    "cast": null,
+    "column": "",
+    "compared": [
+     "actual_fired_at"
+    ],
+    "kind": "guard",
+    "literal": "actual_fired_at > $1",
+    "param": null,
+    "params": [
+     3
+    ]
+   }
+  ]
+ },
+ {
+  "args": [
+   "trigger.conversation_id",
+   "since"
+  ],
+  "columns": null,
+  "function": "check_rate_limit",
+  "helper": "aggregate_keyed",
+  "line": 191,
+  "method": "fetchval",
+  "new_call": "(await aggregate_keyed(pool, 'wake_fires', aggregates={'n': Count()}, by={'conversation_id': trigger.conversation_id, 'status': 'fired'}, where=[Fragment('actual_fired_at > $1', (since,))]))[0]['n']",
+  "old_sql": "SELECT COUNT(*) FROM wake_fires WHERE conversation_id = $1 AND actual_fired_at > $2 AND status = 'fired'",
+  "order": [],
+  "path": "packages/agent/wake/src/threetears/agent/wake/rate_limit.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "conversation_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "status",
+    "compared": [],
+    "kind": "literal",
+    "literal": "fired",
+    "param": null,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "count",
+  "table": "wake_fires",
+  "where": [
+   {
+    "cast": null,
+    "column": "",
+    "compared": [
+     "actual_fired_at"
+    ],
+    "kind": "guard",
+    "literal": "actual_fired_at > $1",
+    "param": null,
+    "params": [
+     2
+    ]
+   }
+  ]
+ },
+ {
+  "args": [
+   "agent_id",
+   "conversation_id",
+   "limit"
+  ],
+  "columns": [
+   "agent_id",
+   "invocation_id",
+   "skill_id",
+   "user_id",
+   "conversation_id",
+   "message_id",
+   "invocation_source",
+   "invoked_at",
+   "outcome",
+   "outcome_source",
+   "notes",
+   "outcome_notes"
+  ],
+  "function": "AgentSkillInvocationCollection.list_for_conversation",
+  "helper": "keyset_page",
+  "key_from": 1,
+  "limit": {
+   "param": 3
+  },
+  "line": 1091,
+  "method": "fetch",
+  "new_call": "(await keyset_page(self.l3_pool, 'agent_skill_invocations', columns=('agent_id', 'invocation_id', 'skill_id', 'user_id', 'conversation_id', 'message_id', 'invocation_source', 'invoked_at', 'outcome', 'outcome_source', 'notes', 'outcome_notes'), by={'agent_id': agent_id, 'conversation_id': conversation_id}, order=[Sort('invoked_at', descending=True), Sort('invocation_id')], limit=limit, records=True)).rows",
+  "old_sql": "SELECT agent_id, invocation_id, skill_id, user_id, conversation_id, message_id, invocation_source, invoked_at, outcome, outcome_source, notes, outcome_notes FROM agent_skill_invocations WHERE agent_id = $1 AND conversation_id = $2 ORDER BY invoked_at DESC LIMIT $3",
+  "order": [
+   {
+    "column": "invoked_at",
+    "descending": true,
+    "nulls": null
+   },
+   {
+    "column": "invocation_id",
+    "descending": false,
+    "nulls": null
+   }
+  ],
+  "path": "packages/agent/skills/src/threetears/agent/skills/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "conversation_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "first",
+  "table": "agent_skill_invocations"
+ },
+ {
+  "args": [
+   "customer_id"
+  ],
+  "columns": [
+   "customer_id",
+   "status",
+   "requested_at",
+   "requested_by",
+   "granted_at",
+   "granted_by",
+   "ttl_seconds",
+   "expires_at",
+   "date_created",
+   "date_updated"
+  ],
+  "function": "ImpersonationGateCollection.get_effective_status",
+  "helper": "read_row",
+  "line": 3499,
+  "method": "fetchrow",
+  "new_call": "read_row(self.l3_pool, 'impersonation_gates', by={'customer_id': customer_id}, columns=('customer_id', 'status', 'requested_at', 'requested_by', 'granted_at', 'granted_by', 'ttl_seconds', 'expires_at', 'date_created', 'date_updated'), records=True)",
+  "old_sql": "SELECT customer_id, status, requested_at, requested_by, granted_at, granted_by, ttl_seconds, expires_at, date_created, date_updated FROM impersonation_gates WHERE customer_id = $1",
+  "order": [],
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "customer_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "point",
+  "table": "impersonation_gates"
+ },
+ {
+  "args": [
+   "customer_id",
+   "ImpersonationGateStatus.DISABLED.value",
+   "current"
+  ],
+  "columns": null,
+  "function": "ImpersonationGateCollection.disable",
+  "helper": "update_keyed",
+  "line": 3644,
+  "method": "fetchrow",
+  "new_call": "(await update_keyed(self.l3_pool, 'impersonation_gates', values={'status': ImpersonationGateStatus.DISABLED.value, 'date_updated': current}, by={'customer_id': customer_id}, returning=('customer_id', 'status', 'requested_at', 'requested_by', 'granted_at', 'granted_by', 'ttl_seconds', 'expires_at', 'date_created', 'date_updated'))).row",
+  "old_sql": "\n            UPDATE impersonation_gates\n               SET status = $2, date_updated = $3\n             WHERE customer_id = $1\n            RETURNING customer_id, status, requested_at, requested_by, granted_at, granted_by, ttl_seconds, expires_at, date_created, date_updated\n            ",
+  "order": [],
+  "path": "packages/agent/acl/src/threetears/agent/acl/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "customer_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [
+   "customer_id",
+   "status",
+   "requested_at",
+   "requested_by",
+   "granted_at",
+   "granted_by",
+   "ttl_seconds",
+   "expires_at",
+   "date_created",
+   "date_updated"
+  ],
+  "sets": [
+   {
+    "cast": null,
+    "column": "status",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "date_updated",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 3,
+    "params": []
+   }
+  ],
+  "shape": "write",
+  "table": "impersonation_gates"
+ },
+ {
+  "args": [
+   "scheduled_fire_at",
+   "now",
+   "partition_key",
+   "job_id",
+   "claimed_status",
+   "claimed_next_fire_at",
+   "claimed_at"
+  ],
+  "columns": null,
+  "function": "ScheduledJobCollection.undo_claim",
+  "helper": "update_keyed",
+  "line": 740,
+  "method": "fetchval",
+  "new_call": "(await update_keyed(self.l3_pool, 'scheduled_jobs', values={'next_fire_at': scheduled_fire_at, 'status': 'active', 'date_updated': now}, by={'partition_key': partition_key, 'job_id': job_id, 'status': claimed_status, 'last_fired_at': claimed_at, 'date_updated': claimed_at}, where=[Fragment('next_fire_at IS NOT DISTINCT FROM $1::timestamptz', (claimed_next_fire_at,))], returning=('job_id',))).value",
+  "old_sql": "UPDATE scheduled_jobs SET next_fire_at = $1, status = 'active', date_updated = $2 WHERE partition_key = $3 AND job_id = $4 AND status = $5 AND next_fire_at IS NOT DISTINCT FROM $6::timestamptz AND last_fired_at = $7 AND date_updated = $7 RETURNING job_id",
+  "order": [],
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "partition_key",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 3,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "job_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 4,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "status",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 5,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "last_fired_at",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 7,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "date_updated",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 7,
+    "params": []
+   }
+  ],
+  "returning": [
+   "job_id"
+  ],
+  "sets": [
+   {
+    "cast": null,
+    "column": "next_fire_at",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "status",
+    "compared": [],
+    "kind": "literal",
+    "literal": "active",
+    "param": null,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "date_updated",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "shape": "write",
+  "table": "scheduled_jobs",
+  "where": [
+   {
+    "cast": null,
+    "column": "",
+    "compared": [
+     "next_fire_at"
+    ],
+    "kind": "guard",
+    "literal": "next_fire_at IS NOT DISTINCT FROM $1::timestamptz",
+    "param": null,
+    "params": [
+     6
+    ]
+   }
+  ]
  }
 ]

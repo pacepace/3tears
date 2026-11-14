@@ -12,6 +12,8 @@ and the TTL-self-revert / state-transition logic.
 
 from __future__ import annotations
 
+import re
+
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -68,7 +70,7 @@ class TestGetEffectiveStatus:
     async def test_no_row_reads_as_disabled(self) -> None:
         """a tenant that never requested impersonation is gated off by default."""
         pool = AsyncMock()
-        pool.fetchrow.return_value = None
+        pool.fetch.return_value = []  # the keyed read_row's fetch: no row
         coll = _make_collection(l3_pool=pool)
         status = await coll.get_effective_status(uuid7())
         assert status is ImpersonationGateStatus.DISABLED
@@ -78,7 +80,7 @@ class TestGetEffectiveStatus:
         cid = uuid7()
         row = _gate_row(customer_id=cid, status=ImpersonationGateStatus.ENABLED, ttl_seconds=None, expires_at=None)
         pool = AsyncMock()
-        pool.fetchrow.return_value = row
+        pool.fetch.return_value = [row]  # the keyed read_row's fetch
         coll = _make_collection(l3_pool=pool)
         status = await coll.get_effective_status(cid)
         assert status is ImpersonationGateStatus.ENABLED
@@ -94,7 +96,7 @@ class TestGetEffectiveStatus:
             expires_at=now + timedelta(hours=1),
         )
         pool = AsyncMock()
-        pool.fetchrow.return_value = row
+        pool.fetch.return_value = [row]  # the keyed read_row's fetch
         coll = _make_collection(l3_pool=pool)
         status = await coll.get_effective_status(cid, now=now)
         assert status is ImpersonationGateStatus.ENABLED
@@ -113,7 +115,7 @@ class TestGetEffectiveStatus:
             expires_at=now - timedelta(seconds=1),
         )
         pool = AsyncMock()
-        pool.fetchrow.return_value = row
+        pool.fetch.return_value = [row]  # the keyed read_row's fetch
         coll = _make_collection(l3_pool=pool)
         status = await coll.get_effective_status(cid, now=now)
         assert status is ImpersonationGateStatus.DISABLED
@@ -124,7 +126,7 @@ class TestGetEffectiveStatus:
         cid = uuid7()
         row = _gate_row(customer_id=cid, status=ImpersonationGateStatus.REQUESTED)
         pool = AsyncMock()
-        pool.fetchrow.return_value = row
+        pool.fetch.return_value = [row]  # the keyed read_row's fetch
         coll = _make_collection(l3_pool=pool)
         status = await coll.get_effective_status(cid)
         assert status is ImpersonationGateStatus.REQUESTED
@@ -206,24 +208,28 @@ class TestStateTransitions:
         cid = uuid7()
         row = _gate_row(customer_id=cid, status=ImpersonationGateStatus.DISABLED)
         pool = AsyncMock()
-        pool.fetchrow.return_value = row
+        pool.fetch.return_value = [row]  # the keyed update_keyed's RETURNING fetch
         coll = _make_collection(l3_pool=pool)
 
         entity = await coll.disable(cid)
 
         assert entity is not None
         assert entity.status == ImpersonationGateStatus.DISABLED.value
-        pool.fetchrow.assert_awaited_once()
-        sql = pool.fetchrow.await_args.args[0]
-        assert "UPDATE impersonation_gates" in sql
-        assert pool.fetchrow.await_args.args[2] == ImpersonationGateStatus.DISABLED.value
+        pool.fetch.assert_awaited_once()
+        sql = pool.fetch.await_args.args[0]
+        assert 'UPDATE "impersonation_gates"' in sql
+        # the status is bound where the statement sets it
+        placed = re.search(r'"status" = \$(\d+)', sql)
+        assert placed is not None, sql
+        status_place = int(placed.group(1))
+        assert pool.fetch.await_args.args[status_place] == ImpersonationGateStatus.DISABLED.value
 
     @pytest.mark.asyncio
     async def test_disable_with_no_existing_row_returns_none(self) -> None:
         """disabling a tenant that never had a gate row is a no-op, not an
         error -- the effective status was already `disabled`."""
         pool = AsyncMock()
-        pool.fetchrow.return_value = None
+        pool.fetch.return_value = []  # the keyed update_keyed's RETURNING fetch: no row written
         coll = _make_collection(l3_pool=pool)
         result = await coll.disable(uuid7())
         assert result is None

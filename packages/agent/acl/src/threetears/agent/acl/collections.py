@@ -3495,9 +3495,23 @@ class ImpersonationGateCollection(SchemaBackedCollection[ImpersonationGateEntity
         """
         if self.l3_pool is None:
             return ImpersonationGateStatus.DISABLED
-        row = await self.l3_pool.fetchrow(
-            f"SELECT {_IMPERSONATION_GATE_COLUMNS} FROM impersonation_gates WHERE customer_id = $1",
-            customer_id,
+        row = await read_row(
+            self.l3_pool,
+            "impersonation_gates",
+            by={"customer_id": customer_id},
+            columns=(
+                "customer_id",
+                "status",
+                "requested_at",
+                "requested_by",
+                "granted_at",
+                "granted_by",
+                "ttl_seconds",
+                "expires_at",
+                "date_created",
+                "date_updated",
+            ),
+            records=True,
         )
         if row is None:
             return ImpersonationGateStatus.DISABLED
@@ -3626,17 +3640,26 @@ class ImpersonationGateCollection(SchemaBackedCollection[ImpersonationGateEntity
         """
         current = now if now is not None else datetime.now(UTC)
         assert self.l3_pool is not None, "ImpersonationGateCollection requires an l3_pool"
-        row = await self.l3_pool.fetchrow(
-            f"""
-            UPDATE impersonation_gates
-               SET status = $2, date_updated = $3
-             WHERE customer_id = $1
-            RETURNING {_IMPERSONATION_GATE_COLUMNS}
-            """,
-            customer_id,
-            ImpersonationGateStatus.DISABLED.value,
-            current,
-        )
+        row = (
+            await update_keyed(
+                self.l3_pool,
+                "impersonation_gates",
+                values={"status": ImpersonationGateStatus.DISABLED.value, "date_updated": current},
+                by={"customer_id": customer_id},
+                returning=(
+                    "customer_id",
+                    "status",
+                    "requested_at",
+                    "requested_by",
+                    "granted_at",
+                    "granted_by",
+                    "ttl_seconds",
+                    "expires_at",
+                    "date_created",
+                    "date_updated",
+                ),
+            )
+        ).row
         if row is None:
             return None
         data = self._coerce_row(dict(row))

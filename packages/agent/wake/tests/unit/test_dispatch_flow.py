@@ -330,6 +330,10 @@ class _RateLimitStubPool:
             return 0
         return self._values.pop(0)
 
+    async def fetch(self, query: str, *args: Any) -> list[dict[str, int]]:
+        """A keyed count (``aggregate_keyed``): the next queued integer as its one row's ``n``."""
+        return [{"n": await self.fetchval(query, *args)}]
+
 
 # parity-with: threetears.agent.wake.config.WakeConfig
 class _TinyCapsConfig:
