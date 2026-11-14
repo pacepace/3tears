@@ -186,6 +186,24 @@ def _stop_reason(stops: Sequence[BudgetStop]) -> str:
     return f"stopped by {'; by '.join(segments)}"
 
 
+def _set_aside_beside(stops: Sequence[BudgetStop]) -> str:
+    """What an account or model stop says of the cells the cost cap set aside beside it, opening ``; ``.
+
+    The cap reaches its own stop when it has too little left for a running cell's judging. When the account's
+    refusal or the unserved-model circuit had stopped the run first, the run ends ``exhausted``, and the cap's record
+    rides the error (``stops``) onto the run's ``budget_stops``, so its count of the cells it left unjudged is kept.
+
+    :param stops: The cap's records, empty when it set no cell aside.
+    :ptype stops: Sequence[BudgetStop]
+    :return: The clause, or ``""`` when no cell was set aside.
+    :rtype: str
+    """
+    not_judged = sum(stop.cells_not_judged for stop in stops)
+    if not not_judged:
+        return ""
+    return f"; beside it, the cost cap had too little left to judge {not_judged} cell(s), which a re-judge takes up"
+
+
 class AccountExhaustedError(Exception):
     """Raised by :func:`~threetears.evals.run.runner.execute_run` when the run's paying account refuses a call.
 
@@ -210,9 +228,20 @@ class AccountExhaustedError(Exception):
     :ivar unpriced_results: Delivered results whose spend could not be priced, and so is not in
         ``accumulated_usd``.
     :ivar detail: The refused cell's own apparatus message, naming the account fault's kind.
+    :ivar stops: The cost cap's record when it set a running cell's judging aside after the refusal had stopped the
+        run (:func:`_set_aside_beside`); empty when it set none aside.
     """
 
-    def __init__(self, completed: int, total: int, *, accumulated_usd: float, unpriced_results: int, detail: str):
+    def __init__(
+        self,
+        completed: int,
+        total: int,
+        *,
+        accumulated_usd: float,
+        unpriced_results: int,
+        detail: str,
+        stops: Sequence[BudgetStop] = (),
+    ):
         """Record how far the run got, what it had spent, and the refusal that stopped it.
 
         :param completed: Results delivered (and persisted) before the stop.
@@ -225,16 +254,19 @@ class AccountExhaustedError(Exception):
         :ptype unpriced_results: int
         :param detail: The refused cell's apparatus message.
         :ptype detail: str
+        :param stops: The cost cap's record of the cells whose judging it set aside beside the refusal.
+        :ptype stops: Sequence[BudgetStop]
         """
         self.completed = completed
         self.total = total
         self.accumulated_usd = accumulated_usd
         self.unpriced_results = unpriced_results
         self.detail = detail
+        self.stops = tuple(stops)
         unpriced = f", and {unpriced_results} result(s) whose spend could not be priced" if unpriced_results else ""
         super().__init__(
             f"eval run stopped: the provider account refused a candidate call after {completed}/{total} results "
-            f"(${round_half_even(accumulated_usd, 4)} spent{unpriced}) — {detail}"
+            f"(${round_half_even(accumulated_usd, 4)} spent{unpriced}) — {detail}{_set_aside_beside(self.stops)}"
         )
 
 
@@ -260,10 +292,20 @@ class ModelUnservedError(Exception):
     :ivar accumulated_usd: What the delivered priced results cost, summed from what the loop recorded.
     :ivar unpriced_results: Delivered results whose spend could not be priced, and so is not in ``accumulated_usd``.
     :ivar detail: The last unserved cell's own apparatus message: which call, and the provider's words.
+    :ivar stops: The cost cap's record when it set a running cell's judging aside after the circuit had stopped the
+        run (:func:`_set_aside_beside`); empty when it set none aside.
     """
 
     def __init__(
-        self, completed: int, total: int, *, model: str, accumulated_usd: float, unpriced_results: int, detail: str
+        self,
+        completed: int,
+        total: int,
+        *,
+        model: str,
+        accumulated_usd: float,
+        unpriced_results: int,
+        detail: str,
+        stops: Sequence[BudgetStop] = (),
     ):
         """Record how far the run got, what it had spent, the model and the provider's answer that stopped it.
 
@@ -279,6 +321,8 @@ class ModelUnservedError(Exception):
         :ptype unpriced_results: int
         :param detail: The last unserved cell's apparatus message.
         :ptype detail: str
+        :param stops: The cost cap's record of the cells whose judging it set aside beside the circuit's stop.
+        :ptype stops: Sequence[BudgetStop]
         """
         self.completed = completed
         self.total = total
@@ -286,11 +330,12 @@ class ModelUnservedError(Exception):
         self.accumulated_usd = accumulated_usd
         self.unpriced_results = unpriced_results
         self.detail = detail
+        self.stops = tuple(stops)
         unpriced = f", and {unpriced_results} result(s) whose spend could not be priced" if unpriced_results else ""
         super().__init__(
             f"eval run stopped: the provider does not serve the candidate model {model} "
             f"({completed}/{total} results, ${round_half_even(accumulated_usd, 4)} spent{unpriced}); resume the run "
-            f"once the model is served — {detail}"
+            f"once the model is served — {detail}{_set_aside_beside(self.stops)}"
         )
 
 

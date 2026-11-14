@@ -39,6 +39,48 @@ background delivery can name the upstream that served its calls: `AsyncDelivery.
 optional, never on a substituted entry), which the host fills and the engine folds into the `inner_agent` usage row
 (`RoleUsage.served_provider`, a key of the row); left unset it reads as not recorded.
 
+### evals: export, seed and carry follow-ups
+
+**Added:** the definition seed gives a stored template the corpus's presentation names it lacks (`goal_check_names`,
+`stratum_names`) on its current revision, fill-only: an entry the seed reads on the stored template is never overwritten, a
+name the stored template gives another entry is not given twice, and `updated_at` is unchanged, so a second boot
+writes nothing. The template write is not conditional, so an `update_template` landing between the seed's read and
+its write can be lost, as between two `update_template` calls.
+`SeedOutcome.presentation_named` reports what was filled and `SeedOutcome.presentation_fill_failed` a write the store
+refused. A host's own boot pass filling these names through `update_template` can be dropped.
+
+**Fixed:** `python -m threetears.evals.harness export` removes its partial directory when interrupted too, not only
+when a write fails, and the directory it writes takes the mode the process's umask gives a new directory rather than
+the owner-only mode of a temporary one, so a mint run as another user can read it. The `campaign_closure` docstring
+says what `closure_keys_digest` detects: a document added, removed or replaced, not one edited in place under its id.
+
+**Changed:** `DefinitionReset.render()` prints each live case a carry copied as `carried <source> -> <copy>`. A reset
+refused for live cases beside a corpus case reading `unknown` (a store seeded before `.30`) names the host's
+`seeded_digests` with the carry, so the first remedy is the call that succeeds, and the carry's own refusal names them
+ahead of the overwrite. A refusal of a template's own case says "its template", not "its judge template"; a host
+matching that text must update the match. A store failing part-way through a carry raises a `StorageError` naming each
+live case not yet carried, which stays only on the archived revision, since a retried reset does not carry it.
+
+### evals: the cost cap's edge cases hold, and its count of unjudged cells survives another stop (#1161)
+
+**Fixed:** a run the account's refusal or the unserved-model circuit stopped first, whose running cell's judging the
+cost cap then set aside, lost the cap's record, so its count of the cells left unjudged was gone. That run still ends
+`exhausted`, and now also carries the cap's record in `EvalRun.budget_stops` (`AccountExhaustedError.stops`,
+`ModelUnservedError.stops`). Its error says how many cells the cap left unjudged, and its job status is that error.
+
+**Changed, for hosts:** `budget_stops` is no longer written only with `budget_stopped`. On an `exhausted` run (and on
+the lifetime entry, `RunLifetime.budget_stops`, of a holding that ended so) it is the cap's count beside the stop,
+never the stop, so read `status` to know what stopped a run. Such a run's summary has `stopped_because` (and
+`stopped_text`) `None`, where it used to be `None` because no record was kept: the refusal is in its `errors` and its
+results line counts the cells not judged.
+
+**Fixed:** a cell whose deadline strikes while its judging waits for the cap's room is still set aside, but it no
+longer stops the run as cost-capped, and the cap's record no longer counts it (`cells_not_judged`): the phase waited on
+a hold that might have billed less, so the cap's shortage was never established. Its own mark counts it, as the
+summary's `n_not_judged` does. In a judge phase that cannot be priced, a cell the judge had already
+failed on one dimension when the cap kept the next one unasked is now excluded as the judge's fault, which a re-judge
+recovers. It is no longer filed under `cost_cap`, and the stop record no longer counts it as set aside.
+
 ### evals: a page's forms, arm names and gate checks are worked out once per report input
 
 **Changed:** `PageForms.of`, `page_arm_names` and a `gate_check` read off any page (no `forms`) keep their results per

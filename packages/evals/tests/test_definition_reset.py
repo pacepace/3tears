@@ -1551,6 +1551,8 @@ def test_a_carry_reset_writes_the_corpus_battery_beside_a_copy_of_every_live_cas
     kept = {c.id: c for c in storage.query_test_cases(TOYHOST_SCOPE, template_id=first.id)}
     assert all(kept[c.id] == c for c in live), "the source cases stay on the archived revision, unedited"
     assert reset.carried == {source.id: carried[source.id].id for source in live}
+    rendered = reset.render().splitlines()
+    assert all(f"carried {source.id} -> {carried[source.id].id}" in rendered for source in live), reset.render()
     (entry,) = [e for e in reset.reset if e.key == TEMPLATE_J]
     assert entry.written == f"revision 2, carrying {LIVE} live case(s)", reset.render()
     assert f"{TEMPLATE_J}: stale -> revision 2, carrying {LIVE} live case(s)" in reset.render()
@@ -1634,6 +1636,93 @@ def test_under_carry_a_pulled_case_reading_unknown_beside_live_cases_is_still_re
     then = corpus_digests(toyhost_host(storage=storage), _full_corpus())
     reset = _reset(storage, _grown(), [TEMPLATE_J], carry_live_cases=True, seeded_digests=then)
     assert len(reset.carried) == LIVE and set(_states(reset.after).values()) == {"current"}
+
+
+def test_the_first_remedy_for_live_cases_beside_an_unrecorded_case_names_the_host_s_digests_with_the_carry() -> None:
+    """Followed as written, the remedy for a pre-.30 battery holding live cases is the carry that succeeds: it names
+    the host's ``seeded_digests`` with it, since the carry alone meets the corpus case reading unknown. That second
+    refusal names them too, ahead of the overwrite."""
+    storage = _seeded_before_30()
+    _with_live_cases(storage)
+
+    with pytest.raises(ConflictError) as first:
+        _reset(storage, _grown(), [TEMPLATE_J])
+    with pytest.raises(ConflictError) as second:
+        _reset(storage, _grown(), [TEMPLATE_J], carry_live_cases=True)
+
+    for refused in (first.value, second.value):
+        remedy = refused.remedy
+        assert "seeded_digests=run.corpus_digests(host, " in remedy and GROWN_KEY in remedy, remedy
+        assert remedy.index("seeded_digests") < remedy.index("overwrite_customized=True"), remedy
+    assert first.value.remedy.startswith(
+        f"run.reset_definitions(..., [{TEMPLATE_J!r}], carry_live_cases=True, seeded_digests="
+    ), first.value.remedy
+    then = corpus_digests(toyhost_host(storage=storage), _full_corpus())
+    reset = _reset(storage, _grown(), [TEMPLATE_J], carry_live_cases=True, seeded_digests=then)
+    assert len(reset.carried) == LIVE, "the call the first remedy names succeeds"
+
+
+def test_live_cases_beside_a_customized_template_are_refused_naming_both_flags_then_the_overwrite_alone() -> None:
+    """A battery refused both for live cases and for a definition that may be an operator's is answered by the two
+    flags together, which keep every live case, and second by the overwrite alone, which leaves them archived."""
+    storage, store = _seeded()
+    judge = storage.load_template_by_name(JUDGE_NAME, TOYHOST_SCOPE)
+    assert judge is not None
+    storage.save_template(judge.model_copy(update={"intent": "an operator's own wording"}))
+    live = _with_live_cases(storage)
+    grown = _grown_with_its_set()
+    keys = _drift(storage, grown).keys("stale", "customized")
+    before = copy.deepcopy(store.documents)
+
+    with pytest.raises(ConflictError) as refused:
+        _reset(storage, grown, keys)
+
+    assert store.documents == before
+    said, remedy = str(refused.value), refused.value.remedy
+    assert f"{TEMPLATE_J}: it reads customized" in said and all(case.id in said for case in live), said
+    both = remedy.index("carry_live_cases=True, overwrite_customized=True)")
+    alone = remedy.index("], overwrite_customized=True)")
+    assert both < alone, remedy
+    assert "leaves the live cases only on the archived revision" in remedy[alone:], remedy
+    assert remedy.count(repr(TEMPLATE_J)) == 2, "each call names the template once, though two refusals name it"
+    reset = _reset(storage, grown, keys, carry_live_cases=True, overwrite_customized=True)
+    assert set(reset.carried) == {case.id for case in live}
+
+
+class _CarryRefusingStorage(EvalStorage):
+    """A store that refuses every carried copy after the first, as a store failing part-way through a carry does."""
+
+    copies = 0
+
+    def save_test_case(self, test_case: EvalTestCase, *, if_match: str | None = None) -> None:
+        if test_case.carried_from is not None:
+            if self.copies:
+                raise StorageError("the document store went away")
+            self.copies += 1
+        super().save_test_case(test_case, if_match=if_match)
+
+
+def test_a_carry_failing_part_way_names_each_live_case_left_only_on_the_archived_revision() -> None:
+    """A retried reset reads the new revision, so it never finds the cases a failed carry left behind: the failure
+    names them."""
+    storage, store = _seeded()
+    first = storage.load_template_by_name(JUDGE_NAME, TOYHOST_SCOPE)
+    assert first is not None
+    live = _with_live_cases(storage)
+    grown = _grown_with_its_set()
+
+    with pytest.raises(StorageError) as failed:
+        _reset(_CarryRefusingStorage(store), grown, _drift(storage, grown).keys("stale"), carry_live_cases=True)
+
+    said = str(failed.value)
+    second = storage.load_template_by_name(JUDGE_NAME, TOYHOST_SCOPE)
+    assert second is not None and second.revision == 2
+    copied = {c.carried_from for c in storage.query_test_cases(TOYHOST_SCOPE, template_id=second.id) if c.carried_from}
+    left = [case.id for case in live if case.id not in copied]
+    assert len(left) == LIVE - 1, copied
+    assert "the document store went away" in said and f"{JUDGE_NAME!r} revision 2 ({second.id})" in said, said
+    assert f"{LIVE - 1} live case(s) not yet carried stay only on the archived revision" in said, said
+    assert all(case_id in said for case_id in left) and not any(source in said for source in copied), said
 
 
 def test_a_template_s_own_live_cases_are_carried_into_its_next_revision() -> None:
@@ -1723,8 +1812,9 @@ def test_a_corpus_case_s_unrecorded_predecessor_is_written_over_under_both_flags
     assert (reading.state, reading.stored_id) == ("unknown", old_b.id), reading.line
 
     for flags in ({}, {"carry_live_cases": True}):
-        with pytest.raises(ConflictError, match=re.escape(f"{_own_key('b')}: it is written with its judge template")):
+        with pytest.raises(ConflictError, match=re.escape(f"{_own_key('b')}: it is written with its template")) as no:
             _reset(storage, now, [TEMPLATE_KEY], **flags)
+        assert "judge template" not in str(no.value), "a template case's template is no judge template"
     reset = _reset(storage, now, [TEMPLATE_KEY], carry_live_cases=True, overwrite_customized=True)
 
     cases = _cases_on(storage, _subject(storage))

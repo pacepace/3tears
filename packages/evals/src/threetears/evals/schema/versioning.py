@@ -843,7 +843,8 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   holding the source's content, payload, stratum, name and seed record unchanged. Written only on such a copy, so
 #:   every case stored before reads as a copy of nothing. In no digest pre-image and no identity key, so it changes no
 #:   reading, pool or drift. An older build (v16.8 and earlier) reading a copy keeps the field opaquely and writes it
-#:   back.
+#:   back, but does not know the copy stands for its source: a judge-case freeze run on such a pod during a rolling
+#:   deploy stores the case again beside its carried copy.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 #: - **v17.0** — the lever's reader name (above): every other durable shape exactly as v16.9 stored it.
 DURABLE_SCHEMA_MINOR: int = 0

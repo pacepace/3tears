@@ -617,6 +617,7 @@ def freeze_judge_cases(
         nothing could be frozen.
     :raises NotFoundError: A run does not load.
     :raises StorageError: A case or the set could not be persisted.
+    :raises ValueError: A case a definition reset carried into the template holds a judge case this build cannot read.
     """
     _judge_template(template)
     if from_labels and (run_ids or result_ids is not None):
