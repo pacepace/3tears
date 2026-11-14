@@ -12,9 +12,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from threetears.core.collections.change_notes import NotedChange, NotedRows, noted_rows_since
+from threetears.core.collections.generation import tables_written_l2_first
 from threetears.core.collections.write_marks import WriteMarkReconciler
 
 _EPOCH = datetime(2026, 11, 11, tzinfo=UTC)
+
+#: the noted table: a name no collection class in the process claims. The reconciler passes over a table some class
+#: defined in the process writes L2-first (``tables_written_l2_first``, a process-wide registry), and the epoch
+#: package's L2-first tests define such a class on "results": run in one batch after them, a "results" mark here was
+#: deleted unadvanced and the reconciler test failed on the batch's order alone
+_TABLE = "noted_reach_results"
 
 #: a load of two states' rows, as ``note_reach_text(prefixes=...)`` writes it
 _LOAD = json.dumps({"prefixes": [{"state": "PA"}, {"state": "OH"}]}, separators=(",", ":"))
@@ -40,7 +47,7 @@ def _note(key_text: str | None, keys: list[str] | None, columns: Any, tenant: st
 class _Notes:
     """a pool answering the notes statement with the rows given, and the reconciler's marks page once."""
 
-    def __init__(self, notes: list[_Record], table: str = "results") -> None:
+    def __init__(self, notes: list[_Record], table: str = _TABLE) -> None:
         self.notes = notes
         self.marks = {1: table}
 
@@ -103,7 +110,7 @@ class _Recorder:
 
 
 async def _noted(notes: list[_Record]) -> NotedRows:
-    answer = await noted_rows_since(_Notes(notes), notes_schema="platform", table="results", since=_EPOCH, cap=100)
+    answer = await noted_rows_since(_Notes(notes), notes_schema="platform", table=_TABLE, since=_EPOCH, cap=100)
     assert isinstance(answer, NotedRows), answer
     return answer
 
@@ -113,7 +120,7 @@ async def test_a_load_s_whole_note_keeps_its_prefixes_and_covers_no_row_beside_t
     tenant wrote beside the load is no longer named (a load names only its prefixes)."""
     noted = await _noted([_note(None, None, _LOAD, "s1"), _note("x", ["x"], None, "s1")])
     assert noted.whole == (
-        NotedChange(table="results", tenant="s1", whole_table=True, prefixes=({"state": "OH"}, {"state": "PA"})),
+        NotedChange(table=_TABLE, tenant="s1", whole_table=True, prefixes=({"state": "OH"}, {"state": "PA"})),
     )
     assert [row.ids for row in noted.rows] == [["x"]]
     assert noted.whole_table and noted.whole_tenants == ("s1",)
@@ -122,14 +129,14 @@ async def test_a_load_s_whole_note_keeps_its_prefixes_and_covers_no_row_beside_t
 async def test_a_reset_s_whole_note_keeps_its_reason_and_covers_its_tenant_s_rows() -> None:
     """Flips if an operator's reset comes back without its reason, or a row it covers is still named."""
     noted = await _noted([_note(None, None, _RESET, None), _note("x", ["x"], None, "s1")])
-    assert noted.whole == (NotedChange(table="results", tenant=None, whole_table=True, reason="reset"),)
+    assert noted.whole == (NotedChange(table=_TABLE, tenant=None, whole_table=True, reason="reset"),)
     assert noted.rows == ()
 
 
 async def test_a_whole_note_naming_no_reach_is_the_plain_whole_table() -> None:
     """Flips if a bare truncate's note gains a reach, or stops covering its tenant's rows."""
     noted = await _noted([_note(None, None, None, "s1"), _note("x", ["x"], None, "s1"), _note("y", ["y"], None, "s2")])
-    assert noted.whole == (NotedChange(table="results", tenant="s1", whole_table=True),)
+    assert noted.whole == (NotedChange(table=_TABLE, tenant="s1", whole_table=True),)
     assert [(row.ids, row.tenant) for row in noted.rows] == [(["y"], "s2")]
 
 
@@ -145,8 +152,9 @@ async def test_the_reconciler_records_a_load_s_mark_with_its_prefixes_and_a_rese
             pool,  # type: ignore[arg-type]
             generation_source=source,  # type: ignore[arg-type]
             marks_schema="platform",
-            tables=lambda: ("results",),
+            tables=lambda: (_TABLE,),
         )
+        assert _TABLE not in tables_written_l2_first(), "a class in this process claims the test's table L2-first"
         done = await reconciler.run_pass()
         assert done.applied == 1, done
         (change,) = source.changes
