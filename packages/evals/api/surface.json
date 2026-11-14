@@ -258,8 +258,8 @@
     },
     "threetears.evals.schema.check_after": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "check_after(after: Any, order_by: str | None) -> tuple[Any, str] | None",
+      "tier": "host-contract"
     },
     "threetears.evals.schema.check_grouping": {
       "kind": "function",
@@ -4883,8 +4883,8 @@
     },
     "threetears.evals.run.UnpricedCall": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "UnpricedCall(call: str, why: str)",
+      "tier": "host-contract"
     },
     "threetears.evals.run.UnreadableRunDeleteStore": {
       "kind": "protocol",
@@ -4958,6 +4958,11 @@
     },
     "threetears.evals.analysis.AnalysisGenerationEstimate": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.AnalysisReportStore": {
+      "kind": "protocol",
       "signature": "",
       "tier": "provisional"
     },
@@ -7990,6 +7995,16 @@
       "kind": "model",
       "signature": "",
       "tier": "provisional"
+    },
+    "threetears.evals.ops.LIST_PAGE_MAX": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "stable"
+    },
+    "threetears.evals.ops.LIST_PAGE_SIZE": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "stable"
     },
     "threetears.evals.ops.ModelFamily": {
       "kind": "type alias",

@@ -31,6 +31,7 @@ from packages.evals.tests.rung_support import (
     root_only_imports,
 )
 from packages.evals.tests.ladder_support import offline_copy
+from packages.evals.tests.offline_support import refuse_connects
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 
 RUNG = EXAMPLES / "1-triage"
@@ -216,17 +217,28 @@ def test_the_program_runs_from_another_directory_through_the_module_entry(
     assert not (triage_dir / ".evals").exists()
 
 
-def test_an_email_the_recording_does_not_hold_is_excluded_rather_than_sent_to_a_model(
-    triage_dir: Path, capsys: pytest.CaptureFixture[str]
+def test_an_email_the_recording_does_not_hold_fails_the_run_naming_its_call_and_is_never_sent_to_a_model(
+    triage_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """An email added after the recording was made asks a call the recording does not hold: a replay miss, so the
+    recordings are stale for every cell, and the run fails naming that call (owner ruling, 2026-11-14, #1162) where it
+    once excluded the email's cells and read on. The email is never sent to a model: no key is set and no socket opens.
+    """
+    attempts = refuse_connects(monkeypatch, run="a replayed triage run")
     added = {"id": "new", "stratum": "plain", "email": "Is there a student discount?", "category": "sales"}
     with (triage_dir / "emails.jsonl").open("a", encoding="utf-8") as cases:
         cases.write(json.dumps(added | {"urgent": False, "needs_human": False}) + "\n")
 
-    assert main(["triage.py"]) == 0
+    assert main(["triage.py"]) == 1
 
     printed = capsys.readouterr().out
-    assert "excluded: 3 x " in printed and "Is there a student discount" in printed
+    assert attempts == []
+    errors = [line for line in printed.splitlines() if line.startswith("  error: ")]
+    # The email's cell is recorded as the rig's failure, never scored, and the run's failure names the same call.
+    assert any(line.startswith("  error: case new: apparatus: RecordingRefused: ") for line in errors), errors
+    assert any(line.startswith("  error: recording ") for line in errors), errors
+    assert all("Is there a student discount" in line for line in errors), errors
+    assert re.search(r"^  excluded: \d+ x apparatus: RecordingRefused: ", printed, flags=re.M), printed
 
 
 def test_each_docstring_states_the_cost_its_recordings_record() -> None:

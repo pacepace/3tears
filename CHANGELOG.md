@@ -92,6 +92,13 @@ active, as its model reads it. `campaigns_list` reads what an exploratory campai
 (`EvalStorage.declared_campaigns_holding`), among every campaign of the scope, so a declared campaign on another page
 is still named; the archive filter is in the read, so its pages are full but the last. New provisional reads:
 `EvalStorage.query_eval_runs_page`, `EvalStorage.list_campaigns_page`, `list_runs_page` (`threetears.evals.run`).
+**For hosts:** `LIST_PAGE_SIZE` (100) and `LIST_PAGE_MAX` (1000), a page's default and its most rows from Python, are
+exported from `threetears.evals.ops`, so a host's own listing surface states its `limit` from them rather than
+restating the numbers. Four names a host binds are declared, and the declared surface's ceiling moves from 499 to 503
+(owner rule: the ceiling gives way for a genuinely necessary host name): `LIST_PAGE_SIZE` and `LIST_PAGE_MAX` are
+stable; `threetears.evals.schema.check_after`, which a store declaring `after` calls, and
+`threetears.evals.run.UnpricedCall`, which the host-contract `LaunchableKind.price_subject_call_floor` and
+`price_largest_call` return, join the host contract.
 
 **For hosts (a caller of the listings):** a caller that expected every run or campaign gets the first 100 and a
 `next`. To read them all, loop: `page = runs_list(host, scope)`, then while `page.next` is not `None`,
@@ -282,10 +289,10 @@ frozen with the analysis. Over frozen bundles this build no longer reads, it is 
 (`DOC_WRITTEN`) and `report_doc_blocks` are removed, and so is the `report_doc_id` parameter of the provisional
 `build_campaign_report` and `build_campaign_report_in_aspect_forms`, which printed it and which nothing passed.
 **For hosts:**
-`analysis_report` reads its store as both `AnalysisStore` and the new `ReportDocReads` (`load_report_doc`,
-`load_report_snapshot`, provisional, in `threetears.evals.analysis`); the protocol joining the two is the service's
-own, private, and a host never names it. `EvalStorage` satisfies both, so a host passing its `EvalStorage` changes
-nothing; a host passing its own `AnalysisStore` adds the two reads. `read_report_doc` and `stored_headline` take `ReportDocReads`
+`analysis_report` takes an `AnalysisReportStore`: `AnalysisStore` and the new `ReportDocReads` (`load_report_doc`,
+`load_report_snapshot`), both in `threetears.evals.analysis` (provisional), so a host typing what it passes names it.
+`EvalStorage` satisfies both, so a host passing its `EvalStorage` changes nothing; a host passing its own
+`AnalysisStore` adds the two reads. `read_report_doc` and `stored_headline` take `ReportDocReads`
 (#1020 item 2).
 
 **Added (provisional):** `ResultReadings.grouped` (and `AsyncResultReadings.grouped`) takes `exclude_in_items`, with
@@ -603,6 +610,9 @@ check is reported skipped. A kind that calls its candidate through the factory n
 candidate_role="analyst")` declares a writer the host builds on its analyst client), and the skip notice names that
 fix and the factory-side one.
 `Model.price_ceiling_refusal()` says why a ceiling is unknown, and `unpriced_because` words it for a refusal.
+**For hosts:** a host that wraps `Model` (a forwarding proxy or a decorator, such as a timing wrapper) forwards
+`price_ceiling_refusal()` to the model it wraps; a wrapper that does not loses the reason, and its capped refusals say
+the model gave none.
 
 **Docs:** the host guide names the boot step, `await clients.load_prices()` before a host offers launches or
 resumes, and the launch docstrings no longer say a run refuses a call inside a cell.

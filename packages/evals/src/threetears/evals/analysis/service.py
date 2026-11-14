@@ -188,7 +188,7 @@ class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
         ...
 
 
-class _AnalysisReportStore(AnalysisStore, ReportDocReads, Protocol):
+class AnalysisReportStore(AnalysisStore, ReportDocReads, Protocol):
     """What :func:`analysis_report` reads: the analysis service's port, and the two reads a stored report document is
     read back through (:class:`~threetears.evals.analysis.report.doc_page.store.ReportDocReads`).
 
@@ -1246,7 +1246,7 @@ def _analysis_page(
 
 
 def analysis_report(
-    storage: _AnalysisReportStore, analysis_id: str, scope_id: str, *, trials: TrialDetail = "table"
+    storage: AnalysisReportStore, analysis_id: str, scope_id: str, *, trials: TrialDetail = "table"
 ) -> CampaignReport:
     """Read one stored analysis as its campaign's page — the one page every door renders.
 
@@ -1273,7 +1273,7 @@ def analysis_report(
     never read.
 
     :param storage: Where the analysis is read, and its report document and that document's snapshot.
-    :ptype storage: AnalysisStore and ReportDocReads
+    :ptype storage: AnalysisReportStore
     :param analysis_id: The analysis to report.
     :ptype analysis_id: str
     :param scope_id: The scope it lives in.
@@ -1911,6 +1911,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AnalysisGenerationEstimate",
+    "AnalysisReportStore",
     "AnalysisStore",
     "DEFAULT_WRITER_UNRESOLVED",
     "analysis_report",

@@ -475,6 +475,10 @@ members (and `sent_settings`, when it can say what the request carried), whose `
 3tears package; `check_completion_conformance` on your client's completions, and `check_refusal_negotiation` on the
 client, in your suite, hold the wrapper to what the engine reads.
 
+**A wrapper around a `Model` or a completion client forwards `price_ceiling_refusal()`.** A forwarding proxy or a
+decorator (a timing wrapper, a logging one) passes `price_ceiling_refusal()` through to what it wraps, as it does
+`price_ceiling`; one that does not loses the reason, and its capped refusals say the model gave none.
+
 **A client builder of your own sends every reasoning field.** The judge asks by a token budget
 (`JUDGE_REQUEST_SETTINGS.reasoning_max_tokens`, with `reasoning_effort=None`), so its reasoning is bounded where a
 model takes a budget; `SIMULATOR_REQUEST_SETTINGS` asks by

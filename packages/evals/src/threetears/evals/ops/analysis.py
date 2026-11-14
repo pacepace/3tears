@@ -113,6 +113,7 @@ from threetears.evals.kernel.job_leases import (
 from threetears.evals.kernel.inner_ceilings import writer_turns
 from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.storage import CampaignsPage
 from threetears.evals.kernel.provider import describe_failure, traceback_is_safe
 from threetears.evals.kernel.refusals import job_refusal
 from threetears.evals.kernel.host import EvalHost, HostProfile
@@ -1084,7 +1085,7 @@ def campaigns_list(
     :rtype: CampaignListing
     :raises ValidationFailedError: ``cursor`` is not one ``campaigns_list`` returned, or ``limit`` is out of range.
     """
-    page = host.storage.list_campaigns_page(
+    page: CampaignsPage = host.storage.list_campaigns_page(
         scope_id,
         limit=check_page_limit(limit),
         after=None if cursor is None else decode_list_cursor("campaigns_list", {"archived": archived}, cursor),

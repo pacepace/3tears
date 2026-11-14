@@ -329,6 +329,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "kernel/job_context.py": {},
     "kernel/job_leases.py": {},
     "kernel/job_timeout.py": {},
+    "kernel/list_pages.py": {},
     "kernel/inner_ceilings.py": {},
     "kernel/surface.py": {},
     "kernel/evidence_tiers.py": {},
