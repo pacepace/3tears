@@ -406,7 +406,7 @@ def _literal(text: str) -> str | bool | int:
     return int(text)
 
 
-def parse_point(sql: str, *, ordered: bool = False, guards: bool = False) -> PointSql | str:
+def parse_point(sql: str, *, ordered: bool = False, guards: bool = False, seeks: bool = False) -> PointSql | str:
     """a plain point read, or why it is not one.
 
     :param sql: the statement
@@ -416,6 +416,9 @@ def parse_point(sql: str, *, ordered: bool = False, guards: bool = False) -> Poi
     :param guards: each ``WHERE`` conjunct other than an equality is kept as a guard (the helper's ``where=``), not
         refused; at least one equality must still bind a parameter
     :ptype guards: bool
+    :param seeks: a first-of read's: a guard binding a parameter is enough (a seek over the sort's index, the LIMIT
+        bounding the rows), with no equality binding one
+    :ptype seeks: bool
     :return: the parsed read, or the refusal's reason
     :rtype: PointSql | str
     """
@@ -467,7 +470,8 @@ def parse_point(sql: str, *, ordered: bool = False, guards: bool = False) -> Poi
     numbers = sorted({number for pin in (*pins, *(kept or ())) for number in pin.numbers()})
     if numbers != list(range(1, len(numbers) + 1)):
         return "parameters not numbered $1..$n"
-    if not any(pin.kind in _BOUND_KINDS for pin in pins):
+    sought = seeks and any(guard.params for guard in kept or ())
+    if not any(pin.kind in _BOUND_KINDS for pin in pins) and not sought:
         return "no bound parameter (literals only): a constant read, judged by hand"
     return PointSql(
         table=match.group("table").lower(),
@@ -605,7 +609,8 @@ def parse_first(sql: str, *, guards: bool = False) -> PointSql | str:
     found = _LIMIT.search(text)
     if found is None:
         return "no trailing LIMIT 1 / LIMIT $n after its ORDER BY (an OFFSET, or no LIMIT)"
-    parsed = parse_point(text[: found.start()], ordered=True, guards=guards)
+    # a first-of read's parameters may all be its guards': a seek over the sort's index, its LIMIT bounding the rows
+    parsed = parse_point(text[: found.start()], ordered=True, guards=guards, seeks=True)
     if isinstance(parsed, str):
         return parsed
     if not parsed.order:

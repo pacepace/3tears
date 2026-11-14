@@ -1352,6 +1352,30 @@ _AGGREGATES = """
 """
 
 
+def test_a_first_of_read_bound_by_its_guards_alone_is_parsed() -> None:
+    """Flips if a first-of or top-n read whose only bound parameters are in guards (a keyset seek over the sort's
+    index, ``WHERE (date_created, id) > ($1, $2) ORDER BY date_created, id LIMIT $3``) is refused as a constant read,
+    or if a listing so bound (no LIMIT: every row past the seek), a read of literals only, or one without guards is
+    taken."""
+    seek = parse_first(
+        "SELECT * FROM agents t WHERE (t.date_created, t.id) > ($1, $2) ORDER BY t.date_created, t.id LIMIT $3",
+        guards=True,
+    )
+    assert isinstance(seek, PointSql) and seek.pins == () and seek.limit == {"param": 3}, seek
+    assert [guard.params for guard in seek.guards] == [(1, 2)], seek.guards
+    newest = parse_first(
+        "SELECT * FROM rates WHERE effective_from <= $1 ORDER BY effective_from DESC LIMIT 1", guards=True
+    )
+    assert isinstance(newest, PointSql) and newest.limit == {"literal": 1}, newest
+    for refused in (
+        parse_list("SELECT * FROM agents WHERE id > $1 ORDER BY id", guards=True),
+        parse_first("SELECT * FROM agents WHERE is_deleted = false ORDER BY id LIMIT 5", guards=True),
+    ):
+        assert isinstance(refused, str) and "literals only" in refused, refused
+    unguarded = parse_first("SELECT * FROM agents WHERE id > $1 ORDER BY id LIMIT $2")
+    assert isinstance(unguarded, str) and "other than equality" in unguarded, unguarded
+
+
 def test_aggregates_and_scalar_sub_selects_are_parsed() -> None:
     """Flips if a select list of aggregates (``count``, ``max``, ``min``, ``sum`` of ``*`` or a column, each under its
     name) over a point read's rows, or of scalar sub-selects each such a read or one column of a row by its pins, is
