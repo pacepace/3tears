@@ -23,7 +23,7 @@ from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.surface import GuardrailCheck
 
 __all__ = [
-    "answer_split_lines",
+    "_answer_split_lines",
     "answer_split_warnings",
     "bar_warnings",
     "campaign_warnings",
@@ -205,7 +205,7 @@ def floor_warnings(readings: CampaignReadings, *, names: AspectNames, forms: Pag
     ]
 
 
-def answer_split_lines(readings: CampaignReadings, names: AspectNames) -> list[str]:
+def _answer_split_lines(readings: CampaignReadings, names: AspectNames) -> list[str]:
     """One line per arm whose results were answered by more than one candidate model, naming the models and the
     aspects: ``latest's results on billing were answered by 2 models (m-03 and m-06), so they are read per model: no
     change, interval or verdict is given for latest there.`` A split control's line says no candidate is read against
@@ -243,16 +243,16 @@ def answer_split_lines(readings: CampaignReadings, names: AspectNames) -> list[s
 
 
 def answer_split_warnings(readings: CampaignReadings, *, names: AspectNames) -> list[ReportBlock]:
-    """:func:`answer_split_lines` as the page's warnings, after the guardrails'."""
+    """:func:`_answer_split_lines` as the page's warnings, after the guardrails'."""
     return [
-        DisclosureBlock(section="warnings", source="runs", text=text) for text in answer_split_lines(readings, names)
+        DisclosureBlock(section="warnings", source="runs", text=text) for text in _answer_split_lines(readings, names)
     ]
 
 
 def campaign_warnings(readings: CampaignReadings, names: AspectNames, *, forms: PageForms) -> list[str]:
     """What warns on a campaign's page of its bars and floors, as code words it: each arm missing a bar, then each
     candidate breaking a floor — never the guardrail lines after — then each arm read per answering model
-    (:func:`answer_split_lines`), which has no row for a listing to quote.
+    (:func:`_answer_split_lines`), which has no row for a listing to quote.
 
     The page's own warnings are these lines, so whatever repeats them (an analysis's listing line) says what its page
     says, word for word.
@@ -270,7 +270,7 @@ def campaign_warnings(readings: CampaignReadings, names: AspectNames, *, forms: 
     return [
         *(text for *_, text in _bar_lines(readings, names)),
         *(text for *_, text in _floor_lines(readings, names, forms)),
-        *answer_split_lines(readings, names),
+        *_answer_split_lines(readings, names),
     ]
 
 
