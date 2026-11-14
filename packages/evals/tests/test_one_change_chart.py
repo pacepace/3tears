@@ -33,14 +33,19 @@ _CONTRASTS: dict[str, object] = {
 }
 
 
-def _page(kind: str, query: dict[str, object]) -> str:
-    """Kairo's written page with its third claim's chart redrawn as ``kind`` over ``query``, as Markdown."""
+def _page(kind: str, query: dict[str, object], *, one_candidate: bool = False) -> str:
+    """Kairo's written page with its third claim's chart redrawn as ``kind`` over ``query``, as Markdown; with
+    ``one_candidate``, its input holding the pass rate's contrast of one candidate alone, as a campaign of one candidate
+    does."""
     doc = copy.deepcopy(converted_doc(_KAIRO))
     evidence = doc["claims"][3]["evidence"][1]
     evidence["block"] = kind
     evidence["query"].update(query)
     evidence["caption"] = "The chart drawn here."
     held = ReportInput.model_validate(snapshot_of(_KAIRO).report_input)
+    if one_candidate:
+        kept = [c for c in held.contrasts if not (c.arm == "1017" and c.measure == "passed")]
+        held = held.model_copy(update={"contrasts": kept})
     return doc_page_markdown(build(ReportDoc.model_validate(doc), held, strict=True))
 
 
@@ -54,6 +59,19 @@ def test_a_change_chart_of_one_row_is_refused_naming_where_the_change_belongs(ki
     with pytest.raises(UnresolvableReference, match="it draws one change") as refused:
         _page(kind, {**_CONTRASTS, "arms": ["qwen3.8-flash"]})
     assert "in the prose" in str(refused.value) and "in a table" in str(refused.value)
+
+
+def test_the_refusal_names_a_compare_chart_and_more_rows_only_where_the_source_holds_them() -> None:
+    """The refusal's advice can be followed (Critic D-3): it names a ``compare`` chart of the two arms, which draws one
+    difference, and selecting more rows only where the source holds another change of the measure. Kairo's two
+    candidates hold two; a campaign of one candidate holds one, and is told no more."""
+    with pytest.raises(UnresolvableReference) as two:
+        _page("forest", {**_CONTRASTS, "arms": ["qwen3.8-flash"]})
+    with pytest.raises(UnresolvableReference) as one:
+        _page("forest", {**_CONTRASTS, "arms": ["qwen3.8-flash"]}, one_candidate=True)
+    assert "a 'compare' chart" in str(two.value) and "a 'compare' chart" in str(one.value)
+    assert "select more rows" in str(two.value)
+    assert "select more rows" not in str(one.value)
 
 
 @pytest.mark.parametrize("kind", ["diverging_bars", "dot_interval"])

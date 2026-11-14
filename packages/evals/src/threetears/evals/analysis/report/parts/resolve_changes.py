@@ -130,7 +130,7 @@ from threetears.evals.analysis.report.keys.resolve import figure_unit
 from threetears.evals.analysis.report.keys.separation import correction_words, pairing_contrast
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import aspect_board
-from threetears.evals.analysis.report.rows import lever_arms, query_aspect
+from threetears.evals.analysis.report.rows import lever_arms, query_aspect, query_rows
 from threetears.evals.analysis.style import lever_reader_name
 
 __all__ = ["RESOLVERS", "higher_is_better"]
@@ -1289,11 +1289,19 @@ def _refuse_one_change(context: ChartContext, changes: Sequence[_Change]) -> Non
     """Refuse a change chart that draws a single change (#1124): a structural rule, the count of its rows, so a chart
     of one row never reaches a page. Only a chart of what changed is refused (owner ruling, 2026-11-14): two arms
     compared on one measure (``compare``) are one difference by what they are, and a judge's preference is a split
-    around even, which the writer eval's page draws for its one pair (:func:`_preference_changes`); both are drawn."""
+    around even, which the writer eval's page draws for its one pair (:func:`_preference_changes`); both are drawn.
+
+    The refusal names what the writer can do: the prose, a table, or a ``compare`` chart of the two arms, which draws
+    one difference; and selecting more rows only where the source holds more of the chart's measures than the query
+    selected, over every arm and stratum (a campaign of one candidate holds one contrast of a measure, so there it
+    would be advice no draft can follow)."""
     if context.query.source not in _NOT_CHANGES and len(changes) < _FEWEST_CHANGES:
+        widened = context.query.model_copy(update={"arms": [], "strata": [], "limit": 0})
+        more = len(query_rows(widened, context.report_input)) >= _FEWEST_CHANGES
         raise context.refuse(
             "it draws one change, which a chart compares with nothing: state it in the prose (its key prints the "
-            "change and its interval) or in a table, or select more rows to compare"
+            "change and its interval) or in a table, or draw the two arms as a 'compare' chart, which draws one "
+            "difference" + ("; or select more rows to compare" if more else "")
         )
 
 
