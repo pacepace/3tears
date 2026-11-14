@@ -15,7 +15,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from threetears.core.shared_arrow import HandedTables, JobContext, MappedTables, MappedVersion
+from threetears.core.shared_arrow import HandedTables, JobContext, MappedTables, MappedVersion, Parts
 
 #: how long a job waits on the test's signal file before it gives up
 _WAIT_SECONDS = 60.0
@@ -340,3 +340,27 @@ def handed_rows(context: JobContext) -> int:
     """
     assert context.tables is not None
     return sum(table.num_rows for table in context.tables.tables.values())
+
+
+def part_rows(value: int, rows: int) -> pa.Table:
+    """one part's rows: ``a`` is ``value`` in every row, a short text beside it.
+
+    :return: the rows
+    :rtype: pa.Table
+    """
+    return pa.table({"a": pa.array([value] * rows, pa.int64()), "s": pa.array([f"r{value}"] * rows)})
+
+
+def write_parts(context: JobContext, table: str, parts: int, rows: int) -> int:
+    """write a result of ``parts`` parts of ``table``, ``rows`` rows each, in one step.
+
+    :return: the parts written
+    :rtype: int
+    """
+    assert context.result is not None
+    schema = part_rows(0, 1).schema
+    with context.result.writing() as write:
+        write(
+            {table: Parts(schema=schema, parts={f"p{value + 1}": part_rows(value + 1, rows) for value in range(parts)})}
+        )
+    return parts

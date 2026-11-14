@@ -239,6 +239,17 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/shared_arrow.py",
         class_name="SharedArrowStore",
+        attr_name="_pieces",
+        rationale=(
+            "the pieces of each result slot this process reserved in pieces for its own worker processes and has "
+            "not yet claimed or discarded (each piece also in _slots); they name files in this pod's own "
+            "memory-backed directory, so another pod has nothing to do with them, and a restart takes the "
+            "directory over and removes every result in it, as _slots"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
         attr_name="_claimed_bytes",
         rationale=(
             "the bytes each result this process claimed still holds in its own memory-backed directory, until "
