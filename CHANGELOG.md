@@ -69,8 +69,13 @@ the epoch-bypass allowlist with the same fix. The customer is reconciled against
 `threetears.langgraph.CheckpointPruneResult` (rows deleted per table, namespaces held) where
 LangGraph's returns `None`; an unknown strategy raises `ValueError`. Also added:
 `ThreeTierCheckpointSaver.scope`, and in `threetears.langgraph.checkpoint`
-`DELTA_COUNTERS_METADATA_KEY` and `keep_latest_survivors_sql()`, the one predicate the prune and
-the report below share.
+`DELTA_COUNTERS_METADATA_KEY`, `keep_latest_counts()` / `KeepLatestCounts` (what `keep_latest` would
+remove from some threads) and `CHECKPOINT_BLOB_BYTES` / `WRITE_BLOB_BYTES`. The prune and the report share one
+guard per row ("its namespace's newest checkpoint is newer and carries no delta marker"), and every read and delete is
+keyed by thread: the writes and checkpoints are deleted through `delete_keyed`, a batch of threads a statement, each
+row's namespace decided when the statement runs; the report and the maintenance walks read a keyset page of threads
+at a time, never the whole table in one statement. The walks are `@operator_command`s reached only from the
+command line.
 
 **Added:** `threetears.langgraph.checkpoint_maintenance`, generic to any app running the saver:
 `checkpoint_usage(executor, *, owned_threads_sql=None)` (table and heap sizes, live rows and dead
@@ -87,6 +92,12 @@ threetears.langgraph.checkpoint_maintenance {report,prune,delete-unowned} --dsn 
 bundles stay in the app's NATS KV bucket: `NatsCheckpointL2Cache` opens the bucket with no TTL, so they
 expire only if the app declared the bucket with one; an erasure deletes those keys too, or runs
 `aprune(..., strategy="delete")` through the app's own saver.
+
+### enforcement: a module's `if __name__ == "__main__":` block is an operator command's entry
+
+**Changed:** no-whole-reads: a call in a module's `if __name__ == "__main__":` block (a `python -m` command line) is
+the entry an `@operator_command` / `@operator_reset` chain ends at, not an unmarked caller of the marked `main`. A call
+of it anywhere else at module level still is.
 
 ### enforcement: an epoch-discipline allowlist is debt pinned by count, not a list that only shrinks
 

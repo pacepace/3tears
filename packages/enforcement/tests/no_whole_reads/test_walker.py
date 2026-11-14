@@ -421,6 +421,35 @@ def test_an_operator_mark_needs_its_proof_and_no_unmarked_caller(tmp_path: Path)
     )
 
 
+_MARKED_CLI = """
+    import asyncio
+
+    from threetears.core.operator import operator_command
+
+    @operator_command("an operator's explicit one-off recount of every state row", proof="tests/test_ops.py::test_cli")
+    async def _recount(conn):
+        return await conn.fetch("SELECT * FROM state")
+
+    @operator_command("an operator's explicit one-off recount of every state row", proof="tests/test_ops.py::test_cli")
+    def main(conn=None):
+        return asyncio.run(_recount(conn))
+
+    main()
+
+    if __name__ == "__main__":
+        raise SystemExit(main())
+"""
+
+
+def test_a_module_s_main_guard_is_the_entry_of_a_marked_command(tmp_path: Path) -> None:
+    """Flips if the ``if __name__ == "__main__":`` block of a command line (``python -m``) is reported as an unmarked
+    caller of its marked ``main``, or if a call of it anywhere else at module level is not."""
+    _ops(tmp_path, "def test_cli():\n    assert _recount and main\n")
+    findings = no_whole_reads_findings(_config(tmp_path, {"cli.py": _MARKED_CLI}))
+    callers = [finding for finding in findings if "marked @operator_command" in finding]
+    assert [finding.split(" in ", 1)[0] for finding in callers] == ["src/cli.py:14"], callers
+
+
 _MARKED_METHOD = """
     from threetears.core.operator import operator_command
 

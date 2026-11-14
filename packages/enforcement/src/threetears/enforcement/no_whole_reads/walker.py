@@ -905,6 +905,8 @@ class _CallSite:
         or ``self`` attribute assigned one of it), empty when unknown
     :ivar whole_flags: the whole flags (``whole=True``) a bare or ``self`` call passes: each a finding unless the
         callee resolves to functions of the repo none of which reaches a whole read
+    :ivar entry: whether the call is in its module's ``if __name__ == "__main__":`` block: a command line's own entry
+        (``python -m``), which an entry-only mark's chain ends at
     """
 
     path: str
@@ -919,6 +921,7 @@ class _CallSite:
     receiver_name: str
     receiver_class: str = ""
     whole_flags: tuple[str, ...] = ()
+    entry: bool = False
 
 
 @dataclass(frozen=True)
@@ -2034,6 +2037,8 @@ class _ModuleWalk(ast.NodeVisitor):
         self._source: list[tuple[frozenset[str], frozenset[str], bool]] = []
         self.stubs: set[str] = set()
         self._stack: list[str] = []
+        #: whether the walk is in the module's ``if __name__ == "__main__":`` block (a command line's entry)
+        self._in_main_guard = False
         self._classes: list[str] = []
         self._class_nodes: list[ast.ClassDef] = []
         self._envs: list[dict[str, str]] = [{}]
@@ -2869,6 +2874,28 @@ class _ModuleWalk(ast.NodeVisitor):
         for child in body:
             self.visit(child)
         self._loops.pop()
+
+    def visit_If(self, node: ast.If) -> None:
+        """walk an ``if``; a module's ``if __name__ == "__main__":`` block is its command line's entry, so the calls in
+        its body are kept as that entry's (:attr:`_CallSite.entry`).
+
+        :param node: the branch
+        :ptype node: ast.If
+        :return: nothing
+        :rtype: None
+        """
+        if self._stack or not _is_main_guard(node.test):
+            self.generic_visit(node)
+            return
+        self.visit(node.test)
+        self._in_main_guard = True
+        try:
+            for child in node.body:
+                self.visit(child)
+        finally:
+            self._in_main_guard = False
+        for child in node.orelse:
+            self.visit(child)
 
     def visit_For(self, node: ast.For) -> None:
         """walk a ``for`` loop.
@@ -5234,6 +5261,7 @@ class _ModuleWalk(ast.NodeVisitor):
                 receiver_name,
                 self._receiver_class(node),
                 whole_flags,
+                self._in_main_guard,
             )
         )
 
@@ -6382,6 +6410,22 @@ def _class_module(
     return found
 
 
+def _is_main_guard(test: ast.expr) -> bool:
+    """whether ``test`` is ``__name__ == "__main__"`` (either way round).
+
+    :param test: an ``if``'s test
+    :ptype test: ast.expr
+    :return: whether it is a module's main guard
+    :rtype: bool
+    """
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)):
+        return False
+    sides = (test.left, test.comparators[0])
+    return any(isinstance(side, ast.Name) and side.id == "__name__" for side in sides) and any(
+        isinstance(side, ast.Constant) and side.value == "__main__" for side in sides
+    )
+
+
 def _calls_marked(call: _CallSite, target: tuple[str, str]) -> bool:
     """whether a call that may reach an entry-only marked function is known to: a ``self`` or bare call resolved to
     it, or a method call on a receiver known to be its class. A receiver of unknown type that only shares the method's
@@ -6563,7 +6607,10 @@ def _resolve(
         "operator's command is reached only from its own entry, so every caller carries the same mark"
         for call, targets in resolved
         for target in targets
-        if target in marks and marks.get((call.path, call.function)) != marks[target] and _calls_marked(call, target)
+        if target in marks
+        and marks.get((call.path, call.function)) != marks[target]
+        and not call.entry
+        and _calls_marked(call, target)
     ]
     for index, (call, targets) in enumerate(resolved):
         if index in constructors_found:
