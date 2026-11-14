@@ -45,6 +45,15 @@ bundles stay in the app's NATS KV bucket: `NatsCheckpointL2Cache` opens the buck
 expire only if the app declared the bucket with one; an erasure deletes those keys too, or runs
 `aprune(..., strategy="delete")` through the app's own saver.
 
+### enforcement: the underscore-access scan parses each module once
+
+**Changed:** `threetears.enforcement.underscore_access` shapes A, C, D, E, F and I read each module's
+facts (private imports, module surface, `__all__` entries, class members and state, shape F's
+findings) from one parse, instead of each shape parsing the workspace again past the 8 MiB parse
+cache. The facts are a few kilobytes a module and current against a hash of its bytes, so a rewrite
+that keeps size, modification time and inode is still seen. On this repo the full scan went from
+97 s and 701 MiB peak RSS to 18 s and 93 MiB on one machine. Verdicts are unchanged.
+
 ### enforcement: an epoch-discipline allowlist is debt pinned by count, not a list that only shrinks
 
 **Changed:** the wording of the five `tests/enforcement/_epoch_*_allowlist.txt` headers, the
