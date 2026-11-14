@@ -3348,15 +3348,19 @@ class _ModuleWalk(ast.NodeVisitor):
             # each relation in it judged by the producer's declared key, as one relation; a producer declared per
             # label (reports #61: the long relation keyed by ``data_time``, the rest by ``run_id``) is read as each
             # labelled relation beside the default one, each judged by its own key and its own ``pins=``
-            if isinstance(value, ast.Constant) and str(value.value).startswith(PRODUCED_PREFIX):
+            if (
+                isinstance(value, ast.Constant)
+                and isinstance(produced := value.value, str)
+                and produced.startswith(PRODUCED_PREFIX)
+            ):
                 labelled = sorted(
-                    name.removeprefix(f"{value.value}{PRODUCED_LABEL}")
+                    name.removeprefix(f"{produced}{PRODUCED_LABEL}")
                     for name in self._schema.tables
-                    if name.startswith(f"{value.value}{PRODUCED_LABEL}")
+                    if name.startswith(f"{produced}{PRODUCED_LABEL}")
                 )
                 return ast.Dict(
                     keys=[ast.Constant(""), *(ast.Constant(label) for label in labelled)],
-                    values=[value, *(ast.Constant(f"{value.value}{PRODUCED_LABEL}{label}") for label in labelled)],
+                    values=[value, *(ast.Constant(f"{produced}{PRODUCED_LABEL}{label}") for label in labelled)],
                 )
             return value
 

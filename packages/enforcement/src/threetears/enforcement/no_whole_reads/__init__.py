@@ -457,10 +457,10 @@ def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
             name = "{}" if written == "*" and prefix else written
             for key in _keys_of(declared):
                 catalog.add_key(f"{prefix}{name.lower()}", key, "NoWholeReadsConfig")
-    for entry, declared in config.relation_producers.items():
+    for entry, produced in config.relation_producers.items():
         # one key (or keys) for every relation the producer yields, or per label of the mapping it yields: ``"*"``
         # the default, every other label its own relation's (reports #61)
-        labelled = declared if isinstance(declared, Mapping) else {"*": declared}
+        labelled = produced if isinstance(produced, Mapping) else {"*": produced}
         for label, keys in labelled.items():
             for key in _keys_of(keys):
                 catalog.add_key(

@@ -795,14 +795,14 @@ def _counts_by_relations(call: ast.Call) -> list[str]:
         # counted with nothing narrowing it: every value of the column, whatever the relation
         raise _Unseen("values")
     pins = _argument(call, "pins", None)
+    mine: dict[str, ast.expr] = {}
     if pins is not None and not (isinstance(pins, ast.Constant) and pins.value is None):
-        if not isinstance(pins, ast.Dict) or not all(
-            isinstance(key, ast.Constant) and isinstance(key.value, str) for key in pins.keys
-        ):
+        if not isinstance(pins, ast.Dict):
             raise _Unseen("pins")
-        mine = {str(key.value).lower(): value for key, value in zip(pins.keys, pins.values, strict=True) if key}
-    else:
-        mine = {}
+        for key, value in zip(pins.keys, pins.values, strict=True):
+            if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                raise _Unseen("pins")
+            mine[key.value.lower()] = value
     statements: list[str] = []
     for key, node in zip(tables.keys, tables.values, strict=True):
         relation, own = _relation(node, "tables")
