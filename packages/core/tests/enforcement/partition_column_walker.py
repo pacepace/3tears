@@ -10,11 +10,12 @@ import functools
 from collections.abc import Mapping
 from pathlib import Path
 
-from threetears.enforcement.no_whole_reads.schema import collect_schema
+from threetears.enforcement.no_whole_reads.schema import SchemaCatalog, collect_schema
 from threetears.enforcement.partition_column import (
     PARTITIONED_TABLES,
     PartitionRule,
     tied_columns,
+    unique_keys,
     walk_python_files,
 )
 from threetears.enforcement.partition_column import violations_in_file as rule_violations
@@ -23,7 +24,9 @@ __all__ = [
     "PACKAGE_SRC_ROOTS",
     "PARTITIONED_TABLES",
     "repo_tied_columns",
+    "repo_unique_keys",
     "tied_columns",
+    "unique_keys",
     "violations_in_file",
     "walk_python_files",
 ]
@@ -46,24 +49,54 @@ PACKAGE_SRC_ROOTS: list[Path] = [
 
 
 @functools.cache
+def _repo_catalog() -> SchemaCatalog:
+    """the schema catalog of the walked packages' own declarations.
+
+    :return: the catalog
+    :rtype: SchemaCatalog
+    """
+    roots = tuple(root for root in PACKAGE_SRC_ROOTS if root.exists())
+    return collect_schema(_REPO_ROOT, roots)
+
+
 def repo_tied_columns() -> Mapping[str, frozenset[str]]:
     """:func:`tied_columns` over the walked packages' own declarations.
 
     :return: table onto its tied columns
     :rtype: Mapping[str, frozenset[str]]
     """
-    roots = tuple(root for root in PACKAGE_SRC_ROOTS if root.exists())
-    return tied_columns(collect_schema(_REPO_ROOT, roots))
+    return tied_columns(_repo_catalog())
 
 
-def violations_in_file(path: Path, tied: Mapping[str, frozenset[str]] | None = None) -> tuple[list[str], list[str]]:
+def repo_unique_keys() -> Mapping[str, frozenset[frozenset[str]]]:
+    """:func:`unique_keys` over the walked packages' own declarations.
+
+    :return: table onto its unique keys
+    :rtype: Mapping[str, frozenset[frozenset[str]]]
+    """
+    return unique_keys(_repo_catalog())
+
+
+def violations_in_file(
+    path: Path,
+    tied: Mapping[str, frozenset[str]] | None = None,
+    unique: Mapping[str, frozenset[frozenset[str]]] | None = None,
+) -> tuple[list[str], list[str]]:
     """``(strict, deferred)`` violations in ``path`` under 3tears' rule.
 
     :param path: source file under inspection
     :ptype path: Path
     :param tied: the tied columns; None takes the walked packages' own (:func:`repo_tied_columns`)
     :ptype tied: Mapping[str, frozenset[str]] | None
+    :param unique: the unique keys; None takes the walked packages' own (:func:`repo_unique_keys`)
+    :ptype unique: Mapping[str, frozenset[frozenset[str]]] | None
     :return: the strict and the deferred violations
     :rtype: tuple[list[str], list[str]]
     """
-    return rule_violations(path, PartitionRule(tied=repo_tied_columns() if tied is None else tied))
+    return rule_violations(
+        path,
+        PartitionRule(
+            tied=repo_tied_columns() if tied is None else tied,
+            unique=repo_unique_keys() if unique is None else unique,
+        ),
+    )

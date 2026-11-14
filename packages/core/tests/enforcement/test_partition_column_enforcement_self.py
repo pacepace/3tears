@@ -22,6 +22,7 @@ from pathlib import Path
 # meta-test exercises exactly the function the enforcement test runs.
 from packages.core.tests.enforcement.partition_column_walker import (  # type: ignore[import-not-found]
     tied_columns,
+    unique_keys,
     violations_in_file,
 )
 from threetears.enforcement.no_whole_reads.schema import collect_schema
@@ -270,9 +271,10 @@ class TestPartitionWalkerHelperCalls:
             "    return await read_by(conn, 'memories', by={'user_id': user_id}, records=True)\n"
             "async def every(conn):\n"
             "    return await holds_any(conn, 'conversations', order=['agent_id'])\n"
-            "async def mark(conn, fire_id):\n"
-            "    await update_keyed(conn, 'wake_fires', values={'status': 'done'}, by={'fire_id': fire_id})\n",
+            "async def mark(conn, user_id):\n"
+            "    await update_keyed(conn, 'wake_fires', values={'status': 'done'}, by={'user_id': user_id})\n",
         )
+        # (a write by ``fire_id`` alone passes since unique keys count: wake_fires declares it unique, one row)
         strict, _ = violations_in_file(target)
         assert len(strict) == 3, strict
         assert all("partition column" in message for message in strict), strict
@@ -298,3 +300,65 @@ class TestPartitionWalkerHelperCalls:
         )
         strict, deferred = violations_in_file(target)
         assert strict == [] and deferred == [], strict
+
+
+#: memories partitioned by agent, its id unique on its own, a slug unique per agent, a handle unique only while live
+_MEMORIES_DDL = (
+    "CREATE TABLE memories (agent_id UUID NOT NULL, id UUID NOT NULL, slug TEXT, user_id UUID, handle TEXT, "
+    "PRIMARY KEY (agent_id, id), UNIQUE (id))",
+    "CREATE UNIQUE INDEX memories_slug_key ON memories (user_id, slug)",
+    "CREATE UNIQUE INDEX memories_live_handle ON memories (handle) WHERE handle IS NOT NULL",
+)
+
+
+def _unique(tmp_path: Path, *statements: str) -> dict[str, frozenset[frozenset[str]]]:
+    """the unique keys a migration of ``statements`` declares, read through the no_whole_reads catalog.
+
+    :param tmp_path: the tree root
+    :ptype tmp_path: Path
+    :param statements: the DDL, in order
+    :ptype statements: str
+    :return: table onto its unique keys
+    :rtype: dict[str, frozenset[frozenset[str]]]
+    """
+    body = "".join(f"S{n} = {statement!r}\n" for n, statement in enumerate(statements))
+    _write(tmp_path / "src" / "pkg" / "migrations" / "v001.py", body)
+    return unique_keys(collect_schema(tmp_path, (tmp_path / "src",)))
+
+
+class TestPartitionWalkerUniqueKeys:
+    """a keyed helper call binding a whole unique key of its table reads or writes at most one row: one partition."""
+
+    def test_a_call_binding_a_whole_unique_key_passes(self, tmp_path: Path) -> None:
+        """Flips if a helper call bound by a declared unique key (a lone unique id, a composite unique index) is
+        flagged for want of the partition column."""
+        unique = _unique(tmp_path, *_MEMORIES_DDL)
+        assert frozenset({"id"}) in unique["memories"]
+        assert frozenset({"user_id", "slug"}) in unique["memories"]
+        target = _write(
+            tmp_path / "src" / "pkg" / "mod.py",
+            "from threetears.core.keyed import read_row, update_keyed\n"
+            "async def one(conn, memory_id):\n"
+            "    return await read_row(conn, 'memories', by={'id': memory_id})\n"
+            "async def by_slug(conn, user_id, slug):\n"
+            "    await update_keyed(conn, 'memories', values={'x': 1}, by={'user_id': user_id, 'slug': slug})\n",
+        )
+        assert violations_in_file(target, {}, unique) == ([], [])
+
+    def test_part_of_a_key_a_partial_unique_or_a_null_pin_stays_red(self, tmp_path: Path) -> None:
+        """Flips if a call binding only part of a composite unique key, the columns of a PARTIAL unique index (no
+        key of the table), or a unique column pinned to None (``IS NULL``, which many rows may be) passes."""
+        unique = _unique(tmp_path, *_MEMORIES_DDL)
+        assert frozenset({"handle"}) not in unique["memories"]
+        target = _write(
+            tmp_path / "src" / "pkg" / "mod.py",
+            "from threetears.core.keyed import read_by\n"
+            "async def part(conn, slug):\n"
+            "    return await read_by(conn, 'memories', by={'slug': slug})\n"
+            "async def live(conn, handle):\n"
+            "    return await read_by(conn, 'memories', by={'handle': handle})\n"
+            "async def none(conn):\n"
+            "    return await read_by(conn, 'memories', by={'id': None})\n",
+        )
+        strict, _ = violations_in_file(target, {}, unique)
+        assert len(strict) == 3, strict
