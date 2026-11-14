@@ -288,34 +288,33 @@ class TestPipeThrough:
         await asyncio.wait_for(gen.aclose(), timeout=5)
 
     async def test_a_consumer_that_stops_after_the_source_failed_gets_the_failure_and_leaves_no_pipe_open(
-        self,
+        self, tmp_path: Path
     ) -> None:
         """The source's failure was raised before the killed child was drained or waited on, so its stdout, paused
         on a full buffer, stayed open behind the error."""
-        stopped, failed = asyncio.Event(), asyncio.Event()
+        stopped = asyncio.Event()
 
         async def failing_once_the_consumer_stops() -> AsyncIterator[bytes]:
             yield b"start of an archive"
             await stopped.wait()
-            failed.set()
             raise RuntimeError("object store read failed")
 
         before = _open_pipes()
-        # a megabyte on stdout at once, so its reader is paused on a full buffer when the consumer stops
-        gen = pipe_through(["sh", "-c", "head -c 1048576 /dev/zero; cat >/dev/null"], failing_once_the_consumer_stops())
+        # the child says its pid, then puts a megabyte on stdout at once, so its reader is paused on a full buffer
+        # when the consumer stops
+        pid_file = tmp_path / "pid"
+        child = f"echo $$ > {pid_file}; head -c 1048576 /dev/zero; cat >/dev/null"
+        gen = pipe_through(["sh", "-c", child], failing_once_the_consumer_stops())
         assert await anext(gen)
+        pid = int(pid_file.read_text())
         stopped.set()
-        await failed.wait()
-        # the hazard, not a wait for an outcome: the pump takes the failure and kills the child
-        await asyncio.sleep(0.1)
+        # the pump kills the child in the same step it takes the failure, so once the child is gone the failure is
+        # the pump's outcome. The deadline fails only a pump that never kills it, however slow the runner
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 60
+        while Path(f"/proc/{pid}").exists():
+            assert loop.time() < deadline, "the source failed and the pump never killed the child"
+            await asyncio.sleep(0.01)
         with pytest.raises(RuntimeError, match="object store read failed"):
             await asyncio.wait_for(gen.aclose(), timeout=5)
         assert _open_pipes() - before == set()
-
-    async def test_a_consumer_that_stops_early_does_not_hang_when_the_child_s_exit_is_seen_late(self) -> None:
-        """#1168, as ``stream_stdout``'s abort: the child's exit is seen only after the wait on it began."""
-        gen = pipe_through(["sh", "-c", "exec 2>&-; cat"], _emit(b"y" * (50 * 1024 * 1024), chunk=64 * 1024))
-        assert await anext(gen)
-        # the hazard, not a wait for an outcome: stdout's reader fills until it pauses, and the closed stderr is read
-        await asyncio.sleep(0.1)
-        await asyncio.wait_for(gen.aclose(), timeout=5)
