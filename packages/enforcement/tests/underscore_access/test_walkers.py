@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 import os
 from pathlib import Path
 
 import pytest
 
+from threetears.enforcement.common import clear_parse_cache
 from threetears.enforcement.underscore_access import walkers
 from threetears.enforcement.underscore_access.walkers import (
     package_id,
@@ -83,16 +85,20 @@ class TestShapeA:
         src = tmp_path / "src"
         _write(src / "pkg" / "__init__.py", "")
         _write(src / "pkg" / "_helper.py", "_name = 1\n")
-        _write(
+        importer = _write(
             src / "consumer" / "__init__.py",
-            "from pkg._helper import _name\n",
+            '"""consumer."""\n\nfrom pkg._helper import _name\n',
         )
         violations = shape_a_violations((src,), tmp_path, (src,))
-        assert len(violations) == 1
-        v = violations[0]
-        assert v.category == "underscore_access.A"
-        assert v.symbol == "_name"
-        assert v.file == src / "consumer" / "__init__.py"
+        assert [(v.category, v.file, v.line, v.symbol, v.reason) for v in violations] == [
+            (
+                "underscore_access.A",
+                importer,
+                3,
+                "_name",
+                "imports private name '_name' from 'pkg._helper' across package boundary",
+            )
+        ]
 
     def test_same_package_private_allowed(self, tmp_path: Path) -> None:
         src = tmp_path / "src"
@@ -629,8 +635,15 @@ class TestShapeI:
 
         violations = shape_i_violations((tests,), tmp_path, (src,))
 
-        assert [(v.category, v.file, v.line, v.symbol) for v in violations] == [
-            ("underscore_access.I", path, 5, "_lock")
+        assert [(v.category, v.file, v.line, v.symbol, v.reason) for v in violations] == [
+            (
+                "underscore_access.I",
+                path,
+                5,
+                "_lock",
+                "class 'Held' reaches '_lock', private state of its base 'Backend' (src/pkg/backend.py:4); "
+                "reach the base through its public surface, or a protected method it offers subclasses",
+            )
         ]
 
     def test_class_state_and_a_write_of_it_are_reported_too(self, tmp_path: Path) -> None:
@@ -722,13 +735,42 @@ class TestEveryShapeReadsOneParse:
         monkeypatch.setattr(walkers, "note_unscanned", lambda target, reason: notes.append(reason))
         src = tmp_path / "src"
         _write(src / "pkg" / "bad.py", "def f(:\n")
+        roots = (src,)
 
-        assert shape_c_violations((src,), tmp_path, _DEFAULT_SHAPE_C_SKIP) == []
-        assert shape_e_violations((src,), tmp_path) == []
+        assert shape_a_violations(roots, tmp_path, roots) == []
+        assert shape_c_violations(roots, tmp_path, _DEFAULT_SHAPE_C_SKIP) == []
+        assert shape_e_violations(roots, tmp_path) == []
+        assert shape_f_violations(roots, tmp_path) == []
+        assert len(notes) == 4
+        # D and I each read the module twice: once for the inheritance roots' map, once to scan
+        assert shape_d_violations(roots, tmp_path, roots) == []
+        assert shape_i_violations(roots, tmp_path, roots) == []
 
-        assert len(notes) == 2
-        assert notes[0] == notes[1]
-        assert notes[0].startswith("syntax error at line")
+        assert len(notes) == 4 + 2 + 3
+        assert len(set(notes)) == 1
+        assert notes[0] == "syntax error at line 1"
+
+    def test_every_shape_reads_one_parse_until_the_parse_cache_is_cleared(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        parses: list[str] = []
+        real_parse = ast.parse
+        monkeypatch.setattr(ast, "parse", lambda source, *a, **k: parses.append("p") or real_parse(source, *a, **k))
+        src = tmp_path / "src"
+        _write(src / "pkg" / "mod.py", '__all__ = ["_x"]\n\nclass A:\n    _y = 1\n')
+        roots = (src,)
+
+        shape_a_violations(roots, tmp_path, roots)
+        shape_c_violations(roots, tmp_path, _DEFAULT_SHAPE_C_SKIP)
+        shape_d_violations(roots, tmp_path, roots)
+        shape_e_violations(roots, tmp_path)
+        shape_f_violations(roots, tmp_path)
+        shape_i_violations(roots, tmp_path, roots)
+        assert len(parses) == 1
+
+        clear_parse_cache()
+        shape_e_violations(roots, tmp_path)
+        assert len(parses) == 2
 
     def test_a_module_that_is_not_utf8_is_reported(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         notes: list[str] = []

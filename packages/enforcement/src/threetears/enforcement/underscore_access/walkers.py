@@ -53,6 +53,7 @@ from pathlib import Path
 from threetears.observe import BuildOnce
 from threetears.enforcement.common import (
     Violation,
+    clear_with_parse_cache,
     is_private_name,
     iter_python_files,
     note_unscanned,
@@ -185,6 +186,8 @@ _FACTS_MAX_MODULES = 20_000
 _FACTS: BuildOnce[Path, _ModuleFacts] = BuildOnce(
     is_current=_same_content, cost=_one_module, max_cost=_FACTS_MAX_MODULES
 )
+# a caller that clears the parse cache to read the source afresh gets fresh facts too
+clear_with_parse_cache(_FACTS.clear)
 
 
 def _read_module_facts(path: Path) -> _ModuleFacts:
