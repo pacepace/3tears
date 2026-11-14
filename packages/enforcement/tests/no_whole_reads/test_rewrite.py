@@ -1181,6 +1181,68 @@ def test_first_of_and_top_n_reads_are_rewritten_onto_keyset_page_s_first_page(tm
         assert_source_says(tmp_path, entry)
 
 
+_NEAREST = """
+    async def nearest(conn, vector, state, k):
+        rows = await conn.fetch(
+            "SELECT geo_id, name, 1 - (shape OPERATOR(public.<=>) $1::text::public.vector) AS similarity FROM geos "
+            "WHERE state = $2 AND shape IS NOT NULL ORDER BY shape OPERATOR(public.<=>) $1::text::public.vector LIMIT $3",
+            vector,
+            state,
+            k,
+        )
+        return [row["geo_id"] for row in rows]
+
+
+    async def unscored(conn, vector, state):
+        rows = await conn.fetch(
+            "SELECT geo_id FROM geos WHERE state = $2 ORDER BY shape OPERATOR(public.<=>) $1::text::public.vector LIMIT 5",
+            vector,
+            state,
+        )
+        return [row["geo_id"] for row in rows]
+"""
+
+
+def test_a_nearest_rows_read_is_rewritten_onto_read_nearest(tmp_path: Path) -> None:
+    """Flips if a read ordered by a vector column's distance from a bound vector under a LIMIT, selecting ``1 -`` that
+    distance, is not parsed as a nearest-rows read (the order and the similarity item taken off, the vector's
+    parameter counted) and rewritten onto ``read_nearest`` with records, its ``Nearest`` naming the column, the vector
+    argument and the similarity; or if one selecting no similarity (the proof compares rows by it) is taken."""
+    parsed = parse_first(
+        "SELECT geo_id, 1 - (g.shape OPERATOR(public.<=>) $1::text::public.vector) AS score FROM geos g "
+        "WHERE g.state = $2 ORDER BY g.shape OPERATOR(public.<=>) $1::text::public.vector LIMIT $3",
+        guards=True,
+    )
+    assert isinstance(parsed, PointSql), parsed
+    assert parsed.columns == ("geo_id",) and parsed.order == () and parsed.limit == {"param": 3}
+    assert parsed.nearest == {
+        "column": "shape",
+        "param": 1,
+        "operator": "<=>",
+        "schema": "public",
+        "similarity": "score",
+    }
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_NEAREST), encoding="utf-8")
+    rewrites, refusals = plan_first_rewrites(config)
+    assert [rewrite.function for rewrite in rewrites] == ["nearest"]
+    assert [refusal.function for refusal in refusals] == ["unscored"]
+    assert "no similarity" in refusals[0].reason
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    (entry,) = json.loads(manifest.read_text(encoding="utf-8"))
+    assert entry["helper"] == "read_nearest" and entry["nearest"]["similarity"] == "similarity"
+    source = " ".join((tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8").split())
+    assert "from threetears.core.keyed import Fragment, Nearest, read_nearest" in source
+    assert (
+        "await read_nearest(conn, 'geos', by={'state': state}, where=[Fragment('shape IS NOT NULL', ())], "
+        "nearest=Nearest('shape', vector, similarity='similarity'), limit=k, columns=('geo_id', 'name'), "
+        "records=True)" in source
+    )
+    assert_source_says(tmp_path, entry)
+
+
 #: the index the first-of reads by state walk in name order, completed by the key's geo_id
 _GEO_NAME_INDEX = """
     BY_NAME = "CREATE INDEX IF NOT EXISTS geos_by_name ON geos (state, name, geo_id)"
@@ -2110,6 +2172,43 @@ def test_a_correlated_exists_is_kept_as_a_guard_over_the_helper_s_row() -> None:
         "SELECT id FROM geos g WHERE g.state = $1 AND EXISTS (SELECT 1 FROM grants k WHERE geo = g.id)",
         "SELECT id FROM geos g WHERE g.state = $1 AND EXISTS (SELECT 1 FROM grants k WHERE k.geo = x.id)",
         "SELECT id FROM geos g WHERE g.state = $1 AND EXISTS (SELECT 1 FROM grants g WHERE g.geo = 1)",
+    ):
+        assert isinstance(parse_point(refused, guards=True), str), refused
+
+
+def test_a_correlated_exists_inside_a_conjunct_is_kept_as_a_guard_over_the_helper_s_row() -> None:
+    """Flips if a conjunct holding a correlated ``[NOT] EXISTS`` beside other conditions (``(m.superseded_by IS NULL
+    OR NOT EXISTS (SELECT ... WHERE g.memory_id = m.superseded_by))``) is refused as a subquery, or kept without the
+    outer table's columns respelled ``t.`` both inside the ``EXISTS`` and beside it; or if one beside a column of
+    another relation, or beside a subquery that is no ``EXISTS``, is taken."""
+    parsed = parse_list(
+        "SELECT m.memory_id FROM memories m WHERE m.agent_id = $1 AND m.user_id IS NULL AND (m.superseded_by IS NULL "
+        "OR NOT EXISTS (SELECT 1 FROM memories g WHERE g.agent_id = m.agent_id AND g.memory_id = m.superseded_by)) "
+        "AND NOT (COALESCE(m.tags, '[]'::jsonb) ? 'retracted') ORDER BY m.date_created",
+        guards=True,
+    )
+    assert isinstance(parsed, PointSql), parsed
+    assert [pin.column for pin in parsed.pins] == ["agent_id", "user_id"]
+    assert [guard.literal for guard in parsed.guards] == [
+        "(t.superseded_by IS NULL OR NOT EXISTS (SELECT 1 FROM memories g WHERE g.agent_id = t.agent_id AND "
+        "g.memory_id = t.superseded_by))",
+        "NOT (COALESCE(tags, '[]'::jsonb) ? 'retracted')",
+    ]
+    bare = parse_list(
+        "SELECT memory_id FROM memories WHERE agent_id = $1 AND (superseded_by IS NULL OR NOT EXISTS (SELECT 1 FROM "
+        "memories g WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))",
+        guards=True,
+    )
+    assert isinstance(bare, PointSql), bare
+    assert [guard.literal for guard in bare.guards] == [
+        "(superseded_by IS NULL OR NOT EXISTS (SELECT 1 FROM memories g WHERE g.agent_id = t.agent_id AND "
+        "g.memory_id = t.superseded_by))"
+    ]
+    for refused in (
+        "SELECT id FROM geos g WHERE g.state = $1 AND (x.id IS NULL OR EXISTS (SELECT 1 FROM grants k WHERE k.geo = g.id))",
+        "SELECT id FROM geos g WHERE g.state = $1 AND (g.id IN (SELECT geo FROM grants) OR EXISTS (SELECT 1 FROM grants k "
+        "WHERE k.geo = g.id))",
+        "SELECT id FROM geos g WHERE g.state = $1 AND (g.id IS NULL OR EXISTS (SELECT 1 FROM grants WHERE grants.geo = g.id))",
     ):
         assert isinstance(parse_point(refused, guards=True), str), refused
 

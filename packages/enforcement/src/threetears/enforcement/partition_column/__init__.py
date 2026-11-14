@@ -280,6 +280,7 @@ _BY_HELPERS: frozenset[str] = frozenset(
         "keyset_page",
         "read_after",
         "read_by",
+        "read_nearest",
         "read_row",
         "read_value",
         "update_keyed",

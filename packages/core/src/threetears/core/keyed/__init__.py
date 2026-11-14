@@ -96,6 +96,7 @@ from threetears.core.keyed.counts import (
     rows_affected,
 )
 from threetears.interfaces.keyed.counts import Count, Range, Sum
+from threetears.interfaces.keyed.point import Nearest
 from threetears.core.keyed.deletes import SweptRows, delete_before, delete_oldest, update_before
 from threetears.core.keyed.inline import InlineDuckDB, InlineTransaction, run_inline
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
@@ -105,7 +106,7 @@ from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_
 from threetears.core.keyed.options import with_options
 from threetears.core.keyed.joins import Joined, read_by_joined
 from threetears.core.keyed.links import read_link_chain
-from threetears.core.keyed.point import read_by, read_row, read_value
+from threetears.core.keyed.point import read_by, read_nearest, read_row, read_value
 from threetears.interfaces.keyed.keys import (
     DeclaredIndex,
     TableKey,
@@ -225,6 +226,7 @@ __all__ = [
     "PageAfter",
     "Pin",
     "Range",
+    "Nearest",
     "Selected",
     "Sort",
     "StageMode",
@@ -260,6 +262,7 @@ __all__ = [
     "keyset_rows",
     "read_after",
     "read_by",
+    "read_nearest",
     "read_by_joined",
     "read_link_chain",
     "read_joined",
