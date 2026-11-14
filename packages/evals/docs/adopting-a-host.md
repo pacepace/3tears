@@ -270,8 +270,9 @@ replay as the `k` answers they were. Inside an eval's cell, each call is also re
 one prompt get back what each got, whatever order the cells run in. A recording made before format 3 noted no cell
 and is still read: repeat `i` is served the call of index `i`, and otherwise the first call left. A prompt the recording does not hold, or one asked once more than it was, is
 refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
-an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. To name a prompt that
-changed under its recording before a replay starts, hand
+an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. A judge that meets a
+`RecordingRefused` now raises it too, where it used to record a failed call with its text withheld. To name a
+prompt that changed under its recording before a replay starts, hand
 `RecordedCompletions.check_covers(RECORDING, prompts, settings=...)` the prompts your code sends. A file holds one
 model's calls at one temperature, under any number of settings (one model at two efforts), and each client replays
 its own with `replay(path, settings=...)`; record a second model into a file of its own, since recording it onto
