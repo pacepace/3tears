@@ -33,7 +33,7 @@ from threetears.evals.analysis.blind_read import PREFERENCE_MIN_ITEMS, blind_she
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA
 from threetears.evals.kernel import CALIBRATION_MIN_AGREEMENT, CALIBRATION_MIN_RESULTS
-from threetears.evals.kernel.text_block import one_line
+from threetears.evals.kernel.text_block import under
 from threetears.evals.schema import (
     SCALES,
     BlindAgreement,
@@ -538,7 +538,7 @@ def _review_prompt(sheet: BlindSheet, index: int) -> str:
         answers = " or ".join(
             f'"{level.value}"' + (f" ({level.meaning})" if level.meaning else "") for level in criterion.levels
         )
-        lines.append(f"- {criterion.dim}: {one_line(criterion.question)} Answer {answers}.")
+        lines += under(f"{criterion.dim}: {criterion.question} Answer {answers}.", "  ", first="- ")
     lines += ["", "# What the output answers", item.case_material]
     for output in item.outputs:
         lines += ["", f"# Output {output.slot}", output.text]
@@ -772,7 +772,7 @@ def judge_lines(
             )
         for check in checked:
             kappa = "kappa undefined" if check.kappa is None else f"kappa {_figure(check.kappa)}"
-            lines.append(f"    {one_line(reviewer)} against people on {check.dim}: {check.outputs} outputs, {kappa}")
+            lines += under(f"{reviewer} against people on {check.dim}: {check.outputs} outputs, {kappa}", "    ")
     for reviewer in dict.fromkeys(refused.reviewer for refused in report.refused_anchors):
         lines.append(
             f"  {reviewer} is the judge's own model: its answers repeat the judge and are not read as calibration"

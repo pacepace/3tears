@@ -37,7 +37,7 @@ input[type=text]{font:inherit;padding:.25rem;width:min(100%,30rem)}
   function load() {
     try {
       var kept = JSON.parse(window.localStorage.getItem(key) || "null");
-      if (kept && kept.answers) { state = kept; }
+      if (kept ? kept.answers : null) { state = kept; }
     } catch (unavailable) { /* storage is blocked or absent: the page works without it */ }
   }
   function save() {
@@ -54,11 +54,15 @@ input[type=text]{font:inherit;padding:.25rem;width:min(100%,30rem)}
     var all = item.outputs.every(function (output) {
       return item.ask.verdicts.every(function (dim) { return answer.verdicts[output.slot + "|" + dim]; });
     });
-    return all && (!item.ask.preference || answer.prefer);
+    if (!all) { return false; }
+    return !item.ask.preference || Boolean(answer.prefer);
   }
   function fromTheTop() {
     var count = 0;
-    while (count < sheet.items.length && complete(sheet.items[count])) { count += 1; }
+    while (count < sheet.items.length) {
+      if (!complete(sheet.items[count])) { break; }
+      count += 1;
+    }
     return count;
   }
   function answered() { return sheet.items.filter(complete).length; }
@@ -134,7 +138,7 @@ input[type=text]{font:inherit;padding:.25rem;width:min(100%,30rem)}
   function refresh() {
     var item = sheet.items[state.at];
     var done = document.getElementById("done");
-    if (item && done) {
+    if (item ? done : null) {
       var answer = answerOf(item);
       done.textContent = complete(item) ? (answer.skipped ? "Skipped." : "Answered.") :
         "Answer every question for this item to count it.";
@@ -169,7 +173,7 @@ input[type=text]{font:inherit;padding:.25rem;width:min(100%,30rem)}
           first = false;
         });
       });
-      if (first && answer.prefer) { rows.push([item.item, "A", "", "", note, state.rater, "person", answer.prefer]); }
+      if (first ? answer.prefer : "") { rows.push([item.item, "A", "", "", note, state.rater, "person", answer.prefer]); }
     });
     return rows.map(function (row) { return row.map(cell).join(","); }).join("\n") + "\n";
   }
