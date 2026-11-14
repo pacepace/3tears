@@ -43,6 +43,7 @@ from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoi
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER  # noqa: E402
 from threetears.core.collections.scope_epochs import ScopeEpochs  # noqa: E402
 from threetears.core.collections.copy_follower import (  # noqa: E402
+    FAILING_AFTER,
     WHOLE_READ_WHYS,
     CopyFollower,
     FollowedTable,
@@ -195,7 +196,9 @@ def noted_world() -> tuple[tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollowe
     return _world()
 
 
-def _world() -> tuple[tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollower], CollectionRegistry]:
+def _world(
+    retry_waits: tuple[float, float] = (1.0, 60.0),
+) -> tuple[tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollower], CollectionRegistry]:
     l3, log, lock = _L3(), _Log(), _Seqlock()
     backend = DuckDBBackend()
     backend.initialize(_metadata())
@@ -210,6 +213,7 @@ def _world() -> tuple[tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollower], C
         generation=log.current,
         changes=log,
         page_size=50,
+        retry_waits=retry_waits,
     )
     follower.register()
     return (l3, log, lock, backend, follower), registry
@@ -1709,3 +1713,141 @@ async def test_a_warm_paged_by_its_order_over_one_shared_lead_value_reads_every_
     follower.register()
     await _warmed((l3, log, lock, backend, follower), 120)
     assert len(_copy(backend)) == 120
+
+
+def _dies_applying(backend: DuckDBBackend, deaths: int) -> dict[str, int]:
+    """the apply worker dies applying the next ``deaths`` changes: its stages die with it (a worker-process backend's
+    ``LookupError``), nothing is applied."""
+    real = backend.apply_staged
+    calls = {"n": 0}
+
+    def dying(*args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] <= deaths:
+            held = backend.staged_stages()
+            if held:
+                backend.drop_stage(*held)
+            raise LookupError("the apply worker died applying the change; the change is read again")
+        return real(*args, **kwargs)
+
+    backend.apply_staged = dying  # type: ignore[method-assign]
+    return calls
+
+
+def _failures_counted(what: str) -> float:
+    return REGISTRY.get_sample_value("copy_follower_pass_failures_total", {"what": what}) or 0.0
+
+
+def _behind_since() -> float:
+    return REGISTRY.get_sample_value("copy_follower_behind_since_timestamp_seconds") or 0.0
+
+
+async def test_an_apply_whose_worker_died_reads_the_change_again_and_the_next_pass_applies_it(world: Any) -> None:
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 10)
+    before = _copy(backend)
+    l3.put([("VA", 1, 5)])
+    l3.delete([("VA", 2)])
+    log.commit([("VA", 1), ("VA", 2)])
+    lock.version += 1
+    _dies_applying(backend, 1)
+    lost = _failures_counted("stages_lost")
+    with pytest.raises(LookupError):
+        await follower.catch_up()
+    # the copy keeps serving its last change; the change's keys are pending again, nothing is read whole
+    assert _copy(backend) == before
+    assert follower.status().pending == {_TABLE: 2}
+    assert follower.status().failures == 1
+    assert follower.status().behind_since is not None
+    assert _failures_counted("stages_lost") == lost + 1
+    assert _behind_since() > 0
+    whole = _whole_reads_now()
+    l3.rows_read = 0
+    assert await follower.catch_up()
+    # the change is read again -- its own keys, never the table
+    assert l3.rows_read == 1
+    assert _risen(whole) == {}
+    assert _copy(backend) == l3.held()
+    assert follower.status().failures == 0
+    assert follower.status().behind_since is None
+    assert follower.status().phase is FollowerPhase.FOLLOWING
+    assert _behind_since() == 0
+
+
+async def test_stages_lost_while_staging_are_forgotten_and_the_next_pass_reads_the_change_again(world: Any) -> None:
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 10)
+    l3.put([("VA", 3, 7)])
+    log.commit([("VA", 3)])
+    lock.version += 1
+    real = backend.stage_rows
+    calls = {"n": 0}
+
+    def dying(*args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise LookupError("the apply worker holding this change's stages was replaced; the change is read again")
+        return real(*args, **kwargs)
+
+    backend.stage_rows = dying
+    with pytest.raises(LookupError):
+        await follower.catch_up()
+    assert follower.status().pending == {_TABLE: 1}
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+
+
+async def test_repeated_deaths_reach_the_failing_state_serving_the_last_change_and_a_good_change_then_applies(
+    world: Any,
+) -> None:
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 10)
+    before = _copy(backend)
+    stamp = follower.stamp
+    l3.put([("VA", 4, 9)])
+    log.commit([("VA", 4)])
+    lock.version += 1
+    _dies_applying(backend, FAILING_AFTER)
+    for failed in range(1, FAILING_AFTER + 1):
+        with pytest.raises(LookupError):
+            await follower.catch_up()
+        status = follower.status()
+        assert status.failures == failed
+        assert status.phase is (FollowerPhase.FAILING if failed >= FAILING_AFTER else FollowerPhase.WAITING)
+        # stale is fine: every reader still reads the last change applied, labelled with its stamp
+        assert _copy(backend) == before
+        with follower.reading() as (_cursor, read_stamp):
+            assert read_stamp == stamp
+    assert _behind_since() > 0
+    l3.put([("VA", 5, 9)])
+    log.commit([("VA", 5)])
+    lock.version += 1
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert follower.status().phase is FollowerPhase.FOLLOWING
+    assert follower.status().failures == 0
+    assert _behind_since() == 0
+
+
+async def test_the_running_follower_tries_a_failed_pass_again_after_a_wait_with_nothing_else_heard() -> None:
+    (l3, log, lock, backend, follower), _registry = _world(retry_waits=(0.01, 0.05))
+    await _warmed((l3, log, lock, backend, follower), 10)
+    applied = follower.status().applied
+    l3.put([("VA", 6, 3)])
+    log.commit([("VA", 6)])
+    lock.version += 1
+    calls = _dies_applying(backend, 3)
+    running = asyncio.create_task(follower.run())
+    try:
+        follower.poke()
+        async with asyncio.timeout(10):
+            while follower.status().applied == applied:
+                await asyncio.sleep(0.01)
+    finally:
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+    # three deaths, each retried after its wait with no poke; the fourth try applied the change
+    assert calls["n"] == 4
+    assert _copy(backend) == l3.held()
+    assert follower.status().failures == 0

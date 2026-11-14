@@ -48,7 +48,7 @@ from typing import Annotated, Any, Final, Protocol, TYPE_CHECKING
 
 from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumns
 from threetears.observe import contain, get_logger
-from threetears.observe.metrics import counter
+from threetears.observe.metrics import counter, gauge
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, rail_arrow_types
@@ -124,6 +124,28 @@ _NOTES_CANNOT: Final = frozenset({"notes_unavailable", "notes_not_covered", "not
 
 #: the most values of a key prefix's last column one partition read names
 _PREFIX_BATCH: Final = 1000
+
+
+#: failed passes, by what failed: ``stages_lost`` (the apply worker died and its stages with it: the change is read
+#: again) or ``pass`` (any other failure: the stages are kept and the next pass tries again)
+_PASS_FAILURES = counter(
+    "copy_follower_pass_failures_total",
+    description="copy follower passes that failed, by what failed; the copy keeps serving its last change",
+    label_names=("what",),
+)
+
+#: when the copy stopped taking changes: unix time of the first failed pass since the last good one, 0 while current
+_BEHIND_SINCE = gauge(
+    "copy_follower_behind_since_timestamp_seconds",
+    description="unix time of the first failed copy follower pass since the last change applied, 0 while passes "
+    "succeed; alert when it is non-zero for several minutes (the copy serves an old change)",
+)
+
+#: consecutive failed passes after which the follower says FAILING (it keeps trying, at the longest wait)
+FAILING_AFTER: Final = 5
+
+#: the wait before a failed pass is tried again: doubled each failure from the first, up to the second (seconds)
+RETRY_WAITS: Final = (1.0, 60.0)
 
 
 def _warms() -> Any:
@@ -282,11 +304,11 @@ class FollowedTable:
         # a keyset read pages past the last row's values of its order: an order that is not unique skips every row
         # sharing the cursor's values at each page boundary, so the copy would hold fewer rows than L3 under L3's
         # epochs. Unique here means it holds every key column
-        for field, order in (("order", self.order), ("partition_order", self.partition_order)):
+        for named, order in (("order", self.order), ("partition_order", self.partition_order)):
             short = [column for column in self.key if order and column not in order]
             if short:
                 raise ValueError(
-                    f"{self.name}: {field} {list(order)} is not unique: a keyset read by it skips rows at page "
+                    f"{self.name}: {named} {list(order)} is not unique: a keyset read by it skips rows at page "
                     f"boundaries; it must hold every key column, missing {short}"
                 )
 
@@ -479,6 +501,7 @@ class FollowerPhase(StrEnum):
     FOLLOWING = "following"
     WAITING = "waiting"
     BEHIND = "behind"
+    FAILING = "failing"
     STOPPED = "stopped"
 
 
@@ -494,6 +517,9 @@ class FollowerStatus:
     :ivar rows: each table's rows, as last counted
     :ivar applied: changes applied since start
     :ivar last_apply_seconds: how long the last change took, from the first stamp read to the commit
+    :ivar failures: passes failed in a row since the last good one; at :data:`FAILING_AFTER` the phase is FAILING
+    :ivar behind_since: when the first of those failed (None while passes succeed): the copy serves the change it held
+        then
     :ivar detail: a line for an operator
     """
 
@@ -504,7 +530,13 @@ class FollowerStatus:
     rows: dict[str, int] = field(default_factory=dict)
     applied: int = 0
     last_apply_seconds: float | None = None
+    failures: int = 0
+    behind_since: datetime | None = None
     detail: str = ""
+
+
+class _StagesLostError(LookupError):
+    """a pass's stages were lost with the worker holding them: forgotten, and the change is read again."""
 
 
 class FollowerBackend(Protocol):
@@ -532,7 +564,9 @@ class FollowerBackend(Protocol):
         ...
 
     def apply_staged(self, changes: Sequence[StagedChange], *, mark: int | None = None) -> int:
-        """apply every change staged in one transaction, labelled with ``mark``; the rows applied."""
+        """apply every change staged in one transaction, labelled with ``mark``; the rows applied. Raises
+        ``LookupError`` when the stages are gone (the worker holding them died; nothing applied): the follower then
+        reads the change again. Any other failure keeps the stages for the apply to be tried again."""
         ...
 
     def read_snapshot(self) -> AbstractContextManager[Any]:
@@ -571,6 +605,9 @@ class CopyFollower:
         replica's commit moves its scopes, with nothing else heard. None derives it from ``settled`` when that is a
         ``ScopeEpochs.settled``, and hears none when no table has a scope (no write can hold its keys)
     :ptype stamp_table: str | None
+    :param retry_waits: after a failed pass, the first wait before :meth:`run` tries again and the longest it doubles to
+        (seconds)
+    :ptype retry_waits: tuple[float, float]
     :raises ValueError: when a table has a scope and ``stamp_table`` is neither given nor derivable
     """
 
@@ -587,6 +624,7 @@ class CopyFollower:
         page_size: int = DEFAULT_PAGE_SIZE,
         checkpoints: CopyCheckpoints | None = None,
         stamp_table: str | None = None,
+        retry_waits: tuple[float, float] = RETRY_WAITS,
     ) -> None:
         if pa is None:
             raise ImportError("a copy follower needs pyarrow: install 3tears[snapshot]")
@@ -602,6 +640,7 @@ class CopyFollower:
         self._generation = generation
         self._changes = changes
         self._page_size = page_size
+        self._retry_waits = retry_waits
         #: keys heard and not yet applied, by table, each the key's values as text
         self._pending: dict[str, set[tuple[str, ...]]] = {name: set() for name in self._tables}
         #: tables to read again whole at the next apply, and why (:data:`WHOLE_READ_WHYS`): a cold start, a schema
@@ -870,6 +909,59 @@ class CopyFollower:
     # --- the apply -------------------------------------------------------------------------------
 
     async def catch_up(self) -> bool:
+        """one pass (:meth:`_catch_up`), counted: a failed pass raises as it did, and is counted in the status
+        (``failures``, ``behind_since``, FAILING after :data:`FAILING_AFTER` in a row) and in
+        ``copy_follower_pass_failures_total`` / ``copy_follower_behind_since_timestamp_seconds``; a good one clears
+        them. The copy keeps serving its last change throughout.
+
+        :return: as :meth:`_catch_up`
+        :rtype: bool
+        """
+        try:
+            done = await self._catch_up()
+        except asyncio.CancelledError, KeyboardInterrupt:
+            raise
+        except _StagesLostError as exc:
+            self._failed("stages_lost", exc)
+            raise
+        except Exception as exc:
+            self._failed("pass", exc)
+            raise
+        if self._status.failures:
+            log.info(
+                "copy follower recovered",
+                extra={"extra_data": {"failures": self._status.failures, "since": str(self._status.behind_since)}},
+            )
+        self._status.failures = 0
+        self._status.behind_since = None
+        _BEHIND_SINCE.set(0)
+        return done
+
+    def _failed(self, what: str, exc: BaseException) -> None:
+        """count a failed pass: its counter, the status's run of failures and when it began, FAILING at the bound.
+
+        :param what: ``stages_lost`` or ``pass``
+        :ptype what: str
+        :param exc: what it raised
+        :ptype exc: BaseException
+        :return: nothing
+        :rtype: None
+        """
+        _PASS_FAILURES.labels(what=what).inc()
+        self._status.failures += 1
+        if self._status.behind_since is None:
+            self._status.behind_since = datetime.now(UTC)
+            _BEHIND_SINCE.set(self._status.behind_since.timestamp())
+        line = f"a pass failed ({self._status.failures} in a row): {type(exc).__name__}: {exc}"
+        if self._status.failures >= FAILING_AFTER:
+            self._say(
+                FollowerPhase.FAILING,
+                f"{line}; serving the copy at {self._status.stamp} since {self._status.behind_since.isoformat()}",
+            )
+        else:
+            self._say(FollowerPhase.WAITING, line)
+
+    async def _catch_up(self) -> bool:
         """apply every key heard at one stamp of the writer's seqlock; label the copy with it.
 
         At a settled stamp every key heard is applied. While a write is in progress, and the writer names each scope's
@@ -881,7 +973,9 @@ class CopyFollower:
         every scope it staged: a pass the stamp moved under keeps its stages, and the next pass reads only the keys
         heard since (a key named again leaves the stage and is read again). A stage holding a scope a write has since
         taken is forgotten (its keys read again once the write commits). A pass whose apply fails keeps every stage
-        and tries only the apply again.
+        and tries only the apply again -- unless the backend says the stages are gone (``LookupError``: the worker
+        holding them died): then every stage is forgotten and its keys, partitions and whole reads are put back, so the
+        next pass reads the change again (never more than the change).
 
         :return: whether the copy is now labelled with this pass's stamp (False: a write in progress whose record
             names no scope, the stamp moved while it read, or the registry is behind on a table; the copy is as it was)
@@ -937,6 +1031,12 @@ class CopyFollower:
             try:
                 await self._stage(pending, whole, held)
                 await self._stage_partitions(partitions, held)
+            except LookupError as exc:
+                # the worker holding the stages died while this pass staged: what it had not staged is put back, and
+                # every stage (this pass's and earlier ones') is forgotten, to be read again
+                await self._unstaged(pending, whole, partitions)
+                self._stages_lost()
+                raise _StagesLostError(f"the stages were lost while staging: {exc}") from exc
             except BaseException:
                 # the table being read when it failed is read again; every table staged before it keeps its stage
                 await self._unstaged(pending, whole, partitions)
@@ -947,8 +1047,13 @@ class CopyFollower:
                 return False
             self._mark += 1
             mark = self._mark
-            # a failed apply keeps every stage: the next pass tries only the apply again, never a read
-            rows = await asyncio.to_thread(self._backend.apply_staged, list(self._staged.values()), mark=mark)
+            # a failed apply keeps every stage: the next pass tries only the apply again, never a read -- unless the
+            # stages died with the worker holding them: then the change is read again
+            try:
+                rows = await asyncio.to_thread(self._backend.apply_staged, list(self._staged.values()), mark=mark)
+            except LookupError as exc:
+                self._stages_lost()
+                raise _StagesLostError(f"the stages were lost applying the change: {exc}") from exc
             # a table is current at the marks taken for this pass only when nothing of it is left to read: no key left
             # pending (a scope the write holds, a table of no scope while any write is), no whole read, no partition
             for name in self._tables:
@@ -1176,6 +1281,15 @@ class CopyFollower:
             if why is not None:
                 self._whole.setdefault(name, why)
             self._dropping.update((f"{STAGE_PREFIX}{name}__rows", f"{STAGE_PREFIX}{name}__keys"))
+
+    def _stages_lost(self) -> None:
+        """the backend lost every stage (the worker holding them died): forget them all, putting back what each held
+        to be read again; the next pass drops whatever names are left and reads the change again.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._forget_tables_now(sorted(self._staged))
 
     async def _forget_tables(self, names: Sequence[str]) -> None:
         """:meth:`_forget_tables_now`, and drop the stages of every table forgotten so far.
@@ -1708,19 +1822,30 @@ class CopyFollower:
 
     async def run(self) -> None:
         """apply each change as it is heard, until cancelled: a pass whenever the registry hears a key, catches up, or
-        :meth:`poke` is called (the writer's stamp moved). Never on a timer.
+        :meth:`poke` is called (the writer's stamp moved). Never on a timer while passes succeed; after a failed pass,
+        the next is tried after a wait doubling from the first of ``retry_waits`` to the longest (or sooner when
+        poked), FAILING in the status after :data:`FAILING_AFTER` in a row, until one succeeds.
 
         :return: nothing
         :rtype: None
         """
         while True:
-            await self._poked.wait()
+            if self._status.failures:
+                # a failed pass is tried again after a wait (doubling to the longest), or sooner when poked: the keys
+                # it left pending are never left waiting for a change that may not come
+                first, longest = self._retry_waits
+                wait = min(longest, first * 2 ** (self._status.failures - 1))
+                try:
+                    await asyncio.wait_for(self._poked.wait(), timeout=wait)
+                except TimeoutError:  # NOSILENT: the wait ran out with no poke: that is the retry's cue, not a failure
+                    pass
+            else:
+                await self._poked.wait()
             try:
                 await self.catch_up()
             except asyncio.CancelledError, KeyboardInterrupt:
                 raise
             except Exception as exc:  # noqa: BLE001 - one failed pass leaves the copy as it was; the next tries again
-                self._say(FollowerPhase.WAITING, f"a pass failed: {type(exc).__name__}: {exc}")
                 contain(
                     exc, log=log, what="a copy follower's pass failed; the copy is as it was and the keys stay pending"
                 )
