@@ -1870,8 +1870,8 @@ def campaign_arms_spelled(
     known = {key for arm in named for key in (arm.variant_key, *resolve_control_arm(arm).variant_keys)}
     derived: dict[str, _AddressedArm] = {}
     members = dict.fromkeys(run_id for aspect in campaign.aspects for run_id in aspect.run_ids)
-    held = [run for run_id in members if (run := storage.load_eval_run(run_id, campaign.scope_id)) is not None]
-    for addressed in _address_runs(storage, campaign.scope_id, held, profile=profile):
+    loaded = [run for run_id in members if (run := storage.load_eval_run(run_id, campaign.scope_id)) is not None]
+    for addressed in _address_runs(storage, campaign.scope_id, loaded, profile=profile):
         if addressed.key not in known and addressed.key not in derived:
             derived[addressed.key] = addressed
     if not derived:
