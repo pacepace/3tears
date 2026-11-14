@@ -245,6 +245,36 @@ async def test_a_judge_completion_breaking_the_protocol_is_raised_to_the_host_no
     assert judging.spent([]) == [pytest.approx(0.001)]
 
 
+@dataclass(frozen=True)
+class _ResentTemperaturelessCompletion(_TemperaturelessCompletion):
+    """The defective reply, its first send dropped before any response began and resent."""
+
+    maybe_billed_sends: int = 1
+
+
+@dataclass
+class _ResendingDefectiveJudge(_ScriptedJudge):
+    """Every call answered with the defective reply, after a send that may have been billed too."""
+
+    async def generate(self, *, system: str, user: str, response_format: Any = None) -> _Completion:
+        reply = await super().generate(system=system, user=user, response_format=response_format)
+        return _ResentTemperaturelessCompletion(**vars(reply))  # type: ignore[return-value]
+
+
+async def test_a_protocol_defect_s_judging_counts_what_its_dropped_send_may_have_billed() -> None:
+    """The call that found the defect cost $0.001, and its dropped first send may have cost as much again: no cell is
+    recorded, and the run's judge ceiling counts both, as a judged cell's judging would."""
+    judge = _ResendingDefectiveJudge(temperatureless=True)
+    host, template, run, case = off_loop(_setup, judge)
+    stamped = off_loop(_stamped, host, template, run)
+    judging = WitnessedJudging(stamped.id)
+
+    with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance"):
+        await _record(host, stamped, case, _output(), judging=judging)
+
+    assert judging.spent([]) == [pytest.approx(0.002)]
+
+
 async def test_a_rejudge_whose_judge_completion_breaks_the_protocol_raises_and_stores_nothing() -> None:
     judge = _ScriptedJudge(failing={_DIM})
     host, template, run, case = off_loop(_setup, judge)

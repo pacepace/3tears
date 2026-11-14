@@ -184,6 +184,8 @@ from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.metrics import reads_as_share
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.run_pages import iter_stored_results
+from threetears.evals.kernel.usage_capture import maybe_billed_usd
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.ops import JobStatus, OpsHost, await_job
 from threetears.evals.ops.analysis import CampaignDefinition
@@ -1309,7 +1311,16 @@ class WriterEval:
         status, and why a designed stop ended it, if one did. Blocking."""
         summary = summarize_run(host, run_id, self.scope_id)
         cost = summary.total_cost_usd
-        return (cap if cost is None else cost), summary.status, summary.stopped_because
+        if cost is None:
+            return cap, summary.status, summary.stopped_because
+        # Beside its cost, what its priced cells' dropped sends may have billed, as the run's cap counted it: the next
+        # batch's cap is what the arm's part has left after both.
+        dropped = math.fsum(
+            maybe_billed_usd(row.usage, row.cost_roles)
+            for row in iter_stored_results(host.storage, run_id, self.scope_id)
+            if row.cost_usd is not None
+        )
+        return cost + dropped, summary.status, summary.stopped_because
 
     async def _launch_batch(
         self, host: OpsHost, template_id: str, case_set: CaseSetRef, parts: Mapping[str, float], arms: Sequence[str]

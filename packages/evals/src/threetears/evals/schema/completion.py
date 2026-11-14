@@ -202,6 +202,9 @@ class CompletionProtocolDefect(TypeError):
         self.reasoning_tokens: int | None = None
         self.cost_usd: float | None = None
         self.price_source: str | None = None
+        #: Sends of those calls that broke before any response began and were resent, which the provider may have
+        #: billed and ``cost_usd`` does not hold; ``None`` when none was counted.
+        self.maybe_billed_sends: int | None = None
         problem = (
             f"{self.completion_type}'s optional `{member}` is not what the CompletionResult protocol documents: {why}"
             if optional

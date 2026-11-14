@@ -18,6 +18,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Collection
 from pathlib import Path
@@ -44,6 +45,7 @@ from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.errors import StorageError, ValidationFailedError
 from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
+from threetears.evals.kernel.usage_capture import maybe_billed_usd
 from threetears.evals.ops import OpsHost, job_poll
 from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.ops.report_writer.writer_contract import (
@@ -542,6 +544,55 @@ async def test_a_spend_cap_that_admits_two_batches_stops_the_run_there_and_says_
         "stopped it (the pass's line says where), so the gated readings and guardrails were read once, on those 4."
     ]
     assert result.pairwise_unread == {}
+    assert offline == []
+
+
+@dataclasses.dataclass(frozen=True)
+class _ResentReply(ScoredReply):
+    """A judge reply whose first send broke before any response began and was resent, which the provider may have
+    billed too."""
+
+    maybe_billed_sends: int = 1
+
+
+# parity-with: threetears.evals.harness.writer_host.WriterJudge
+class FakeResendingCostlyJudge(FakeCostlyJudge):
+    """The costly judge, every call's first send dropped before a response, then answered."""
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> ScoredReply:
+        said = await super().generate(system=system, user=user, response_format=response_format)
+        return _ResentReply(**vars(said))
+
+
+async def test_an_arm_s_spend_counts_what_its_runs_dropped_sends_may_have_billed_as_their_caps_did(
+    tmp_path: Path, offline: list[Connect], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Every judge call costs $0.05, and its first send dropped, so it may have cost $0.05 more. Each batch run's cap
+    counted those sends as its cells landed; the arm's spend, which the next batch's cap is what is left of, counts
+    them too: each run's logged spend is its rows' cost and their dropped sends, never the cost alone."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+    judge = FakeResendingCostlyJudge(cost=0.05, floor=0.05)
+    caplog.set_level(logging.INFO)
+
+    result = await _eval(tmp_path, cases, arms, judge=judge, batch_size=2, max_cost_usd=10.0).run()
+
+    logged = {
+        match[1]: float(match[2])
+        for record in caplog.records
+        if (
+            match := re.search(
+                r"eval\.writer_batch_ran .* run=(\S+) status=\S+ spent_usd=([0-9.]+)", record.getMessage()
+            )
+        )
+    }
+    assert logged, "every batch run logs what it spent"
+    for run_id, spent in logged.items():
+        rows = await asyncio.to_thread(result.host.storage.query_eval_results_by_run, run_id, SCOPE)
+        priced = [row for row in rows if row.cost_usd is not None]
+        dropped = sum(maybe_billed_usd(row.usage, row.cost_roles) for row in priced)
+        assert dropped > 0
+        assert spent == pytest.approx(sum(row.cost_usd or 0.0 for row in priced) + dropped, abs=1e-4)
     assert offline == []
 
 

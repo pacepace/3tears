@@ -558,6 +558,7 @@ async def run_judge_llm(
             defect.reasoning_tokens = spent.reasoning_tokens
             defect.cost_usd = spent.cost_usd
             defect.price_source = spent.price_source
+            defect.maybe_billed_sends = spent.maybe_billed_sends
         log.error(
             "%s reply for case %s cannot be recorded, after %d attempt(s) costing %s: the completion breaks the "
             "protocol",
@@ -741,6 +742,7 @@ def defect_usage(defect: CompletionProtocolDefect) -> CallUsage | None:
         cost_usd=defect.cost_usd,
         price_source=defect.price_source,
         calls=defect.calls,
+        maybe_billed_sends=defect.maybe_billed_sends,
     )
 
 
