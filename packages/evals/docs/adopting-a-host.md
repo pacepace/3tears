@@ -2036,9 +2036,10 @@ scope holds no version of is minted over their stored ids through `mint_case_set
 and reported under `case_set` as `<name> v1`; a scope holding any version keeps it (the next version is
 `case_set_mint`'s), so a host's own minting script over `case_set_mint` can be dropped.
 
-**The seed gives a stored template the corpus's presentation names it lacks.** The template digest a reset reads
-leaves `goal_check_names` and `stratum_names` out, so a name your corpus later declares for a template the store
-already holds would never reach it through a reset. The seed fills it instead, on every boot, into the template's
+**The seed, and a reset, give a stored template the corpus's presentation names it lacks.** The template digest a
+reset reads leaves `goal_check_names` and `stratum_names` out, so a name your corpus later declares for a template the
+store already holds never makes it stale, and a reset never writes it a new revision for one. The seed fills it
+instead, on every boot, into the template's
 current revision: each goal check the stored template holds and names nothing, and each stratum it names nothing, is
 given the corpus's name, unless the stored template already gives that name to another check or stratum. An entry the
 seed reads on the stored template is never overwritten, only those two fields are written, and `updated_at` stays
@@ -2048,7 +2049,11 @@ where it was, so no run reads the template as edited. Each template filled is re
 boot writes nothing. The template write is not conditional, so a name an operator gives through `update_template`
 between the seed's read and its write can be lost, the same race two `update_template` calls have. A host pass at
 boot that fills these names through `update_template` can be dropped; `update_template` stays the seam for an
-operator's own names, which the seed then leaves alone. A name holds at most `DECLARED_NAME_CHARS` characters, and
+operator's own names, which the seed then leaves alone. `reset_definitions` runs the same pass after its writes, on
+every corpus template reading `current` after the reset (named in the call or not), so a release step's reset leaves
+no template waiting for the next boot for its names; it reports them under `DefinitionReset.presentation_named` and
+`DefinitionReset.presentation_fill_failed`, the same shapes as the seed's, and `DefinitionReset.render()` prints a
+line for each. A name holds at most `DECLARED_NAME_CHARS` characters, and
 `check_names(checks, {})` over the host's seeded checks shows which the namer leaves `GOAL_CHECK`, the ones worth a
 declared name.
 
