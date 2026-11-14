@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: a judge call its replay does not hold is named, never dropped (#1162)
+### evals: a call its replay does not hold fails the run, named, never dropped (#1162)
 
 **Fixed:** a replayed judge whose recording held no call for a prompt read the miss as a failed call, its text
 withheld, and judged on the calls it still found. The judge's recordings are keyed on the pages it reads, so a change
@@ -16,7 +16,11 @@ fails at the miss and the eval exits 1. A run's scoring judge that misses fails 
 breaks the protocol does (owner ruling): the cell is recorded `apparatus_failed` naming the call, and the run raises
 the miss. So does a judge kind's run whose judge under test misses on any one trial: that cell is recorded
 `apparatus_failed`, naming the call, and the run raises the miss, where the trial was graded `no_reply` and charged to
-the judge under test, so a campaign never finishes on fewer trials. A miss now names
+the judge under test, so a campaign never finishes on fewer trials. A candidate's replay miss fails the run the
+same way (owner ruling: any miss means stale recordings), where its cell was excluded and the run went on.
+`ReplayMiss` (new, `threetears.evals.kernel.host`) is what a replay that cannot serve raises: `RecordingRefused`,
+`CassetteMiss`, `CassetteExhausted` and the quick world's `ToolRecordingMiss` subclass it. Every other
+`ApparatusError` still excludes its one cell. A miss now names
 the prompt's key and where it parts from the recorded prompts: how many hold the same user message or open on the same
 80 characters, or the nearest recorded key and the character it parts at. Rung 5's recordings README says what to do
 when page text moves.

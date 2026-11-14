@@ -3,7 +3,8 @@
 ``World(tools=[...])(agent)`` hands the agent the case and its tools. With no recording every call is live. With
 ``recording=``, a file that is not there is recorded — every call live, its first answer kept — and a file that is
 there is replayed, the tool never called; ``RECORD=1`` records it again. An ask the recording does not hold, or holds
-fewer times, excludes the cell as the rig's failure — even when the agent catches the miss itself. Graders read the
+fewer times, is a replay miss — even when the agent catches the miss itself: its cell is recorded as the rig's failure,
+never scored, and the run fails, since the recording is stale for every cell (owner ruling, #1162). Graders read the
 agent's answer, and the calls it made, on the :class:`~threetears.evals.quick.world.WorldOutcome`. Every arm of a
 comparison is served the same recording.
 """
@@ -111,9 +112,13 @@ async def test_record_set_to_one_records_the_file_again_live(tmp_path: Path, mon
     assert dice.calls == 6 and replay.summary.measures[0].mean == again.summary.measures[0].mean
 
 
-async def test_an_ask_the_recording_does_not_hold_excludes_the_cell_as_the_rigs_failure_and_stays_offline(
+async def test_an_ask_the_recording_does_not_hold_on_one_case_fails_the_run_naming_the_call_and_stays_offline(
     tmp_path: Path,
 ) -> None:
+    """The recording serves two of the three cases, and the third asks what it does not hold. That cell once was
+    excluded and the run completed on the two others, so a replay read on fewer cells in silence. A replay miss means
+    the recordings are stale, so the run now fails: the cell is recorded as the rig's failure, naming the call, and
+    never scored."""
     dice = Dice()
     world = World(tools=[dice.roll], recording=tmp_path / "rolls.jsonl")
     await Eval(CASES, world(adds_a_roll), [total], k=1).run(store=":memory:")
@@ -124,11 +129,14 @@ async def test_an_ask_the_recording_does_not_hold_excludes_the_cell_as_the_rigs_
 
     replay = (await Eval(CASES, world(rolls_bigger_on_two), [total], k=1).run(store=":memory:")).summary
     assert dice.calls == 3
-    assert (replay.status, replay.n_scored, replay.n_candidate_failed, replay.n_excluded) == ("completed", 2, 0, 1)
-    assert len(replay.errors) == 1 and "ToolRecordingMiss" in replay.errors[0]
+    assert (replay.status, replay.n_scored, replay.n_candidate_failed, replay.n_excluded) == ("failed", 2, 0, 1)
+    # The cell's record and the run's failure, each naming the call that missed.
+    cell, failed = replay.errors
+    assert cell.startswith("case 1: apparatus: ToolRecordingMiss: ")
+    assert 'roll({"sides": 100}) asked 1 time(s)' in cell and 'roll({"sides": 100}) asked 1 time(s)' in failed
 
 
-async def test_a_miss_the_agent_swallows_still_excludes_the_cell(tmp_path: Path) -> None:
+async def test_a_miss_the_agent_swallows_still_fails_the_run_never_scoring_the_cell(tmp_path: Path) -> None:
     dice = Dice()
     world = World(tools=[dice.roll], recording=tmp_path / "rolls.jsonl")
     await Eval(CASES, world(adds_a_roll), [total], k=1).run(store=":memory:")
@@ -141,7 +149,7 @@ async def test_a_miss_the_agent_swallows_still_excludes_the_cell(tmp_path: Path)
             return 0
 
     replay = (await Eval(CASES, world(shrugs_off_failures), [total], k=1).run(store=":memory:")).summary
-    # Every cell missed, so the rig measured nothing: the run fails, and no cell is scored as the agent's 0.
+    # Every cell missed: the run fails, and no cell is scored as the agent's 0.
     assert dice.calls == 3
     assert (replay.status, replay.n_scored, replay.n_candidate_failed, replay.n_excluded) == ("failed", 0, 0, 3)
 
@@ -158,7 +166,7 @@ async def test_asking_more_often_than_the_recording_did_is_a_miss_not_a_neighbou
 
     replay = (await Eval(CASES, world(rolls_twice_on_three), [total], k=1).run(store=":memory:")).summary
     assert dice.calls == 3
-    assert (replay.n_scored, replay.n_excluded) == (2, 1)
+    assert (replay.status, replay.n_scored, replay.n_excluded) == ("failed", 2, 1)
     assert "ToolRecordingMiss" in replay.errors[0] and "asked 2 time(s)" in replay.errors[0]
 
 

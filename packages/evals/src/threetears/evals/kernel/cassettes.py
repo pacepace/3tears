@@ -40,7 +40,9 @@ Misses are loud, and they are the rig's
 
 Every replay failure is an :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`, so a
 kind's tool boundary must re-raise it rather than absorb it into an ordinary failed tool result — the
-cell is the measuring rig's failure, not the candidate's.
+cell is the measuring rig's failure, not the candidate's. A miss or an exhaustion is a
+:class:`~threetears.evals.kernel.host.apparatus.ReplayMiss`: the corpus is stale, so the run fails with it, its cell
+recorded first.
 """
 
 from __future__ import annotations
@@ -49,7 +51,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, Self, runtime_checkable
 
-from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.kernel.host.apparatus import ApparatusError, ReplayMiss
 from threetears.evals.schema.models import CassetteKey
 
 __all__ = [
@@ -89,7 +91,7 @@ DeliveryOutcome = Literal["delivered", "failed", "undelivered"]
 # =============================================================================
 
 
-class CassetteMiss(ApparatusError, LookupError):
+class CassetteMiss(ReplayMiss, LookupError):
     """A replay asked for something its corpus never recorded.
 
     Carries the whole key, so an operator can see exactly what the candidate asked that the capture
@@ -110,7 +112,7 @@ class CassetteMiss(ApparatusError, LookupError):
         )
 
 
-class CassetteExhausted(ApparatusError, LookupError):
+class CassetteExhausted(ReplayMiss, LookupError):
     """A replay asked for something one more time than its capture did.
 
     The corpus recorded ``key.occurrence`` answers to this exact ask and the candidate is asking for

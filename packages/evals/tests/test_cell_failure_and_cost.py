@@ -53,7 +53,7 @@ from threetears.evals.schema.models import (
     WorldSeed,
 )
 from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
-from threetears.evals.kernel.cassettes import CassetteMiss, CellCassettes
+from threetears.evals.kernel.cassettes import CassetteCorrupt, CassetteMiss, CellCassettes
 from threetears.evals.run.judge import CANNOT_TELL, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.lifecycle import rejudge_result
@@ -359,7 +359,7 @@ async def test_a_cannot_tell_whose_reasoning_is_not_a_string_is_a_judge_defect_n
 
 
 # =============================================================================
-# An apparatus fault excludes its cell, never the run
+# An apparatus fault excludes its cell, never the run; a replay miss fails the run
 # =============================================================================
 
 #: What the kind below had billed before the rig broke under it.
@@ -367,15 +367,17 @@ _SPENT_BEFORE_THE_FAULT = 0.0031
 
 
 class _RigBreaksUnderKind(ToyExtractorKind):
-    """A toy extractor whose tool boundary re-raises a replay miss, as the cassette seam tells it to.
+    """A toy extractor whose tool boundary re-raises a rig fault, as the cassette seam tells it to.
 
     It breaks on the documents named in ``breaks_on``, after a first call it has already paid for
-    and reported through the sink; every other cell runs as the shipped kind does.
+    and reported through the sink; every other cell runs as the shipped kind does. The fault is a corrupt recording,
+    which excludes its one cell, or with ``misses`` a replay miss, which fails the run.
     """
 
-    def __init__(self, *args: Any, breaks_on: frozenset[str], **kwargs: Any) -> None:
+    def __init__(self, *args: Any, breaks_on: frozenset[str], misses: bool = False, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.breaks_on = breaks_on
+        self.misses = misses
 
     async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         if test_case.variation_params[DOCUMENT_PARAM] not in self.breaks_on:
@@ -398,6 +400,8 @@ class _RigBreaksUnderKind(ToyExtractorKind):
                 ),
             )
         )
+        if not self.misses:
+            raise CassetteCorrupt("the ledger's recording no longer loads: written under another cassette format")
         raise CassetteMiss(
             CassetteKey(
                 corpus_id="capture-run",
@@ -411,9 +415,13 @@ class _RigBreaksUnderKind(ToyExtractorKind):
         )
 
 
-def _breaking_on(*documents: str) -> KindFor:
+def _breaking_on(*documents: str, misses: bool = False) -> KindFor:
     return lambda world: _RigBreaksUnderKind(
-        client=ScriptedExtractionClient(), world=world, breaks_on=frozenset(documents), goal_checks=_TOY_CHECKS
+        client=ScriptedExtractionClient(),
+        world=world,
+        breaks_on=frozenset(documents),
+        misses=misses,
+        goal_checks=_TOY_CHECKS,
     )
 
 
@@ -425,7 +433,7 @@ async def test_an_apparatus_fault_mid_cell_excludes_that_cell_with_its_spend_and
     assert len(drive.results) == 3, "the fault ended one cell, not the run"
     faulted = drive.result_for(first)
     assert faulted.termination == "apparatus_failed"
-    assert faulted.infra_error is not None and faulted.infra_error.startswith("apparatus: CassetteMiss")
+    assert faulted.infra_error is not None and faulted.infra_error.startswith("apparatus: CassetteCorrupt")
     assert faulted.candidate_error is None
     assert classify_result(faulted) is ResultOutcome.INFRA_EXCLUDE
     (row,) = faulted.usage
@@ -435,6 +443,27 @@ async def test_an_apparatus_fault_mid_cell_excludes_that_cell_with_its_spend_and
     assert trace is not None and trace.trace == [{"turn": "asked the ledger for the vendor"}]
     others = [result for result in drive.results if result.id != faulted.id]
     assert [result.termination for result in others] == ["completed", "completed"]
+
+
+async def test_a_candidate_s_replay_miss_on_one_cell_fails_the_run_naming_the_call_with_its_spend():
+    """One cell of three asks its cassettes what the corpus never recorded. That cell was once excluded and the run
+    completed on the other two, so a replay read on fewer cells in silence. A replay miss means the recordings are
+    stale for every cell (owner ruling, #1162): the cell is recorded apparatus_failed naming the call, with what it
+    had spent, and the run raises the miss."""
+    first = toyhost_test_cases(toyhost_template())[0]
+    drive, go = off_loop(_drive, _breaking_on(first.variation_params[DOCUMENT_PARAM], misses=True), n_cases=3)
+
+    with pytest.raises(CassetteMiss, match="the corpus never recorded tool='ledger' action='lookup'"):
+        await go()
+
+    faulted = drive.result_for(first)
+    assert faulted.termination == "apparatus_failed"
+    assert faulted.infra_error is not None and faulted.infra_error.startswith("apparatus: CassetteMiss: ")
+    assert "tool='ledger' action='lookup'" in faulted.infra_error
+    assert faulted.candidate_error is None
+    assert faulted.cost_usd == _SPENT_BEFORE_THE_FAULT
+    others = [result for result in drive.results if result.id != faulted.id]
+    assert all(result.termination == "completed" for result in others)
 
 
 class _DeclinedAfterBillingKind(ToyExtractorKind):
@@ -539,7 +568,7 @@ async def test_a_run_whose_every_cell_the_rig_excluded_fails_after_recording_the
         await go()
 
     assert raised.value.total == 2
-    assert "CassetteMiss" in str(raised.value)
+    assert "CassetteCorrupt" in str(raised.value)
     assert [result.termination for result in drive.results] == ["apparatus_failed", "apparatus_failed"]
 
 
