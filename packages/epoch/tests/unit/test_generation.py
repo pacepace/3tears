@@ -11,11 +11,14 @@ The contract this pins:
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
+
 import pytest
 
 from threetears.core.collections.generation import GenerationSource
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.testing.kv import FakeChangeLog, FakeNatsClient
+from threetears.epoch import generation
 from threetears.epoch import EPOCH_CHANGES_BUCKET, EpochGenerationReader, EpochGenerationSource, generation_kv_key
 from threetears.nats import KvError
 from threetears.nats.subjects import set_default_namespace
@@ -117,3 +120,34 @@ class TestFailuresAreNeverAToken:
             await source.current(_TABLE)
         with pytest.raises(GenerationUnavailableError):
             await source.advance(_TABLE)
+
+
+class TestAWatchOnALogNotYetDeclaredWaitsForIt:
+    """a follower starts before any write declares the log: an absent log is a table with no epoch yet."""
+
+    @pytest.fixture(autouse=True)
+    def _quick_poll(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(generation, "_ABSENT_LOG_POLL_SECONDS", 0.01)
+
+    @pytest.mark.asyncio
+    async def test_it_yields_nothing_and_raises_nothing_while_the_log_is_absent(self) -> None:
+        client = FakeNatsClient()
+        assert await _log(client).state() is None
+        async with aclosing(EpochGenerationReader(client).watch(_TABLE)) as pushed:
+            first = asyncio.ensure_future(anext(pushed))
+            await asyncio.sleep(0.1)
+            assert not first.done()
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+
+    @pytest.mark.asyncio
+    async def test_the_first_write_that_declares_the_log_is_pushed(self) -> None:
+        client = FakeNatsClient()
+        async with aclosing(EpochGenerationReader(client).watch(_TABLE)) as pushed:
+            first = asyncio.ensure_future(anext(pushed))
+            await asyncio.sleep(0.05)
+            written = await EpochGenerationSource(client).advance(_TABLE)
+            assert await asyncio.wait_for(first, timeout=1) == written
+            again = await EpochGenerationSource(client).advance(_TABLE)
+            assert await asyncio.wait_for(anext(pushed), timeout=1) == again

@@ -29,6 +29,7 @@ them -- so a follower catches up by walking the table's records after its mark
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
@@ -79,6 +80,13 @@ EPOCH_CHANGES_BUCKET: Final = "epoch-changes"
 #: to raise it or find what fills it. Alert on ``threetears_epoch_changes_fill_ratio`` above this.
 EPOCH_CHANGES_FILL_WARN_RATIO: Final = 0.75
 _FILL_WARN_RATIO: Final = EPOCH_CHANGES_FILL_WARN_RATIO
+
+#: how often a watch on a log not yet declared looks again. A follower starts before the first write
+#: declares the log, and an absent log is a table with no epoch, not a failure: the watch waits for it.
+#: Nothing is missed meanwhile -- a key watch pushes the key's newest record first -- but an epoch whose
+#: broadcasts were lost is caught only once the watch binds, so this bounds how late that is: one
+#: second, a follower's first restart delay, never backed off.
+_ABSENT_LOG_POLL_SECONDS: Final = 1.0
 
 #: the key restore fills a sequence the L3 log holds nothing for, so every restored record keeps its number
 _RESTORE_FILLER_KEY: Final = "_restored-gap"
@@ -344,12 +352,18 @@ class _ChangeLogReading:
         :ptype table_name: str
         :return: the generation tokens, in order
         :rtype: AsyncGenerator[str | None]
-        :raises GenerationUnavailableError: when the log is absent, or cannot be read or watched
+        :raises GenerationUnavailableError: when the log cannot be read or watched
         :raises KvError: when the connection closes, so nothing can ever be delivered again
         """
         state = await self._state()
         if state is None:
-            raise GenerationUnavailableError(f"write generation for {table_name!r} could not be watched: no log")
+            log.info(
+                "the epoch change log is not declared yet; the table is watched once its first write declares it",
+                extra={"extra_data": {"table": table_name, "poll_seconds": _ABSENT_LOG_POLL_SECONDS}},
+            )
+        while state is None:
+            await asyncio.sleep(_ABSENT_LOG_POLL_SECONDS)
+            state = await self._state()
         async with aclosing(self._log().watch(generation_kv_key(table_name))) as updates:
             async for update in updates:
                 # the incarnation is read with each push: a log lost and declared again numbers from
