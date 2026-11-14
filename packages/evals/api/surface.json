@@ -5173,7 +5173,7 @@
     },
     "threetears.evals.analysis.ChartBlock": {
       "kind": "model",
-      "signature": "ChartBlock(section: ReportSection, anchor: str | None = None, fold: str | None = None, kind: Literal['chart'] = 'chart', chart: ChartKind, title: str, bars: list[OutcomeBar] = list(), rows: list[IntervalRow] = list(), points: list[CostQualityPoint] = list(), unit: str = '', zero_line: bool = False, margin: float | None = None, level: str | None = None, data: KitChart | None = None)",
+      "signature": "ChartBlock(section: ReportSection, anchor: str | None = None, fold: str | None = None, kind: Literal['chart'] = 'chart', chart: ChartKind, title: str, bars: list[OutcomeBar] = list(), rows: list[IntervalRow] = list(), points: list[CostQualityPoint] = list(), unit: str = '', zero_line: bool = False, margin: float | None = None, level: str | None = None, level_head: str | None = None, data: KitChart | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.analysis.ChartColumn": {

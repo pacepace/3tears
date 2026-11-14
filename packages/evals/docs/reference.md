@@ -1093,6 +1093,7 @@ One of the charts a report draws, with every value it draws, so it prints as a t
 | `zero_line` | `bool` | `False` | Whether the chart draws a line at zero (a difference's). |
 | `margin` | `float \| None` | `None` | A margin band either side of zero, on the chart's ruler; None when none declared. |
 | `level` | `str \| None` | `None` | The level a cost/quality chart's intervals are read at (`95%`), which its scatter draws them at; None where it states none, and its intervals are in its table alone. |
+| `level_head` | `str \| None` | `None` | What a cost/quality chart's head prints of its level, where its page decides it (#1128): empty for nothing, or the head marking a level other than the page's main one; None for the level's own head. |
 | `data` | `KitChart \| None` | `None` | A kit kind's chart data, as the kit's `data-chart` contract names it (kit/API.md); None for the report's own three kinds. |
 
 #### `DisclosureBlock`
