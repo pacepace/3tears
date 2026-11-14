@@ -386,6 +386,7 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
             "WHERE key_text IS NULL",
             "-- purpose: packages/core/src/threetears/core/collections/change_notes.py::ChangeNoteKeeper.count_ring_reads\n"
             "-- plan_test: packages/core/tests/integration/test_change_note_ring_plans.py::test_threetears_change_notes_0_ring_read_reads_a_switchs_count\n"
+            "-- speed: packages/core/tests/integration/test_ring_read_count_live.py::test_a_switchs_ring_read_count_reads_only_the_ring_reads\n"
             "-- reason: partial over the notes written without a cached slot alone, counted at each switch\n"
             f"CREATE INDEX IF NOT EXISTS {quote_identifier(note_table(index) + '_ring_read')} "
             f"ON {owner}.{quote_identifier(note_table(index))} (table_name) WHERE ring_read",
