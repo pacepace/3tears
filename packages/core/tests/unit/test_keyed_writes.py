@@ -202,11 +202,11 @@ class TestKeysetRows:
             pages = asked[2:]
             assert len(pages) == -(-len(plain) // 8) - 1
             # the pinned column is bound by equality beside the comparison, never inside it (there only an index it
-            # leads takes the comparison as its condition), and leads the order
+            # leads takes the comparison as its condition), and is never in the order (a constant orders nothing)
             assert all('t."s" = $1 AND ' in sql for sql in pages), pages[0]
             assert all(('(t."a", t."b") > ($2::text, $3::text::bigint)' in sql) is by_row for sql in pages), pages[0]
             assert not any('(t."s", ' in sql for sql in pages), pages[0]
-            assert all('ORDER BY t."s" ASC, t."a" ASC, t."b" ASC' in sql for sql in pages), pages[0]
+            assert all('ORDER BY t."a" ASC, t."b" ASC' in sql and 't."s" ASC' not in sql for sql in pages), pages[0]
         single = _Recording(db)
         rows = await keyset_rows(single, "t", columns=["a", "b"], by={"a": "k1"}, order=order, page=50)
         assert len(rows) == 10 and len(single.statements) == 1

@@ -28,7 +28,6 @@ from datetime import date, datetime, time
 from typing import Any, Literal
 
 from threetears.interfaces.keyed.filters import (
-    AnyOf,
     Derived,
     Fragment,
     Lock,
@@ -418,16 +417,6 @@ def check_page(
         raise ValueError(f"a sort expression is read under a name of its own, not a column read: {shadowed}")
 
 
-def _pinned(by: Mapping[str, Any], order: Sequence[Sort]) -> list[str]:
-    """each column ``by`` pins to one value (not a set, not NULL, not a sort column), as the page names it."""
-    sorted_columns = {sort.column for sort in order}
-    return [
-        f"t.{quote_identifier(column)}"
-        for column, value in by.items()
-        if not isinstance(value, AnyOf) and value is not None and column not in sorted_columns
-    ]
-
-
 def page_statement(
     table: str | Derived,
     columns: Sequence[str | Selected] | None,
@@ -485,7 +474,6 @@ def page_statement(
             "(an ordering of a step takes that: keyed.ordered)"
         )
     conditions, params = by_conditions(by, alias="t")
-    lead = _pinned(by, order)
     for fragment in where:
         conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
@@ -525,10 +513,11 @@ def page_statement(
     for condition, leg_order in legs:
         every = [*conditions, *([condition] if condition is not None else []), *after]
         clause = f" WHERE {' AND '.join(every)}" if every else ""
-        # the pinned columns, constant on every row, lead the ORDER BY too: the same order, read as one range of
-        # the index they lead
-        ordered = ", ".join([f"{column} ASC" for column in lead] + ([order_by_terms(leg_order)] if leg_order else []))
-        by_clause = f" ORDER BY {ordered}" if ordered else ""
+        # a column ``by`` pins to one value is a constant on every row: it orders nothing, and is never named in the
+        # ORDER BY. Named there, a pin the index does not hold (a soft-delete flag beside the key's index, which
+        # PostgreSQL folds to ``NOT is_deleted``, no equality it drops from the order) made the page sort its rows
+        # rather than walk the index
+        by_clause = f" ORDER BY {order_by_terms(leg_order)}" if leg_order else ""
         statements.append(f"SELECT {selected} FROM {relation(table, 't')}{clause}{by_clause} LIMIT {rows}")
     if len(statements) == 1:
         sql = statements[0]

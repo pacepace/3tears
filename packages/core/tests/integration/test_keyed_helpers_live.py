@@ -383,6 +383,40 @@ class TestKeysetPage:
         (plan,) = [recorded for recorded in recorder.plans if " LIMIT " in recorded.sql]
         assert plan.rows_scanned <= 2 * limit + 1, plan
 
+    async def test_a_pin_outside_the_index_does_not_make_the_page_sort(self, seeded: _Seeded) -> None:
+        """Flips if a page pinning a column its index does not hold (a soft-delete flag beside the key's index,
+        the hub's dataset_definitions latest version) names that pin in its ORDER BY: PostgreSQL folds a boolean
+        pin to ``NOT is_deleted``, which is no equality it can drop from the order, so it read the dataset's rows
+        and sorted them rather than walking the key's index backward. A pin is a constant on every row the page
+        reads: it orders nothing."""
+        await seeded.conn.execute(
+            "CREATE TABLE definitions (dataset_id TEXT NOT NULL, version INTEGER NOT NULL, "
+            "is_deleted BOOLEAN NOT NULL, body TEXT, PRIMARY KEY (dataset_id, version))"
+        )
+        await seeded.conn.execute(
+            "INSERT INTO definitions SELECT 'd' || (i % 500), i / 500, i % 7 = 0, repeat('x', 50) "
+            "FROM generate_series(1, 50000) i"
+        )
+        await seeded.conn.execute("ANALYZE definitions")
+        recorder = PlanRecorder(seeded.conn)
+        page = await keyset_page(
+            recorder,
+            "definitions",
+            columns=["dataset_id", "version"],
+            by={"dataset_id": "d7", "is_deleted": False},
+            order=[Sort("version", "integer", descending=True)],
+            limit=1,
+        )
+        expected = await seeded.conn.fetchval(
+            "SELECT max(version) FROM definitions WHERE dataset_id = 'd7' AND NOT is_deleted"
+        )
+        assert [row["version"] for row in page.rows] == [expected]
+        (plan,) = [recorded for recorded in recorder.plans if " LIMIT " in recorded.sql]
+        assert plan_uses_index(plan, "definitions_pkey"), plan.plan
+        nodes = set(_node_types(plan))
+        assert not nodes & {"Sort", "Incremental Sort", "Bitmap Heap Scan"}, nodes
+        assert '"is_deleted" ASC' not in plan.sql, plan.sql
+
 
 class TestCounts:
     async def test_counts_by_counts_only_its_keys_rows(self, seeded: _Seeded) -> None:

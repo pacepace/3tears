@@ -37,9 +37,8 @@ async def test_the_prefix_s_rows_are_copied_in_order_as_csv_and_joined() -> None
     ((query, args, options),) = pool.asked
     assert args == ("agent", "p1") and options == {"format": "csv", "force_quote": ["principal_id"]}
     assert 'WHERE t."principal_kind" = $1 AND t."principal_id" = $2' in query
-    assert query.endswith(
-        'ORDER BY t."principal_kind" ASC, t."principal_id" ASC, t."date_admitted" ASC, t."connection_id" ASC'
-    )
+    # the pinned columns are constants on every row: never in the ORDER BY
+    assert query.endswith('ORDER BY t."date_admitted" ASC, t."connection_id" ASC')
     assert "LIMIT" not in query
 
 

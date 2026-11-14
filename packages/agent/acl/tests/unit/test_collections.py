@@ -161,8 +161,8 @@ class TestGroupCollectionPages:
         assert page.next_cursor is not None
         sql = pool.fetch.await_args.args[0]
         assert 't."row_scope" = $1 AND t."customer_id" = $2' in sql
-        # keyset_page orders by the pinned columns too (equal on the page: the index's own order), then the name
-        assert sql.endswith('ORDER BY t."row_scope" ASC, t."customer_id" ASC, t."name" ASC LIMIT 3'), sql
+        # keyset_page orders by the name alone: the pinned columns are constants on every row
+        assert sql.endswith('ORDER BY t."name" ASC LIMIT 3'), sql
         assert pool.fetch.await_args.args[1:] == ("customer", customer_id)
 
         pool.fetch.return_value = rows[2:]
@@ -984,7 +984,7 @@ class TestNamespacePageIds:
         assert [row["namespace_id"] for row in page.rows] == ids[:2]
         assert page.next_cursor is not None
         # by id within the partition the page pins (the primary key's lead)
-        assert 'ORDER BY t."row_scope" ASC, t."namespace_id" ASC' in pool.fetch.await_args.args[0]
+        assert 'ORDER BY t."namespace_id" ASC LIMIT' in pool.fetch.await_args.args[0]
 
 
 class TestGroupMemberPageByGroup:
@@ -999,7 +999,8 @@ class TestGroupMemberPageByGroup:
         page = await coll.page_by_group(group_id, limit=10)
         assert page.entities == [] and page.next_cursor is None
         sql = pool.fetch.await_args.args[0]
-        assert sql.endswith('WHERE t."group_id" = $1 ORDER BY t."group_id" ASC, t."id" ASC LIMIT 11'), sql
+        # the pinned group is a constant on every row: the page orders by the key alone
+        assert sql.endswith('WHERE t."group_id" = $1 ORDER BY t."id" ASC LIMIT 11'), sql
         assert pool.fetch.await_args.args[1:] == (group_id,)
 
 
