@@ -385,6 +385,25 @@ class _GroupsWholeItems(InMemoryDocumentStore):
         return super().grouped(doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
 
 
+class _SumWraps(_PlainFold):
+    """``sum_int`` wraps at 64 bits, as a signed 64-bit accumulator does: in range, every sum is right."""
+
+    kinds = {**_KINDS, "sum_int": lambda values: (_sum_int(values) + 2**63) % 2**64 - 2**63}
+
+
+class _SharesGroupedValues(InMemoryDocumentStore):
+    """``grouped`` hands each ``values`` value out as the stored document holds it, so a reader shares it."""
+
+    def grouped(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        groups = super().grouped(doc_type, scope_id, **kwargs)
+        stored = {doc_id: document for (scope, doc_id), document in self.documents.items() if scope == scope_id}
+        for group in groups:
+            for name, (kind, path) in kwargs["measures"].items():
+                if kind == "values":
+                    group[name] = [[row_id, _read(stored[row_id], path)] for row_id, _ in group[name]]
+        return groups
+
+
 class _SwallowsFailures(InMemoryDocumentStore):
     """A backend failure reads as an empty answer."""
 
@@ -418,6 +437,8 @@ _FAULTS: dict[type[DocumentStore], frozenset[str]] = {
     _SwallowsFailures: frozenset({"failure.raises"}),
     _SharesStoredValues: frozenset({"reads.copied_out"}),
     _GroupsWholeItems: frozenset({"grouped.values_narrowed_in_items"}),
+    _SumWraps: frozenset({"grouped.sum_int"}),
+    _SharesGroupedValues: frozenset({"reads.copied_out"}),
 }
 
 

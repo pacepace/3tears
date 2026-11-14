@@ -211,6 +211,7 @@ from threetears.evals.schema.store_port import (
     StoreClock,
     StoreConflict,
     check_grouping,
+    copy_json,
     field_in_values,
     fold_groups,
     grouped_narrowed,
@@ -219,6 +220,7 @@ from threetears.evals.schema.store_port import (
     narrow_items,
     omit_paths,
     refuse_on_event_loop,
+    takes_exclude_in_items,
 )
 from threetears.evals.schema.job_lease import (
     DEFAULT_JOB_LEASE_S,
@@ -526,6 +528,7 @@ __all__ = [
     "attribution_state",
     "canonical_digest",
     "check_grouping",
+    "copy_json",
     "extract_paths",
     "eval_trace_doc_id",
     "field_in_values",
@@ -542,6 +545,7 @@ __all__ = [
     "sent_settings_of",
     "referenced_actions",
     "refuse_on_event_loop",
+    "takes_exclude_in_items",
     "utc_now_iso",
     "CellIdentity",
     "CellTrace",

@@ -556,13 +556,25 @@ _MEASURE_KINDS = frozenset({"count", "count_null", "sum_int", "min", "max", "val
 _SHARED_SCALARS: frozenset[type] = frozenset({str, int, float, bool, type(None)})
 
 
-def _copied(value: Any) -> Any:
-    """``value`` with every object and list in it copied and every JSON scalar shared; any other type deep-copied."""
+def copy_json(value: Any) -> Any:
+    """``value`` with every object and list in it copied, and every JSON scalar in it shared.
+
+    The copy a caller's isolation from a store needs and no more: a caller can change a dict or a list it was handed,
+    and never a string or a number. Several times cheaper than :func:`copy.deepcopy`, which records every object it
+    visits. A value of any other type (a tuple, a set, a model a test wrote) is deep-copied, so nothing mutable is ever
+    shared. The in-memory store copies every document in and out through it, and :func:`fold_groups` each ``values``
+    value.
+
+    :param value: The value. Not mutated.
+    :ptype value: Any
+    :return: The copy.
+    :rtype: Any
+    """
     kind = type(value)
     if kind is dict:
-        return {key: _copied(item) for key, item in value.items()}
+        return {key: copy_json(item) for key, item in value.items()}
     if kind is list:
-        return [_copied(item) for item in value]
+        return [copy_json(item) for item in value]
     if kind in _SHARED_SCALARS:
         return value
     return copy.deepcopy(value)
@@ -645,7 +657,7 @@ class _Fold:
             return
         value = _read_path(row, path)
         if kind == "values":
-            self.answer.append([row.get("id"), _copied(value)])
+            self.answer.append([row.get("id"), copy_json(value)])
         elif kind == "count_null":
             self.answer += value is None
         elif value is None:
@@ -761,8 +773,18 @@ def _narrowed_value(value: Any, path: str, exclude_in_items: Mapping[str, Sequen
     return _read_path(narrow_items(row, exclude_in_items), path)
 
 
-def _takes_exclude_in_items(grouped: Any) -> bool:
-    """Whether a ``grouped`` declares ``exclude_in_items`` by name (``**kwargs`` does not count)."""
+def takes_exclude_in_items(grouped: Any) -> bool:
+    """Whether a ``grouped`` (:meth:`ResultReadings.grouped`, or an async store's) declares ``exclude_in_items``.
+
+    The one rule for deciding whether a store is asked with the parameter: it is declared by name, keyword-only or
+    positional-or-keyword; ``**kwargs`` does not count, since a store that takes it only that way cannot be told from
+    one that drops it. A callable whose signature cannot be read is read as not taking it.
+
+    :param grouped: The store's ``grouped`` method.
+    :ptype grouped: Any
+    :return: Whether it declares the parameter.
+    :rtype: bool
+    """
     try:
         declared = inspect.signature(grouped).parameters.get("exclude_in_items")
     except TypeError, ValueError:
@@ -801,7 +823,7 @@ def grouped_narrowed(
     """
     if not exclude_in_items:
         return readings.grouped(doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
-    if _takes_exclude_in_items(readings.grouped):
+    if takes_exclude_in_items(readings.grouped):
         return readings.grouped(
             doc_type,
             scope_id,
@@ -1070,6 +1092,7 @@ __all__ = [
     "StoreClock",
     "StoreConflict",
     "check_grouping",
+    "copy_json",
     "field_in_values",
     "fold_groups",
     "grouped_narrowed",
@@ -1078,4 +1101,5 @@ __all__ = [
     "narrow_items",
     "omit_paths",
     "refuse_on_event_loop",
+    "takes_exclude_in_items",
 ]

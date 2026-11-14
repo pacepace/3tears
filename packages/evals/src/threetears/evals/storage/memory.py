@@ -17,7 +17,7 @@ is the shape to compare a real adapter against. It injects nothing into a stored
 nothing to strip on the way out: the etag lives beside the document, not in it. Documents are copied
 in and out, so a caller mutating what it wrote or read never reaches the stored copy. A copy is only as deep as
 that needs: each object and list is copied, and a string, number, boolean or null is shared, since nothing can
-change one in place (:func:`_copied`).
+change one in place (:func:`~threetears.evals.schema.store_port.copy_json`).
 
 **One lock over every method.** The engine calls its store from a blocking-I/O executor, so two
 threads can write one document at once; a conditional write's compare and its write happen under
@@ -27,7 +27,6 @@ without a conflict — exactly what the etag exists to prevent.
 
 from __future__ import annotations
 
-import copy
 import itertools
 import threading
 from collections.abc import Iterator, Mapping, Sequence
@@ -37,6 +36,7 @@ from typing import Any
 from threetears.evals.schema.store_port import (
     GroupMeasure,
     StoreConflict,
+    copy_json,
     field_in_values,
     fold_groups,
     keep_fields,
@@ -48,27 +48,6 @@ __all__ = ["InMemoryDocumentStore"]
 
 #: The fields that locate a document, which :meth:`InMemoryDocumentStore.merge_fields` refuses to set.
 _LOCATING_FIELDS = frozenset({"id", "scope_id", "doc_type"})
-
-
-#: The JSON scalars a copy shares rather than copies: nothing can change one in place.
-_SHARED_SCALARS: frozenset[type] = frozenset({str, int, float, bool, type(None)})
-
-
-def _copied(value: Any) -> Any:
-    """``value`` with every object and list in it copied, and every JSON scalar in it shared.
-
-    The copy a caller's isolation needs and no more: a caller can change a dict or a list it was handed, and never a
-    string or a number. Several times cheaper than :func:`copy.deepcopy`, which records every object it visits. A
-    value of any other type (a tuple, a set, a model a test wrote) is deep-copied, so nothing mutable is ever shared.
-    """
-    kind = type(value)
-    if kind is dict:
-        return {key: _copied(item) for key, item in value.items()}
-    if kind is list:
-        return [_copied(item) for item in value]
-    if kind in _SHARED_SCALARS:
-        return value
-    return copy.deepcopy(value)
 
 
 def _stored_equal(stored: Any, wanted: Any) -> bool:
@@ -112,7 +91,7 @@ class InMemoryDocumentStore:
         """
         with self._lock:
             document = self.documents.get((scope_id, doc_id))
-            return _copied(document) if document is not None else None
+            return copy_json(document) if document is not None else None
 
     def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
         """Return one document plus the token a conditional write must present.
@@ -129,7 +108,7 @@ class InMemoryDocumentStore:
             document = self.documents.get(key)
             if document is None:
                 return None, None
-            return _copied(document), self._etags[key]
+            return copy_json(document), self._etags[key]
 
     def get_many(
         self,
@@ -165,7 +144,7 @@ class InMemoryDocumentStore:
                 if (document := self.documents.get((scope_id, doc_id))) is not None
                 and document.get("doc_type") == doc_type
             ]
-            return [_copied(keep_fields(d, keep) if keep else omit_paths(d, exclude)) for d in found]
+            return [copy_json(keep_fields(d, keep) if keep else omit_paths(d, exclude)) for d in found]
 
     def by_doc_type(
         self,
@@ -218,7 +197,7 @@ class InMemoryDocumentStore:
                 )
             if limit is not None:
                 rows = rows[:limit]
-            return [_copied(omit_paths(d, exclude)) for d in rows]
+            return [copy_json(omit_paths(d, exclude)) for d in rows]
 
     def _matching(
         self, doc_type: str, scope_id: str, field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapping[str, Any]
@@ -281,7 +260,7 @@ class InMemoryDocumentStore:
             not a scalar.
         """
         rows = self._matching(doc_type, scope_id, field_in, field_eq)
-        return (_copied(narrow_items(omit_paths(row, exclude), exclude_in_items)) for row in rows)
+        return (copy_json(narrow_items(omit_paths(row, exclude), exclude_in_items)) for row in rows)
 
     def grouped(
         self,
@@ -368,7 +347,7 @@ class InMemoryDocumentStore:
             raise ValueError("a write is conditional on an etag or on absence, never both")
         scope_id, doc_id = document["scope_id"], document["id"]
         key = (scope_id, doc_id)
-        stored = _copied(document)
+        stored = copy_json(document)
         with self._lock:
             if if_match is not None and self._etags.get(key) != if_match:
                 raise StoreConflict(f"document {doc_id!r} in scope {scope_id!r} no longer carries etag {if_match!r}")
@@ -395,7 +374,7 @@ class InMemoryDocumentStore:
         if locating := sorted(_LOCATING_FIELDS & fields.keys()):
             raise ValueError(f"merge_fields cannot set the fields that locate a document: {locating}")
         key = (scope_id, doc_id)
-        merged = _copied(fields)
+        merged = copy_json(fields)
         with self._lock:
             document = self.documents.get(key)
             if document is None:

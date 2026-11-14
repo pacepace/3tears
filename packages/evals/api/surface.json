@@ -311,6 +311,11 @@
       "signature": "values: `'max_turns'`, `'user_done'`, `'participants_ended'`, `'simulator_error'`, `'apparatus_error'`, `'candidate_error'`, `'budget_stopped'`",
       "tier": "stable"
     },
+    "threetears.evals.schema.copy_json": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.CORE_ADDRESSING_FIELDS": {
       "kind": "constant (mappingproxy)",
       "signature": "",
@@ -1250,6 +1255,11 @@
       "kind": "model",
       "signature": "SweepableValue(content_hash: str, display: str, scale: Scale, raw: Any | None = None)",
       "tier": "host-contract"
+    },
+    "threetears.evals.schema.takes_exclude_in_items": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.ThinkingBinding": {
       "kind": "dataclass",

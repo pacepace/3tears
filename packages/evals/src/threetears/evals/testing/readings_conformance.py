@@ -43,7 +43,14 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
-from threetears.evals.schema.store_port import DocumentStore, GroupMeasure, ResultReadings, narrow_items, omit_paths
+from threetears.evals.schema.store_port import (
+    DocumentStore,
+    GroupMeasure,
+    ResultReadings,
+    grouped_narrowed,
+    narrow_items,
+    omit_paths,
+)
 from threetears.evals.testing.store_conformance import StoreConformanceFailure
 
 __all__ = [
@@ -181,7 +188,11 @@ def _values_narrowed_in_items(store: DocumentStore, _install: Callable[[Callable
         "rows": ("count", None),
     }
     narrowing = {"rejudges": ["prose", "keep.prose"], "holder.rejudges": ["prose"]}
-    groups = _readings(store).grouped(_TYPE, _SCOPE, by=["run"], measures=measures, exclude_in_items=narrowing)
+    # Through grouped_narrowed, as the engine asks: a store whose grouped declares exclude_in_items is asked with it and
+    # must narrow, and one written before the parameter is asked without it and narrowed after, so it still passes.
+    groups = grouped_narrowed(
+        _readings(store), _TYPE, _SCOPE, by=["run"], measures=measures, exclude_in_items=narrowing
+    )
     # The values the store's own narrowed read gives, paired with their rows in its order.
     narrowed = {row["id"]: row for row in _narrowed(store, exclude_in_items=narrowing, run="a")}
     order = _ids(store.by_doc_type(_TYPE, _SCOPE, run="a"))
@@ -707,8 +718,9 @@ RESULT_READINGS_CONFORMANCE_CASES: tuple[ResultReadingsConformanceCase, ...] = (
     ),
     ResultReadingsConformanceCase(
         "grouped.values_narrowed_in_items",
-        "exclude_in_items drops the named paths from each object item of a list in every values value, as "
-        "iter_narrowed drops them, and changes nothing else",
+        "exclude_in_items, where grouped declares it, drops the named paths from each object item of a list in every "
+        "values value, as iter_narrowed drops them, and changes nothing else; a grouped that does not declare it is "
+        "read without it and narrowed after",
         _values_narrowed_in_items,
     ),
     ResultReadingsConformanceCase(

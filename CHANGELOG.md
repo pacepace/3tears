@@ -8,6 +8,18 @@ packages (bumped in lock-step).
 
 ### evals: store reads (#1020, #1052, #1053, #1057, #1058, #1059)
 
+**Changed, for hosts (a store offering `ResultReadings`):** the readings conformance kit holds four rules it did not
+before; `docs/adopting-a-host.md` ("Narrowed and grouped reads are optional") says what each asks of an adapter.
+`grouped.sum_int` sums integers past a signed 64-bit range and accepts only the exact sum or a `TypeError`: a Postgres
+adapter summing through `bigint` raises a driver error (`bigint out of range`) and goes red, so sum through `numeric`
+and return an `int`, or raise `TypeError`. `grouped.values_exact` reads integers of 2**63 and wider, which `values`
+returns whole, as your own reads do. `grouped.values_narrowed_in_items` is new; it reads a `grouped` that does not
+declare `exclude_in_items` without it and narrows the values after (`grouped_narrowed`), so an adapter written before
+the parameter passes it and keeps working, only shipping whole items, though mypy reads it as not matching
+`ResultReadings` until it declares the parameter. `reads.copied_out` is new: a narrowed row or a grouped value handed
+out must not share the stored document. A narrowed read the engine abandons is closed (`close()`, or `aclose()` through
+the bridge): release the cursor there.
+
 **Changed:** `fold_groups` folds each row into its group as it arrives and lets it go, so a fold holds its groups'
 answers, never the rows; a measure refuses a value when the fold reaches it. The engine's grouping of a store without
 `ResultReadings` (`EvalStorage.result_groups`) now hands it each page of rows as the page is read, so a spend read on
@@ -23,13 +35,16 @@ page first (#1059 item 2).
 numbers, booleans and nulls, where it deep-copied every value of every row on each read and write: about a third of
 the copy time, which inflated every profile run on it. The store conformance kit's `write.copied_in_and_out` now
 checks every read and `merge_fields`, at every depth, inside objects and list items, and the readings kit gains
-`reads.copied_out` (a narrowed row, a grouped value); a host store that hands out what it holds fails them (#1052).
+`reads.copied_out` (a narrowed row, a grouped value); a host store that hands out what it holds fails them. The
+copy is `copy_json` in `threetears.evals.schema` (provisional), which `fold_groups` copies each `values` value with too
+(#1052).
 
-**Fixed:** the SQLite store's `grouped` sums `sum_int` exactly at any width, in its one statement: a sum past a
-signed 64-bit integer raised SQLite's `integer overflow`, and an integer wider than 64 bits was summed as a rounded
-real. Its `values` now hand such an integer back whole, as its own reads do, closing the gap the docstrings stated.
-The port states that a `sum_int` past 64 bits is exact or refused with `TypeError`, never wrapped or rounded, and the
-readings kit's `grouped.sum_int` and `grouped.values_exact` check it (#1059 item 1).
+**Changed, for hosts:** the port states that a `sum_int` past 64 bits is exact or refused with `TypeError`, never
+wrapped, rounded or failed as a backend error, and the readings kit's `grouped.sum_int` and `grouped.values_exact`
+check it (see the first paragraph). The SQLite store's `grouped` now sums `sum_int` exactly at any width, in its one
+statement: a sum past a signed 64-bit integer raised SQLite's `integer overflow`, and an integer wider than 64 bits was
+summed as a rounded real. Its `values` hand such an integer back whole, as its own reads do, closing the gap the
+docstrings stated (#1059 item 1).
 
 **Fixed:** a read abandoned part way closes the store's rows when it is closed, not when it is collected.
 `ReadingsRead` (what `EvalStorage.iter_result_readings` returns) has `close()` and is a context manager, and a walk of
@@ -54,7 +69,10 @@ interim code-only page whose first screen said "This page is the code-only page 
 version no longer reads the document (its record, its snapshot, or its snapshot's bundle), the page is code's over the
 bundles frozen with the analysis, never the campaign's evidence now; its first screen carries the regenerate line
 naming the analysis (`unread_analysis_id`), and `needs_regeneration` adds why and that the page lays out the evidence
-frozen with the analysis. Over frozen bundles this build no longer reads, it is refused as before. **For hosts:**
+frozen with the analysis. Over frozen bundles this build no longer reads, it is refused as before. That interim line
+(`DOC_WRITTEN`) and `report_doc_blocks` are removed, and so is the `report_doc_id` parameter of the provisional
+`build_campaign_report` and `build_campaign_report_in_aspect_forms`, which printed it and which nothing passed.
+**For hosts:**
 `analysis_report` takes an `AnalysisReportStore`: `AnalysisStore` and the new `ReportDocReads` (`load_report_doc`,
 `load_report_snapshot`), both in `threetears.evals.analysis` (provisional). `EvalStorage` satisfies both; a host
 passing its own `AnalysisStore` adds the two reads. `read_report_doc` and `stored_headline` take `ReportDocReads`
@@ -66,7 +84,8 @@ passing its own `AnalysisStore` adds the two reads. `read_report_doc` and `store
 (#1058). The in-memory, SQLite and routed stores and `bridge_async_store` take it, and the readings kit gains
 `grouped.values_narrowed_in_items`. A host store whose `grouped` predates the parameter keeps working: the engine
 asks it without the parameter and narrows the values itself (`grouped_narrowed`, `narrow_groups` in
-`threetears.evals.schema`), so it ships the items whole until it declares `exclude_in_items`.
+`threetears.evals.schema`), so it ships the items whole until it declares `exclude_in_items`. Whether a `grouped`
+declares it is decided by one rule, `takes_exclude_in_items` (provisional): by name, never through `**kwargs`.
 `EvalStorage.result_groups` and `LensStore.result_groups` take `exclude_in_items` too.
 
 ### evals: export, seed and carry follow-ups

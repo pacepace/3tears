@@ -57,6 +57,7 @@ from threetears.evals.schema.store_port import (
     GroupMeasure,
     narrow_groups,
     refuse_on_event_loop,
+    takes_exclude_in_items,
 )
 
 __all__ = ["AsyncStoreBridge", "bridge_async_store"]
@@ -296,7 +297,7 @@ class _ReadingAsyncStoreBridge(AsyncStoreBridge):
         without it, and its values are narrowed here (:func:`~threetears.evals.schema.store_port.narrow_groups`).
         """
         grouped = self._readings().grouped
-        if exclude_in_items and "exclude_in_items" in inspect.signature(grouped).parameters:
+        if exclude_in_items and takes_exclude_in_items(grouped):
             return self._call(
                 partial(
                     grouped,

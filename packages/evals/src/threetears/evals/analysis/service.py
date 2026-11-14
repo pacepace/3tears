@@ -1145,7 +1145,6 @@ def _campaign_page(
         readings,
         reports,
         call=campaign.call,
-        report_doc_id=analysis.report_doc_id if analysis is not None else None,
         unread_analysis_id=unread_analysis_id,
         unread_report_doc_id=unread_report_doc_id,
         unread_line=unread_line,
@@ -1294,13 +1293,18 @@ def analysis_report(
     campaign = storage.load_campaign(analysis.campaign_id, scope_id)
     if analysis.report_doc_id is None or retired_generation(analysis.basis) is not None:
         return _analysis_page(analysis, campaign, trials=trials)
+    # Only the document not reading falls back: a document gone (NotFoundError) or refused, or a layout its bundle
+    # refuses. Anything else raised while laying it out is not the document failing to read, and propagates.
     try:
         read = read_report_doc(storage, analysis.report_doc_id, scope_id)
-        page = _doc_laid_out(_as_analysed(analysis, campaign), read, analysis_id=analysis.id, trials=trials)
-    except (NotFoundError, RefusedInput) as unread:
-        why = unread.message if isinstance(unread, NotFoundError) else unread.fault
-        return _frozen_stand_in(analysis, campaign, why, trials=trials)
-    return page
+    except NotFoundError as missing:
+        return _frozen_stand_in(analysis, campaign, missing.message, trials=trials)
+    except RefusedInput as unread:
+        return _frozen_stand_in(analysis, campaign, unread.fault, trials=trials)
+    try:
+        return _doc_laid_out(_as_analysed(analysis, campaign), read, analysis_id=analysis.id, trials=trials)
+    except RefusedInput as unread:
+        return _frozen_stand_in(analysis, campaign, unread.fault, trials=trials)
 
 
 #: What a stored analysis's page laid out over its own frozen bundles says beside why its document no longer reads:
