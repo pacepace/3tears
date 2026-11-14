@@ -45,7 +45,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -234,8 +233,14 @@ def _program(event: str, args: tuple[Any, ...]) -> str:
 
 
 def _is_code(path: str) -> bool:
-    """whether *path* is the interpreter's own code: a module under its installation prefix."""
-    return Path(path).suffix in _CODE_SUFFIXES and any(path.startswith(root + os.sep) for root in _CODE_ROOTS)
+    """whether *path* is the interpreter's own code: a module, or its bytecode, under its installation prefix.
+
+    an import's bytecode write goes through a temporary name (``x.cpython-314.pyc.<id>``), so anything
+    in a ``__pycache__`` there counts.
+    """
+    parts = Path(path)
+    in_code = parts.suffix in _CODE_SUFFIXES or "__pycache__" in parts.parts
+    return in_code and any(path.startswith(root + os.sep) for root in _CODE_ROOTS)
 
 
 class _Recorded:
@@ -380,9 +385,13 @@ class ScanCache:
         self._prune(name, target)
 
     def _prune(self, name: str, kept: Path) -> None:
-        """drop this store's files from other code no run has used for a day, and dead writers' temporaries."""
-        now = time.time()
+        """drop this store's files from other code no run has used for a day, and dead writers' temporaries.
+
+        ages are measured against the store just written, not the clock: a test runner that caches
+        results treats a clock read as an input it cannot replay.
+        """
         try:
+            now = kept.stat().st_mtime
             for path in self.directory.glob(f"{name}-*.pickle"):
                 if path != kept and path.stat().st_mtime < now - _OTHER_CODE_AGE_S:
                     path.unlink(missing_ok=True)
