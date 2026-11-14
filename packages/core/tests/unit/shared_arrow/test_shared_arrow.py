@@ -30,7 +30,6 @@ import pytest
 
 from packages.core.tests.unit.shared_arrow import jobs
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
-from threetears.core import shared_arrow
 from threetears.core.shared_arrow import (
     MappedTables,
     MappedVersion,
@@ -1425,12 +1424,11 @@ class TestAReaderRunsNoMoreEngineThreadsThanItsCores:
         ("cores", "threads", "slots"), [(2, 2, 1), (4, 2, 2), (10, 2, 5), (8, None, 4), (3, None, 1), (3, 4, 1)]
     )
     def test_its_slots_are_the_usable_cores_over_the_engine_threads(
-        self, store: SharedArrowStore, monkeypatch: pytest.MonkeyPatch, cores: int, threads: int | None, slots: int
+        self, store: SharedArrowStore, cores: int, threads: int | None, slots: int
     ) -> None:
         """Flips if a reader admits more reads than keep reads x engine threads within the usable cores (an unset
         ``threads`` is 2), or fewer than one."""
-        monkeypatch.setattr(shared_arrow, "_usable_cores", lambda: cores)
-        reader = store.reader(config=None if threads is None else {"threads": threads})
+        reader = store.reader(config=None if threads is None else {"threads": threads}, cores=cores)
 
         assert reader.status()["slots"] == slots
         reader.close()
@@ -1452,14 +1450,11 @@ class TestAReaderRunsNoMoreEngineThreadsThanItsCores:
         with pytest.raises(ValueError, match="at least 1"):
             store.reader(config={"threads": 0})
 
-    def test_a_read_past_the_slots_waits_its_turn_and_runs_when_one_frees(
-        self, store: SharedArrowStore, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_read_past_the_slots_waits_its_turn_and_runs_when_one_frees(self, store: SharedArrowStore) -> None:
         """Flips if a read past the slots runs beside the one holding the slot, or never runs once it frees; the
         waiting read shows as queued."""
-        monkeypatch.setattr(shared_arrow, "_usable_cores", lambda: 2)
         _serving_version(store, "v1")
-        reader = store.reader(config={"threads": 2})
+        reader = store.reader(config={"threads": 2}, cores=2)
         order: list[str] = []
         first = reader.read()
         first.__enter__()
@@ -1484,14 +1479,11 @@ class TestAReaderRunsNoMoreEngineThreadsThanItsCores:
         assert (reader.status()["in_flight"], reader.status()["queued"]) == (0, 0)
         reader.close()
 
-    def test_a_read_that_waits_past_its_bound_fails_naming_the_reads_ahead(
-        self, store: SharedArrowStore, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_read_that_waits_past_its_bound_fails_naming_the_reads_ahead(self, store: SharedArrowStore) -> None:
         """Flips if a starved read waits without bound, or fails without saying what held the slots; a slot it
         never took is not given back."""
-        monkeypatch.setattr(shared_arrow, "_usable_cores", lambda: 1)
         _serving_version(store, "v1")
-        reader = store.reader(config={"threads": 1}, admit_wait=0.05)
+        reader = store.reader(config={"threads": 1}, admit_wait=0.05, cores=1)
         with reader.read():
             failed: list[BaseException] = []
 

@@ -117,7 +117,7 @@ from nats.js.client import JetStreamContext
 from nats.nuid import NUID
 from nats.protocol.command import PUB_OP
 
-from threetears.nats._asyncio_send_path import send_path_gaps
+from threetears.nats._asyncio_send_path import TRANSPORT_NAME, send_path_gaps
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -127,6 +127,7 @@ __all__ = [
     "NUID_LENGTH",
     "PRIVATE_SURFACE",
     "SEND_BOUND_BYTES",
+    "TRANSPORT_NAME",
     "UNJOINED_FROM_BYTES",
     "CsprngNuid",
     "PrivateAttribute",
@@ -141,6 +142,7 @@ __all__ = [
     "request_unjoined",
     "send_unsubscribe",
     "send_bound_gaps",
+    "send_path_gaps",
     "sends_are_bounded",
     "take_queued_messages",
     "write_pending_then_ping",

@@ -2362,6 +2362,7 @@ class SharedArrowStore:
         config: Mapping[str, Any] | None = None,
         prepare: Callable[[Any], Any] | None = None,
         admit_wait: float = _ADMIT_WAIT_SECONDS,
+        cores: int | None = None,
     ) -> SharedArrowReader:
         """a reader of the current version for this process (the serving process reading what its workers read), told
         after every publish so it lets a superseded version go as soon as its last read ends.
@@ -2376,12 +2377,16 @@ class SharedArrowStore:
         :ptype prepare: Callable[[duckdb.DuckDBPyConnection], Any] | None
         :param admit_wait: the longest a read waits for an engine slot (:class:`SharedArrowReader`)
         :ptype admit_wait: float
+        :param cores: the cores its reads may share (:class:`SharedArrowReader`); None for the process's usable cores
+        :ptype cores: int | None
         :return: the reader; close it when done
         :rtype: SharedArrowReader
         :raises ImportError: when duckdb is not installed
         """
         _require_duckdb()
-        made = SharedArrowReader(self, schema=schema, config=config, prepare=prepare, admit_wait=admit_wait)
+        made = SharedArrowReader(
+            self, schema=schema, config=config, prepare=prepare, admit_wait=admit_wait, cores=cores
+        )
         with self._state:
             self._readers.add(made)
         return made
@@ -3365,6 +3370,9 @@ class SharedArrowReader:
     :param admit_wait: the longest a read waits for an engine slot (:class:`_Admission`: reads run at once only as
         many as keep reads x the connection's ``threads`` within the process's usable cores)
     :ptype admit_wait: float
+    :param cores: the cores its reads may share; None for the process's usable cores (its cgroup quota within its CPU
+        affinity)
+    :ptype cores: int | None
     """
 
     def __init__(
@@ -3375,6 +3383,7 @@ class SharedArrowReader:
         config: Mapping[str, Any] | None = None,
         prepare: Callable[[Any], Any] | None = None,
         admit_wait: float = _ADMIT_WAIT_SECONDS,
+        cores: int | None = None,
     ) -> None:
         self._store = store
         self._schema = schema
@@ -3385,7 +3394,7 @@ class SharedArrowReader:
         engine_threads = int(self._config["threads"])
         if engine_threads < 1:
             raise ValueError(f"a shared Arrow reader's DuckDB threads must be at least 1, got {engine_threads}")
-        self._admission = _Admission(_usable_cores() // engine_threads, admit_wait)
+        self._admission = _Admission((_usable_cores() if cores is None else cores) // engine_threads, admit_wait)
         self._prepare = prepare
         self._lock = threading.Lock()
         self._held: _HeldVersion | None = None

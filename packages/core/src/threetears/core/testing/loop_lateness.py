@@ -57,6 +57,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Final, TypeVar
 
+from threetears.observe import BuildOnce
+
 __all__ = [
     "MEASURE_ATTEMPTS",
     "CouldNotMeasure",
@@ -255,7 +257,7 @@ def _spun(threads: int) -> float:
     return time.perf_counter() - began
 
 
-def _cpu_crowding(threads: int) -> float:
+def _cpu_crowding(threads: int, probe: Callable[[int], float]) -> float:
     """how much longer a fixed spin takes on ``threads`` threads at once now than the fastest this host has ever run it
     on that many: about 1 with that many cores free, more as fewer are.
 
@@ -268,15 +270,17 @@ def _cpu_crowding(threads: int) -> float:
 
     :param threads: the threads the measured path runs on
     :ptype threads: int
+    :param probe: takes the spin on as many threads at once, in seconds (:func:`_taken` on a real host)
+    :ptype probe: Callable[[int], float]
     :return: the spin's seconds now over the reference's
     :rtype: float
     """
     threads = _spin_threads(threads)
-    reference = _reference(threads)
+    reference = _reference(threads, probe)
     if math.isinf(reference):
         # no quiet reference: nothing this session takes is recorded (a busy take must never become the host's)
         return math.inf
-    now = _taken(threads)
+    now = probe(threads)
     _record(threads, now)
     return now / reference
 
@@ -333,7 +337,7 @@ def _cpu_model() -> str:
             for line in cpuinfo:
                 if line.startswith("model name"):
                     return line.split(":", 1)[1].strip()
-    except OSError:
+    except OSError:  # NOSILENT: no /proc/cpuinfo (macOS, a sandbox): the platform's own names below are the model
         pass
     return f"{platform.machine()} {platform.processor()}".strip()
 
@@ -352,7 +356,7 @@ def _stored(threads: int) -> float | None:
     """the host's fastest recorded spin on ``threads`` threads, or None."""
     try:
         held = json.loads(_record_path().read_text(encoding="utf-8"))
-    except OSError, ValueError:
+    except OSError, ValueError:  # NOSILENT: no record yet (or a torn one) is "no record": the session's take stands
         return None
     value = held.get(_record_key(threads)) if isinstance(held, dict) else None
     return float(value) if isinstance(value, (int, float)) and value > 0 else None
@@ -377,31 +381,43 @@ def _record(threads: int, seconds: float) -> None:
     os.replace(scratch, path)
 
 
-#: this session's reference per spin thread count: its first take, or None when no reference could be had
-_SESSION: dict[int, float | None] = {}
+#: this session's reference per probe and spin thread count: its first take, or None when no reference could be had;
+#: taken once per probe and thread count, however many measurements ask first
+_SESSION: Final[BuildOnce[tuple[Callable[[int], float], int], float | None]] = BuildOnce()
 
 
-def _reference(threads: int) -> float:
+def _reference(threads: int, probe: Callable[[int], float]) -> float:
     """the spin on ``threads`` threads a window is compared with: the lower of this session's first take and the
     host's record. A host with no record trusts the first take only when its idle loop was on time over it; else the
     session has no reference (infinite: nothing compares under it)."""
-    if threads not in _SESSION:
-        stored = _stored(threads)
-        with HostTicker() as host:
-            began = time.perf_counter()
-            first = _taken(threads)
-            ended = time.perf_counter()
-        quiet = host_lateness(host.ticks, [(began, ended)]) <= _REFERENCE_HOST_MAY_BE_LATE
-        if stored is None and not quiet:
-            _SESSION[threads] = None
-        else:
-            _SESSION[threads] = first if stored is None else min(first, stored)
-            _record(threads, first)
-    session = _SESSION[threads]
+    session = _SESSION.get((probe, threads), lambda: _first_take(threads, probe))
     stored = _stored(threads)
     if session is None:
         return stored if stored is not None else math.inf
     return session if stored is None else min(session, stored)
+
+
+def _first_take(threads: int, probe: Callable[[int], float]) -> float | None:
+    """this session's first spin on ``threads`` threads, recorded as the host's when the idle loop was on time over it
+    or the host has a record; None when the host has no record and was busy (a busy take never becomes the host's).
+
+    :param threads: the spin's threads
+    :ptype threads: int
+    :param probe: takes the spin
+    :ptype probe: Callable[[int], float]
+    :return: the session's reference, or None
+    :rtype: float | None
+    """
+    stored = _stored(threads)
+    with HostTicker() as host:
+        began = time.perf_counter()
+        first = probe(threads)
+        ended = time.perf_counter()
+    quiet = host_lateness(host.ticks, [(began, ended)]) <= _REFERENCE_HOST_MAY_BE_LATE
+    if stored is None and not quiet:
+        return None
+    _record(threads, first)
+    return first if stored is None else min(first, stored)
 
 
 class CouldNotMeasure(AssertionError):
@@ -433,6 +449,7 @@ async def trusted(
     attempts: int = MEASURE_ATTEMPTS,
     threads: int | None = None,
     cpu_may_be_crowded: float = _CPU_MAY_BE_CROWDED,
+    probe: Callable[[int], float] = _taken,
 ) -> _Measured:
     """the first of up to ``attempts`` measurements over which the host's idle loop was late by at most
     ``host_may_be_late`` (and, for a path on ``threads`` threads, its cores were free before and after it).
@@ -451,15 +468,19 @@ async def trusted(
     :ptype threads: int | None
     :param cpu_may_be_crowded: the most :func:`_cpu_crowding` may be
     :ptype cpu_may_be_crowded: float
+    :param probe: takes a fixed spin on as many threads at once and answers its seconds: the host's own spin
+        (:func:`_taken`) unless a test scripts one; each probe has its own session reference, and every probe's takes
+        lower the host's record
+    :ptype probe: Callable[[int], float]
     :return: the trusted measurement
     :rtype: _Measured
     :raises CouldNotMeasure: when the host was too late, or its cores too crowded, in every attempt
     """
     seen: list[str] = []
     for _ in range(attempts):
-        before = _crowding(threads)
+        before = _crowding(threads, probe)
         measured = await measure()
-        after = _crowding(threads)
+        after = _crowding(threads, probe)
         ticks, host = window(measured)
         verdict = _untrusted(host_lateness(host, ticks), (before, after), host_may_be_late, cpu_may_be_crowded)
         if verdict is None:
@@ -475,6 +496,7 @@ def quietly(
     attempts: int = MEASURE_ATTEMPTS,
     threads: int | None = None,
     cpu_may_be_crowded: float = _CPU_MAY_BE_CROWDED,
+    probe: Callable[[int], float] = _taken,
 ) -> _Measured:
     """the first of up to ``attempts`` runs of ``measure()`` over which the host's idle loop, ticking beside it in a
     process of its own (:class:`HostTicker`), was late by at most ``host_may_be_late``: :func:`trusted` for a
@@ -495,18 +517,20 @@ def quietly(
     :ptype threads: int | None
     :param cpu_may_be_crowded: the most :func:`_cpu_crowding` may be
     :ptype cpu_may_be_crowded: float
+    :param probe: the spin crowding is judged by, as :func:`trusted` takes it
+    :ptype probe: Callable[[int], float]
     :return: the trusted measurement
     :rtype: _Measured
     :raises CouldNotMeasure: when the host was too late, or its cores too crowded, in every attempt
     """
     seen: list[str] = []
     for _ in range(attempts):
-        before = _crowding(threads)
+        before = _crowding(threads, probe)
         with HostTicker() as host:
             began = time.perf_counter()
             measured = measure()
             ended = time.perf_counter()
-        after = _crowding(threads)
+        after = _crowding(threads, probe)
         late = host_lateness(host.ticks, [(began, ended)])
         verdict = _untrusted(late, (before, after), host_may_be_late, cpu_may_be_crowded)
         if verdict is None:
@@ -515,9 +539,9 @@ def quietly(
     raise _could_not_measure(seen, attempts)
 
 
-def _crowding(threads: int | None) -> float | None:
+def _crowding(threads: int | None, probe: Callable[[int], float]) -> float | None:
     """:func:`_cpu_crowding` on ``threads`` threads; None when the measurement names none (a loop's ticks alone)."""
-    return None if threads is None else _cpu_crowding(threads)
+    return None if threads is None else _cpu_crowding(threads, probe)
 
 
 def _untrusted(

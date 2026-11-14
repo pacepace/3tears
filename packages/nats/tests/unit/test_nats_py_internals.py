@@ -8,35 +8,44 @@ these attributes must fail here, by name, before anything ships against it.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 import importlib.metadata
+import inspect
 import shutil
 import string
 import subprocess
 import sys
 import tomllib
 import types
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
 from nats.aio.client import Client
 
-from threetears.nats import _asyncio_send_path
-from threetears.nats._asyncio_send_path import send_path_gaps
+from threetears.nats import NatsClient, Subject, set_default_namespace
 from threetears.nats._nats_py_internals import (
     NUID_LENGTH,
     PRIVATE_SURFACE,
     CsprngNuid,
+    SEND_BOUND_BYTES,
+    TRANSPORT_NAME,
     PrivateAttribute,
     bound_transport,
+    bounded_send_buffers,
     missing_private_attributes,
     send_bound_gaps,
+    send_path_gaps,
+    sends_are_bounded,
     take_queued_messages,
 )
 
+from .byte_server import ByteServer, byte_server
 from .wire_server import wire_server
 
 
@@ -126,7 +135,7 @@ def test_the_send_path_check_names_each_step_a_python_release_could_change() -> 
             return None
 
     changed = types.ModuleType("selector_events")
-    setattr(changed, _asyncio_send_path.TRANSPORT_NAME, _ChangedTransport)
+    setattr(changed, TRANSPORT_NAME, _ChangedTransport)
     assert send_path_gaps(changed) == [
         "asyncio.selector_events._HAS_SENDMSG: not True, so the socket transport sends with send() and never "
         "reads _get_sendmsg_buffer",
@@ -184,7 +193,7 @@ def test_every_declared_python_minor_sends_through_the_path_the_send_bound_repla
     gaps: dict[str, object] = {}
     for minor in minors:
         ran = subprocess.run(
-            [uv, "run", "--no-project", "--python", minor, "python", "-I", _asyncio_send_path.__file__],
+            [uv, "run", "--no-project", "--python", minor, "python", "-I", inspect.getfile(send_path_gaps)],
             check=False,
             capture_output=True,
             text=True,
@@ -363,3 +372,72 @@ def test_a_threetears_connection_names_its_inboxes_from_the_csprng() -> None:
             assert len({token[:12] for token in tokens}) == len(tokens)
 
     asyncio.run(scenario())
+
+
+#: a payload large enough that one ``sendmsg`` of it would hold the loop (the large-publish tests' size)
+_LARGE_BYTES = 64 * 1024 * 1024
+
+_LARGE_REQUEST_TIMEOUT = timedelta(seconds=30)
+
+
+def _large_payload() -> bytes:
+    """:data:`_LARGE_BYTES` bytes no two runs of which can pass for each other by length alone."""
+    return (hashlib.sha256(str(_LARGE_BYTES).encode()).digest() * (_LARGE_BYTES // 32 + 1))[:_LARGE_BYTES]
+
+
+@asynccontextmanager
+async def _connected_to_byte_server(name: str) -> AsyncIterator[tuple[NatsClient, ByteServer]]:
+    """a NatsClient connected to a running :func:`byte_server` (it answers each request with its size and sha256)."""
+    set_default_namespace("3tears")
+    with byte_server() as server:
+        client = await NatsClient.connect(
+            nats_url=server.url, nats_subject_namespace="3tears", client_name=name, verify_jetstream=False
+        )
+        try:
+            yield client, server
+        finally:
+            await client.shutdown(drain_timeout=timedelta(seconds=2))
+
+
+def test_a_send_is_offered_whole_buffers_up_to_the_bound_and_never_more() -> None:
+    """small buffers go together while they fit; the one that would cross the bound waits for the next call."""
+    buffers: list[bytes | memoryview] = [b"a" * 400, memoryview(b"b" * 500), b"c" * 300, b"d"]
+    offered = list(bounded_send_buffers(buffers, 1000, 1024))
+    assert [bytes(view) for view in offered] == [b"a" * 400, b"b" * 500]
+
+
+def test_a_buffer_larger_than_the_bound_is_offered_its_first_bound_bytes() -> None:
+    """a 64 MB payload at the front is cut, not copied: the view covers its first ``bound`` bytes."""
+    payload = _large_payload()
+    offered = list(bounded_send_buffers([memoryview(payload), b"\r\n"], SEND_BOUND_BYTES, 1024))
+    assert len(offered) == 1
+    assert offered[0].obj is payload
+    assert offered[0].nbytes == SEND_BOUND_BYTES
+    assert offered[0].tobytes() == payload[:SEND_BOUND_BYTES]
+
+
+def test_a_send_is_offered_no_more_buffers_than_the_platform_takes() -> None:
+    """tiny buffers stop at ``most``, as asyncio's own slice of its buffer does."""
+    offered = list(bounded_send_buffers([b"x"] * 50, SEND_BOUND_BYTES, 16))
+    assert len(offered) == 16
+
+
+async def test_a_large_request_bounds_its_socket_and_still_arrives_whole() -> None:
+    """after a 64 MB request the connection's socket offers at most a megabyte per send, and the server read all of it.
+
+    Before the bound, ``sendmsg`` was offered the whole 64 MB and the kernel took as much as its autotuned buffer had
+    room for on the loop. The bound stays on the connection for every later send.
+    """
+    payload = _large_payload()
+    async with _connected_to_byte_server("large-request-bound") as (client, server):
+        assert not sends_are_bounded(client.raw)
+        reply = await client.request_raw(
+            subject=Subject.raw("3tears.copy"), payload=payload, timeout=_LARGE_REQUEST_TIMEOUT
+        )
+        assert sends_are_bounded(client.raw)
+        again = await client.request_raw(
+            subject=Subject.raw("3tears.copy"), payload=payload, timeout=_LARGE_REQUEST_TIMEOUT
+        )
+    whole = f"{len(payload)} {hashlib.sha256(payload).hexdigest()}".encode()
+    assert reply == again == whole
+    assert [(subject, size) for subject, size, _ in server.answered] == [("3tears.copy", _LARGE_BYTES)] * 2
