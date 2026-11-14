@@ -95,6 +95,48 @@ did not hear every row of. Three ways to follow, all exported from `threetears.e
   the table checks before it serves what it holds. `threetears.agent.acl.generation_follow`
   uses it for the access tables.
 
+### A cache kept by key, followed from its cold read
+
+`RowFollower` keeps a cache derived from tables' rows: each changed row is read again by
+its key, never the table whole. A cache read cold BEFORE its follow starts (a process's
+start sweeps long before it follows) is followed from the generation read just before that
+cold read, so a row written between the two is walked from the change log and read by key
+instead of missed until a restart:
+
+```python
+since = await cold_read_generations(reader, ("gateway_models",))  # just BEFORE the cold read
+rows = await read_cold()
+...
+follower.follow(registry, reader, since=since)  # each table's mark starts there
+```
+
+`follow_since(registry, since)` does the same beside several followers of one table (call it
+right after their follows, before anything awaits).
+
+### Standing rows
+
+`StandingRows` holds "every row of a table that stands" (every active agent, every active
+customer) by key: read cold once through the caller's own `cold=` read (declared a cold start
+where the table is named), then kept by each changed row, read by its whole key and held or
+let go as `Standing.member` judges it. Ask it for `keys(where=...)`, `count(where=...)`,
+`held()`, or the rows themselves, read by key a page at a time (`read(columns, where=...)`).
+A changed row whose read fails is read again before the next answer; a table's reset reads
+cold at the next question. A cold read taken before `follow()` is followed from its
+generation (`generations=`), as above.
+
+```python
+active = StandingRows(
+    pool,
+    Standing(table="agents", key=("customer_id", "id"), key_types=("uuid", "uuid"),
+             held=("is_deleted", "status"), member=lambda row: not row["is_deleted"]),
+    cold=read_active_agents_cold,  # whole_read(kind="cold_start", ...) where it is written
+    generations=EpochGenerationReader(nats),
+    name="active-agents",
+)
+active.follow(registry, reader)
+ids = await active.keys(where=lambda row: row["status"] == "active")
+```
+
 ## Identity
 
 The unit of identity is the **NATS subject path**. Each consumer:
