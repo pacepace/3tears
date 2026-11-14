@@ -3946,7 +3946,7 @@ class _ModuleWalk(ast.NodeVisitor):
         if len(bound) != 1 or len(stores) != 1 or name in _function_bindings(function, {}).parameters:
             return None
         value = bound[0]
-        arms = [value.body, value.orelse] if isinstance(value, ast.IfExp) else [value]
+        arms = _arms(value) if isinstance(value, ast.IfExp) else [value]
         if not all(isinstance(arm, ast.Dict) and None not in arm.keys for arm in arms):
             return None
         always = [(key, put) for key, put, at_top in given if at_top]
@@ -3970,11 +3970,15 @@ class _ModuleWalk(ast.NodeVisitor):
                 chained = ast.IfExp(test=ast.Constant(True), body=shape, orelse=chained)
             return chained
 
-        # a conditional binding keeps its test, so an arm its callers never take is folded away as where it is
-        # written in the call (:meth:`_none_folded`)
-        if isinstance(value, ast.IfExp):
-            return ast.IfExp(test=value.test, body=shaped(value.body), orelse=shaped(value.orelse))
-        return shaped(value)
+        # a conditional binding keeps its tests (a conditional of conditionals each of its own), so an arm its callers
+        # never take is folded away as where it is written in the call (:meth:`_none_folded`)
+
+        def kept(arm: ast.expr) -> ast.expr:
+            if isinstance(arm, ast.IfExp):
+                return ast.IfExp(test=arm.test, body=kept(arm.body), orelse=kept(arm.orelse))
+            return shaped(arm)
+
+        return kept(value)
 
     def _bound_step(self, name: str) -> ast.Call | None:
         """the step (or change relation, or derived select) the enclosing function binds ``name`` to once, if it does.
@@ -5623,9 +5627,15 @@ def _literal_branches(value: ast.expr) -> bool:
     arms = (value.body, value.orelse)
     if all(_string_arm(arm) for arm in arms):
         return True
-    return isinstance(value.body, ast.Dict | ast.Tuple | ast.List) and isinstance(
-        value.orelse, ast.Dict | ast.Tuple | ast.List
-    )
+    return all(_collection_arm(arm) for arm in arms)
+
+
+def _collection_arm(arm: ast.expr) -> bool:
+    """whether an arm of a condition is a literal mapping or sequence, or another condition whose arms all are (a
+    mapping bound once to a conditional of conditionals: each mapping it can be, judged in turn)."""
+    if isinstance(arm, ast.Dict | ast.Tuple | ast.List):
+        return True
+    return isinstance(arm, ast.IfExp) and _collection_arm(arm.body) and _collection_arm(arm.orelse)
 
 
 def _string_arm(arm: ast.expr) -> bool:

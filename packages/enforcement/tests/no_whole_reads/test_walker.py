@@ -3040,6 +3040,50 @@ def test_a_local_mapping_built_by_literal_keys_is_judged_by_each_shape_it_can_ta
     assert ("popped", "unknown-predicate keyset_page(by)") in found, found
 
 
+_NESTED_MAPPINGS = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import AnyOf, Sort, keyset_page
+
+    FIRES = "fires"
+    FIRES_SCHEMA = TableSchema(name=FIRES, primary_key=("conversation_id", "fire_id"), columns=[])
+
+
+    async def nested(pool, conversation_id=None, fire_id=None):
+        by = (
+            {"conversation_id": conversation_id}
+            if fire_id is None
+            else ({"conversation_id": conversation_id, "fire_id": fire_id} if conversation_id is not None else {})
+        )
+        return await keyset_page(
+            pool, FIRES, columns=["fire_id"], by=by, order=[Sort("conversation_id"), Sort("fire_id")], limit=1
+        )
+
+
+    async def nested_off_key(pool, conversation_id=None, status=None):
+        by = (
+            {"conversation_id": conversation_id}
+            if status is None
+            else ({"status": status} if conversation_id is None else {"conversation_id": conversation_id})
+        )
+        return await keyset_page(pool, FIRES, columns=["fire_id"], by=by, order=[Sort("fire_id")], limit=1)
+
+
+    async def nested_unread(pool, pins, conversation_id=None, fire_id=None):
+        by = {"conversation_id": conversation_id} if fire_id is None else (pins if conversation_id else {})
+        return await keyset_page(pool, FIRES, columns=["fire_id"], by=by, order=[Sort("fire_id")], limit=1)
+"""
+
+
+def test_a_local_mapping_bound_once_to_a_nested_conditional_is_judged_arm_by_arm(tmp_path: Path) -> None:
+    """Flips if a by= the function binds once to a conditional of conditionals of literal mappings stays unknown
+    rather than judged by each mapping it can be (``nested``: every arm keyed, ``{}`` a page in the key's order), if an arm off the key is not found (``nested_off_key``), or if a conditional
+    with an arm the walk cannot read is judged rather than left unknown (``nested_unread``)."""
+    found = _symbols(_config(tmp_path, {"pkg/fires.py": _NESTED_MAPPINGS}))
+    assert not any(function == "nested" for function, _ in found), found
+    assert ("nested_off_key", 'non-key-where "fires"') in found, found
+    assert ("nested_unread", "unknown-predicate keyset_page(by)") in found, found
+
+
 _RENAMED_VIEWS = """
     def make(db):
         db.execute("CREATE VIEW offices AS SELECT p.race AS office_key, p.state FROM lsf_rows AS p")
