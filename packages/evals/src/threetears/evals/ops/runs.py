@@ -57,7 +57,14 @@ from threetears.evals.run.judge_temperature import (
 )
 from threetears.evals.run.lifecycle import get_run
 from threetears.evals.run.ratings import rate_result
-from threetears.evals.run.reads import list_runs_disclosing
+from threetears.evals.kernel.list_pages import (
+    LIST_PAGE_SIZE,
+    NEXT_DESCRIPTION,
+    check_page_limit,
+    decode_list_cursor,
+    encode_list_cursor,
+)
+from threetears.evals.run.reads import list_runs_page
 
 log = get_logger(__name__)
 
@@ -112,7 +119,7 @@ class RunLine(EvalBaseModel):
 
 
 class RunListing(EvalBaseModel):
-    """A scope's runs, newest first as the store lists them."""
+    """One page of a scope's runs, newest first by created_at and id."""
 
     runs: list[RunLine]
     include_archived: bool = Field(description="Whether archived runs were listed; they are left out by default.")
@@ -120,11 +127,21 @@ class RunListing(EvalBaseModel):
     unreadable: int = Field(
         ge=0,
         description=(
-            "Stored runs the listing matched by status that this build's model cannot read, so they are not "
-            "listed; runs_unreadable names each with why. Their archive flag and labels cannot be read, so the "
-            "archive and label filters do not narrow this count."
+            "Stored runs on this page the listing matched by status that this build's model cannot read, so they "
+            "are not listed; runs_unreadable names each with why. Their archive flag and labels cannot be read, so "
+            "the archive and label filters do not narrow this count."
         ),
     )
+    filtered: int = Field(
+        ge=0,
+        description=(
+            "Stored runs this page read that its filters then left out: archived runs (unless include_archived), "
+            "runs without the label, and runs whose status changed as they were read (a lapsed running run reads "
+            "cancelled). The status filter is part of the read; the archive and label filters run after it, so a "
+            "page can list fewer runs than its limit while next is set. 0 when no row was left out."
+        ),
+    )
+    next: str | None = Field(description=NEXT_DESCRIPTION)
 
 
 class UnreadableRunLine(EvalBaseModel):
@@ -441,12 +458,18 @@ def runs_list(
     status: str | None = None,
     include_archived: bool = False,
     label: str | None = None,
+    cursor: str | None = None,
+    limit: int = LIST_PAGE_SIZE,
 ) -> RunListing:
-    """The scope's runs, and how many it matched that this build cannot read.
+    """One page of the scope's runs, newest first, how many on it this build cannot read, and the next page's cursor.
 
     An inventory, so a run this build's model cannot read is left out and counted rather than refusing the listing
-    (:func:`~threetears.evals.run.list_runs_disclosing`): the operator opening it is looking for a run, and one row
+    (:func:`~threetears.evals.run.list_runs_page`): the operator opening it is looking for a run, and one row
     nothing can read must not hide every other. ``unreadable`` says how many, and ``runs_unreadable`` names them.
+
+    A page reads ``limit`` stored runs matching the status. The archive and label filters run over those, so a page
+    can list fewer, and ``filtered`` says how many were left out; ``next`` is set whenever a run remains past the
+    page, filtered or not, so reading until ``next`` is ``None`` reads every run once (:mod:`~threetears.evals.kernel.list_pages`).
 
     :param host: The host whose store is read.
     :ptype host: EvalHost
@@ -458,18 +481,33 @@ def runs_list(
     :ptype include_archived: bool
     :param label: Only runs carrying this label (:func:`run_label`); None lists every run.
     :ptype label: str | None
-    :return: The listing.
+    :param cursor: The ``next`` of the page before; ``None`` reads the first page.
+    :ptype cursor: str | None
+    :param limit: The stored runs a page reads, 1 to :data:`~threetears.evals.kernel.list_pages.LIST_PAGE_MAX`.
+    :ptype limit: int
+    :return: The page.
     :rtype: RunListing
-    :raises ValidationFailedError: ``status`` is not a run status.
+    :raises ValidationFailedError: ``status`` is not a run status, ``cursor`` is not one ``runs_list`` returned, or
+        ``limit`` is out of range.
     :raises UnreadableRunError: A run read, but writing it lost was refused by a model.
     """
     label = None if label is None else label.strip()
-    read = list_runs_disclosing(host, scope_id, status=status, include_archived=include_archived, label=label)
-    return RunListing(
-        runs=[_line(run) for run in read.runs],
+    page = list_runs_page(
+        host,
+        scope_id,
+        limit=check_page_limit(limit),
+        after=None if cursor is None else decode_list_cursor("runs_list", cursor),
+        status=status,
         include_archived=include_archived,
         label=label,
-        unreadable=len(read.unreadable),
+    )
+    return RunListing(
+        runs=[_line(run) for run in page.runs],
+        include_archived=include_archived,
+        label=label,
+        unreadable=len(page.unreadable),
+        filtered=page.rows - len(page.runs) - len(page.unreadable),
+        next=None if page.after is None else encode_list_cursor("runs_list", *page.after),
     )
 
 

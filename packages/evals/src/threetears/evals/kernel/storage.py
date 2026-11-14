@@ -112,6 +112,7 @@ from threetears.evals.schema.store_port import (
     fold_groups,
     grouped_narrowed,
     narrow_items,
+    page_by_doc_type,
     refuse_on_event_loop,
 )
 from threetears.evals.schema.logs import get_logger
@@ -292,6 +293,15 @@ def _result_key(item: Mapping[str, Any], run_id: object) -> ResultKey:
 def _payload_exclusions(elide_payload: frozenset[str]) -> list[str]:
     """The store ``exclude`` paths for payload paths a run read leaves out, in a stable order."""
     return sorted(f"host_payload.{path}" for path in elide_payload)
+
+
+def _cut_page(rows: list[dict[str, Any]], limit: int) -> tuple[list[dict[str, Any]], tuple[Any, str] | None]:
+    """A page of ``limit`` rows cut from a read of ``limit + 1``, and the next page's ``after``: the page's last row's
+    ``(created_at, id)`` when the read found a row past it, else ``None``."""
+    if len(rows) <= limit:
+        return rows, None
+    page = rows[:limit]
+    return page, (page[-1].get("created_at"), str(page[-1].get("id")))
 
 
 class CaseRecordings(NamedTuple):
@@ -487,6 +497,34 @@ class RunsRead(NamedTuple):
 
     unreadable: list[RefusedRow]
     """The matched rows the model refused, each with why, in the store's order."""
+
+
+class RunsPage(NamedTuple):
+    """One page of a run listing (:meth:`EvalStorage.query_eval_runs_page`): what read, what did not, and where the
+    next page starts."""
+
+    runs: list[EvalRun]
+    """The page's runs that read, settled, whose settled status is the one asked for, newest first."""
+
+    unreadable: list[RefusedRow]
+    """The page's rows the model refused whose stored status is the one asked for, each with why, newest first."""
+
+    rows: int
+    """The rows the store returned for the page, before the model read them and the settled status narrowed them: a
+    page whose ``runs`` and ``unreadable`` together are fewer was narrowed after the read, not short of rows."""
+
+    after: tuple[Any, str] | None
+    """The last row's ``(created_at, id)``, the next page's ``after``; ``None`` when no row remains past this page."""
+
+
+class CampaignsPage(NamedTuple):
+    """One page of a campaign listing (:meth:`EvalStorage.list_campaigns_page`), and where the next page starts."""
+
+    campaigns: list[EvalCampaign]
+    """The page's campaigns, newest first."""
+
+    after: tuple[Any, str] | None
+    """The last campaign's ``(created_at, id)``, the next page's ``after``; ``None`` when none remains past it."""
 
 
 class EvalRunScan(NamedTuple):
@@ -1525,6 +1563,63 @@ class EvalStorage:
         items = self._store.by_doc_type("eval_campaign", scope_id, order_by="created_at", descending=True, **field_eq)
         return self._hydrate_all(EvalCampaign, items)
 
+    def list_campaigns_page(
+        self,
+        scope_id: str,
+        *,
+        limit: int,
+        after: tuple[Any, str] | None = None,
+        archived: bool | None = None,
+    ) -> CampaignsPage:
+        """One page of the scope's campaigns, newest first by ``(created_at, id)``, the archive filter in the read.
+
+        Read through :func:`~threetears.evals.schema.store_port.page_by_doc_type`, so a store that declares ``after``
+        pages in its backend and one written before it is read whole and paged here. One row past the page is asked
+        for, so ``after`` is ``None`` exactly when no campaign remains.
+
+        :param scope_id: The scope.
+        :ptype scope_id: str
+        :param limit: The page's size, at least 1.
+        :ptype limit: int
+        :param after: Where the page starts: the ``after`` of the page before, or ``None`` for the first.
+        :ptype after: tuple[Any, str] | None
+        :param archived: Only archived (``True``) or only active (``False``) campaigns; ``None`` for both.
+        :ptype archived: bool | None
+        :return: The page.
+        :rtype: CampaignsPage
+        :raises UnreadableRecordError: A campaign on the page does not validate under this build's model.
+        """
+        field_eq: dict[str, Any] = {} if archived is None else {"archived": archived}
+        rows = page_by_doc_type(
+            self._store, "eval_campaign", scope_id, order_by="created_at", limit=limit + 1, after=after, **field_eq
+        )
+        page, after_page = _cut_page(rows, limit)
+        return CampaignsPage(campaigns=self._hydrate_all(EvalCampaign, page), after=after_page)
+
+    def declared_campaigns_holding(self, run_ids: Iterable[str], scope_id: str) -> list[EvalCampaign]:
+        """The scope's declared (not exploratory) campaigns holding any of ``run_ids``, oldest first.
+
+        What an exploratory campaign feeds, asked of the whole scope rather than of one page of a listing, so paging
+        a listing never hides a campaign it feeds. Whether a campaign is exploratory is derived from its aspects
+        (:attr:`~threetears.evals.kernel.campaign.EvalCampaign.exploratory`), never a stored field a read could match,
+        so every campaign of the scope is read and the declared ones holding a run are kept: one read, whatever the
+        number of runs asked about. No run asked about reads nothing.
+
+        :param run_ids: The runs.
+        :ptype run_ids: Iterable[str]
+        :param scope_id: The scope.
+        :ptype scope_id: str
+        :return: The campaigns, oldest first by ``(created_at, id)``.
+        :rtype: list[EvalCampaign]
+        :raises UnreadableRecordError: A campaign of the scope does not validate under this build's model.
+        """
+        wanted = set(run_ids)
+        if not wanted:
+            return []
+        every = self._hydrate_all(EvalCampaign, self._store.by_doc_type("eval_campaign", scope_id))
+        held = [campaign for campaign in every if not campaign.exploratory and wanted & set(campaign.run_ids)]
+        return sorted(held, key=lambda campaign: (campaign.created_at, campaign.id))
+
     # =========================================================================
     # EvalAnalysis / EvalInsight
     # Generated, stored analysis of a campaign + the insights it mints.
@@ -2285,6 +2380,68 @@ class EvalStorage:
         return RunsRead(
             runs=[run for run in runs if not status or run.status == status],
             unreadable=[row for row in refused if not status or row.status == status],
+        )
+
+    def query_eval_runs_page(
+        self,
+        scope_id: str,
+        status: EvalRunStatus | None = None,
+        *,
+        limit: int,
+        after: tuple[Any, str] | None = None,
+        elide_payload: frozenset[str] = frozenset(),
+    ) -> RunsPage:
+        """One page of :meth:`query_eval_runs_isolating`: newest first by ``(created_at, id)``, the status in the read.
+
+        The page is read through :func:`~threetears.evals.schema.store_port.page_by_doc_type`, so a store that
+        declares ``after`` pages in its backend and one written before it is read whole and paged here. The status
+        asked for is a predicate of the read: one status is matched by equality (an index on the field serves it), and
+        the ``cancelled`` listing, which a lapsed ``pending`` or ``running`` run joins as it is settled, by membership
+        over the three. The page is then read and settled as :meth:`query_eval_runs_isolating` reads it, and a run
+        whose settled status is not the one asked for leaves the page, which is why a page can hold fewer runs than
+        ``rows``. One row past the page is asked for, so ``after`` is ``None`` exactly when no row remains.
+
+        :param scope_id: The scope whose runs to read.
+        :ptype scope_id: str
+        :param status: As :meth:`query_eval_runs_isolating` takes it.
+        :ptype status: EvalRunStatus | None
+        :param limit: The page's size in stored rows, at least 1.
+        :ptype limit: int
+        :param after: Where the page starts: the ``after`` of the page before, or ``None`` for the first.
+        :ptype after: tuple[Any, str] | None
+        :param elide_payload: As :meth:`query_eval_runs` takes it.
+        :ptype elide_payload: frozenset[str]
+        :return: The page.
+        :rtype: RunsPage
+        :raises UnreadableRunError: A run read, but writing it lost was refused by a model.
+        """
+        field_eq: dict[str, Any] = {}
+        field_in: dict[str, list[str]] | None = None
+        if status:
+            asked = sorted({status} | (NON_TERMINAL_RUN_STATUSES if status == RUN_LOST_STATUS else set()))
+            if len(asked) == 1:
+                field_eq["status"] = asked[0]
+            else:
+                field_in = {"status": asked}
+        rows = page_by_doc_type(
+            self._store,
+            "eval_run",
+            scope_id,
+            order_by="created_at",
+            limit=limit + 1,
+            after=after,
+            exclude=_payload_exclusions(elide_payload) if elide_payload else (),
+            field_in=field_in,
+            **field_eq,
+        )
+        page, after_page = _cut_page(rows, limit)
+        read, refused = self._hydrate_isolating(EvalRun, page)
+        runs = self._settled_runs(read, elide_payload, scope_id)
+        return RunsPage(
+            runs=[run for run in runs if not status or run.status == status],
+            unreadable=[row for row in refused if not status or row.status == status],
+            rows=len(page),
+            after=after_page,
         )
 
     def query_eval_runs_in_status(self, scope_id: str, statuses: Iterable[EvalRunStatus], /) -> RunsRead:
@@ -3787,8 +3944,10 @@ __all__ = [
     "LeaseClock",
     "LeaseStore",
     "NonTerminalRunScan",
+    "CampaignsPage",
     "RefusedRow",
     "ResultStore",
+    "RunsPage",
     "RunsRead",
     "UnreadableRecordError",
     "UnreadableRunError",

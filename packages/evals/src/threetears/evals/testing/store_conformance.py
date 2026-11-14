@@ -2,7 +2,7 @@
 
 An app that brings its own database implements :class:`~threetears.evals.schema.DocumentStore`
 over it, and every eval document then lives or dies by that adapter. The port's rules — scoping,
-the strip on read, projection, ordering, optimistic concurrency, delete — are stated in prose on the
+the strip on read, projection, ordering, paging, optimistic concurrency, delete — are stated in prose on the
 port; this module states them again as checks, so an adapter is proved rather than read. That includes
 both write preconditions: ``if_match`` (the etag cases) and ``create_only`` (the create cases), which a
 store forwarding writes to a backend must pass through, never drop.
@@ -61,7 +61,7 @@ from typing import Any
 
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.models import EVAL_DOC_TYPES
-from threetears.evals.schema.store_port import DocumentStore, StoreConflict
+from threetears.evals.schema.store_port import DocumentStore, StoreConflict, page_by_doc_type, takes_after
 
 log = get_logger(__name__)
 
@@ -560,6 +560,107 @@ def _limit_applies_after_ordering(store: DocumentStore) -> None:
     _expect_equal(len(store.by_doc_type(_TYPE, _SCOPE, limit=3)), 3, "the number of documents under limit=3")
 
 
+# --- paging -----------------------------------------------------------------------------------------
+#
+# Each case reads through page_by_doc_type, as the engine does: a store that declares ``after`` is asked for each page,
+# and one written before it is read whole and paged by the port's default, so an adapter that predates ``after`` passes
+# and one that declares it is held to what it declares.
+
+#: Documents and their places: two without the order field (one absent, one null), one alone at a value, three tied
+#: at one value, one alone at the latest. Written in an order that is neither id order nor time order.
+_PAGED: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("t2", {"created_at": "2026-01-02T00:00:00Z"}),
+    ("n2", {"created_at": None}),
+    ("l", {"created_at": "2026-01-03T00:00:00Z"}),
+    ("t3", {"created_at": "2026-01-02T00:00:00Z"}),
+    ("e", {"created_at": "2026-01-01T00:00:00Z"}),
+    ("n1", {}),
+    ("t1", {"created_at": "2026-01-02T00:00:00Z"}),
+)
+_NEWEST_FIRST = ["l", "t3", "t2", "t1", "e", "n2", "n1"]
+
+
+def _walk(store: DocumentStore, size: int, *, descending: bool, **predicates: Any) -> list[list[Any]]:
+    """Every page of a walk by ``created_at``, each page's last document handed back as the next page's ``after``."""
+    pages: list[list[Any]] = []
+    after: tuple[Any, str] | None = None
+    for _ in range(len(_PAGED) + 2):
+        page = page_by_doc_type(
+            store, _TYPE, _SCOPE, order_by="created_at", descending=descending, limit=size, after=after, **predicates
+        )
+        if not page:
+            return pages
+        pages.append(_ids(page))
+        last = page[-1]
+        after = (last.get("created_at"), str(last.get("id")))
+    raise StoreConformanceFailure(f"a walk of pages of {size} never ended: {pages}")
+
+
+def _a_walk_reads_every_document_once_in_one_order(store: DocumentStore) -> None:
+    for doc_id, fields in _PAGED:
+        store.upsert(_doc(doc_id, **fields))
+    _expect_equal(
+        _walk(store, 2, descending=True),
+        [["l", "t3"], ["t2", "t1"], ["e", "n2"], ["n1"]],
+        "pages of 2, newest first, ties by id descending, a null value past the last one",
+    )
+    _expect_equal(
+        _walk(store, 3, descending=False),
+        [["n1", "n2", "e"], ["t1", "t2", "t3"], ["l"]],
+        "pages of 3, oldest first, ties by id ascending",
+    )
+    _expect_equal(_walk(store, 7, descending=True), [_NEWEST_FIRST], "one page holding every document")
+
+
+def _a_page_holds_its_predicates_and_projection(store: DocumentStore) -> None:
+    for doc_id, fields in _PAGED:
+        kept = doc_id.startswith("t") or doc_id == "e"
+        store.upsert(_doc(doc_id, **fields, status="kept" if kept else "other", heavy="x" * 16))
+    store.upsert(_doc("t0", created_at="2026-01-02T00:00:00Z", status="kept", heavy="x", doc_type=_OTHER_TYPE))
+    store.upsert(_doc("t9", created_at="2026-01-02T00:00:00Z", status="kept", heavy="x", scope=_OTHER_SCOPE))
+    _expect_equal(
+        _walk(store, 2, descending=True, status="kept"),
+        [["t3", "t2"], ["t1", "e"]],
+        "pages of 2 matching status='kept' in their scope and type",
+    )
+    _expect_equal(
+        _walk(store, 3, descending=True, field_in={"status": ["kept"]}),
+        [["t3", "t2", "t1"], ["e"]],
+        "pages of 3 matching field_in={'status': ['kept']}",
+    )
+    page = page_by_doc_type(
+        store,
+        _TYPE,
+        _SCOPE,
+        order_by="created_at",
+        limit=1,
+        after=("2026-01-02T00:00:00Z", "t3"),
+        exclude=["heavy"],
+        status="kept",
+    )
+    _expect_equal(
+        page,
+        [_doc("t2", created_at="2026-01-02T00:00:00Z", status="kept")],
+        "the page past ('2026-01-02T00:00:00Z', 't3'), excluding 'heavy'",
+    )
+
+
+def _after_without_order_by_is_refused(store: DocumentStore) -> None:
+    store.upsert(_doc("d1", created_at="2026-01-01T00:00:00Z"))
+    if not takes_after(store.by_doc_type):
+        # A store written before ``after`` is never handed one (page_by_doc_type pages it whole), so it has no
+        # ``after`` to refuse.
+        return
+    _expect_value_error(
+        lambda: store.by_doc_type(_TYPE, _SCOPE, after=("2026-01-01T00:00:00Z", "d0")),
+        "by_doc_type(after=..., no order_by)",
+    )
+    _expect_type_error(
+        lambda: store.by_doc_type(_TYPE, _SCOPE, order_by="created_at", after=("2026-01-01T00:00:00Z",)),  # type: ignore[arg-type]
+        "by_doc_type(after=('2026-01-01T00:00:00Z',)) — one element, not a pair",
+    )
+
+
 # --- optimistic concurrency -------------------------------------------------------------------------
 
 
@@ -931,6 +1032,23 @@ STORE_CONFORMANCE_CASES: tuple[StoreConformanceCase, ...] = (
         "order.limit_after_ordering",
         "limit takes the first documents of the ordered result",
         _limit_applies_after_ordering,
+    ),
+    StoreConformanceCase(
+        "page.walk_reads_each_once",
+        "pages read by order_by with limit, each started past the last document of the page before (after), read "
+        "every matching document once, ties by id in the direction read, a missing or null value lowest",
+        _a_walk_reads_every_document_once_in_one_order,
+    ),
+    StoreConformanceCase(
+        "page.holds_predicates_and_projection",
+        "a page past after holds the read's scope, type, field_eq, field_in and exclude as an unpaged read does",
+        _a_page_holds_its_predicates_and_projection,
+    ),
+    StoreConformanceCase(
+        "page.after_refusals",
+        "a store declaring after refuses it without order_by (ValueError) and refuses one that is not a pair "
+        "(TypeError); a store written before after is never handed one",
+        _after_without_order_by_is_refused,
     ),
     StoreConformanceCase(
         "etag.found_document_has_one",

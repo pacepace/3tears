@@ -96,7 +96,9 @@ from threetears.evals.schema.store_port import (
     ResultReadings,
     StoreClock,
     StoreConflict,
+    check_after,
     grouped_narrowed,
+    page_by_doc_type,
 )
 from threetears.evals.schema.versioning import CORE_RESET_DOC_TYPES
 from threetears.evals.schema.logs import get_logger
@@ -477,20 +479,34 @@ class RoutedDocumentStore:
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = None,
+        after: tuple[Any, str] | None = None,
         exclude: Sequence[str] = (),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
-        """Return documents of one type within a scope, from the store the type is kept in."""
-        return self._routed(doc_type).by_doc_type(
-            doc_type,
-            scope_id,
-            order_by=order_by,
-            descending=descending,
-            limit=limit,
-            exclude=exclude,
-            field_in=field_in,
-            **field_eq,
+        """Return documents of one type within a scope, from the store the type is kept in.
+
+        An ordered read goes through :func:`~threetears.evals.schema.store_port.page_by_doc_type`, so a store written
+        before ``after`` is asked for the whole match and the router orders and pages it, ties by ``id``, as the port
+        promises of a store that declares ``after``, which the router does.
+        """
+        routed = self._routed(doc_type)
+        if order_by is not None:
+            return page_by_doc_type(
+                routed,
+                doc_type,
+                scope_id,
+                order_by=order_by,
+                descending=descending,
+                limit=limit,
+                after=after,
+                exclude=exclude,
+                field_in=field_in,
+                **field_eq,
+            )
+        check_after(after, order_by)
+        return routed.by_doc_type(
+            doc_type, scope_id, descending=descending, limit=limit, exclude=exclude, field_in=field_in, **field_eq
         )
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:

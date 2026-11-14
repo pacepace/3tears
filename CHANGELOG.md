@@ -6,6 +6,41 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the run and campaign listings read a page at a time (#1145)
+
+**Changed:** `runs_list` and `campaigns_list` (the operations and their actions) read one page, newest first by
+`(created_at, id)`, 100 rows unless `limit` names another (1 to 1000 from Python, 1 to 200 through an action), where
+they read and hydrated every run or campaign of the scope on every call. Each answer carries `next`, the cursor for
+the page after, `None` on the last page; pass it back as `cursor`. The cursor is the package's own opaque string
+(`threetears.evals.kernel.list_pages`), and one that does not decode, or came from the other listing, is refused as
+caller input. `runs_list` puts the status filter in the store's read (one status by equality, the `cancelled` listing
+by `field_in` over the statuses a lapsed run settles from); its archive and label filters run over the page, so a page
+can list fewer runs than `limit` while `next` is set, and the new `filtered` says how many it left out. `unreadable`
+now counts the page's unreadable rows. `campaigns_list` reads what an exploratory campaign feeds with its own query
+(`EvalStorage.declared_campaigns_holding`), among every campaign of the scope, so a declared campaign on another page
+is still named; the archive filter is in the read, so its pages are full but the last. New provisional reads:
+`EvalStorage.query_eval_runs_page`, `EvalStorage.list_campaigns_page`, `list_runs_page` (`threetears.evals.run`).
+
+**For hosts (a caller of the listings):** a caller that expected every run or campaign gets the first 100 and a
+`next`. To read them all, loop: `page = runs_list(host, scope)`, then while `page.next` is not `None`,
+`page = runs_list(host, scope, cursor=page.next)`, keeping each page's `runs` (`campaigns_list` alike, its
+`campaigns`). Through the actions, call `runs_list` / `campaigns_list` again with `cursor` set to the last `next`.
+Do not stop at a short `runs_list` page: stop when `next` is `None`.
+
+**Changed, for hosts (a `DocumentStore` adapter):** `DocumentStore.by_doc_type` (and `AsyncDocumentStore`'s) takes
+`after=(order_by value, id)`, the last document of the page before, and returns only documents strictly past it; a
+store that declares `after` breaks every ordered read's ties by `id` in the sort direction. An adapter written before
+it keeps working unchanged: the engine never hands `after` to a `by_doc_type` that does not declare it by name
+(`takes_after`), and pages it with `page_by_doc_type`, which reads the whole match and orders and slices it in Python
+(`order_and_page`); the async bridge and the routed store do the same for a store beneath them, ordering every
+ordered read above it. Until it declares `after`, every listing call still reads the scope's whole match, and mypy
+reads the adapter as not matching the port. The store conformance kit gains `page.walk_reads_each_once`,
+`page.holds_predicates_and_projection` and `page.after_refusals`, which read through `page_by_doc_type`, so an
+adapter predating `after` passes them; `docs/adopting-a-host.md` ("`by_doc_type` pages with `after`") gives the
+Postgres keyset condition and ordering (`DESC NULLS LAST`, ties by id, one collation). The in-memory and SQLite
+stores page natively, and now break ties of an ordered read by `id` where they kept insertion order. New provisional
+names in `threetears.evals.schema`: `check_after`, `order_and_page`, `page_by_doc_type`, `takes_after`.
+
 ### evals: a judge call its replay does not hold is named, never dropped (#1162)
 
 **Fixed:** a replayed judge whose recording held no call for a prompt read the miss as a failed call, its text

@@ -20,7 +20,7 @@ import hashlib
 import json
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -42,6 +42,12 @@ def _doc(doc_id: str, **fields: object) -> dict[str, object]:
 @pytest.mark.parametrize("case", STORE_CONFORMANCE_CASES, ids=lambda case: case.name)
 def test_the_reference_store_conforms(case: StoreConformanceCase) -> None:
     case.run(InMemoryDocumentStore())
+
+
+@pytest.mark.parametrize("case", STORE_CONFORMANCE_CASES, ids=lambda case: case.name)
+def test_an_adapter_written_before_after_conforms(case: StoreConformanceCase) -> None:
+    """The paging cases read it through the port's default, which never hands it ``after``."""
+    case.run(_PredatesAfter())
 
 
 def test_case_names_are_unique() -> None:
@@ -683,6 +689,148 @@ class _RoutesOnlyTheTypesItWasBuiltFor(InMemoryDocumentStore):
         super().upsert(document, if_match=if_match, create_only=create_only)
 
 
+def _place(document: dict[str, Any], order_by: str) -> tuple[bool, Any, str]:
+    """A document's place in ``(order_by, id)`` order, null lowest: the order the port pages."""
+    value = document.get(order_by)
+    return value is not None, value, str(document["id"])
+
+
+def _past(place: tuple[bool, Any, str], mark: tuple[bool, Any, str], descending: bool) -> bool:
+    """Whether ``place`` is strictly past ``mark`` in the direction read."""
+    return place < mark if descending else place > mark
+
+
+class _PagesStore(InMemoryDocumentStore):
+    """The reference store with ``after`` declared, its ordered reads cut by :meth:`page`, which a fault overrides.
+
+    Not a fault itself: its :meth:`page` and :meth:`predicates` are the port's meaning, and each subclass breaks one.
+    """
+
+    def by_doc_type(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        order_by: str | None = None,
+        descending: bool = True,
+        limit: int | None = None,
+        after: tuple[Any, str] | None = None,
+        exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        if order_by is None:
+            return super().by_doc_type(
+                doc_type, scope_id, limit=limit, after=after, exclude=exclude, field_in=field_in, **field_eq
+            )
+        field_in, field_eq = self.predicates(after, field_in, field_eq)
+        ordered = super().by_doc_type(
+            doc_type, scope_id, order_by=order_by, descending=descending, exclude=exclude, field_in=field_in, **field_eq
+        )
+        rows = self.page(ordered, order_by, descending, after)
+        return rows if limit is None else rows[:limit]
+
+    def predicates(
+        self, after: tuple[Any, str] | None, field_in: Mapping[str, Sequence[Any]] | None, field_eq: dict[str, Any]
+    ) -> tuple[Mapping[str, Sequence[Any]] | None, dict[str, Any]]:
+        return field_in, field_eq
+
+    def page(
+        self, ordered: list[dict[str, Any]], order_by: str, descending: bool, after: tuple[Any, str] | None
+    ) -> list[dict[str, Any]]:
+        if after is None:
+            return ordered
+        mark = (after[0] is not None, after[0], after[1])
+        return [d for d in ordered if _past(_place(d, order_by), mark, descending)]
+
+
+class _PagesInclusively(_PagesStore):
+    """A page starts AT ``after``, not past it, so each page repeats the last document of the one before."""
+
+    def page(
+        self, ordered: list[dict[str, Any]], order_by: str, descending: bool, after: tuple[Any, str] | None
+    ) -> list[dict[str, Any]]:
+        if after is None:
+            return ordered
+        mark = (after[0] is not None, after[0], after[1])
+        return [d for d in ordered if _place(d, order_by) == mark or _past(_place(d, order_by), mark, descending)]
+
+
+class _PagesPastTheValueOnly(_PagesStore):
+    """``after`` compares the order field alone, so the documents tied with a page's last one are skipped."""
+
+    def page(
+        self, ordered: list[dict[str, Any]], order_by: str, descending: bool, after: tuple[Any, str] | None
+    ) -> list[dict[str, Any]]:
+        if after is None:
+            return ordered
+        mark = (after[0] is not None, after[0], "")
+        return [d for d in ordered if _past((*_place(d, order_by)[:2], ""), mark, descending)]
+
+
+class _TiesInInsertionOrder(_PagesStore):
+    """Ties keep insertion order, as ``ORDER BY field, seq`` does, while ``after`` pages by ``(field, id)``: the tied
+    documents on the first page are not the ones the next page starts past."""
+
+    def page(
+        self, ordered: list[dict[str, Any]], order_by: str, descending: bool, after: tuple[Any, str] | None
+    ) -> list[dict[str, Any]]:
+        inserted = {key: at for at, key in enumerate(self.documents)}
+        by_insertion = sorted(ordered, key=lambda d: inserted[(d["scope_id"], d["id"])])
+        tied = sorted(by_insertion, key=lambda d: _place(d, order_by)[:2], reverse=descending)
+        return super().page(tied, order_by, descending, after)
+
+
+class _PageDropsItsPredicates(_PagesStore):
+    """A page past ``after`` reads every document of the type, whatever ``field_eq`` and ``field_in`` ask."""
+
+    def predicates(
+        self, after: tuple[Any, str] | None, field_in: Mapping[str, Sequence[Any]] | None, field_eq: dict[str, Any]
+    ) -> tuple[Mapping[str, Sequence[Any]] | None, dict[str, Any]]:
+        return (None, {}) if after is not None else (field_in, field_eq)
+
+
+class _PredatesAfter(InMemoryDocumentStore):
+    """An adapter written before ``after``: its ``by_doc_type`` does not declare it, and reads an ``after=`` it is
+    handed as an equality predicate, which a tuple is refused as. It must pass every case, paged by the default."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        if "after" in kwargs:
+            raise TypeError(f"by_doc_type compares a field to a scalar, not tuple: after={kwargs['after']!r}")
+        return super().by_doc_type(doc_type, scope_id, **kwargs)
+
+
+class _AfterRefusalsIgnored(InMemoryDocumentStore):
+    """``after`` without ``order_by``, or not a pair, is ignored rather than refused."""
+
+    def by_doc_type(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        order_by: str | None = None,
+        descending: bool = True,
+        limit: int | None = None,
+        after: tuple[Any, str] | None = None,
+        exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        if order_by is None or after is None or len(after) != 2:
+            after = None
+        return super().by_doc_type(
+            doc_type,
+            scope_id,
+            order_by=order_by,
+            descending=descending,
+            limit=limit,
+            after=after,
+            exclude=exclude,
+            field_in=field_in,
+            **field_eq,
+        )
+
+
 #: Each broken store, and the cases it must turn red. A case may fail under other faults too; what is
 #: asserted is that these ones go red, and that every case is listed against at least one fault.
 _FAULTS: dict[type[DocumentStore], frozenset[str]] = {
@@ -740,6 +888,11 @@ _FAULTS: dict[type[DocumentStore], frozenset[str]] = {
     _DeleteAlwaysReportsTrue: frozenset({"delete.removes_and_reports"}),
     _SweepIgnoresDocType: frozenset({"delete.sweep_by_doc_type"}),
     _RoutesOnlyTheTypesItWasBuiltFor: frozenset({"doc_types.every_engine_type_is_stored"}),
+    _PagesInclusively: frozenset({"page.walk_reads_each_once"}),
+    _PagesPastTheValueOnly: frozenset({"page.walk_reads_each_once"}),
+    _TiesInInsertionOrder: frozenset({"page.walk_reads_each_once"}),
+    _PageDropsItsPredicates: frozenset({"page.holds_predicates_and_projection"}),
+    _AfterRefusalsIgnored: frozenset({"page.after_refusals"}),
 }
 
 _CASES = {case.name: case for case in STORE_CONFORMANCE_CASES}

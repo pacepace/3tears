@@ -113,7 +113,7 @@
     },
     "threetears.evals.schema.AsyncDocumentStore": {
       "kind": "protocol",
-      "signature": "AsyncDocumentStore{by_doc_type(self, doc_type: str, scope_id: str, *, order_by: str | None = None, descending: bool = True, limit: int | None = None, exclude: Sequence[str] = (), field_in: Mapping[str, Sequence[Any]] | None = None, **field_eq: Any) -> list[dict[str, Any]]; delete(self, doc_id: str, scope_id: str) -> bool; get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None; get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, *, exclude: Sequence[str] = (), keep: Sequence[str] = ()) -> list[dict[str, Any]]; get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]; iter_by_doc_type(self, doc_type: str, scope_id: str) -> AsyncIterator[str]; merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool; upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None}",
+      "signature": "AsyncDocumentStore{by_doc_type(self, doc_type: str, scope_id: str, *, order_by: str | None = None, descending: bool = True, limit: int | None = None, after: tuple[Any, str] | None = None, exclude: Sequence[str] = (), field_in: Mapping[str, Sequence[Any]] | None = None, **field_eq: Any) -> list[dict[str, Any]]; delete(self, doc_id: str, scope_id: str) -> bool; get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None; get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, *, exclude: Sequence[str] = (), keep: Sequence[str] = ()) -> list[dict[str, Any]]; get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]; iter_by_doc_type(self, doc_type: str, scope_id: str) -> AsyncIterator[str]; merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool; upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None}",
       "tier": "host-contract"
     },
     "threetears.evals.schema.AsyncExternalSpend": {
@@ -255,6 +255,11 @@
       "kind": "dataclass",
       "signature": "CellTrace(spans: list[dict[str, Any]] = list(), total_ms: float | None = None, llm_ms: float | None = None, tool_ms: float | None = None)",
       "tier": "stable"
+    },
+    "threetears.evals.schema.check_after": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.check_grouping": {
       "kind": "function",
@@ -418,7 +423,7 @@
     },
     "threetears.evals.schema.DocumentStore": {
       "kind": "protocol",
-      "signature": "DocumentStore{by_doc_type(self, doc_type: str, scope_id: str, *, order_by: str | None = None, descending: bool = True, limit: int | None = None, exclude: Sequence[str] = (), field_in: Mapping[str, Sequence[Any]] | None = None, **field_eq: Any) -> list[dict[str, Any]]; delete(self, doc_id: str, scope_id: str) -> bool; get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None; get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, *, exclude: Sequence[str] = (), keep: Sequence[str] = ()) -> list[dict[str, Any]]; get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]; iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]; merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool; upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None}",
+      "signature": "DocumentStore{by_doc_type(self, doc_type: str, scope_id: str, *, order_by: str | None = None, descending: bool = True, limit: int | None = None, after: tuple[Any, str] | None = None, exclude: Sequence[str] = (), field_in: Mapping[str, Sequence[Any]] | None = None, **field_eq: Any) -> list[dict[str, Any]]; delete(self, doc_id: str, scope_id: str) -> bool; get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None; get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, *, exclude: Sequence[str] = (), keep: Sequence[str] = ()) -> list[dict[str, Any]]; get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]; iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]; merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool; upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None}",
       "tier": "host-contract"
     },
     "threetears.evals.schema.DSLError": {
@@ -921,6 +926,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.order_and_page": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.OrdinalScale": {
       "kind": "model",
       "signature": "",
@@ -958,6 +968,11 @@
     },
     "threetears.evals.schema.OutOfRunSpendStore": {
       "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.page_by_doc_type": {
+      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -1255,6 +1270,11 @@
       "kind": "model",
       "signature": "SweepableValue(content_hash: str, display: str, scale: Scale, raw: Any | None = None)",
       "tier": "host-contract"
+    },
+    "threetears.evals.schema.takes_after": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.takes_exclude_in_items": {
       "kind": "function",
@@ -1588,6 +1608,11 @@
     },
     "threetears.evals.kernel.CampaignDeclaration": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.CampaignsPage": {
+      "kind": "class",
       "signature": "",
       "tier": "provisional"
     },
@@ -2960,6 +2985,11 @@
       "kind": "protocol",
       "signature": "RunRecordStore{delete_eval_result(self, result_id: str, scope_id: str, /) -> bool; delete_eval_run(self, run_id: str, scope_id: str, /) -> bool; load_eval_result(self, result_id: str, scope_id: str, /) -> EvalResult | None; load_eval_result_with_etag(self, result_id: str, scope_id: str, /) -> tuple[EvalResult | None, str | None]; load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None; load_eval_run_stamps(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalRunStamp]; load_eval_run_with_etag(self, run_id: str, scope_id: str, /) -> tuple[EvalRun | None, str | None]; load_eval_runs(self, run_ids: Sequence[str], scope_id: str, /, *, elide_payload: frozenset[str] = frozenset()) -> list[EvalRun]; load_eval_trace(self, result_id: str, scope_id: str, /) -> EvalTrace | None; query_eval_results(self, scope_id: str, /, *, run_id: str | None = None, test_case_id: str | None = None, model: str | None = None, elide: Sequence[str] = ()) -> list[EvalResult]; query_eval_results_by_run(self, run_id: str, scope_id: str, /, *, elide: Sequence[str] = ()) -> list[EvalResult]; query_eval_runs(self, scope_id: str, status: EvalRunStatus | None = None, *, elide_payload: frozenset[str] = frozenset()) -> list[EvalRun]; query_non_terminal_eval_runs(self, scope_id: str, /) -> NonTerminalRunScan; replace_eval_result(self, result: EvalResult, /, *, if_match: str | None) -> None; save_eval_result(self, result: EvalResult, trace: EvalTrace | None = None, /) -> None; save_eval_run(self, run: EvalRun, /, *, if_match: str | None = None) -> None; set_eval_run_archived(self, run_id: str, scope_id: str, /, *, archived: bool) -> bool}",
       "tier": "host-contract"
+    },
+    "threetears.evals.kernel.RunsPage": {
+      "kind": "class",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.kernel.RunsRead": {
       "kind": "class",
@@ -4377,6 +4407,11 @@
       "tier": "stable"
     },
     "threetears.evals.run.list_runs_disclosing": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.run.list_runs_page": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
@@ -7593,12 +7628,12 @@
     },
     "threetears.evals.ops.CampaignListing": {
       "kind": "model",
-      "signature": "CampaignListing(campaigns: list[CampaignLine])",
+      "signature": "CampaignListing(campaigns: list[CampaignLine], next: str | None)",
       "tier": "stable"
     },
     "threetears.evals.ops.campaigns_list": {
       "kind": "function",
-      "signature": "campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing",
+      "signature": "campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None, cursor: str | None = None, limit: int = 100) -> CampaignListing",
       "tier": "stable"
     },
     "threetears.evals.ops.case_rename": {
@@ -8128,7 +8163,7 @@
     },
     "threetears.evals.ops.RunListing": {
       "kind": "model",
-      "signature": "RunListing(runs: list[RunLine], include_archived: bool, label: str | None = None, unreadable: int)",
+      "signature": "RunListing(runs: list[RunLine], include_archived: bool, label: str | None = None, unreadable: int, filtered: int, next: str | None)",
       "tier": "stable"
     },
     "threetears.evals.ops.runs_bisect": {
@@ -8153,7 +8188,7 @@
     },
     "threetears.evals.ops.runs_list": {
       "kind": "function",
-      "signature": "runs_list(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> RunListing",
+      "signature": "runs_list(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None, cursor: str | None = None, limit: int = 100) -> RunListing",
       "tier": "stable"
     },
     "threetears.evals.ops.runs_unreadable": {

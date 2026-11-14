@@ -290,6 +290,88 @@ def field_in_values(field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapp
     return checked
 
 
+def check_after(after: Any, order_by: str | None) -> tuple[Any, str] | None:
+    """Return :meth:`DocumentStore.by_doc_type`'s ``after`` checked, as a pair — the calls every implementation refuses.
+
+    Defined beside the port for the reason :func:`omit_paths` is: every implementation refuses the same calls.
+
+    :param after: The call's ``after``: ``None``, or a pair of the ``order_by`` field's stored value and an ``id``.
+    :ptype after: Any
+    :param order_by: The same call's ``order_by``.
+    :ptype order_by: str | None
+    :return: ``(value, id)``, or ``None`` when ``after`` is ``None``.
+    :rtype: tuple[Any, str] | None
+    :raises ValueError: ``after`` is given with no ``order_by``: a place is a place in an order.
+    :raises TypeError: ``after`` is not a pair, its id is not a string, or its value is not a scalar.
+    """
+    if after is None:
+        return None
+    if order_by is None:
+        raise ValueError("by_doc_type's after names a place in order_by's order, and no order_by was given")
+    if not isinstance(after, tuple | list) or len(after) != 2:
+        raise TypeError(f"by_doc_type's after is a pair, (the order field's value, an id), not {after!r}")
+    value, doc_id = after
+    if not isinstance(doc_id, str):
+        raise TypeError(f"by_doc_type's after names a document by its id, a string, not {type(doc_id).__name__}")
+    if value is not None and not isinstance(value, str | int | float):
+        raise TypeError(
+            f"by_doc_type's after holds the order field's value, a scalar (str, int, float, bool, None), not "
+            f"{type(value).__name__}: {value!r}"
+        )
+    return value, doc_id
+
+
+def _page_key(value: Any, doc_id: str) -> tuple[bool, Any, str]:
+    """A document's place in ``(order_by, id)`` order: a missing or null value below every value, then the id."""
+    return value is not None, value, doc_id
+
+
+def order_and_page(
+    rows: Iterable[dict[str, Any]],
+    *,
+    order_by: str,
+    descending: bool = True,
+    after: tuple[Any, str] | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Return ``rows`` in ``(order_by, id)`` order, the ones past ``after``, at most ``limit`` — the meaning of ``after``.
+
+    The order is :meth:`DocumentStore.by_doc_type`'s under ``order_by``, its ties broken by ``id`` in the same
+    direction, so it is one order however the rows arrived, and a place in it (``after``) names where the next page
+    starts. A row without the field, or with it null, sorts below every row that has it. A row is past ``after`` when
+    it sorts strictly after it in the direction read, so the row ``after`` names is never read twice.
+
+    Defined beside the port for the reason :func:`omit_paths` is: an implementation that cannot page in its backend
+    pages through it, and :func:`page_by_doc_type` pages a store written before ``after`` with it.
+
+    :param rows: The rows, in any order. Not mutated.
+    :ptype rows: Iterable[dict[str, Any]]
+    :param order_by: The field to order by.
+    :ptype order_by: str
+    :param descending: The direction, as on :meth:`DocumentStore.by_doc_type`.
+    :ptype descending: bool
+    :param after: The place to start past (:func:`check_after`), or ``None`` for the first page.
+    :ptype after: tuple[Any, str] | None
+    :param limit: The most rows returned; ``None`` is every row past ``after``.
+    :ptype limit: int | None
+    :return: The page.
+    :rtype: list[dict[str, Any]]
+    :raises ValueError: As :func:`check_after`.
+    :raises TypeError: As :func:`check_after`.
+    """
+    place = check_after(after, order_by)
+    keyed = sorted(
+        ((_page_key(row.get(order_by), str(row.get("id"))), row) for row in rows),
+        key=lambda pair: pair[0],
+        reverse=descending,
+    )
+    if place is not None:
+        mark = _page_key(*place)
+        keyed = [(key, row) for key, row in keyed if (key < mark if descending else key > mark)]
+    page = [row for _, row in keyed]
+    return page if limit is None else page[:limit]
+
+
 class DocumentStore(Protocol):
     """A narrow document store over one ``(scope_id, doc_type, id)``-keyed collection.
 
@@ -389,11 +471,20 @@ class DocumentStore(Protocol):
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = None,
+        after: tuple[Any, str] | None = None,
         exclude: Sequence[str] = (),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
         """Return documents of one type within a scope, matching ANDed equality and membership predicates.
+
+        **Paging.** ``order_by`` with ``limit`` reads one page and ``after`` the next: pass the last document's
+        ``(order_by value, id)`` back as ``after``, and the read starts strictly past it. A store that declares
+        ``after`` breaks ties of ``order_by`` by ``id`` in the same direction on every ordered read, the first page's
+        included, so a walk of pages reads every matching document once, in one order, however many share a value. A
+        store written before ``after`` keeps working: the engine pages it through :func:`page_by_doc_type`, which
+        reads every matching document and orders and slices them itself (:func:`order_and_page`), so a store declares
+        ``after`` to page in its backend. Whether it does is decided by :func:`takes_after`.
 
         :param doc_type: The discriminator to select on.
         :ptype doc_type: str
@@ -403,12 +494,19 @@ class DocumentStore(Protocol):
             store. Sorting is by the field's stored type, so a number orders
             numerically and an ISO-8601 timestamp lexicographically. A document
             without the field, or with it null, sorts below every document that
-            has it — first ascending, last descending.
+            has it — first ascending, last descending. In a store that declares
+            ``after``, ties sort by ``id``, in the same direction.
         :ptype order_by: str | None
         :param descending: Sort direction when ``order_by`` is given.
         :ptype descending: bool
         :param limit: Maximum documents to return; ``None`` is unbounded.
         :ptype limit: int | None
+        :param after: A place in the ``order_by`` order, as ``(the field's stored value, id)`` — the last document of
+            the page before — and only documents strictly past it in the direction read are returned, with
+            :func:`order_and_page`'s meaning. A null value names a place among the documents without the field.
+            ``None`` reads from the start. Only with ``order_by``. :func:`check_after` checks a call as every
+            implementation must.
+        :ptype after: tuple[Any, str] | None
         :param exclude: Dotted paths the store leaves out of every returned document, with the
             meaning :func:`omit_paths` gives them. For a bulk read whose consumer needs
             the documents but not a heavy value inside them; the store drops it before
@@ -435,9 +533,11 @@ class DocumentStore(Protocol):
         :ptype field_eq: Any
         :return: The matching documents.
         :rtype: list[dict[str, Any]]
-        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``, or ``after`` is given without
+            ``order_by``.
         :raises TypeError: A ``field_in`` entry is a string rather than a sequence of values
-            (``{"run": "r1"}`` would read as the values ``"r"`` and ``"1"``), or one of its values is not a scalar.
+            (``{"run": "r1"}`` would read as the values ``"r"`` and ``"1"``), or one of its values is not a scalar;
+            or ``after`` is not a pair of a scalar and a string id.
         """
         ...
 
@@ -785,16 +885,102 @@ def takes_exclude_in_items(grouped: Any) -> bool:
     :return: Whether it declares the parameter.
     :rtype: bool
     """
+    return _declares(grouped, "exclude_in_items")
+
+
+def takes_after(by_doc_type: Any) -> bool:
+    """Whether a ``by_doc_type`` (:meth:`DocumentStore.by_doc_type`, or an async store's) declares ``after``.
+
+    :func:`takes_exclude_in_items`'s rule: declared by name, keyword-only or positional-or-keyword. ``**field_eq``
+    does not count, and must not: a store written before ``after`` reads ``after=`` as an equality predicate on a field
+    named ``after``, and answers no documents at all.
+
+    :param by_doc_type: The store's ``by_doc_type`` method.
+    :ptype by_doc_type: Any
+    :return: Whether it declares the parameter.
+    :rtype: bool
+    """
+    return _declares(by_doc_type, "after")
+
+
+def _declares(method: Any, name: str) -> bool:
+    """Whether ``method`` declares the keyword ``name`` by name; one whose signature cannot be read does not."""
     try:
-        declared = inspect.signature(grouped).parameters.get("exclude_in_items")
+        declared = inspect.signature(method).parameters.get(name)
     except TypeError, ValueError:
-        # NOSILENT: the answer, not a failure: a callable with no signature to read is read as not taking it, and the
-        # values are narrowed after it answers, which gives the same groups.
+        # NOSILENT: the answer, not a failure: a callable with no signature to read is read as not taking the
+        # parameter, and the caller then does without it (narrows the values itself, or pages the rows itself), which
+        # gives the same answer.
         return False
     return declared is not None and declared.kind in (
         inspect.Parameter.KEYWORD_ONLY,
         inspect.Parameter.POSITIONAL_OR_KEYWORD,
     )
+
+
+def page_by_doc_type(
+    store: DocumentStore,
+    doc_type: str,
+    scope_id: str,
+    *,
+    order_by: str,
+    descending: bool = True,
+    limit: int | None = None,
+    after: tuple[Any, str] | None = None,
+    exclude: Sequence[str] = (),
+    field_in: Mapping[str, Sequence[Any]] | None = None,
+    **field_eq: Any,
+) -> list[dict[str, Any]]:
+    """One page of ``store.by_doc_type`` in ``(order_by, id)`` order, from a store that takes ``after`` or one before it.
+
+    The port's default for paging. A store whose ``by_doc_type`` declares ``after`` (:func:`takes_after`) is asked
+    for the page, and pages in its backend. One written before the parameter is asked for every matching document,
+    unordered and unlimited, and the page is cut from them here (:func:`order_and_page`): the same page, at the cost
+    of reading the whole match, until the store declares ``after``.
+
+    :param store: The store.
+    :ptype store: DocumentStore
+    :param doc_type: As :meth:`DocumentStore.by_doc_type` takes it.
+    :ptype doc_type: str
+    :param scope_id: As :meth:`DocumentStore.by_doc_type` takes it.
+    :ptype scope_id: str
+    :param order_by: The field the pages are ordered by; ties by ``id``.
+    :ptype order_by: str
+    :param descending: The direction.
+    :ptype descending: bool
+    :param limit: The page's size; ``None`` reads every document past ``after``.
+    :ptype limit: int | None
+    :param after: Where the page starts (:meth:`DocumentStore.by_doc_type`), or ``None`` for the first page.
+    :ptype after: tuple[Any, str] | None
+    :param exclude: As :meth:`DocumentStore.by_doc_type` takes it. Passed to a store written before ``after`` only
+        when it names a path, so a store older still, written before ``exclude``, is never handed it as a predicate.
+    :ptype exclude: Sequence[str]
+    :param field_in: As :meth:`DocumentStore.by_doc_type` takes it.
+    :ptype field_in: Mapping[str, Sequence[Any]] | None
+    :param **field_eq: As :meth:`DocumentStore.by_doc_type` takes them.
+    :ptype field_eq: Any
+    :return: The page.
+    :rtype: list[dict[str, Any]]
+    :raises ValueError: As :meth:`DocumentStore.by_doc_type`.
+    :raises TypeError: As :meth:`DocumentStore.by_doc_type`.
+    """
+    if takes_after(store.by_doc_type):
+        return store.by_doc_type(
+            doc_type,
+            scope_id,
+            order_by=order_by,
+            descending=descending,
+            limit=limit,
+            after=after,
+            exclude=exclude,
+            field_in=field_in,
+            **field_eq,
+        )
+    check_after(after, order_by)
+    if exclude:
+        field_eq = {**field_eq, "exclude": exclude}
+    rows = store.by_doc_type(doc_type, scope_id, field_in=field_in, **field_eq)
+    return order_and_page(rows, order_by=order_by, descending=descending, after=after, limit=limit)
 
 
 def grouped_narrowed(
@@ -1003,6 +1189,7 @@ class AsyncDocumentStore(Protocol):
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = None,
+        after: tuple[Any, str] | None = None,
         exclude: Sequence[str] = (),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
@@ -1091,6 +1278,7 @@ __all__ = [
     "StoreCalledOnEventLoop",
     "StoreClock",
     "StoreConflict",
+    "check_after",
     "check_grouping",
     "copy_json",
     "field_in_values",
@@ -1100,6 +1288,9 @@ __all__ = [
     "narrow_groups",
     "narrow_items",
     "omit_paths",
+    "order_and_page",
+    "page_by_doc_type",
     "refuse_on_event_loop",
+    "takes_after",
     "takes_exclude_in_items",
 ]
