@@ -1934,7 +1934,9 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
     unkeyed: dict[tuple[str, int], str] = {(hit.path, hit.line): hit.symbol for hit in whole_hits}
     hits = [
         hit
-        for hit in _helper_hits(scan.statements, config.helper_modules, _producers(config))
+        for hit in _helper_hits(
+            scan.statements, config.helper_modules, _producers(config), caller_judged=config.caller_judged_modules
+        )
         if hit.shape == (shape.finds or shape.shape)
     ]
     modules: dict[str, _Module] = {}
@@ -2098,7 +2100,11 @@ def plan_write_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
     whole_hits, scan = _hits(config)
     unkeyed: dict[tuple[str, int], str] = {(hit.path, hit.line): hit.symbol for hit in whole_hits}
     hits = [
-        hit for hit in _helper_hits(scan.statements, config.helper_modules, _producers(config)) if hit.shape == "write"
+        hit
+        for hit in _helper_hits(
+            scan.statements, config.helper_modules, _producers(config), caller_judged=config.caller_judged_modules
+        )
+        if hit.shape == "write"
     ]
     modules: dict[str, _Module] = {}
     rewrites: list[Rewrite] = []

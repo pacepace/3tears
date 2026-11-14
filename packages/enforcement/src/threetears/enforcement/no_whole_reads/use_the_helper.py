@@ -13,7 +13,9 @@ a data table (one the repo's or 3tears' declarations key: a ``TableSchema``, SQL
 change registers, a stage; their steps are :mod:`threetears.core.keyed.steps`) is a finding,
 ``use-the-helper <shape> <table>``,
 unless the module is one of the sanctioned helper modules (:data:`_HELPER_MODULES`, plus the repo's reviewed
-``NoWholeReadsConfig.helper_modules``). A relation of a local copy (``copy.<name>``), a CTE, a catalog or a function
+``NoWholeReadsConfig.helper_modules``), or a declared caller-judged module
+(``NoWholeReadsConfig.caller_judged_modules``) writing over a relation its caller names at run time (its callers key
+that relation where they hand it on; a table it names itself is still judged). A relation of a local copy (``copy.<name>``), a CTE, a catalog or a function
 is no data table. Migrations are never walked.
 
 **Its shapes** (:func:`~threetears.enforcement.no_whole_reads.sql.statement_shape`), the backlog's buckets: ``point``
@@ -174,10 +176,28 @@ def _data_table(statement: WrittenStatement, producers: frozenset[str] = frozens
     return None
 
 
+def _callers_relation(table: str) -> bool:
+    """whether a relation is one a caller names at run time: a ``{}`` in its table part (a parameter, a field, a
+    template the module fills), never a fixed table in a run-time schema (``{}.markers``), a literal table or a change
+    relation the module names itself.
+
+    :param table: the relation as :func:`_data_table` spells it
+    :ptype table: str
+    :return: whether it is
+    :rtype: bool
+    """
+    return not table.startswith("change:") and "{" in table.rsplit(".", 1)[-1]
+
+
 def _helper_hits(
-    statements: list[WrittenStatement], helper_modules: tuple[str, ...] = (), producers: frozenset[str] = frozenset()
+    statements: list[WrittenStatement],
+    helper_modules: tuple[str, ...] = (),
+    producers: frozenset[str] = frozenset(),
+    *,
+    caller_judged: tuple[str, ...] = (),
 ) -> list[_Hit]:
-    """every statement written as text against a data table outside the helper modules.
+    """every statement written as text against a data table outside the helper modules, and outside what a declared
+    caller-judged module writes over its callers' relations (``caller_judged_modules``).
 
     :param statements: the statements a walk found
     :ptype statements: list[WrittenStatement]
@@ -185,6 +205,8 @@ def _helper_hits(
     :ptype helper_modules: tuple[str, ...]
     :param producers: the repo's declared view and transient producers, whose run-time names are local relations
     :ptype producers: frozenset[str]
+    :param caller_judged: the repo's declared caller-judged module prefixes
+    :ptype caller_judged: tuple[str, ...]
     :return: the hits, in walk order
     :rtype: list[_Hit]
     """
@@ -194,9 +216,30 @@ def _helper_hits(
             continue
         shape = statement_shape(statement.text)
         table = _data_table(statement, producers) if shape is not None else None
-        if shape is not None and table is not None:
-            hits.append(_Hit(statement, shape, table[0], table[1]))
+        if shape is None or table is None:
+            continue
+        if any(statement.path.startswith(prefix) for prefix in caller_judged) and _callers_relation(table[0]):
+            # the module is the helper its callers call: the relation is theirs, keyed where they hand it on
+            continue
+        hits.append(_Hit(statement, shape, table[0], table[1]))
     return hits
+
+
+def _stale_declarations(statements: list[WrittenStatement], caller_judged: tuple[str, ...]) -> list[str]:
+    """each declared caller-judged prefix no statement of the walk is written under, as a finding.
+
+    :param statements: the statements a walk found
+    :ptype statements: list[WrittenStatement]
+    :param caller_judged: the repo's declared caller-judged module prefixes
+    :ptype caller_judged: tuple[str, ...]
+    :return: the findings
+    :rtype: list[str]
+    """
+    return [
+        f"{prefix}: caller_judged_modules declares a module no walked statement is written in: drop it, or fix its path"
+        for prefix in caller_judged
+        if not any(statement.path.startswith(prefix) for statement in statements)
+    ]
 
 
 def _parse(path: Path) -> tuple[list[_Line], list[str]]:
@@ -257,6 +300,7 @@ def statement_findings(
     ledger_dir: Path,
     helper_modules: tuple[str, ...] = (),
     producers: frozenset[str] = frozenset(),
+    caller_judged: tuple[str, ...] = (),
 ) -> list[str]:
     """every statement written as text against a data table outside the helpers, and every ledger defect.
 
@@ -268,12 +312,15 @@ def statement_findings(
     :ptype helper_modules: tuple[str, ...]
     :param producers: the repo's declared view and transient producers, whose run-time names are local
     :ptype producers: frozenset[str]
+    :param caller_judged: the repo's declared caller-judged module prefixes (``caller_judged_modules``)
+    :ptype caller_judged: tuple[str, ...]
     :return: the findings: hits outside the ledger, a ledger line whose count differs from the function's
-        statements, a line naming a function with none, and malformed lines
+        statements, a line naming a function with none, malformed lines, and a stale caller-judged declaration
     :rtype: list[str]
     """
-    hits = _helper_hits(statements, helper_modules, producers)
+    hits = _helper_hits(statements, helper_modules, producers, caller_judged=caller_judged)
     lines, findings = _parse(ledger_dir / _LEDGER)
+    findings.extend(_stale_declarations(statements, caller_judged))
     by_function: Counter[tuple[str, str]] = Counter((hit.statement.path, hit.statement.function) for hit in hits)
     ledgered = {(line.path, line.function): line for line in lines}
     for hit in hits:
@@ -290,7 +337,11 @@ def statement_findings(
 
 
 def statement_counts(
-    statements: list[WrittenStatement], helper_modules: tuple[str, ...] = (), producers: frozenset[str] = frozenset()
+    statements: list[WrittenStatement],
+    helper_modules: tuple[str, ...] = (),
+    producers: frozenset[str] = frozenset(),
+    *,
+    caller_judged: tuple[str, ...] = (),
 ) -> dict[str, int]:
     """the backlog by shape: how many statements of each shape are written outside the helpers, ledgered or not,
     and how many of them name a table only at run time (``named-at-run-time``).
@@ -301,10 +352,12 @@ def statement_counts(
     :ptype helper_modules: tuple[str, ...]
     :param producers: the repo's declared view and transient producers, whose run-time names are local
     :ptype producers: frozenset[str]
+    :param caller_judged: the repo's declared caller-judged module prefixes (``caller_judged_modules``)
+    :ptype caller_judged: tuple[str, ...]
     :return: shape onto count, plus ``named-at-run-time`` and ``total``
     :rtype: dict[str, int]
     """
-    hits = _helper_hits(statements, helper_modules, producers)
+    hits = _helper_hits(statements, helper_modules, producers, caller_judged=caller_judged)
     counts: dict[str, int] = {shape: 0 for shape in ("point", "list", "count", "join", "write")}
     for hit in hits:
         counts[hit.shape] += 1

@@ -30,6 +30,31 @@ NO_WHOLE_READS_CONFIG = NoWholeReadsConfig(
     # the hub reads 3tears' per-agent tables through their declarations (the admin conversations listing): an index
     # purpose may name its read, which the hub's own gate keys by that index
     consumer_purposes=("src/aibots/hub/",),
+    # 3tears' declared helper modules, judged at their callers: each writes the SQL over a relation its caller names
+    # at run time (a collection's table, a copy's table, a warehouse table, the change-note ring a store owns), so
+    # use-the-helper leaves those statements to the callers, as it does 3tears' keyed helpers'; a table one names
+    # itself is still judged where it is written, and no_whole_reads still judges every statement in them
+    caller_judged_modules=(
+        # the L3 storage layer: the backend and its statement builders, over the table each collection names
+        f"{_CORE}/backends/",
+        # a collection's base and declared-table writer, over the table its subclass declares
+        f"{_CORE}/collections/base.py",
+        f"{_CORE}/collections/declared_table.py",
+        # the change-note ring and the scope epochs: the epoch machinery every keyed read is told its keys by
+        f"{_CORE}/collections/change_notes.py",
+        f"{_CORE}/collections/scope_epochs.py",
+        # the copy machinery: a follower, its checkpoint and a complete copy, over the copied tables it is handed
+        f"{_CORE}/collections/copy_follower.py",
+        f"{_CORE}/collections/copy_checkpoint.py",
+        f"{_CORE}/collections/complete_copy.py",
+        # a table's fingerprint, over the table its caller names
+        f"{_CORE}/fingerprint.py",
+        # the warehouse readers: pages, partitions, exports and coverage over the table a datasource names
+        "packages/datasources/src/threetears/datasources/partitioned_read.py",
+        "packages/datasources/src/threetears/datasources/query_client.py",
+        "packages/datasources/src/threetears/datasources/export_read.py",
+        "packages/datasources/src/threetears/datasources/drivers/base.py",
+    ),
     # every shipped migration: its text is never edited again, so an index in one is declared in the ledger
     # (_index_declarations.txt, written by python -m threetears.enforcement.no_whole_reads.index_purposes)
     frozen_migrations=("packages/*/migrations/v*.py", "packages/scrape/src/threetears/scrape/migrations.py"),

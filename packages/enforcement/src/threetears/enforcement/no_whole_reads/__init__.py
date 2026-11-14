@@ -196,6 +196,13 @@ class NoWholeReadsConfig:
     :ivar helper_modules: repo-relative prefixes of the repo's own reviewed modules that write a data table's SQL
         for the rest of it (``use-the-helper``: :mod:`~threetears.enforcement.no_whole_reads.use_the_helper`), beside
         3tears' own helpers
+    :ivar caller_judged_modules: repo-relative prefixes of the repo's declared helper modules whose statements over
+        a relation their caller names at run time (a parameter, a field, a template the module fills: a relation
+        spelled with a ``{}`` in its table part) are the module's callers' to key, as 3tears' keyed helpers' are:
+        ``use-the-helper`` leaves those statements to the callers (the module is the helper they call), while a
+        statement over a table the module names itself (a literal table, a fixed table in a run-time schema) is
+        still judged where it is written. ``no_whole_reads`` still judges every statement in them. A prefix
+        matching no module that writes SQL is a finding
     :ivar public_forwarders: whether a public function, method or constructor of the repo that hands a parameter on
         to a keyed step (or returns a step over it: ``settle_rules.annotated_step(table, relation)``) is judged at
         each of its calls in the repo, by the argument the call hands it, as a private one always is in its own
@@ -252,6 +259,7 @@ class NoWholeReadsConfig:
     local_relations: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
     foreign_relations: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
     helper_modules: tuple[str, ...] = ()
+    caller_judged_modules: tuple[str, ...] = ()
     relation_producers: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
     public_forwarders: bool = False
     declared_parameters: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
@@ -1034,6 +1042,7 @@ def use_the_helper_findings(config: NoWholeReadsConfig) -> list[str]:
         ledger_dir=config.ledger_dir,
         helper_modules=config.helper_modules,
         producers=_producers(config),
+        caller_judged=config.caller_judged_modules,
     )
 
 
@@ -1046,7 +1055,12 @@ def use_the_helper_counts(config: NoWholeReadsConfig) -> dict[str, int]:
     :return: shape onto count
     :rtype: dict[str, int]
     """
-    return statement_counts(_helper_statements(config), config.helper_modules, _producers(config))
+    return statement_counts(
+        _helper_statements(config),
+        config.helper_modules,
+        _producers(config),
+        caller_judged=config.caller_judged_modules,
+    )
 
 
 def _helper_statements(config: NoWholeReadsConfig) -> list[WrittenStatement]:

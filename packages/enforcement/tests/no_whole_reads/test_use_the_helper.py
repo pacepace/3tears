@@ -169,6 +169,48 @@ def test_a_helper_module_writes_its_sql_and_a_repo_names_its_own(tmp_path: Path)
     assert {line.split(":", 1)[0] for line in reviewed} == {"src/pkg/other.py"}, reviewed
 
 
+_MACHINERY = """
+    RING_PREFIX = "ring_notes_"
+
+
+    def ring_table(index):
+        return f"{RING_PREFIX}{index}"
+
+
+    class Keeper:
+        def __init__(self, pool, owner):
+            self._pool = pool
+            self._owner = owner
+
+        async def empty(self, table, last):
+            return await self._pool.execute(f"DELETE FROM {table} WHERE id > $1", last)
+
+        async def ring_count(self, index):
+            return await self._pool.fetch(f"SELECT count(*) AS n FROM {self._owner}.{ring_table(index)}")
+
+        async def own_markers(self, owner):
+            return await self._pool.fetch(f"SELECT key FROM {owner}.markers WHERE table_name = $1", "t")
+
+        async def a_geo(self, state):
+            return await self._pool.fetch("SELECT * FROM geos WHERE state = $1", state)
+"""
+
+
+def test_a_caller_judged_module_leaves_only_its_callers_relations_to_them(tmp_path: Path) -> None:
+    """Flips if a declared caller-judged module (``caller_judged_modules``) still reports a statement over a relation
+    its caller names at run time (a parameter, a template the module fills), if it passes a statement over a table it
+    names itself (a literal table, a fixed table in a run-time schema), if the same module undeclared passes any, or
+    if a declaration matching no module that writes SQL passes."""
+    modules = {"pkg/tables.py": _TABLES, "pkg/ring.py": _MACHINERY}
+    bare = {line.split(" in ", 1)[1].split(":", 1)[0] for line in use_the_helper_findings(_config(tmp_path, modules))}
+    assert bare == {"Keeper.empty", "Keeper.ring_count", "Keeper.own_markers", "Keeper.a_geo"}, bare
+    declared = use_the_helper_findings(_config(tmp_path, modules, caller_judged_modules=("src/pkg/ring.py",)))
+    named = {line.split(" in ", 1)[1].split(":", 1)[0] for line in declared if " in " in line}
+    assert named == {"Keeper.own_markers", "Keeper.a_geo"}, declared
+    stale = use_the_helper_findings(_config(tmp_path, modules, caller_judged_modules=("src/pkg/gone.py",)))
+    assert any("src/pkg/gone.py" in line and "caller_judged_modules" in line for line in stale), stale
+
+
 def test_the_ledger_pins_each_functions_statements_and_its_reason(tmp_path: Path) -> None:
     """Flips if a ledgered function's statements are still findings, if a line whose count no longer matches (or
     whose function writes none) passes, or if a short reason or a malformed line is accepted."""
