@@ -99,6 +99,7 @@ __all__ = [
     "insert_duplicate",
     "load_manifest",
     "row_factory",
+    "seed_rows",
 ]
 
 #: per table, column -> its value for a seed, where the catalog's row does not fit
@@ -476,6 +477,9 @@ class _ClauseCase:
     old_sql: str
     params: list[Any]
     where: list[Fragment]
+    #: seeds the other table's rows the clause reads (its builder's ``parents``), the same for every subject; None when
+    #: the clause reads the statement's own row alone
+    related: Callable[[Any, list[Mapping[str, Any]]], Any] | None = None
 
 
 def _clause_cases(
@@ -493,6 +497,7 @@ def _clause_cases(
     (clause,) = clauses
     build = _named(clause["build"])
     subjects = [None, *_named(clause["subjects"])()]
+    related = _named(clause["parents"]) if clause.get("parents") else None
     cases: list[_ClauseCase] = []
     for subject in subjects:
         bound = list(params)
@@ -505,9 +510,74 @@ def _clause_cases(
                 old_sql[: clause["at"]] + text + old_sql[clause["at"] :],
                 bound,
                 [*where, *clause_guards(build, subject, *clause["respelled"])],
+                related,
             )
         )
     return cases
+
+
+def _assert_clause_restricts(entry: Mapping[str, Any], answered: Mapping[Any, list[int]]) -> None:
+    """an entry's clause proof showed the clause at work: over the seed cases, some subject's statement read fewer
+    rows (a smaller count) than with no subject, and some read at least one. Otherwise both sides agreeing proves
+    nothing about the clause (a clause matching nothing, its parent rows unseeded, reads nothing on either side).
+
+    :param entry: the manifest entry
+    :ptype entry: Mapping[str, Any]
+    :param answered: per subject (``None`` first), the old statement's row count (or count) in each seed case
+    :ptype answered: Mapping[Any, list[int]]
+    :return: nothing
+    :rtype: None
+    :raises AssertionError: when no subject restricted or none kept a row
+    """
+    if not entry.get("clauses"):
+        return
+    unrestricted = answered[None]
+    subjects = [counts for subject, counts in answered.items() if subject is not None]
+    dropped = any(
+        restricted < whole for counts in subjects for restricted, whole in zip(counts, unrestricted, strict=True)
+    )
+    kept = any(count > 0 for counts in subjects for count in counts)
+    if not (dropped and kept):
+        raise AssertionError(
+            f"{entry['function']}: its clause's subjects {'kept no row' if not kept else 'dropped no row'} over the "
+            "seed cases, so the proof shows nothing about the clause (seed the rows it reads: clause_parents)"
+        )
+
+
+async def seed_rows(conn: Any, table: str, rows: Sequence[Mapping[str, Any]]) -> None:
+    """empty ``table`` and insert ``rows``, every column a row does not give filled as the generic seed fills it
+    (unique a row: the row's position): the other table's rows a clause proof reads beside the entry's own
+    (``clause_parents``), inside the case's transaction (rolled back after it).
+
+    :param conn: the connection the proof runs on
+    :ptype conn: Any
+    :param table: the TRUSTED table
+    :ptype table: str
+    :param rows: the rows, each the columns it fixes (every row the same columns)
+    :ptype rows: Sequence[Mapping[str, Any]]
+    :return: nothing
+    :rtype: None
+    """
+    await _drop_checks(conn, table)
+    shape = await _catalog(conn, table)
+    await conn.execute(f"DELETE FROM {table}")  # noqa: S608 - a test's own table, in a transaction rolled back
+    if not rows:
+        return
+    given = list(rows[0])
+    filled = [
+        column
+        for column in shape.columns.values()
+        if column.name not in given and not column.generated and _seedable(column)
+    ]
+    names = [*given, *(column.name for column in filled)]
+    marks = ", ".join(f"${index}" for index in range(1, len(names) + 1))
+    await conn.executemany(
+        f"INSERT INTO {table} ({', '.join(names)}) VALUES ({marks})",  # noqa: S608 - trusted test identifiers
+        [
+            (*(row[name] for name in given), *(_value(column, index) for column in filled))
+            for index, row in enumerate(rows)
+        ],
+    )
 
 
 def _guard_params(
@@ -614,8 +684,10 @@ async def _assert_point_same(
         if entry.get("shape") == "first":
             await _assert_first_same(conn, entry, row, params, by, order, where)
             return
+        answered: dict[Any, list[int]] = {}
         for case in _clause_cases(old_sql, params, where, entry):
-            await _assert_read_case(conn, entry, row, case, by, columns, order)
+            answered[case.subject] = await _assert_read_case(conn, entry, row, case, by, columns, order)
+        _assert_clause_restricts(entry, answered)
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")
 
@@ -628,10 +700,11 @@ async def _assert_read_case(
     by: dict[str, Any],
     columns: tuple[Any, ...] | None,
     order: list[Sort],
-) -> None:
-    """one case of a read entry: every row its key names (``read_by``), then the one row or value it read."""
+) -> list[int]:
+    """one case of a read entry: every row its key names (``read_by``), then the one row or value it read; answers
+    the old statement's row count in each seed case."""
     table, old_sql, params, where = entry["table"], case.old_sql, case.params, case.where
-    await assert_same_results(
+    answered = await assert_same_results(
         conn,
         table=table,
         row=row,
@@ -640,6 +713,7 @@ async def _assert_read_case(
         helper=lambda c: read_by(c, table, by=by, columns=columns, records=True, order=order, where=where),
         order_by=[term["column"] for term in entry.get("order", ())] or None,
         ordered=bool(order),
+        related=case.related,
     )
     if entry["helper"] == "read_row":
 
@@ -654,6 +728,7 @@ async def _assert_read_case(
             old_sql=f"SELECT * FROM ({old_sql}) AS o LIMIT 1",  # noqa: S608 - the manifest's own statement
             params=params,
             helper=one_row,
+            related=case.related,
         )
     elif entry["helper"] == "read_value":
         # a read_value reads one plain column (the codemod refuses an expression there)
@@ -669,7 +744,9 @@ async def _assert_read_case(
             old_sql=f'SELECT (SELECT o."{column}" FROM ({old_sql}) AS o LIMIT 1) AS "{column}"',  # noqa: S608
             params=params,
             helper=one_value,
+            related=case.related,
         )
+    return [len(rows) for rows in answered]
 
 
 async def _assert_count_same(
@@ -686,6 +763,7 @@ async def _assert_count_same(
 
     await conn.execute("SET session_replication_role = replica")
     try:
+        counted_by: dict[Any, list[int]] = {}
         for case in _clause_cases(entry["old_sql"], params, where, entry):
 
             async def answered(c: Any, guards: list[Fragment] = case.where) -> list[dict[str, Any]]:
@@ -694,14 +772,17 @@ async def _assert_count_same(
                 counted = await aggregate_keyed(c, table, aggregates={"n": Count()}, by=by, where=guards)
                 return [{"answer": counted[0]["n"]}]
 
-            await assert_same_results(
+            olds = await assert_same_results(
                 conn,
                 table=table,
                 row=row,
                 old_sql=f'SELECT ({case.old_sql}) AS "answer"',  # noqa: S608 - the manifest's own statement
                 params=case.params,
                 helper=answered,
+                related=case.related,
             )
+            counted_by[case.subject] = [int(dict(rows[0])["answer"] or 0) for rows in olds]
+        _assert_clause_restricts(entry, counted_by)
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")
 

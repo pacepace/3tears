@@ -252,6 +252,10 @@ class NoWholeReadsConfig:
         subjects are a zero-argument callable answering the subjects the generated proof binds the clause to, beside
         ``None``: each must restrict the seeded rows, or the proof shows nothing about the clause. Not a judging
         option: the gate's findings are the same with or without it
+    :ivar clause_parents: per clause builder whose clause reads rows of another table (a chunk's parent memory),
+        ``module:name`` of the coroutine seeding them in the generated proof, handed the connection and the rows seeded
+        in the read's own table: without those rows a subject's clause would match nothing on either side and prove
+        nothing. Not a judging option either
     """
 
     repo_root: Path
@@ -282,6 +286,7 @@ class NoWholeReadsConfig:
     bounded_producers: Mapping[str, BoundBy] = field(default_factory=dict)
     local_relations_checked: bool = True
     clause_builders: Mapping[str, str] = field(default_factory=dict)
+    clause_parents: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

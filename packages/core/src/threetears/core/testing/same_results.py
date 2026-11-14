@@ -267,6 +267,7 @@ async def _written(
     columns: Sequence[str] | None,
     state_sql: str,
     write: Callable[[Any], Awaitable[Sequence[Mapping[str, Any]]]],
+    related: Callable[[Any, list[Mapping[str, Any]]], Awaitable[None]] | None = None,
 ) -> tuple[list[tuple[tuple[str, Any], ...]], list[tuple[tuple[str, Any], ...]]]:
     """one side of a write's comparison, on its own seeded table: the rows it returned and the table after it.
 
@@ -282,6 +283,8 @@ async def _written(
     :ptype state_sql: str
     :param write: the write, handed the connection, returning its rows
     :ptype write: Callable[[Any], Awaitable[Sequence[Mapping[str, Any]]]]
+    :param related: seeds the rows read beside ``table``, after it is seeded; None for none
+    :ptype related: Callable[[Any, list[Mapping[str, Any]]], Awaitable[None]] | None
     :return: the returned rows and the table's rows, normalised
     :rtype: tuple[list[tuple[tuple[str, Any], ...]], list[tuple[tuple[str, Any], ...]]]
     """
@@ -289,6 +292,8 @@ async def _written(
     await transaction.start()
     try:
         await _seed(conn, table, seeded)
+        if related is not None:
+            await related(conn, seeded)
         returned = [_normal(dict(found), columns) for found in await write(conn)]
         state = [_normal(dict(found), None) for found in await conn.fetch(state_sql)]
     finally:
@@ -310,7 +315,8 @@ async def assert_same_results(
     page_size: int = 5,
     state_sql: str | None = None,
     limited: bool = False,
-) -> None:
+    related: Callable[[Any, list[Mapping[str, Any]]], Awaitable[None]] | None = None,
+) -> list[list[tuple[tuple[str, Any], ...]]]:
     """seed ``table`` for every case, run ``old_sql`` and ``helper`` on the same rows, and fail on any difference.
 
     :param conn: an asyncpg-shaped connection (``fetch``, ``execute``, ``executemany``, ``transaction``)
@@ -344,12 +350,18 @@ async def assert_same_results(
         before the last kept row's sort values must match exactly; of the rows tied with it, only their sort values
         and how many (which of the tied rows a ``LIMIT`` kept was the engine's choice, the helper's is its key's)
     :ptype limited: bool
-    :return: nothing
-    :rtype: None
+    :param related: seeds the rows both statements read beside ``table`` (a clause's parent rows), handed the
+        connection and the case's seeded rows, after ``table`` is seeded and inside the same rolled-back transaction
+        (each side's own, for a write); None when they read ``table`` alone
+    :ptype related: Callable[[Any, list[Mapping[str, Any]]], Awaitable[None]] | None
+    :return: the old statement's rows in each case, in case order, normalised: what a caller proving a clause
+        restricts the seeded rows reads (the cases themselves are this module's)
+    :rtype: list[list[tuple[tuple[str, Any], ...]]]
     :raises AssertionError: naming each case whose rows differ, and how
     """
     compare_order = bool(_ORDER_BY.search(old_sql)) if ordered is None else ordered
     differences: list[str] = []
+    answered: list[list[tuple[tuple[str, Any], ...]]] = []
     for case in _cases(page_size):
         seeded = [row(seed) for seed in _seeded(case)]
         if state_sql is None:
@@ -357,15 +369,17 @@ async def assert_same_results(
             await transaction.start()
             try:
                 await _seed(conn, table, seeded)
+                if related is not None:
+                    await related(conn, seeded)
                 old = [_normal(dict(found), columns) for found in await conn.fetch(old_sql, *params)]
                 new = [_normal(dict(found), columns) for found in await helper(conn)]
             finally:
                 await transaction.rollback()
         else:
             old, old_state = await _written(
-                conn, table, seeded, columns, state_sql, lambda c: c.fetch(old_sql, *params)
+                conn, table, seeded, columns, state_sql, lambda c: c.fetch(old_sql, *params), related
             )
-            new, new_state = await _written(conn, table, seeded, columns, state_sql, helper)
+            new, new_state = await _written(conn, table, seeded, columns, state_sql, helper, related)
             difference = _differ(f"{case.name} (the table after)", old_state, new_state, None, False)
             if difference is not None:
                 differences.append(difference)
@@ -376,4 +390,6 @@ async def assert_same_results(
         )
         if difference is not None:
             differences.append(difference)
+        answered.append(old)
     assert not differences, "the helper does not give the old statement's rows:\n" + "\n".join(differences)
+    return answered

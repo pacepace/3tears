@@ -311,8 +311,9 @@ class Rewrite:
     #: the statement's clause written by a declared clause builder (``NoWholeReadsConfig.clause_builders``): the
     #: builder and its proof subjects (``module:name`` each), its arguments before the parameter list as the statement
     #: wrote them (``leading``) and over the helper's row (``respelled``), where in ``old_sql`` its text goes (``at``;
-    #: ``old_sql`` is the statement as sent when the builder answers ``""``) and the ``clause_guards`` call the
-    #: ``where=`` spreads (``call``); not recorded when there is none
+    #: ``old_sql`` is the statement as sent when the builder answers ``""``), the ``clause_guards`` call the
+    #: ``where=`` spreads (``call``) and, for a clause reading another table's rows, their seeder (``parents``,
+    #: ``NoWholeReadsConfig.clause_parents``); not recorded when there is none
     clauses: list[dict[str, Any]] = field(default_factory=list)
     # the edits that make it, not recorded: (start line, start col, end line, end col, text) in the module's bytes
     edits: list[tuple[int, int, int, int, str]] = field(default_factory=list, repr=False)
@@ -1740,6 +1741,8 @@ class _Clause:
 
     :ivar build: the builder, ``module:name``
     :ivar subjects: its proof subjects, ``module:name`` (``NoWholeReadsConfig.clause_builders``)
+    :ivar parents: the seeder of the other table's rows its clause reads, ``module:name``
+        (``NoWholeReadsConfig.clause_parents``); None when it reads the statement's own row alone
     :ivar written: the builder as the module calls it
     :ivar subject: its first argument (the clause's run-time subject) as written
     :ivar leading: its text arguments after the subject
@@ -1749,6 +1752,7 @@ class _Clause:
 
     build: str
     subjects: str
+    parents: str | None
     written: str
     subject: str
     leading: tuple[str, ...]
@@ -1854,6 +1858,7 @@ def _local_clauses(config: NoWholeReadsConfig, module: _Module, node: ast.Joined
         found[name] = _Clause(
             build=build,
             subjects=builders[build],
+            parents=config.clause_parents.get(build),
             written=call.func.id,
             subject=module.segment(call.args[0]),
             leading=tuple(str(arg.value) for arg in leading if isinstance(arg, ast.Constant)),
@@ -2784,6 +2789,7 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                     "respelled": respelled,
                     "at": at[0],
                     "call": f"clause_guards({texts})",
+                    **({"parents": clause.parents} if clause.parents else {}),
                 }
             ]
             sent: tuple[list[ast.Call], ast.Assign | ast.AnnAssign | None] | str = ([sender], None)

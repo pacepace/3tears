@@ -4928,6 +4928,7 @@
     "leading": [
      "mc"
     ],
+    "parents": "tests.integration.clause_subjects:chunk_parents",
     "respelled": [
      "t"
     ],

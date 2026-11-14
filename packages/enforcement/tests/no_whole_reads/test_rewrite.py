@@ -12,6 +12,7 @@ import json
 import re
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1721,3 +1722,29 @@ def test_a_declared_clause_builders_answer_is_rewritten_as_its_guards(tmp_path: 
     for entry in json.loads(manifest.read_text(encoding="utf-8")):
         assert entry["clauses"][0]["build"] == "pkg.filters:tag_clause"
         assert_source_says(tmp_path, entry)
+
+
+def test_a_clause_builders_parent_seeder_is_recorded_beside_it(tmp_path: Path) -> None:
+    """Flips if a clause builder declared with a parent seeder (``clause_parents``: its clause decides on another
+    table's rows) is recorded without it, so the generated proof would seed no parent and both sides would read
+    nothing under every subject; or if a builder declared without one gains a ``parents`` key."""
+    config = _config(tmp_path)
+    for name, source in {"filters.py": _CLAUSE_BUILDERS, "reads.py": _CLAUSE_READS}.items():
+        (tmp_path / "src/pkg" / name).write_text(textwrap.dedent(source), encoding="utf-8")
+
+    def planned(parents: dict[str, str]) -> dict[str, Any]:
+        declared = NoWholeReadsConfig(
+            repo_root=tmp_path,
+            src_roots=config.src_roots,
+            ledger_dir=tmp_path,
+            dependency_schema=False,
+            table_lists=(),
+            clause_builders={"pkg.filters:tag_clause": "pkg.filters:subjects"},
+            clause_parents=parents,
+        )
+        rewrites, _ = plan_point_rewrites(declared)
+        (clause,) = next(rewrite for rewrite in rewrites if rewrite.function == "by_key").clauses
+        return clause
+
+    assert planned({"pkg.filters:tag_clause": "pkg.filters:parents"})["parents"] == "pkg.filters:parents"
+    assert "parents" not in planned({})

@@ -68,4 +68,9 @@ NO_WHOLE_READS_CONFIG = NoWholeReadsConfig(
             "collections:_media_parent_clause",
         )
     },
+    # the clause builders deciding on a parent table's rows: their proof seeds those rows beside the read's own
+    clause_parents={
+        "threetears.agent.memory.collections:_chunk_parent_clause": "tests.integration.clause_subjects:chunk_parents",
+        "threetears.agent.memory.collections:_media_parent_clause": "tests.integration.clause_subjects:media_parents",
+    },
 )

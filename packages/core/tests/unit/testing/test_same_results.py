@@ -211,3 +211,25 @@ async def test_a_changed_list_object_or_nested_value_is_caught(documents: _Duck,
             params=["t0"],
             helper=_asking(helper_sql, "t0"),
         )
+
+
+async def test_related_rows_are_seeded_in_each_case_and_the_old_rows_answered(conn: _Duck) -> None:
+    """Flips if ``related`` is not handed each case's seeded rows inside the case (a statement reading another
+    table's rows beside the seeded one would read none, on both sides), or if the old statement's rows per case are
+    not answered (a clause proof reads them to show its clause restricted something)."""
+    await conn.execute("CREATE TABLE p (k INTEGER NOT NULL, flag BOOLEAN NOT NULL)")
+    seen: list[int] = []
+
+    async def parents(c: _Duck, rows: list[Mapping[str, Any]]) -> None:
+        seen.append(len(rows))
+        await c.execute("DELETE FROM p")
+        if rows:
+            await c.executemany("INSERT INTO p VALUES ($1, $2)", [(row["k"], row["k"] % 2 == 0) for row in rows])
+
+    old = "SELECT k FROM t WHERE tenant = $1 AND EXISTS (SELECT 1 FROM p WHERE p.k = t.k AND p.flag) ORDER BY k"
+    answered = await assert_same_results(
+        conn, table="t", row=_row, old_sql=old, params=["t0"], helper=_asking(old, "t0"), related=parents
+    )
+    assert seen == [0, 1, 25, 12, 12, 12, 5, 6]
+    assert [len(rows) for rows in answered] == [0, 1, 13, 6, 6, 3, 3, 3]
+    assert await conn.fetch("SELECT * FROM p") == []
