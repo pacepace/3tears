@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
+
+from threetears.enforcement.underscore_access import walkers
 from threetears.enforcement.underscore_access.walkers import (
     package_id,
     parse_ruff_slf001_output,
@@ -689,3 +693,58 @@ class TestShapeI:
         )
 
         assert shape_i_violations((tests,), tmp_path, (tmp_path / "src",)) == []
+
+
+# ------------------------------------------------------------------
+# one parse per module, shared by every shape
+# ------------------------------------------------------------------
+
+
+class TestEveryShapeReadsOneParse:
+    """the shapes read each module's facts from one parse, and never a stale one."""
+
+    def test_a_rewrite_that_keeps_size_mtime_and_inode_is_still_seen(self, tmp_path: Path) -> None:
+        # the facts are current against the module's bytes, so a rewrite no stamp can tell apart is seen
+        src = tmp_path / "src"
+        path = _write(src / "pkg" / "mod.py", '__all__ = ["_x"]\n')
+        assert [v.symbol for v in shape_e_violations((src,), tmp_path)] == ["_x"]
+        stat = path.stat()
+        path.write_text('__all__ = ["xy"]\n')
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        assert (path.stat().st_size, path.stat().st_ino) == (stat.st_size, stat.st_ino)
+
+        assert shape_e_violations((src,), tmp_path) == []
+
+    def test_a_module_that_does_not_parse_is_reported_by_every_shape_that_skips_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        notes: list[str] = []
+        monkeypatch.setattr(walkers, "note_unscanned", lambda target, reason: notes.append(reason))
+        src = tmp_path / "src"
+        _write(src / "pkg" / "bad.py", "def f(:\n")
+
+        assert shape_c_violations((src,), tmp_path, _DEFAULT_SHAPE_C_SKIP) == []
+        assert shape_e_violations((src,), tmp_path) == []
+
+        assert len(notes) == 2
+        assert notes[0] == notes[1]
+        assert notes[0].startswith("syntax error at line")
+
+    def test_a_module_that_is_not_utf8_is_reported(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        notes: list[str] = []
+        monkeypatch.setattr(walkers, "note_unscanned", lambda target, reason: notes.append(reason))
+        src = tmp_path / "src"
+        bad = src / "pkg" / "latin.py"
+        bad.parent.mkdir(parents=True)
+        bad.write_bytes(b'name = "caf\xe9"\n')
+
+        assert shape_e_violations((src,), tmp_path) == []
+        assert notes == ["not valid utf-8"]
+
+    def test_crlf_source_reports_the_lines_a_text_read_gives(self, tmp_path: Path) -> None:
+        src = tmp_path / "src"
+        path = src / "pkg" / "mod.py"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b'"""doc."""\r\n\r\n__all__ = [\r\n    "a",\r\n    "_b",\r\n]\r\n')
+
+        assert [(v.symbol, v.line) for v in shape_e_violations((src,), tmp_path)] == [("_b", 5)]
