@@ -26,12 +26,25 @@ import pytest
 
 from packages.core.tests.unit.shared_arrow import jobs
 from threetears.core.shared_arrow import SharedArrowFullError, SharedArrowPool, SharedArrowStore
+from threetears.core.testing.loop_lateness import (
+    HostTicker,
+    Tick,
+    added_lateness,
+    hold_the_loop,
+    latest,
+    ticks_while,
+    trusted,
+)
 
 #: the large table's first column: 100 MiB of int64
 BIG_BYTES = 100 << 20
 
-#: the most the event loop may run late while a large table is handed over
+#: the most the event loop may run late while a large table is handed over, past what the host's own idle loop, ticking
+#: in a process of its own, was late at the same moments (:func:`added_lateness`)
 LOOP_MAY_BE_LATE = 0.020
+
+#: what the test loop's ticker asks to sleep
+TICK = 0.002
 
 
 def _big() -> tuple[pa.Table, str]:
@@ -286,30 +299,63 @@ class TestTheHandOffIsBounded:
         assert store.hand({"t": reader}, max_bytes=1 << 20).tables == ("t",)
 
 
+async def _handed(
+    single: SharedArrowPool, table: pa.Table, *, planted: Callable[[], None] | None = None
+) -> tuple[list[Tick], list[Tick], dict[str, Any]]:
+    """the test loop's ticks and the host's idle loop's while ``table`` is handed to a worker that digests it.
+
+    :param planted: called on the loop as the hand-off starts (a red case plants its blocking here)
+    :return: the loop's ticks, the host's ticks and the job's answer
+    """
+    answer: dict[str, Any] = {}
+
+    async def run() -> None:
+        if planted is not None:
+            asyncio.get_running_loop().call_soon(planted)
+        result = await single.run(jobs.handed_digest, "t", read=False, tables={"t": table})
+        answer.update(result.value)
+        await asyncio.sleep(0.05)
+
+    with HostTicker() as host:
+        ticks = await ticks_while(run, every=TICK)
+    return ticks, host.ticks, answer
+
+
+async def _trusted_hand(
+    single: SharedArrowPool, table: pa.Table, *, planted: Callable[[], None] | None = None
+) -> tuple[list[Tick], list[Tick], dict[str, Any]]:
+    """:func:`_handed`, retaken while the host's own idle loop was later over it than the loop may be
+    (:func:`~threetears.core.testing.loop_lateness.trusted`: such a run says nothing about the code)."""
+    return await trusted(
+        lambda: _handed(single, table, planted=planted),
+        lambda measured: (measured[0], measured[1]),
+        host_may_be_late=LOOP_MAY_BE_LATE,
+    )
+
+
 @pytest.mark.loop_timing
 class TestTheLoopRunsWhileALargeTableIsHanded:
     async def test_a_ticker_is_never_late_while_100mb_is_handed_to_a_worker(
         self, store: SharedArrowStore, single: SharedArrowPool, big: tuple[pa.Table, str]
     ) -> None:
         table, digest = big
-        late = 0.0
-        ticking = True
+        ticks, host, answer = await _trusted_hand(single, table)
+        assert answer["sha256"] == digest
+        added = added_lateness(ticks, host, every=TICK)
+        assert added < LOOP_MAY_BE_LATE, (
+            f"the loop ran {added * 1000:.1f} ms late while the table was handed, past the host's own idle loop "
+            f"({latest(ticks, every=TICK) * 1000:.1f} ms late in all)"
+        )
 
-        async def tick() -> None:
-            nonlocal late
-            while ticking:
-                start = time.perf_counter()
-                await asyncio.sleep(0.002)
-                late = max(late, time.perf_counter() - start - 0.002)
-
-        ticker = asyncio.create_task(tick())
-        await asyncio.sleep(0.05)
-        result = await single.run(jobs.handed_digest, "t", read=False, tables={"t": table})
-        await asyncio.sleep(0.05)
-        ticking = False
-        await ticker
-        assert result.value["sha256"] == digest
-        assert late < LOOP_MAY_BE_LATE, f"the loop ran {late * 1000:.1f} ms late while the table was handed"
+    async def test_a_block_planted_on_the_loop_is_caught(
+        self, store: SharedArrowStore, single: SharedArrowPool, big: tuple[pa.Table, str]
+    ) -> None:
+        """the judgement's red case: 30 ms of blocking on the loop itself while the table is handed fails it."""
+        table, digest = big
+        ticks, host, answer = await _trusted_hand(single, table, planted=lambda: hold_the_loop(0.03))
+        assert answer["sha256"] == digest
+        added = added_lateness(ticks, host, every=TICK)
+        assert added >= LOOP_MAY_BE_LATE, f"a 30 ms block on the loop was judged {added * 1000:.1f} ms"
 
 
 class TestHandOffsSideBySide:
