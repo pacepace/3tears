@@ -1011,6 +1011,8 @@ _SPARSE = """
         "CREATE INDEX IF NOT EXISTS notes_flag_scope ON notes (flag, scope)",
         "-- purpose: src/sparse.py::hot_counts; src/sparse.py::cold_counts\\n"
         "-- plan_test: tests/test_plans.py::test_notes_hot\\n"
+        "-- reason: partial over the few hot notes alone, counted at each switch\\n"
+        "-- speed: tests/test_speed.py::test_hot_counts_bounded\\n"
         "CREATE INDEX IF NOT EXISTS notes_hot ON notes (scope) WHERE hot",
     )
 
@@ -1043,6 +1045,14 @@ _SPARSE_PLANS = """
         assert plan_uses_index(plan, "notes_flag_scope")
 """
 
+_SPARSE_SPEED = """
+    from threetears.core.testing.calibrate import budget_problem
+
+    async def test_hot_counts_bounded(conn, took, baseline):
+        await hot_counts(conn)
+        assert not budget_problem("hot counts", took, baseline)
+"""
+
 
 def test_a_partial_index_whose_predicate_the_read_states_is_the_one_it_reads(tmp_path: Path) -> None:
     """Flips if a read stating a partial index's predicate is not credited to it (tied on the bound lead with a full
@@ -1050,11 +1060,40 @@ def test_a_partial_index_whose_predicate_the_read_states_is_the_one_it_reads(tmp
     that does not state it is (partial-index credit, 3tears #79)."""
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_plans.py").write_text(textwrap.dedent(_SPARSE_PLANS), encoding="utf-8")
+    (tmp_path / "tests" / "test_speed.py").write_text(textwrap.dedent(_SPARSE_SPEED), encoding="utf-8")
     findings = no_whole_reads_findings(_config(tmp_path, {"sparse.py": _SPARSE}))
     assert not [f for f in findings if "in flagged:" in f or "in hot_counts:" in f or "in by_scope:" in f], findings
+    assert not [f for f in findings if "index-speed" in f], findings
     assert not [f for f in findings if "notes_flagged on notes: index-purpose-unused" in f], findings
     assert [f for f in findings if "in cold_counts: whole-aggregate notes" in f], findings
     assert [f for f in findings if "cold_counts holds no read" in f], findings
+
+
+def test_a_partial_index_keys_a_predicate_only_read_only_with_its_proof(tmp_path: Path) -> None:
+    """Flips if a read binding none of a partial index's columns (``WHERE hot``, ``WHERE deleted_at IS NULL``) is
+    keyed by the index without its full proof -- purpose, plan test, written reason and a speed test at real size
+    calling ``budget_problem`` (coordinator ruling, 3tears #80) -- or if a speed test that never calls
+    ``budget_problem`` or never runs the read is accepted."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_plans.py").write_text(textwrap.dedent(_SPARSE_PLANS), encoding="utf-8")
+    # no reason, no speed test: the predicate alone keys nothing
+    bare = _SPARSE.replace(
+        '"-- reason: partial over the few hot notes alone, counted at each switch\\n"\n', ""
+    ).replace('"-- speed: tests/test_speed.py::test_hot_counts_bounded\\n"\n', "")
+    assert bare != _SPARSE
+    findings = no_whole_reads_findings(_config(tmp_path, {"sparse.py": bare}))
+    assert [f for f in findings if "in hot_counts:" in f], findings
+    # a reason but no speed test: still a finding
+    reasoned = _SPARSE.replace('"-- speed: tests/test_speed.py::test_hot_counts_bounded\\n"\n', "")
+    findings = no_whole_reads_findings(_config(tmp_path, {"sparse.py": reasoned}))
+    assert [f for f in findings if "in hot_counts:" in f], findings
+    # a speed test that never calls budget_problem: the index declaration is a finding
+    (tmp_path / "tests" / "test_speed.py").write_text(
+        textwrap.dedent(_SPARSE_SPEED).replace('assert not budget_problem("hot counts", took, baseline)', "pass"),
+        encoding="utf-8",
+    )
+    findings = no_whole_reads_findings(_config(tmp_path, {"sparse.py": _SPARSE}))
+    assert [f for f in findings if "notes_hot on notes: index-speed-test" in f and "budget_problem" in f], findings
 
 
 _DEDUP = """

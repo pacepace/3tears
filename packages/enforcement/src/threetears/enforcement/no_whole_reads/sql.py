@@ -57,6 +57,7 @@ from typing import Final
 
 from threetears.enforcement.no_whole_reads.schema import (
     COPY_PREFIX,
+    MIN_REASON,
     NEAREST_METHODS,
     TENANT_COLUMNS,
     _DeclaredTable,
@@ -1336,9 +1337,11 @@ def _key_hit(
         return True
     # a purposed partial index whose predicate the read states, nothing of its columns bound (``SELECT table_name,
     # count(*) ... WHERE ring_read GROUP BY 1`` over one ``WHERE ring_read``): the read reads that index's rows and no
-    # other -- the predicate is its key, as the purpose declaring the read and its plan test say
+    # other -- but a predicate is no key: ``deleted_at IS NULL`` holds nearly every row. Keyed only when the index
+    # proves the read bounded: its purpose, plan test, written reason and a speed test at real size calling
+    # ``budget_problem`` (coordinator ruling, 3tears #80); without that proof the read stays a finding
     for name, _ in purposed:
-        if fits.get(name) is True:
+        if fits.get(name) is True and _partial_proven(reader, relation, name):
             if table is not None:
                 reader.schema.use(table, name, reader.names)
             elif reader.template is not None:
@@ -1396,6 +1399,28 @@ def _partial_fit(reader: Reader, relation: _Relation, name: str, where: str | No
     if index is None or not index.partial or not index.where:
         return None
     return where is not None and _predicate_terms(index.where) <= _predicate_terms(where)
+
+
+def _partial_proven(reader: Reader, relation: _Relation, name: str) -> bool:
+    """whether a partial index declares the proof that a read keyed by its predicate alone is bounded: a purpose, a plan
+    test, a written reason and a speed test (whose soundness the index-declaration findings judge).
+
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :param relation: the relation read
+    :ptype relation: _Relation
+    :param name: the index
+    :ptype name: str
+    :return: whether it does
+    :rtype: bool
+    """
+    declared = reader.schema.table(relation.name) if bare_table(relation.name) is not None else reader.template
+    index = declared.indexes.get(name) if declared is not None else None
+    return (
+        index is not None
+        and bool(index.purpose and index.plan_test and index.speed)
+        and len(index.reason) >= MIN_REASON
+    )
 
 
 def _local(reader: Reader, table: str) -> bool:

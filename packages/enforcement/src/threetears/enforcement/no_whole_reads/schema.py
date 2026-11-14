@@ -157,7 +157,9 @@ _ADD_FK: Final[re.Pattern[str]] = re.compile(
 )
 #: what a foreign key references, after its referencing columns: the referenced table and the ``(`` of its columns
 _REFERENCES: Final[re.Pattern[str]] = re.compile(rf"^\s*REFERENCES\s+{_QNAME}\s*\(", re.IGNORECASE)
-_DDL_COMMENT: Final[re.Pattern[str]] = re.compile(r"--\s*(purpose|plan_test|reason)\s*:\s*(.+?)\s*$", re.IGNORECASE)
+_DDL_COMMENT: Final[re.Pattern[str]] = re.compile(
+    r"--\s*(purpose|plan_test|reason|speed)\s*:\s*(.+?)\s*$", re.IGNORECASE
+)
 _DDL_HINT: Final[re.Pattern[str]] = re.compile(r"\b(?:CREATE|ALTER|DROP)\b", re.IGNORECASE)
 
 
@@ -272,6 +274,9 @@ class _DeclaredIndex:
     :ivar purpose: ``<path>::<qualified function>`` whose keyed read uses it; empty when it names none
     :ivar plan_test: ``<test file>::<test function>`` proving that read uses it
     :ivar reason: why it is wide, or why its table carries more than three
+    :ivar speed: ``<test file>::<test function>``: a speed test at real size calling ``budget_problem``, proving a read
+        keyed by a partial index's predicate alone (binding none of its columns) stays bounded; without it such a read
+        is no keyed read of the index
     :ivar origin: ``<path>:<line>`` of the declaration
     :ivar local: whether the repo being judged declares it (not a dependency's source)
     :ivar pattern: for a name built at run time, a regular expression of the names it makes
@@ -300,6 +305,7 @@ class _DeclaredIndex:
     where: str = ""
     ranged: bool = False
     method: str = ""
+    speed: str = ""
 
 
 @dataclass
@@ -625,6 +631,7 @@ class SchemaCatalog:
             known.purpose = "; ".join(dict.fromkeys((*purposes(known.purpose), *purposes(index.purpose))))
             known.plan_test = known.plan_test or index.plan_test
             known.reason = known.reason or index.reason
+            known.speed = known.speed or index.speed
             known.include = known.include or index.include
             known.method = known.method or index.method
 
@@ -707,6 +714,7 @@ class SchemaCatalog:
                     index.purpose = index.purpose or declared.purpose
                     index.plan_test = index.plan_test or declared.plan_test
                     index.reason = index.reason or declared.reason
+                    index.speed = index.speed or declared.speed
                 entry.indexes[new] = index
 
     def rename_column(self, table: str, old: str, new: str) -> None:
@@ -1083,6 +1091,7 @@ def _template_ddl(catalog: SchemaCatalog, kind: str, payload: Any, origin: str, 
                     where=where_text,
                     ranged=ranged,
                     method=method,
+                    speed=notes.get("speed", ""),
                 ),
             )
     template.origins.append(origin)
@@ -1139,6 +1148,7 @@ def _apply_ddl(catalog: SchemaCatalog, text: str, origin: str, *, local: bool) -
                 where=where_text,
                 ranged=ranged,
                 method=method,
+                speed=notes.get("speed", ""),
             )
             catalog.add_index(index)
             if not local:
@@ -1508,6 +1518,7 @@ def _index_from_call(call: ast.Call, values: _Values, table: str, origin: str, *
         partial=_keyword(call, "where") is not None or _keyword(call, "postgresql_where") is not None,
         where=values.text(_keyword(call, "where")) or "",
         method=(values.text(_keyword(call, "using")) or "").lower(),
+        speed=values.text(_keyword(call, "speed")) or _info(call, values, "speed"),
         ranged=bool(columns)
         and columns[0].lower()
         in {
@@ -1984,6 +1995,7 @@ def _apply_yaml(catalog: SchemaCatalog, path: Path, relative: str, *, local: boo
                                 unique=index.get("unique") is True,
                                 partial=bool(index.get("where")),
                                 method=str(index.get("using") or "").lower(),
+                                speed=str(index.get("speed") or ""),
                                 ranged=bool(index.get("columns"))
                                 and str(index["columns"][0]).lower()
                                 in {str(c).lower() for o in ("asc", "desc") for c in _listed(index.get(o))},
@@ -2133,6 +2145,7 @@ def _resolve_patterns(catalog: SchemaCatalog) -> None:
                     index.purpose = index.purpose or pattern.purpose
                     index.plan_test = index.plan_test or pattern.plan_test
                     index.reason = index.reason or pattern.reason
+                    index.speed = index.speed or pattern.speed
     catalog.sites = [site for site in catalog.sites if id(site) not in covered]
 
 
@@ -2240,6 +2253,8 @@ def index_findings(
         findings.extend(
             _index_site_findings(catalog, repo_root, definitions, site, (purpose, plan_test, reason), consumer)
         )
+        speed = site.speed or (merged.speed if merged is not None else "")
+        findings.extend(_index_speed_findings(repo_root, site, speed, purpose))
     findings.extend(_template_index_findings(catalog, definitions))
     for where, table_name, index, entry in catalog.added_purposes:
         if "::" not in entry or entry not in definitions:
@@ -2337,6 +2352,43 @@ def _fk_purpose_findings(where: str, table: _DeclaredTable | None, site: _Declar
             f"columns {list(referencing)} of {constraint}: the database's lookup of the referencing rows would not use it"
         ]
     return []
+
+
+def _index_speed_findings(repo_root: Path, site: _DeclaredIndex, speed: str, purpose: str) -> list[str]:
+    """what is wrong with an index's ``speed`` note: only a partial index carries one (it proves a read keyed by the
+    index's predicate alone stays bounded at real size), and it names a test that runs one of the index's reads and
+    calls ``budget_problem``.
+
+    :param repo_root: the repo root
+    :ptype repo_root: Path
+    :param site: the declaration
+    :ptype site: _DeclaredIndex
+    :param speed: its speed test, from any declaration of it
+    :ptype speed: str
+    :param purpose: its purpose
+    :ptype purpose: str
+    :return: findings
+    :rtype: list[str]
+    """
+    if not speed:
+        return []
+    where = f"{site.origin} index {site.name}" + (f" on {site.table}" if site.table else "")
+    if not site.partial:
+        return [
+            f"{where}: index-speed-not-partial -- names a speed test, which only a partial index keying a read by its "
+            "predicate alone needs: drop it"
+        ]
+    readers = tuple(entry.rpartition("::")[2].rsplit(".", 1)[-1] for entry in purposes(purpose) if "::" in entry)
+    defect = _test_defect(repo_root, speed, names=(), calls="budget_problem")
+    if (
+        defect is None
+        and readers
+        and not any(_test_defect(repo_root, speed, names=(r,), calls="budget_problem") is None for r in readers)
+    ):
+        defect = f"{speed} never names {readers[0]}: it cannot prove that read bounded"
+    if defect is None:
+        return []
+    return [f"{where}: index-speed-test -- the speed test {defect}"]
 
 
 def _index_site_findings(
