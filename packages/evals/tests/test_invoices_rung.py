@@ -154,7 +154,8 @@ async def test_3b_a_margin_lets_total_read_equivalent(monkeypatch: pytest.Monkey
 
     result = await module.within_margin.run(store=":memory:")
     (total,) = result.contrasts("total")
-    assert (total["outcome"], total["interval"]) == ("equivalent", "-19 to +19 pts at 99.2%")
+    # Its level, 1 − 0.05/6, reads to two significant figures of the chance it misses (owner ruling, 2026-11-14).
+    assert (total["outcome"], total["interval"]) == ("equivalent", "-19 to +19 pts at 99.17%")
     # Only the reading with a margin can: the others still cannot tell the arms apart.
     assert {row["outcome"] for grader in ("accuracy", "number", "due") for row in result.contrasts(grader)} == {
         "not_separated"
@@ -361,8 +362,9 @@ async def test_a_model_shared_by_two_evals_refuses_the_second_naming_the_first_a
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Why each file builds its own Model: a replay serves each recorded call once per model. A second eval on
-    compare.py's model is refused every call, the rig's fault (excluded, never scored), and the refusal names the
-    real cause, not a recording to make again."""
+    compare.py's model is refused its calls, the rig's fault (excluded, never scored), and the refusal names the
+    real cause, not a recording to make again. A refused replay is a replay miss, so the run fails at it rather than
+    reading on (owner ruling, 2026-11-14, #1162): no arm reads all 90 trials."""
     offline_copy("3-invoices", tmp_path, monkeypatch)
     module = load(Path("compare.py"), "compare", monkeypatch)
     again = Eval(
@@ -378,7 +380,8 @@ async def test_a_model_shared_by_two_evals_refuses_the_second_naming_the_first_a
     result = await again.run(store=":memory:")
 
     for summary in result.arms.values():
-        assert (summary.n_results, summary.n_excluded) == (90, 90)
+        assert summary.status == "failed" and summary.n_scored == 0
+        assert 0 < summary.n_excluded == summary.n_results < 90
     errors = [line for line in str(result).splitlines() if line.startswith("  error: ")]
     assert errors and all(
         "every one was already served to another eval's run in this process ('compare')" in line

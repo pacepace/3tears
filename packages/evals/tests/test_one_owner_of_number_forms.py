@@ -221,6 +221,10 @@ _RESPELL = (
 )
 _TABLE_CELL = "a values cell that holds words, a yes or no, or nothing; a number cell carries its decided text"
 _HOST_CHART = "a chart a host built with no decided texts, spelled by the number rule so it still reads"
+_HOST_CHART_COLUMN = (
+    "a host-built chart's column of one measure, read at one precision, its narrowest interval's, as the owner's "
+    "per-measure rule (2026-11-14) reads a measure; forms.py imports blocks.py, so it cannot route through forms"
+)
 _STORED_READING = "a reason stored in a campaign's readings, which are fingerprinted, so its text may not move"
 _WHOLE_COUNT = "a test that a count is whole, not a printed figure"
 _CSS_WIDTH = "a table column's width in rem, written to the page's CSS, not a figure"
@@ -277,6 +281,10 @@ _PERMANENT: dict[tuple[str, str, str], tuple[int, str]] = {
     ("threetears/evals/analysis/report/blocks.py", "ChartBlock._cost_drawn", "with_unit()"): (1, _HOST_CHART),
     ("threetears/evals/analysis/report/blocks.py", "ChartBlock._cost_quality_scatter", "with_unit()"): (3, _HOST_CHART),
     ("threetears/evals/analysis/report/blocks.py", "ChartBlock._outcome_bars", "with_unit()"): (1, _HOST_CHART),
+    ("threetears/evals/analysis/report/blocks.py", "ChartBlock._values_table", "policy_interval_set()"): (
+        2,
+        _HOST_CHART_COLUMN,
+    ),
     ("threetears/evals/analysis/report/blocks.py", "ChartBlock._values_table.said", "number_in()"): (1, _HOST_CHART),
     ("threetears/evals/analysis/report/blocks.py", "TableCell.figure", "render_cell()"): (1, _TABLE_CELL),
     ("threetears/evals/analysis/report/blocks.py", "interval_text", "policy_lone_interval()"): (1, _HOST_CHART),
@@ -419,8 +427,9 @@ _PERMANENT: dict[tuple[str, str, str], tuple[int, str]] = {
 }
 
 #: How many entries :data:`_PERMANENT` holds, pinned: an entry routed through ``forms.py`` lowers it in the same
-#: change, and a new exemption raises it only by an owner's decision, so no slack is ever refilled unseen.
-_PERMANENT_CEILING = 118
+#: change, and a new exemption raises it only by an owner's decision, so no slack is ever refilled unseen. 119: the
+#: owner's per-measure precision ruling (2026-11-14) reads a host-built chart's column at one precision.
+_PERMANENT_CEILING = 119
 
 #: The one-line remedy every failure of the rule ends with.
 _REMEDY = (
@@ -1909,6 +1918,7 @@ class TestAWrapperIsAPrimitive:
             "policy_figure",
             "policy_interval",
             "policy_interval_places",
+            "policy_interval_set",
             "policy_level",
             "policy_lone_interval",
             "policy_p",

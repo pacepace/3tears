@@ -51,7 +51,7 @@ on `sys.path`, and the door puts a rung's there too.
 
 A recording that exists is replayed: no key, no network, no cost. `RECORD=1` with `OPENROUTER_API_KEY` set records it
 again, live (`RECORD=1 uv run python -m threetears.evals examples/1-triage/triage.py`). A recording holds one model at one
-temperature, and an email the recording does not hold is excluded from the run by name, never sent to a model.
+temperature, and an email the recording does not hold fails the run, naming the call, and is never sent to a model.
 
 ### Rungs 0 and 1: email triage, `1-triage/`
 

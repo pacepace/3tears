@@ -470,7 +470,10 @@ def _served(tool: MountedTool) -> list[str]:
 #: The evals tool's help names JobsStarted's notices on every action that starts a job: what admitting the work found
 #: and did not refuse it for, such as a served-model check that could not be made. EvalSummary's fields include
 #: n_not_judged: the cases a run's cost cap left unjudged.
-_EVALS_BYTES = "52d33c382d5c250d8c75639a94e246194378fb3d1c305c384024f09e1f8bb681"
+#: The evals tool moved again when runs_list and campaigns_list came to page by default (#1145; owner ruling
+#: 2026-11-14, a cursor with a default): each gained cursor and limit, its help a paging line, and its result next
+#: (and runs_list's filtered). Nothing else it serves moved.
+_EVALS_BYTES = "bd48f8b0426489a8867fa7fc580789941edff650eacd20b1eca2dc257a5ece91"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).

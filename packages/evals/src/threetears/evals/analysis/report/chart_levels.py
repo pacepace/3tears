@@ -25,6 +25,8 @@ from typing import cast
 from threetears.evals.analysis.report.blocks import ChartBlock
 from threetears.evals.analysis.report.charts import GateScatterChart, ScatterChart, level_head
 
+__all__ = ["chart_level", "levels_said"]
+
 
 def chart_level(block: ChartBlock) -> str | None:
     """The level a chart's head prints, as the chart carries it; None where its head prints none: a kind with no
@@ -51,7 +53,7 @@ def chart_level(block: ChartBlock) -> str | None:
     return level
 
 
-def marked_head(level: str, main: str) -> str:
+def _marked_head(level: str, main: str) -> str:
     """The head of a chart at a level other than its page's main one: its level's own head, then ``not`` the main
     level's figure where the two figures differ (``98.3% intervals, not 95%``); a level differing only in its gloss
     (``95% unpaired``, ``95% (adjusted for 3 comparisons)``) is marked by the gloss its head keeps.
@@ -90,7 +92,7 @@ def levels_said[T](blocks: Sequence[T]) -> list[T]:
             said.append(block)
             continue
         if level != main:
-            head: str | None = marked_head(level, main)
+            head: str | None = _marked_head(level, main)
         else:
             head = "" if level in stated else None
         stated.add(level)
