@@ -1,4 +1,9 @@
-"""A bundle's fingerprint and the page JSON are the same across Python builds.
+"""A version 2 fingerprint and the page JSON are the same across Python builds.
+
+A bundle's fingerprint is now ``v3:``, over the evidence it was assembled from, which no computed float reaches
+(``test_evidence_fingerprint.py``). What this file holds is what was stored before that and what is still served: a
+``v2:`` fingerprint, asked for through ``like="v2:"``, hashes the bundle's own document with every float rounded, and
+the campaign bundle's fingerprint and the page JSON round theirs the same way.
 
 The bundle's intervals and multipliers come from C maths (``math.lgamma``, ``math.exp``, ``NormalDist().inv_cdf``)
 whose last bits differ between two builds of one Python: a uv-managed CPython 3.14.6 and Debian's give
@@ -167,7 +172,10 @@ def test_every_float_of_a_bundle_moved_one_ulp_leaves_its_fingerprint(toward: fl
     assert len(_floats(document)) > 100, "the toy corpus's bundle carries its statistics"
     assert _v1_aspect(nudged) != _v1_aspect(document), "a ULP moves the unrounded digest: the defect"
 
-    assert bundle.fingerprint().startswith("v2:")
+    v2 = bundle.fingerprint(like="v2:")
+    assert v2.startswith("v2:")
+    assert evidence_digest(nudged, like="v2:") == evidence_digest(document, like="v2:") == v2
+    # Version 3 reads no computed float at all.
     assert evidence_digest(nudged) == evidence_digest(document) == bundle.fingerprint()
 
 
@@ -355,7 +363,9 @@ def test_a_build_whose_c_maths_answers_one_ulp_off_fingerprints_and_serves_alike
 # =============================================================================
 
 
-def test_a_statistic_changed_in_its_tenth_figure_is_another_fingerprint() -> None:
+def test_a_statistic_changed_in_its_tenth_figure_is_another_version_2_fingerprint() -> None:
+    """The version 2 pre-image is the bundle's document, so a statistic past the rounding moves it. A ``v3:``
+    fingerprint is over the evidence, which a statistic is not: it stays (#1062)."""
     bundle = toyhost_bundle()
     document = bundle.to_dict()
     moved = False
@@ -377,7 +387,8 @@ def test_a_statistic_changed_in_its_tenth_figure_is_another_fingerprint() -> Non
 
     changed = change_one(document)
     assert moved
-    assert evidence_digest(changed) != bundle.fingerprint()
+    assert evidence_digest(changed, like="v2:") != bundle.fingerprint(like="v2:")
+    assert evidence_digest(changed) == bundle.fingerprint()
 
 
 # =============================================================================

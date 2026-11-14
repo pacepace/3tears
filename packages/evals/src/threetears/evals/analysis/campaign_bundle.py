@@ -329,11 +329,15 @@ class CampaignBundle(EvalDocumentModel):
         :return: The bundle.
         :rtype: CampaignBundle
         :raises RefusedInput: The frame is of another shape.
-        :raises ValueError: The bundles are not the ones the frame names, by aspect and fingerprint.
+        :raises ValueError: The bundles are not the ones the frame names, by aspect and fingerprint, each fingerprint
+            compared in the version the frame holds it in.
         """
         cls.refuse_another_shape(frame, what=what, remedy="generate the analysis again (analysis_generate)")
         named = [(entry["aspect"], entry["fingerprint"]) for entry in frame.get("aspects") or []]
-        held = [(bundle.aspect, bundle.fingerprint()) for bundle in bundles]
+        # Each bundle's fingerprint in the version the frame named it by, so a frame stored under an earlier version
+        # still holds its bundles.
+        likes = [fingerprint for _, fingerprint in named] + [None] * len(bundles)
+        held = [(bundle.aspect, bundle.fingerprint(like=like)) for bundle, like in zip(bundles, likes)]
         if named != held:
             raise ValueError(f"{what}'s campaign bundle names aspects {named}, and its aspects hold {held}")
         return cls.model_validate({**_held(frame), "aspects": bundles})

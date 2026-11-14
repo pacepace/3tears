@@ -656,6 +656,9 @@ PINNED: dict[str, frozenset[str]] = {
             "metered_calls_refused",
             "model",
             "model_copy()",
+            # The evidence digest (`analysis.bundle.evidence`): under the recorder a reading is the stored result,
+            # which is digested as its dump cut to what a reading carries.
+            "model_dump()",
             "model_unserved",
             "judging_set_aside",
             "outcome_score",

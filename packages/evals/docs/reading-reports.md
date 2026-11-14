@@ -844,14 +844,18 @@ which chose a page from a fixed vocabulary of sections and charts. An analysis e
 reads as the code-only page, its first screen naming the retired writer and saying to regenerate with
 `analysis_generate`; `analyses_list` counts no findings for it and marks it to regenerate.
 
-Every stored analysis carries the bundles it was written over (`EvalAnalysis.bundle`). A bundle's fingerprint is `v2:` and the
-sha256 of its canonical JSON with every float rounded to twelve significant figures, so the same evidence
-fingerprints alike across builds and machines (except, rarely, a value exactly on a rounding boundary); a fingerprint
-recorded before the rounding, with no prefix, was taken over a shape no build reads, so it never matches.
-Re-assembling a stored analysis's bundle (`inspect_analysis_bundle`) compares
-fingerprints, and when they differ `mismatch_cause` names why: `package_shape` (the bundle schema moved),
-`host_declarations` (the host added, removed or renamed a declaration), or `evidence` (the runs, results or insights
-did). Renaming a lever, a measure or a level is none of these: a name is no part of a fingerprint.
+Every stored analysis carries the bundles it was written over (`EvalAnalysis.bundle`). A bundle's fingerprint is `v3:` and the
+sha256 of the evidence it was assembled from: the runs and results read, the declaration, the cases, the ratings, the
+judge profiles consulted and the prior insights, as the bundle's `evidence` manifest digests them. It hashes nothing
+the package computes, so the same evidence fingerprints alike on every build and machine, and a statistic computed a
+better way moves no fingerprint. A fingerprint stored before that is `v2:`, the sha256 of the bundle's own JSON with
+every float rounded to twelve significant figures; it is still compared the `v2:` way, so what holds one keeps
+matching and is not regenerated. Re-assembling a stored analysis's bundle (`inspect_analysis_bundle`) compares
+fingerprints in the stored one's version, and when they differ `mismatch_cause` names why: `host_declarations` (the
+host added, removed or renamed a declaration), `evidence` (the runs, results, declaration, ratings or insights
+moved), or, against a `v2:` fingerprint only, `package_shape` (the bundle schema moved). A newer fingerprint version
+is never a cause. Renaming a lever, a measure or a level is none of these, and neither is where a cost was priced: a
+name and a price source are no part of a fingerprint.
 
 **Insights.** A claim the analyst marks durable becomes an insight later campaigns read in their overview. Two claims
 stating one thing mint it once, and a later analysis restating a claim retires the earlier insight, so regenerating

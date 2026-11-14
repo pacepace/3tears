@@ -10,9 +10,10 @@ imports none of them.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from datetime import datetime
 from dataclasses import dataclass
+import math
 from typing import Any, Final, Literal
 
 from pydantic import Field, ValidationInfo, computed_field, field_validator, model_validator
@@ -48,17 +49,25 @@ from threetears.evals.analysis.reporting import served_model_state
 from threetears.evals.analysis.measurement_windows import MeasurementWindow
 from threetears.evals.analysis.lenses.comparison_sets import ComparisonSetsResult
 from threetears.evals.analysis.lenses.frontier import FrontierResult
+from threetears.evals.analysis.bundle.evidence import (
+    EVIDENCE_FINGERPRINT_PREFIX,
+    EvidenceManifest,
+    manifest_fingerprint,
+    unnamed_axes,
+    unnamed_levels,
+    unpresented,
+)
 from threetears.evals.analysis.stats import (
     MIN_PAIRS_FOR_CORRELATION,
     MULTIPLE_COMPARISON_CORRECTION,
     SIGNIFICANCE_ALPHA,
+    hedges_j,
 )
 from threetears.evals.kernel.analysis_measures import BarAdjudication, MeasureCollection
 from threetears.evals.kernel.campaign import CampaignWindow, EvalInsight, VariantIndexEntry
 from threetears.evals.kernel.declaration import (
     ARM_PRESENTATION_FIELDS,
     ASPECT_PRESENTATION_FIELDS,
-    AXIS_PRESENTATION_FIELDS,
     LEVEL_PRESENTATION_FIELDS,
     RateDrop,
 )
@@ -2869,7 +2878,10 @@ class AnalysisContextBundle(EvalDocumentModel):
     error one layer down.
     """
 
-    # The bundle's shape version. It reaches `fingerprint()`, so bump it whenever a fingerprinted
+    # The bundle's shape version. A `v3:` fingerprint is over the evidence (`evidence`) and reads neither this number
+    # nor any field below, so a shape change moves none. What follows is the history of the version 2 pre-image, which
+    # is frozen at shape 66 (`_V2_FIELDS`): a field added since is not in it, and an additive, optional field needs no
+    # bump. Under version 2 it reached `fingerprint()`, so it was bumped whenever a fingerprinted
     # field is added, renamed or removed — and whenever a PACKAGE change moves a fingerprinted VALUE
     # over unchanged evidence: a core dimension joining the apparatus partition, a new ordering, a
     # different rendering of what the writer is shown. Otherwise a re-assembled bundle that only
@@ -3831,6 +3843,18 @@ class AnalysisContextBundle(EvalDocumentModel):
             "Empty is the ordinary case."
         ),
     )
+    # Left out of the document while unset, so a bundle assembled before the manifest existed is that shape byte for
+    # byte. No part of the version 2 pre-image (`_V2_FIELDS`), and the whole of version 3's.
+    evidence: EvidenceManifest | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What the bundle was assembled from, as one digest and one count per kind of input the assembly read "
+            "(`analysis.bundle.evidence`): the pre-image of a `v3:` fingerprint, which hashes the evidence and no "
+            "statistic computed from it. None in a bundle assembled before the manifest existed, whose fingerprint is "
+            "`v2:`, over the bundle's own document."
+        ),
+    )
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
@@ -3920,34 +3944,34 @@ class AnalysisContextBundle(EvalDocumentModel):
         # A check this aspect names nowhere else is named among its checks, as every other is.
         return named[check] if check in named else check_names([*named, check], self.goal_check_names)[check]
 
-    def fingerprint(self) -> str:
-        """Return the bundle's fingerprint — a stable A/B key: ``v2:`` and the sha256 of its identity JSON.
+    def fingerprint(self, *, like: str | None = None) -> str:
+        """Return the bundle's fingerprint: ``v3:`` and the digest of what it was assembled from (:attr:`evidence`).
 
-        Routes through :func:`fingerprint_digest`: sorted keys, tight separators, and every float rounded to
-        twelve significant figures (:func:`~threetears.evals.schema.hashing.identity_json`), so two structurally
-        identical bundles produce identical bytes. Because the bundle carries no wall-clock value, identical
-        (runs, results, insights) yield an identical fingerprint — the invariant the prompt-tuning A/B loop
-        depends on — **across Python builds**, except, rarely, a value that falls exactly on a 12th-figure rounding boundary: the
-        bundle's intervals and multipliers come from C maths (``math.lgamma``, ``math.exp``, ``NormalDist().inv_cdf``)
-        whose last bits differ between two builds of one Python, and the rounding is what keeps those bits out of the
-        key.
+        **Over the evidence, never over a statistic** (#1062). The manifest digests what the assembly read from the
+        store (:mod:`~threetears.evals.analysis.bundle.evidence` lists it), so the same runs, results, declaration,
+        ratings, judge profiles and insights fingerprint alike whatever this build computes from them and on whatever
+        platform: a more accurate formula, another maths library or a reordered sum moves no fingerprint, and a
+        changed, added or removed input moves it. Names and pricing are no part of it either.
 
-        **Under one host profile**, which is a condition rather than a caveat: this assembly reads
-        the profile it is handed at several points, ``measure_catalog`` among them (a measure whose
-        vocabulary is a host tool's is described by the host that declares it), so the same runs
-        assembled for a DIFFERENT host would fingerprint differently. Every path that reaches here
-        names its profile — :func:`assemble_context_bundle` takes one — so this cannot vary within
-        a host. It is stated because a reader comparing two fingerprints needs to know what
-        "identical" is quantified over, and because the A/B loop's premise is that nothing but the
-        prompt moved.
+        **Under one host profile**, as far as :attr:`host_declarations_digest` reads it: the sweepables and world
+        dimensions the host declares partition the observations, so the same runs assembled under other declarations
+        fingerprint differently.
 
-        :return: The fingerprint: ``v2:`` and a 64-character lowercase hex digest.
+        **A stored fingerprint is compared in its own version.** ``like`` takes a stored fingerprint and returns this
+        bundle's in that one's version, so what was recorded as ``v2:`` (the sha256 of the bundle's document with
+        every float rounded to twelve figures, :func:`evidence_digest`) is compared the version 2 way and is never
+        read as moved because the version did. A bundle assembled before the manifest existed carries none, and its
+        fingerprint is ``v2:`` whatever is asked: nothing stored is rewritten to version 3 on a read.
+
+        :param like: A stored fingerprint whose version to answer in; None answers in the newest the bundle can.
+        :ptype like: str | None
+        :return: The fingerprint: its version's prefix and a 64-character lowercase hex digest.
         :rtype: str
         """
-        return evidence_digest(self.to_dict())
+        return evidence_digest(self.to_dict(), like=like)
 
 
-#: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, when its results
+#: The bundle fields a version 2 fingerprint leaves out: what built the bundle, when its results
 #: were written, and how a page prints its aspect, its checks and its levers (the presentation fields of the aspect and
 #: the template, which the bundle carries under their own names, and ``lever_names``), not what it read.
 _NOT_EVIDENCE: frozenset[str] = (
@@ -3956,71 +3980,195 @@ _NOT_EVIDENCE: frozenset[str] = (
     | TEMPLATE_PRESENTATION_FIELDS
 )
 
-#: The fields of each arm's census (``scoreboard[]``) :meth:`AnalysisContextBundle.fingerprint` leaves out: how the
+#: The fields of each arm's census (``scoreboard[]``) a version 2 fingerprint leaves out: how the
 #: arm's cost was priced (:class:`ArmPricing`), which says where a cost comes from, not what the arm did. Owner ruling,
 #: 2026-10-28: the price source is no part of a fingerprint, so a bundle assembled before the census read pricing and
 #: one assembled after fingerprint alike over the same runs, and so do two bundles whose runs were priced differently.
 _NOT_ARM_EVIDENCE: frozenset[str] = frozenset({"pricing"})
 
-#: What a bundle's fingerprint starts with: version 2, which rounds every float to twelve significant figures first,
-#: so one evidence fingerprints alike across Python builds, except, rarely, a value that falls exactly on a
-#: 12th-figure rounding boundary. A fingerprint of another version (version 1 had no prefix) was taken over a bundle of
-#: an earlier shape, which no build reads, so it never matches: what holds it is regenerated.
-FINGERPRINT_PREFIX: Final[str] = "v2:"
+#: What a bundle's fingerprint starts with: version 3, the digest of the evidence the bundle was assembled from
+#: (:attr:`AnalysisContextBundle.evidence`).
+FINGERPRINT_PREFIX: Final[str] = EVIDENCE_FINGERPRINT_PREFIX
+
+#: What a version 2 fingerprint starts with: the sha256 of the bundle's own document, every float rounded to twelve
+#: significant figures. Computed for what was stored under it, and for a bundle that carries no manifest.
+_V2_PREFIX: Final[str] = "v2:"
+
+#: The bundle's fields a version 2 fingerprint reads: the fields of bundle shape 66 on the day version 3 landed, less
+#: :data:`_NOT_EVIDENCE`. **Frozen.** A field the bundle gains later is not added here, so an additive change to the
+#: bundle moves no stored ``v2:`` fingerprint and no ``v2:`` comparison of a bundle assembled afresh.
+_V2_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "schema_version",
+        "campaign_id",
+        "subject_id",
+        "subject_kind",
+        "behavior",
+        "aspect",
+        "template_id",
+        "scope_id",
+        "run_ids",
+        "unresolved_run_ids",
+        "archived_run_ids",
+        "model_versions",
+        "window",
+        "run_summaries",
+        "comparison",
+        "frontier",
+        "frontier_bar_withheld",
+        "telemetry",
+        "coverage",
+        "scope_divergences",
+        "whole_swings",
+        "divergences_omitted",
+        "divergences_tested",
+        "divergences_untested",
+        "declared",
+        "design",
+        "incomplete_runs",
+        "short_runs",
+        "completeness_unknown_run_ids",
+        "short_cells",
+        "cost_unmeasured_cells",
+        "cost_unmeasured",
+        "all_failed_cells",
+        "all_failed",
+        "latency_contended_cells",
+        "latency_contended",
+        "held_fixed_reading",
+        "judge_agreement",
+        "judge_self_agreement",
+        "judge_evidence_tiers",
+        "inter_judge_agreement",
+        "judge_drift",
+        "judge_change",
+        "goal_check_proofs",
+        "floor_contrasts",
+        "multiple_comparisons",
+        "guardrails",
+        "run_margins",
+        "launch_declarations",
+        "run_margins_withheld",
+        "scoreboard",
+        "negative_values",
+        "trials",
+        "trials_omitted",
+        "case_sets",
+        "design_frozen_at",
+        "reading_scope",
+        "exclusions",
+        "differential_exclusions",
+        "verdict_order",
+        "measurement_windows",
+        "launch_disclosure",
+        "model_identity_disclosure",
+        "request_settings_disclosure",
+        "apparatus_confounds",
+        "aliased_factors",
+        "unexercised_factors",
+        "factor_pairs",
+        "declared_crossing",
+        "arm_mechanisms",
+        "arm_served_models",
+        "arm_production_footings",
+        "cell_model_version",
+        "host_declarations_digest",
+        "cells",
+        "variant_index",
+        "refused_merges",
+        "refused_merges_omitted",
+        "next_experiments",
+        "next_experiments_omitted",
+        "subject_key_instabilities",
+        "measure_catalog",
+        "judged_measures",
+        "bar_adjudications",
+        "cell_measures",
+        "time_axis",
+        "time_axis_withheld",
+        "confound_catalog",
+        "prior_insights",
+        "prior_insights_omitted",
+        "retracted_insights",
+        "question_declared",
+    }
+)
+
+#: Field names added, since the freeze, INSIDE a value one of :data:`_V2_FIELDS` holds (a new field of a comparison, a
+#: scoreboard row, a cell), which a version 2 pre-image leaves out at every depth. A change that adds such a field
+#: names it here; a name any shape-66 document already uses at any depth cannot be listed.
+_ADDED_SINCE_V2: Final[frozenset[str]] = frozenset()
+
+
+def known_fingerprint(fingerprint: str) -> bool:
+    """Whether ``fingerprint`` is of a version this build computes (``v3:`` or ``v2:``).
+
+    :param fingerprint: A stored fingerprint.
+    :ptype fingerprint: str
+    :return: True when a bundle's fingerprint can be answered in its version.
+    :rtype: bool
+    """
+    return fingerprint.startswith((EVIDENCE_FINGERPRINT_PREFIX, _V2_PREFIX))
 
 
 def fingerprint_digest(payload: Any) -> str:
-    """The fingerprint of a bundle's pre-image: :data:`FINGERPRINT_PREFIX` and the sha256 of
-    :func:`~threetears.evals.schema.hashing.identity_json`, which rounds every float to twelve significant figures. The
-    one place a fingerprint's version is decided.
+    """The version 2 fingerprint of a pre-image: ``v2:`` and the sha256 of
+    :func:`~threetears.evals.schema.hashing.identity_json`, which rounds every float to twelve significant figures.
 
     :param payload: The pre-image: a bundle's document less what built it.
     :ptype payload: Any
     :return: The fingerprint.
     :rtype: str
     """
-    return FINGERPRINT_PREFIX + identity_digest(payload)
+    return _V2_PREFIX + identity_digest(payload)
 
 
-def evidence_digest(document: Mapping[str, Any]) -> str:
-    """A bundle document's fingerprint: the digest of every field but what built it (``package_version``), how a page
-    prints it (:data:`_NOT_EVIDENCE`, the declared control's
+def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> str:
+    """A bundle document's fingerprint, for a reader that holds the stored document and not the model: the one
+    derivation :meth:`AnalysisContextBundle.fingerprint` uses.
+
+    **Version 3** (``v3:``) where the document carries its evidence manifest: the digest of that manifest alone
+    (:func:`~threetears.evals.analysis.bundle.evidence.manifest_fingerprint`), so nothing the bundle computed is read.
+
+    **Version 2** (``v2:``) where ``like`` is a ``v2:`` fingerprint, or the document carries no manifest (it was
+    assembled before one existed): the digest of the document's shape-66 fields (:data:`_V2_FIELDS`) but what built
+    it, how a page prints it (:data:`_NOT_EVIDENCE`, the declared control's
     :data:`~threetears.evals.kernel.declaration.ARM_PRESENTATION_FIELDS`, each catalogued measure's
     :data:`~threetears.evals.kernel.metrics.MEASURE_PRESENTATION_FIELDS`, each level's
     :data:`~threetears.evals.kernel.declaration.LEVEL_PRESENTATION_FIELDS` and each trial's
-    :data:`_TRIAL_PRESENTATION_FIELDS`), and how each arm's cost was priced (:data:`_NOT_ARM_EVIDENCE`).
+    :data:`_TRIAL_PRESENTATION_FIELDS`), and how each arm's cost was priced (:data:`_NOT_ARM_EVIDENCE`), every float
+    rounded to twelve significant figures. It hashes computed statistics, so it can differ between platforms where
+    a value falls on a twelfth-figure rounding boundary; that is why version 3 replaced it. Its pre-image is frozen:
+    a field added to the bundle since never enters it, and a document assembled since the manifest existed has each
+    Hedges' g put back to the small-sample correction version 2 was taken with (:func:`_with_v2_hedges`), so a
+    stored ``v2:`` fingerprint is matched by the same evidence assembled today.
 
-    **Names are presentation, never evidence** (owner ruling, 2026-11-11). What a reader calls a measure, a lever, a
-    level or a test case is carried where a page reads it and left out here, so naming or renaming one moves no
-    fingerprint and stales no analysis; a page built from a stored analysis prints the names it was frozen with until it
-    is regenerated. A level is identified by its ``content_hash``, a measure by its key, a test case by its id. A
-    fingerprint taken before bundle shape 66 read them, and is never compared, since no bundle of an earlier shape is
-    read.
-
-    **Two bundles may share a fingerprint with different pricing** (owner ruling, 2026-10-28: "I recognize the
-    implications, but it's ok"). The same runs priced by another source, or served by another provider, fingerprint
-    alike; a page built from either still prints its own pricing, and a report snapshot's content address
-    (``report_input_digest``) still tells the two inputs apart.
-
-    The one derivation :meth:`AnalysisContextBundle.fingerprint` uses, for a reader that holds the stored document
-    rather than the model — a frozen reporter case checks the bundle it holds against the fingerprint it recorded.
+    **Names are presentation, never evidence** (owner ruling, 2026-11-11), in both versions: naming or renaming a
+    measure, a lever, a level or a test case moves no fingerprint. **So is pricing** (owner rulings, 2026-10-28 and
+    2026-11-14): the same runs priced by another source, or served by another provider, fingerprint alike.
 
     :param document: A bundle as its stored dict.
     :ptype document: Mapping[str, Any]
+    :param like: A stored fingerprint whose version to answer in; None, or one of a version this build does not
+        compute, answers in the newest the document can.
+    :ptype like: str | None
     :return: The fingerprint.
     :rtype: str
     """
-    evidence = {key: value for key, value in document.items() if key not in _NOT_EVIDENCE}
+    manifest = document.get("evidence")
+    if isinstance(manifest, Mapping) and not (like is not None and like.startswith(_V2_PREFIX)):
+        return manifest_fingerprint(manifest)
+    evidence = {key: value for key, value in document.items() if key in _V2_FIELDS}
     if isinstance(scoreboard := evidence.get("scoreboard"), list):
         # How an arm's cost was priced (_NOT_ARM_EVIDENCE) is no part of what the bundle read.
-        evidence["scoreboard"] = _unpresented(scoreboard, _NOT_ARM_EVIDENCE)
+        evidence["scoreboard"] = unpresented(scoreboard, _NOT_ARM_EVIDENCE)
     if isinstance(trials := evidence.get("trials"), list):
         # What a reader calls a test case (_TRIAL_PRESENTATION_FIELDS) is no part of what the bundle read: its id is.
-        evidence["trials"] = _unpresented(trials, _TRIAL_PRESENTATION_FIELDS)
+        evidence["trials"] = unpresented(trials, _TRIAL_PRESENTATION_FIELDS)
     if isinstance(catalog := evidence.get("measure_catalog"), Mapping):
         # What a reader calls a measure (MEASURE_PRESENTATION_FIELDS) is no part of what the bundle read: its key is.
         evidence["measure_catalog"] = {
-            name: _unpresented([descriptor], MEASURE_PRESENTATION_FIELDS)[0] for name, descriptor in catalog.items()
+            name: unpresented([descriptor], MEASURE_PRESENTATION_FIELDS)[0] for name, descriptor in catalog.items()
         }
     if isinstance(index := evidence.get("variant_index"), list):
         # How a page shows each level (LEVEL_PRESENTATION_FIELDS), the host's display or the name the declaration gives
@@ -4029,7 +4177,7 @@ def evidence_digest(document: Mapping[str, Any]) -> str:
             {
                 **entry,
                 **{
-                    field: _unnamed_levels(entry[field])
+                    field: unnamed_levels(entry[field])
                     for field in ("levers", "swept")
                     if isinstance(entry.get(field), Mapping)
                 },
@@ -4041,7 +4189,7 @@ def evidence_digest(document: Mapping[str, Any]) -> str:
     if isinstance(coverage := evidence.get("coverage"), list):
         # A declared level's coverage is read by its content hash; how the declaration renders it is presentation.
         evidence["coverage"] = [
-            {**row, "declared_levels": _unpresented(row["declared_levels"], LEVEL_PRESENTATION_FIELDS)}
+            {**row, "declared_levels": unpresented(row["declared_levels"], LEVEL_PRESENTATION_FIELDS)}
             if isinstance(row, Mapping) and isinstance(row.get("declared_levels"), list)
             else row
             for row in coverage
@@ -4056,60 +4204,66 @@ def evidence_digest(document: Mapping[str, Any]) -> str:
         # What a page calls a declared lever and each of its levels (AXIS_PRESENTATION_FIELDS,
         # LEVEL_PRESENTATION_FIELDS) is no part of what the bundle read either.
         evidence["declared"] = {**declared, "design": unnamed_axes(design)}
+    if _ADDED_SINCE_V2:
+        evidence = _without(evidence, _ADDED_SINCE_V2)
+    if isinstance(manifest, Mapping):
+        # Assembled since version 3 landed, so with the exact small-sample correction: version 2 read the earlier one.
+        evidence = _with_v2_hedges(evidence)
     return fingerprint_digest(evidence)
 
 
-def _unpresented(items: Sequence[Any], fields: frozenset[str]) -> list[Any]:
-    """``items`` with each mapping's ``fields`` left out; anything else as it is."""
-    return [
-        {key: value for key, value in item.items() if key not in fields} if isinstance(item, Mapping) else item
-        for item in items
-    ]
+def _without(value: Any, fields: frozenset[str]) -> Any:
+    """``value`` with every mapping key in ``fields`` left out, at every depth."""
+    if isinstance(value, Mapping):
+        return {key: _without(held, fields) for key, held in value.items() if key not in fields}
+    if isinstance(value, list):
+        return [_without(held, fields) for held in value]
+    return value
 
 
-def _unnamed_levels(levels: Mapping[str, Any]) -> dict[str, Any]:
-    """A stored lever map (lever id to level) as a fingerprint reads it: each level without how a page shows it
-    (:data:`~threetears.evals.kernel.declaration.LEVEL_PRESENTATION_FIELDS`), by its content hash alone, so naming or
-    renaming a level moves no bundle's or campaign bundle's fingerprint.
+def _hedges_j_v2(df: int) -> float:
+    """Hedges' small-sample factor as every ``v2:`` fingerprint was taken with it: the textbook form, which subtracts
+    two log-gammas and so carries the platform's last bits of ``lgamma`` (#1062). Read only to rebuild a version 2
+    pre-image; :func:`~threetears.evals.analysis.stats.hedges_j` is the factor every statistic uses."""
+    return math.exp(math.lgamma(df / 2.0) - math.lgamma((df - 1) / 2.0)) / math.sqrt(df / 2.0)
 
-    :param levels: Lever id to the level, as its stored dict.
-    :ptype levels: Mapping[str, Any]
-    :return: The map, each level unnamed.
-    :rtype: dict[str, Any]
+
+def _with_v2_hedges(evidence: dict[str, Any]) -> dict[str, Any]:
+    """A version 2 pre-image with each comparison's Hedges' g as version 2 computed it.
+
+    A comparison's g is its uncorrected effect times the small-sample factor at its test's degrees of freedom (the
+    paired cases less one; unpaired, both sides' cases less two), which a :class:`FamilyComparison` states. So g under
+    the earlier factor is g times the ratio of the two factors, and rounds to the same twelve figures the earlier
+    build's g did, except, as in every version 2 fingerprint, where it falls on a twelfth-figure boundary.
+    Comparisons are the only place a bundle holds a g.
     """
+    comparisons = evidence.get("multiple_comparisons")
+    if not isinstance(comparisons, Mapping) or not isinstance(families := comparisons.get("families"), list):
+        return evidence
     return {
-        lever: {key: value for key, value in level.items() if key not in LEVEL_PRESENTATION_FIELDS}
-        if isinstance(level, Mapping)
-        else level
-        for lever, level in levels.items()
+        **evidence,
+        "multiple_comparisons": {
+            **comparisons,
+            "families": [
+                {**family, "comparisons": [_v2_comparison(held) for held in family["comparisons"]]}
+                if isinstance(family, Mapping) and isinstance(family.get("comparisons"), list)
+                else family
+                for family in families
+            ],
+        },
     }
 
 
-def unnamed_axes(design: Mapping[str, Any]) -> dict[str, Any]:
-    """A stored design as a fingerprint reads it: each declared axis without how a page names its lever
-    (:data:`~threetears.evals.kernel.declaration.AXIS_PRESENTATION_FIELDS`) and each of its levels without how a page
-    shows it (:data:`~threetears.evals.kernel.declaration.LEVEL_PRESENTATION_FIELDS`), so naming or renaming a lever
-    or a level moves no bundle's or campaign bundle's fingerprint. A design whose axes carry no name is returned as
-    it is.
-
-    :param design: An aspect's design, as its stored dict.
-    :ptype design: Mapping[str, Any]
-    :return: The design, its axes and their levels unnamed.
-    :rtype: dict[str, Any]
-    """
-    axes = design.get("axes")
-    if not isinstance(axes, list):
-        return dict(design)
-    unnamed = []
-    for axis in axes:
-        if not isinstance(axis, Mapping):
-            unnamed.append(axis)
-            continue
-        held = {key: value for key, value in axis.items() if key not in AXIS_PRESENTATION_FIELDS}
-        if isinstance(values := held.get("values"), list):
-            held["values"] = _unpresented(values, LEVEL_PRESENTATION_FIELDS)
-        unnamed.append(held)
-    return {**design, "axes": unnamed}
+def _v2_comparison(comparison: Any) -> Any:
+    """One stored comparison with its g under the version 2 factor; one holding no g, as it is."""
+    if not isinstance(comparison, Mapping) or not isinstance(g := comparison.get("hedges_g"), float):
+        return comparison
+    control, contrast = comparison["control"]["n_cases"], comparison["contrast"]["n_cases"]
+    df = control - 1 if comparison.get("test") == "paired" else control + contrast - 2
+    exact = hedges_j(df)
+    if exact is None:
+        return comparison
+    return {**comparison, "hedges_g": g * (_hedges_j_v2(df) / exact)}
 
 
 class BundleInspection(EvalDocumentModel):
@@ -4167,7 +4321,11 @@ class BundleInspection(EvalDocumentModel):
     campaign_id: str = Field(description="The campaign the bundle was assembled for.")
     scope_id: str = Field(description="The storage scope its member runs were loaded from.")
     fingerprint: str = Field(
-        description="The fingerprint of the bundle AS ASSEMBLED NOW — recomputed, never read from a store."
+        description=(
+            "The fingerprint of the bundle AS ASSEMBLED NOW — recomputed, never read from a store — in the version of "
+            "`recorded_fingerprint` when one is recorded (a `v2:` record is compared the version 2 way), else the "
+            "newest."
+        )
     )
     analysis_id: str | None = Field(
         default=None,
@@ -4211,13 +4369,18 @@ class BundleInspection(EvalDocumentModel):
         default=None,
         description=(
             "Why the re-assembly does not reproduce the generation, set exactly when `reproduces_generation` is "
-            "False. `package_shape`: the bundle `schema_version` differs from the recorded one, so this build "
-            "digests the same evidence differently (when the host declarations differ too, this still wins: a "
-            "package change can move the core declarations the digest covers). `host_declarations`: the version "
-            "agrees and `host_declarations_digest` does not — the host changed which sweepables or world "
-            "dimensions it declares. `evidence`: both agree, so the inputs moved — a run archived, a result "
-            "deleted, an insight the generation read since deleted or superseded, the analysis that minted one "
-            "archived — or a host declaration the digest does not cover (a measure, a bar, prose) changed."
+            "False. The two fingerprints are compared in the recorded one's version, so a newer fingerprint version "
+            "is never a cause. Against a `v3:` record, which hashes the evidence alone: `host_declarations` when "
+            "`host_declarations_digest` differs from the recorded one (the host changed which sweepables or world "
+            "dimensions it declares), else `evidence`: the inputs moved — a run archived, a result added, deleted "
+            "or rescored, the declaration edited, an insight the generation read since deleted or superseded, the "
+            "analysis that minted one archived; never `package_shape`, since no shape and no statistic is hashed. "
+            "Against a `v2:` record, which hashes the bundle's own document: `package_shape` when the bundle "
+            "`schema_version` differs from the recorded one, so this build digests the same evidence differently "
+            "(when the host declarations differ too, this still wins); `host_declarations` when the version agrees "
+            "and the digest does not; `evidence` when both agree, so the inputs moved, or a host declaration the "
+            "digest does not cover (a measure, a bar, prose) changed. Against a record of a version this build does "
+            "not compute: `package_shape`."
         ),
     )
     bundle: AnalysisContextBundle = Field(description="The assembled bundle itself, whole.")
@@ -4250,11 +4413,20 @@ class BundleInspection(EvalDocumentModel):
             exactly when that comparison is False.
         :rtype: BundleInspection
         """
-        fingerprint = bundle.fingerprint()
+        # Like with like: the bundle's fingerprint in the recorded one's version, so a version is never what differs.
+        fingerprint = bundle.fingerprint(like=recorded_fingerprint)
         reproduces = None if recorded_fingerprint is None else fingerprint == recorded_fingerprint
         cause: Literal["package_shape", "host_declarations", "evidence"] | None = None
         if reproduces is False:
-            if recorded_schema_version != bundle.schema_version:
+            assert recorded_fingerprint is not None
+            if not known_fingerprint(recorded_fingerprint):
+                # A version this build does not compute: the package moved, and nothing says the evidence did.
+                cause = "package_shape"
+            elif recorded_fingerprint.startswith(FINGERPRINT_PREFIX):
+                # Over the evidence alone: the bundle's shape is no part of it, so only what was read can differ.
+                differs = recorded_host_declarations_digest != bundle.host_declarations_digest
+                cause = "host_declarations" if differs else "evidence"
+            elif recorded_schema_version != bundle.schema_version:
                 cause = "package_shape"
             elif recorded_host_declarations_digest != bundle.host_declarations_digest:
                 cause = "host_declarations"
@@ -4426,6 +4598,7 @@ __all__ = [
     "evidence_digest",
     "exploratory_disclosure",
     "fingerprint_digest",
+    "known_fingerprint",
     "host_declarations_digest",
     "late_criteria",
     "observed_mechanism_key",

@@ -672,7 +672,11 @@ def test_an_unset_disclosure_leaves_a_bundles_fingerprint_where_it_was() -> None
         update={"frontier": bundle.frontier.model_copy(update={"narrowed_read_disclosure": "read for one subject"})}
     )
 
-    assert said.fingerprint() != bundle.fingerprint(), "set, it is evidence"
+    # In version 2, which hashes the bundle's own document: a field written only when set must leave it where it
+    # was while unset. A `v3:` fingerprint is over the evidence and reads no disclosure either way (#1062).
+    assert said.fingerprint(like="v2:") != bundle.fingerprint(like="v2:"), "set, it is in the version 2 pre-image"
+    assert said.fingerprint() == bundle.fingerprint()
+    assert bundle.model_copy(deep=True).fingerprint(like="v2:") == bundle.fingerprint(like="v2:")
     assert bundle.model_copy(deep=True).fingerprint() == bundle.fingerprint()
     assert "narrowed_read_disclosure" not in json.dumps(
         said.model_copy(

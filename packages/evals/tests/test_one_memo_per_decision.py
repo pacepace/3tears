@@ -675,7 +675,7 @@ _WHEN = re.compile(
 
 
 #: A bundle's fingerprint, which digests the campaign it was read for.
-_FINGERPRINT = re.compile(r"v2:[0-9a-f]{64}")
+_FINGERPRINT = re.compile(r"v[23]:[0-9a-f]{64}")
 
 
 def _undated(text: str, *ids: str) -> str:

@@ -149,6 +149,66 @@ def identity_digest(payload: Any) -> str:
     return hashlib.sha256(identity_json(payload).encode("utf-8")).hexdigest()
 
 
+#: The largest magnitude below which every whole number is one exact double, so a float holding a whole number and the
+#: integer it equals are one value (:func:`input_json`).
+_EXACT_WHOLE: Final[float] = 2.0**53
+
+
+def _canonical_input(payload: Any) -> Any:
+    """``payload`` as :func:`input_json` writes it: null-valued keys left out, whole floats as integers."""
+    if isinstance(payload, float):
+        # A whole number is one value however a store types it; -0.0 is 0. NaN and the infinities fail both tests.
+        return int(payload) if payload.is_integer() and abs(payload) < _EXACT_WHOLE else payload
+    if isinstance(payload, dict):
+        return {key: _canonical_input(value) for key, value in payload.items() if value is not None}
+    if isinstance(payload, list | tuple):
+        return [_canonical_input(value) for value in payload]
+    return payload
+
+
+def input_json(payload: Any) -> str:
+    """Render stored inputs as canonical JSON: the pre-image of an identity over evidence, never over a statistic.
+
+    For values a store holds and hands back (a result's recorded scores, a run's configuration, a declaration), which
+    are exact: parsing JSON to a double is correctly rounded on every platform, so nothing here is rounded and no
+    maths library is read. Two documents holding the same inputs render the same bytes whatever store returned them:
+
+    - **Key order is not read.** Every mapping's keys are sorted, at every depth, so a store that reorders keys (a
+      ``jsonb`` column does) moves nothing. A list keeps its order, as every JSON store keeps it.
+    - **Null and absent are one.** A mapping key whose value is null is left out, so a field a store writes as null
+      and one it leaves out render alike, and an optional field added to a stored shape later moves nothing while it
+      is unset. A null inside a list stays.
+    - **Numbers.** A bool is ``true`` or ``false``, never a number. An integer is written in decimal. A float holding
+      a whole number of magnitude below 2**53 is written as that integer, so ``1`` and ``1.0`` (which a JSON store may
+      hand back for one another) render alike, and ``-0.0`` is ``0``. Any other float is written as Python's
+      ``repr``: the shortest decimal string that parses back to the same IEEE-754 double, which Python computes
+      itself and not through the platform's C library, so it is the same string on every platform. NaN and the
+      infinities, which no JSON store holds, are written as ``NaN``, ``Infinity`` and ``-Infinity``.
+
+    A float **computed** here would carry its platform's last bits into the key, which is what
+    :func:`identity_json` rounds away; this function is for values nothing computed.
+
+    :param payload: Any JSON-encodable structure of stored values.
+    :ptype payload: Any
+    :return: The canonical JSON encoding.
+    :rtype: str
+    :raises UnhashableContentError: ``payload`` holds something JSON cannot encode.
+    """
+    return canonical_json(_canonical_input(payload))
+
+
+def input_digest(payload: Any) -> str:
+    """Return the full sha256 hex digest of ``payload``'s :func:`input_json`.
+
+    :param payload: Any JSON-encodable structure of stored values.
+    :ptype payload: Any
+    :return: A 64-character lowercase hex digest.
+    :rtype: str
+    :raises UnhashableContentError: ``payload`` holds something JSON cannot encode.
+    """
+    return hashlib.sha256(input_json(payload).encode("utf-8")).hexdigest()
+
+
 def bytes_digest(payload: bytes) -> str:
     """Return the full sha256 hex digest of raw bytes, with no JSON encoding step.
 
@@ -172,6 +232,8 @@ __all__ = [
     "canonical_json",
     "identity_digest",
     "identity_json",
+    "input_digest",
+    "input_json",
     "round_figures",
     "round_floats",
 ]

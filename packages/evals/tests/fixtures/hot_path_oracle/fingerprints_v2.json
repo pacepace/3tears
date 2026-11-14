@@ -1,0 +1,26 @@
+{
+ "courierhost": {
+  "plan_delivery_round": [
+   "v2:f9c57d32a48ed1881815cdae7428bf5b45009147a1a3ffb0547bf26e2e185103"
+  ]
+ },
+ "scaled": {
+  "tpl-support": [
+   "v2:3436e5eaa851671c3ca24d4113844db745be136329c3d674bf071a9fa5d99a70"
+  ]
+ },
+ "scaled_two_aspects": {
+  "tpl-escalation": [
+   "v2:4e7b52ee34849b08f35954dee43d917d83f892fbbd62ebfee00f0e97bee158ac"
+  ],
+  "tpl-support": [
+   "v2:78b1fe5292abc58e5bbd197ebc0db0930a10bff8076f15b33149a22a1374e783",
+   "v2:afd918be15bfb38ccc64898535039bd0882d2daa454d37056288eed0d9bd336a"
+  ]
+ },
+ "toyhost": {
+  "extract_invoice_fields": [
+   "v2:69022b399ef02deccc331894af85a50d3648feef3ffbea3fb3a1f4cfd3a8b705"
+  ]
+ }
+}

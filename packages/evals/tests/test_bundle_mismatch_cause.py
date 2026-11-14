@@ -130,14 +130,16 @@ class TestAMismatchNamesWhatMoved:
         host, campaign_id, scope_id = off_loop(_corpus_host)
         analysis = await _generated(host, campaign_id, scope_id)
         current = off_loop(inspect_analysis_bundle, host, analysis.id, scope_id).bundle
-        # What the same evidence digested to under the version before: only the shape version differs.
+        # What the same evidence digested to under the version before: only the shape version differs. Recorded as
+        # `v2:`, the fingerprint that hashes the bundle's shape; a `v3:` record reads no shape
+        # (`test_evidence_fingerprint.py`).
         older = current.model_copy(update={"schema_version": current.schema_version - 1})
         off_loop(
             _restored,
             host,
             analysis,
             bundle_schema_version=older.schema_version,
-            bundle_fingerprint=older.fingerprint(),
+            bundle_fingerprint=older.fingerprint(like="v2:"),
         )
 
         inspection = off_loop(inspect_analysis_bundle, host, analysis.id, scope_id)
@@ -148,7 +150,9 @@ class TestAMismatchNamesWhatMoved:
     async def test_a_shape_bump_wins_over_a_declarations_change(self) -> None:
         host, campaign_id, scope_id = off_loop(_corpus_host)
         analysis = await _generated(host, campaign_id, scope_id)
-        off_loop(_restored, host, analysis, bundle_schema_version=1)
+        # A `v2:` record, the fingerprint that hashes the bundle's shape: against a `v3:` one no shape is a cause.
+        current = off_loop(inspect_analysis_bundle, host, analysis.id, scope_id).bundle
+        off_loop(_restored, host, analysis, bundle_schema_version=1, bundle_fingerprint=current.fingerprint(like="v2:"))
 
         relit = toyhost_host(profile=_with_a_lamp(host.profile), storage=host.storage)
 

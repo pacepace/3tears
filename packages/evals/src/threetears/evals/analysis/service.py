@@ -35,7 +35,7 @@ from threetears.evals.analysis.campaign_bundle import (
 from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.campaigns import campaign_arms_spelled
 from threetears.evals.analysis.generation_tally import GenerationTally
-from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection
+from threetears.evals.analysis.bundle.schema import BundleInspection, known_fingerprint
 from threetears.evals.analysis.report import CampaignReport, Verdict
 from threetears.evals.analysis.report.keys.names import input_check_name
 from threetears.evals.analysis.report.input_build import report_input
@@ -1202,13 +1202,15 @@ def _frozen_fingerprints(analysis: EvalAnalysis) -> dict[str, str]:
     """Each aspect's bundle fingerprint in the analysis's frozen frame, by aspect.
 
     Putting the bundle back together refused it unless each aspect's entry in the frame is that aspect's bundle
-    fingerprint in the entry's version, so an entry in the current version is the one each fold's source names.
+    fingerprint in the entry's version, so an entry in a version this build computes (``v3:``, or the ``v2:`` an
+    analysis stored before it holds) is the one each fold's source names: a stored analysis's page prints the
+    fingerprint it was stored with.
     """
     entries = analysis.campaign_bundle.get("aspects")
     return {
         str(entry["aspect"]): str(entry["fingerprint"])
         for entry in (entries if isinstance(entries, list) else [])
-        if isinstance(entry, dict) and str(entry.get("fingerprint", "")).startswith(FINGERPRINT_PREFIX)
+        if isinstance(entry, dict) and known_fingerprint(str(entry.get("fingerprint", "")))
     }
 
 

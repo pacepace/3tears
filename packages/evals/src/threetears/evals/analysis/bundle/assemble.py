@@ -101,6 +101,7 @@ from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     host_declarations_digest,
 )
+from threetears.evals.analysis.bundle.evidence import ResultsDigest, evidence_manifest
 from threetears.evals.analysis.bundle.insights import (
     carried_insights,
     retracted_insights,
@@ -472,10 +473,14 @@ def assemble_context_bundle(
     # As readings: every fold below reads figures, never the judge's prose, a world's event log or a kind's payload,
     # which are most of a result's bytes. The trials the bundle keeps are read whole, below, for their prose.
     returned = 0
+    # Each result's evidence is digested as the store returned it, before any lens reads or rewrites it: the bundle's
+    # fingerprint is over what was read, never over what is computed from it (`bundle.evidence`).
+    read = ResultsDigest()
     for result in storage.iter_result_readings(list(every_result), scope_id):
         returned += 1
         if result.eval_run_id in every_result:
             every_result[result.eval_run_id].append(result)
+            read.add(result)
     # The safety net: results their runs' matrices did not promise (a run that wrote past its matrix and recorded no
     # completeness) are not assembled past the budget either.
     hold_to_read_budget(
@@ -955,6 +960,20 @@ def assemble_context_bundle(
     # what they might have — a catalog built from the declaration would name dimensions no
     # lens reported, and a reader would take that as a claim the campaign made.
     bundle.confound_catalog = confound_catalog(bundle, profile=profile)
+    # What all of the above was read from, and nothing it computed: the pre-image of the bundle's fingerprint.
+    bundle.evidence = evidence_manifest(
+        view,
+        host_declarations=bundle.host_declarations_digest,
+        runs=runs,
+        archived_run_ids=archived,
+        unresolved_run_ids=unresolved,
+        results=read,
+        cases=case_facts,
+        ratings=ratings,
+        tiers=tiers,
+        insights=prior_insights,
+        retracted_insights=retracted,
+    )
     return bundle
 
 
