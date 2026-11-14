@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -59,6 +60,15 @@ from threetears.datasources.entities import DataSourceType
 from threetears.nats import KvError
 
 from .helpers.driver_shims import PoolAcquireHandle, RedshiftConnectionWithSocket
+
+
+_IDS = itertools.count(1)
+
+
+def _fresh_id() -> uuid.UUID:
+    """the next id in a fixed sequence: unique within the run, and no entropy read."""
+    return uuid.UUID(int=next(_IDS))
+
 
 _PASSWORD_ENV = "TEST_CONNECT_GUARD_PW"
 _REVISION = "rev-1"
@@ -106,7 +116,7 @@ def _replica(nats: FakeNatsClient) -> CredentialRefusalGuards:
     """
     registry = CollectionRegistry()
     registry.configure(
-        l1_backend=SQLiteBackend(db_name=f"guard_{uuid.uuid4().hex[:8]}"),
+        l1_backend=SQLiteBackend(db_name=f"guard_{_fresh_id().hex[-8:]}"),
         l2_client=nats,
         kv_key_scope=_SCOPE,
     )
@@ -148,7 +158,7 @@ class TestOneRefusalPausesTheFleet:
 
     async def test_a_refusal_on_one_replica_pauses_the_other(self) -> None:
         nats = _Nats()
-        datasource_id = uuid.uuid4()
+        datasource_id = _fresh_id()
         here = _replica(nats).for_credential(
             datasource_id, credential_revision=_REVISION, datasource_name="influencers-build"
         )
@@ -165,16 +175,16 @@ class TestOneRefusalPausesTheFleet:
 
     async def test_another_datasource_is_not_paused(self) -> None:
         guards = _replica(_Nats())
-        await guards.for_credential(uuid.uuid4(), credential_revision=_REVISION, datasource_name="a").record_refusal(
+        await guards.for_credential(_fresh_id(), credential_revision=_REVISION, datasource_name="a").record_refusal(
             DriverAuthError("refused")
         )
 
-        await guards.for_credential(uuid.uuid4(), credential_revision=_REVISION, datasource_name="b").admit()
+        await guards.for_credential(_fresh_id(), credential_revision=_REVISION, datasource_name="b").admit()
 
     async def test_clearing_lets_the_next_login_through(self) -> None:
         """a clear drops the shared row; another replica's cached copy goes with the
         registry's invalidation listener, as for every coordination primitive."""
-        datasource_id = uuid.uuid4()
+        datasource_id = _fresh_id()
         guards = _replica(_Nats())
         guard = guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds")
         await guard.record_refusal(DriverAuthError("refused"))
@@ -196,7 +206,7 @@ class TestOneRefusalPausesTheFleet:
             raise DataLayerUnavailableError("l3 down")
 
         monkeypatch.setattr(CoordinationCountersCollection, "get", _unreadable)
-        guard = _replica(_Nats()).for_credential(uuid.uuid4(), credential_revision=_REVISION, datasource_name="ds")
+        guard = _replica(_Nats()).for_credential(_fresh_id(), credential_revision=_REVISION, datasource_name="ds")
 
         await guard.admit()
 
@@ -207,7 +217,7 @@ class TestOneRefusalPausesTheFleet:
             raise KvError("kv down")
 
         monkeypatch.setattr(CoordinationCountersCollection, "l2_cas_mutate", _unwritable)
-        guard = _replica(_Nats()).for_credential(uuid.uuid4(), credential_revision=_REVISION, datasource_name="ds")
+        guard = _replica(_Nats()).for_credential(_fresh_id(), credential_revision=_REVISION, datasource_name="ds")
         refusal = DriverAuthError("refused", sqlstate="28000")
 
         with pytest.raises(DriverAuthError) as exc_info:
@@ -267,7 +277,9 @@ class TestGuardedConnect:
     """the one place a login meets its guard."""
 
     async def test_a_paused_credential_never_reaches_the_login(self) -> None:
-        guard = _ScriptedGuard(admit_error=DriverCredentialPausedError("paused", refused_at=datetime.now(UTC)))
+        guard = _ScriptedGuard(
+            admit_error=DriverCredentialPausedError("paused", refused_at=datetime(2026, 1, 1, tzinfo=UTC))
+        )
         login = AsyncMock()
 
         with pytest.raises(DriverCredentialPausedError):
@@ -322,7 +334,7 @@ class TestThePauseBelongsToACredential:
     async def test_a_stale_holder_cannot_pause_the_replacement(self) -> None:
         """a pool still holding the old password is refused after the new one was stored."""
         nats = _Nats()
-        datasource_id = uuid.uuid4()
+        datasource_id = _fresh_id()
         stale = _replica(nats).for_credential(datasource_id, credential_revision="old", datasource_name="ds")
         current = _replica(nats).for_credential(datasource_id, credential_revision="new", datasource_name="ds")
 
@@ -334,7 +346,7 @@ class TestThePauseBelongsToACredential:
 
     async def test_replacing_a_refused_credential_needs_no_clear(self) -> None:
         guards = _replica(_Nats())
-        datasource_id = uuid.uuid4()
+        datasource_id = _fresh_id()
         await guards.record(datasource_id, "wrong")
 
         await guards.for_credential(datasource_id, credential_revision="fixed", datasource_name="ds").admit()
@@ -345,7 +357,7 @@ class TestThePauseBelongsToACredential:
     def test_a_guard_without_a_revision_is_refused(self) -> None:
         """an empty revision would put every credential the datasource ever has under one pause."""
         with pytest.raises(ValueError, match="revision"):
-            _replica(_Nats()).for_credential(uuid.uuid4(), credential_revision="", datasource_name="ds")
+            _replica(_Nats()).for_credential(_fresh_id(), credential_revision="", datasource_name="ds")
 
 
 class TestLoginsGoOneAtATime:
@@ -353,7 +365,7 @@ class TestLoginsGoOneAtATime:
 
     async def test_a_burst_of_cold_logins_against_a_refusing_warehouse_costs_one(self) -> None:
         """five at once is a Redshift lock on its own, before the first refusal could be recorded."""
-        datasource_id = uuid.uuid4()
+        datasource_id = _fresh_id()
         guards = _replica(_Nats())
         driver = RedshiftDriver(
             _redshift_config(),
@@ -377,7 +389,7 @@ class TestLoginsGoOneAtATime:
 
     async def test_logins_wait_their_turn_even_after_a_success(self) -> None:
         """a credential that worked is not trusted to keep working: its logins still queue."""
-        guard = _replica(_Nats()).for_credential(uuid.uuid4(), credential_revision=_REVISION, datasource_name="ds")
+        guard = _replica(_Nats()).for_credential(_fresh_id(), credential_revision=_REVISION, datasource_name="ds")
         await guarded_connect(guard, AsyncMock(return_value="first"))
         inside = 0
         most_at_once = 0
@@ -402,7 +414,7 @@ class TestLoginsGoOneAtATime:
         the earlier success, the next burst -- a pool refilling, five queries at once -- would send
         the old password five times, and five failures is a Redshift lock.
         """
-        guard = _replica(_Nats()).for_credential(uuid.uuid4(), credential_revision=_REVISION, datasource_name="ds")
+        guard = _replica(_Nats()).for_credential(_fresh_id(), credential_revision=_REVISION, datasource_name="ds")
         await guarded_connect(guard, AsyncMock(return_value="first"))
 
         async def _refused_login() -> str:
@@ -422,7 +434,7 @@ class TestARefusingWarehouseCostsOneLogin:
 
     async def test_every_pass_after_the_first_is_refused_without_a_login(self) -> None:
         nats = _Nats()
-        datasource_id = uuid.uuid4()
+        datasource_id = _fresh_id()
         replicas = [_replica(nats), _replica(nats)]
         outcomes: list[type[DriverAuthError]] = []
         with patch(
@@ -449,7 +461,7 @@ class TestARefusingWarehouseCostsOneLogin:
 
     async def test_a_probe_logs_in_while_paused_and_a_clear_resumes(self) -> None:
         nats = _Nats()
-        datasource_id = uuid.uuid4()
+        datasource_id = _fresh_id()
         guards = _replica(nats)
         await guards.record(datasource_id, _REVISION)
         connection = MagicMock()
@@ -543,7 +555,7 @@ class TestAsyncpgGuardsEveryPooledLogin:
 
     async def test_the_pool_logs_in_through_the_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """the hook the pool logs in with asks the guard first: a paused credential is not sent."""
-        datasource_id = uuid.uuid4()
+        datasource_id = _fresh_id()
         guards = _replica(_Nats())
         driver = self._driver(guards, datasource_id)
         hook = await self._pool_login_hook(driver, monkeypatch)
@@ -569,7 +581,7 @@ class TestAsyncpgGuardsEveryPooledLogin:
 
         create_pool = AsyncMock(side_effect=_slow_create_pool)
         monkeypatch.setattr("threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool", create_pool)
-        driver = self._driver(_replica(_Nats()), uuid.uuid4())
+        driver = self._driver(_replica(_Nats()), _fresh_id())
 
         callers = [asyncio.create_task(driver.test_connection()) for _ in range(5)]
         await asyncio.sleep(0)
@@ -584,7 +596,7 @@ class TestAsyncpgGuardsEveryPooledLogin:
         pool.close.assert_awaited_once()
 
     async def test_a_refused_pooled_login_pauses_the_next(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        driver = self._driver(_replica(_Nats()), uuid.uuid4())
+        driver = self._driver(_replica(_Nats()), _fresh_id())
         hook = await self._pool_login_hook(driver, monkeypatch)
         connect = AsyncMock(side_effect=asyncpg.exceptions.InvalidPasswordError("password authentication failed"))
         monkeypatch.setattr("threetears.datasources.drivers.asyncpg_driver.asyncpg.connect", connect)
@@ -695,7 +707,7 @@ class TestTheCancelPathLogsInUnderTheGuard:
     """cancelling a Redshift query opens a fresh login to terminate its backend; that login is guarded too."""
 
     async def test_a_paused_credential_skips_the_terminate_login(self) -> None:
-        datasource_id = uuid.uuid4()
+        datasource_id = _fresh_id()
         guards = _replica(_Nats())
         driver = RedshiftDriver(
             _redshift_config(),
@@ -713,7 +725,7 @@ class TestTheCancelPathLogsInUnderTheGuard:
         assert running.connect.call_count == 1
 
     async def test_a_refused_terminate_login_pauses_the_credential(self) -> None:
-        datasource_id = uuid.uuid4()
+        datasource_id = _fresh_id()
         guards = _replica(_Nats())
         driver = RedshiftDriver(
             _redshift_config(),
@@ -791,7 +803,7 @@ class TestNoLoginIsLeftOpen:
 
     async def test_a_terminate_that_outlasts_its_timeout_still_records_a_refusal(self) -> None:
         """the slot is held until the login resolves, so the refusal it meets is not lost."""
-        datasource_id = uuid.uuid4()
+        datasource_id = _fresh_id()
         guards = _replica(_Nats())
         driver = RedshiftDriver(
             _redshift_config(),
@@ -822,7 +834,7 @@ class TestTheCancelHoldsTheLoginSlotForTheLoginOnly:
     """the guard serializes LOGINS; a cancel's terminate statement must not stall the next one."""
 
     async def test_another_login_proceeds_while_a_terminate_runs(self) -> None:
-        datasource_id = uuid.uuid4()
+        datasource_id = _fresh_id()
         guards = _replica(_Nats())
         driver = RedshiftDriver(
             _redshift_config(),
@@ -976,7 +988,7 @@ class TestTheFactoryHandsTheGuardOn:
 
     async def test_a_redshift_driver_carries_it(self) -> None:
         """the factory-built driver consults the guard it was given: a paused credential is not sent."""
-        datasource_id = uuid.uuid4()
+        datasource_id = _fresh_id()
         guards = _replica(_Nats())
         await guards.record(datasource_id, _REVISION)
         guard = guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds")
