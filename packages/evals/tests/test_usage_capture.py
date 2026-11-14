@@ -13,6 +13,7 @@ from threetears.evals.kernel.usage_capture import (
     async_delivery_usage,
     cell_cost,
     count_substituted_deliveries,
+    maybe_billed_usd,
     production_replicating_cost,
     program_cost,
     resolve_result_usage,
@@ -192,6 +193,17 @@ def test_the_model_a_deliverys_responses_named_is_its_inner_agent_rows_served_mo
     assert (row.model, row.served_model) == ("inner", "inner-2026-10")
     (unnamed,) = async_delivery_usage([_work(cost_usd=0.01)], rate_table=None)
     assert unnamed.served_model is None
+
+
+def test_the_upstream_a_delivery_names_is_its_inner_agent_rows_served_provider_and_keys_it():
+    """The host fills it; work two upstreams served is two rows, and work naming none is not recorded."""
+    rows = async_delivery_usage(
+        [_work(cost_usd=0.01, served_provider="Acme Cloud"), _work(cost_usd=0.02, served_provider="Other Cloud")],
+        rate_table=None,
+    )
+    assert [(row.served_provider, row.cost_usd) for row in rows] == [("Acme Cloud", 0.01), ("Other Cloud", 0.02)]
+    (unnamed,) = async_delivery_usage([_work(cost_usd=0.01)], rate_table=None)
+    assert unnamed.served_provider is None and "served_provider" not in unnamed.model_dump(mode="json")
 
 
 def test_work_one_model_had_answered_by_two_is_two_rows():
@@ -644,3 +656,15 @@ def test_count_substituted_deliveries_of_an_unobserved_lifecycle_is_zero():
     assert count_substituted_deliveries(EvalResult(**base)) == 0
     substituted = EvalResult(**base, async_deliveries=_deliveries(substituted=True))
     assert count_substituted_deliveries(substituted) == 1
+
+
+def test_a_send_that_may_have_been_billed_is_priced_at_its_rows_price_per_call_for_the_cap():
+    """Only rows in the cost's roles count, and a row whose dollars or calls are unknown adds nothing here."""
+    rows = [
+        RoleUsage(role="judge", model="j", cost_usd=0.03, call_count=3, maybe_billed_sends=2),
+        RoleUsage(role="candidate", model="c", cost_usd=0.05, call_count=1),
+        RoleUsage(role="simulator", model="s", cost_usd=None, call_count=2, maybe_billed_sends=1),
+        RoleUsage(role="judge", model="k", cost_usd=0.04, call_count=None, maybe_billed_sends=1),
+    ]
+    assert maybe_billed_usd(rows, ["candidate", "judge", "simulator"]) == pytest.approx(0.02)
+    assert maybe_billed_usd(rows, ["candidate"]) == 0.0

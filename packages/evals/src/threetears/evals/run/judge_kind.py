@@ -56,6 +56,7 @@ from threetears.evals.kernel.capped_completion import (
     unpriced_because,
 )
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.failed_call import failed_call_output
 from threetears.evals.kernel.run_pages import iter_keyed_results
 from threetears.evals.kernel.judge_cases import (
@@ -991,7 +992,12 @@ class JudgeKind:
     async def invoke(self, instance: PreparedJudge, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Ask the judge under test the case's criterion over the frozen evidence, and grade its answer.
 
-        Never raises. A case that cannot be read is the harness's (``infra_errors``, the cell excluded). The judge's
+        Raises only what fails the cell or the run outside the judge's answer: an
+        :class:`~threetears.evals.kernel.host.ApparatusError` (a replayed judge whose recording holds no call for the
+        prompt, :class:`~threetears.evals.testing.RecordingRefused`), which the runner excludes the cell on as
+        ``apparatus_failed`` naming the call, never a trial graded ``no_reply`` and charged to the judge; and a
+        :class:`~threetears.evals.schema.completion.CompletionProtocolDefect`, which fails the run. A case that cannot
+        be read is the harness's (``infra_errors``, the cell excluded). The judge's
         own call failing is the candidate's (``candidate_errors``) — unless the host's describer says the call was the
         account's, which excludes the cell and stops the run (``account_refused``), or the provider's (it declined the
         call: a rate limit, or the provider overloaded or unavailable), which excludes the cell and lets the run go
@@ -1039,6 +1045,10 @@ class JudgeKind:
             try:
                 with scopes.collecting():
                     outcome = await service.score_request(request, case_id=test_case.id)
+            except ApparatusError:
+                # The rig could not serve the judge's call (a replay's miss): no answer of the judge's, so no trial.
+                # Raised through ``invoke`` on purpose, for the runner to exclude the cell as apparatus_failed.
+                raise
             except CompletionProtocolDefect as defect:
                 # The host's completion type fails the run (raised through ``invoke``), but its billed calls are
                 # added and reported as this cell's spend, so the runner records them.

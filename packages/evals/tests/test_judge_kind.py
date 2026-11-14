@@ -16,6 +16,7 @@ import types
 
 import json
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -48,6 +49,7 @@ from threetears.evals.run import (
     rate_result,
 )
 from threetears.evals.run.judge_service import builtin_judge_config_ids, judge_config_ids_for
+from threetears.evals.run.runner import EveryCellApparatusFailedError
 from threetears.evals.schema import (
     DEFAULT_JUDGE_TEMPERATURE,
     CompletionProtocolDefect,
@@ -58,6 +60,7 @@ from threetears.evals.schema import (
     JudgedArtifact,
     RubricDim,
 )
+from threetears.evals.testing import RecordedCompletions, RecordingRefused
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.scripted_table import FakeCellSink
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, TOYHOST_SCOPE
@@ -581,6 +584,58 @@ async def test_a_trial_whose_completion_carries_no_temperature_fails_the_run_and
     assert room.progress is not None
     spent = sum(row.cost_usd or 0.0 for row in room.progress().telemetry.usage)
     assert spent > 0 and room.spent == {"candidate": pytest.approx(spent)}
+
+
+async def test_a_judge_under_test_whose_replay_misses_is_excluded_as_the_rig_s_fault_never_graded(
+    tmp_path: Path,
+) -> None:
+    """The judge under test replays a recording that holds none of the prompts the trials ask, as after its prompt
+    moved. Each trial once came back graded no_reply, charged to the judge; now the miss leaves ``invoke`` and the
+    runner excludes the cell as apparatus_failed, naming the call. Every cell missed, so the run fails."""
+    campaign = await _campaign()
+    path = tmp_path / "judge.jsonl"
+    async with RecordedCompletions.record(campaign.judge, path, settings=None) as recorder:
+        await recorder.generate(system="A prompt the trials never ask.", user="Score this.")
+    replay = RecordedCompletions.replay(path, settings=None)
+    kind = JudgeKind(
+        clients=lambda role, model, *, temperature=None: replay,
+        model=TOY_JUDGE_MODEL,
+        failure_describer=describe_failure,
+    )
+    stored = off_loop(campaign.host.storage.load_test_case, campaign.case_ids[0], TOYHOST_SCOPE)
+    assert stored is not None
+
+    with pytest.raises(RecordingRefused, match="no call is recorded for the prompt"):
+        await kind.invoke(await _prepared(kind), stored, sink=FakeCellSink())
+
+    template = _judge_template()
+    run = make_eval_run(
+        id="judge-arm-replay-missed",
+        scope_id=TOYHOST_SCOPE,
+        template_id=template.id,
+        candidate_kind=JUDGE_KIND,
+        candidate_model=TOY_JUDGE_MODEL,
+        k_runs=1,
+        test_case_ids=list(campaign.case_ids),
+    )
+    off_loop(campaign.host.storage.save_eval_run, run)
+    cases = off_loop(campaign.host.storage.load_test_cases_by_ids, list(campaign.case_ids), TOYHOST_SCOPE)
+    with pytest.raises(EveryCellApparatusFailedError):
+        await execute_run(
+            campaign.host,
+            run=run,
+            template=template,
+            test_cases=cases,
+            judge_service=None,
+            options=RunnerOptions(candidate_kinds={JUDGE_KIND: lambda _cell: kind}),
+        )
+    results = off_loop(campaign.host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
+    assert len(results) == len(campaign.case_ids)
+    for result in results:
+        assert result.termination == "apparatus_failed"
+        assert result.infra_error is not None and "RecordingRefused" in result.infra_error
+        assert "no call is recorded for the prompt" in result.infra_error
+        assert result.kind_payload is None or result.kind_payload.get("outcome") != "no_reply"
 
 
 def test_a_config_pinning_another_model_than_the_arm_is_refused() -> None:

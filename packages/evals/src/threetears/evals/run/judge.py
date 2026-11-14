@@ -53,6 +53,7 @@ from threetears.evals.kernel.provider import (
     sum_optional_tokens,
 )
 from threetears.evals.kernel.authored import strict_response_format
+from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.usage_capture import CallUsage
 from threetears.evals.schema.logs import contain, get_logger
 
@@ -470,6 +471,10 @@ async def run_judge_llm(
     :raises CompletionProtocolDefect: The client's completion does not meet the protocol (:func:`sent_temperature`), or
         its optional ``sent_settings`` holds something other than request settings or ``None``, carrying the
         calls made and what they cost.
+    :raises ApparatusError: The rig could not serve the call: a replayed judge's recording holds no answer for it
+        (:class:`~threetears.evals.testing.RecordingRefused`: its prompt changed since it was recorded, or it is asked
+        more often). Never a judging outcome, since dropping the call would move what the replay measures in silence;
+        whatever is judging fails at the miss, which names the call.
     """
     # Retry on parse-failure so a single malformed judge response can't
     # silently drop a rubric dimension. We retry on any parse failure of a FINISHED
@@ -505,6 +510,9 @@ async def run_judge_llm(
     # record names one value only when every attempt reported the same one: a fold of unlike or unreported sends
     # reads as unverified, never as one of them.
     attempt_sent: list[ClientRequestSettings | None] = []
+    # Sends the attempts' clients said broke before any response began and were sent again, which the provider may
+    # have billed: summed, ``None`` until an attempt counts one.
+    total_maybe_billed: int | None = None
     attempts_made = 0
     max_attempts = JUDGE_CALL_ATTEMPTS
 
@@ -530,6 +538,7 @@ async def run_judge_llm(
             # row must count them all — not just the one that finally parsed.
             calls=attempts_made,
             sent_settings=_agreed_sent_settings(attempt_sent),
+            maybe_billed_sends=total_maybe_billed,
         )
 
     def _thread_spend(defect: CompletionProtocolDefect) -> None:
@@ -563,6 +572,10 @@ async def run_judge_llm(
     for attempt in range(max_attempts):
         try:
             result = await client.generate(system=system_prompt, user=user_prompt, response_format=response_format)
+        except ApparatusError:
+            # The rig could not serve the call (a replay's miss): never the judge's answer. Raised, so a replay whose
+            # page text moved under its recording fails naming the missed call rather than judging on fewer calls.
+            raise
         except Exception as e:  # prawduct:ok-broad-except — LLM/network boundary; SDK can raise many types
             # Earlier attempts in this loop may already have spent tokens before this one
             # raised; report that spend rather than losing it to the error path.
@@ -606,7 +619,9 @@ async def run_judge_llm(
         judge_model = getattr(result, "model", "") or judge_model
         judge_price_source = getattr(result, "price_source", None) or judge_price_source
         attempt_served.add(getattr(result, "served_model", None) or None)
-        attempt_upstream.add(CallUsage.billed(result).served_provider)
+        billed = CallUsage.billed(result)
+        attempt_upstream.add(billed.served_provider)
+        total_maybe_billed = sum_optional_tokens(total_maybe_billed, billed.maybe_billed_sends)
         # What this attempt's request carried, as its client reports it. Absent is unverified and recorded so; a value
         # of the wrong type is the host's defect, raised like a missing temperature, with the spend threaded on. Read
         # here, before the reply is judged usable, so a cut-short or unparsable attempt's spend row says it too.

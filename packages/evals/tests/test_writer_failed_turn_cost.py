@@ -222,6 +222,32 @@ async def test_a_turn_whose_connection_was_never_made_is_sent_again(never: Excep
     assert answered.resent_after == (f"the connection was never made ({type(never).__name__})",)
 
 
+async def test_a_turn_the_server_dropped_with_no_response_is_sent_again_once_naming_the_drop() -> None:
+    """A live Kairo re-record ended failed 34 turns in, on a disconnect with no response that nothing resent."""
+    dropped = httpx.RemoteProtocolError("Server disconnected without sending a response.")
+    messages, waits = Messages(dropped, (200, ANSWERS)), Waits()
+
+    answered = await _turn(sonnet(messages, waits))
+
+    assert messages.sent == 2 and waits.asked == [1.0]
+    assert answered.resent_after == (
+        "the connection broke before any response began (RemoteProtocolError: Server disconnected without sending a "
+        "response.), so the provider may have served and billed the call",
+    )
+
+
+async def test_a_turn_dropped_twice_raises_the_first_drop_from_the_second_after_one_resend() -> None:
+    first = httpx.RemoteProtocolError("Server disconnected without sending a response.")
+    second = httpx.RemoteProtocolError("Server disconnected again.")
+    messages, waits = Messages(first, second), Waits()
+
+    with pytest.raises(httpx.RemoteProtocolError) as raised:
+        await _turn(sonnet(messages, waits, retry={"turn_failure_attempts": 3}))
+
+    assert messages.sent == 2 and waits.asked == [1.0], "a drop is sent again once, however many attempts a 5xx gets"
+    assert raised.value is first and raised.value.__cause__ is second
+
+
 @pytest.mark.parametrize("status", [504, 524], ids=["a 504", "Cloudflare's 524"])
 async def test_a_turn_a_gateway_timed_out_is_never_sent_again_since_it_may_have_been_served(status: int) -> None:
     """The gateway gave up waiting; the provider may still have served and billed the turn, as a turn cut in flight."""

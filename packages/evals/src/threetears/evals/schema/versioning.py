@@ -412,7 +412,15 @@ CORE_SCHEMA_VERSION: int = 15
 #:   digest. An older build reads such a cell as excluded whole by its judge errors, under ``infra``, as it did before
 #:   this minor; a re-judge on an older build leaves the mark, which this build reads only while a judge error stands.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 15
+#: - **v15.16** — a usage row counts the sends of its calls whose connection broke before any response began and that
+#:   were sent again: ``RoleUsage.maybe_billed_sends`` (default None: none counted, its client counts none, or stored
+#:   before the field existed), beside ``call_count`` and never in it; the provider may have served and billed each,
+#:   and the row's ``cost_usd`` holds none of it. A background delivery names the upstream that served its calls:
+#:   ``AsyncDelivery.served_provider`` (default None: not recorded, a direct provider, or stored before the field
+#:   existed), filled by the host, never on a substituted delivery. Each is left out of the document when unset, so a
+#:   row or entry setting none is stored byte for byte as before. In no identity, key or digest.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 16
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

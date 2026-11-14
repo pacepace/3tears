@@ -5065,6 +5065,19 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
             "its own entry). Never set on a substituted delivery, which ran on no model."
         ),
     )
+    # Left out of the document when unset, so an entry naming none is stored as it was before the field existed.
+    served_provider: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The upstream provider the work's responses named as having served its calls (the provider a router "
+            "sent them to), as the work's client reported it; the host fills it, and it is folded into the "
+            "inner_agent role's `RoleUsage.served_provider`, a key of the row. None = not recorded: the responses named none (a direct provider names "
+            "none), named more than one (report each upstream's work as its own entry), or the entry was stored "
+            "before the field existed. Never set on a substituted delivery, which ran on no model."
+        ),
+    )
     acknowledged_turn: int | None = Field(
         default=None,
         ge=0,
@@ -5123,7 +5136,8 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
 
         :raises ValueError: An error without a failure or a failure without one; a delivery's own
             fields on an entry that delivered nothing; a delivery before its acknowledgement;
-            a substituted entry naming the model it supposedly ran on or reporting spend; or a
+            a substituted entry naming the model it supposedly ran on, the provider that served it, or reporting
+            spend; or a
             price source for a cost nobody reported.
         """
         defects: list[str] = []
@@ -5150,6 +5164,8 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
             defects.append(f"a substituted delivery ran on no model, yet names {self.model!r}")
         if self.substituted and self.served_model is not None:
             defects.append(f"a substituted delivery was answered by no model, yet names {self.served_model!r}")
+        if self.substituted and self.served_provider is not None:
+            defects.append(f"a substituted delivery was served by no provider, yet names {self.served_provider!r}")
         if self.substituted and (spent := self.reported_spend):
             defects.append(f"a substituted delivery spent nothing, yet reports {', '.join(spent)}")
         if self.price_source is not None and self.cost_usd is None:
@@ -5411,6 +5427,18 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
             "word mapped to how many of them it accounts for, at least 1. Set only beside a counted "
             "unanswered_retried or unanswered_lost, and summing to no more than they do: a call whose host gave no "
             "reason is counted there and not here. None = no reasons were counted."
+        ),
+    )
+    maybe_billed_sends: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Sends of this row's calls whose connection broke before any response began and that were sent again: "
+            "the provider may have served and billed each, and this row's `cost_usd` holds none of it, so the row's "
+            "dollars may undercount by that many calls. Beside `call_count` and never in it. Counted per row. None = "
+            "none counted: no send met such a drop, its client counts none, or the row was stored before the field "
+            "existed."
         ),
     )
 

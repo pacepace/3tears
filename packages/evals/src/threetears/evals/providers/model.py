@@ -198,7 +198,7 @@ _ASKED: Final[Mapping[str, ClientRequestSettings]] = {
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Completion:
-    """One reply: the completion port's ten members, and five of the client's own.
+    """One reply: the completion port's ten members, and seven of the client's own.
 
     Implements :class:`~threetears.evals.schema.CompletionResult`. Every count and the cost are ``None`` where the
     provider reported nothing, never ``0``.
@@ -226,6 +226,11 @@ class Completion:
     :ivar pricing_stale_since: When the catalogue rates that priced the call expired with every refresh since failing
         (UTC): the cost is the last rates read, kept rather than failing the call. ``None`` when the rates were
         fresh, and for a cost the provider reported (OpenRouter's), which no catalogue priced.
+    :ivar resent_after: What each resend of the call followed, oldest first, as a tool turn's reply names them
+        (:attr:`~threetears.evals.schema.TurnReply.resent_after`); empty when the first send was answered.
+    :ivar maybe_billed_sends: How many sends of the call broke before any response began and were sent again: the
+        provider may have served and billed each, and ``cost_usd`` holds none of it. A usage row counts them
+        (``RoleUsage.maybe_billed_sends``).
     """
 
     content: str
@@ -243,6 +248,13 @@ class Completion:
     served_provider: str | None
     pricing_failure: str | None
     pricing_stale_since: datetime | None
+    resent_after: tuple[str, ...] = ()
+    maybe_billed_sends: int = 0
+
+
+#: What a resend after a first send that broke before any response began follows, as its words open: what
+#: :attr:`Completion.maybe_billed_sends` counts.
+_DROPPED_BEFORE_RESPONSE: Final = "the connection broke before any response began"
 
 
 #: What :meth:`Model.refresh_prices` answers while replaying, and for a model its pricer prices: no catalogue is read,
@@ -566,7 +578,13 @@ class _Live:
         With ``failure_attempts`` above 1 (a tool turn's: the policy's ``turn_failure_attempts``), a call the provider
         failed with a 5xx status that is no decline, or whose connection was never made, is sent again too, up to that
         many attempts in all: nothing came back, so nothing was billed. A gateway's timeout (504, 524) is not: the
-        provider may still have served it. Every wait and resend ends within one
+        provider may still have served it. A first send whose connection broke before any response began
+        (``httpx.RemoteProtocolError`` out of sending it: "Server disconnected without sending a response") is sent
+        again once, whatever ``failure_attempts`` is: a completion request changes nothing but what it bills, so one
+        resend costs at most a second call, and the drop, with its own text, is named among what the resend followed,
+        since the provider may have served the first and billed it. The first send is read streamed so that a
+        ``RemoteProtocolError`` while its body is read (a response begun and cut short: served and billed) is told
+        apart, and raised as it came, never resent. Every wait and resend ends within one
         request's timeout of the first attempt. Any other failure, and the last decline or failure, is raised as it
         came; an error in a 200's body that is no decline is left to :func:`read_reply`, as before.
         """
@@ -581,18 +599,33 @@ class _Live:
         until = time.monotonic() + budget if budget is not None else None
         made = declined = failed = 0
         resent_after: list[str] = []
-        # The answer the next resend follows, re-read if that resend brings none; or the connection never made.
+        # The answer the next resend follows, re-read if that resend brings none; or the first send that brought none:
+        # a connection never made, or one the server dropped with no response.
         previous: httpx.Response | None = None
-        unsent: httpx.ConnectError | httpx.ConnectTimeout | None = None
+        unsent: httpx.ConnectError | httpx.ConnectTimeout | httpx.RemoteProtocolError | None = None
         while True:
             if made == 0:
+                # Sent streamed, so a failure before the response began is told apart from one while its body was
+                # read: only the first is a drop with no response.
+                request = client.build_request("POST", self._url + path, json=body, headers=headers)
+                response: httpx.Response | None
                 try:
-                    response: httpx.Response | None = await client.post(self._url + path, json=body, headers=headers)
+                    begun = await client.send(request, stream=True)
                 except (httpx.ConnectError, httpx.ConnectTimeout) as never:
                     if failure_attempts < 2:
                         raise
                     # NOSILENT: the request never reached the provider; it is sent again below, or raised there.
                     response, unsent = None, never
+                except httpx.RemoteProtocolError as dropped:
+                    # NOSILENT: the connection broke before any response began; sent again once below, or raised there.
+                    response, unsent = None, dropped
+                else:
+                    try:
+                        # A body cut short here (RemoteProtocolError too) was served and billed: raised as it came.
+                        await begun.aread()
+                    finally:
+                        await begun.aclose()
+                    response = begun
             else:
                 response, lost = await self._resend(client, path, body, headers, until=until)
                 if response is None:
@@ -615,10 +648,16 @@ class _Live:
             if response is None:
                 assert unsent is not None
                 failed += 1
-                if failed >= failure_attempts:
+                dropped_once = isinstance(unsent, httpx.RemoteProtocolError)
+                if failed >= failure_attempts and not dropped_once:
                     raise unsent
                 after, wait = (
-                    f"the connection was never made ({type(unsent).__name__})",
+                    (
+                        f"{_DROPPED_BEFORE_RESPONSE} (RemoteProtocolError: {unsent}), so the provider may have served "
+                        "and billed the call"
+                        if dropped_once
+                        else f"the connection was never made ({type(unsent).__name__})"
+                    ),
                     self._retry.wait_s(failed, None),
                 )
                 standing: BaseException = unsent
@@ -707,6 +746,7 @@ class _Live:
         declared = self._declared()
         asked = replace(self._asked, strict_output=directive.asks_strict(self.provider))
         refused: list[tuple[dict[str, Any], ProviderError]] = []  # Any: a JSON body
+        resent: list[str] = []
 
         async def send(wire: WireSettings, facts: SettingFacts) -> tuple[int, Mapping[str, Any]]:  # Any: JSON
             body = request_body(
@@ -723,7 +763,8 @@ class _Live:
             if refused and refused[-1][0] == body:
                 raise refused[-1][1]  # nothing closer to send: the refusal stands, as it came
             try:
-                status, parsed, _ = await self._post(body)
+                status, parsed, after = await self._post(body)
+                resent.extend(after)
                 return status, parsed
             except ProviderError as failure:
                 refused.append((body, failure))
@@ -766,6 +807,8 @@ class _Live:
             served_provider=reply.served_provider,
             pricing_failure=price.unpriced_reason,
             pricing_stale_since=price.stale_since,
+            resent_after=tuple(resent),
+            maybe_billed_sends=sum(1 for after in resent if after.startswith(_DROPPED_BEFORE_RESPONSE)),
         )
 
     async def turn(
@@ -910,9 +953,9 @@ class Model:
     naming the variable, unless a recording will serve every call.
 
     Implements :class:`~threetears.evals.schema.CompletionClient` and
-    :class:`~threetears.evals.schema.BoundCompletionClient`; ``generate`` is safe to call concurrently. Two resends,
-    and nothing else is retried. A provider's refusal of a setting the request carried, which the provider did not
-    bill, is answered with the closest setting the model then takes, learned for every model sharing the
+    :class:`~threetears.evals.schema.BoundCompletionClient`; ``generate`` is safe to call concurrently. The
+    resends below are made, and nothing else is retried. A provider's refusal of a setting the request carried, which
+    the provider did not bill, is answered with the closest setting the model then takes, learned for every model sharing the
     :class:`~threetears.evals.providers.Catalogue`. A call the provider declined at that moment (a 429 that is no
     spent quota, a 529 overloaded, a 503 unavailable, as a status or as the code a 200's body carries), which it also
     did not bill, is sent again after a wait, at most three attempts in all, all within one request's timeout of the
@@ -922,7 +965,12 @@ class Model:
     timeout (a 500, a 502, a 520 from its edge; never a 504 or a 524, which it may still have served), or whose
     connection was never made, is sent again too, two attempts in all by default
     (``DeclinedRetry.turn_failure_attempts``), within the same bound: no completion came back, so nothing was billed,
-    and the reply names what each resend followed (``TurnReply.resent_after``).
+    and the reply names what each resend followed (``TurnReply.resent_after``). A call or a turn whose first send's
+    connection broke before any response began (``httpx.RemoteProtocolError``) is sent again once, after the same wait;
+    one cut short while its body was read was served and is raised, never resent. The
+    request changes nothing but what it bills, and the provider may have served and billed the first: a WARNING logs it,
+    a turn's reply names it, and a completion names it (``Completion.resent_after``) and counts it
+    (``Completion.maybe_billed_sends``), which its usage row counts in turn (``RoleUsage.maybe_billed_sends``).
 
     **Keys.** A model handed no ``api_key=`` reads its provider's variable (``ANTHROPIC_API_KEY``), then the
     variables ``<VARIABLE>_FALLBACKS`` names, a comma list tried in order
