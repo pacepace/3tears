@@ -8,7 +8,7 @@ import re
 from collections.abc import Callable, Sequence
 from itertools import chain
 
-from threetears.evals.analysis.agreement import tier_sentence_in
+from threetears.evals.analysis.lens_text import tier_sentence_in
 from threetears.evals.analysis.bundle.schema import (
     AliasedFactors,
     AnalysisContextBundle,

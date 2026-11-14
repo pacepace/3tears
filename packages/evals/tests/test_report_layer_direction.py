@@ -35,9 +35,9 @@ is numbers by default, because a default would place a new printing module on th
 nothing joins the package unclassified.
 
 A wording or layout change must never move a measured result, so no numbers module imports a presentation module,
-by any of the ways above, directly or through a module that is on neither side. The pairs that break the rule today
-are listed in :data:`_KNOWN_PAIRS`. That list only shrinks: a pair off the list fails the gate, and so does a listed
-pair the tree no longer holds.
+by any of the ways above, directly or through a module that is on neither side. The rule has no exemption: code a
+numbers module needs from presentation moves down to numbers (a decision, a typed value, a fixed-form speller in
+``kernel/numbers.py``), or the wording that needs presentation moves up.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ from pathlib import Path
 import pytest
 
 from packages.evals.tests.import_resolution import absolute_module
-from packages.evals.tests.package_placement import discover, eval_relative, join
+from packages.evals.tests.package_placement import discover, eval_relative
 from threetears.enforcement.common import clear_parse_cache, parse_python_path
 
 #: The directory holding the ``threetears`` namespace.
@@ -211,6 +211,7 @@ _NUMBERS_MODULES = frozenset(
         "depth",
         "depth_reading",
         "errors",
+        "floors",
         "generation_tally",
         "judge_drift",
         "judge_kind_readings",
@@ -228,6 +229,7 @@ _NUMBERS_MODULES = frozenset(
         "report_margins",
         "reporting",
         "revisions",
+        "said",
         "separation",
         "significance",
         "stats",
@@ -276,7 +278,7 @@ def stale_placements(root: Path) -> list[str]:
 def presentation_imports(root: Path) -> dict[tuple[str, str], int]:
     """Each ``(numbers module, presentation module)`` pair where the first names the second, with its first line.
 
-    Both names are relative to ``threetears.evals``, as :data:`_KNOWN_PAIRS` writes them.
+    Both names are relative to ``threetears.evals``.
     """
     pairs: dict[tuple[str, str], int] = {}
     for module, named in import_graph(root).items():
@@ -315,41 +317,13 @@ def laundered_presentation(root: Path) -> list[str]:
     return sorted(reaches)
 
 
-#: The numbers modules that import presentation today, as ``(importer, imported)`` relative to ``threetears.evals``.
-#: Delete a line when its import goes. Never add one: move the code instead.
-_KNOWN_PAIRS: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("analysis.agreement", "analysis.report.forms"),
-        ("analysis.bar_proposals", "analysis.report.forms"),
-        ("analysis.campaign_readings", "analysis.report.decision"),
-        ("analysis.campaign_readings", "analysis.report.said"),
-        ("analysis.judge_temperature", "analysis.report.forms"),
-        ("analysis.lenses.cost_estimate", "analysis.report.forms"),
-        ("analysis.lenses.frontier", "analysis.report.said"),
-        ("analysis.out_of_run_spend", "analysis.report.forms"),
-        ("analysis.references", "analysis.report.forms"),
-        ("analysis.significance", "analysis.report.forms"),
-    }
-)
-
-#: How many pairs the list holds. It falls with every line deleted from the list, and never rises.
-_KNOWN_PAIRS_COUNT = 10
-
-
-def pair_findings(found: dict[tuple[str, str], int], known: frozenset[tuple[str, str]]) -> list[str]:
-    """One sentence for each pair that is in the tree and off the list, and each that is on the list and gone."""
-    new = [
+def pair_findings(found: dict[tuple[str, str], int]) -> list[str]:
+    """One sentence for each pair in the tree: the importer, the line, what it imports and what to do instead."""
+    return [
         f"{importer} (line {line}) imports {imported}: numbers never import presentation. Move the code that "
-        f"needs {imported} to the presentation side, or move what both sides need down to numbers; do not list "
-        f"the pair."
+        f"needs {imported} to the presentation side, or move what both sides need down to numbers."
         for (importer, imported), line in sorted(found.items())
-        if (importer, imported) not in known
     ]
-    gone = [
-        f"{importer} no longer imports {imported}: delete that pair from _KNOWN_PAIRS in {Path(__file__).name}."
-        for importer, imported in sorted(known - found.keys())
-    ]
-    return new + gone
 
 
 # --- the gate over today's tree --------------------------------------------------------------------
@@ -371,16 +345,9 @@ def test_every_placed_name_is_a_module() -> None:
     )
 
 
-def test_no_numbers_module_imports_presentation_outside_the_known_pairs() -> None:
-    findings = pair_findings(presentation_imports(SOURCE_ROOT), _KNOWN_PAIRS)
+def test_no_numbers_module_imports_presentation() -> None:
+    findings = pair_findings(presentation_imports(SOURCE_ROOT))
     assert findings == [], "\n".join(findings)
-
-
-def test_the_known_pairs_only_shrink() -> None:
-    assert len(_KNOWN_PAIRS) == _KNOWN_PAIRS_COUNT, (
-        f"_KNOWN_PAIRS holds {len(_KNOWN_PAIRS)} pairs and _KNOWN_PAIRS_COUNT says {_KNOWN_PAIRS_COUNT}. After "
-        "deleting a pair, lower the count to match; never raise it, remove the new import instead."
-    )
 
 
 def test_no_numbers_module_reaches_presentation_through_a_module_on_neither_side() -> None:
@@ -652,14 +619,19 @@ def test_the_analysis_root_launders_presentation_to_a_numbers_module_that_import
     ]
 
 
-def test_a_pair_off_the_list_and_a_listed_pair_that_is_gone_are_each_a_finding() -> None:
-    listed = ("analysis.agreement", "analysis.report.forms")
+def test_every_pair_is_a_finding_and_none_is_exempt() -> None:
     planted = ("analysis.stats", "analysis.report.said")
-    assert pair_findings({listed: 4}, frozenset({listed})) == []
-    new, gone = pair_findings({planted: 7}, frozenset({listed}))
-    assert new.startswith("analysis.stats (line 7) imports analysis.report.said: numbers never import presentation.")
-    assert gone.startswith("analysis.agreement no longer imports analysis.report.forms: delete that pair")
+    assert pair_findings({}) == []
+    (finding,) = pair_findings({planted: 7})
+    assert finding.startswith(
+        "analysis.stats (line 7) imports analysis.report.said: numbers never import presentation."
+    )
 
 
-def test_every_known_pair_is_a_numbers_module_and_a_presentation_module() -> None:
-    assert all((side(join(a)), side(join(b))) == (NUMBERS, PRESENTATION) for a, b in _KNOWN_PAIRS)
+def test_a_planted_pair_fails_the_gate_as_the_gate_reads_the_tree(tmp_path: Path) -> None:
+    """The gate's own two calls, over a tree with one numbers module importing presentation: one finding, so the
+    rule is held by what the tree imports and by no list."""
+    files = {**_SYNTHETIC_BASE, _PLANTED_NUMBERS: "from threetears.evals.analysis.report.forms import PageForms\n"}
+    root = _synthetic_tree(tmp_path, files)
+    (finding,) = pair_findings(presentation_imports(root))
+    assert finding.startswith("analysis.stats (line 1) imports analysis.report.forms: numbers never import")

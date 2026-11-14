@@ -170,7 +170,7 @@ from threetears.evals.analysis.report.number_forms.written import (
 )
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text, in_change_form, quantity, quantity_of
 from threetears.evals.analysis.report.per_input import kept_for
-from threetears.evals.analysis.report.said import Said, SaidFigure
+from threetears.evals.analysis.said import Said, SaidFigure
 from threetears.evals.analysis.report.unit_once import interval_alone, interval_beside, unit_after, unit_spaced
 from threetears.evals.analysis.report.verdict import MIN_CASES, interval_words
 from threetears.evals.analysis.report_input import ContrastFamily, Criterion, ReportInput
@@ -190,7 +190,9 @@ from threetears.evals.kernel.numbers import (
     spell_at,
     spell_count,
     spell_dollars,
+    spell_ledger_dollars,
     spell_multiple,
+    spell_share,
     spell_stored_counts,
 )
 from threetears.evals.kernel.surface import DecisionSurface
@@ -1416,7 +1418,7 @@ class PageForms:
         """
         if value is None or not math.isfinite(value):
             return self._issue("", "", "share", value, _ABSENT_TEXT, _ABSENT_TEXT, "")
-        text = f"{value:.0%}"
+        text = spell_share(value)
         return self._issue("", "", "share", value, text, text.removesuffix(PERCENT), PERCENT, held=round(100 * value))
 
     def pass_k(self, key: str, value: float | None, *, kind: _MeasureKind = "measure") -> Printed:
@@ -1503,7 +1505,7 @@ class PageForms:
         in points, unsigned, at the places this page reads that rate's changes at, kept off zero: its own form of the
         rate (a code page's pass rate), else the rate's set on an aspect page. A rate the page states no change of reads
         to a decimal, a whole number whole, as the campaign's readings freeze it
-        (:meth:`~threetears.evals.analysis.report.said.Said.stored`). A figure the words state as a bound never reads
+        (:meth:`~threetears.evals.analysis.said.Said.stored`). A figure the words state as a bound never reads
         past itself: a lower bound (``at least``) rounds down at those places, an upper one (``at most``) up, and where
         that would cross the margin the sentence compares it with, or zero, it takes a decimal more until it does not
         (``within 2.5 points (it is at most 2.4)``, never ``at most 3``). Each point figure is recorded under its rate's
@@ -1626,7 +1628,7 @@ class PageForms:
         :return: The amount.
         :rtype: Printed
         """
-        return self._money(amount, f"${amount:.4f}", measure, kind)
+        return self._money(amount, spell_ledger_dollars(amount), measure, kind)
 
     def whole_seconds(self, seconds: float, *, measure: str = "", kind: _MeasureKind = None) -> Printed:
         """A duration an off-page line states in whole seconds, rounded half to even, its ``s`` after the number

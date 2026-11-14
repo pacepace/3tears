@@ -6,6 +6,30 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: numbers never import presentation, with no exemption
+
+**Changed:** no module on the numbers side of `threetears.evals.analysis` (the statistics, the bundle, the lenses, the
+campaign's readings, the report input) imports a presentation module, by any route, and
+`tests/test_report_layer_direction.py` holds it with no list of exceptions. Nothing a report, a page, a command line
+or an action prints changed. What moved:
+
+- Reading a floor is numbers: `analysis/report/decision.py` is now `analysis/floors.py`. The two functions that word
+  a projection in a page's forms (`projected_cell`, `projection_note`) stay in `analysis/report/decision.py`.
+- A sentence held as words and typed figures (`Said`, `SaidFigure`) is numbers: `analysis/report/said.py` is now
+  `analysis/said.py`.
+- A judge's tier sentence is wording: `tier_sentence_in` moved from `analysis/agreement.py` to
+  `analysis/lens_text.py`, beside `tier_sentence`.
+- `judged_name` moved from `analysis/report/words.py` to `analysis/style.py`, beside `measure_name`.
+- A numbers module spells a fixed-form figure through `kernel/numbers.py` alone, as the engine's packages do, never
+  through `PageForms.off_page()`. Two fixed forms joined that module for it: `spell_share` (a share in whole percent)
+  and `spell_ledger_dollars` (a ledger's dollars, to four decimals); `PageForms.share` and `PageForms.money_ledger`
+  call them. `tests/test_one_owner_of_number_forms.py` holds the numbers side to that route on the engine's terms.
+
+**For hosts:** nothing, if you import from the public roots. `threetears.evals.analysis.report.decision`,
+`threetears.evals.analysis.report.said` and `threetears.evals.analysis.report.words` still export every name they
+did. One path has no forwarding import: `tier_sentence_in` is imported from `threetears.evals.analysis.lens_text`, no
+longer from `threetears.evals.analysis.agreement`; `threetears.evals.analysis.tier_sentence` is unchanged.
+
 ### evals: a definitions reset fills the presentation names a template it leaves current lacks
 
 **Added:** `reset_definitions` runs the definition seed's fill-only presentation-name pass after its writes, on every

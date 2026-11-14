@@ -24,7 +24,7 @@ from threetears.evals.analysis.contention import (
     withhold_contended_latency,
 )
 from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.report.said import Said, SaidFigure
+from threetears.evals.analysis.said import Said, SaidFigure
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     case_rate_interval,

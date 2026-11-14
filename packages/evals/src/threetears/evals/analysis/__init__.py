@@ -183,7 +183,7 @@ from threetears.evals.analysis.gate import (
     parse_fail_on,
     verdict_token,
 )
-from threetears.evals.analysis.report.decision import CasesNeeded, NeedKind, SampleProjection
+from threetears.evals.analysis.floors import CasesNeeded, NeedKind, SampleProjection
 from threetears.evals.analysis.report import (
     KIT_CHARTS,
     BarRow,

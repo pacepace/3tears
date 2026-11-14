@@ -36,6 +36,7 @@ from threetears.evals.analysis.style import (
     cannot_tell_apart,
     lever_reader_name,
     humanize,
+    judged_name,
     measure_name,
 )
 from threetears.evals.kernel.host.kinds import EMPTY_VALUE_DISPLAY, NO_VALUE_DISPLAY
@@ -305,22 +306,6 @@ def trial_dimension(dimension: str) -> str:
     :rtype: str
     """
     return _RESERVED_AXIS_WORDS.get(dimension, dimension)
-
-
-def judged_name(dimension: str, declared: str | None = None) -> str:
-    """A judged dimension's name, the one rule every surface names it by: the label its input declares for it
-    (``Judged.label``) wherever one is declared, on a chart, a table, a figure key and in prose alike; else its name as
-    :func:`~threetears.evals.analysis.style.measure_name` spells it (``reply stays on topic``). Unmarked: a heading adds
-    the judged mark (:func:`judged_heading`), and a label its capital (:func:`label_case`).
-
-    :param dimension: The dimension, as the rubric names it.
-    :ptype dimension: str
-    :param declared: The label its input declares, or None for none.
-    :ptype declared: str | None
-    :return: The name.
-    :rtype: str
-    """
-    return declared or measure_name(dimension)
 
 
 def _judged_label(heading: str) -> str:

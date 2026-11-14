@@ -47,13 +47,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis import stats
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.quantities import PERCENT, is_money
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import ReadingKind
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier
 from threetears.evals.kernel.metrics import MeritAxis, classifier_label_of
+from threetears.evals.kernel.numbers import format_number, spell_share
 from threetears.evals.kernel.surface import (
     CellFacts,
     DecisionSurface,
@@ -401,14 +400,12 @@ def _find_judged(cell: CellFacts, dimension: str) -> JudgedReading | None:
     return next((j for j in cell.judged if j.dimension == dimension), None)
 
 
-def _dispersion(
-    sem: float | None, ci_low: float | None, ci_high: float | None, n: int, n_cases: int | None, unit: str = ""
-) -> str:
+def _dispersion(sem: float | None, ci_low: float | None, ci_high: float | None, n: int, n_cases: int | None) -> str:
     """State a reading's spread in words, including when there is none to state.
 
     The interval it states is already computed over the cases, so a clustered cell needs no caveat
-    beside it; the one case it explains is the interval a single case cannot have. The figures are spelled in
-    ``unit`` where the row states one — a percent's interval reads ``[88.1%, 100%]`` — and bare otherwise.
+    beside it; the one case it explains is the interval a single case cannot have. The figures are bare, by the
+    number rule: the row states its unit beside its value.
 
     :return: The dispersion text an evidence row carries.
     :rtype: str
@@ -423,18 +420,10 @@ def _dispersion(
         return f"unestimable at {n_cases} case{'' if n_cases == 1 else 's'}"
     # A rate carries its interval and no standard error, and its interval is its spread: stated, never
     # reported as unestimable because the sem it does not have is absent.
-    # The unit on each end where it sits on the number (``[88.1%, 100%]``); a spaced unit is the value's, and the
-    # interval beside it stays bare (``[0.8, 1.1]`` under ``0.95 s``), as it always read.
     # An evidence row is read off any page, so it takes the fixed forms of no page's measure.
-    forms = PageForms.off_page()
-    on_the_number = unit == PERCENT or is_money(unit)
-    low, high = (
-        (forms.in_unit(bound, unit, role="interval") if on_the_number else forms.lone(bound)).text
-        for bound in (ci_low, ci_high)
-    )
-    text = f"{forms.share(stats.INTERVAL_LEVEL).text} CI [{low}, {high}]"
+    text = f"{spell_share(stats.INTERVAL_LEVEL)} CI [{format_number(ci_low)}, {format_number(ci_high)}]"
     if sem is not None:
-        text = f"sem {forms.in_unit(sem, unit, role='half_width').digits}; {text}"
+        text = f"sem {format_number(sem)}; {text}"
     return text
 
 

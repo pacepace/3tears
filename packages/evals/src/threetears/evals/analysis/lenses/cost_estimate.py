@@ -17,7 +17,7 @@ from pydantic import Field
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.models import utc_now_iso
-from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.kernel.numbers import format_number, spell_share
 from threetears.evals.analysis.reporting import _subject_id_of, pooled_cost_compositions
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
@@ -227,13 +227,12 @@ def _cost_band(history: Sequence[float], n_observations: int, estimate: float) -
     :rtype: tuple[float, float, str]
     """
     n = len(history)
-    forms = PageForms.off_page()
-    level = forms.share(INTERVAL_LEVEL).text
+    level = spell_share(INTERVAL_LEVEL)
     if math.isclose(min(history), max(history), rel_tol=_BAND_ROUNDING_REL_TOL):
         return (
             estimate,
             estimate,
-            f"No spread in {n} past observations: each cost {forms.lone(history[0], money=True).text}, so the band has "
+            f"No spread in {n} past observations: each cost {format_number(history[0], prefix='$')}, so the band has "
             f"no width and is the estimate itself; a sweep whose total differs from it at all falls outside it. "
             f"{_COST_BAND_INDEPENDENCE}",
         )
@@ -263,8 +262,8 @@ def _cost_band(history: Sequence[float], n_observations: int, estimate: float) -
         ("upper", 1.0 - high / estimate, "below") if high < estimate else ("lower", low / estimate - 1.0, "above")
     )
     missed = (
-        f"{end} end {forms.lone(high if end == 'upper' else low, money=True).text}, "
-        f"{forms.share(share).text if share >= 0.01 else 'less than 1%'} {side}"
+        f"{end} end {format_number(high if end == 'upper' else low, prefix='$')}, "
+        f"{spell_share(share) if share >= 0.01 else 'less than 1%'} {side}"
     )
     normal_low, normal_high = _normal_theory_band(history, n_observations, estimate)
     low, high = min(low, normal_low), max(high, normal_high)
@@ -277,7 +276,7 @@ def _cost_band(history: Sequence[float], n_observations: int, estimate: float) -
         low,
         high,
         f"At least {level} prediction band for the sweep's total from {n} past observations, spanning two "
-        f"fits that disagree: a lognormal fit put its {missed} the {forms.lone(estimate, money=True).text} the "
+        f"fits that disagree: a lognormal fit put its {missed} the {format_number(estimate, prefix='$')} the "
         f"observations' mean predicts, so the band runs from the lower of that fit's and a normal-theory band's lower "
         f"ends around the mean to the higher of their upper ends, and covers the sweep at least {level} "
         f"of the time if either fit holds: wider than one fit's band, because neither can be trusted alone."
@@ -549,8 +548,7 @@ def compute_borrowed_cost(
     margin = estimate * COST_BAND_SAFETY_MARGIN
     floored = high - estimate < margin or estimate - low < margin
     low, high = min(low, max(0.0, estimate - margin)), max(high, estimate + margin)
-    forms = PageForms.off_page()
-    level, share = forms.share(INTERVAL_LEVEL).text, forms.share(COST_BAND_SAFETY_MARGIN).text
+    level, share = spell_share(INTERVAL_LEVEL), spell_share(COST_BAND_SAFETY_MARGIN)
     n_obs, n_case = len(costs), len(case_means)
     spread = (
         f"The {n_obs} past observations show no spread, so nothing they hold measures how a new case's cost may differ."
