@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the analyst cites a contrast under one key; a campaign's arms and its scorecard read less
+
+**Fixed:** `dominance` cited a separating contrast's delta under `aspects.<aspect>.contrast.<arm>.<measure>` wherever
+the contrast named an aspect, while `contrasts_list` and the editor's facts cite it as `contrast.<arm>.<measure>`
+unless the input holds that arm and measure twice. The analyst saw one figure under two keys; a survivor's standing
+now cites it by the listing's key (#1021).
+
+**Changed:** `aspect_pass_rate` reads the trials' pass rate alone rather than every floor reading, and the scorecard
+reads each row's pass rate once. `campaign_arms` loads each member run once and reads every run's first result in one
+call by id, where it loaded each run twice and read each first result on its own; it still reads each run's result
+keys one run at a time (#1053). `editor_rubric` keeps at most 64 editor texts read (#1117). Output is unchanged.
+
 ### evals: a page's forms, arm names and gate checks are worked out once per report input
 
 **Changed:** `PageForms.of`, `page_arm_names` and a `gate_check` read off any page (no `forms`) keep their results per
