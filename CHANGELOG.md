@@ -101,6 +101,14 @@ the submission that replaces it; a pool replaced for its memory whose worker die
 has its own shutdown lock, so one finishing a long job holds up no other's, and `close()` also waits for the pools
 still being retired.
 
+### backup: a dump or restore stopped early no longer waits forever on its killed child (#1168)
+
+**Fixed:** `stream_stdout` and `pipe_through` kill the child when their consumer stops before the end, then wait on
+it. When that wait began before the event loop had seen the kill land, asyncio returned it only once every one of the
+child's pipes had closed, and the stopped consumer had left stdout's reader paused on a full buffer, so the wait never
+returned. Both now read the killed child's stdout to its end, dropping it, before they wait. A loaded test runner hit
+it as a 5 s timeout closing a `stream_stdout` that had read one chunk.
+
 ### core: a shared Arrow worker that dies leaves nothing behind (#1140)
 
 **Fixed:** when a `SharedArrowPool` worker died holding a hand-off, a version or a result, the pool could hear the
