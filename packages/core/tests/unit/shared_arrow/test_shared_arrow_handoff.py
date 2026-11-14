@@ -314,6 +314,18 @@ class TestTheHandOffIsBounded:
         assert store.handoffs() == () and _hidden(store) == []
         assert store.status()["handoffs_open"] == 0
 
+    def test_a_small_hand_off_under_a_large_named_bound_counts_what_it_hands(self, tmp_path: Path) -> None:
+        """Flips if a hand-off of known-size tables is held at the caller's named ``max_bytes`` rather than at what
+        it hands (reports #53: a 12 MiB store refused a 1 MiB hand-off named at 64 MiB), or if one whose own bytes
+        pass the store's room is no longer refused."""
+        small = SharedArrowStore(tmp_path / "shm", max_bytes=12 << 20)
+        handed = small.hand({"t": pa.table({"a": pa.array(range(100_000), pa.int64())})}, max_bytes=64 << 20)
+        assert small.status()["refused"] == 0
+        small.release(handed)
+        with pytest.raises(SharedArrowFullError):
+            small.hand({"t": pa.table({"a": pa.array(range(2_000_000), pa.int64())})}, max_bytes=64 << 20)
+        assert small.status()["refused"] == 1
+
     def test_a_reader_of_unknown_size_needs_its_bound_named(self, store: SharedArrowStore) -> None:
         reader = pa.RecordBatchReader.from_batches(pa.schema([("a", pa.int64())]), iter(()))
         with pytest.raises(ValueError, match="max_bytes"):

@@ -2482,7 +2482,8 @@ class SharedArrowStore:
         :param tables: name -> a ``pyarrow.Table``, a ``pyarrow.RecordBatchReader`` or what opens either (then name
             ``max_bytes``)
         :ptype tables: Mapping[str, Any]
-        :param max_bytes: the most its files may take; None for its tables' bytes and the file's own
+        :param max_bytes: the most its files may take; None for its tables' bytes and the file's own. Tables all of
+            known size (``pyarrow.Table``) are held at the lesser of it and their own bound
         :ptype max_bytes: int | None
         :return: the hand-off, to pass to the worker
         :rtype: HandedTables
@@ -2493,7 +2494,16 @@ class SharedArrowStore:
         """
         for name in tables:
             _valid_name(name, "table")
-        bound = _handoff_bound(tables) if max_bytes is None else max_bytes
+        if max_bytes is not None and max_bytes <= 0:
+            raise ValueError("a hand-off's max_bytes must be positive")
+        # tables of known size are held at what they hand, never more than a named bound: a large bound named for
+        # the worst case must not refuse a small hand-off in a store with room for it
+        if max_bytes is None:
+            bound = _handoff_bound(tables)
+        elif all(isinstance(table, pa.Table) for table in tables.values()):
+            bound = min(max_bytes, _handoff_bound(tables))
+        else:
+            bound = max_bytes
         if bound <= 0:
             raise ValueError("a hand-off's max_bytes must be positive")
         self.sweep()
