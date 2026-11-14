@@ -77,6 +77,7 @@ from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.analysis.report.blocks import TableBlock, bare_columns
 from threetears.evals.analysis.report.aspect.contrasts import contrast_evidence
 from threetears.evals.analysis.report.verdict import led_sentences
+from threetears.evals.analysis.report.words import heading_case
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 
 __all__ = ["build_campaign_report"]
@@ -405,9 +406,9 @@ _EVIDENCE_HEADING = "Evidence"
 def _fold_heading(aspect: Aspect, names: AspectNames, title: str) -> str:
     """An aspect fold's heading: its full label, which a declared short name stands in for everywhere else; an
     engine-given label by the name the page calls the aspect; and a fold named as the page is, its evidence, so no
-    heading prints twice."""
+    heading prints twice. A heading is a label, so one in words opens on a capital (:func:`heading_case`)."""
     heading = aspect.label if aspect.short_name is not None else names(aspect.label)
-    return _EVIDENCE_HEADING if heading == title else heading
+    return _EVIDENCE_HEADING if heading == title else heading_case(heading)
 
 
 def _title(campaign: EvalCampaign) -> str:

@@ -150,9 +150,11 @@ class Figure:
     ``held_above``, a criterion figure's ``gap``): descriptive, with no interval and no test behind it. ``per`` is
     what a money figure counts, as a plural noun (``conversations``), where the input states it
     (:mod:`~threetears.evals.analysis.report.cost_unit`); empty where it does not, or the figure is no money.
-    ``level`` marks an interval's confidence level, read in percent as the input states it, to every digit the number
-    rule keeps (``97.5%``, ``98.33%``), never rounded to a whole percent or to a rate's one decimal: two levels that
-    differ never print alike.
+    ``level`` marks an interval's confidence level, held in percent as the input states it and never rounded, so two
+    levels that differ are two figures. Its printed text rounds as a value does by its interval (owner ruling,
+    2026-11-14; :func:`~threetears.evals.analysis.report.number_forms.policy.policy_level`): its distance from 100% to
+    two significant figures (``97.5%``, ``99.69%``, ``98.3%`` for 98.33%), so two levels that differ past those
+    figures print alike while the figure keeps them apart.
 
     A money figure also carries the set it is spelled with (#993): ``amounts``, its statistic's amount for every arm of its
     family, on its scale, or, for a change, the amounts it compares, from which

@@ -129,8 +129,9 @@ class TestAScorerGuardrail:
         # On the row's ruler, points for a pass/fail, as the margin column states it.
         assert "the interval reaches both sides of -10 pts, the declared margin" in slip["decision"]
         (same,) = comparison.guardrails("same")
-        # The level sits once in the table's header; a pass/fail reads in points.
-        assert same["interval"] == "-8 to +8 pts", "a pass/fail is on 0 to 1: the bounded test's"
+        # The level sits once in the table's header; a pass/fail reads in points, at the tenth the measure's narrowest
+        # interval sets (the precision rule, owner ruling 2026-11-14), where it read "-8 to +8 pts".
+        assert same["interval"] == "-8.1 to +8.1 pts", "a pass/fail is on 0 to 1: the bounded test's"
         assert comparison.guardrail_readings.checks[0].interval_basis == "bounded"
 
     async def test_the_standing_of_each_arm_and_none_for_the_control(self) -> None:

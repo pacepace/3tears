@@ -130,7 +130,7 @@ from threetears.evals.analysis.report.keys.resolve import figure_unit
 from threetears.evals.analysis.report.keys.separation import correction_words, pairing_contrast
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import aspect_board
-from threetears.evals.analysis.report.rows import lever_arms, query_aspect
+from threetears.evals.analysis.report.rows import lever_arms, query_aspect, query_rows
 from threetears.evals.analysis.style import lever_reader_name
 
 __all__ = ["RESOLVERS", "higher_is_better"]
@@ -1276,6 +1276,35 @@ def _family_level(context: ChartContext) -> str:
     return context.forms.confidence(context.level, families[0] if len(families) == 1 else None).text
 
 
+#: The fewest changes a change chart draws (#1124): one change belongs in a sentence or a table, which state it
+#: with its interval, never in a chart, whose one row compares it with nothing.
+_FEWEST_CHANGES = 2
+
+#: The sources a diverging chart draws that are no change across the campaign or over time, so one row of them is
+#: drawn: two arms compared, and a judge's preference.
+_NOT_CHANGES = frozenset({"compare", "human_pref"})
+
+
+def _refuse_one_change(context: ChartContext, changes: Sequence[_Change]) -> None:
+    """Refuse a change chart that draws a single change (#1124): a structural rule, the count of its rows, so a chart
+    of one row never reaches a page. Only a chart of what changed is refused (owner ruling, 2026-11-14): two arms
+    compared on one measure (``compare``) are one difference by what they are, and a judge's preference is a split
+    around even, which the writer eval's page draws for its one pair (:func:`_preference_changes`); both are drawn.
+
+    The refusal names what the writer can do: the prose, a table, or a ``compare`` chart of the two arms, which draws
+    one difference; and selecting more rows only where the source holds more of the chart's measures than the query
+    selected, over every arm and stratum (a campaign of one candidate holds one contrast of a measure, so there it
+    would be advice no draft can follow)."""
+    if context.query.source not in _NOT_CHANGES and len(changes) < _FEWEST_CHANGES:
+        widened = context.query.model_copy(update={"arms": [], "strata": [], "limit": 0})
+        more = len(query_rows(widened, context.report_input)) >= _FEWEST_CHANGES
+        raise context.refuse(
+            "it draws one change, which a chart compares with nothing: state it in the prose (its key prints the "
+            "change and its interval) or in a table, or draw the two arms as a 'compare' chart, which draws one "
+            "difference" + ("; or select more rows to compare" if more else "")
+        )
+
+
 def _forest(context: ChartContext) -> Drawn:
     source = context.query.source
     refusal = unit_refusal(context.spec.kind, context.query, context.report_input)
@@ -1290,6 +1319,7 @@ def _forest(context: ChartContext) -> Drawn:
         raise context.refuse("a forest draws readings or contrasts")
     if not context.level:
         raise context.refuse("a forest draws intervals, and the chart states no level for them")
+    _refuse_one_change(context, changes)
     zero = _zero_label(context, changes)
     changes = _baselined(context, changes)
     reference = reference_line(context, drawn)
@@ -1395,6 +1425,7 @@ def _diverging(context: ChartContext) -> Drawn:
         )
     if not changes:
         raise context.refuse("it selects no change to draw")
+    _refuse_one_change(context, changes)
     zero = _zero_label(context, changes)
     if source not in ("strata", "tasks"):
         # Slices are set beside what they are compared with as their changes are read (:func:`_slice_changes`).

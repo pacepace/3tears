@@ -161,6 +161,38 @@ def test_interval_rows_carry_no_level_so_they_read_as_their_table_alone() -> Non
     assert _interval_chart().kit_chart() is None
 
 
+def _decimals(text: str) -> set[int]:
+    """How many decimals each figure in a cell carries."""
+    return {len(found.partition(".")[2]) for found in re.findall(r"\d+(?:\.\d+)?", text)}
+
+
+def test_one_measures_column_reads_at_one_precision_its_narrowest_intervals() -> None:
+    """A chart a host built with no decided texts reads as its table: its rows are one measure's, so every value and
+    every end reads at the one precision its narrowest interval sets (two significant figures of a 0.70 width: two
+    decimals), never each row at its own (``12.35`` above ``46``; owner ruling, 2026-11-14; Critic D-2)."""
+    block = ChartBlock(
+        section="contrasts",
+        chart="interval_rows",
+        title="Latency by arm",
+        rows=[
+            IntervalRow(label="a", value=12.345, low=12.0, high=12.7, n_cases=8),
+            IntervalRow(label="b", value=45.6, low=30.1, high=60.2, n_cases=8),
+        ],
+        unit="",
+    )
+    _, rows = block.values_table()
+    assert [row[1:3] for row in rows] == [["12.35", "12.00 to 12.70"], ["45.60", "30.10 to 60.20"]], rows
+
+
+def test_a_cost_quality_tables_pass_rate_reads_at_one_precision() -> None:
+    """The pass rate down a cost/quality chart's table is one measure: one precision, its narrowest interval's."""
+    block = _cost_chart(1.0, 2.0)
+    narrow = block.points[1].model_copy(update={"pass_rate": 61.234, "pass_rate_low": 58.0, "pass_rate_high": 64.5})
+    block = block.model_copy(update={"points": [block.points[0], narrow]})
+    _, rows = block.values_table()
+    assert {decimals for row in rows for cell in row[3:5] for decimals in _decimals(cell)} == {1}, rows
+
+
 def test_two_lost_causes_side_by_side_are_two_colours_and_neither_is_a_series() -> None:
     _, data = _drawn(_bar_chart())
     lost = [segment["color"] for segment in data["rows"][0]["segments"][2:]]
@@ -288,8 +320,9 @@ async def test_a_campaign_with_enough_cases_draws_its_contrast_s_interval_in_the
 def test_a_glyph_is_ink_on_one_scale_with_its_numbers_in_its_title() -> None:
     svg = interval_glyph_svg(-1.1, -4.2, 2.0, unit="pts", scale=(-7.0, 36.7), margin=5.0)
     assert svg.startswith('<svg class="viz-glyph" viewBox="0 0 120 14" role="img">')
-    # The interval in its one form, a change's ends signed, the unit once, on the figure (number rule 3).
-    assert "<title>-1.1 pts, interval -4.2 to +2, margin ±5 pts</title>" in svg
+    # The interval in its one form, a change's ends signed, the unit once, on the figure (number rule 3), the figure
+    # and both ends at two significant figures of the interval's width (owner ruling, 2026-11-14): +2.0, never +2.
+    assert "<title>-1.1 pts, interval -4.2 to +2.0, margin ±5 pts</title>" in svg
     for mark in ("viz-track", "viz-zero", "viz-band", "viz-whisker", "viz-point"):
         assert f'class="{mark}"' in svg, mark
     assert "<script" not in svg and "url(" not in svg and "#" not in svg and "href" not in svg

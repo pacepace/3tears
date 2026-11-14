@@ -137,14 +137,15 @@ def test_a_change_in_points_reads_signed_at_its_rate_s_places_and_its_interval_s
 ) -> None:
     """Field accuracy's candidate-b change of -6.0 points printed ``-6 pts`` beside ``+3.6``'s ``3.6 pts``, and Refund
     amount check's interval ``[-6.9, 11] pts``. Every change reads signed at its rate's places, which its narrowest
-    interval sets (Field accuracy's tenth, Refund amount check's whole points), both ends of its interval alike and
-    signed, the unit once; the pass rate's ``-0.03046`` end reads ``-0.03``, never ``-0`` or ``0``."""
+    interval sets (Field accuracy's tenth, Refund amount check's tenth), both ends of its interval alike and
+    signed, the unit once; the pass rate's ``-0.03046`` end reads ``-0.03``, never ``-0`` or ``0``. Refund amount
+    check's narrowest interval is 6 points wide, so it reads to a tenth at two significant figures of that width."""
     table = _comparisons(scaled)
     field = {row["contrast"]: row for row in _rows(table, "Field accuracy")}
     assert field["candidate-b"]["change"] == "-6.0 pts"
     assert field["candidate-a"]["change"] == "+3.6 pts"
     refund = {row["contrast"]: row for row in _rows(table, "Refund amount check")}
-    assert refund["candidate-a"]["interval"] == "-7 to +11 pts"
+    assert refund["candidate-a"]["interval"] == "-6.9 to +11.0 pts"
     passes = {row["contrast"]: row for row in _rows(table, "Pass rate")}
     assert passes["candidate-b"]["interval"] == "-15 to -0.03 pts"
     for row in table.rows:
@@ -215,11 +216,11 @@ def test_the_corrected_comparisons_read_each_figure_at_its_measure_s_one_precisi
     rows = [{key: cell.text for key, cell in row.items()} for row in kairo_tables["contrasts"].rows]
     said = {(row["arm"], row["measure"]): row for row in rows}
     held = said["qwen3.8-flash", "Persona holds character"]
-    assert (held["change"], held["interval"]) == ("-6 pts", "-12 to -2 pts")
+    assert (held["change"], held["interval"]) == ("-6.0 pts", "-11.6 to -2.2 pts")
     outcome = said["qwen3.8-flash", "Outcome (1–5)"]
     assert (outcome["change"], outcome["interval"]) == ("-0.21", "-0.31 to -0.12")
     notices = said["1017", "Failed-reply notices"]
-    assert (notices["change"], notices["interval"]) == ("-0.002 notices", "-0.007 to +0.002 notices")
+    assert (notices["change"], notices["interval"]) == ("-0.0022 notices", "-0.0069 to +0.0025 notices")
     assert {row["level"] for row in rows} == {"95% (adjusted for 16 comparisons)"}
 
 
@@ -243,8 +244,8 @@ def test_a_change_of_float_residue_leaves_its_measure_s_other_changes_at_their_p
         if row["measure"].text == "Failed-reply notices"
     }
     assert said == {
-        "1017": ("-0.002 notices", "-0.007 to +0.002 notices"),
-        "qwen3.8-flash": ("0 notices", "-0.007 to +0.002 notices"),
+        "1017": ("-0.0022 notices", "-0.0069 to +0.0025 notices"),
+        "qwen3.8-flash": ("0 notices", "-0.0069 to +0.0025 notices"),
     }, said
 
 
@@ -260,7 +261,7 @@ def test_a_judged_score_reads_at_two_decimals_and_an_exact_zero_whole_in_every_f
     outcome = [row[key].text for row in arms.rows if key in row]
     assert outcome and all(re.fullmatch(r"\d\.\d{2}", text) for text in outcome), outcome
     notices = [cell.text for row in arms.rows for key, cell in row.items() if "notices" in cell.text]
-    assert "0.002 notices" in notices and "0 notices" in notices, notices
+    assert "0.0022 notices" in notices and "0 notices" in notices, notices
 
 
 def test_a_measured_figure_reads_on_the_scorecard_as_the_full_results_print_it() -> None:
@@ -467,15 +468,15 @@ def test_an_undeclared_floor_leaves_a_count_s_interval_as_the_run_read_it() -> N
     assert not descriptor.nonnegative and descriptor.value_range is None, "the control: no floor declared"
     _, rows = _kairo_contrasts()
     row = rows["1017"]
-    assert row["control"] == "0.002 notices (-0.001 to 0.005)", row
+    assert row["control"] == "0.0022 notices (-0.0009 to 0.0053)", row
     assert row["arm"] == "0 notices", row
-    assert row["interval"] == "-0.007 to +0.002 notices", row
+    assert row["interval"] == "-0.0069 to +0.0025 notices", row
 
 
 def test_a_declared_floor_holds_a_level_s_interval_at_zero() -> None:
     """The same measure declared non-negative: the level's interval stops at the floor, which reads ``0``."""
     _, rows = _kairo_contrasts({"nonnegative": True})
-    assert rows["1017"]["control"] == "0.002 notices (0 to 0.005)", rows["1017"]
+    assert rows["1017"]["control"] == "0.0022 notices (0 to 0.0053)", rows["1017"]
 
 
 def test_a_declared_range_holds_a_level_s_interval_and_a_change_s_inside_it_in_the_table_and_the_sentence() -> None:
@@ -483,10 +484,10 @@ def test_a_declared_range_holds_a_level_s_interval_and_a_change_s_inside_it_in_t
     than the range is wide, in the table's interval cell and in the verdict line's sentence alike."""
     aspect, rows = _kairo_contrasts({"nonnegative": True, "value_range": (0.0, 0.004)})
     row = rows["1017"]
-    assert row["control"] == "0.002 notices (0 to 0.004)", row
-    assert row["interval"] == "-0.004 to +0.002 notices", row
+    assert row["control"] == "0.0022 notices (0 to 0.0040)", row
+    assert row["interval"] == "-0.0040 to +0.0025 notices", row
     sentence = _notices_sentence(aspect)
-    assert "0.004 notices better" in sentence and "0.007" not in sentence, sentence
+    assert "0.0040 notices better" in sentence and "0.0069" not in sentence, sentence
 
 
 def test_a_written_page_s_change_never_reaches_past_its_measure_s_scale() -> None:
@@ -504,7 +505,7 @@ def test_a_written_page_s_change_never_reaches_past_its_measure_s_scale() -> Non
     tables = {table.name: table for table in every_table(held, look, forms=PageForms.of(held))}
     said = {(row["arm"].text, row["measure"].text): row["interval"].text for row in tables["contrasts"].rows}
     assert said["qwen3.8-flash", "Outcome (1–5)"] == "-4.00 to +0.10"
-    assert said["1017", "Failed-reply notices"] == "-0.007 to +0.002 notices"
+    assert said["1017", "Failed-reply notices"] == "-0.0069 to +0.0025 notices"
 
 
 # --- the review's observations ------------------------------------------------------------------------------------------
@@ -520,17 +521,17 @@ def test_a_key_reads_a_score_and_a_measure_s_interval_at_the_table_s_precision()
         == "-0.31 to -0.12"
     )
     notices = format_figure(resolve("contrast.1017.failed_reply_notices.interval", held), forms=PageForms.of(held))
-    assert notices == "-0.007 to +0.002 notices", notices
+    assert notices == "-0.0069 to +0.0025 notices", notices
     assert (
         format_figure(resolve("contrast.1017.failed_reply_notices.delta", held), forms=PageForms.of(held))
-        == "-0.002 notices"
+        == "-0.0022 notices"
     )
 
 
 def test_a_key_and_the_full_results_read_a_measure_s_change_by_one_owner_of_its_set() -> None:
     """The keys placed a measure's changes over every comparison on it but a judged one, the Full results over those of
     the row's own kind: a notices change of -0.5 stated with no kind read ``-0.50 notices`` in the table and
-    ``-0.5000 notices`` in the key citing it. One owner places the set, for both."""
+    ``-0.5000 notices`` in the key citing it. One owner places the set, for both, at the measure's four decimals."""
     held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
     unkinded = [
         contrast.model_copy(update={"kind": None, "delta": -0.5})
@@ -548,18 +549,18 @@ def test_a_key_and_the_full_results_read_a_measure_s_change_by_one_owner_of_its_
         arm: format_figure(resolve(f"contrast.{arm}.{_NOTICES}.delta", held), forms=PageForms.of(held))
         for arm in tabled
     }
-    assert tabled == keyed == {"1017": "-0.002 notices", "qwen3.8-flash": "-0.500 notices"}, (tabled, keyed)
+    assert tabled == keyed == {"1017": "-0.0022 notices", "qwen3.8-flash": "-0.5000 notices"}, (tabled, keyed)
 
 
 def test_a_measure_s_places_are_read_from_its_narrowest_half_width_as_printed() -> None:
     """A measure's decimals come from its uncertainty (number policy, rule 2): the narrowest half-width among its
-    headline intervals, as printed, to its first significant figure. Kairo's failed-reply notices: the control's
-    interval is 0.0031 either side, so every notice figure reads to three decimals; its send-message check, a share
-    printed in percent, is 0.64 points either side at its narrowest, so it reads to a tenth."""
+    headline intervals, as printed, its width to two significant figures (owner ruling, 2026-11-14). Kairo's
+    failed-reply notices: the control's interval is 0.0062 wide, so every notice figure reads to four decimals; its
+    send-message check, a share printed in percent, is 1.28 points wide at its narrowest, so it reads to a tenth."""
     held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
     forms = PageForms.of(held)
     notices = forms.measure(_NOTICES)
-    assert notices.places == 3
+    assert notices.places == 4
     assert notices.half_width is not None and round(notices.half_width, 4) == 0.0031
     check = next(form for form in forms.measures if form.key.startswith("goal_state:"))
     assert check.places == 1
@@ -575,7 +576,8 @@ def test_a_figure_under_a_millionth_reads_as_its_bound_and_asks_for_no_decimals(
 
 def test_a_family_level_under_100_never_reads_100() -> None:
     """A corrected level of 99.95% read ``100%``, which no interval holds at. Its heading now states the guarantee the
-    family holds at, and the level itself, where it is printed, reads as stored, never rounded."""
+    family holds at, and the level itself, where it is printed, reads its distance from 100% to two significant
+    figures, which keeps 99.95% off 100%."""
     held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
     held = held.model_copy(
         update={
@@ -607,8 +609,8 @@ def test_a_change_reads_at_its_table_s_precision_however_its_family_spells_it() 
     ]
     notices = "compare.1017.September.failed_reply_notices.overall"
     assert (said(f"{notices}.difference"), said(f"{notices}.interval")) == (
-        "-0.002 notices",
-        "-0.007 to +0.002 notices",
+        "-0.0022 notices",
+        "-0.0069 to +0.0025 notices",
     )
     stratum = "strata.taste.1017.__outcome__"
     assert (said(f"{stratum}.mean"), said(f"{stratum}.vs_control")) == ("4.76", "+0.10")

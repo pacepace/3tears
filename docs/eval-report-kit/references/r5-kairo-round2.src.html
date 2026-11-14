@@ -83,13 +83,13 @@ const C=(arm,meas)=>D.contrasts.find(c=>c.arm===arm&&c.measure===meas);
 // The number policy (packages/evals/docs/design.md, The number policy), for every figure the page writes. A measure
 // reads at one count of decimals everywhere on the page, taken from the narrowest interval the page states for it (the
 // 95% reading's where the data holds one, else its corrected contrasts', which are wider and so never ask for more
-// digits): its first significant digit, or its second when that is a 1 or a 2. A rate or a change in points takes one
+// digits): two significant figures of that interval's width (owner ruling, 2026-11-14). A rate or a change in points takes one
 // decimal at most; an interval's end that would round onto zero takes just enough digits to stay off it. A measure
 // with no interval reads at two significant figures of its least figure. Rounding is half-to-even, as the package's.
 const even=(v,d)=>{const r=v*10**d,f=Math.floor(r);const t=Math.abs(r-f-0.5)<1e-9?(f%2===0?f:f+1):Math.round(r);return t/10**d;};
 const placesOf=(halves,least,cap)=>{const h=Math.min(...halves.filter(x=>x>0));let d;
-  if(isFinite(h)){const e=Math.floor(Math.log10(h)),lead=Math.floor(h/10**e+1e-9);d=(lead<=2?1:0)-e;}
-  else d=least>0?1-Math.floor(Math.log10(least)):0;return Math.max(0,cap==null?d:Math.min(d,cap));};
+  if(isFinite(h))d=1-Number((2*h).toExponential(1).split("e")[1]);
+  else d=least>0?1-Math.floor(Math.log10(least)):0;return Math.max(0,Math.min(d,cap==null?6:cap));};
 const at=(v,d,signed)=>{const t=even(v,d);return (signed&&t>0?"+":"")+(t===0?0:t).toFixed(d);};
 // a level: an exact zero reads whole, and a rate under 100% never reads 100% (nor one over 0% 0%)
 const lvl=(v,d,rate)=>{if(v===0)return "0";let e=d;while(rate&&v!==100&&(even(v,e)===100||even(v,e)===0)&&e<6)e++;return at(v,e);};

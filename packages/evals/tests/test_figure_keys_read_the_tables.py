@@ -96,7 +96,7 @@ def test_a_contrast_key_reads_its_change_and_interval_as_the_comparisons_table(k
 def test_a_measure_key_reads_its_mean_as_the_arms_by_measure_table(kairo: ReportInput) -> None:
     figure = resolve("measure.failed_reply_notices.September.mean", kairo)
     tabled = _cell(_table(kairo, "arms_by_measure"), "measure:failed_reply_notices", arm="September")
-    assert format_figure(figure, forms=PageForms.of(kairo)) == tabled == "0.002 notices"
+    assert format_figure(figure, forms=PageForms.of(kairo)) == tabled == "0.0022 notices"
     assert PageForms.of(kairo).level("failed_reply_notices", _level(figure)).text == tabled
 
 

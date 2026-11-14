@@ -111,6 +111,7 @@ from threetears.evals.analysis.report.call import (
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report.doc_page.prose import reads_as_a_tag
 from threetears.evals.analysis.report.fact_arms import fact_arms
+from threetears.evals.analysis.report.words import label_case
 from threetears.evals.analysis.style import humanize, measure_name
 from threetears.evals.kernel.report_doc import DocCaveat, Evidence, ReportDoc, ReportFinding, is_analyst_caveat
 from threetears.evals.kernel.chart_query import ChartSpec, PlannedChart
@@ -313,7 +314,7 @@ def _code_label(caveat: Caveat | ImpliedCaveat, look: PageLook, report_input: Re
     else:
         name = humanize("dimension", rest.rsplit(":", 1)[-1])
     label = CAVEAT_LABELS.get(caveat.kind, humanize("dimension", caveat.kind)).format(name=name)
-    return label[:1].upper() + label[1:]
+    return label_case(label)
 
 
 @dataclass(frozen=True)
@@ -490,7 +491,7 @@ def _reference(spec: ChartSpec, forms: PageForms) -> str:
         return ""
     line = spec.reference[0]
     return REFERENCE_TEMPLATE.format(
-        kind=humanize("dimension", line.kind).capitalize(),
+        kind=label_case(humanize("dimension", line.kind)),
         value=format_figure(resolve(line.key, forms.report_input), forms=forms),
     )
 

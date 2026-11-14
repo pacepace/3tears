@@ -8,10 +8,10 @@ Contracts held here (``analysis.report.figure_keys`` level figures, ``analysis.r
   (two contrasts at different levels) names them as the keys print them;
 - **a chart of readings prints the level of the interval it draws**: a forest of readings draws each one's
   ``within_interval``, at the nominal level with no correction, and prints that level, as a reading's level key does,
-  never the gain interval's Holm step (``gain_confidence``): one candidate at a step past the nominal level prints the
-  nominal one, candidates at different steps draw together, and a reading stating no gain interval draws; a reading
-  stating no within_interval (an aspect with no margin) states no level: its level key is unstated and its bars
-  print none;
+  never the gain interval's Holm step (``gain_confidence``): a candidate at a step past the nominal level prints the
+  nominal one beside another, candidates at different steps draw together, and a reading stating no gain interval
+  draws; a reading stating no within_interval (an aspect with no margin) states no level: its level key is unstated
+  and its bars print none. Each chart draws two candidates, since a change chart of one row is refused (#1124);
 - **a confusion block names every panel's own columns and its axis**: with two axes the domain panel never sits
   under the complexity labels, and with two arms each panel names its arm and its axis;
 - **a check is named as the code it is**: a measure whose only name is its check's expression heads its column as
@@ -39,6 +39,7 @@ from threetears.evals.kernel.numbers import format_number, group_thousands, mone
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import BarsChart, ForestChart
 from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.number_forms.policy import policy_level
 from threetears.evals.analysis.report.figure_keys import format_figure, price_frontier, resolve
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_input import Factor, Reading, ReportInput
@@ -74,8 +75,9 @@ def _inputs() -> dict[str, ReportInput]:
 
 
 def _stated(level: float) -> str:
-    """A level, a share, as the input states it: in percent, to every digit the number rule keeps."""
-    return f"{format_number(level * 100)}%"
+    """A level, a share, as a page prints it as text: its distance from 100% to two significant figures (owner ruling,
+    2026-11-14: the figure stays exact, its text rounds), ``98.3%`` for 98.33%."""
+    return policy_level(level * 100)
 
 
 def _drawn(held: ReportInput, kind: str, query: ChartQuery) -> Any:
@@ -107,6 +109,20 @@ def _stepped_readings() -> list[tuple[str, str, Reading]]:
         and reading.gain_confidence is not None
         and float(reading.gain_confidence) != INTERVAL_LEVEL
     ]
+
+
+def _beside(held: ReportInput, aspect: str, reading: Reading) -> list[str]:
+    """The reading's arm and one other arm the aspect reads with a within_interval: two rows, since a change chart of
+    one row is refused (#1124)."""
+    others = [
+        r.arm
+        for a in held.aspects
+        if a.id == aspect
+        for r in a.readings
+        if r.arm != reading.arm and r.within_interval is not None
+    ]
+    assert others, f"the aspect {aspect!r} reads no other arm beside {reading.arm!r}"
+    return [reading.arm, others[0]]
 
 
 def _forest(held: ReportInput, aspect: str, arms: list[str]) -> tuple[Any, ForestChart]:
@@ -186,12 +202,12 @@ def test_a_pairs_level_key_prints_the_level_as_the_input_states_it() -> None:
         assert format_figure(figure, forms=PageForms.of(held)) == _stated(float(pair.confidence))
 
 
-def test_a_one_candidate_forest_prints_the_nominal_level_of_the_interval_it_draws() -> None:
+def test_a_forest_holding_a_stepped_reading_prints_the_nominal_level_of_the_interval_it_draws() -> None:
     found = _stepped_readings()
     assert found, "no input holds a reading whose gain interval sits past the nominal level"
     for name, aspect, reading in found:
         held = _inputs()[name]
-        block, chart = _forest(held, aspect, [reading.arm])
+        block, chart = _forest(held, aspect, _beside(held, aspect, reading))
         assert block.level == chart.level == _NOMINAL, (name, aspect, reading.arm)
         assert block.level == format_figure(
             resolve(f"aspects.{aspect}.reading.{reading.arm}.level", held), forms=PageForms.of(held)
@@ -223,7 +239,7 @@ def test_a_reading_with_a_within_interval_and_no_gain_fields_draws_at_the_nomina
     stripped = _with_reading(
         held, aspect_id, reading.model_copy(update={"gain_interval": None, "gain_confidence": None})
     )
-    block, chart = _forest(stripped, aspect_id, [reading.arm])
+    block, chart = _forest(stripped, aspect_id, _beside(stripped, aspect_id, reading))
     assert block.level == chart.level == _NOMINAL
     _drew_within(chart, stripped, aspect_id)
     assert (
@@ -236,17 +252,20 @@ def test_a_reading_with_a_within_interval_and_no_gain_fields_draws_at_the_nomina
 
 def test_a_reading_with_gain_fields_and_no_within_interval_states_no_level() -> None:
     """An aspect with no margin: the reading states its gain interval and level, and no within_interval. No chart of
-    readings draws the gain interval, so nothing labels one: the level key is unstated, and its bars print no level."""
+    readings draws the gain interval, so nothing labels one: the level key is unstated, and its bars print no level.
+    Every reading drawn loses its within_interval, as an aspect with no margin states none."""
     name, aspect_id, reading = _stepped_readings()[0]
     assert reading.gain_interval is not None and reading.gain_confidence is not None
-    held = _with_reading(_inputs()[name], aspect_id, reading.model_copy(update={"within_interval": None}))
+    held = _inputs()[name]
+    arms = _beside(held, aspect_id, reading)
+    for arm in arms:
+        (each,) = [r for a in held.aspects if a.id == aspect_id for r in a.readings if r.arm == arm]
+        held = _with_reading(held, aspect_id, each.model_copy(update={"within_interval": None}))
     with pytest.raises(UnstatedFigure):
         resolve(f"aspects.{aspect_id}.reading.{reading.arm}.level", held)
-    block = block_render(
-        held, block_kind="diverging_bars", query=_query("readings", aspect=aspect_id, arms=[reading.arm])
-    )
+    block = block_render(held, block_kind="diverging_bars", query=_query("readings", aspect=aspect_id, arms=arms))
     assert block.level == ""
-    bars = _bars(held, aspect_id, [reading.arm])
+    bars = _bars(held, aspect_id, arms)
     assert bars.level is None
     assert all(row.lo is None and row.hi is None for row in bars.rows or [])
 

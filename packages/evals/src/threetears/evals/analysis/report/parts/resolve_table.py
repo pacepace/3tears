@@ -689,7 +689,7 @@ def _with_intervals(
         own = f"{column.key}{_INTERVAL_COLUMN}"
         if any(row[column.key].low is not None or own in row for row in rows if column.key in row):
             key = f"{column.key}{_INTERVAL_COLUMN}"
-            laid.append(TableColumn(key=key, header=INTERVAL_HEADER.format(level=level).strip().capitalize()))
+            laid.append(TableColumn(key=key, header=label_case(INTERVAL_HEADER.format(level=level).strip())))
             spelled.append(column.key)
     filled = [
         {

@@ -6,6 +6,57 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a page states each interval level once (#1128)
+
+**Changed:** a page of several interval charts printed "95% intervals" over every one. It now states each level once
+(owner ruling, 2026-11-14): the level most of its charts draw (the first met on a tie) heads the first chart that draws
+it and no later one, and a chart at any other level is marked on every chart at it, its head naming the main level's
+figure it is not (`98.3% intervals, not 95%`) or keeping the gloss that sets it apart (`95% intervals (adjusted for 11
+comparisons)`, `95% unpaired intervals`). An aspect's page, a campaign's own charts, each aspect fold of a campaign page
+and a written report's evidence are each one page. A figure's values table keeps its level in its interval column's
+head, and a chart carries its level as before.
+
+**Added:** `level_head` on the kit's `bars`, `diverging_bars`, `forest`, `lines`, `scatter_frontier`, `gate_scatter` and
+`dot_interval` data and on a cost/quality `ChartBlock`: what the chart's head prints of its level, empty for nothing;
+left out, the head is the level's own. The kit reads it (`kHead`), as the static page's drawings do
+(`charts.drawn_head`); `analysis.report.chart_levels.levels_said` sets it over a page's charts in reading order.
+
+### evals: a change chart of one row is refused (#1124)
+
+**Changed:** a forest, diverging bars or a dot strip of changes that would draw a single change is refused, naming
+where the change belongs: in the prose, whose key prints the change with its interval, or in a table (owner ruling,
+2026-11-14), or a `compare` chart of the two arms, which draws one difference; it suggests selecting more rows only
+where the source holds another change of the measure. A chart of one row compares the change with nothing. A writer
+whose draft asks for one is bounced and revises; the analyst skill's charts guide states the rule.
+
+### evals: report polish (#1117, #1127, #1136, #1059)
+
+**Fixed:** a label that `str.capitalize` capitalised (an interval column's head, a verdict's words, a design line's
+kind, a heat cell's tip) keeps the rest of its letters as written, through the one label rule (`GPT tone`, never
+`Gpt tone`). An aspect fold's heading in words opens on a capital; one that is a single token or opens on an
+identifier keeps its case. Every arm by measure reads an arm's dash by one rule on a one-aspect and a several-aspect
+page: `— (not recorded)` where another arm shows a figure in that place, a bare dash where none does. On an HTML page
+the control's mark stays on its name's line (`▸&nbsp;`), so a narrowed column never sets the mark alone above its
+name. A note of three runs or more may break after its first run, where its longer line is shortest, on the static
+page and in the kit alike. The static page reads a chart's data as the page serves it to the kit, every float to
+twelve significant figures, so a heat cell on a boundary takes the same shade and ink in both.
+
+### evals: a value and its interval print to the precision the interval justifies (#1127, #1024)
+
+**Changed:** a measure's figures read at two significant figures of the width of its narrowest headline interval
+(owner ruling, 2026-11-14), where they read at the half-width's first figure, or its second when that was a 1 or a 2.
+A measure whose narrowest interval is 6 to 10 units wide now reads one decimal more: Kairo's pass rate reads `85.3%`,
+`-7.6 pts` and `-12.9 to -1.8 pts` where it read `85%`, `-8 pts` and `-13 to -2 pts`, and its failed-reply notices
+`0.0022` where they read `0.002`. A measure still reads at one precision across its campaign, and a rate at most one
+decimal. A figure and interval no measure's set holds (a glyph drawn with no table) read at two figures of their own
+interval's width through one function, so they no longer print at two precisions (`-4.2 to +2.0`, never `-4.2 to
++2`); the rows of a chart a host built with no decided texts are one measure's, so its table reads every row at the
+one precision its narrowest interval sets. A confidence level printed as text reads its distance from 100% to two
+significant figures (`99.69%`, `98.3%` for 98.33%), in a head, a cell and the prose alike, an aspect page's contrast
+family heads and guardrail interval header included, and a chance under 50% printed the same way (a miss rate) reads
+two significant figures of itself (`2.5%`, `7.5%`, never `2%`); the level a figure holds stays exact. The kit's r4 and
+r5 reference pages read their measures by the same rule. No recording was re-recorded with this change.
+
 ### evals: the run and campaign listings read a page at a time (#1145)
 
 **Changed:** `runs_list` and `campaigns_list` (the operations and their actions) read one page, newest first by

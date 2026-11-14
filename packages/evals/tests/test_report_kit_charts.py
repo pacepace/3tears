@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import KIT_CHARTS, ChartBlock, report_html
+from threetears.evals.analysis.report.chart_levels import levels_said
 from threetears.evals.schema.hashing import round_floats
 from packages.evals.tests.report_kit_support import (
     KIT,
@@ -101,7 +102,8 @@ def test_every_chart_a_reference_draws_is_a_chart_block_that_gives_back_its_data
 
 @pytest.mark.browser
 def test_a_package_page_hands_the_kit_the_data_its_blocks_carry(tmp_path: Path) -> None:
-    """Every reference chart put on a package page is drawn by the kit from the same JSON, with no error."""
+    """Every reference chart put on a package page is drawn by the kit from the same JSON, with no error: the JSON its
+    block carries, each chart's head set as the page states each interval level once (#1128)."""
     reason = chromium_unavailable()
     if reason is not None:
         pytest.skip(f"headless Chromium cannot launch: {reason}")
@@ -118,7 +120,10 @@ def test_a_package_page_hands_the_kit_the_data_its_blocks_carry(tmp_path: Path) 
     drawn, errors = rendered(page, _CHARTS)
     assert errors == []
     # The page serves each chart's data with every float to twelve significant figures, so the kit draws that form.
-    served = [(kind, round_floats(data)) for kind, data in (block.kit_chart() or (None, None) for block in blocks)]
+    served = [
+        (kind, round_floats(data))
+        for kind, data in (block.kit_chart() or (None, None) for block in levels_said(blocks))
+    ]
     assert [(chart["kind"], chart["data"]) for chart in drawn] == served
     assert all(chart["drawn"] for chart in drawn)
 

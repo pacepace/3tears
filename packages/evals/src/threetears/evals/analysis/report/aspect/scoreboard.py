@@ -30,7 +30,7 @@ from threetears.evals.analysis.report.model import (
 )
 from threetears.evals.analysis.report.number_forms.kinds import Role
 from threetears.evals.analysis.report.verdict import cause_short, caveat_lines
-from threetears.evals.analysis.report.words import campaign_arm_tags
+from threetears.evals.analysis.report.words import campaign_arm_tags, label_case
 from threetears.evals.analysis.style import GLOSSARY, ArmName, arm_display_name, lever_reader_name
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
 from threetears.evals.kernel.surface import DecisionSurface, earlier_control_mark
@@ -262,7 +262,7 @@ def _other_failures_header(causes: Sequence[str]) -> str:
     (``Model failed``), or ``Failed otherwise`` over several, which the outcome bar then names one by one."""
     if len(causes) == 1:
         words = cause_short(causes[0])
-        return words[:1].upper() + words[1:]
+        return label_case(words)
     return "Failed otherwise"
 
 

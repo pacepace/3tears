@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import decimal
 import math
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Sequence
 
 from threetears.evals.analysis.quantities import PERCENT
 from threetears.evals.analysis.report.unit_once import interval_alone, unit_spaced
@@ -37,11 +37,10 @@ _ABSENT_TEXT = format_number(None)
 #: which a figure reads as the bound it is under.
 _POLICY_MOST_PLACES = 6
 
-#: The leading digits of a half-width read to two significant figures rather than one: a 1 or a 2, where one figure
-#: would round away up to a third of the uncertainty (0.15 to 0.2). A simplified form of the Particle Data Group's
-#: rule, whose 354 would split two measures of like uncertainty on one page (a half-width of 3.7 points reading 85.3%
-#: beside 4.05 points reading 91%).
-_TWO_FIGURE_LEADS = frozenset("12")
+#: The significant figures an interval's width reads to, which sets the decimals its value and its ends read at
+#: (owner ruling, 2026-11-14): two, so a value and its interval print to the precision the interval justifies
+#: (``-7.6`` with ``-10.8 to -3.4``, never ``-7.581`` with ``-10.79 to -3.381``, nor ``-8`` with ``-11 to -3``).
+_WIDTH_FIGURES = 2
 
 #: The most decimals a rate or a change in points reads at: a tenth of a point is finer than any interval a campaign's
 #: cases support, short of an end the boundary exception keeps off a boundary.
@@ -63,12 +62,12 @@ _PREFERENCE_BOUNDS = (*_RATE_BOUNDS, 50.0)
 def policy_places(
     half_widths: Iterable[float | None], figures: Iterable[float | None] = (), *, capped: bool = False
 ) -> int:
-    """The decimals every figure of one measure reads at, read from its uncertainty: the narrowest of its headline
-    intervals' 95% half-widths (each arm's level, each comparison) printed to its first significant digit, or to its
-    second where that digit is a 1 or a 2. The digit is read off the half-width at two significant figures, so 0.0996
-    leads with the 1 of 0.10. A measure with no interval reads at two significant figures of its least figure but zero
-    (:func:`~threetears.evals.kernel.numbers.set_places`). Never fewer than none, so a half-width of 37 ms reads whole
-    rather than to the ten.
+    """The decimals every figure of one measure reads at, read from its uncertainty: those that print the narrowest of
+    its headline intervals (each arm's level, each comparison) to two significant figures of its width, twice its 95%
+    half-width (owner ruling, 2026-11-14). The width is placed by what it rounds to, so a half-width of 0.0498 (a width
+    of 0.0996, two figures: 0.10) reads at two decimals. A measure with no interval reads at two significant figures of
+    its least figure but zero (:func:`~threetears.evals.kernel.numbers.set_places`). Never fewer than none, so a width
+    of 74 ms reads whole rather than to the ten.
 
     :param half_widths: The half-widths, as printed (a rate's in points); ``None``, zero and non-finite ones say nothing
         of the precision.
@@ -80,14 +79,113 @@ def policy_places(
     :return: The decimals.
     :rtype: int
     """
-    widths = [abs(width) for width in half_widths if width is not None and math.isfinite(width) and width != 0]
+    widths = [2 * abs(width) for width in half_widths if width is not None and math.isfinite(width) and width != 0]
     if widths:
-        lead, exponent = f"{min(widths):.1e}".split("e")
-        places = -int(exponent) + (1 if lead[0] in _TWO_FIGURE_LEADS else 0)
+        exponent = int(f"{min(widths):.{_WIDTH_FIGURES - 1}e}".split("e")[1])
+        places = _WIDTH_FIGURES - 1 - exponent
     else:
         places = set_places(figures)
     places = min(max(0, places), _POLICY_MOST_PLACES)
     return min(places, _POINT_MOST_PLACES) if capped else places
+
+
+def policy_interval_places(low: float, high: float, *, capped: bool = False) -> int:
+    """The decimals a value and its interval read at where no measure's set holds them (a lone figure: a glyph drawn
+    with no table, a chart's own interval): two significant figures of this interval's own width, as
+    :func:`policy_places` reads a measure's narrowest. An interval with no width reads its ends at two significant
+    figures of the lesser.
+
+    :param low: The low end, as printed.
+    :ptype low: float
+    :param high: The high end, as printed.
+    :ptype high: float
+    :param capped: Whether the figure is a rate or a change in points, which reads to at most one decimal.
+    :ptype capped: bool
+    :return: The decimals.
+    :rtype: int
+    """
+    return policy_places([(high - low) / 2], [low, high], capped=capped)
+
+
+def policy_lone_interval(
+    low: float, high: float, *, rate: bool = False, change: bool = False, value: float | None = None
+) -> tuple[str, str]:
+    """A figure and its interval where no measure's set holds them (a chart a host built with no decided texts, a glyph
+    drawn with no table), read at one precision, two significant figures of the interval's own width
+    (:func:`policy_interval_places`): ``-7.6`` with ``-10.8 to -3.4``, never ``-7.581`` with ``-10.79 to -3.381``. The
+    one function such a figure and its interval go through, so the two never read at two precisions.
+
+    :param low: The low end, as printed.
+    :ptype low: float
+    :param high: The high end, as printed.
+    :ptype high: float
+    :param rate: Whether the figure is a percent or a change in points, which reads to at most one decimal and, as a
+        level, is kept off 0% and 100%.
+    :ptype rate: bool
+    :param change: Whether the figure is a change, its value and ends signed.
+    :ptype change: bool
+    :param value: The figure the interval is on; None for an interval alone.
+    :ptype value: float | None
+    :return: The figure's digits (empty for none), and the interval's text, ``low to high``, with no unit.
+    :rtype: tuple[str, str]
+    """
+    places = policy_interval_places(low, high, capped=rate)
+    bounds = _RATE_BOUNDS if rate and not change else ()
+    figure = "" if value is None else policy_figure(value, places, bounds=bounds, signed=change)
+    return figure, policy_interval(low, high, places, change=change, bounds=bounds)[2]
+
+
+def policy_interval_set(
+    rows: Sequence[tuple[float | None, float, float]], *, rate: bool = False
+) -> list[tuple[str, str]]:
+    """Figures of one measure and their intervals where no measure's set holds them but one column does (a chart a
+    host built with no decided texts, read as its table): every row at one precision, two significant figures of the
+    narrowest interval's width (:func:`policy_places`), as a measure reads across its campaign (owner ruling,
+    2026-11-14), never each row at its own interval's (``12.35`` above ``46``).
+
+    :param rows: Each row's figure (None for an interval alone) and its interval's ends, as printed.
+    :ptype rows: Sequence[tuple[float | None, float, float]]
+    :param rate: Whether the figures are percents or changes in points, which read to at most one decimal and, as a
+        level, are kept off 0% and 100%.
+    :ptype rate: bool
+    :return: Each row's figure's digits (empty for none) and its interval's text, ``low to high``, with no unit.
+    :rtype: list[tuple[str, str]]
+    """
+    places = policy_places(
+        [(high - low) / 2 for _, low, high in rows], [end for _, low, high in rows for end in (low, high)], capped=rate
+    )
+    bounds = _RATE_BOUNDS if rate else ()
+    return [
+        (
+            "" if value is None else policy_figure(value, places, bounds=bounds),
+            policy_interval(low, high, places, change=False, bounds=bounds)[2],
+        )
+        for value, low, high in rows
+    ]
+
+
+def policy_level(percent: float) -> str:
+    """An interval's confidence level as text, in percent, rounded as a value is by its interval
+    (:func:`policy_places`): its decimals are those that print its distance from 100%, the chance its interval
+    misses, to two significant figures, trailing zeros dropped, since a level is no member of a set (``95%``,
+    ``97.5%``, ``99.69%`` for 99.6875%, ``98.3%`` for 98.33%). A chance under 50% (a miss rate, ``2.5%``) is that
+    distance itself, so it reads to two significant figures of its own. Owner ruling, 2026-11-14: a level printed as
+    text rounds, so two levels that differ past those figures print alike; the figure keeps the level exact
+    (:attr:`~threetears.evals.analysis.report.keys.figure.Figure.level`).
+
+    :param percent: The level, in percent (``99.6875``).
+    :ptype percent: float
+    :return: Its text with its ``%``; an em dash for a non-finite one.
+    :rtype: str
+    """
+    if not math.isfinite(percent):
+        return _ABSENT_TEXT
+    miss = min(100.0 - percent, percent)
+    places = set_places([miss], figures=_WIDTH_FIGURES) if abs(miss) >= WRITTEN_FROM else 0
+    digits = round_half_even(percent, places)
+    if "." in digits:
+        digits = digits.rstrip("0").rstrip(".")
+    return digits + PERCENT
 
 
 def policy_bounded_places(value: float, places: int, *, bounds: Collection[float]) -> int:

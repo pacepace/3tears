@@ -4,8 +4,8 @@ The policy decides a figure's form from what was measured, once per measure:
 
 1. A measure reads at one precision on the whole page: its levels, changes and interval ends share one count of
    decimals.
-2. That precision comes from the measure's uncertainty: the narrowest 95% half-width among its headline intervals,
-   printed to its first significant digit, or its second when that digit is a 1 or a 2. A rate or a change in points
+2. That precision comes from the measure's uncertainty: the narrowest of its headline intervals, its width (twice its
+   95% half-width) printed to two significant figures (owner ruling, 2026-11-14). A rate or a change in points
    never goes past one decimal, except a figure that would round onto a boundary (zero, a rate's 0% or 100%), which
    takes just enough digits to stay off it. The exception holds for those capped figures and for interval ends alone:
    any other level or change reads at its measure's decimals.
@@ -30,6 +30,7 @@ import math
 import pytest
 
 from threetears.evals.analysis.report.forms import MeasureForm
+from threetears.evals.analysis.report.number_forms.intervals import interval_level
 from threetears.evals.analysis.report.number_forms.policy import (
     policy_bounded_places,
     policy_declared,
@@ -38,6 +39,8 @@ from threetears.evals.analysis.report.number_forms.policy import (
     policy_interval,
     policy_p,
     policy_percent,
+    policy_interval_places,
+    policy_level,
     policy_places,
     policy_rate,
 )
@@ -59,26 +62,36 @@ class TestRuleTwoTheDigitsComeFromTheUncertainty:
     @pytest.mark.parametrize(
         ("half_width", "places"),
         [
-            (3.7, 0),
-            (4.05, 0),
+            (3.7, 1),
+            (4.05, 1),
             (0.6, 1),
             (0.05, 2),
-            (0.0047, 3),
-            (0.35, 1),
+            (0.0047, 4),
+            (0.35, 2),
             (37.0, 0),
+            (5.55, 0),
+            (0.16, 2),
+            (0.25, 2),
+            (1.9, 1),
         ],
     )
-    def test_a_half_width_reads_to_its_first_significant_digit(self, half_width, places):
+    def test_the_width_reads_to_two_significant_figures(self, half_width, places):
+        """A value and its interval print to the precision the interval justifies: two significant figures of its
+        width, twice the half-width (7.4 reads a tenth, 11.1 whole)."""
         assert policy_places([half_width]) == places
 
-    @pytest.mark.parametrize(("half_width", "places"), [(0.16, 2), (0.25, 2), (1.9, 1), (0.0012, 4)])
-    def test_a_half_width_that_leads_with_a_one_or_a_two_reads_to_its_second(self, half_width, places):
+    @pytest.mark.parametrize(("half_width", "places"), [(0.0498, 2), (0.498, 1), (4.98, 0)])
+    def test_the_width_is_placed_by_what_it_rounds_to(self, half_width, places):
+        """A width of 0.0996 rounds to the 0.10 of two figures, so it reads at two decimals, not three."""
         assert policy_places([half_width]) == places
 
-    @pytest.mark.parametrize(("half_width", "places"), [(0.0996, 2), (0.296, 1), (0.996, 1)])
-    def test_the_leading_digit_is_read_at_two_significant_figures(self, half_width, places):
-        """0.0996 leads with the 1 of 0.10, and 0.296 with the 3 of 0.30."""
-        assert policy_places([half_width]) == places
+    def test_a_lone_interval_reads_at_its_own_width(self):
+        """A value and interval no measure's set holds (a glyph with no table) read at two figures of its own width:
+        ``-4.2 to +2.0``, never ``-4.2 to +2``, and ``99 [72, 127]``, never ``99.23 [71.55, 126.9]``."""
+        assert policy_interval_places(-4.2, 2.0) == 1
+        assert policy_interval_places(71.55, 126.9) == 0
+        assert policy_interval_places(73.2, 91.5, capped=True) == 0
+        assert policy_interval_places(0.4444, 3.556) == 1
 
     def test_an_absent_zero_or_non_finite_half_width_says_nothing(self):
         assert policy_places([None, 0.0, math.nan, math.inf, 0.6]) == 1
@@ -86,7 +99,8 @@ class TestRuleTwoTheDigitsComeFromTheUncertainty:
     def test_a_rate_or_a_change_in_points_reads_to_at_most_one_decimal(self):
         assert policy_places([0.05], capped=True) == 1
         assert policy_places([0.6], capped=True) == 1
-        assert policy_places([3.7], capped=True) == 0
+        assert policy_places([3.7], capped=True) == 1
+        assert policy_places([5.7], capped=True) == 0
 
     def test_a_measure_with_no_interval_reads_at_two_significant_figures_of_its_least_figure(self):
         figures = [0.0022, 1.3, 0.0]
@@ -95,14 +109,14 @@ class TestRuleTwoTheDigitsComeFromTheUncertainty:
         assert policy_places([]) == 0
 
     def test_the_figures_are_not_read_where_an_interval_is(self):
-        assert policy_places([3.7], [0.0022]) == 0
+        assert policy_places([5.7], [0.0022]) == 0
 
     def test_the_decimals_stop_at_six(self):
         """A half-width finer than a millionth would ask for an eighth decimal; a figure that fine reads as the bound it
         is under (``< 0.000001``), so the decimals stop at six."""
         assert policy_places([3e-8]) == 6
         assert policy_places([3e-6]) == 6
-        assert policy_places([3e-5]) == 5
+        assert policy_places([6e-5]) == 5
 
 
 class TestTheBoundaryException:
@@ -271,11 +285,13 @@ class TestKairoBeforeAndAfter:
         assert policy_rate(765 / 897 * 100, 0) == "85%"
 
     def test_the_change_chart_s_head_and_qwen3_8_flash_s_change(self):
+        """The narrowest width, 7.4 points, reads to two figures, so the set reads a tenth (owner ruling, 2026-11-14:
+        it read whole, ``85%`` beside ``-8`` and ``-13 to -2``, under the first-digit rule)."""
         places = policy_places([3.7, 5.55], capped=True)
-        assert places == 0
-        assert policy_rate(85.3, places) == "85%"
-        assert policy_figure(-7.6, places, signed=True, bounds=(0.0,)) == "-8"
-        assert policy_interval(-12.9, -1.8, places, change=True, bounds=())[2] == "-13 to -2"
+        assert places == 1
+        assert policy_rate(85.3, places) == "85.3%"
+        assert policy_figure(-7.6, places, signed=True, bounds=(0.0,)) == "-7.6"
+        assert policy_interval(-12.9, -1.8, places, change=True, bounds=())[2] == "-12.9 to -1.8"
 
     def test_the_prose_change_reads_as_its_chart_does(self):
         assert policy_figure(-3.0, 0, signed=True, bounds=(0.0,)) == "-3"
@@ -286,8 +302,8 @@ class TestKairoBeforeAndAfter:
 
     def test_holds_character_by_arm_and_by_stratum(self):
         places = policy_places([4.05], capped=True)
-        assert [policy_rate(rate, places) for rate in (91.47, 85.4, 86.6)] == ["91%", "85%", "87%"]
-        assert [policy_rate(rate, places) for rate in (65.8, 42.9, 45.6)] == ["66%", "43%", "46%"]
+        assert [policy_rate(rate, places) for rate in (91.47, 85.4, 86.6)] == ["91.5%", "85.4%", "86.6%"]
+        assert [policy_rate(rate, places) for rate in (65.8, 42.9, 45.6)] == ["65.8%", "42.9%", "45.6%"]
 
     def test_the_send_message_check_is_unchanged(self):
         places = policy_places([0.6], capped=True)
@@ -299,10 +315,10 @@ class TestKairoBeforeAndAfter:
     def test_failed_reply_notices(self):
         low, high = -0.0069, 0.00248
         places = policy_places([(high - low) / 2])
-        assert places == 3
-        assert policy_figure(0.0022, places, bounds=()) == "0.002"
-        assert policy_figure(-0.0022, places, signed=True, bounds=()) == "-0.002"
-        assert policy_interval(low, high, places, change=True, bounds=())[2] == "-0.007 to +0.002"
+        assert places == 4
+        assert policy_figure(0.0022, places, bounds=()) == "0.0022"
+        assert policy_figure(-0.0022, places, signed=True, bounds=()) == "-0.0022"
+        assert policy_interval(low, high, places, change=True, bounds=())[2] == "-0.0069 to +0.0025"
 
     def test_adjusted_p_values(self):
         assert [policy_p(p) for p in (1e-7, 0.00008342, 0.4996, 1.0)] == ["< 0.001", "< 0.001", "0.50", "1.00"]
@@ -348,14 +364,54 @@ class TestScaledCampaignBeforeAndAfter:
 
 class TestCodeOnlyAndRungFiveBeforeAndAfter:
     def test_discodon_s_code_only_scorecard_reads_its_interval_in_its_level_s_form(self):
-        assert policy_rate(84.4, 0) == "84%"
-        assert policy_interval(73.2, 91.5, 0, change=False, unit="%", bounds=RATE_BOUNDS)[2] == "73 to 92%"
+        """84% beside 73.2% to 91.5% read two forms (#1127 item 10); the width, 18.3 points, reads whole."""
+        places = policy_interval_places(73.2, 91.5, capped=True)
+        assert policy_rate(84.4, places) == "84%"
+        assert policy_interval(73.2, 91.5, places, change=False, unit="%", bounds=RATE_BOUNDS)[2] == "73 to 92%"
 
     def test_a_lost_call_rate_of_none_carries_its_percent(self):
         assert policy_rate(0.0, 0) == "0%"
 
     def test_rung_five_s_report_finished_rate_reads_in_percent(self):
         assert [policy_rate(100 * passed / 7, 0) for passed in (1, 3)] == ["14%", "43%"]
+
+
+class TestALevelPrintedAsText:
+    """A confidence level printed as text rounds as a value does by its interval (owner ruling, 2026-11-14): its
+    distance from 100% to two significant figures, so the stored level stays exact and only the text rounds."""
+
+    @pytest.mark.parametrize(
+        ("percent", "text"),
+        [
+            (95.0, "95%"),
+            (97.5, "97.5%"),
+            (99.6875, "99.69%"),
+            (98.3333, "98.3%"),
+            (99.0, "99%"),
+            (99.9, "99.9%"),
+            (99.99, "99.99%"),
+            (90.0, "90%"),
+            (100.0, "100%"),
+        ],
+    )
+    def test_a_level_reads_its_miss_to_two_figures(self, percent, text):
+        assert policy_level(percent) == text
+
+    def test_two_levels_that_differ_past_two_figures_of_their_miss_print_alike(self):
+        """The text gives up "never rounded": 98.33% and 98.34% both read 98.3%."""
+        assert policy_level(98.33) == policy_level(98.34) == "98.3%"
+
+    def test_a_non_finite_level_reads_absent(self):
+        assert policy_level(math.nan) == ABSENT
+
+    def test_a_head_with_no_corrected_family_reads_its_stated_level_by_the_one_rule(self):
+        """A contrasts chart's head with no corrected family printed a stored ``98.33%`` as ``98.3%`` by a rounding of
+        its own, untested (#1127 item 2); every level as text now reads through the one rule, a level in no percent's
+        digits as stated."""
+        assert interval_level("98.33%", None) == "98.3%"
+        assert interval_level("99.69%", None) == "99.69%"
+        assert interval_level("95%", None) == "95%"
+        assert interval_level("a one-sided bound", None) == "a one-sided bound"
 
 
 class TestMeasureFormPolicyFields:

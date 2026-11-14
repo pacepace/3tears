@@ -651,6 +651,43 @@ def _interval_head(level: str | None) -> str:
     return f"{glossed[1]} interval {glossed[2]}" if glossed else f"{level} interval"
 
 
+#: What a chart's ``level_head`` says, on every kind that states a level.
+_LEVEL_HEAD_WORDS = (
+    "What the chart's head prints of its level, where its page decides it (#1128): empty for nothing, a later chart at "
+    "the page's main level, which the page's first chart at that level states; or the head that marks a level other "
+    'than the main one ("98.3% intervals, not 95%"). None prints the level as the kit\'s head does ("95% intervals").'
+)
+
+
+def level_head(level: str) -> str:
+    """An interval level as a chart's head prints it (the kit's ``kLevelHead``): ``95% intervals``; a glossed level
+    keeps its gloss last, ``99.7% intervals (95% across 16 comparisons)``.
+
+    :param level: The level, as a chart carries it.
+    :ptype level: str
+    :return: The head.
+    :rtype: str
+    """
+    glossed = _GLOSSED_LEVEL.fullmatch(level)
+    return f"{glossed[1]} intervals {glossed[2]}" if glossed else f"{level} intervals"
+
+
+def drawn_head(chart: object) -> str:
+    """What a chart's head prints of its level (the kit's ``kHead``): its ``level_head`` where its page set one (empty
+    for nothing), else the level's own head (:func:`level_head`), else nothing.
+
+    :param chart: The chart or the panel as drawn: any kind, a kind carrying no level printing nothing.
+    :ptype chart: object
+    :return: The head; empty for none.
+    :rtype: str
+    """
+    said: str | None = getattr(chart, "level_head", None)
+    if said is not None:
+        return said
+    level: str | None = getattr(chart, "level", None)
+    return level_head(level) if level else ""
+
+
 def _need_level(level: str | None, intervals: bool) -> None:
     """Refuse intervals drawn without their level: the kit prints "<level> intervals" on every such chart."""
     if intervals and not level:
@@ -752,6 +789,7 @@ class _BarsFields(_Kind):
         "with no interval an open mark, each note at the right edge.",
     )
     level: str | None = Field(default=None, description='The intervals\' level ("95%"); required with intervals.')
+    level_head: str | None = Field(default=None, description=_LEVEL_HEAD_WORDS)
     emphasis: str | None = Field(default=None, description="The id of the one row to bold.")
     label_width: float | None = Field(default=None, description="The label column in px, 480 px wide and over.")
     label_width_narrow: float | None = Field(default=None, description="The label column in px below 480 px.")
@@ -873,6 +911,7 @@ class ForestChart(_Drawable):
     domain: tuple[float, float] = Field(description="The axis range, in value units.")
     fmt: Fmt = Field(description="The values' format.")
     level: str = Field(description='The intervals\' level ("95%").')
+    level_head: str | None = Field(default=None, description=_LEVEL_HEAD_WORDS)
     reference: ChartReference | None = Field(default=None, description="The margin (kind `margin`).")
     zero_label: str | None = Field(
         default=None,
@@ -958,6 +997,7 @@ class LinesChart(_Drawable):
     x_title: str | None = Field(default=None, description="The x axis's title.")
     height: float | None = Field(default=None, description="The plot's height in px.")
     level: str | None = Field(default=None, description='The bands\' level ("95%"); required with bands.')
+    level_head: str | None = Field(default=None, description=_LEVEL_HEAD_WORDS)
 
     def check_drawable(self) -> None:
         super().check_drawable()
@@ -1073,6 +1113,7 @@ class _ScatterFields(_Kind):
     emphasis: str | None = Field(default=None, description="The id of the one point to ring.")
     height: float | None = Field(default=None, description="The plot's height in px.")
     level: str | None = Field(default=None, description='The intervals\' level ("95%"); required with intervals.')
+    level_head: str | None = Field(default=None, description=_LEVEL_HEAD_WORDS)
 
     def check_drawable(self) -> None:
         super().check_drawable()
@@ -1205,6 +1246,7 @@ class _DotIntervalFields(_Kind):
     level: str | None = Field(
         default=None, description='The intervals\' level ("95%"); required with intervals, unprinted without them.'
     )
+    level_head: str | None = Field(default=None, description=_LEVEL_HEAD_WORDS)
     ticks: list[float] | None = Field(default=None, description="Explicit tick positions.")
     reference: ChartReference | None = Field(default=None, description="The floor.")
     zero_label: str | None = Field(

@@ -63,6 +63,23 @@ def test_a_static_outcome_note_breaks_at_its_dot_never_inside_its_count() -> Non
     assert ["21% passed · 96 of 456"] in notes, notes
 
 
+#: A bar whose note runs to three parts, too long for two lines at a phone's width: its first part holds the figure
+#: with its unit, so the note may break after it.
+_THREE_RUNS = "21% passed of all trials · 96 of 456 · 12 lost"
+
+
+def test_a_note_of_three_runs_breaks_where_its_longer_line_is_shortest() -> None:
+    """A note of three runs or more set two runs on its first line wherever it broke, since the split kept a note's
+    first two words together, which a run's first part already does (#1136): at a phone's width it now breaks after
+    its first run, where the longer of its two lines is shortest."""
+    data = {"rows": [{"label": "control", "value": 21.0, "note": _THREE_RUNS}], "domain": [0, 100], "fmt": "pct"}
+    block = ChartBlock.model_validate({"section": "memo", "title": "Outcomes", "chart": "bars", "data": data})
+    drawing = chart_drawing(block)
+    assert drawing is not None
+    notes = [lines for lines in (_SPAN.findall(spans) for spans in _LINES.findall(drawing)) if len(lines) > 1]
+    assert ["21% passed of all trials ·", "96 of 456 · 12 lost"] in notes, notes
+
+
 #: Each bar chart text set in lines, its lines in order.
 _KIT_LINES = """() => [...document.querySelectorAll('div.chart[data-kind="bars"] svg text')]
   .filter(t => t.querySelector('tspan'))

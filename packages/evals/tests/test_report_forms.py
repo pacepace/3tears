@@ -67,6 +67,7 @@ from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, TRIAL_PASS_NAME
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.report.figures import report_rulers
+from threetears.evals.analysis.quantities import PERCENT
 from threetears.evals.analysis.report.words import judged_heading, reading_heading
 from threetears.evals.analysis.report_input import Contrast, Measure, ReportInput, Unanswered
 from threetears.evals.analysis.report_margins import aspect_board
@@ -89,6 +90,7 @@ from packages.evals.tests.report_doc_support import snapshot_of
 from packages.evals.tests.campaign_support import ASSEMBLED_AT
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
+from packages.evals.tests.campaign_page_support import kairo_page
 from packages.evals.tests.report_shapes_support import s1_change, s2_choice, s3_measurement, s4_change
 
 
@@ -560,24 +562,97 @@ def _kairo_pass_rate_places(readings: CampaignReadings) -> int | None:
     return places.change
 
 
+def _kairo_pass_rate_half_width(readings: CampaignReadings) -> float | None:
+    """The half-width Kairo's code page reads the pass rate's decimals from (:attr:`MeasureForm.half_width`), its forms
+    built over ``readings`` and every aspect page's intervals, as the aspect pages' are."""
+    reports = {fold.aspect: fold.report for fold in kairo_page().aspects}
+    return PageForms.of_campaign(readings, reports).measure(TRIAL_PASS_NAME, kind="trial").half_width
+
+
 def test_a_pooled_figure_never_sets_a_measure_s_digits() -> None:
     """Owner ruling, set digits: a measure's digits come from the narrowest interval on a figure a reader compares (an
     arm's level, a comparison's change). The code page's campaign-wide pooled pass rate and its change, cut narrower
-    than every compared interval, still leave Kairo's pass rate in whole points; a compared reading cut as narrow sets
-    a tenth (the control)."""
+    than every compared interval, leave the interval Kairo's pass rate reads its digits from where it was; a compared
+    reading cut as narrow becomes that interval (the control). Under the precision rule (owner ruling, 2026-11-14) the
+    pass rate reads a tenth from its compared intervals already, a rate's most, so the digits alone no longer tell the
+    three apart: the half-width they are read from does."""
     readings = kairo_bundle().readings
-    assert _kairo_pass_rate_places(readings) == 0
-    assert _kairo_pass_rate_places(_pooled_narrowed(readings)) == 0
-    assert _kairo_pass_rate_places(_narrowed_readings(readings)) == 1
+    compared = _kairo_pass_rate_half_width(readings)
+    assert compared is not None and compared > 1
+    assert _kairo_pass_rate_places(readings) == 1
+    assert _kairo_pass_rate_half_width(_pooled_narrowed(readings)) == compared
+    assert _kairo_pass_rate_places(_pooled_narrowed(readings)) == 1
+    assert _kairo_pass_rate_half_width(_narrowed_readings(readings)) == pytest.approx(0.4)
+
+
+def _widened(interval: tuple[float, float] | None, factor: float) -> tuple[float, float] | None:
+    """``interval`` widened ``factor`` times about its centre."""
+    if interval is None:
+        return None
+    centre, half = (interval[0] + interval[1]) / 2, (interval[1] - interval[0]) / 2 * factor
+    return (centre - half, centre + half)
+
+
+def _widened_campaign(factor: float) -> tuple[list[AnalysisContextBundle], CampaignReadings]:
+    """Kairo's aspect bundles and campaign readings with every compared interval on the pass rate widened ``factor``
+    times (each contrast's, each code-page reading's and pair's), its pooled figures as they were."""
+    bundle = kairo_bundle()
+    aspects = []
+    for aspect in bundle.aspects:
+        families = [
+            family.model_copy(
+                update={
+                    "comparisons": [
+                        comparison.model_copy(update={"interval": _widened(comparison.interval, factor)})
+                        if comparison.name == TRIAL_PASS_NAME
+                        else comparison
+                        for comparison in family.comparisons
+                    ]
+                }
+            )
+            for family in aspect.multiple_comparisons.families
+        ]
+        compared = aspect.multiple_comparisons.model_copy(update={"families": families})
+        aspects.append(aspect.model_copy(update={"multiple_comparisons": compared}))
+    rows = []
+    for row in bundle.readings.readings:
+        update: dict[str, object] = {
+            name: _widened(getattr(row, name), factor) for name in ("within_interval", "gain_interval", "drop_interval")
+        }
+        if row.precision is not None:
+            update["precision"] = row.precision.model_copy(update={"half_width": row.precision.half_width * factor})
+        rows.append(row.model_copy(update=update))
+    pairs = [pair.model_copy(update={"interval": _widened(pair.interval, factor)}) for pair in bundle.readings.pairs]
+    return aspects, bundle.readings.model_copy(update={"readings": rows, "pairs": pairs})
+
+
+def test_a_pooled_figure_never_sets_an_aspect_page_s_digits() -> None:
+    """The same contract on the aspect pages' own path (``PageForms.of_aspects``), where a rate's one-decimal cap would
+    hide it at Kairo's own widths (Critic D-6): every compared interval on the pass rate widened three times, so they
+    set whole points, the pooled figures cut to ±0.1 points leave them whole, and a compared reading cut to ±0.4 points
+    sets a tenth (the control)."""
+    aspects, readings = _widened_campaign(3.0)
+
+    def places(held: CampaignReadings) -> tuple[int | None, int | None]:
+        (aspect,) = PageForms.of_aspects(aspects, held).values()
+        found = aspect.contrast_places(TRIAL_PASS_NAME, "trial")
+        assert found is not None
+        return found.level, found.change
+
+    assert places(readings) == (0, 0)
+    assert places(_pooled_narrowed(readings)) == (0, 0)
+    assert places(_narrowed_readings(readings)) == (1, 1)
 
 
 def test_a_written_page_reads_each_measure_at_the_precision_its_campaign_s_other_pages_do() -> None:
     """One form per measure across the campaign: Kairo's written page reads the pass rate at the places its aspect's
-    page does, both from the narrowest interval a reader compares, the change 1017 reads at ±3.5 points: whole
-    points (as design.md's table reads it), never the tenth the code page's pooled change (±2.86 points) would set."""
+    page does, both from the narrowest interval a reader compares, the change 1017 reads at ±3.5 points, never the
+    code page's pooled change (±2.86 points). Under the precision rule (owner ruling, 2026-11-14) both read a tenth,
+    two significant figures of a 7-point width."""
     held = report_input(kairo_bundle())
-    assert PageForms.of(held).measure(TRIAL_PASS_NAME, kind="trial").places == 0
-    assert _kairo_pass_rate_places(kairo_bundle().readings) == 0
+    written = PageForms.of(held).measure(TRIAL_PASS_NAME, kind="trial")
+    assert written.places == _kairo_pass_rate_places(kairo_bundle().readings) == 1
+    assert written.half_width == _kairo_pass_rate_half_width(kairo_bundle().readings) == pytest.approx(3.5, abs=0.05)
 
 
 def test_a_judged_bar_reads_alike_on_the_code_page_and_its_aspect_page() -> None:
@@ -704,6 +779,21 @@ def test_an_interval_s_level_held_as_a_share_reads_to_the_hundredth_that_tells_t
 ) -> None:
     printed = PageForms("code", {}).confidence_share(level)
     assert (printed.text, printed.held, printed.unit) == (text, held, "%")
+
+
+@pytest.mark.parametrize(("level", "text"), [(0.95, "95%"), (0.996875, "99.69%"), (0.98333, "98.3%"), (0.025, "2.5%")])
+def test_every_level_as_text_reads_by_the_one_rule(level: float, text: str) -> None:
+    """A level as text reads one way wherever a page prints it (owner ruling, 2026-11-14): an aspect page's contrast
+    family heads and guardrail interval header (``in_unit``'s ``confidence`` role), a code page's level lines
+    (``confidence_share``) and a written page's chart heads (``drawn_confidence``) alike. ``in_unit`` read a level to a
+    percent's one decimal, ``99.7%`` beside ``99.69%`` elsewhere (Critic D-1)."""
+    forms = PageForms("code", {})
+    printed = {
+        forms.in_unit(100 * level, PERCENT, role="confidence").text,
+        forms.confidence_share(level).text,
+        forms.drawn_confidence(level).text,
+    }
+    assert printed == {text}
 
 
 def test_a_pass_k_and_a_share_are_held_as_a_table_s_cell_holds_them() -> None:
@@ -1414,7 +1504,7 @@ _MEASURED_KEYS = [
         "$1.76 to $2.03 per 1,000 replies",
         ["$1.76", "$2.03"],
     ),
-    ("contrast.qwen3.8-flash.passed.delta", (TRIAL_PASS_NAME, "trial"), "change", "-8", ["-8"]),
+    ("contrast.qwen3.8-flash.passed.delta", (TRIAL_PASS_NAME, "trial"), "change", "-7.6", ["-7.6"]),
 ]
 
 

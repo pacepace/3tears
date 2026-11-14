@@ -97,7 +97,7 @@ from threetears.evals.analysis.report.model import (
 from threetears.evals.analysis.report.verdict import interval_words, passed_clause
 from threetears.evals.analysis.report.keys.vocabulary import joint_guarantee
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
-from threetears.evals.analysis.report.words import PASS_RATE, judged_name, reason_words
+from threetears.evals.analysis.report.words import PASS_RATE, judged_name, label_case, reason_words
 from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart
@@ -1813,7 +1813,7 @@ def _measure_words(reading: MeasureReading, reports: Mapping[str, Report]) -> st
     others are (``Pass rate``)."""
     if reading.measure == PASSED_READING:
         name = reading_name(reports[reading.aspect].bundle, reading.measure)
-        return name[:1].upper() + name[1:]
+        return label_case(name)
     return measure_name_of(reports[reading.aspect].bundle, reading.measure)
 
 

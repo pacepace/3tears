@@ -66,6 +66,7 @@ from threetears.evals.analysis.report.parts.charting import (
     slice_name,
     stat_interval,
     stat_value,
+    own_fmt,
     unit_quantities,
     unit_refusal,
 )
@@ -527,12 +528,15 @@ def _panels(
     panels = []
     for title, rows in grouped.items():
         own = rows[0].drawn or drawn
+        # A panel of one measure on a shared axis names that measure's own format (:func:`own_fmt`).
+        alone = {bar.key for bar in rows}
+        mine = own_fmt(context, rows[0].key, own) if len(alone) == 1 else None
         panels.append(
             BarsPanel(
                 title=title,
                 rows=[_bar_row(context, bar, drawn) for bar in rows],
                 domain=spans[own] if spans is not None else None,
-                fmt=own.fmt if spans is not None else None,
+                fmt=own.fmt if spans is not None else mine,
                 tick_fmt=own.tick_fmt if spans is not None else None,
                 ticks=log_ticks(spans[own]) if spans is not None and own in logged else None,
                 log=(own in logged) if spans is not None and own in logged else None,
