@@ -406,8 +406,8 @@ async def test_the_judge_s_next_step_says_what_the_read_holds_and_how_many_more_
     assert sheet == {"answer.billing": 3, "answer.plain": 3}, "one row per drawn answer per dimension"
     needed = CALIBRATION_MIN_RESULTS - 3
     assert result.render().splitlines()[1] == (
-        f"judge: 0 of 3 items read blind: judge uncalibrated ({labels.name} is not there yet); next step: open the "
-        f"blind_read.html the report writes, answer its items from the top, and save its labels as {labels.name}; "
+        f"judge: 0 of 3 cases read blind: judge uncalibrated ({labels.name} is not there yet); next step: open the "
+        f"blind_read.html the report writes, answer its cases from the top, and save its labels as {labels.name}; "
         f"the calibrated tier's floor is {CALIBRATION_MIN_RESULTS} judged answers per dimension and the read holds 3, "
         f"so it needs {needed} more"
     )
@@ -420,8 +420,8 @@ async def test_a_read_at_the_floor_asks_only_for_the_read(tmp_path: Path) -> Non
     # Every case's answer is the one word "billing", so the read holds each case once, as its own item.
     assert set(sheet.values()) == {CALIBRATION_MIN_RESULTS}
     assert result.calibration_lines() == [
-        f"judge: 0 of {CALIBRATION_MIN_RESULTS} items read blind: judge uncalibrated (Judge(labels=...) names the "
-        "labels file); next step: open the blind_read.html the report writes, answer its items from the top, and "
+        f"judge: 0 of {CALIBRATION_MIN_RESULTS} cases read blind: judge uncalibrated (Judge(labels=...) names the "
+        "labels file); next step: open the blind_read.html the report writes, answer its cases from the top, and "
         "save its labels where Judge(labels=...) names"
     ]
 

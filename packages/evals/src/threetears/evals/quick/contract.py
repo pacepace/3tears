@@ -61,6 +61,7 @@ from threetears.evals.quick.result import (
     CREATED_BY,
     Result,
     calibrations_of,
+    model_slug,
     coordinates,
     declare,
     read_blind,
@@ -452,8 +453,11 @@ class Eval:
                 "its own storage; pass one or the other (as_host([...], store=...) builds a host over a store)"
             )
         scope_id = self.name if scope is None else scope
+        store_file: Path | None = None
         if host is None:
             opened, where = open_store(store)
+            if isinstance(opened, SqliteDocumentStore) and (store is None or isinstance(store, str | os.PathLike)):
+                store_file = DEFAULT_STORE if store is None else Path(store)
             host = as_host([self], store=opened)
         else:
             where = f"host {host.profile.host_id!r}"
@@ -550,8 +554,12 @@ class Eval:
         # Filing the campaign and reading its report and labels are store reads and writes, so they run off the loop.
         result = await run_blocking(host.blocking_executor, declared)
         if judge is not None and judge.reviewer is not None and result.blind_read is not None:
-            # A reference reviewer answers the sheet a person would, through its own client, once the read is drawn.
-            result = await result.reviewed_by(judge.reviewer)
+            # A model answers the sheet a person would, once the read is drawn: held to what the eval's cap has left,
+            # ledgered, and kept beside a file store so the same draw is not paid for twice.
+            kept = None
+            if store_file is not None:
+                kept = store_file.parent / "blind_reads" / f"{result.blind_read.id}.{model_slug(judge.reviewer)}.csv"
+            result = await result.reviewed_by(judge.reviewer, max_cost_usd=self.max_cost_usd, kept=kept)
         return result
 
     def _disclosures(self) -> list[str]:

@@ -121,7 +121,7 @@ apart is not grading the run's replies right. That takes a person's labels on th
 missing in the line it never quiets:
 
 ```text
-judge: 0 of 20 items read blind: judge uncalibrated (labels.csv is not there yet); next step: open the blind_read.html the report writes, answer its items from the top, and save its labels as labels.csv
+judge: 0 of 20 cases read blind: judge uncalibrated (labels.csv is not there yet); next step: open the blind_read.html the report writes, answer its cases from the top, and save its labels as labels.csv
 ```
 
 Calibrating it is yours to do; no person's labels ship with the rung.
@@ -129,8 +129,9 @@ Calibrating it is yours to do; no person's labels ship with the rung.
    a random order, each with the email it answers, and no judge verdict on the page.
    [`blind_read.html`](2-replies/blind_read.html) beside the example is that file, as the recorded run wrote it
    ([`blind_read.csv`](2-replies/blind_read.csv) is the same order as rows, for a spreadsheet).
-2. Open it and answer from the top. Stop when you like, press **Download labels.csv**, and save the file beside
-   `replies.py`. What you answered from the top is a random sample; answers out of order read `selected`.
+2. Open it and answer from the top. Press **Download labels.csv** and save the file beside `replies.py`. What you
+   answered from the top is a random sample; answers out of order are not drawn at random, and the run says so. The
+   page holds one reply per email, 20 in all, which is also the fewest that can check the judge: read them all.
 3. Run it again. `Judge(labels="labels.csv")` reads your labels back, pairs each with the judge's score of the same
    reply (by its fingerprint, so a replayed run draws the same order and pairs), and prints how far you read and,
    per dimension, the results paired, κ with its bounds, and the evidence tier it earns. Below 20 results the tier

@@ -9,8 +9,9 @@
 | A skip that follows content biases what is read | The same population; a rater who skips the upper half of the values | The answered prefix's mean misses the population's by more than 25: which is why a standing carries its skips |
 | Slot balance | Every prefix of ``2m`` pair items, 200 seeds | Exactly ``m`` with the control in slot A |
 
-Every draw is through :func:`~threetears.evals.analysis.blind_read.draw_blind_read` and every verdict through
-:func:`~threetears.evals.analysis.blind_read.close_blind_read`, so what is held is what ships.
+Every draw is through :func:`~threetears.evals.analysis.blind_read.draw_blind_read`. The stopping row reads its
+verdicts through :func:`~threetears.evals.analysis.blind_read.close_blind_read`, so the gate it holds is the one that
+ships; the sign-test rows call the test itself (``exact_sign_test_p``), which is what that close calls.
 """
 
 from __future__ import annotations
@@ -196,7 +197,7 @@ def test_a_skip_that_follows_content_biases_the_answered_prefix_which_the_standi
                 for position in range(30)
             ]
             standing = sample_standing(read.model_copy(update={"answers": answers}), "rater")
-            assert standing.standing == "random" and standing.skipped == len(prefix) - len(answered) > 0
+            assert standing.sample == "random" and standing.skipped == len(prefix) - len(answered) > 0
     assert (cases - 1) / 2 - total / seeds > 25
 
 

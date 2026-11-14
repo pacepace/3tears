@@ -12,7 +12,7 @@ packages (bumped in lock-step).
   judged answers in one seeded random order, one per case, with no arm, run or result id and no judge score. The page
   is one static file that opens from disk, loads nothing, and saves `labels.csv`.
 - `Judge(labels=...)` keeps its name and meaning. The print now says how far the person read and whether the answers
-  are the first items of the drawn order (a random sample) or any other set (`selected`), then per dimension the
+  are the first cases of the drawn order (a random sample) or any other set (not drawn at random), then per dimension the
   results paired with their cases, kappa with its bounds, the tier, and, where the person failed some answers, how
   many of those the judge failed. `to_label.csv` listed answers arm by arm in store order, so no prefix of it was a
   random sample.
@@ -21,16 +21,26 @@ packages (bumped in lock-step).
   items (or all of them, where fewer) are answered, and over those items only. Before that the print says how far the
   read is and no direction or p: a sign test re-read after every item and stopped when it separates is falsely
   separated about 18% of the time (`tests/test_simulated_blind_read.py`).
-- `Judge(reviewer=...)` and `Result.reviewed_by(model)` have a model answer the same sheet, one call per item: a
-  reference reviewer. Its answers are never a person's. The judge's agreement with it prints as "checked against
-  <model>", it is refused as calibration where it is the judge's own model, and a person's reading decides the tier
-  once it is itself decided.
-- New, provisional: the `BlindRead` shapes and `BlindSheet` on `threetears.evals.schema`; `Result.blind_read` and
-  `Result.loose_labels`. `judge_agreement` and `person_scores_by_result` take `rated_by=` (people by default).
+- `Judge(reviewer=...)` and `Result.reviewed_by(model)` have a model answer the same sheet, one call per case. Its
+  answers are a model's, never a person's: the judge's agreement with it prints as "checked against a model (<id>)"
+  with no tier word, it is not read as a check where it is the judge's own model or where which model served either
+  side was not recorded, and a person's reading decides once it is itself decided. Its calls are held to the eval's
+  `max_cost_usd`, written to the out-of-run ledger under a new purpose, `reviewer` (core v15.18), and printed with
+  what they cost; beside a file store its answers are kept and the same draw is not asked again. A reply that cannot
+  be used leaves its case not answered and the run completes.
+- Labels carry a fingerprint of the output each was given on, so when the answers change the labels whose outputs
+  are still there are kept, as not drawn at random, and the print counts the rest with why.
+- Measured and recorded (`docs/open-problems.md`): two results of one case whose judge errors coincide award the
+  tier to a judge at the bar up to 7% of the time against the 5% its bound claims. Every agreement line states its
+  cases beside its results.
+- New, provisional: the `BlindRead` shapes and `BlindSheet` on `threetears.evals.schema`; `Result.blind_read`,
+  `Result.loose_labels` and `Result.reviews_kept`. `judge_agreement` and `person_scores_by_result` take `rated_by=`
+  (people by default).
 - Removed: `Result.to_label`. A `to_label.csv` filled in under an earlier version still reads as a labels file, and
-  counts as `selected`.
+  counts as not drawn at random.
 
-**For hosts:** nothing stored changes shape and no action is added; the host door for blind reads is a later change.
+**For hosts:** no stored document changes shape and no action is added; the host door for blind reads is a later
+change. The out-of-run ledger gains the purpose `reviewer` at core v15.18: a build that lists purposes lists it.
 A host that read `Result.to_label` or the `to_label` key of `Result.write()` reads `Result.blind_read` and the
 `blind_read` and `blind_read_csv` keys.
 ### evals: a run that did not finish never opens with a verdict, on any surface (#1173)

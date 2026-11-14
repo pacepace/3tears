@@ -39,8 +39,8 @@ RUNG = EXAMPLES / "2-replies"
 
 #: What the honest first run prints about its judge: no labels, and the step that calibrates it.
 UNCALIBRATED = (
-    "judge: 0 of 20 items read blind: judge uncalibrated (labels.csv is not there yet); next step: open the "
-    "blind_read.html the report writes, answer its items from the top, and save its labels as labels.csv"
+    "judge: 0 of 20 cases read blind: judge uncalibrated (labels.csv is not there yet); next step: open the "
+    "blind_read.html the report writes, answer its cases from the top, and save its labels as labels.csv"
 )
 
 #: What the run prints about the judge's examples: each graded twice, as the recording holds it.
@@ -197,7 +197,7 @@ def test_a_sheet_answered_from_the_top_is_read_back_as_a_random_sample_and_the_j
 
     lines = capsys.readouterr().out.splitlines()
     assert UNCALIBRATED not in lines
-    at = lines.index("judge: 14 of 20 items read blind, in the drawn order (a random sample)")
+    at = lines.index("judge: 14 of 20 cases read blind, in the drawn order (a random sample)")
     # The judge passed every reply and so did the labels, so kappa has nothing to measure: said, with what to do.
     undefined = (
         "14 results from 14 cases  kappa undefined: you and the judge gave every answer the same verdict; read further"
@@ -206,7 +206,7 @@ def test_a_sheet_answered_from_the_top_is_read_back_as_a_random_sample_and_the_j
         f"  answer.answers   {undefined}",
         f"  answer.grounded  {undefined}",
         f"  answer.safe      {undefined}",
-        "next: keep going from item 15 in blind_read.html",
+        "next: keep going from case 15 in blind_read.html",
     ]
     assert lines[at + 5] == EXAMPLES_GRADED
     # The ladder shows these lines as what a read from the top prints; it is held to them here.
@@ -215,14 +215,16 @@ def test_a_sheet_answered_from_the_top_is_read_back_as_a_random_sample_and_the_j
     assert not any(line.startswith("preference") for line in lines), "one arm has no pair to prefer between"
 
 
-def test_a_sheet_answered_out_of_order_reads_as_selected(replies_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_a_sheet_answered_out_of_order_reads_as_not_drawn_at_random(
+    replies_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     _label(replies_dir, {2, 5, 11})
 
     assert main(["replies.py"]) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert "judge: 3 of 20 items read blind, out of the drawn order (selected, not a random sample)" in lines
-    assert "next: for a random sample, answer blind_read.html from item 1, in order" in lines
+    assert "judge: 3 of 20 cases read blind, out of the drawn order (not drawn at random)" in lines
+    assert "next: for a random sample, answer blind_read.html from case 1, in order" in lines
 
 
 async def test_the_result_carries_the_read_and_each_standing(replies_dir: Path) -> None:
@@ -235,8 +237,8 @@ async def test_the_result_carries_the_read_and_each_standing(replies_dir: Path) 
     assert read is not None and read.report is not None
     assert (len(read.items), read.draw.population, read.draw.excluded) == (20, 20, {})
     assert [arm.role for arm in read.arms] == ["control"] and read.ask == ["verdicts"]
-    (standing,) = read.report.standings
-    assert (standing.standing, standing.answered, standing.items) == ("random", 20, 20)
+    (standing,) = read.report.samples
+    assert (standing.sample, standing.answered, standing.items) == ("random", 20, 20)
     assert [(c.dimension, c.labels, c.kappa) for c in result.calibrations] == [
         ("answer.answers", 20, None),
         ("answer.grounded", 20, None),

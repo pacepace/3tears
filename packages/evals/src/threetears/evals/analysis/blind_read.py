@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Final, NamedTuple
 
 from threetears.evals.analysis.agreement import (
@@ -55,9 +55,8 @@ from threetears.evals.analysis.agreement import (
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, bounded_separation_p, cohen_kappa, wilson_interval
 from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier, agreement_statistic, calibration_criterion
 from threetears.evals.schema.blind_read import (
-    REFERENCE_RATER_PREFIX,
     BlindAgreement,
-    BlindAnchorCheck,
+    BlindReviewerCheck,
     BlindAnswer,
     BlindArm,
     BlindAsk,
@@ -70,11 +69,11 @@ from threetears.evals.schema.blind_read import (
     BlindRaterKind,
     BlindRead,
     BlindReadReport,
-    BlindRefusedAnchor,
-    BlindSampleStanding,
+    BlindCheckRefused,
+    BlindSampleKind,
     BlindSheet,
     BlindSlot,
-    BlindStanding,
+    BlindSample,
     BlindVerdictTable,
     SheetAsk,
     SheetCriterion,
@@ -127,14 +126,18 @@ class BlindClose(NamedTuple):
     """What closing a blind read gives: the read with its report, and the ratings its answers are.
 
     ``ratings`` are the read's own answers as ratings, a person's as a person's (``source`` naming the read) and a
-    reference reviewer's as an agent's, under the name ``reference:<model>``: never a person's. ``random`` holds the
-    ids of those given by a rater whose answered items are a random sample, which is what a reading that needs a
-    random sample admits.
+    model's as an agent's: never a person's. ``random`` holds the ids of those given by a rater whose answered items
+    are a random sample, which is what a reading that needs a random sample admits. ``reviewed`` says which ratings
+    are a model reviewer's, by rating id, with the reviewer's model id: read off the answer each came from. No code
+    reads that out of a rater's name. It stands in for the typed ``made_by`` a rating is to carry: when a rating
+    records who made it (a person, or a model with its id, served model and the read it answered), this map and the
+    ``agent`` kind it qualifies are what that field replaces.
     """
 
     read: BlindRead
     ratings: list[CalibrationRating]
     random: frozenset[str]
+    reviewed: Mapping[str, str]
 
 
 def _sha(*parts: object) -> str:
@@ -387,7 +390,15 @@ def blind_sheet(read: BlindRead, *, rater: str | None = None) -> BlindSheet:
             SheetItem(
                 item=item.item,
                 case_material=item.outputs[0].evidence.case_material,
-                outputs=[SheetOutput(slot=output.slot, text=output.evidence.artifact) for output in item.outputs],
+                outputs=[
+                    SheetOutput(
+                        slot=output.slot,
+                        text=output.evidence.artifact,
+                        output_fingerprint=output.output_fingerprint,
+                        criterion_fingerprints=output.criterion_fingerprints,
+                    )
+                    for output in item.outputs
+                ],
                 ask=SheetAsk(verdicts=verdicts, preference="preference" in read.ask and len(item.outputs) == 2),
             )
             for item in read.items
@@ -397,31 +408,54 @@ def blind_sheet(read: BlindRead, *, rater: str | None = None) -> BlindSheet:
     )
 
 
-def sample_standing(read: BlindRead, rater: str) -> BlindStanding:
+def _answered_in_full(read: BlindRead, item: BlindItem, answer: BlindAnswer) -> bool:
+    """Whether ``answer`` gives everything ``item`` asks: a verdict per criterion per output, and the preference of a
+    pair where one is asked. A skip gives nothing and is its own count."""
+    if "verdicts" in read.ask:
+        given = {(verdict.slot, verdict.dim) for verdict in answer.verdicts}
+        if any((output.slot, dim.name) not in given for output in item.outputs for dim in read.criteria):
+            return False
+    return not ("preference" in read.ask and len(item.outputs) == 2 and answer.prefer is None)
+
+
+def sample_standing(read: BlindRead, rater: str, kind: BlindRaterKind = "person") -> BlindSample:
     """Whether ``rater``'s answered items are a random sample: the first ``m`` of the order, or not.
 
-    A skip is an answer, so a skipped item keeps a prefix a prefix.
+    A skip is an answer, so a skipped item keeps a prefix a prefix; so is an item answered in part. Both follow
+    content (a hard item is the one skipped or left half done), so both are counted, for every reading of the sample
+    to say.
 
     :param read: The read.
     :ptype read: BlindRead
     :param rater: The rater, as their answers name them.
     :ptype rater: str
-    :return: ``random`` with the count, ``selected``, or ``none``.
-    :rtype: BlindStanding
+    :param kind: Whether the rater is a person or a model: the two never share a sample, whatever they are named.
+    :ptype kind: BlindRaterKind
+    :return: The sample: ``random`` with its counts, ``selected``, or ``none``.
+    :rtype: BlindSample
     """
-    own = [answer for answer in read.answers if answer.rater == rater]
+    own = [answer for answer in read.answers if (answer.rater, answer.rater_kind) == (rater, kind)]
     answered = {answer.item for answer in own}
     order = [item.item for item in read.items]
-    kind: BlindRaterKind = own[0].rater_kind if own else "person"
-    standing: BlindSampleStanding = (
+    items = {item.item: item for item in read.items}
+    sample: BlindSampleKind = (
         "none" if not answered else "random" if answered == set(order[: len(answered)]) else "selected"
     )
-    return BlindStanding(
+    return BlindSample(
         rater=rater,
         rater_kind=kind,
-        standing=standing,
+        sample=sample,
         answered=len(answered),
-        skipped=sum(1 for answer in own if answer.skipped),
+        skipped=len({answer.item for answer in own if answer.skipped}),
+        partial=len(
+            {
+                answer.item
+                for answer in own
+                if not answer.skipped
+                and answer.item in items
+                and not _answered_in_full(read, items[answer.item], answer)
+            }
+        ),
         items=len(order),
     )
 
@@ -449,20 +483,16 @@ def exact_sign_test_p(successes: int, trials: int) -> float | None:
     return min(1.0, 2 * tail / 2**trials)
 
 
-def reference_rater(model: str) -> str:
-    """The rater name a reference reviewer's answers and ratings carry: ``reference:<model>``."""
-    return f"{REFERENCE_RATER_PREFIX}{model}"
-
-
-def _ratings_of(read: BlindRead) -> list[CalibrationRating]:
-    """The read's answers as ratings, each bound to the output and criterion it was given on.
+def _ratings_of(read: BlindRead) -> list[tuple[CalibrationRating, BlindAnswer]]:
+    """The read's answers as ratings, each bound to the output and criterion it was given on, beside the answer it
+    came from: who gave a rating is read off that answer, never off the rating's rater name.
 
     :raises ValueError: An answer to no item of the read, a verdict on a slot the item does not show or on no
         criterion of the read, or a score its criterion's scale cannot hold.
     """
     items = {item.item: item for item in read.items}
     scales = {dim.name: dim.scale for dim in read.criteria}
-    ratings: dict[str, CalibrationRating] = {}
+    ratings: dict[str, tuple[CalibrationRating, BlindAnswer]] = {}
     for answer in read.answers:
         item = items.get(answer.item)
         if item is None:
@@ -485,8 +515,9 @@ def _ratings_of(read: BlindRead) -> list[CalibrationRating]:
                 run_id=output.run_id,
                 result_id=output.result_id,
                 rubric_dim=verdict.dim,
-                rater=answer.rater if person else reference_rater(answer.rater),
-                # The durable rating knows two kinds; a reference reviewer is a model, so it is never the person's.
+                rater=answer.rater,
+                # The durable rating knows two kinds, and a model's answer is never the person's. That this agent's
+                # rating is a blind read's model reviewer's is held beside it (BlindClose.reviewed), not in its name.
                 rater_kind="person" if person else "agent",
                 source=f"blind_read:{read.id}" if person else None,
                 collected_by=(answer.collected_by or answer.rater) if person else None,
@@ -498,7 +529,7 @@ def _ratings_of(read: BlindRead) -> list[CalibrationRating]:
                 criterion_fingerprint=output.criterion_fingerprints[verdict.dim],
                 rated_withheld=_RATED_ON_THE_READ,
             )
-            ratings[rating.id] = rating
+            ratings[rating.id] = (rating, answer)
     return list(ratings.values())
 
 
@@ -602,7 +633,7 @@ def _agreements(
 
 
 def _preference(
-    read: BlindRead, answers: Sequence[BlindAnswer], standings: Mapping[str, BlindStanding]
+    read: BlindRead, answers: Sequence[BlindAnswer], samples: Mapping[tuple[str, str], BlindSample]
 ) -> BlindPreference:
     """One kind of rater's preference over the planned items, per case, with its test; withheld until a rater has
     answered every planned item."""
@@ -637,12 +668,15 @@ def _preference(
             slot_choices=0,
         )
     shares: dict[str, list[float]] = {}
-    slot_a = slot_choices = skipped = 0
+    slot_a = slot_choices = missing = 0
     for rater in done:
         for answer in by_rater[rater]:
             item = items[answer.item]
-            skipped += answer.skipped
-            if answer.prefer is None or len(item.outputs) != 2:
+            if len(item.outputs) != 2:
+                continue
+            if answer.prefer is None:
+                # Skipped, or answered with the preference left blank: counted, never read as a tie.
+                missing += 1
                 continue
             if answer.prefer == "tie":
                 share = 0.5
@@ -675,12 +709,12 @@ def _preference(
     return BlindPreference(
         anchor=kind,
         anchor_names=done,
-        random=all(standings[rater].standing == "random" for rater in done),
+        random=all(samples[(rater, kind)].sample == "random" for rater in done),
         control=control,
         candidate=candidate,
         planned=len(planned),
         answered=len(planned),
-        skipped=skipped,
+        missing=missing,
         items=len(means),
         prefer_candidate=for_candidate,
         prefer_control=for_control,
@@ -694,32 +728,33 @@ def _preference(
     )
 
 
-def _anchor_checks(ratings: Sequence[CalibrationRating], criteria: Sequence[RubricDim]) -> list[BlindAnchorCheck]:
-    """Each reference reviewer's agreement with people on the outputs both answered, per criterion."""
-    people: dict[tuple[str, str, str], list[int]] = {}
-    reviewers: dict[str, dict[tuple[str, str, str], int]] = {}
-    for rating in ratings:
-        if rating.label_key is None:
-            continue
-        key = (rating.rubric_dim, *rating.label_key)
-        if rating.rater_kind == "person":
-            people.setdefault(key, []).append(rating.score)
-        elif rating.rater.startswith(REFERENCE_RATER_PREFIX):
-            reviewers.setdefault(rating.rater.removeprefix(REFERENCE_RATER_PREFIX), {})[key] = rating.score
-    checks: list[BlindAnchorCheck] = []
-    for reviewer in sorted(reviewers):
+def _reviewer_checks(
+    people: Sequence[CalibrationRating],
+    reviewed: Mapping[str, Sequence[CalibrationRating]],
+    criteria: Sequence[RubricDim],
+) -> list[BlindReviewerCheck]:
+    """Each model reviewer's agreement with people on the outputs both answered, per criterion.
+
+    ``reviewed`` is each reviewer's ratings as the read's own answers gave them, by its model id.
+    """
+    by_people: dict[tuple[str, str, str], list[int]] = {}
+    for rating in people:
+        if rating.label_key is not None:
+            by_people.setdefault((rating.rubric_dim, *rating.label_key), []).append(rating.score)
+    checks: list[BlindReviewerCheck] = []
+    for reviewer in sorted(reviewed):
         for dim in criteria:
             pairs = [
-                (score, given)
-                for key, given in reviewers[reviewer].items()
-                if key[0] == dim.name
-                for score in people.get(key, ())
+                (score, rating.score)
+                for rating in reviewed[reviewer]
+                if rating.rubric_dim == dim.name and rating.label_key is not None
+                for score in by_people.get((rating.rubric_dim, *rating.label_key), ())
             ]
             if not pairs:
                 continue
             low, high = SCALES[dim.scale].scores
             checks.append(
-                BlindAnchorCheck(
+                BlindReviewerCheck(
                     dim=dim.name,
                     reviewer=reviewer,
                     outputs=len(pairs),
@@ -734,6 +769,18 @@ def _anchor_checks(ratings: Sequence[CalibrationRating], criteria: Sequence[Rubr
     return checks
 
 
+#: Why a model reviewer's answers are not read as a check of the judge: it is the judge's own model.
+REFUSED_SAME_MODEL: Final = (
+    "the reviewer is the judge's own model, so its answers repeat the judge and are not read as a check of it"
+)
+
+#: Why they are not: which model served the judge's scores, or the reviewer's answers, was not recorded.
+REFUSED_UNRECORDED: Final = (
+    "which model served {side} was not recorded, so the reviewer cannot be shown to be another model than the judge, "
+    "and its answers are not read as a check of it"
+)
+
+
 def close_blind_read(
     read: BlindRead,
     results: Iterable[EvalResult],
@@ -741,14 +788,16 @@ def close_blind_read(
     *,
     other_ratings: Sequence[CalibrationRating] = (),
     unread: Sequence[str] = (),
+    judge_models: Collection[str] = (),
     closed_by: str | None = None,
     closed_at: str | None = None,
 ) -> BlindClose:
     """Close ``read``: its answers as ratings, and what they say of the judge and of the arms.
 
-    A person's answers and a reference reviewer's are read apart. On each criterion the person reading decides the
-    tier where there is one; a reference reading decides only in its absence, and is refused outright where the
-    reviewer is the judge's own model.
+    A person's answers and a model's are read apart. On each criterion the person reading decides the tier once it is
+    itself decided; until then a model's reading stands. A model's reading is refused where the model is the judge's
+    own (its id, or any model that served one of its answers, is the judge's asked or served model), and where which
+    model served either side was not recorded: an unrecorded model matches nothing, so the guard cannot be passed.
 
     :param read: The read, with its answers.
     :ptype read: BlindRead
@@ -761,6 +810,9 @@ def close_blind_read(
     :ptype other_ratings: Sequence[CalibrationRating]
     :param unread: Answers offered that could not be read against the read, each with why; carried on the report.
     :ptype unread: Sequence[str]
+    :param judge_models: The ids the judge was asked as, beside the served model each score records: a reviewer
+        named or served as any of them is the judge's own model.
+    :ptype judge_models: Collection[str]
     :param closed_by: Who closed it; None leaves the read open, its report computed.
     :ptype closed_by: str | None
     :param closed_at: When; None for now, where ``closed_by`` is given.
@@ -770,38 +822,50 @@ def close_blind_read(
     :raises ValueError: An answer the read does not ask (see :func:`_ratings_of`).
     """
     results = list(results)
-    ratings = _ratings_of(read)
-    raters = list(dict.fromkeys(answer.rater for answer in read.answers))
-    standings = {rater: sample_standing(read, rater) for rater in raters}
-    kind_of = {answer.rater: answer.rater_kind for answer in read.answers}
-    random_raters = {
-        (rater if kind_of[rater] == "person" else reference_rater(rater))
-        for rater, standing in standings.items()
-        if standing.standing == "random"
-    }
+    given = _ratings_of(read)
+    ratings = [rating for rating, _ in given]
+    keys = list(dict.fromkeys((answer.rater, answer.rater_kind) for answer in read.answers))
+    samples = {key: sample_standing(read, *key) for key in keys}
     own = frozenset(rating.id for rating in ratings)
-    random_ids = frozenset(rating.id for rating in ratings if rating.rater in random_raters)
+    random_ids = frozenset(
+        rating.id for rating, answer in given if samples[(answer.rater, answer.rater_kind)].sample == "random"
+    )
     if tiers_before is None:
         judged = {key for result in results for score in result.judge_scores() if (key := judge_key(result, score.dim))}
         tiers_before = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), judged)
     before = {judge_key_of(tier): tier.tier for tier in tiers_before}
-    people = [rating for rating in (*ratings, *other_ratings) if rating.rater_kind == "person"]
+    people = [
+        *(rating for rating, answer in given if answer.rater_kind == "person"),
+        *(rating for rating in other_ratings if rating.rater_kind == "person"),
+    ]
     agreement = [
         reading
         for _, reading in _agreements(
             people, results, anchor="person", names=None, before=before, own=own, random_ids=random_ids
         )
     ]
-    refused: list[BlindRefusedAnchor] = []
-    served = {
-        answer.rater: {answer.rater, *([answer.reviewer_served_model] if answer.reviewer_served_model else [])}
-        for answer in read.answers
-        if answer.rater_kind == "reference"
-    }
-    for reviewer in sorted(served):
-        own_ratings = [rating for rating in ratings if rating.rater == reference_rater(reviewer)]
+    # A model's answers, by the model: read off the answers themselves, every one of them.
+    reviewed: dict[str, list[CalibrationRating]] = {}
+    served: dict[str, set[str]] = {}
+    unrecorded: set[str] = set()
+    for answer in read.answers:
+        if answer.rater_kind != "reference":
+            continue
+        reviewed.setdefault(answer.rater, [])
+        if answer.skipped:
+            continue
+        if answer.reviewer_served_model is None:
+            unrecorded.add(answer.rater)
+        else:
+            served.setdefault(answer.rater, set()).add(answer.reviewer_served_model)
+    for rating, answer in given:
+        if answer.rater_kind == "reference":
+            reviewed[answer.rater].append(rating)
+    asked = set(judge_models)
+    refused: list[BlindCheckRefused] = []
+    for reviewer in sorted(reviewed):
         for entry, reading in _agreements(
-            own_ratings,
+            reviewed[reviewer],
             results,
             anchor="reference",
             names=[reviewer],
@@ -809,17 +873,16 @@ def close_blind_read(
             own=own,
             random_ids=random_ids,
         ):
-            if entry.judge_model is not None and entry.judge_model in served[reviewer]:
-                refused.append(
-                    BlindRefusedAnchor(
-                        reviewer=reviewer,
-                        dim=entry.rubric_dim,
-                        reason=(
-                            "the reviewer is the judge's own model, so its answers repeat the judge and are not read "
-                            "as calibration"
-                        ),
-                    )
-                )
+            judge_names = asked | ({entry.judge_model} if entry.judge_model is not None else set())
+            reason: str | None = None
+            if ({reviewer} | served.get(reviewer, set())) & judge_names:
+                reason = REFUSED_SAME_MODEL
+            elif entry.judge_model is None:
+                reason = REFUSED_UNRECORDED.format(side="the judge's scores")
+            elif reviewer in unrecorded:
+                reason = REFUSED_UNRECORDED.format(side="the reviewer's answers")
+            if reason is not None:
+                refused.append(BlindCheckRefused(reviewer=reviewer, dim=entry.rubric_dim, reason=reason))
                 continue
             agreement.append(reading)
     agreement = _with_the_deciding_anchor(agreement)
@@ -828,12 +891,12 @@ def close_blind_read(
         for kind in ("person", "reference"):
             for group in _preference_groups(read, kind):
                 if group:
-                    preferences.append(_preference(read, group, standings))
+                    preferences.append(_preference(read, group, samples))
     report = BlindReadReport(
-        standings=list(standings.values()),
+        samples=list(samples.values()),
         agreement=agreement,
-        anchor_checks=_anchor_checks([*ratings, *other_ratings], read.criteria),
-        refused_anchors=refused,
+        reviewer_checks=_reviewer_checks(people, reviewed, read.criteria),
+        refused_checks=refused,
         preferences=preferences,
         other_ratings=len(other_ratings),
         unread=list(unread),
@@ -845,7 +908,12 @@ def close_blind_read(
             "closed_at": (closed_at or utc_now_iso()) if closed_by is not None else None,
         }
     )
-    return BlindClose(read=closed, ratings=ratings, random=random_ids)
+    return BlindClose(
+        read=closed,
+        ratings=ratings,
+        random=random_ids,
+        reviewed={rating.id: answer.rater for rating, answer in given if answer.rater_kind == "reference"},
+    )
 
 
 def _with_the_deciding_anchor(agreement: Sequence[BlindAgreement]) -> list[BlindAgreement]:

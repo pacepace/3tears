@@ -428,7 +428,13 @@ CORE_SCHEMA_VERSION: int = 15
 #:   as before. In no identity, key or digest. An older build reads the run's rules as the one version its proofs
 #:   stand under, which the re-proof made true.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 17
+#: - **v15.18** — an out-of-run call can be a blind read's model reviewer's: ``reviewer``, a new value of the open
+#:   vocabulary ``OutOfRunPurpose`` on ``OutOfRunSpend.purpose``, written when a model answers a blind read's sheet
+#:   (one call per item). Measurement spend on its own line, never the candidate's and never the judge's. In no
+#:   identity, key or digest. An older build refuses a row carrying it unless the row says this minor wrote it, and
+#:   then lists the purpose by name beside the ones it knows.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 18
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

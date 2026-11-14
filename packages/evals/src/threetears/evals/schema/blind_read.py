@@ -3,7 +3,7 @@
 One idea carries the whole shape: **the population in a seeded random order.** Every case where each chosen arm has
 a judged, usable answer is one *item*; the items are a seeded permutation, and a rater answers them from the top. A
 prefix of a random permutation is a simple random sample, so nobody picks a sample size first, and "is this sample
-random" is a structural fact (:class:`BlindStanding`): the answered items are the first ``m`` of the order, or they
+random" is a structural fact (:class:`BlindSample`): the answered items are the first ``m`` of the order, or they
 are not.
 
 **There is no key to hide.** What a rater is shown is a :class:`BlindSheet`: the outputs, the case each answers and
@@ -21,7 +21,7 @@ The shapes here are plain documents with no behaviour. The mechanism (drawing, t
 
 from __future__ import annotations
 
-from typing import Final, Literal
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -42,7 +42,7 @@ BlindAsk = Literal["verdicts", "preference"]
 
 #: Whether a rater's answered items are a random sample of the population: ``random`` (the first ``m`` of the drawn
 #: order), ``selected`` (any other set), or ``none`` (nothing answered).
-BlindSampleStanding = Literal["random", "selected", "none"]
+BlindSampleKind = Literal["random", "selected", "none"]
 
 #: How a preference read: the candidate shown better or worse, not told apart, too few non-tie items to test, or
 #: ``withheld``: the read has not reached its planned length, so no direction, count or p is given. A preference
@@ -52,9 +52,6 @@ BlindPreferenceVerdict = Literal["improved", "regressed", "not_separated", "too_
 
 #: The test a preference was read by: the exact sign test (one answer per item), or the bounded test on shares.
 BlindPreferenceTest = Literal["exact_sign", "bounded_share"]
-
-#: The prefix a reference reviewer's rater name carries on every surface, before its model id.
-REFERENCE_RATER_PREFIX: Final = "reference:"
 
 
 class BlindArm(EvalDocumentModel):
@@ -164,15 +161,23 @@ class BlindAnswer(EvalDocumentModel):
         return self
 
 
-class BlindStanding(EvalDocumentModel):
+class BlindSample(EvalDocumentModel):
     """Whether one rater's answered items are a random sample: a structural fact, read off the order."""
 
     rater: str = Field(min_length=1)
     rater_kind: BlindRaterKind
-    standing: BlindSampleStanding = Field(
+    sample: BlindSampleKind = Field(
         description="`random`: the first `answered` items of the order. `selected`: any other set. `none`: nothing."
     )
-    answered: int = Field(ge=0, description="The items answered, skips included.")
+    answered: int = Field(ge=0, description="The items answered, skipped and partly answered ones included.")
+    partial: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "How many of them were answered in part: a verdict or the preference the item asks is missing. What "
+            "was given counts; what was left out follows content, as a skip does, and is said with the skips."
+        ),
+    )
     skipped: int = Field(
         default=0,
         ge=0,
@@ -248,7 +253,7 @@ class BlindAgreement(EvalDocumentModel):
     table: BlindVerdictTable | None = Field(default=None, description="The two-by-two, on a pass/fail criterion.")
 
 
-class BlindAnchorCheck(EvalDocumentModel):
+class BlindReviewerCheck(EvalDocumentModel):
     """How a reference reviewer agrees with people on the outputs both answered: the anchor, itself measured."""
 
     dim: DimName
@@ -258,7 +263,7 @@ class BlindAnchorCheck(EvalDocumentModel):
     kappa: float | None = Field(description="Kappa on pass/fail, quadratic-weighted on 1-5; None where undefined.")
 
 
-class BlindRefusedAnchor(EvalDocumentModel):
+class BlindCheckRefused(EvalDocumentModel):
     """A reference reviewer whose answers are not read as calibration, and why."""
 
     reviewer: str = Field(min_length=1)
@@ -276,7 +281,11 @@ class BlindPreference(EvalDocumentModel):
     candidate: str = Field(min_length=1, description="The candidate arm.")
     planned: int = Field(ge=0, description="The planned length: the first this-many items are what is read.")
     answered: int = Field(ge=0, description="How many of those items the rater furthest along has answered.")
-    skipped: int = Field(default=0, ge=0, description="How many of the planned items were skipped by a rater read.")
+    missing: int = Field(
+        default=0,
+        ge=0,
+        description="The planned pair items a rater read gave no preference on: skipped, or left blank.",
+    )
     items: int = Field(ge=0, description="The pair items with a preference; 0 while withheld.")
     prefer_candidate: int = Field(ge=0, description="Items where the candidate's share is above a half.")
     prefer_control: int = Field(ge=0, description="Items where it is below a half.")
@@ -312,16 +321,41 @@ class BlindPreference(EvalDocumentModel):
 class BlindReadReport(EvalDocumentModel):
     """What a blind read found, as its close computed it."""
 
-    standings: list[BlindStanding] = Field(default_factory=list)
+    samples: list[BlindSample] = Field(default_factory=list)
     agreement: list[BlindAgreement] = Field(default_factory=list)
-    anchor_checks: list[BlindAnchorCheck] = Field(default_factory=list)
-    refused_anchors: list[BlindRefusedAnchor] = Field(default_factory=list)
+    reviewer_checks: list[BlindReviewerCheck] = Field(default_factory=list)
+    refused_checks: list[BlindCheckRefused] = Field(default_factory=list)
     preferences: list[BlindPreference] = Field(default_factory=list)
     other_ratings: int = Field(
         default=0, ge=0, description="Ratings read beside the read's own answers, which count as selected."
     )
     unread: list[str] = Field(
         default_factory=list, description="Answers offered that could not be read against the read, each with why."
+    )
+
+
+class BlindReview(EvalDocumentModel):
+    """One model's reading of a blind read's sheet: the calls made for it, what they cost, and what went unanswered.
+
+    The spend is measurement spend: what it cost to check the judge, never part of what a candidate costs.
+    """
+
+    reviewer: str = Field(min_length=1, description="The model's id, which names its answers (BlindAnswer.rater).")
+    served_models: list[str] = Field(
+        default_factory=list,
+        description="Every model that served one of its answers, as the provider named it, sorted.",
+    )
+    asked: int = Field(ge=0, description="The items a call was made for in this reading.")
+    reused: int = Field(default=0, ge=0, description="The items read from answers recorded earlier, with no call made.")
+    calls: int = Field(default=0, ge=0, description="The calls made.")
+    cost_usd: float | None = Field(default=None, description="What the priced calls cost; None when none was priced.")
+    unpriced_calls: int = Field(default=0, ge=0, description="The calls that carry no dollars.")
+    unanswered: list[str] = Field(
+        default_factory=list,
+        description="Why each item the model was asked and gave no usable answer on has none, in order.",
+    )
+    stopped: str | None = Field(
+        default=None, description="Why the reading stopped before every item was asked; None where nothing stopped it."
     )
 
 
@@ -340,6 +374,13 @@ class BlindRead(EvalDocumentModel):
     draw: BlindDraw
     items: list[BlindItem] = Field(default_factory=list, description="The items, in the drawn order.")
     answers: list[BlindAnswer] = Field(default_factory=list)
+    reviews: list[BlindReview] = Field(
+        default_factory=list,
+        description=(
+            "Each model's reading of the sheet as it was made: what was asked, what it cost and what was not "
+            "answered. An answer is a model's because a review here made it, never because of how its rater is named."
+        ),
+    )
     closed_at: str | None = None
     closed_by: str | None = None
     report: BlindReadReport | None = None
@@ -362,10 +403,16 @@ class SheetCriterion(EvalDocumentModel):
 
 
 class SheetOutput(EvalDocumentModel):
-    """An output as the rater reads it: its slot and its text, and nothing else."""
+    """An output as the rater reads it: its slot and its text, and the fingerprints a label of it is bound to.
+
+    The fingerprints are digests of the text shown and of each criterion's wording. They name no arm, run or result,
+    and they are what lets a saved label pair with the same output under another draw.
+    """
 
     slot: BlindSlot
     text: str
+    output_fingerprint: str = Field(min_length=1)
+    criterion_fingerprints: dict[str, str] = Field(default_factory=dict)
 
 
 class SheetAsk(EvalDocumentModel):
@@ -402,9 +449,8 @@ class BlindSheet(EvalDocumentModel):
 
 
 __all__ = [
-    "REFERENCE_RATER_PREFIX",
     "BlindAgreement",
-    "BlindAnchorCheck",
+    "BlindReviewerCheck",
     "BlindAnswer",
     "BlindArm",
     "BlindAsk",
@@ -418,11 +464,12 @@ __all__ = [
     "BlindRaterKind",
     "BlindRead",
     "BlindReadReport",
-    "BlindRefusedAnchor",
-    "BlindSampleStanding",
+    "BlindReview",
+    "BlindCheckRefused",
+    "BlindSampleKind",
     "BlindSheet",
     "BlindSlot",
-    "BlindStanding",
+    "BlindSample",
     "BlindVerdict",
     "BlindVerdictTable",
     "SheetAsk",

@@ -195,6 +195,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/campaign_upgrade.py",
     # The one rule naming an aspect after its campaign's behavior, which every site that does so calls.
     "schema/aspect_label.py",
+    # The blind read's stored shapes: a draw, a sheet, answers and what a close found. No host is named.
+    "schema/blind_read.py",
     # The one function reading a lever id as words, which every surface naming a lever calls.
     "schema/lever_words.py",
     "kernel/declaration.py",

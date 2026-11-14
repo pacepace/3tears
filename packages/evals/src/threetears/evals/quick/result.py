@@ -32,8 +32,10 @@ A factor's effect at another level of another factor is read against a second co
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -69,7 +71,7 @@ from threetears.evals.kernel import (
     confusion_of,
 )
 from threetears.evals.analysis.blind_read import BlindClose, blind_sheet, close_blind_read, draw_blind_read
-from threetears.evals.schema import BlindArm, BlindRead, CalibrationRating, CompletionClient, EvalResult
+from threetears.evals.schema import BlindAnswer, BlindArm, BlindRead, CalibrationRating, CompletionClient, EvalResult
 from threetears.evals.schema.models import DECLARED_NAME_CHARS
 from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
@@ -94,8 +96,17 @@ from threetears.evals.analysis.report.verdict import VerdictLine
 from threetears.evals.analysis.style import arm_display_name, arm_name
 from threetears.evals.analysis.report.words import campaign_arm_tags, judged_heading, stratum_names
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
-from threetears.evals.quick.blind import answer_sheet, judge_lines, read_labels, write_blind_read
-from threetears.evals.quick.judged import Judge, JudgeExamples, judge_client
+from threetears.evals.kernel.out_of_run import OutOfRunBudget
+from threetears.evals.quick.blind import (
+    REVIEWER_PURPOSE,
+    answer_sheet,
+    judge_lines,
+    keep_reviewed,
+    plan_review,
+    read_labels,
+    write_blind_read,
+)
+from threetears.evals.quick.judged import BorrowedJudgeClient, Judge, JudgeExamples, judge_client
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
 from threetears.evals.run import get_result_trace, list_results
 
@@ -234,7 +245,8 @@ class Result:
         the first candidate where there are several arms), with the answers ``Judge(labels=...)`` names and what
         they say of the judge in its ``report``; ``None`` with no judge, or no judged answer to show.
     :ivar loose_labels: The people's labels in that file that are not on this run's draw (an older ``to_label.csv``,
-        another run's answers): counted toward agreement as selected, never as a random sample.
+        another run's answers): each paired with the same output, and counted as not drawn at random.
+    :ivar reviews_kept: The file a model reviewer's answers are kept in (:meth:`reviewed_by`), or ``None``.
     :ivar contrast_arms: The arm each row of the report's contrasts table tests, by name, row for row; ``None`` for a
         row no arm's variant matches.
     :ivar contrast_measures: The key of the measure each row of the contrasts table reads, row for row.
@@ -263,6 +275,7 @@ class Result:
     judge_examples: JudgeExamples | None = None
     blind_read: BlindRead | None = field(default=None, repr=False, compare=False)
     loose_labels: tuple[CalibrationRating, ...] = field(default=(), repr=False, compare=False)
+    reviews_kept: Path | None = field(default=None, repr=False, compare=False)
     contrast_arms: tuple[str | None, ...] = field(default=(), repr=False, compare=False)
     contrast_measures: tuple[str | None, ...] = field(default=(), repr=False, compare=False)
     kind: str = field(default=CALLABLE_KIND, repr=False, compare=False)
@@ -394,41 +407,113 @@ class Result:
             loose=report.other_ratings if report is not None else 0,
             unread=report.unread if report is not None else (),
             shown={arm: _shown_arm_name(arm) for arm in self.arms},
+            kept=None if self.reviews_kept is None else self.reviews_kept.name,
         )
 
-    async def reviewed_by(self, model: str | CompletionClient) -> Result:
-        """This result with its blind read answered by a model: a reference reviewer, never a person.
+    async def reviewed_by(
+        self,
+        model: str | CompletionClient,
+        *,
+        max_cost_usd: float | None = None,
+        kept: str | os.PathLike[str] | None = None,
+    ) -> Result:
+        """This result with its blind read answered by a model, read apart from any person and never as one.
 
         The model is shown the sheet a person is (the outputs in their drawn order and slots, the case each answers,
-        the criteria as worded; no arm, run or judge score), one call per item. Its answers are read apart from any
-        person's: the judge's agreement with it is agreement with that model, and it is refused as calibration where
-        it is the judge's own model. Its calls are the model's own to record and replay (a
-        :class:`~threetears.evals.providers.Model` with ``recording=``).
+        the criteria as worded; no arm, run or judge score), one call per case. The judge's agreement with it is
+        agreement with that model. It is not read as a check of the judge where it is the judge's own model, or where
+        which model served either side was not recorded.
+
+        **Its calls are spend like any other.** Each is admitted before it is made, held to ``max_cost_usd`` over
+        everything the eval has landed (its arms, its judge's examples), and written to the store's out-of-run ledger
+        under the purpose ``reviewer``: the cost of checking the judge, in no candidate's cost. The print says what
+        they cost on a line of their own.
+
+        **A case it answered is not asked again.** With ``kept`` its answers are written there as a labels file, and
+        a later call over the same draw reads them back and asks only the cases the file does not hold. A reply that
+        cannot be used leaves its case not answered, counted and said, and the rest are asked.
 
         :param model: The reviewer: a model id, a :class:`~threetears.evals.providers.Model`, or any completion
             client that names its model.
         :ptype model: str | CompletionClient
-        :return: The result, its blind read carrying the reviewer's answers beside any already there.
+        :param max_cost_usd: The most the eval may spend, these calls included; ``None`` for no cap.
+        :ptype max_cost_usd: float | None
+        :param kept: The file its answers are kept in and read back from; ``None`` keeps none.
+        :ptype kept: str | os.PathLike[str] | None
+        :return: The result, its blind read carrying the model's answers beside any already there.
         :rtype: Result
-        :raises ValueError: A client naming no model; an unjudged result, or one with no judged answer to read; or a
-            reply that is not the answer asked for.
+        :raises ValueError: A client naming no model, or an unjudged result or one with no judged answer to read.
         """
         read = self.blind_read
-        if self.judge is None or read is None:
-            raise ValueError("a reference reviewer answers a judged result's blind read, and this result has none")
+        judge = self.judge
+        if judge is None or read is None:
+            raise ValueError("a model answers a judged result's blind read, and this result has none")
         client, name = judge_client(model)
-        answers = await answer_sheet(blind_sheet(read), client, model=name)
-        kept = [answer for answer in read.answers if answer.rater != name]
+        lent = BorrowedJudgeClient(client, model_name=name)
+        kept_at = None if kept is None else Path(kept)
         report = read.report
 
+        def recorded() -> tuple[list[EvalResult], list[BlindAnswer]]:
+            results = _results_of(self.host, self.arms, self.scope_id)
+            if kept_at is None or not kept_at.is_file():
+                return results, []
+            # Only answers on this very draw are read back: an answer to another draw is asked for again.
+            earlier = read_labels(kept_at, read, results).answers
+            return results, [answer for answer in earlier if (answer.rater, answer.rater_kind) == (name, "reference")]
+
+        results, earlier = await run_blocking(self.host.blocking_executor, recorded)
+        have = {answer.item for answer in earlier}
+        landed = [summary.total_cost_usd for summary in self.arms.values()]
+        if self.judge_examples is not None and self.judge_examples.spend.calls:
+            landed.append(None if self.judge_examples.spend.unpriced_calls else self.judge_examples.spend.cost_usd)
+        budget = OutOfRunBudget(
+            store=self.host.storage,
+            scope_id=self.scope_id,
+            cap_usd=None,
+            template_id=self.template_id,
+            campaign_id=self.campaign_id,
+            blocking_executor=self.host.blocking_executor,
+        )
+        sheet = blind_sheet(read)
+        # Planned, then admitted here, then made: the reading makes only what this call admitted.
+        planned = plan_review(sheet, {item.item for item in read.items} - have)
+        admitted = (
+            dict(zip(planned, budget.admit(lent, REVIEWER_PURPOSE, list(planned.values())), strict=True))
+            if planned
+            else {}
+        )
+        try:
+            answers, review = await answer_sheet(
+                sheet,
+                lent,
+                budget,
+                admitted,
+                reused=len(have),
+                max_cost_usd=max_cost_usd,
+                landed_usd=None
+                if any(cost is None for cost in landed)
+                else math.fsum(c for c in landed if c is not None),
+            )
+        finally:
+            if isinstance(model, str):
+                # A client built here from a model id is this call's to close; a caller's own is the caller's.
+                await client.aclose()
+
         def closed() -> Result:
+            others = [answer for answer in read.answers if (answer.rater, answer.rater_kind) != (name, "reference")]
+            reviews = [review_ for review_ in read.reviews if review_.reviewer != name]
             again = close_blind_read(
-                read.model_copy(update={"answers": [*kept, *answers], "report": None}),
-                _results_of(self.host, self.arms, self.scope_id),
+                read.model_copy(
+                    update={"answers": [*others, *earlier, *answers], "reviews": [*reviews, review], "report": None}
+                ),
+                results,
                 other_ratings=self.loose_labels,
                 unread=report.unread if report is not None else (),
+                judge_models=[judge.model],
             ).read
-            return replace(self, blind_read=again, calibrations=calibrations_of(again))
+            if kept_at is not None:
+                keep_reviewed(kept_at, again, name)
+            return replace(self, blind_read=again, calibrations=calibrations_of(again), reviews_kept=kept_at)
 
         return await run_blocking(self.host.blocking_executor, closed)
 
@@ -1015,6 +1100,7 @@ class Result:
                     calibrations=self.calibrations,
                     blind_read=self.blind_read,
                     loose_labels=self.loose_labels,
+                    reviews_kept=self.reviews_kept,
                 ),
                 self.judge_examples,
             )
@@ -1253,7 +1339,7 @@ def read_blind(
     One arm is read as singles; several as the control against the first candidate, in pairs. The draw is not
     stored: the same answers draw the same order, so a run replayed from its recordings reads the labels saved from
     an earlier run's page as answers to its own draw. A label that is not on this draw (an older ``to_label.csv``,
-    another run's answers) pairs with the judge's score of the byte-identical answer and counts as ``selected``.
+    another run's answers) pairs with the judge's score of the byte-identical answer and counts as not drawn at random.
 
     :return: The read, closed over the labels, and the people's labels that are not on its draw; ``(None, ())`` with
         no judge or no judged answer to show.
@@ -1289,15 +1375,25 @@ def read_blind(
         read = read.model_copy(update={"answers": labels.answers})
     loose = tuple(labels.loose) if labels is not None else ()
     closed: BlindClose = close_blind_read(
-        read, results, other_ratings=loose, unread=labels.unread if labels is not None else ()
+        read,
+        results,
+        other_ratings=loose,
+        unread=labels.unread if labels is not None else (),
+        judge_models=[judge.model],
     )
     return closed.read, loose
+
+
+def model_slug(model: str | CompletionClient) -> str:
+    """A file-name-safe digest of a reviewer's model id: what a kept answers file is named by, never read back."""
+    name = model if isinstance(model, str) else str(getattr(model, "model_name", ""))
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
 
 
 def calibrations_of(read: BlindRead | None) -> tuple[JudgeCalibration, ...]:
     """How the judge agrees with people's labels, per dimension, off a closed blind read's report.
 
-    A reference reviewer's answers are never here: this is agreement with people.
+    A model's answers are never here: this is agreement with people.
 
     :param read: The read, or ``None``.
     :ptype read: BlindRead | None
@@ -1545,6 +1641,7 @@ __all__ = [
     "JudgeCalibration",
     "Result",
     "calibrations_of",
+    "model_slug",
     "coordinates",
     "declare",
     "read_blind",

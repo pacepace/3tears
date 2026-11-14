@@ -36,8 +36,8 @@ run, through the call its answers are graded by, and reports how many it graded 
 (:class:`~threetears.evals.kernel.AuthoredJudgeCase`), for a host's judge campaign to measure the judge on.
 ``labels=`` names a CSV of a person's verdicts on judged answers, saved from the ``blind_read.html`` a written result
 leaves (the answers in one seeded random order, with no arm, run or judge score on the page), and the result reports
-how far the judge agrees with them. ``reviewer=`` names a model that answers the same sheet: a reference reviewer,
-read apart from people and never as one.
+how far the judge agrees with them. ``reviewer=`` names a model that answers the same sheet: read
+apart from people and never as one.
 
 **The caller owns the client.** The engine releases every client it is handed when a run ends; the judge's is lent
 to it through :class:`BorrowedJudgeClient`, whose release does nothing, so one client serves every call that names it
@@ -257,7 +257,7 @@ class Judge:
         :class:`~threetears.evals.schema.RubricDim` values for a scoring guide or a 1-5 scale.
     :ivar examples: Answers the judge must grade a known way (:class:`Example`), graded in every run it judges.
     :ivar labels: The CSV of a person's labels the judge is calibrated against, or ``None``.
-    :ivar reviewer: A model that answers the run's blind read as a reference reviewer, or ``None``.
+    :ivar reviewer: A model that answers the run's blind read, read as a model and never as a person, or ``None``.
     :ivar case_material: Renders what an answer is judged against from its case, or ``None`` for the case as JSON.
     :ivar guard: Each dimension no arm may get worse on, by its rubric key, with the margin it may: scored on the
         boundary axis and decided against the control apart from every contrast.
@@ -294,8 +294,8 @@ class Judge:
         :param labels: A CSV of a person's verdicts on judged answers: the labels saved from the ``blind_read.html``
             that :meth:`~threetears.evals.quick.contract.Result.write` writes, or its ``blind_read.csv`` filled in.
             The result reports how far the judge agrees with them (kappa, its bounds and the evidence tier), whether
-            they were answered from the top (a random sample) or out of order (selected), and, of two arms, which
-            the person preferred. A ``to_label.csv`` an earlier version wrote still reads, as selected. A file that
+            they were answered from the top (a random sample) or out of order (not drawn at random), and, of two arms, which
+            the person preferred. A ``to_label.csv`` an earlier version wrote still reads, as not drawn at random. A file that
             is not there yet reads as no labels, said by name. A relative path is read beside the eval file being
             loaded, else in the working directory.
         :ptype labels: str | os.PathLike[str] | None
@@ -305,10 +305,12 @@ class Judge:
         :param guard: Each dimension no arm may get worse on than the control by more than its margin, by rubric key
             (``{"grounded": 0.02}``).
         :ptype guard: Mapping[str, float] | None
-        :param reviewer: A model that answers the run's blind read, one call per item, as a reference reviewer: a
-            model id, a :class:`~threetears.evals.providers.Model` (its ``recording=`` with it), or a client that
-            names its model. The judge's agreement with it is printed as agreement with that model, never as
-            agreement with people, and it is refused as calibration where it is the judge's own model.
+        :param reviewer: A model that answers the run's blind read, one call per case: a model id, a
+            :class:`~threetears.evals.providers.Model` (its ``recording=`` with it), or a client that names its
+            model. The judge's agreement with it is printed as checked against a model, never against people; it is
+            not read as a check where it is the judge's own model. Its calls are held to the eval's cost cap, written
+            to the out-of-run ledger, and printed with what they cost; beside a file store its answers are kept, so
+            the same answers are not read twice.
         :ptype reviewer: str | CompletionClient | None
         :raises ValueError: A client naming no model; an empty rubric, a dimension the engine refuses, or two under one
             name; an example naming no dimension, giving a verdict its scale cannot hold, or whose case cannot be

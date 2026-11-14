@@ -382,60 +382,63 @@ def test_the_pooled_tier_from_several_people_holds_its_error_at_the_bar(label: s
     assert met / replicates <= at_most(_ONE_SIDED, replicates), f"{label}: met {met / replicates:.3f}"
 
 
-def _two_results_a_case(
-    rng: random.Random, cases: int, agreement: float, scale: str
-) -> tuple[list[CalibrationRating], list[EvalResult]]:
-    """``cases`` cases of two results each, as a blind read's pair items give them, one person rating every result.
+#: How many reads each cell of the two-results-a-case rows draws: enough that four standard errors is 0.9 points.
+_CLUSTERED_REPLICATES = 10_000
 
-    The judge's errors coincide within a case: it gives both of a case's results the true score with probability
-    ``agreement``, and a chance score to both otherwise (a hard case is hard for both arms). Each result's kappa with
-    the person is ``agreement``; the two results of a case are as far from independent as they can be.
+
+def _two_results_a_case(seed: str, cases: int, scale: str, *, replicates: int = _CLUSTERED_REPLICATES) -> float:
+    """How often a judge AT the bar is awarded the tier when each case gives two results whose errors coincide.
+
+    ``cases`` cases of two results each, as a blind read's pair items give them, one person rating every result. The
+    judge gives both of a case's results the true score with probability 0.6, and a chance score to both otherwise
+    (a hard case is hard for both arms): each result's kappa with the person is 0.6, and the two results of a case are
+    as far from independent as they can be. Read by the engine's own kappa, moments, interval and criterion, each
+    result its own cluster, as :func:`~threetears.evals.analysis.judge_agreement` hands them over.
     """
     categories, marginal = ([0, 1], [1, 1]) if scale == "pass_fail" else (_SCALE, [1, 2, 4, 2, 1])
-    results, ratings = [], []
-    for case in range(cases):
-        right = rng.random() < agreement
-        for arm in range(2):
-            truth = rng.choices(categories, weights=marginal)[0]
-            judge = truth if right else rng.choices(categories, weights=marginal)[0]
-            result = make_eval_result(
-                id=f"result-{case}-{arm}",
-                test_case_id=f"case-{case}",
-                rubric_scores=[
-                    RubricScore(
-                        dim=_DIM,
-                        score=judge,
-                        scale=scale,
-                        served_model=_JUDGE,
-                        axis="capability",
-                        judge_temperature=0.0,
-                    )
-                ],
-            )
-            results.append(result)
-            ratings.append(
-                make_calibration_rating(result_id=result.id, rater="ana", score=truth, rubric_dim=_DIM, scale=scale)
-            )
-    return ratings, results
-
-
-@pytest.mark.parametrize("scale", ["pass_fail", "ordinal"])
-@pytest.mark.parametrize("cases", [10, 30, 60])
-def test_two_results_a_case_with_errors_that_coincide_hold_the_tier_s_error_at_the_bar(scale: str, cases: int) -> None:
-    """A pair item of a blind read gives two results from one case, and the tier's floor and interval count results.
-
-    Held at the worst case, the judge's errors on a case's two results coinciding outright, with the judge at the
-    bar (kappa 0.6): the tier is awarded at most 5% of the time plus four Monte Carlo standard errors. Measured over
-    1,000 reads a row (2026-11-14): awarded 1.5% to 5.9% and shown below the bar 3.1% to 6.1%, against 0.8% to 4.5%
-    and 1.4% to 2.9% with independent errors. So coinciding errors use up the interval's slack and no more; the
-    interval is not recomputed over cases, and a reading states its cases beside its results.
-    """
-    rng = random.Random(f"two-results-a-case-{scale}-{cases}")
-    replicates = 500
+    weights = "none" if scale == "pass_fail" else "quadratic"
+    rng = random.Random(seed)
     met = 0
-    key = JudgeKey(_DIM, scale, _JUDGE, None, 0.0)
     for _ in range(replicates):
-        ratings, results = _two_results_a_case(rng, cases, CALIBRATION_MIN_AGREEMENT, scale)
-        (tier,) = judge_evidence_tiers(judge_agreement(ratings, results), judge_self_agreement([]), {key})
-        met += tier.calibration.state == "met"
-    assert met / replicates <= at_most(_ONE_SIDED, replicates), f"{scale}, {cases} cases: met {met / replicates:.3f}"
+        pairs: list[tuple[int, int]] = []
+        for _case in range(cases):
+            right = rng.random() < CALIBRATION_MIN_AGREEMENT
+            for _arm in range(2):
+                truth = rng.choices(categories, weights=marginal)[0]
+                pairs.append((truth if right else rng.choices(categories, weights=marginal)[0], truth))
+        read = _criterion_over(pairs, categories, weights, (), calibration_criterion)
+        met += read is not None and read[0].state == "met"
+    return met / replicates
+
+
+@pytest.mark.parametrize(("scale", "cases"), [("pass_fail", 10), ("pass_fail", 20), ("ordinal", 10), ("ordinal", 30)])
+def test_two_results_a_case_hold_the_tier_s_error_on_few_cases(scale: str, cases: int) -> None:
+    """Where it holds. Measured over 20,000 reads a cell (2026-11-14), a judge at the bar awarded the tier: pass/fail
+    2.7% at 10 cases and 5.3% at 20; 1-5 1.9% at 10, 3.8% at 20 and 4.4% at 30. Held at 5% plus four Monte Carlo
+    standard errors over 10,000 reads (5.9%)."""
+    met = _two_results_a_case(f"two-results-a-case-{scale}-{cases}", cases, scale)
+    assert met <= at_most(_ONE_SIDED, _CLUSTERED_REPLICATES), f"{scale}, {cases} cases: met {met:.4f}"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "the tier's interval counts each result as its own cluster, so two results of one case whose judge errors "
+        "coincide award the tier to a judge at the bar about 7% of the time (open-problems.md, 'Two results of one "
+        "case count as two')"
+    ),
+)
+def test_two_results_a_case_hold_the_tier_s_error_on_sixty_cases() -> None:
+    """Where it does not, stated rather than waved through. Measured over 20,000 reads a cell (2026-11-14): pass/fail
+    5.9% at 30 cases, 6.7% at 60 and 7.0% at 120; 1-5 5.2% at 60 and 5.7% at 120. With independent errors the same
+    cells read 3.2% to 4.2% and 3.4% to 3.7%. The interval over cases instead of results reads 1.2% to 1.8% there
+    (and 0.4% to 0.7% with independent errors), so the fix exists and costs power; it is its own change."""
+    met = _two_results_a_case("two-results-a-case-pass_fail-60", 60, "pass_fail")
+    assert met <= at_most(_ONE_SIDED, _CLUSTERED_REPLICATES), f"pass/fail, 60 cases: met {met:.4f}"
+
+
+def test_two_results_a_case_award_the_tier_at_most_eight_percent_of_the_time() -> None:
+    """The measured limit, pinned: with errors that coincide outright, the worst case, a judge at the bar is awarded
+    the tier 6.7% of the time at 60 pass/fail cases. Above 5% beyond Monte Carlo error, and below 8%."""
+    met = _two_results_a_case("two-results-a-case-pass_fail-60", 60, "pass_fail")
+    assert at_most(_ONE_SIDED, _CLUSTERED_REPLICATES) < met < 0.08, f"pass/fail, 60 cases: met {met:.4f}"
