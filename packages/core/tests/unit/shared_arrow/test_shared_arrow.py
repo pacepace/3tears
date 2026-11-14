@@ -45,6 +45,9 @@ from threetears.core.shared_arrow import (
 ROWS = 200_000
 TABLE = "t"
 
+#: the threads a DuckDB point query runs on, for the speed ratio's CPU trust check (coordinator ruling)
+_POINT_QUERY_THREADS = 2
+
 
 def _table(value: int, rows: int = ROWS) -> pa.Table:
     """a table whose column ``a`` is ``value`` in every row, and a text column beside it.
@@ -862,7 +865,7 @@ class TestAReadBorrowsARegisteredCursor:
                 with reader.read() as read:
                     assert read.cursor.execute(point).fetchone() == (3,)
 
-        baseline, took = await best_seconds_interleaved(bare, served)
+        baseline, took = await best_seconds_interleaved(bare, served, threads=_POINT_QUERY_THREADS)
         print(f"{reads} serving reads {took * 1000:.1f} ms, the bare point queries {baseline * 1000:.1f} ms")
         held.__exit__(None, None, None)
         reader.close()

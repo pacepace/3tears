@@ -27,6 +27,9 @@ _REAL_KEYS = 10_000
 #: rows the keyed table holds
 _REAL_ROWS = 200_000
 
+#: the threads a DuckDB point query runs on, for the speed ratio's CPU trust check (coordinator ruling)
+_POINT_QUERY_THREADS = 2
+
 
 @pytest.fixture
 def conn() -> Iterator[duckdb.DuckDBPyConnection]:
@@ -206,7 +209,7 @@ def test_a_long_list_binds_at_real_size_within_twice_the_statement_on_keys_duckd
 
     try:
         assert sorted(r["id"] for r in run_inline(served())) == sorted(r["id"] for r in run_inline(bare())) == ids
-        baseline, took = asyncio.run(best_seconds_interleaved(bare, served))
+        baseline, took = asyncio.run(best_seconds_interleaved(bare, served, threads=_POINT_QUERY_THREADS))
     finally:
         db.close()
     print(

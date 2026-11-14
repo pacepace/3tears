@@ -73,6 +73,7 @@ async def best_seconds_interleaved(
     *,
     runs: int = _RUNS,
     host_may_be_late: float = HOST_MAY_BE_LATE,
+    threads: int | None = None,
 ) -> tuple[float, float]:
     """the fastest of ``runs`` awaits of each side, the two run turn about: the bare, then the path, ``runs`` times.
 
@@ -93,6 +94,11 @@ async def best_seconds_interleaved(
     :ptype runs: int
     :param host_may_be_late: the most the host's idle loop may be late over the runs
     :ptype host_may_be_late: float
+    :param threads: the threads the two sides run on when more than one (a DuckDB point query: 2):
+        the runs are then judged only when that many cores were free before and after them
+        (:func:`~threetears.core.testing.loop_lateness.cpu_crowding`) -- a many-core host can be busy enough to
+        stretch a multi-thread path while a 1 ms idle loop stays on time
+    :ptype threads: int | None
     :return: the bare's best seconds, and the path's
     :rtype: tuple[float, float]
     :raises CouldNotMeasure: when the host was too late over every measurement
@@ -112,7 +118,9 @@ async def best_seconds_interleaved(
             last = time.perf_counter()
         return (best_bare, best_path), [(first, last)], host.ticks
 
-    measured, _, _ = await trusted(measure, lambda taken: (taken[1], taken[2]), host_may_be_late=host_may_be_late)
+    measured, _, _ = await trusted(
+        measure, lambda taken: (taken[1], taken[2]), host_may_be_late=host_may_be_late, threads=threads
+    )
     return measured
 
 

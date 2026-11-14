@@ -27,6 +27,9 @@ _REAL_KEYS = 1_000
 #: rows the table holds at real size
 _REAL_ROWS = 200_000
 
+#: the threads a DuckDB point query runs on, for the speed ratio's CPU trust check (coordinator ruling)
+_POINT_QUERY_THREADS = 2
+
 
 def _metadata() -> MetaData:
     metadata = MetaData()
@@ -202,7 +205,7 @@ def test_a_page_of_keys_is_read_within_twice_the_statement_on_keys_duckdb_holds(
         return backend.select_batch("by_text", ids)
 
     assert sorted(r["id"] for r in asyncio.run(served())) == sorted(r["id"] for r in asyncio.run(bare())) == sorted(ids)
-    baseline, took = asyncio.run(best_seconds_interleaved(bare, served))
+    baseline, took = asyncio.run(best_seconds_interleaved(bare, served, threads=_POINT_QUERY_THREADS))
     print(f"{_REAL_KEYS} keys: select_batch {took * 1000:.1f} ms, keys put in DuckDB by hand {baseline * 1000:.1f} ms")
     problem = budget_problem(f"select_batch of {_REAL_KEYS} keys", took, baseline)
     assert problem is None, problem
@@ -229,7 +232,7 @@ def test_a_page_of_composite_keys_is_read_within_twice_the_join_on_keys_duckdb_h
         return backend.select_batch("by_pair", keys, ("a", "b"))
 
     assert _sorted(asyncio.run(served())) == _sorted(asyncio.run(bare()))
-    baseline, took = asyncio.run(best_seconds_interleaved(bare, served))
+    baseline, took = asyncio.run(best_seconds_interleaved(bare, served, threads=_POINT_QUERY_THREADS))
     print(
         f"{len(keys)} composite keys: select_batch {took * 1000:.1f} ms, keys joined by hand {baseline * 1000:.1f} ms"
     )
