@@ -337,8 +337,8 @@ def by_conditions(
 ) -> tuple[list[str], list[Any]]:
     """the conditions keeping only ``by``'s rows, placeholders numbered from ``first``, and their values.
 
-    :param by: column -> its value, or an :class:`AnyOf` of its values; columns are TRUSTED identifiers, or a
-        :class:`Pin` of a TRUSTED expression
+    :param by: column -> its value (``None`` as ``IS NULL``, ``True`` / ``False`` as their literal), or an
+        :class:`AnyOf` of its values; columns are TRUSTED identifiers, or a :class:`Pin` of a TRUSTED expression
     :ptype by: Mapping[str, Any]
     :param first: the first placeholder's number
     :ptype first: int
@@ -369,6 +369,11 @@ def by_conditions(
             values.append(list(value.values))
         elif value is None:
             conditions.append(f"{spelled} IS NULL")
+        elif value is True or value is False:
+            # the literal, as the hand-written statements wrote it: ``flag = $2`` cannot prove a partial index's
+            # ``WHERE flag = false`` under a generic plan (PostgreSQL's after five runs of a prepared statement), so
+            # the planner would pass over the index the read pins; ``flag = false`` states the predicate every time
+            conditions.append(f"{spelled} = {'TRUE' if value else 'FALSE'}")
         else:
             conditions.append(f"{spelled} = ${place}")
             values.append(value)

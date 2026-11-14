@@ -338,6 +338,48 @@ def test_a_read_stating_an_or_predicate_whole_states_it(tmp_path: Path) -> None:
     assert any("src/either_items.py::EitherItems.noted_or_kinded" in line for line in lines), lines
 
 
+_UNDELETED = """
+    UNDELETED_BY_OWNER = (
+        "CREATE INDEX IF NOT EXISTS items_undeleted_by_owner ON items (owner_id, made_at) WHERE (is_deleted = false)"
+    )
+"""
+
+_BOOLEAN_READERS = """
+    from threetears.core.keyed import Sort, read_by
+
+    class BooleanItems:
+        async def undeleted_of_owner(self, conn, owner_id):
+            return await read_by(
+                conn, "items", by={"owner_id": owner_id, "is_deleted": False}, order=[Sort("made_at", descending=True)]
+            )
+
+        async def of_owner_either_state(self, conn, owner_id, deleted):
+            return await read_by(
+                conn, "items", by={"owner_id": owner_id, "is_deleted": deleted}, order=[Sort("made_at", descending=True)]
+            )
+"""
+
+
+@pytest.mark.parametrize(("reader", "credited"), [("undeleted_of_owner", True), ("of_owner_either_state", False)])
+def test_a_boolean_pin_states_a_partial_index_s_predicate(tmp_path: Path, reader: str, credited: bool) -> None:
+    """Flips if a keyed helper's ``False`` pin (sent as its literal by ``by_conditions``) does not state a partial
+    index's ``WHERE is_deleted = false``, or a pin bound at run time is taken to."""
+    _repo(tmp_path)
+    (tmp_path / "src/versions/v002.py").write_text(textwrap.dedent(_UNDELETED), encoding="utf-8")
+    (tmp_path / "src/versions/v003.py").write_text(
+        'DELETED = "ALTER TABLE items ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT false"\n', encoding="utf-8"
+    )
+    head, *bodies = textwrap.dedent(_BOOLEAN_READERS).split("        async def ")
+    kept = head + "".join("        async def " + body for body in bodies if body.startswith(reader + "("))
+    (tmp_path / "src/boolean_items.py").write_text(kept, encoding="utf-8")
+
+    assert main([str(tmp_path), "support.py", "CONFIG", "--write"]) == 0
+
+    ledger = (tmp_path / "_index_declarations.txt").read_text(encoding="utf-8")
+    lines = [entry for entry in ledger.splitlines() if entry.startswith("items_undeleted_by_owner ")]
+    assert any(f"src/boolean_items.py::BooleanItems.{reader}" in line for line in lines) is credited, lines
+
+
 _NOTED = """
     NOTED = "CREATE INDEX IF NOT EXISTS items_noted ON items (note, made_at) WHERE note IS NOT NULL"
 """

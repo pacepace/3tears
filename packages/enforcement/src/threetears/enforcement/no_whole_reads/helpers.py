@@ -326,6 +326,10 @@ def _by(node: ast.expr | None, argument: str = "by") -> list[tuple[str, str]]:
             pinned.append((column, "any"))
         elif isinstance(value, ast.Constant) and value.value is None:
             pinned.append((column, "null"))
+        elif argument == "by" and isinstance(value, ast.Constant) and isinstance(value.value, bool):
+            # a boolean pin is sent as its literal (``threetears.interfaces.keyed.filters.by_conditions``), so it
+            # states a partial index's ``WHERE flag = false`` under any plan
+            pinned.append((column, _LITERAL + ("TRUE" if value.value else "FALSE")))
         elif argument == "by" and isinstance(value, ast.Constant) and isinstance(value.value, str):
             # a literal pin (``by={"status": "proposed"}``) is the literal the statement compares: a partial index
             # whose predicate names it (``WHERE status = 'proposed'``) holds the rows asked for

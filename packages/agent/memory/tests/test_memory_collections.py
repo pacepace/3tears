@@ -677,7 +677,10 @@ class TestAScanCachesNothing:
         # a one-method L3 whose scan is overtaken by a write of the row it returns
         class _WriteLandsDuringScan:
             async def fetch(self, sql: str, *args: object) -> list[dict]:
-                del sql, args
+                del args
+                # the keyed read first asks which engine answers (its YugabyteDB index hint), as a real L3 answers it
+                if sql == "SELECT version() AS v":
+                    return [{"v": "PostgreSQL 16"}]
                 holder["coll"].evict_from_cache_sync(key)
                 return [dict(data)]
 
