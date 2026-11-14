@@ -62,7 +62,13 @@ from threetears.evals.run import (
 from threetears.evals.run.definition_digests import measured_template_digest
 from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.schema import EvalResult, EvalRun, EvalTemplate, JobLease
-from threetears.evals.schema.models import GOAL_CHECK_PROOF_RULES, RunLifetime, cell_result_id, eval_trace_doc_id
+from threetears.evals.schema.models import (
+    GOAL_CHECK_PROOF_RULES,
+    RunLifetime,
+    cell_result_id,
+    eval_trace_doc_id,
+    goal_check_proofs_as_read,
+)
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_run, make_template
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_COST_CEILING_USD, TOYHOST_SUBJECT
@@ -512,6 +518,33 @@ def test_a_scoring_guide_edited_since_the_run_launched_refuses_its_take_up_namin
     )
 
 
+@pytest.mark.parametrize(
+    "edit",
+    [
+        pytest.param({"variation_axes": []}, id="variation_axes"),
+        pytest.param({"tools_required": ["shop"]}, id="tools_required"),
+        pytest.param({"universal": True}, id="universal"),
+    ],
+)
+def test_an_edit_to_what_a_template_varies_or_applies_to_refuses_a_take_up_saying_it_changes_the_measurement(
+    edit: dict[str, Any],
+) -> None:
+    template = make_template(created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00")
+    stored = make_eval_run(created_at="2026-06-01T00:00:00+00:00", template_digest=measured_template_digest(template))
+    edited = _edited(template, **edit)
+    assert edited != template, f"the edit moves the template: {edit}"
+    fresh = stored.model_copy(update={"template_digest": measured_template_digest(edited)})
+
+    difference = _measured_otherwise(stored, fresh, edited, toyhost_profile())
+
+    assert difference is not None, f"an edit to {next(iter(edit))} is refused"
+    assert difference.startswith(
+        f"template {template.id!r}: its measured content changed since the run started, and such an edit changes "
+        "what the run measures"
+    ), difference
+    assert "variation axes, required tools, universal flag" in difference, difference
+
+
 #: When the tests' template edits land: after every run they interrupt was created.
 EDITED_AT = "2099-01-01T00:00:00+00:00"
 
@@ -627,11 +660,12 @@ def _as_proved_under_older_rules(store: ClockedStore, run_id: str, **proofs: str
     store.upsert(document)
 
 
-async def test_a_run_whose_checks_the_current_proof_rules_prove_alike_is_taken_up_keeping_its_own_rules(
+async def test_a_run_whose_checks_the_current_proof_rules_prove_alike_is_taken_up_under_the_current_rules(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     holder, run_id, launched, store = await _interrupted(monkeypatch, "cancelled")
     assert launched.goal_check_proofs, "the toy's template has goal checks to prove"
+    assert "proven" in launched.goal_check_proofs.values(), "a proven check is what older rules would demote"
     _as_proved_under_older_rules(store, run_id)
     resumer = other_process(holder)
 
@@ -640,9 +674,37 @@ async def test_a_run_whose_checks_the_current_proof_rules_prove_alike_is_taken_u
 
     run = await _assert_ends_as_the_control(holder, run_id, launched)
     assert run.goal_check_proofs == launched.goal_check_proofs
-    assert run.goal_check_proof_rules == OLDER_PROOF_RULES, (
-        "its proofs were derived under the older rules, so a `proven` among them still reads as unproven"
-    )
+    assert run.goal_check_proof_rules == GOAL_CHECK_PROOF_RULES, "re-proved alike, the run moves to today's rules"
+    assert goal_check_proofs_as_read(run) == launched.goal_check_proofs, "so its `proven` reads as proven again"
+    assert [holding.goal_check_proof_rules for holding in run.lifetimes] == [
+        OLDER_PROOF_RULES,
+        GOAL_CHECK_PROOF_RULES,
+    ], "each holding says which rules proved its checks: the launch's, then the take-up's re-proof"
+
+
+async def test_a_run_taken_up_under_its_own_proof_rules_records_them_on_each_holding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder, run_id, launched, _ = await _interrupted(monkeypatch, "cancelled")
+    resumer = other_process(holder)
+
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+
+    run = await _assert_ends_as_the_control(holder, run_id, launched)
+    assert run.goal_check_proof_rules == launched.goal_check_proof_rules == GOAL_CHECK_PROOF_RULES
+    assert [holding.goal_check_proof_rules for holding in run.lifetimes] == [GOAL_CHECK_PROOF_RULES] * 2
+
+
+def test_a_holding_stored_before_holdings_recorded_their_proof_rules_reads_and_writes_as_before() -> None:
+    stored = {"holder": "worker-1", "epoch": 1, "started_at": "2026-06-01T00:00:00+00:00", "status": "cancelled"}
+
+    holding = RunLifetime.model_validate(stored)
+
+    assert holding.goal_check_proof_rules is None, "not recorded, never a guess"
+    assert "goal_check_proof_rules" not in holding.model_dump(mode="json"), "left out of the document when unset"
+    recorded = holding.model_copy(update={"goal_check_proof_rules": GOAL_CHECK_PROOF_RULES})
+    assert recorded.model_dump(mode="json")["goal_check_proof_rules"] == GOAL_CHECK_PROOF_RULES
 
 
 async def test_a_run_whose_checks_the_current_proof_rules_prove_otherwise_is_refused_naming_both_rules(

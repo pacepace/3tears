@@ -464,7 +464,10 @@ stores them, each one string, so no check is proven on a type no case can carry.
 template saved past authoring, or a quick run) is recorded as unproven on its run and marked wherever its pass
 rate is shown. A run stamps the proof rules it was proven under; a `proven` recorded under older proof rules
 reads as unproven, counted as needing re-proof, because the controls were not frozen
-with the run and cannot be re-proven for the template it graded. A stored template can carry a check a later
+with the run and cannot be re-proven for the template it graded. A resume is the exception: it goes ahead only
+while the template's measured content, its controls included, is as the run froze it, so it re-proves the run's
+checks under the current rules. When they prove alike, the run reads as proved under the current rules, and each
+holding names the rules that proved its checks (`RunLifetime.goal_check_proof_rules`). A stored template can carry a check a later
 grammar rule refuses: the launch records it with the reason, grades every cell on the other checks, and the run
 summary, the bundle and the report name it as refused under the current grammar.
 

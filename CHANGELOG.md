@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a resumed run is proved under today's goal-check proof rules, and each holding names its rules (#920; core v15.17)
+
+**Changed:** a run taken up across a goal-check proof-rules change, whose checks the current rules prove as its own
+proofs say, now moves its `goal_check_proof_rules` forward to the current rules (owner ruling). A `proven` its launch
+recorded reads as proven again, where it read as unproven under the older rules. Each holding records the rules its
+checks were proved under, in `RunLifetime.goal_check_proof_rules` (core v15.17, new, optional, left out of the
+document when unset, in no identity, key or digest). The first holding carries the launch's rules, and each holding a
+take-up began carries the rules it re-proved under. A holding stored before the field reads as before, its rules not
+recorded. A check proved otherwise still refuses. An edit to a template's `variation_axes`, `tools_required` or
+`universal` still refuses a take-up (owner ruling), and the refusal now says why: such an edit changes what the run
+measures, so the cells left to run would not measure what its stored ones did.
+
+**For hosts:** nothing to change. A host that reads `EvalRun.lifetimes` can show which proof rules proved a run's
+checks in each holding. A host that matched the template refusal's exact text matches the new wording, which still
+opens `its measured content changed since the run started`.
+
 ### evals: a judge call its replay does not hold is named, never dropped (#1162)
 
 **Fixed:** a replayed judge whose recording held no call for a prompt read the miss as a failed call, its text
@@ -62,9 +78,8 @@ lacks and what its siblings lack, naming a sibling that differs in a launch cond
 `ArmQuote` gains `overlays` (default empty), which the engine fills from the launch.
 
 **Changed:** `job_resume` takes up a run whose goal-check proof rules moved since it launched when the current rules
-prove the run's own goal checks as its stored proofs say. The run keeps the rules its proofs were derived under, so a
-`proven` from older rules still reads as unproven. A check proved otherwise still refuses, and the refusal names both
-rule versions. The take-up does not yet record the rules change on the run's lifetime (#920 stays open for it).
+prove the run's own goal checks as its stored proofs say. A check proved otherwise still refuses, and the refusal names
+both rule versions. The run then reads as proved under the current rules (#920, above).
 
 **Changed, for callers of `threetears.evals.run.resume`:** the run, launch and sweep take-ups go through one `TakeUp`.
 `take_up_arms` returns a `TakeUp` (its `arms` by label) in place of a dict, and `read_job_to_take_up` reads and

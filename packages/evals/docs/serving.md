@@ -327,8 +327,9 @@ included), a variant lever, a judge or simulator pin, the apparatus, or what the
 candidate kind and the deadlines its cells and turns run under (`cell_timeout_s`, `turn_budget_s`) are wired as a
 launch would wire them now: a deadline the launch named is replayed, one it inherited is inherited again. For a
 sweep or a launch, it names every arm's every difference. A different measurement pooled under one run would be two
-measurements reported as one, so this refusal stays. Two things do not refuse, because they change nothing
-measured, and each is disclosed instead:
+measurements reported as one, so this refusal stays. An edit to the template's `variation_axes`, `tools_required`
+or `universal` refuses too, since it changes what the run measures. Three things do not refuse, because they change
+nothing measured, and each is disclosed instead:
 
 - **The host's labels** (`SubjectSnapshot.labels`, the run's own labels): a deploy changes them, and a deploy is
   the usual reason to resume.
@@ -336,11 +337,15 @@ measured, and each is disclosed instead:
   its template's measured content at launch (`EvalRun.template_digest`), and only a moved digest refuses. A run
   stored before that digest existed can't tell the two apart, so it resumes only while its template is unedited
   since the run started.
+- **A change of goal-check proof rules** (`GOAL_CHECK_PROOF_RULES`) that proves the run's own goal checks as its
+  launch did. The resume re-proves them under the rules in force, and only a check proved otherwise refuses. The run
+  then reads as proved under the current rules.
 
 What is disclosed sits on the run's `lifetimes`. The first resume writes the original holding's entry, closed as it
 ended, and opens one per resume: its holder and epoch, when it began and how it ended, the cells stored when it
-ended, the labels it began under, the cost cap it ran under, and `template_edited_at` when the template was edited
-in nothing measured. A run never resumed has no entries; once resumed, `len(lifetimes)` is the number of process
+ended, the labels it began under, the cost cap it ran under, the goal-check proof rules its checks were proved
+under (`goal_check_proof_rules`: the launch's on the first entry, the resume's re-proof on each later one), and
+`template_edited_at` when the template was edited in nothing measured. A run never resumed has no entries; once resumed, `len(lifetimes)` is the number of process
 lifetimes it has spanned. A sweep records its own holdings the same way.
 
 **In the foreground.** A caller that is not a transport — a script, a test, a host's own batch — may await
