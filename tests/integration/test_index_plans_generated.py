@@ -37,6 +37,12 @@ async def test_idx_audit_events_type(engine_conn: Any) -> None:
     assert plan_uses_index(plan, "idx_audit_events_type"), json.dumps(plan.plan)
 
 
+async def test_idx_folders_user(engine_conn: Any) -> None:
+    """Flips if packages/conversations/src/threetears/conversations/folder_collection.py::FolderCollection.find_by_user's read stops reading idx_folders_user."""
+    plan = await explain_index_read(engine_conn, _ENTRIES["idx_folders_user"])
+    assert plan_uses_index(plan, "idx_folders_user"), json.dumps(plan.plan)
+
+
 async def test_idx_identity_variant_history(engine_conn: Any) -> None:
     """Flips if packages/agent/identity/src/threetears/agent/identity/collections.py::IdentityVersionsCollection.find_versions_for_block's read stops reading idx_identity_variant_history."""
     plan = await explain_index_read(engine_conn, _ENTRIES["idx_identity_variant_history"])
@@ -65,6 +71,12 @@ async def test_ix_context_items_agent_var_key(engine_conn: Any) -> None:
     """Flips if context_items may hold two rows alike on ix_context_items_agent_var_key's columns: the index refuses the second."""
     with pytest.raises(asyncpg.UniqueViolationError, match="ix_context_items_agent_var_key"):
         await insert_duplicate(engine_conn, _ENTRIES["ix_context_items_agent_var_key"])
+
+
+async def test_ix_context_items_type(engine_conn: Any) -> None:
+    """Flips if packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.count_results; packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.evict_lru's read stops reading ix_context_items_type."""
+    plan = await explain_index_read(engine_conn, _ENTRIES["ix_context_items_type"])
+    assert plan_uses_index(plan, "ix_context_items_type"), json.dumps(plan.plan)
 
 
 async def test_uq_folders_agent_user_name(engine_conn: Any) -> None:
