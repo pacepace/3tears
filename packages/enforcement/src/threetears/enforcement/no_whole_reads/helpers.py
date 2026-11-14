@@ -77,6 +77,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "read_value",
         "read_joined",
         "read_by_joined",
+        "read_link_chain",
         "any_rows",
         "keyset_page",
         "keyset_rows",
@@ -733,6 +734,19 @@ def _read_by_joined(call: ast.Call) -> list[str]:
     return statements
 
 
+def _read_link_chain(call: ast.Call) -> list[str]:
+    """a chain of links (``read_link_chain``): the recursive statement it sends, the first row by its ``key`` and each
+    next one by the ``key`` the row before links to, so keyed exactly when ``key`` leads the table's key."""
+    table = _named(_argument(call, "table", 1), "table")
+    key = _quoted(_text(_argument(call, "key", None), "key"))
+    link = _quoted(_text(_argument(call, "link", None), "link"))
+    return [
+        f"WITH RECURSIVE chain({key}, {link}, depth) AS ( SELECT t.{key}, t.{link}, 1 FROM {table} AS t WHERE "
+        f"t.{key} = $1 UNION ALL SELECT t.{key}, t.{link}, chain.depth + 1 FROM {table} AS t JOIN chain ON "
+        f"t.{key} = chain.{link} WHERE chain.depth < $2 ) SELECT {key}, {link} FROM chain"
+    ]
+
+
 def _relation(node: ast.expr | None, argument: str) -> tuple[str, list[str]]:
     """a relation a helper reads, as its statement names it, and the statements it holds of its own: a table literal
     (``schema.table`` quoted a segment at a time), or a ``Derived("SELECT ...")`` judged on its own text."""
@@ -1164,6 +1178,7 @@ _SYNTHESIZERS: Final = {
     "read_value": _read_by,
     "read_joined": _read_joined,
     "read_by_joined": _read_by_joined,
+    "read_link_chain": _read_link_chain,
     "any_rows": _any_rows,
     "keyset_page": _keyset_page,
     "keyset_rows": _keyset_page,
@@ -1201,6 +1216,7 @@ _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
             "read_keyed_arrow",
             "read_by",
             "read_by_joined",
+            "read_link_chain",
             "read_row",
             "read_value",
             "any_rows",

@@ -34,6 +34,7 @@ from threetears.enforcement.no_whole_reads.rewrite import (
     parse_point,
     parse_write,
     plan_count_rewrites,
+    plan_chain_rewrites,
     plan_first_rewrites,
     plan_join_rewrites,
     plan_list_rewrites,
@@ -1922,3 +1923,80 @@ def test_a_correlated_exists_is_kept_as_a_guard_over_the_helper_s_row() -> None:
         "SELECT id FROM geos g WHERE g.state = $1 AND EXISTS (SELECT 1 FROM grants g WHERE g.geo = 1)",
     ):
         assert isinstance(parse_point(refused, guards=True), str), refused
+
+
+_CHAIN_TABLES = """
+    from threetears.core.collections.schema_backed import TableSchema
+
+    CONCEPTS_SCHEMA = TableSchema(name="concepts", primary_key="id", columns=[])
+"""
+
+_CHAINS = """
+    _MOST = 10_000
+
+    #: the origin chain from one concept, link by link by primary key
+    _ORIGIN_CHAIN_SQL = \"\"\"
+    WITH RECURSIVE chain(id, origin_concept_id, depth) AS (
+        SELECT id, origin_concept_id, 1 FROM concepts WHERE id = $1
+      UNION ALL
+        SELECT c.id, c.origin_concept_id, chain.depth + 1
+          FROM concepts c
+          JOIN chain ON c.id = chain.origin_concept_id
+         WHERE chain.depth < $2
+    )
+    SELECT id, origin_concept_id FROM chain
+    \"\"\"
+
+
+    async def origins(pool, start):
+        links = {}
+        rows = await pool.fetch(_ORIGIN_CHAIN_SQL, start, _MOST)
+        for row in rows:
+            links[row["id"]] = row["origin_concept_id"]
+        return links
+
+
+    async def by_place(pool, start):
+        rows = await pool.fetch(
+            "WITH RECURSIVE chain(id, origin_concept_id, depth) AS ( SELECT id, origin_concept_id, 1 FROM concepts "
+            "WHERE id = $1 UNION ALL SELECT c.id, c.origin_concept_id, chain.depth + 1 FROM concepts c JOIN chain "
+            "ON c.id = chain.origin_concept_id WHERE chain.depth < $2 ) SELECT id FROM chain",
+            start,
+            5,
+        )
+        return [row[0] for row in rows]
+"""
+
+
+def test_a_chain_of_links_is_rewritten_onto_read_link_chain(tmp_path: Path) -> None:
+    """Flips if a recursive statement walking a table's links by its key is not rewritten as ``read_link_chain``
+    (its start, its bound of rows, its columns), its constant dropped, the walk unchanged; or if one whose rows are read
+    by position is taken."""
+    src = tmp_path / "src"
+    for name, source in {"pkg/tables.py": _CHAIN_TABLES, "pkg/chains.py": _CHAINS}.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+    config = NoWholeReadsConfig(
+        repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path, dependency_schema=False, table_lists=()
+    )
+    before = no_whole_reads_findings(config)
+    rewrites, refusals = plan_chain_rewrites(config)
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert [rewrite.function for rewrite in rewrites] == ["origins"], refused
+    assert "by position" in refused["by_place"], refused
+    assert rewrites[0].new_call == (
+        "read_link_chain(pool, 'concepts', key='id', link='origin_concept_id', start=start, most=_MOST, "
+        "columns=('id', 'origin_concept_id'))"
+    )
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    source = (src / "pkg/chains.py").read_text(encoding="utf-8")
+    assert "_ORIGIN_CHAIN_SQL" not in source and "import read_link_chain" in source, source
+    remaining = {hit.split(" in ")[1].split(":")[0] for hit in use_the_helper_findings(config) if "chains.py" in hit}
+    assert remaining == {"by_place"}, remaining
+    assert _unlined(no_whole_reads_findings(config)) == _unlined(before)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    (entry,) = json.loads(manifest.read_text(encoding="utf-8"))
+    assert entry["chain"] == {"key": "id", "link": "origin_concept_id"}
+    assert_source_says(tmp_path, entry)

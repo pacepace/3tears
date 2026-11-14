@@ -236,6 +236,9 @@ class PointSql:
     guards: tuple[Pin, ...] = ()
     #: a joined read's (shape ``join``): each other table, joined to this one (:class:`JoinSql`); none for any other
     joins: tuple[JoinSql, ...] = ()
+    #: a chain of links's (shape ``chain``): ``{"key", "link"}``, the column a row is named by and the one naming the
+    #: next; None for any other read
+    chain: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -320,6 +323,8 @@ class Rewrite:
     #: a joined read's (shape ``join``, ``read_by_joined``): each other table (:meth:`JoinSql.record`), joined to
     #: ``table``; not recorded for any other read
     joins: list[dict[str, Any]] = field(default_factory=list)
+    #: a chain of links's (shape ``chain``, ``read_link_chain``): ``{"key", "link"}``; not recorded for any other read
+    chain: dict[str, str] | None = None
     # the edits that make it, not recorded: (start line, start col, end line, end col, text) in the module's bytes
     edits: list[tuple[int, int, int, int, str]] = field(default_factory=list, repr=False)
     # not recorded: index purpose entries naming the replaced constant, each (repo-relative file, old text, new text)
@@ -349,6 +354,8 @@ class Rewrite:
             entry.pop("clauses")
         if not self.joins:
             entry.pop("joins")
+        if self.chain is None:
+            entry.pop("chain")
         return entry
 
 
@@ -2882,6 +2889,8 @@ class _Shape:
     parse: Any
     methods: frozenset[str]
     finds: str = ""
+    #: the word its statements start with
+    verb: str = "select"
 
 
 def _value_sql(value: ast.expr) -> str | None:
@@ -3250,6 +3259,74 @@ def plan_first_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
     return _plan_reads(config, _FIRST)
 
 
+#: a chain of links within one table, as a recursive statement walks it: the first row by its key (``$1``), each next
+#: by the key the row before links to, at most ``$2`` rows; its rows' key and link answered
+_CHAIN: Final[re.Pattern[str]] = re.compile(
+    rf"^with\s+recursive\s+(?P<cte>{_IDENT})\s*\(\s*(?P<key>{_IDENT})\s*,\s*(?P<link>{_IDENT})\s*,\s*(?P<depth>{_IDENT})\s*\)"
+    rf"\s+as\s*\(\s*select\s+(?P=key)\s*,\s*(?P=link)\s*,\s*1\s+from\s+(?P<table>{_IDENT}(?:\.{_IDENT})?)\s+where\s+"
+    rf"(?P=key)\s*=\s*\$1\s+union\s+all\s+select\s+(?P<a>{_IDENT})\.(?P=key)\s*,\s*(?P=a)\.(?P=link)\s*,\s*"
+    rf"(?P=cte)\.(?P=depth)\s*\+\s*1\s+from\s+(?P=table)\s+(?:as\s+)?(?P=a)\s+join\s+(?P=cte)\s+on\s+(?P=a)\.(?P=key)"
+    rf"\s*=\s*(?P=cte)\.(?P=link)\s+where\s+(?P=cte)\.(?P=depth)\s*<\s*\$2\s*\)\s*select\s+(?P<columns>.+?)\s+from\s+"
+    rf"(?P=cte)\s*;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def parse_chain(sql: str, *, guards: bool = False) -> PointSql | str:
+    """a chain of links within one table, written as its own recursive statement (shape ``chain``)::
+
+        WITH RECURSIVE chain(id, origin_id, depth) AS (
+            SELECT id, origin_id, 1 FROM t WHERE id = $1
+          UNION ALL
+            SELECT c.id, c.origin_id, chain.depth + 1 FROM t c JOIN chain ON c.id = chain.origin_id
+             WHERE chain.depth < $2
+        ) SELECT id, origin_id FROM chain
+
+    as :func:`~threetears.core.keyed.read_link_chain` sends it; or why it is not one.
+
+    :param sql: the statement
+    :ptype sql: str
+    :param guards: unused (a chain has no guard)
+    :ptype guards: bool
+    :return: the parsed read (``chain`` set, ``$1`` the start and ``$2`` the most rows as its pins), or the reason
+    :rtype: PointSql | str
+    """
+    del guards
+    text = " ".join(sql.split())
+    if "{" in text or "}" in text:
+        return "interpolated"
+    found = _CHAIN.match(text)
+    if found is None:
+        return "not a chain of links (WITH RECURSIVE ... a row by its key, each next by the key it links to)"
+    key, link = found.group("key").lower(), found.group("link").lower()
+    columns = [item.strip().lower() for item in found.group("columns").split(",")]
+    if not columns or any(column not in {key, link} for column in columns) or len(set(columns)) != len(columns):
+        return "a chain answering a column other than its key and its link"
+    return PointSql(
+        table=found.group("table").lower(),
+        columns=tuple(columns),
+        pins=(Pin(key, "param", param=1), Pin("", "most", param=2)),
+        chain={"key": key, "link": link},
+    )
+
+
+#: a chain of links (:func:`parse_chain`), a listing finding, sent by ``fetch``
+_CHAIN_SHAPE: Final[_Shape] = _Shape("chain", parse_chain, frozenset({"fetch"}), finds="list", verb="with")
+
+
+def plan_chain_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
+    """every listing finding of the repo that is a chain of links written as its own recursive statement
+    (:func:`parse_chain`), sent by ``fetch``, as the :func:`~threetears.core.keyed.read_link_chain` call it takes, or
+    the refusal it gets.
+
+    :param config: the repo's no-whole-reads config
+    :ptype config: NoWholeReadsConfig
+    :return: the rewrites, and the refusals
+    :rtype: tuple[list[Rewrite], list[Refusal]]
+    """
+    return _plan_reads(config, _CHAIN_SHAPE)
+
+
 def plan_join_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
     """every join finding of the repo that is a point read with joins (:func:`parse_join`), sent by ``fetch`` or
     ``fetchrow``, as the :func:`~threetears.core.keyed.read_by_joined` call it takes (the read of the table its
@@ -3370,7 +3447,7 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
         module = modules.get(statement.path)
         if module is None:
             module = modules[statement.path] = _Module.read(config.repo_root / statement.path)
-        literal = _statement_literal(module, statement.line, fstrings=True)
+        literal = _statement_literal(module, statement.line, shape.verb, fstrings=True)
         if isinstance(literal, str):
             refuse(literal)
             continue
@@ -3468,7 +3545,9 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 problem = "fetchval of a select-list expression (read_value reads a column)"
             elif method not in shape.methods and parsed.joins:
                 problem = f"a joined read sent by {method} (its rows are dicts: a fetch or fetchrow only)"
-            elif parsed.joins and _read_by_position(module, call):
+            elif method not in shape.methods and parsed.chain is not None:
+                problem = f"a chain of links sent by {method} (its rows are dicts: a fetch only)"
+            elif (parsed.joins or parsed.chain is not None) and _read_by_position(module, call):
                 problem = "a joined read whose rows are read by position (read_by_joined answers dicts)"
             elif method not in shape.methods and parsed.aggregate:
                 problem = f"a count sent by {method}: read by a column name the helper does not answer under"
@@ -3499,9 +3578,17 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 where=[asdict(guard) for guard in parsed.guards],
                 clauses=recorded,
                 joins=[join.record() for join in parsed.joins],
+                chain=parsed.chain,
             )
             spliced: ast.expr = call
-            if parsed.joins:
+            if parsed.chain is not None:
+                rewrite.helper = "read_link_chain"
+                rewrite.new_call = (
+                    f"read_link_chain({module.segment(call.func.value)}, {parsed.table!r}, key={parsed.chain['key']!r}, "
+                    f"link={parsed.chain['link']!r}, start={rewrite.args[0]}, most={rewrite.args[1]}, "
+                    f"columns={_columns_text(parsed.columns or ())})"
+                )
+            elif parsed.joins:
                 rewrite.helper = "read_by_joined"
                 rewrite.new_call = _render_joined(rewrite, module.segment(call.func.value))
                 if method == "fetchrow":
@@ -3961,7 +4048,7 @@ def main(argv: list[str] | None = None) -> int:
     :rtype: int
     """
     parser = argparse.ArgumentParser(prog="threetears.enforcement.no_whole_reads.rewrite")
-    parser.add_argument("shape", choices=["point", "list", "first", "write", "count", "join", "test-module"])
+    parser.add_argument("shape", choices=["point", "list", "first", "write", "count", "join", "chain", "test-module"])
     parser.add_argument("--module", type=Path, help="test-module: where the generated test goes, repo-relative")
     parser.add_argument("--pg-fixture", default="conn")
     parser.add_argument("--yb-fixture", default="yugabyte_conn")
@@ -3994,6 +4081,7 @@ def main(argv: list[str] | None = None) -> int:
         "first": plan_first_rewrites,
         "count": plan_count_rewrites,
         "join": plan_join_rewrites,
+        "chain": plan_chain_rewrites,
     }.get(options.shape, plan_point_rewrites)
     rewrites, refusals = planner(config)
     reasons = Counter(refusal.reason.split(":")[0].split(" (")[0] for refusal in refusals)

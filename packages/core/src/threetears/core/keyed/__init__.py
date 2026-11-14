@@ -12,7 +12,8 @@ as keyed by construction, judged by the key it names):
   ``EXISTS``, filters on a partial index's predicate or a range (``where=``), a row lock (:class:`Lock`):
   :func:`keyset_page` (:class:`Sort`, :func:`exists_keyed`, :class:`Fragment`); its joined rows by a keyed read of
   the values the page holds: :func:`read_joined`; a point read with joins, as a read and a keyed batch a joined
-  table: :func:`read_by_joined` (:class:`Joined`); every row of a prefix as ``COPY`` CSV text: :func:`copy_keyed`. An
+  table: :func:`read_by_joined` (:class:`Joined`); a chain of links within a table, one statement:
+  :func:`read_link_chain`; every row of a prefix as ``COPY`` CSV text: :func:`copy_keyed`. An
   internal drain of
   every row a prefix names, a page a statement, from a saved place: :func:`threetears.core.keyset.keyset_pages`
   (``after=``);
@@ -103,6 +104,7 @@ from threetears.core.keyed.probes import access_probe_sql, probe_access
 from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_past_marks
 from threetears.core.keyed.options import with_options
 from threetears.core.keyed.joins import Joined, read_by_joined
+from threetears.core.keyed.links import link_chain_statement, read_link_chain
 from threetears.core.keyed.point import read_by, read_row, read_value
 from threetears.interfaces.keyed.keys import (
     DeclaredIndex,
@@ -259,6 +261,8 @@ __all__ = [
     "read_after",
     "read_by",
     "read_by_joined",
+    "read_link_chain",
+    "link_chain_statement",
     "read_joined",
     "read_keyed",
     "read_keyed_arrow",

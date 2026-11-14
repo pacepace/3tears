@@ -712,3 +712,11 @@ def test_a_correlated_exists_guard_is_judged_through_the_row_it_reaches(schema: 
     assert _judged(read, schema) == [[]]
     loose = read.replace("k.who = $1 AND ", "")
     assert _judged(loose, schema) != [[]]
+
+
+def test_a_link_chain_is_judged_as_the_recursive_read_it_sends(schema: SchemaCatalog) -> None:
+    """Flips if ``read_link_chain`` is not judged as its recursive statement: keyed when its ``key`` is the table's
+    key (each link one row by it), a finding when the rows are named by a column no key leads."""
+    keyed = 'read_link_chain(c, "fence", key="signal", link="signal", start=s, most=10, columns=("run_id",))'
+    assert _judged(keyed, schema) == [[]]
+    assert _judged(keyed.replace('key="signal"', 'key="run_id"'), schema) != [[]]

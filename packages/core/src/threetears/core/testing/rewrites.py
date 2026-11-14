@@ -85,6 +85,7 @@ from threetears.core.keyed import (
     index_hint,
     read_by,
     read_by_joined,
+    read_link_chain,
     read_row,
     read_value,
     serving_index,
@@ -660,9 +661,59 @@ async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides:
     if entry.get("joins"):
         await _assert_join_same(conn, entry, overrides=overrides)
         return
+    if entry.get("chain"):
+        await _assert_chain_same(conn, entry)
+        return
     await _assert_point_same(conn, entry, overrides=overrides, nulled=False)
     if any(pin["kind"] == "nullsafe" for pin in entry["pins"]):
         await _assert_point_same(conn, entry, overrides=overrides, nulled=True)
+
+
+#: a chain proof's rows: (its place, the place its link names or None); a chain of four, an unlinked row, and a cycle
+#: of three
+_CHAIN_LINKS: Final[tuple[tuple[int, int | None], ...]] = (
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, None),
+    (4, None),
+    (5, 6),
+    (6, 7),
+    (7, 5),
+)
+
+
+async def _assert_chain_same(conn: Any, entry: Mapping[str, Any]) -> None:
+    """a chain entry's ``read_link_chain`` call gives what its recursive statement gave: the table seeded with a chain
+    of four rows, a row linking nowhere, and a cycle of three; walked from the chain's head, from its last row, from the
+    cycle (round it, under a bound of rows), and from a key no row holds, every row and column compared."""
+    table, key, link = entry["table"], entry["chain"]["key"], entry["chain"]["link"]
+    await _drop_checks(conn, table)
+    shape = await _catalog(conn, table)
+    for column in (key, link):
+        if column not in shape.columns:
+            raise AssertionError(f"{table}: the chain names {column}, which the table has no column of")
+    keys = [_value(shape.columns[key], 700_000 + place) for place, _ in _CHAIN_LINKS]
+    rows = [{key: keys[place], link: None if linked is None else keys[linked]} for place, linked in _CHAIN_LINKS]
+    missing = _value(shape.columns[key], 799_999)
+    columns = tuple(entry["columns"])
+    differences = []
+    await conn.execute("SET session_replication_role = replica")
+    try:
+        for start, most in ((keys[0], 10), (keys[3], 10), (keys[5], 7), (keys[0], 2), (missing, 10)):
+            transaction = conn.transaction()
+            await transaction.start()
+            try:
+                await seed_rows(conn, table, rows)
+                old = [dict(row) for row in await conn.fetch(entry["old_sql"], start, most)]
+                new = await read_link_chain(conn, table, key=key, link=link, start=start, most=most, columns=columns)
+            finally:
+                await transaction.rollback()
+            if sorted(map(repr, old)) != sorted(map(repr, new)):
+                differences.append(f"from {start!r} at most {most}: the statement {old}, the helper {new}")
+    finally:
+        await conn.execute("SET session_replication_role = DEFAULT")
+    assert not differences, f"{entry['function']}: " + "; ".join(differences)
 
 
 #: the stray rows a joined table holds that no read row's values match
@@ -1311,6 +1362,14 @@ def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
     if entry.get("shape") == "write":
         return _write_says(call, entry)
     keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    if entry.get("chain"):
+        chained = (
+            f"read_link_chain(c, {entry['table']!r}, key={entry['chain']['key']!r}, link={entry['chain']['link']!r}, "
+            f"start={entry['args'][0]}, most={entry['args'][1]}, columns={tuple(entry['columns'])!r})"
+        )
+        # the call as written, its connection (whatever the code names it) read as ``c``
+        sent = ast.Call(func=call.func, args=[ast.Name("c", ast.Load()), *call.args[1:]], keywords=call.keywords)
+        return _same_expression(ast.parse(ast.unparse(sent), mode="eval").body, chained)
     if len(call.args) != 2 or not (isinstance(call.args[1], ast.Constant) and call.args[1].value == entry["table"]):
         return False
     by = keywords.get("by")
