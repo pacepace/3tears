@@ -708,12 +708,12 @@ async def _counts_seeking(
         params.append(unique[start : start + size])
         keys = f"unnest(${len(params)}::{values.cast}[]) AS counted_keys(counted_key)"
         clause = " AND ".join([*conditions, f"r.{quoted} = counted_keys.counted_key"])
+        labels = list(tables)
         parts = [
             f"SELECT {index} AS relation, counted_keys.counted_key AS counted, c.held FROM {keys} CROSS JOIN LATERAL "
-            f"(SELECT count(*) AS held FROM {relation(table, 'r')} WHERE {clause}) AS c WHERE c.held > 0"
-            for index, table in enumerate(tables.values())
+            f"(SELECT count(*) AS held FROM {relation(tables[label], 'r')} WHERE {clause}) AS c WHERE c.held > 0"
+            for index, label in enumerate(labels)
         ]
-        labels = list(tables)
         for row in await sent_by(conn).fetch(" UNION ALL ".join(parts), *params):
             counted[labels[int(row["relation"])]][row["counted"]] = int(row["held"])
 

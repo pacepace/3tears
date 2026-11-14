@@ -152,6 +152,8 @@ class CatalogTable:
 
     columns: dict[str, CatalogColumn] = field(default_factory=dict)
     unique: list[frozenset[str]] = field(default_factory=list)
+    #: each partial unique index: its key columns and its ``WHERE`` as the catalog writes it
+    partial_unique: list[tuple[frozenset[str], str]] = field(default_factory=list)
 
 
 async def _drop_checks(conn: Any, table: str) -> None:
@@ -223,6 +225,8 @@ async def _catalog(conn: Any, table: str) -> CatalogTable:
         named = {name for name in re.findall(r"\b(\w+)\b", body) if name in shape.columns}
         if named:
             shape.unique.append(frozenset(named))
+            if " WHERE " in index["definition"]:
+                shape.partial_unique.append((frozenset(named), index["definition"].split(" WHERE ", 1)[1]))
     return shape
 
 
@@ -1285,7 +1289,29 @@ def _coarser_leads(shape: CatalogTable, entry: Mapping[str, Any]) -> dict[str, C
         coarse = last * _PLAN_SPREAD ** (len(bound) - 1 - place)
         if coarse > 1:
             overrides[name] = _coarse_value(shape.columns[name], coarse)
+    for key, where in shape.partial_unique:
+        if not key <= set(bound):
+            continue
+        # every row of a tenant is alike on this partial unique key: they are seeded outside its WHERE (a column the
+        # read does not bind held off the predicate's literal), as only one such row could be inside it
+        held = re.fullmatch(r"\(*(\w+) = '((?:[^']|'')*)'(?:::[\w ]+)?\)*", where.strip())
+        if held is None or held.group(1) in bound or held.group(1) not in shape.columns:
+            raise ValueError(
+                f"a partial unique index on bound columns {sorted(key)} with a WHERE the seed cannot keep out: {where}"
+            )
+        overrides[held.group(1)] = _other_than(shape.columns[held.group(1)], held.group(2).replace("''", "'"))
     return overrides
+
+
+def _other_than(column: CatalogColumn, literal: str) -> Callable[[Seeded], Any]:
+    """a column's seed value that is never ``literal``: another of its enum's labels, or a text beside it."""
+    others = [label for label in column.labels if label != literal]
+    chosen: Any = others[0] if others else f"{literal}-not"
+
+    def value(_seed: Seeded) -> Any:
+        return chosen
+
+    return value
 
 
 def _coarse_value(column: CatalogColumn, coarse: int) -> Callable[[Seeded], Any]:

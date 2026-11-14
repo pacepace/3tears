@@ -1570,12 +1570,13 @@ def test_a_select_list_expression_is_read_as_selected_over_the_helpers_row() -> 
         ("SELECT coalesce(name, $2) AS name FROM t WHERE a = $1", "binding a parameter"),
         ("SELECT (SELECT max(x) FROM t WHERE x > 0) AS top FROM t WHERE a = $1", "reading t again unaliased"),
         ("SELECT u.name FROM t WHERE a = $1", "another relation"),
+        ("SELECT COALESCE(MAX(version), 0) AS top FROM t WHERE a = $1", "an aggregate"),
     ],
 )
 def test_a_select_list_expression_the_helper_cannot_send_is_refused(sql: str, reason: str) -> None:
     """Flips if a select-list expression is taken that has no alias to answer under, binds a parameter the helper would
     not number, reads the row's own table again with no alias of its own (its ``<table>.`` would be the inner read's),
-    or names another relation."""
+    names another relation, or aggregates (one row of the whole match: ``aggregate_keyed``'s, not a row each)."""
     refused = parse_point(sql)
     assert isinstance(refused, str) and reason in refused, refused
 

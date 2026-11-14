@@ -22,9 +22,11 @@ class _Reader:
         self.version = version
         self.rows = rows
         self.asked: list[tuple[str, tuple[Any, ...]]] = []
+        self.probed = 0
 
     async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
         if query.startswith("SELECT version()"):
+            self.probed += 1
             return [{"v": self.version}]
         self.asked.append((query, params))
         return self.rows
@@ -58,3 +60,13 @@ async def test_yugabyte_and_a_warehouse_keep_one_set() -> None:
         await counts_by(reader, "results", column="geo", values=AnyOf(["001", "002"]), by={"state": "S20"})
         ((sql, _params),) = reader.asked
         assert "LATERAL" not in sql and '"geo" = ANY(' in sql, sql
+
+
+async def test_a_count_with_no_pinned_prefix_asks_nothing_and_stays_one_set() -> None:
+    """Flips if a count with no pinned prefix (the set the only index condition: no near tie to break) asks the server
+    its version or is sent other than the one ``= ANY`` count."""
+    reader = _Reader("PostgreSQL 16.4", _ROWS)
+    await counts_by(reader, "results", column="geo", values=AnyOf(["001", "002"]))
+    ((sql, _params),) = reader.asked
+    assert "LATERAL" not in sql and '"geo" = ANY(' in sql, sql
+    assert reader.probed == 0

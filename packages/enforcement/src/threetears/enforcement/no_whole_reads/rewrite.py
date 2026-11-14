@@ -452,6 +452,29 @@ _SELECTED_ITEM: Final[re.Pattern[str]] = re.compile(
 )
 
 
+#: an aggregate function's call: a select list holding one answers one row of the whole match, not a row each
+_AGGREGATE: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:count|sum|max|min|avg|array_agg|string_agg|json_agg|jsonb_agg|bool_and|bool_or|every)\s*\(", re.IGNORECASE
+)
+
+
+def _without_subselects(masked: str) -> str:
+    """``masked`` with each parenthesized sub-select dropped (its own aggregates answer within it)."""
+    kept: list[str] = []
+    start = 0
+    opened: list[tuple[int, bool]] = []
+    for at, char in enumerate(masked):
+        if char == "(":
+            opened.append((at, bool(re.match(r"\(\s*select\b", masked[at:], re.IGNORECASE))))
+        elif char == ")" and opened:
+            begin, subselect = opened.pop()
+            if subselect and not any(inner for _, inner in opened):
+                kept.append(masked[start:begin])
+                start = at + 1
+    kept.append(masked[start:])
+    return "".join(kept)
+
+
 def _reads_unaliased(masked: str, table: str) -> bool:
     """whether ``masked`` reads ``table`` with no alias of its own (``FROM table WHERE ...``, ``FROM table)``)."""
     for found in re.finditer(rf'\bfrom\s+"?{re.escape(table)}"?(?![\w"])\s*(?P<next>{_IDENT})?', masked, re.IGNORECASE):
@@ -500,6 +523,8 @@ def _select_list(text: str, table: str, alias: str | None) -> tuple[str | dict[s
         if re.search(r"\$\d", item_masked):
             return "a select-list expression binding a parameter"
         names = {name for name in (alias, bare) if name}
+        if _AGGREGATE.search(_without_subselects(item_masked)):
+            return "an aggregate in the select list (a count, a max: aggregate_keyed's)"
         if _reads_unaliased(item_masked, bare):
             return f"a select-list expression reading {bare} again unaliased"
         expression = item[: named.end("expr")]

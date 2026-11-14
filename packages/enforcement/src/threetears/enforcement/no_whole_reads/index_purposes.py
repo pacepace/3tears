@@ -351,9 +351,9 @@ def decide(catalog: SchemaCatalog, module: str = _MODULE) -> Decisions:
 
 def _statement(decision: IndexDecision) -> tuple[str, list[dict[str, Any]]]:
     """the read the plan test explains, and its pins (each bound column a parameter, in order): the index's columns
-    the read binds, then the read's other equalities, its order as it sends it; the table read as ``t``, as the keyed
-    helpers read it (and name the index to YugabyteDB)."""
-    bound = (*decision.bound, *decision.also)
+    the read binds after the read's other equalities (seeded coarsest: they narrow no tenant the index tells apart), its
+    order as it sends it; the table read as ``t``, as the keyed helpers read it (and name the index to YugabyteDB)."""
+    bound = (*decision.also, *decision.bound)
     conditions = [f't."{column}" = ${number}' for number, column in enumerate(bound, start=1)]
     if decision.where:
         conditions.append(f"({decision.where})")
