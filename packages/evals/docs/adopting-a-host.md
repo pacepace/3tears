@@ -761,7 +761,7 @@ def test_my_store_conforms(case: StoreConformanceCase, tmp_path: Path) -> None:
 time, newest first by `(created_at, id)`: `by_doc_type(..., order_by="created_at", limit=101, after=(created_at,
 id))`, where `after` is the last document of the page before and the read returns only documents strictly past it.
 Your store need not do anything to keep working. A `by_doc_type` that does not declare `after` by name is never handed
-one: the engine reads it with `page_by_doc_type` (in `threetears.evals.schema`, provisional), which asks your store for
+one: the engine reads it with `page_by_doc_type`, the port's default (provisional), which asks your store for
 the whole match and orders and slices it in Python, so every listing call reads the scope's whole match until you
 declare it. To page in your backend:
 
