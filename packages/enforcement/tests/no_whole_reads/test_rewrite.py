@@ -1651,6 +1651,18 @@ def test_a_local_bound_to_one_statement_per_branch_becomes_a_conditional_of_help
     assert text.count("if every:") == 1, text  # branch_read_twice's, left
 
 
+def test_a_column_pinned_again_restricts_as_a_guard() -> None:
+    """Flips if a read whose ``WHERE`` pins a column twice (``status = $1 AND status IN ('a', 'b')``) is refused when
+    guards are taken, or its second conjunct is not kept as a guard beside the first pin; without guards it stays
+    refused."""
+    sql = "SELECT id FROM geos WHERE state = $1 AND state IN ('a', 'b') AND live = FALSE ORDER BY id LIMIT $2"
+    parsed = parse_first(sql, guards=True)
+    assert isinstance(parsed, PointSql), parsed
+    assert [(pin.column, pin.kind) for pin in parsed.pins] == [("state", "param"), ("live", "literal")]
+    assert [guard.literal for guard in parsed.guards] == ["state IN ('a', 'b')"]
+    assert parse_first(sql) == "a column pinned twice"
+
+
 _NULL_SAFE_KINDS = """
     from enum import Enum
 

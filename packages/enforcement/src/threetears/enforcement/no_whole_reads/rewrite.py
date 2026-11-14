@@ -833,7 +833,7 @@ def _pins(where: str, masked: str, qualifiers: set[str | None], guards: list[Pin
     it is not one.
 
     With ``guards``, every other conjunct (a range, ``<>``, an optional pin ``($5::text IS NULL OR col = $5)``, a
-    ``NOT (...)``) is appended there as a ``guard`` pin instead of refused: the helper's ``where=`` fragments, ANDed
+    ``NOT (...)``, an equality on a column already pinned) is appended there as a ``guard`` pin instead of refused: the helper's ``where=`` fragments, ANDed
     beside the pins, so the rows read are the same. A top-level ``OR`` (which the conjunction would misread) is refused.
 
     :param where: the ``WHERE`` clause's text
@@ -881,6 +881,14 @@ def _pins(where: str, masked: str, qualifiers: set[str | None], guards: list[Pin
         if pinned.group("q") not in qualifiers:
             return f"a column of another relation: {conjunct!r}"
         name = pinned.group("column").lower()
+        if guards is not None and name in {pin.column for pin in pins}:
+            # a column pinned again (``status = $1 AND status IN ('queued', 'running')``): the first pin keys the
+            # read, the rest restrict its rows as a guard, ANDed beside it as written
+            again = _guard(conjunct, qualifiers)
+            if isinstance(again, str):
+                return again
+            guards.append(again)
+            continue
         if kind == "param":
             pins.append(Pin(name, "param", param=int(pinned.group("n"))))
         elif kind == "any":
