@@ -138,6 +138,7 @@ from threetears.core.ddl.change_notes import (
     trigger_function_sql,
 )
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
+from threetears.core.keyed import Fragment, Sort, delete_before, keyset_rows
 from threetears.core.ddl.index_health import ddl_body, rebuild_unusable_indexes
 from threetears.core.declared import whole_read
 from threetears.core.ddl.errors import DdlLockTimeoutError
@@ -176,6 +177,12 @@ _SWITCHES_PER_BUDGET: Final = 2
 
 #: marks of the log's position per fence: a suffix restore can start at one every fence / this
 _MARKS_PER_FENCE: Final = 20
+
+#: the marks a switch's sweep deletes a statement
+_MARKS_SWEEP_PAGE: Final = 500
+
+#: a lost log's marks, in position order (two marks may share a position: the id breaks the tie)
+_MARKS_ORDER: Final = (Sort("seq"), Sort("id"))
 
 #: notes deleted per statement when the keeper empties the idle table; each batch is its own transaction
 _EMPTY_BATCH: Final = 1000
@@ -762,6 +769,8 @@ class ChangeNoteKeeper:
         self._scrub_every = fence / _SCRUBS_PER_FENCE if scrub_every is None else scrub_every
         self._scrubbed_at: float | None = None
         self._marks = f"{self._owner}.{quote_identifier(MARKS_TABLE)}"
+        #: the same, as the keyed helpers name a table (``schema.table``, quoted a segment at a time by them)
+        self._marks_table = f"{notes_schema}.{MARKS_TABLE}"
         self._mark_every = fence / _MARKS_PER_FENCE
         self._marked_at: float | None = None
         self._switch_notes = switch_notes
@@ -1315,16 +1324,53 @@ class ChangeNoteKeeper:
         self._counted_at = None
         _SWITCHES.inc()
         # a mark older than the table the coverage now starts with can floor no restore
-        await self._pool.execute(
-            f"DELETE FROM {self._marks} WHERE at < $1",  # noqa: S608 - trusted identifiers
-            ring.switched_at - self._wait(ring),
-        )
+        await self.drop_marks_before(ring.switched_at - self._wait(ring))
         log.info(
             "the change-note ring switched",
             extra={"extra_data": {"current": after.current, "switch": after.switch_no, "floor": after.floor}},
         )
         await self.count_ring_reads(ring.current)
         return after
+
+    async def drop_marks_before(self, at: datetime) -> int:
+        """delete the marks written before ``at``, a page at a time through the marks' time index (no cache serves
+        the keeper's own table).
+
+        :param at: the time: every mark older is deleted
+        :ptype at: datetime
+        :return: the marks deleted
+        :rtype: int
+        """
+        swept = await delete_before(
+            self._marks_table,
+            collection=None,
+            key=("id",),
+            column="at",
+            before=at,
+            page=_MARKS_SWEEP_PAGE,
+            conn=self._pool,
+        )
+        return swept.deleted
+
+    async def marks_past(self, incarnation: str, floor: int | None) -> list[dict[str, Any]]:
+        """the marks of the log ``incarnation`` names past the position ``floor``, in position order: a page at a time
+        through the marks' position index.
+
+        :param incarnation: the log's incarnation
+        :ptype incarnation: str
+        :param floor: the position the marks are past; every mark when None
+        :ptype floor: int | None
+        :return: the marks (``seq``, ``at``, ``id``)
+        :rtype: list[dict[str, Any]]
+        """
+        return await keyset_rows(
+            self._pool,
+            self._marks_table,
+            columns=("seq", "at", "id"),
+            by={"log_incarnation": incarnation},
+            order=_MARKS_ORDER,
+            where=[Fragment('t."seq" > $1', (-1 if floor is None else floor,))],
+        )
 
     async def count_ring_reads(self, index: int) -> None:
         """count, per table, the notes of the table just switched away from whose statement read the ring row.
@@ -1587,14 +1633,7 @@ class ChangeNoteKeeper:
         if budget is None or await self._estimate(ring, None) <= budget:
             return covered, None
         lag = self._wait(ring) / 2
-        marks = [
-            (int(mark["seq"]), mark["at"] - lag)
-            for mark in await self._pool.fetch(
-                f"SELECT seq, at FROM {self._marks} WHERE log_incarnation = $1 AND seq > $2 ORDER BY seq",  # noqa: S608 - trusted identifiers
-                lost,
-                -1 if covered is None else covered,
-            )
-        ]
+        marks = [(int(mark["seq"]), mark["at"] - lag) for mark in await self.marks_past(lost, covered)]
         low, high = 0, len(marks)
         while low < high:  # the first (oldest-reaching) mark whose part fits; sizes fall along the list
             middle = (low + high) // 2

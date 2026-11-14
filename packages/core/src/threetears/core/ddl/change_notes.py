@@ -101,6 +101,18 @@ _MARKS_TABLE_DDL: Final = (
     "at TIMESTAMPTZ NOT NULL)"
 )
 
+#: the marks table's indexes, ``{schema}`` its schema (quoted): a restore reads one lost log's marks past its floor in
+#: position order, and a switch deletes the marks older than the coverage, a page at a time by their time
+_MARKS_INDEX_DDL: Final = (
+    "-- purpose: packages/core/src/threetears/core/collections/change_notes.py::ChangeNoteKeeper.marks_past\n"
+    "-- plan_test: packages/core/tests/integration/test_change_note_ring_plans.py::test_threetears_change_note_marks_position_reads_a_restores_marks\n"
+    'CREATE INDEX IF NOT EXISTS "threetears_change_note_marks_position" ON {schema}."threetears_change_note_marks" '
+    "(log_incarnation, seq ASC, id ASC)",
+    "-- purpose: packages/core/src/threetears/core/collections/change_notes.py::ChangeNoteKeeper.drop_marks_before\n"
+    "-- plan_test: packages/core/tests/integration/test_change_note_ring_plans.py::test_threetears_change_note_marks_at_reads_a_switchs_sweep\n"
+    'CREATE INDEX IF NOT EXISTS "threetears_change_note_marks_at" ON {schema}."threetears_change_note_marks" (at ASC, id ASC)',
+)
+
 #: the ring's one-row table, ``{schema}`` its schema (quoted): written out whole, so it declares its key where it is read
 _RING_TABLE_DDL: Final = (
     'CREATE TABLE IF NOT EXISTS {schema}."threetears_change_note_ring" ('
@@ -399,6 +411,7 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         *by_table,
         *sparse,
         marks,
+        *(statement.format(schema=owner) for statement in _MARKS_INDEX_DDL),
         _RING_TABLE_DDL.format(schema=owner),
         f"INSERT INTO {ring} (id, current_ring, switch_no, switched_at, emptied, fence_seconds, wait_seconds) "
         f"VALUES (1, 0, 0, now(), TRUE, {float(fence.total_seconds())!r}, {float(fence.total_seconds())!r}) "

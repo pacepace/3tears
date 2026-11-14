@@ -2,8 +2,10 @@
 
 The plan tests the ring's DDL names (``threetears.core.ddl.change_notes``: ``-- purpose:`` / ``-- plan_test:``): the
 scrub's keyed look by the joined-key index, its whole-table look by the partial whole-note index, its any-note look by
-the table-and-time index, and a switch's count of the notes written without a cached slot by the partial ring-read
-index. The ring's current table is seeded past where the planner would rather scan, on Postgres and YugabyteDB alike.
+the table-and-time index, a switch's count of the notes written without a cached slot by the partial ring-read
+index, and a restore's read of a lost log's marks and a switch's sweep of the old marks by the marks' two indexes.
+The ring's current table (and its marks) are seeded past where the planner would rather scan, on Postgres and
+YugabyteDB alike.
 
 Against the session ``db_container``; set ``THREETEARS_TEST_POSTGRES_URL`` to a YugabyteDB URL to run them there.
 """
@@ -13,6 +15,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -137,3 +140,51 @@ async def test_threetears_change_notes_0_ring_read_reads_a_switchs_count(ring: _
     await ChangeNoteKeeper(_Pool(checked), notes_schema=ring.schema, log=_NoLog()).count_ring_reads(0)
     [plan] = checked.plans
     assert plan_uses_index(plan, "threetears_change_notes_0_ring_read", partial=True), plan.plan
+
+
+#: the marks seeded for the marks' plan tests: this many logs, each marked this many times
+_MARKED_LOGS = 200
+_MARKS_EACH = 100
+#: the newest seeded mark's time, less an hour: the g-th mark was written g hours before it
+_MARKED_AT = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+async def _seed_marks(ring: _Ring) -> None:
+    """mark many logs many times each, an hour apart, so a read of one log's marks, or of the oldest, is worth an
+    index."""
+    marks = f"{ring.schema}.threetears_change_note_marks"
+    await ring.conn.execute(
+        f"INSERT INTO {marks} (log_incarnation, seq, at) "  # noqa: S608 - test identifiers
+        f"SELECT 'log_' || (g % {_MARKED_LOGS}), g / {_MARKED_LOGS}, $1::timestamptz - make_interval(hours => g) "
+        f"FROM generate_series(1, {_MARKED_LOGS * _MARKS_EACH}) g",
+        _MARKED_AT,
+    )
+    await ring.conn.execute(f"ANALYZE {marks}")
+
+
+async def test_threetears_change_note_marks_position_reads_a_restores_marks(ring: _Ring) -> None:
+    """Flips if a restore's read of one lost log's marks past its floor stops planning through the marks' position
+    index, or answers other than that log's marks past the floor in position order."""
+    await _seed_marks(ring)
+    checked = PlanRecorder(ring.conn)
+    marks = await ChangeNoteKeeper(_Pool(checked), notes_schema=ring.schema, log=_NoLog()).marks_past("log_7", 40)
+    assert [int(mark["seq"]) for mark in marks] == list(range(41, _MARKS_EACH))
+    assert checked.plans and all(
+        plan_uses_index(plan, "threetears_change_note_marks_position") for plan in checked.plans
+    ), [p.plan for p in checked.plans]
+
+
+async def test_threetears_change_note_marks_at_reads_a_switchs_sweep(ring: _Ring) -> None:
+    """Flips if a switch's sweep of the marks older than the coverage stops planning through the marks' time index,
+    or deletes other than those marks."""
+    await _seed_marks(ring)
+    marks = f"{ring.schema}.threetears_change_note_marks"
+    # the 30 oldest marks (g = 19971 .. 20000) were written before it
+    cut = _MARKED_AT - timedelta(hours=_MARKED_LOGS * _MARKS_EACH - 29.5)
+    checked = PlanRecorder(ring.conn)
+    deleted = await ChangeNoteKeeper(_Pool(checked), notes_schema=ring.schema, log=_NoLog()).drop_marks_before(cut)
+    assert deleted == 30
+    assert await ring.conn.fetchval(f"SELECT count(*) FROM {marks} WHERE at < $1", cut) == 0  # noqa: S608 - test identifiers
+    assert checked.plans and all(plan_uses_index(plan, "threetears_change_note_marks_at") for plan in checked.plans), [
+        p.plan for p in checked.plans
+    ]
