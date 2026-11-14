@@ -90,7 +90,14 @@ from typing import Any, Final, Literal, get_args
 
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocOrigin, DocTypeFacts
 from threetears.evals.schema.hashing import canonical_digest
-from threetears.evals.schema.store_port import DocumentStore, GroupMeasure, ResultReadings, StoreClock, StoreConflict
+from threetears.evals.schema.store_port import (
+    DocumentStore,
+    GroupMeasure,
+    ResultReadings,
+    StoreClock,
+    StoreConflict,
+    grouped_narrowed,
+)
 from threetears.evals.schema.versioning import CORE_RESET_DOC_TYPES
 from threetears.evals.schema.logs import get_logger
 
@@ -803,12 +810,22 @@ class _ReadingRoutedDocumentStore(RoutedDocumentStore):
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
-        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`; from the store the type is kept in."""
-        return self._reading(doc_type).grouped(
-            doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq
+        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`; from the store the type is kept in, through
+        :func:`~threetears.evals.schema.store_port.grouped_narrowed`, so a store written before ``exclude_in_items``
+        has its values narrowed after it answers."""
+        return grouped_narrowed(
+            self._reading(doc_type),
+            doc_type,
+            scope_id,
+            by=by,
+            measures=measures,
+            exclude_in_items=exclude_in_items,
+            field_in=field_in,
+            **field_eq,
         )
 
 

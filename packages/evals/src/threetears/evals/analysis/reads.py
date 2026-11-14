@@ -44,6 +44,7 @@ import logging
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import ValidationError
@@ -356,8 +357,10 @@ class LensStore(RunResultsStore, Protocol):
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
     ) -> GroupsRead:
-        """The results of the runs (or of the scope) grouped by ``by``, each measure computed per group, beside the
+        """The results of the runs (or of the scope) grouped by ``by``, each measure computed per group, each ``values``
+        value without the paths ``exclude_in_items`` drops from its list items, beside the
         path that served the read and the store calls it made
         (:meth:`~threetears.evals.kernel.storage.EvalStorage.result_groups`)."""
         ...
@@ -730,6 +733,14 @@ _SPEND_MEASURES: dict[str, GroupMeasure] = {
 }
 
 
+#: What a spend read leaves out of each re-judge it reads (``exclude_in_items``): the judge's prose, the reasons each
+#: dimension failed again or could not be scored, which the spend lenses never read. Each has a default, so a re-judge
+#: read without it validates as the stored one does; the fields a re-judge requires all ship.
+_SPEND_LEFT_OUT_OF_REJUDGES: Mapping[str, Sequence[str]] = MappingProxyType(
+    {"judge_rescores": ("cannot_tell", "errors")}
+)
+
+
 class _SpendRows:
     """A grouped read of the spend figures (:data:`_SPEND_MEASURES`), as one
     :class:`~threetears.evals.analysis.lenses.program_budget.ResultSpend` per stored result, in the read's order."""
@@ -756,7 +767,11 @@ class _SpendRows:
 def _spend_of(storage: LensStore, scope_id: str) -> Callable[[Sequence[str] | None], _Walk[ResultSpend]]:
     """The read a spend lens folds: each stored result's spend figures as a grouped read's values, never hydrated, so
     nothing else of a result is read or held."""
-    return lambda run_ids: _SpendRows(storage.result_groups(run_ids, scope_id, by=(), measures=_SPEND_MEASURES))
+    return lambda run_ids: _SpendRows(
+        storage.result_groups(
+            run_ids, scope_id, by=(), measures=_SPEND_MEASURES, exclude_in_items=_SPEND_LEFT_OUT_OF_REJUDGES
+        )
+    )
 
 
 def comparison_sets(

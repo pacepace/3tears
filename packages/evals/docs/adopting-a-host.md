@@ -756,6 +756,27 @@ def test_my_store_conforms(case: StoreConformanceCase, tmp_path: Path) -> None:
     case.run(MyDocumentStore(tmp_path / "evals.sqlite"))
 ```
 
+**Narrowed and grouped reads are optional** (`ResultReadings`, provisional; `RESULT_READINGS_CONFORMANCE_CASES`
+proves a store that offers them). Three of their rules are newer than the capability:
+
+- **`grouped` takes `exclude_in_items`**, with `iter_narrowed`'s meaning, applied to every `values` value: the spend
+  lenses ask to leave each re-judge's `cannot_tell` and `errors` prose out. Declare it by name and narrow before you
+  ship a value; a backend that cannot narrow inside an extracted value narrows each `values` value in Python as
+  `iter_narrowed` narrows a row, before it hands the groups back. A `grouped` that does not declare it keeps working: the engine, the routed
+  store and the async bridge ask it without the parameter and narrow its values themselves (`grouped_narrowed`), and
+  the kit's `grouped.values_narrowed_in_items` reads it the same way. It ships the items whole until it declares the
+  parameter, and mypy reads it as not matching `ResultReadings` until then.
+- **`sum_int` is exact past 64 bits, or refused with `TypeError`**, never wrapped, rounded or failed as a backend
+  error: the kit's `grouped.sum_int` sums integers past a signed 64-bit range. On Postgres, sum through `numeric`
+  (`sum((data #>> '{path}')::numeric)`, which is exact at any width) and hand back a Python `int`; a store that sums
+  through `bigint` raises `bigint out of range`, which reads as an outage, so catch it and raise `TypeError`
+  instead, or do not sum through `bigint`. `values` must return an integer of 2**63 or more whole, as your own reads do
+  (`grouped.values_exact`): a `jsonb` number read through the JSON text keeps it.
+- **A narrowed read is closed when abandoned.** A walk the engine leaves part way closes your `iter_narrowed` iterator
+  (`close()`, or `aclose()` through the async bridge, which now closes any async iterator that has one, not only an
+  async generator): release your cursor there. A reader holding `EvalStorage.iter_result_readings`'s read can close it
+  at once with `close()`, or hold it in a `with` block.
+
 **The store is called off the event loop.** The port is synchronous and the engine is async: every store call
 the engine makes runs on the host's `blocking_executor`, never on the loop, and `EvalStorage` refuses a call made
 on a thread running an event loop with `StoreCalledOnEventLoop` (in `threetears.evals.schema`). Your own async
@@ -860,7 +881,8 @@ measured on the paths a host runs (constants of `threetears.evals.analysis.reads
 (28,116, 1 GiB) for a campaign's bundle; `PLANNING_READ_BUDGET` (37,010, 256 MiB) for a launch estimate's planning
 block; `SPEND_READ_BUDGET` (105,196, 1 GiB) for `program_budget` and `orphaned_runs`, which read each result's
 spend figures off one grouped read, never a result, but hold that read whole before folding it (1,683 bytes a result
-on a store offering grouped reads, 10,207 on a store without them, whose rows the engine groups). They take no
+on a store offering grouped reads; on a store without them the engine groups its rows a page at a time, holding the
+groups and one page, not every row, and the budget is not yet re-measured for that path). They take no
 filter, so past it they are refused, the remedy naming where to read the spend a page at a time.
 
 - **A scope within the budget** is read whole, as before.

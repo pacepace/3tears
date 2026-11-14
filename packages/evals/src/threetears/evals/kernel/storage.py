@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from itertools import islice
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, cast
 
 from pydantic import ValidationError
@@ -107,7 +108,10 @@ from threetears.evals.schema.store_port import (
     ResultReadings,
     StoreClock,
     StoreConflict,
+    check_grouping,
     fold_groups,
+    grouped_narrowed,
+    narrow_items,
     refuse_on_event_loop,
 )
 from threetears.evals.schema.logs import get_logger
@@ -1680,6 +1684,28 @@ class EvalStorage:
         """
         return self._load(EvalReportSnapshot, snapshot_id, scope_id)
 
+    def report_snapshot_stored(self, snapshot_id: str, scope_id: str, /) -> bool:
+        """Whether a report snapshot is stored under the id in the scope, read without shipping it.
+
+        The cheap form of :meth:`load_report_snapshot` for a reader that only needs to know the snapshot is still
+        there (an analysis listing, which marks a report document whose snapshot is gone): one ``get_many`` that
+        keeps the snapshot's ``id`` alone, so its report input, most of what it weighs, is never shipped. Whether a
+        stored snapshot still reads under this build is not answered; only :meth:`load_report_snapshot` answers that.
+
+        **Provisional:** this method may change before it is declared part of the host contract.
+
+        :param snapshot_id: The snapshot's id.
+        :ptype snapshot_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: ``True`` when a document of the snapshot's type is stored under the id; ``False`` when none is.
+        :rtype: bool
+        :raises StorageError: The store failed to answer.
+        """
+        doc_type = EvalReportSnapshot.model_fields["doc_type"].default
+        with _read_outage(f"report snapshot {snapshot_id!r}"):
+            return bool(self._store.get_many(doc_type, [snapshot_id], scope_id, keep=("id",)))
+
     def delete_report_snapshot(self, snapshot_id: str, scope_id: str) -> bool:
         """Delete a report snapshot by id within a scope, raw, reporting whether there was one.
 
@@ -2871,6 +2897,50 @@ class EvalStorage:
             raise StorageError(f"failed to read the results of eval run {run_id!r}: {e}") from e
         return [_result_key(item, run_id) for item in items]
 
+    def query_eval_result_keys_by_runs(self, run_ids: Sequence[str], scope_id: str, /) -> dict[str, list[ResultKey]]:
+        """The key of every result stored for each of several runs, in one read that ships no other field.
+
+        :meth:`query_eval_result_keys_by_run` for many runs at once: one ``by_doc_type`` with the runs as a ``field_in``
+        predicate (which every store answers, so a host store needs nothing new), the same fields left out, and each
+        row read into its key by the same checks. For a reader that needs the keys of every run of a set (a
+        campaign's arms read each run's first result), which otherwise asks the store once per run: a round trip each
+        on a database store. A key row still ships the result's scalars and its score objects, so a caller bounds
+        how many results one call covers.
+
+        **Provisional:** this method may change before it is declared part of the host contract.
+
+        :param run_ids: The runs. Empty asks the store nothing; one named twice is read once.
+        :ptype run_ids: Sequence[str]
+        :param scope_id: The scope they live in.
+        :ptype scope_id: str
+        :return: Each run's keys, in the store's order within the run (the order :meth:`query_eval_result_keys_by_run`
+            gives), under every run asked (an empty list for a run with none stored), in the order first asked.
+        :rtype: dict[str, list[ResultKey]]
+        :raises StorageError: The store failed to answer, or answered with a result of a run not asked for.
+        :raises UnreadableResultKey: A row matched carries no readable key.
+        """
+        keys: dict[str, list[ResultKey]] = {run_id: [] for run_id in run_ids}
+        if not keys:
+            return keys
+        store = self._store
+        try:
+            items = store.by_doc_type(
+                "eval_result", scope_id, exclude=_RESULT_KEY_EXCLUDED, field_in={"eval_run_id": list(keys)}
+            )
+        # prawduct:ok-broad-except — DB read boundary; re-raised as a typed eval error
+        except Exception as e:
+            raise StorageError(f"failed to read the results of eval runs {list(keys)!r}: {e}") from e
+        for item in items:
+            run_id = item.get("eval_run_id")
+            held = keys.get(run_id) if isinstance(run_id, str) else None
+            if held is None:
+                raise StorageError(
+                    f"the store answered a read of eval runs {list(keys)!r} with a result ({item.get('id')!r}) of run "
+                    f"{run_id!r}, none of them"
+                )
+            held.append(_result_key(item, run_id))
+        return keys
+
     def load_eval_results(
         self, result_ids: Sequence[str], scope_id: str, /, *, elide: Sequence[str] = ()
     ) -> list[EvalResult]:
@@ -2972,6 +3042,7 @@ class EvalStorage:
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
     ) -> GroupsRead:
         """The results of the runs (or of the scope) grouped by ``by``, each measure computed per group, as the store's
         :meth:`~threetears.evals.schema.store_port.ResultReadings.grouped` answers over the same rows.
@@ -2983,9 +3054,14 @@ class EvalStorage:
           raised; the read is never retried on the engine's path.
         - ``engine``, otherwise: one key read of the runs (or the scope), in the store's order, then the stored rows by
           id, a page at a time, each kept only as the top-level fields ``by`` and the measures read (``keep``) and
-          then only as their paths, and folded by the reference store's own fold, so every measure means here what it
-          means on a capable store, and ``values`` come in the store's order, as a capable store hands them. A stored
-          row is folded as stored, as a store folds it, not hydrated.
+          then only as their paths, and folded by the port's own fold
+          (:func:`~threetears.evals.schema.store_port.fold_groups`), so every measure means here what it means on a
+          capable store, and ``values`` come in the store's order, as a capable store hands them. A stored row is
+          folded as stored, as a store folds it, not hydrated. Each page's rows are folded into their groups before
+          the next page is read, so the read holds its groups and one page of rows, never every row.
+
+        A grouping the port does not define (:func:`~threetears.evals.schema.store_port.check_grouping`) is refused on
+        either path before the store is asked anything.
 
         :param run_ids: The runs, or ``None`` for every result of the scope. An empty sequence asks the store nothing.
         :ptype run_ids: Sequence[str] | None
@@ -2995,6 +3071,12 @@ class EvalStorage:
         :ptype by: Sequence[str]
         :param measures: Measure name → the measure.
         :ptype measures: Mapping[str, GroupMeasure]
+        :param exclude_in_items: List-field path → the dotted paths left out of each object item of that list, in every
+            ``values`` value (:meth:`~threetears.evals.schema.store_port.ResultReadings.grouped`'s meaning). On the
+            store's path it is asked of the store, or applied after it answers where its ``grouped`` predates it
+            (:func:`~threetears.evals.schema.store_port.grouped_narrowed`); on the engine's, applied to each row as it
+            is folded.
+        :ptype exclude_in_items: Mapping[str, Sequence[str]]
         :return: The groups, the path and the store calls made: one ``grouped`` on the store's path; one key read and
             one ``get_many`` per page on the engine's; none for no runs named.
         :rtype: GroupsRead
@@ -3002,6 +3084,9 @@ class EvalStorage:
         :raises ValueError: The grouping is refused, as a store refuses it.
         :raises TypeError: A measure met a value its kind refuses, as a store refuses it.
         """
+        # Refused before the store is asked anything, on either path: a grouping the port does not define never costs
+        # a read, and the engine's path never reads every page to learn it was refused.
+        check_grouping(by, measures)
         store = self._store
         runs = None if run_ids is None else list(dict.fromkeys(run_ids))
         if isinstance(store, ResultReadings):
@@ -3013,27 +3098,43 @@ class EvalStorage:
             # A refused grouping is the read's answer, raised as the engine's path raises it; anything else the store
             # raises is an outage.
             with charged("store"), _read_outage("the grouped results", refusals=(TypeError, ValueError)):
-                groups = store.grouped("eval_result", scope_id, by=by, measures=measures, field_in=_runs_in(runs))
+                groups = grouped_narrowed(
+                    store,
+                    "eval_result",
+                    scope_id,
+                    by=by,
+                    measures=measures,
+                    exclude_in_items=exclude_in_items,
+                    field_in=_runs_in(runs),
+                )
             return GroupsRead("store", 1, groups)
         if runs == []:
             served_by("engine", store_calls=0)
             return GroupsRead("engine", 0, [])
-        ids = [key.id for key in self._keys_in_store_order(runs, scope_id)]
-        calls = 1
+        # Each id once, in the keys' order: a result the key read named twice is one row, where it was first seen.
+        ids = list(dict.fromkeys(key.id for key in self._keys_in_store_order(runs, scope_id)))
+        pages = range(0, len(ids), READINGS_PAGE)
         paths = [*by, *(path for _, path in measures.values() if path is not None)]
         kept = tuple(dict.fromkeys(["id", *(path.split(".", 1)[0] for path in paths)]))
-        # Keyed by id, in the keys' order: a result read twice is one row, where it was first seen.
-        folded: dict[Any, dict[str, Any]] = {}
-        for start in range(0, len(ids), READINGS_PAGE):
-            page = ids[start : start + READINGS_PAGE]
-            served_by("engine", store_calls=1)
-            calls += 1
-            with charged("store"), _read_outage("the results to group"):
-                rows = {row.get("id"): row for row in self._store.get_many("eval_result", page, scope_id, keep=kept)}
-            for result_id in page:
-                if (row := rows.get(result_id)) is not None:
-                    folded[row.get("id")] = _projected(row, paths, scope_id)
-        return GroupsRead("engine", calls, fold_groups(folded.values(), by=by, measures=measures))
+
+        def rows() -> Iterator[dict[str, Any]]:
+            # A page at a time, each row folded into its group as it is handed on: the fold holds the groups, never
+            # the rows, so a read of many results holds one page of rows at once.
+            for start in pages:
+                page = ids[start : start + READINGS_PAGE]
+                served_by("engine", store_calls=1)
+                with charged("store"), _read_outage("the results to group"):
+                    read = {
+                        row.get("id"): row for row in self._store.get_many("eval_result", page, scope_id, keep=kept)
+                    }
+                for result_id in page:
+                    if (row := read.get(result_id)) is not None:
+                        kept_row = _projected(row, paths, scope_id)
+                        yield narrow_items(kept_row, exclude_in_items) if exclude_in_items else kept_row
+                # Let go before the next page is read, so two pages of rows are never held at once.
+                del read, row
+
+        return GroupsRead("engine", 1 + len(pages), fold_groups(rows(), by=by, measures=measures))
 
     def _keys_in_store_order(self, runs: list[str] | None, scope_id: str) -> list[ResultKey]:
         """The keys of the runs' results (or the scope's), in one key read, in the store's own order across them; the

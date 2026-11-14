@@ -538,7 +538,8 @@ class AnalysisLine(EvalBaseModel):
         default=None,
         description=(
             "Why this build cannot read the analysis, and what to do. A report document that no longer reads (its "
-            "shape moved, or it was deleted apart from it) is rendered code-only by report_read: its line is the one "
+            "shape moved, it was deleted apart from it, or its snapshot is gone) is rendered code-only by report_read: "
+            "its line is the one "
             "regenerate line, then why in parentheses where there is more to say, and it counts no findings. Every "
             "memo and every report plan is rendered code-only too, its line the retired writer's (which writer wrote "
             "it, and to regenerate). None when it reads."
@@ -1384,9 +1385,10 @@ def _doc_claims(
     """How many claims a ``doc`` analysis's document holds, whether it is a draft, why it does not read when it does
     not, and its record when it does. Blocking.
 
-    A document that no longer reads (its shape moved, or it was deleted apart from its analysis) counts no claims, is
-    no draft (its line leads with the regenerate line) and says why, never refusing the listing of every other
-    analysis.
+    A document that no longer reads (its shape moved, it was deleted apart from its analysis, or the snapshot it was
+    written from is gone) counts no claims, is no draft (its line leads with the regenerate line) and says why, never
+    refusing the listing of every other analysis. The snapshot is only checked for (one read of its id alone), never
+    read: a snapshot stored but no longer reading is left to the report read.
     """
     try:
         stored = host.storage.load_report_doc(report_doc_id, scope_id)
@@ -1400,6 +1402,15 @@ def _doc_claims(
         )
     if stored is None:
         return 0, False, f"its report document {report_doc_id!r} was deleted apart from it", None
+    # Only that the snapshot is still stored, never the snapshot itself: reading every listed analysis's snapshot was
+    # judged not worth its cost (#1020), and a gone one is what the report read would render code-only for.
+    if not host.storage.report_snapshot_stored(stored.snapshot_id, scope_id):
+        return (
+            0,
+            False,
+            f"its report document {report_doc_id!r} was written from snapshot {stored.snapshot_id!r}, which is gone",
+            None,
+        )
     return len(ReportDoc.model_validate(stored.doc).claims), stored.draft, None, stored
 
 

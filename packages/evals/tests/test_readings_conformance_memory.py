@@ -151,6 +151,7 @@ class _PlainFold(InMemoryDocumentStore):
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
@@ -159,7 +160,9 @@ class _PlainFold(InMemoryDocumentStore):
         for kind, path in measures.values():
             if kind not in {"count", "values", *self.kinds} or (kind == "count") != (path is None):
                 raise ValueError(f"an undefined measure {kind!r}")
-        rows = list(self.iter_narrowed(doc_type, scope_id, field_in=field_in, **field_eq))
+        rows = list(
+            self.iter_narrowed(doc_type, scope_id, exclude_in_items=exclude_in_items, field_in=field_in, **field_eq)
+        )
         groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
         for row in rows:
             values = [_read(row, path) for path in by]
@@ -343,6 +346,64 @@ class _PythonEquality(_PlainFold):
         )
 
 
+class _SharesStoredValues(InMemoryDocumentStore):
+    """``iter_narrowed`` narrows the stored documents without copying them, so a reader shares what is stored."""
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> Iterator[dict[str, Any]]:
+        return iter(
+            [
+                narrow_items(omit_paths(document, exclude), exclude_in_items)
+                for (scope, _), document in self.documents.items()
+                if scope == scope_id and document.get("doc_type") == doc_type
+            ]
+        )
+
+
+class _GroupsWholeItems(InMemoryDocumentStore):
+    """``grouped`` takes ``exclude_in_items`` and ignores it, so each ``values`` value ships its list items whole."""
+
+    def grouped(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        return super().grouped(doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
+
+
+class _SumWraps(_PlainFold):
+    """``sum_int`` wraps at 64 bits, as a signed 64-bit accumulator does: in range, every sum is right."""
+
+    kinds = {**_KINDS, "sum_int": lambda values: (_sum_int(values) + 2**63) % 2**64 - 2**63}
+
+
+class _SharesGroupedValues(InMemoryDocumentStore):
+    """``grouped`` hands each ``values`` value out as the stored document holds it, so a reader shares it."""
+
+    def grouped(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        groups = super().grouped(doc_type, scope_id, **kwargs)
+        stored = {doc_id: document for (scope, doc_id), document in self.documents.items() if scope == scope_id}
+        for group in groups:
+            for name, (kind, path) in kwargs["measures"].items():
+                if kind == "values":
+                    group[name] = [[row_id, _read(stored[row_id], path)] for row_id, _ in group[name]]
+        return groups
+
+
 class _SwallowsFailures(InMemoryDocumentStore):
     """A backend failure reads as an empty answer."""
 
@@ -374,6 +435,10 @@ _FAULTS: dict[type[DocumentStore], frozenset[str]] = {
     _AcceptsAnyMeasure: frozenset({"grouped.undefined_grouping_refused"}),
     _GroupOfNothing: frozenset({"empty.answers"}),
     _SwallowsFailures: frozenset({"failure.raises"}),
+    _SharesStoredValues: frozenset({"reads.copied_out"}),
+    _GroupsWholeItems: frozenset({"grouped.values_narrowed_in_items"}),
+    _SumWraps: frozenset({"grouped.sum_int"}),
+    _SharesGroupedValues: frozenset({"reads.copied_out"}),
 }
 
 

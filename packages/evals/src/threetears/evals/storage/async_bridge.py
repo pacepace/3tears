@@ -44,7 +44,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 import inspect
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator, Mapping, Sequence
 from datetime import datetime
 from functools import partial
 from types import MappingProxyType
@@ -55,7 +55,9 @@ from threetears.evals.schema.store_port import (
     AsyncResultReadings,
     AsyncStoreClock,
     GroupMeasure,
+    narrow_groups,
     refuse_on_event_loop,
+    takes_exclude_in_items,
 )
 
 __all__ = ["AsyncStoreBridge", "bridge_async_store"]
@@ -272,8 +274,11 @@ class _ReadingAsyncStoreBridge(AsyncStoreBridge):
                 exhausted = True
                 batch, exhausted = self._call(partial(_take, rows, _ROWS_PER_HOP))
         finally:
-            if not exhausted and isinstance(rows, AsyncGenerator):
-                self._call(rows.aclose)
+            # Any async iterator that can be closed is closed, not only an async generator: a store's own cursor class
+            # releases its cursor in ``aclose`` as a generator does.
+            aclose = getattr(rows, "aclose", None)
+            if not exhausted and callable(aclose):
+                self._call(aclose)
 
     def grouped(
         self,
@@ -282,15 +287,33 @@ class _ReadingAsyncStoreBridge(AsyncStoreBridge):
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
-        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`: the async store's ``grouped``, on its loop."""
-        return self._call(
-            partial(
-                self._readings().grouped, doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq
+        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`: the async store's ``grouped``, on its loop.
+
+        ``exclude_in_items`` is passed on to a store whose ``grouped`` declares it; one written before it is asked
+        without it, and its values are narrowed here (:func:`~threetears.evals.schema.store_port.narrow_groups`).
+        """
+        grouped = self._readings().grouped
+        if exclude_in_items and takes_exclude_in_items(grouped):
+            return self._call(
+                partial(
+                    grouped,
+                    doc_type,
+                    scope_id,
+                    by=by,
+                    measures=measures,
+                    exclude_in_items=exclude_in_items,
+                    field_in=field_in,
+                    **field_eq,
+                )
             )
+        groups = self._call(
+            partial(grouped, doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
         )
+        return narrow_groups(groups, measures, exclude_in_items)
 
 
 class _ClockedReadingAsyncStoreBridge(ClockedAsyncStoreBridge, _ReadingAsyncStoreBridge):

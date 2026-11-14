@@ -417,8 +417,10 @@ class FakeCountingCampaignStore:
         self._inner = inner
         #: Each run read, by id, in call order.
         self.run_reads: list[str] = []
-        #: Each run whose result keys were read, in call order.
+        #: Each run whose result keys were read on their own, in call order.
         self.key_reads: list[str] = []
+        #: The runs each read of several runs' result keys named, one entry per read.
+        self.batched_key_reads: list[list[str]] = []
         #: The ids each read of results by id named, one entry per read.
         self.result_reads: list[list[str]] = []
 
@@ -453,14 +455,18 @@ class FakeCountingCampaignStore:
         self.key_reads.append(run_id)
         return self._inner.query_eval_result_keys_by_run(run_id, scope_id)
 
+    def query_eval_result_keys_by_runs(self, run_ids: Sequence[str], scope_id: str, /) -> dict[str, list[ResultKey]]:
+        self.batched_key_reads.append(list(run_ids))
+        return self._inner.query_eval_result_keys_by_runs(run_ids, scope_id)
+
     def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
         self.result_reads.append(list(result_ids))
         return self._inner.load_eval_results(result_ids, scope_id)
 
 
 def test_a_campaigns_arms_read_each_run_once_and_every_runs_first_result_in_one_read() -> None:
-    """The arms a campaign's runs carry are read with each member run loaded once, its result keys once, and the
-    first result of every run in one read by id: the same arms the store gives read directly (#1053)."""
+    """The arms a campaign's runs carry are read with each member run loaded once, every run's result keys in one
+    read, and the first result of every run in one read by id: the same arms the store gives read directly (#1053)."""
     host, campaign = toy_campaign_host()
     counted = FakeCountingCampaignStore(host.storage)
 
@@ -469,7 +475,8 @@ def test_a_campaigns_arms_read_each_run_once_and_every_runs_first_result_in_one_
     members = list(dict.fromkeys(campaign.run_ids))
     assert len(members) > 1, "the control: the campaign holds more than one run"
     assert arms == campaign_arms(host.storage, campaign, profile=host.profile)
-    assert counted.run_reads == members and counted.key_reads == members
+    assert counted.run_reads == members
+    assert counted.key_reads == [] and counted.batched_key_reads == [members]
     assert len(counted.result_reads) == 1 and len(counted.result_reads[0]) == len(members)
 
 

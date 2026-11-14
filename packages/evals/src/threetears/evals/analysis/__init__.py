@@ -404,7 +404,8 @@ from threetears.evals.analysis.lenses.frontier import (
 from threetears.evals.kernel.scoring import UnpooledReason
 from threetears.evals.analysis.lenses.history import HistoryResult, MeasureSeries, RegressionFlag, SeriesPoint
 from threetears.evals.analysis.lenses.export import ExportFormat, ExportPage, ScoreExport
-from threetears.evals.analysis.service import AnalysisStore
+from threetears.evals.analysis.service import AnalysisReportStore, AnalysisStore
+from threetears.evals.analysis.report.doc_page.store import ReportDocReads
 
 
 from threetears.evals.analysis.lens_text import frontier_text, tier_sentence
@@ -597,6 +598,7 @@ __all__ = [
     "Report",
     "ReportBasis",
     "ReportBlock",
+    "ReportDocReads",
     "ReportSection",
     "ReportSource",
     "TableBlock",
@@ -657,6 +659,7 @@ __all__ = [
     "TrialRow",
     "TrialState",
     "AnalysisContextBundle",
+    "AnalysisReportStore",
     "AnalysisStore",
     "ArmLevel",
     "ArmMechanismReading",

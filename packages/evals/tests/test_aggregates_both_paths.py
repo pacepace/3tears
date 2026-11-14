@@ -217,6 +217,8 @@ class TestTheSpendLensesFoldTheFiguresAsTheResultsFoldThem:
         assert storage.groupings == [
             ((), ("eval_run_id", "cost_usd", "judge_rescores", "cost_roles", "schema_version", "schema_minor"))
         ]
+        # A re-judge's prose is never shipped to a lens that reads its spend alone (#1058).
+        assert storage.narrowings == [{"judge_rescores": ["cannot_tell", "errors"]}]
 
 
 class TestComparisonSetsReadTheirWindowsAndBadgesOffReadings:
@@ -241,6 +243,8 @@ class _RecordsGroupedReads:
     def __init__(self, inner: EvalStorage) -> None:
         self._inner = inner
         self.groupings: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+        #: Each grouped read's ``exclude_in_items``.
+        self.narrowings: list[dict[str, list[str]]] = []
 
     def result_groups(
         self,
@@ -250,9 +254,11 @@ class _RecordsGroupedReads:
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
     ) -> GroupsRead:
         self.groupings.append((tuple(by), tuple(measures)))
-        return self._inner.result_groups(run_ids, scope_id, by=by, measures=measures)
+        self.narrowings.append({path: list(paths) for path, paths in exclude_in_items.items()})
+        return self._inner.result_groups(run_ids, scope_id, by=by, measures=measures, exclude_in_items=exclude_in_items)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -424,8 +430,9 @@ class _SwapsOneColumn:
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
     ) -> GroupsRead:
-        read = self._inner.result_groups(run_ids, scope_id, by=by, measures=measures)
+        read = self._inner.result_groups(run_ids, scope_id, by=by, measures=measures, exclude_in_items=exclude_in_items)
         groups = [dict(group) for group in read.groups]
         column = list(groups[0]["cost_usd"])
         column[0], column[1] = column[1], column[0]

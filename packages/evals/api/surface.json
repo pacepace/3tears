@@ -256,6 +256,11 @@
       "signature": "CellTrace(spans: list[dict[str, Any]] = list(), total_ms: float | None = None, llm_ms: float | None = None, tool_ms: float | None = None)",
       "tier": "stable"
     },
+    "threetears.evals.schema.check_grouping": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ClientRequestSettings": {
       "kind": "model",
       "signature": "ClientRequestSettings(max_tokens: int, reasoning_max_tokens: int | None = None, reasoning_effort: StoredReasoningEffort | None = None, strict_output: bool = False, unsent_reasoning_max_tokens: int | None = None)",
@@ -305,6 +310,11 @@
       "kind": "enum",
       "signature": "values: `'max_turns'`, `'user_done'`, `'participants_ended'`, `'simulator_error'`, `'apparatus_error'`, `'candidate_error'`, `'budget_stopped'`",
       "tier": "stable"
+    },
+    "threetears.evals.schema.copy_json": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.CORE_ADDRESSING_FIELDS": {
       "kind": "constant (mappingproxy)",
@@ -606,6 +616,11 @@
       "signature": "GoalStateOutcome(expression: str, passed: bool, detail: str = '')",
       "tier": "stable"
     },
+    "threetears.evals.schema.grouped_narrowed": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.GroupMeasure": {
       "kind": "type alias",
       "signature": "",
@@ -868,6 +883,11 @@
     },
     "threetears.evals.schema.ModelRoleOrigin": {
       "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.narrow_groups": {
+      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -1235,6 +1255,11 @@
       "kind": "model",
       "signature": "SweepableValue(content_hash: str, display: str, scale: Scale, raw: Any | None = None)",
       "tier": "host-contract"
+    },
+    "threetears.evals.schema.takes_exclude_in_items": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.ThinkingBinding": {
       "kind": "dataclass",
@@ -4891,6 +4916,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.AnalysisReportStore": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.AnalysisStore": {
       "kind": "protocol",
       "signature": "",
@@ -6453,6 +6483,11 @@
     },
     "threetears.evals.analysis.ReportBlock": {
       "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.ReportDocReads": {
+      "kind": "protocol",
       "signature": "",
       "tier": "provisional"
     },

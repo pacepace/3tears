@@ -43,7 +43,14 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
-from threetears.evals.schema.store_port import DocumentStore, GroupMeasure, ResultReadings, narrow_items, omit_paths
+from threetears.evals.schema.store_port import (
+    DocumentStore,
+    GroupMeasure,
+    ResultReadings,
+    grouped_narrowed,
+    narrow_items,
+    omit_paths,
+)
 from threetears.evals.testing.store_conformance import StoreConformanceFailure
 
 __all__ = [
@@ -165,6 +172,47 @@ def _grouped(
     **field_eq: Any,
 ) -> list[dict[str, Any]]:
     return _readings(store).grouped(doc_type, scope, by=by, measures=measures, field_in=field_in, **field_eq)
+
+
+def _values_narrowed_in_items(store: DocumentStore, _install: Callable[[Callable[[], None]], None]) -> None:
+    rows = (
+        _doc("n1", run="a", rejudges=[{"cost": 0.25, "prose": "long", "keep": {"prose": "nested"}}, "plain"]),
+        _doc("n2", run="a", rejudges=None, holder={"rejudges": [{"cost": 1, "prose": "x"}], "prose": "kept"}),
+        _doc("n3", run="a", rejudges={"prose": "an object, not a list"}),
+        _doc("n4", run="a"),
+    )
+    _write(store, *rows)
+    measures: dict[str, GroupMeasure] = {
+        "rejudges": ("values", "rejudges"),
+        "holder": ("values", "holder"),
+        "rows": ("count", None),
+    }
+    narrowing = {"rejudges": ["prose", "keep.prose"], "holder.rejudges": ["prose"]}
+    # Through grouped_narrowed, as the engine asks: a store whose grouped declares exclude_in_items is asked with it and
+    # must narrow, and one written before the parameter is asked without it and narrowed after, so it still passes.
+    groups = grouped_narrowed(
+        _readings(store), _TYPE, _SCOPE, by=["run"], measures=measures, exclude_in_items=narrowing
+    )
+    # The values the store's own narrowed read gives, paired with their rows in its order.
+    narrowed = {row["id"]: row for row in _narrowed(store, exclude_in_items=narrowing, run="a")}
+    order = _ids(store.by_doc_type(_TYPE, _SCOPE, run="a"))
+    _expect_equal(
+        groups,
+        [
+            {
+                "run": "a",
+                "rejudges": [[row_id, narrowed[row_id].get("rejudges")] for row_id in order],
+                "holder": [[row_id, narrowed[row_id].get("holder")] for row_id in order],
+                "rows": 4,
+            }
+        ],
+        "values with exclude_in_items: each list item narrowed as iter_narrowed narrows it, other values whole",
+    )
+    _expect_equal(
+        narrowed["n1"].get("rejudges"),
+        [{"cost": 0.25, "keep": {}}, "plain"],
+        "iter_narrowed's own narrowing of a list field",
+    )
 
 
 def _one_group(store: DocumentStore, measures: Mapping[str, GroupMeasure], **field_eq: Any) -> dict[str, Any]:
@@ -412,6 +460,18 @@ def _sum_int_sums_integers_only(store: DocumentStore, _install: Callable[[Callab
         [{"run": "b", "tokens": 0}],
         "sum_int over a group with no integers",
     )
+    # Past 64 bits the port promises an exact sum or a TypeError, never a sum that wrapped or was rounded: sums that
+    # overflow a signed 64-bit integer, and integers wider than one.
+    wide = (2**62, 2**62, 2**62, -(2**63), 2**64 + 1, -(2**70) - 3, 7)
+    _write(store, *(_doc(f"g{index}", run="wide", tokens=value) for index, value in enumerate(wide)))
+    _write(store, *(_doc(f"h{index}", run="over", tokens=2**62) for index in range(4)))
+    for run, total in (("wide", sum(wide)), ("over", 2**64)):
+        try:
+            answer = _grouped(store, ["run"], {"tokens": ("sum_int", "tokens")}, run=run)
+        except TypeError:
+            # NOSILENT: a refusal is one of the two answers the port allows past 64 bits
+            continue
+        _expect_equal(answer, [{"run": run, "tokens": total}], f"sum_int past 64 bits ({run}), when not refused")
     for run in ("bool", "float", "whole_float", "text"):
         _expect_refused(
             TypeError,
@@ -480,7 +540,7 @@ def _values_come_in_stored_order(store: DocumentStore, _install: Callable[[Calla
 
 #: Values a store that carries numbers through text, or compares with Python's ``==``, would hand back changed: a
 #: double needing 17 significant digits, the largest finite double, negative zero, an integral real beside its
-#: integer, and ``false`` beside ``0``.
+#: integer, ``false`` beside ``0``, and integers at and past the edge of 64 bits.
 _EXACT_VALUES: tuple[Any, ...] = (
     0.1 + 0.2,
     123456789.12345678,
@@ -491,6 +551,9 @@ _EXACT_VALUES: tuple[Any, ...] = (
     1.0,
     0,
     False,
+    2**63,
+    -(2**64) - 1,
+    2**63 - 1,
     "0.1",
     [1, 2.5, {"k": 0.30000000000000004}],
     None,
@@ -526,6 +589,24 @@ def _a_grouping_the_port_does_not_define_is_refused(
     )
     for what, by, measures in refusals:
         _expect_refused(ValueError, partial(_grouped, store, by, measures), f"grouped with {what}")
+
+
+def _reads_are_copies(store: DocumentStore, _install: Callable[[Callable[[], None]], None]) -> None:
+    def stored() -> dict[str, Any]:
+        return _doc("k1", run="a", nested={"v": [1, {"w": 2}]}, scores=[{"value": 1, "notes": {"n": [3]}}])
+
+    _write(store, stored())
+    for row in _narrowed(store, exclude_in_items={"scores": ["reasoning"]}):
+        row["nested"]["v"].append(42)
+        row["nested"]["v"][1]["w"] = 42
+        row["scores"][0]["notes"]["n"].append(42)
+    for group in _grouped(store, ["run"], {"nested": ("values", "nested"), "scores": ("values", "scores")}):
+        for _, value in (*group["nested"], *group["scores"]):
+            if isinstance(value, dict):
+                value["v"].append(42)
+            elif isinstance(value, list):
+                value[0]["notes"]["n"].append(42)
+    _expect_equal(store.get("k1", _SCOPE), stored(), "the stored document after a reader mutated what it was handed")
 
 
 # --- empty answers and failures ---------------------------------------------------------------------
@@ -614,7 +695,8 @@ RESULT_READINGS_CONFORMANCE_CASES: tuple[ResultReadingsConformanceCase, ...] = (
     ),
     ResultReadingsConformanceCase(
         "grouped.sum_int",
-        "sum_int sums JSON integers, skips nulls, gives 0 for none, and refuses booleans and non-integers",
+        "sum_int sums JSON integers, exactly or refused past 64 bits, skips nulls, gives 0 for none, and refuses "
+        "booleans and non-integers",
         _sum_int_sums_integers_only,
     ),
     ResultReadingsConformanceCase(
@@ -630,13 +712,27 @@ RESULT_READINGS_CONFORMANCE_CASES: tuple[ResultReadingsConformanceCase, ...] = (
     ResultReadingsConformanceCase(
         "grouped.values_exact",
         "values gives each value exactly as this store's own by_doc_type returns it: every double to its last bit, "
-        "negative zero, 1 apart from 1.0, false apart from 0, wherever its reads keep them apart",
+        "every integer whole at any width, negative zero, 1 apart from 1.0, false apart from 0, wherever its reads "
+        "keep them apart",
         _values_are_exact,
+    ),
+    ResultReadingsConformanceCase(
+        "grouped.values_narrowed_in_items",
+        "exclude_in_items, where grouped declares it, drops the named paths from each object item of a list in every "
+        "values value, as iter_narrowed drops them, and changes nothing else; a grouped that does not declare it is "
+        "read without it and narrowed after",
+        _values_narrowed_in_items,
     ),
     ResultReadingsConformanceCase(
         "grouped.undefined_grouping_refused",
         "an unknown kind, a count naming a path, a measure naming none, or a measure named as a by path is refused",
         _a_grouping_the_port_does_not_define_is_refused,
+    ),
+    ResultReadingsConformanceCase(
+        "reads.copied_out",
+        "mutating a narrowed row or a grouped value, or any object or list inside it, never reaches the stored "
+        "document",
+        _reads_are_copies,
     ),
     ResultReadingsConformanceCase(
         "empty.answers",
