@@ -87,7 +87,7 @@ _CASTS = {"date_created": "timestamptz", "date_updated": "timestamptz", "status"
 
 
 async def _resumed_page(conn: asyncpg.Connection, by: dict[str, Any], sort: str) -> tuple[str, tuple[Any, ...]]:
-    """the statement the hub's admin listing (``_fetch_paginated_rows``, on keyset_page) sends for the second page of
+    """the statement the hub's admin listing (``fetch_conversation_page``, on keyset_page) sends for the second page of
     one pin, newest / last first: the first page read for real for its cursor, the second captured.
 
     :param conn: the seeded connection

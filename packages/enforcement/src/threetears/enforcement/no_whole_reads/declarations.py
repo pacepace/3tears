@@ -171,7 +171,7 @@ def apply_index_declarations(catalog: SchemaCatalog, path: Path, frozen: Sequenc
     for declaration in declarations.values():
         where = f"{DECLARATIONS_NAME}:{declaration.line} index {declaration.index}"
         if declaration.addition:
-            refusal = _addition_refusal(catalog, declaration, where)
+            refusal = _addition_refusal(catalog, declaration, where, frozen)
             if refusal is not None:
                 findings.append(refusal)
             continue
@@ -225,14 +225,18 @@ def apply_index_declarations(catalog: SchemaCatalog, path: Path, frozen: Sequenc
     return findings
 
 
-def _addition_refusal(catalog: SchemaCatalog, declaration: _Declaration, where: str) -> str | None:
+def _addition_refusal(
+    catalog: SchemaCatalog, declaration: _Declaration, where: str, frozen: Sequence[str]
+) -> str | None:
     """add a purpose-only line's reads to the purpose of the dependency's index it names, or say why it is refused.
 
     A consumer reads a dependency's table through the dependency's index; the dependency declares the index (its DDL,
     purpose and plan test) and cannot name every consumer's read. The consumer's line adds its own reads to that
     index's purpose, so the consumer's gate credits them as keyed by it (each still held to a read that uses it,
     :attr:`SchemaCatalog.added_purposes`). It re-declares nothing, so it is never ``index-declared-twice``; an index
-    the repo itself declares is declared whole instead.
+    the repo itself declares is declared whole instead -- unless every copy of it the repo creates is in a frozen
+    migration and a dependency declares it inline (its purpose and plan test): then the repo's copy is the
+    dependency's index, and the line adds to that (hub #62).
 
     :param catalog: the catalog
     :ptype catalog: SchemaCatalog
@@ -240,6 +244,8 @@ def _addition_refusal(catalog: SchemaCatalog, declaration: _Declaration, where: 
     :ptype declaration: _Declaration
     :param where: the line, as a finding names it
     :ptype where: str
+    :param frozen: repo-relative globs of the frozen migrations
+    :ptype frozen: Sequence[str]
     :return: the refusal, or None when the reads were added
     :rtype: str | None
     """
@@ -253,13 +259,20 @@ def _addition_refusal(catalog: SchemaCatalog, declaration: _Declaration, where: 
             f"{where}: index-ledger-stale -- no declaration the walk read creates it on {declaration.table}: delete "
             "the line"
         )
-    if any(site.local for site in sites):
+    declared = catalog.tables.get(declaration.table)
+    merged = declared.indexes.get(declaration.index) if declared is not None else None
+    local = [site for site in sites if site.local]
+    # the repo's frozen copies carry no notes, so a purpose and plan test the index holds are its dependency's
+    declared_by_dependency = (
+        merged is not None
+        and bool(merged.purpose and merged.plan_test)
+        and not any(site.purpose or site.plan_test or site.reason for site in local)
+    )
+    if local and not (declared_by_dependency and all(_frozen(site.origin, frozen) for site in local)):
         return (
             f"{where}: index-addition-refused -- {declaration.index} is the repo's own: a purpose-only line adds a "
             "consumer's reads to a dependency's index; declare this one whole (purpose= :: plan_test=)"
         )
-    declared = catalog.tables.get(declaration.table)
-    merged = declared.indexes.get(declaration.index) if declared is not None else None
     if merged is None:
         return f"{where}: index-ledger-stale -- {declaration.table} carries no index {declaration.index}"
     added = purposes(declaration.purpose)
