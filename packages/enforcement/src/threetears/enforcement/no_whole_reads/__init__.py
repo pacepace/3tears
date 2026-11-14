@@ -194,7 +194,10 @@ class NoWholeReadsConfig:
         ``Class.method``), or a class's attribute holding one (``SourceTable.relation``), named on ``self`` in its
         class or on a receiver the walk knows is the class (a parameter's or annotated assignment's annotation, a
         loop target over an annotated iterable). A helper reading one is judged as reading ``produced.<entry>`` (a
-        dot ``__``) with those keys, as a declared table is by its own; ``()`` declares one read whole
+        dot ``__``) with those keys, as a declared table is by its own; ``()`` declares one read whole. A producer of a
+        label -> relation mapping (``counts_by_relations``' ``tables``) may declare per label (``{"long":
+        ("data_time",), "*": ("run_id",)}``): each label's relation judged by its own key and the call's ``pins=`` for
+        it, ``"*"`` every other label's
     :ivar helper_modules: repo-relative prefixes of the repo's own reviewed modules that write a data table's SQL
         for the rest of it (``use-the-helper``: :mod:`~threetears.enforcement.no_whole_reads.use_the_helper`), beside
         3tears' own helpers
@@ -277,7 +280,10 @@ class NoWholeReadsConfig:
     foreign_relations: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
     helper_modules: tuple[str, ...] = ()
     caller_judged_modules: tuple[str, ...] = ()
-    relation_producers: Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = field(default_factory=dict)
+    relation_producers: Mapping[
+        str,
+        tuple[str, ...] | tuple[tuple[str, ...], ...] | Mapping[str, tuple[str, ...] | tuple[tuple[str, ...], ...]],
+    ] = field(default_factory=dict)
     public_forwarders: bool = False
     declared_parameters: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     threetears_tables_only: bool = False
@@ -452,8 +458,16 @@ def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
             for key in _keys_of(declared):
                 catalog.add_key(f"{prefix}{name.lower()}", key, "NoWholeReadsConfig")
     for entry, declared in config.relation_producers.items():
-        for key in _keys_of(declared):
-            catalog.add_key(produced_relation(entry), key, "NoWholeReadsConfig.relation_producers")
+        # one key (or keys) for every relation the producer yields, or per label of the mapping it yields: ``"*"``
+        # the default, every other label its own relation's (reports #61)
+        labelled = declared if isinstance(declared, Mapping) else {"*": declared}
+        for label, keys in labelled.items():
+            for key in _keys_of(keys):
+                catalog.add_key(
+                    produced_relation(entry, None if label == "*" else label),
+                    key,
+                    "NoWholeReadsConfig.relation_producers",
+                )
     catalog.marking = False
     catalog.threetears_only = config.threetears_tables_only
     # an index in a frozen migration is declared in the ledger; applied before the walk credits its purpose's read

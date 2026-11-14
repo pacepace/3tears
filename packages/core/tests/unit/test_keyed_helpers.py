@@ -935,6 +935,51 @@ class TestRelations:
         assert counted == {"all": {"k1": 10, "k2": 10}, "low": {"k1": 5, "k2": 5}, "derived": {"k1": 1, "k2": 1}}
         assert len(reader.statements) == 1 and reader.statements[0][0].count(" UNION ALL ") == 2
 
+    async def test_a_relations_own_pins_narrow_only_its_part_of_the_one_statement(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if ``pins=`` is not ANDed into its relation's part alone (the others counted by ``by``/``values``
+        only), the counts differ from the unpinned statement's when every row holds its pinned value, it is split into
+        a second statement (packed too), or a pin naming no relation, the counted column or a ``by`` column passes."""
+        db.execute("CREATE TABLE long_t AS SELECT a, b, v, b % 10 AS slot FROM t")
+        tables = {"all": "t", "long": "long_t"}
+        unpinned = await counts_by_relations(_Recording(db), tables, column="a", values=AnyOf(["k1", "k2"]))
+        reader = _Recording(db)
+        pinned = await counts_by_relations(
+            reader, tables, column="a", values=AnyOf(["k1", "k2"]), pins={"long": {"slot": AnyOf([1, 2], "bigint")}}
+        )
+        assert pinned == unpinned == {"all": {"k1": 10, "k2": 10}, "long": {"k1": 10, "k2": 10}}
+        ((sql, _),) = reader.statements
+        all_part, long_part = sql.split(" UNION ALL ")
+        assert '"slot"' in long_part and '"slot"' not in all_part, sql
+        narrowed = await counts_by_relations(
+            _Recording(db),
+            tables,
+            column="a",
+            values=AnyOf(["k1", "k2"]),
+            pins={"long": {"slot": AnyOf([1], "bigint")}},
+        )
+        assert narrowed == {"all": {"k1": 10, "k2": 10}, "long": {"k1": 10}}
+        packing = _Recording(db)
+        packed = await counts_by_relations(
+            packing,
+            tables,
+            column="a",
+            values=AnyOf(["k1", "k2"]),
+            pins={"long": {"slot": AnyOf([1], "bigint", as_list=True)}},
+            packed_rows=1,
+        )
+        assert packed == narrowed and len(packing.statements) == 1
+        for pins, refused in (
+            ({"other": {"slot": 1}}, "not one of the relations"),
+            ({"long": {"a": "k1"}}, "counted by"),
+            ({"long": {"b": 1}}, "by=, so not again"),
+        ):
+            with pytest.raises(ValueError, match=refused):
+                await counts_by_relations(
+                    _Recording(db), tables, column="a", values=AnyOf(["k1"]), by={"b": 1}, pins=pins
+                )
+
     async def test_a_count_named_by_a_bounded_subquery_needs_no_list_of_values(
         self, db: duckdb.DuckDBPyConnection
     ) -> None:

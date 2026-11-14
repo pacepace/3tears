@@ -240,15 +240,23 @@ _ELEMENT_CONTAINERS: Final = frozenset(
 _MAPPINGS: Final = frozenset({"Mapping", "dict", "MutableMapping"})
 
 
-def produced_relation(entry: str) -> str:
+def produced_relation(entry: str, label: str | None = None) -> str:
     """the relation name a declared relation producer's run-time relations are judged as.
 
     :param entry: the declaration (``SourceTable.relation``, ``derived``)
     :ptype entry: str
-    :return: ``produced.<entry>``, a dot written as ``__``, lower case
+    :param label: for a producer of a mapping declared per label (``{"long": ("data_time",), "*": ("run_id",)}``),
+        the label whose relation it is; None for the declaration's default (``"*"``) or a producer of one relation
+    :ptype label: str | None
+    :return: ``produced.<entry>``, a dot written as ``__``, lower case; a label's ``produced.<entry>__label__<label>``
     :rtype: str
     """
-    return PRODUCED_PREFIX + entry.replace(".", "__").lower()
+    name = PRODUCED_PREFIX + entry.replace(".", "__").lower()
+    return name if label is None else f"{name}{PRODUCED_LABEL}{label.lower()}"
+
+
+#: what joins a per-label producer's relation name to its label (:func:`produced_relation`)
+PRODUCED_LABEL: Final[str] = "__label__"
 
 
 def _generic(node: ast.expr) -> tuple[str, list[ast.expr]]:
@@ -3337,10 +3345,30 @@ class _ModuleWalk(ast.NodeVisitor):
 
         def tables(value: ast.expr) -> ast.expr:
             # a mapping of relations a declared producer yields (``counted_relations(rels)``, reports #55 ask 3):
-            # each relation in it judged by the producer's declared key, as one relation
+            # each relation in it judged by the producer's declared key, as one relation; a producer declared per
+            # label (reports #61: the long relation keyed by ``data_time``, the rest by ``run_id``) is read as each
+            # labelled relation beside the default one, each judged by its own key and its own ``pins=``
             if isinstance(value, ast.Constant) and str(value.value).startswith(PRODUCED_PREFIX):
-                return ast.Dict(keys=[ast.Constant("")], values=[value])
+                labelled = sorted(
+                    name.removeprefix(f"{value.value}{PRODUCED_LABEL}")
+                    for name in self._schema.tables
+                    if name.startswith(f"{value.value}{PRODUCED_LABEL}")
+                )
+                return ast.Dict(
+                    keys=[ast.Constant(""), *(ast.Constant(label) for label in labelled)],
+                    values=[value, *(ast.Constant(f"{value.value}{PRODUCED_LABEL}{label}") for label in labelled)],
+                )
             return value
+
+        def labels(value: ast.expr) -> ast.expr:
+            # ``pins=``' labels as the text each names (``{LONG_RELATION: {...}}``, a module or imported constant)
+            if not isinstance(value, ast.Dict):
+                return literal(value)
+            keys: list[ast.expr | None] = []
+            for key in value.keys:
+                text = None if key is None else _constant_text(key, self._envs[-1])
+                keys.append(key if text is None else ast.Constant(text.lower()))
+            return ast.Dict(keys=keys, values=[literal(pinned) for pinned in value.values])
 
         def target(value: ast.expr) -> ast.expr:
             # a delete's table a declared transient producer names (``self._stage_name(rows_stage)``, reports #56):
@@ -3368,6 +3396,8 @@ class _ModuleWalk(ast.NodeVisitor):
                     if k.arg == "by"
                     else tables(literal(k.value))
                     if mapped and k.arg == "tables"
+                    else labels(k.value)
+                    if mapped and k.arg == "pins"
                     else target(k.value)
                     if deletes and k.arg == "table"
                     else literal(k.value),

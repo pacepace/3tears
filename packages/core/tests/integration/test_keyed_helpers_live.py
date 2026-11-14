@@ -851,6 +851,38 @@ class TestCountsByRelations:
         problem = _budget(f"counts_by_relations of {len(geos)} geographies in 2 relations", took, baseline)
         assert problem is None, problem
 
+    async def test_a_relations_own_pins_count_the_same_rows_in_the_one_statement(self, seeded: _Seeded) -> None:
+        """Flips if ``pins=`` changes what a relation counts when every row holds a pinned value, narrows another
+        relation, or a narrower pin miscounts, on PostgreSQL (the per-key seek) and YugabyteDB (``= ANY``) alike."""
+        await seeded.conn.execute(f"CREATE TABLE results_p AS SELECT *, id % 3 AS slot FROM {_TABLE}")
+        await seeded.conn.execute("ALTER TABLE results_p ADD PRIMARY KEY (state, geo, id)")
+        geos = [f"{g:03d}" for g in range(5, 200, 20)]
+        tables = {"a": _TABLE, "p": "results_p"}
+        try:
+            whole = await counts_by_relations(
+                seeded.conn, tables, column="geo", values=AnyOf(geos, "text"), by={"state": "S50"}
+            )
+            pinned = await counts_by_relations(
+                seeded.conn,
+                tables,
+                column="geo",
+                values=AnyOf(geos, "text"),
+                by={"state": "S50"},
+                pins={"p": {"slot": AnyOf([0, 1, 2], "int")}},
+            )
+            narrowed = await counts_by_relations(
+                seeded.conn,
+                tables,
+                column="geo",
+                values=AnyOf(geos, "text"),
+                by={"state": "S50"},
+                pins={"p": {"slot": 0}},
+            )
+        finally:
+            await seeded.conn.execute("DROP TABLE results_p")
+        assert pinned == whole == {"a": dict.fromkeys(geos, _IDS), "p": dict.fromkeys(geos, _IDS)}
+        assert narrowed == {"a": dict.fromkeys(geos, _IDS), "p": dict.fromkeys(geos, _IDS // 3)}
+
 
 class TestDeleteOldest:
     async def test_a_cache_trim_deletes_its_oldest_rows_within_budget(self) -> None:

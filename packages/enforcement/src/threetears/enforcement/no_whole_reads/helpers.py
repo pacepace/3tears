@@ -95,6 +95,9 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "update_keyed",
         "counts_by_relations",
         "aggregate_keyed",
+        # :func:`threetears.datasources.query_client.read_counted`: the part of a warehouse relation its filters name,
+        # paged by its key (reports #61 R4: judged by those filters against the relation's declared keys)
+        "read_counted",
         "update_before",
         "apply_stage",
         "update_from",
@@ -724,15 +727,18 @@ def _relation(node: ast.expr | None, argument: str) -> tuple[str, list[str]]:
     raise _Unseen(argument)
 
 
-def _count_of(relation: str, column: str, call: ast.Call, *, values: bool) -> str:
-    """a grouped count's statement; ``column`` as the statement spells it (quoted, or a run-time interpolation)."""
+def _count_of(relation: str, column: str, call: ast.Call, *, values: bool, own: ast.expr | None = None) -> str:
+    """a grouped count's statement; ``column`` as the statement spells it (quoted, or a run-time interpolation);
+    ``own``: the relation's own pins (``counts_by_relations``' ``pins=`` for its label), ANDed after the rest."""
     pinned, place = _conditions(_by(_argument(call, "by", None)))
     conditions = [*pinned]
     if values:
         conditions.append(f"{column} = ANY(${place})")
         place += 1
-    filtered, _ = _filters(call, place)
+    filtered, place = _filters(call, place)
     conditions += filtered
+    if own is not None:
+        conditions += _conditions(_by(own, "pins"), first=place)[0]
     return f"SELECT {column}, count(*) FROM {relation} AS r{_where(conditions)} GROUP BY {column}"
 
 
@@ -759,6 +765,26 @@ def _counts_by(call: ast.Call) -> list[str]:
     return [_count_of(relation, column, call, values=values), *own]
 
 
+def _read_counted(call: ast.Call) -> list[str]:
+    """``read_counted(client, datasource, columns=, relation=, key=, rows=, where=, where_in=, not_null=)``: every row
+    of the part its filters name, page after page by its key, so judged as one read of that part -- equalities
+    (``where``), sets (``where_in``, each ``= ANY``) and ``IS NOT NULL`` columns -- against the relation's declared
+    keys; the pages' ``ORDER BY key LIMIT`` read the part whole, so they key nothing of their own."""
+    relation, own = _relation(_argument(call, "relation", None), "relation")
+    conditions, place = _conditions(_by(_argument(call, "where", None), "where"))
+    sets = _argument(call, "where_in", None)
+    if sets is not None and not (isinstance(sets, ast.Constant) and sets.value is None):
+        if not isinstance(sets, ast.Dict) or any(key is None for key in sets.keys):
+            raise _Unseen("where_in")
+        conditions += _conditions([(_text(key, "where_in"), "any") for key in sets.keys if key], first=place)[0]
+    present = _argument(call, "not_null", None)
+    if present is not None:
+        if not isinstance(present, ast.Tuple | ast.List):
+            raise _Unseen("not_null")
+        conditions += [f"{_quoted(_text(column, 'not_null'))} IS NOT NULL" for column in present.elts]
+    return [f"SELECT * FROM {relation} AS r{_where(conditions)}", *own]
+
+
 def _counts_by_relations(call: ast.Call) -> list[str]:
     tables = _argument(call, "tables", 1)
     if not isinstance(tables, ast.Dict) or not tables.values:
@@ -768,10 +794,20 @@ def _counts_by_relations(call: ast.Call) -> list[str]:
     if not values and _argument(call, "where", None) is None and _argument(call, "by", None) is None:
         # counted with nothing narrowing it: every value of the column, whatever the relation
         raise _Unseen("values")
+    pins = _argument(call, "pins", None)
+    if pins is not None and not (isinstance(pins, ast.Constant) and pins.value is None):
+        if not isinstance(pins, ast.Dict) or not all(
+            isinstance(key, ast.Constant) and isinstance(key.value, str) for key in pins.keys
+        ):
+            raise _Unseen("pins")
+        mine = {str(key.value).lower(): value for key, value in zip(pins.keys, pins.values, strict=True) if key}
+    else:
+        mine = {}
     statements: list[str] = []
-    for node in tables.values:
+    for key, node in zip(tables.keys, tables.values, strict=True):
         relation, own = _relation(node, "tables")
-        statements += [_count_of(relation, column, call, values=values), *own]
+        label = str(key.value).lower() if isinstance(key, ast.Constant) and isinstance(key.value, str) else None
+        statements += [_count_of(relation, column, call, values=values, own=mine.get(label or "")), *own]
     return statements
 
 
@@ -1117,6 +1153,7 @@ _SYNTHESIZERS: Final = {
     "update_keyed": _keyed_write,
     "counts_by_relations": _counts_by_relations,
     "aggregate_keyed": _aggregate_keyed,
+    "read_counted": _read_counted,
     "update_before": _update_before,
     "apply_stage": _apply_stage,
     "update_from": _update_from,
@@ -1145,6 +1182,8 @@ _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
         ("table", 1),
     ),
     **dict.fromkeys(("read_changed", "group_hashes", "read_past_marks", "read_packed"), ("relation", 1)),
+    # keyword-only: no position names it
+    "read_counted": ("relation", -1),
     # the keyed writes, and the pure builders a package that may not depend on core sends on its own connection
     **dict.fromkeys(("delete_keyed", "update_keyed"), ("table", 1)),
     **dict.fromkeys(

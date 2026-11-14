@@ -4410,6 +4410,119 @@ def test_a_fragment_chosen_by_a_branch_is_judged_in_each_arm(tmp_path: Path) -> 
     assert counted == {"non-key-where produced.lsfrelations__runs"}, found
 
 
+#: reports #61: the counted relations keyed per label, the long one by ``data_time`` and the rest by ``run_id``
+_COUNTED_PER_LABEL = """
+    from threetears.core import keyed
+
+    LONG = "Projections"
+
+
+    class LsfRelations:
+        runs: str
+
+
+    def counted_relations(relations: LsfRelations) -> dict[str, str]:
+        return {name: relations.relation(name) for name in counted_tables(relations)}
+
+
+    class LsfWarehouse:
+        def __init__(self, reader, *, relations: LsfRelations) -> None:
+            self._reader = reader
+            self._relations = relations
+
+        async def pinned(self, run_ids, times):
+            return await keyed.counts_by_relations(
+                self._reader,
+                counted_relations(self._relations),
+                column="run_id",
+                values=keyed.AnyOf(run_ids),
+                pins={LONG: {"data_time": keyed.AnyOf(times, as_list=True)}},
+            )
+
+        async def unpinned(self, run_ids):
+            return await keyed.counts_by_relations(
+                self._reader, counted_relations(self._relations), column="run_id", values=keyed.AnyOf(run_ids)
+            )
+
+        async def pinned_elsewhere(self, run_ids, times):
+            return await keyed.counts_by_relations(
+                self._reader,
+                counted_relations(self._relations),
+                column="run_id",
+                values=keyed.AnyOf(run_ids),
+                pins={"feeds": {"data_time": keyed.AnyOf(times)}},
+            )
+"""
+
+
+def test_a_producer_declared_per_label_judges_each_relation_by_its_own_key_and_pins(tmp_path: Path) -> None:
+    """Flips if a producer declared per label (reports #61: ``{"projections": ("data_time",), "*": ("run_id",)}``)
+    is judged as one relation: the long relation counted by run_id alone must be the non-key read it is (its key is
+    ``data_time``), and pass once ``pins=`` names its label (a module constant) with ``data_time``; a pin under
+    another label keys nothing of it; the default relation stays keyed by run_id."""
+    producers = {"counted_relations": {"projections": ("data_time",), "*": ("run_id",)}}
+    found = _symbols(_config(tmp_path, {"lsf.py": _COUNTED_PER_LABEL}, relation_producers=producers))
+    by_function: dict[str, set[str]] = {}
+    for function, symbol in found:
+        by_function.setdefault(function, set()).add(symbol)
+    long = "produced.counted_relations__label__projections"
+    assert "LsfWarehouse.pinned" not in by_function, found
+    assert any(long in symbol for symbol in by_function.get("LsfWarehouse.unpinned", ())), found
+    assert any(long in symbol for symbol in by_function.get("LsfWarehouse.pinned_elsewhere", ())), found
+    assert not any(
+        symbol.endswith("produced.counted_relations") for symbols in by_function.values() for symbol in symbols
+    ), found
+    one = _symbols(
+        _config(tmp_path, {"lsf.py": _COUNTED_PER_LABEL}, relation_producers={"counted_relations": ("run_id",)})
+    )
+    assert not one, one
+
+
+#: reports #61 R4: a warehouse part read by read_counted, over a declared producer's relation keyed by run_id
+_READ_COUNTED = """
+    from threetears.datasources.query_client import read_counted
+
+
+    class LsfRelations:
+        def relation(self, name: str) -> str: ...
+
+
+    class LsfWarehouse:
+        def __init__(self, client, relations: LsfRelations) -> None:
+            self._client = client
+            self._relations = relations
+
+        async def read_part(self, run_id, rows):
+            return await read_counted(
+                self._client, "lsf", columns=("run_id", "v"), relation=self._relations.relation("long"),
+                key=("run_id", "v"), rows=rows, where={"run_id": run_id}, not_null=("v",),
+            )
+
+        async def read_runs(self, run_ids, rows):
+            return await read_counted(
+                self._client, "lsf", columns=("run_id",), relation=self._relations.relation("long"),
+                key=("run_id",), rows=rows, where_in={"run_id": run_ids},
+            )
+
+        async def read_ok(self, rows):
+            return await read_counted(
+                self._client, "lsf", columns=("run_id",), relation=self._relations.relation("long"),
+                key=("run_id",), rows=rows, where={"status": "ok"},
+            )
+"""
+
+
+def test_a_read_counted_part_is_judged_by_its_filters_against_its_relations_key(tmp_path: Path) -> None:
+    """Flips if ``read_counted`` (reports #61 R4) passes on any narrowing keyword whatever it narrows by: a part named
+    by the relation's key (an equality or a set) is keyed, one named by another column is the non-key read it is."""
+    found = _symbols(
+        _config(tmp_path, {"lsf.py": _READ_COUNTED}, relation_producers={"LsfRelations.relation": ("run_id",)})
+    )
+    functions = {function for function, _ in found}
+    assert "LsfWarehouse.read_part" not in functions and "LsfWarehouse.read_runs" not in functions, found
+    assert ("LsfWarehouse.read_ok", "non-key-where produced.lsfrelations__relation") in found, found
+
+
 def test_a_producer_s_mapping_with_no_producer_declared_stays_unseen(tmp_path: Path) -> None:
     """Flips if a producer's mapping of relations passes, or is judged against any key, with no producer declared."""
     found = _symbols(_config(tmp_path, {"lsf.py": _COUNTED}))

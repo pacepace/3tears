@@ -25,6 +25,7 @@ part of the key, or an index declared for the caller's read.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import Any, Final, overload
 
 from threetears.core.keyed import _filters
@@ -498,6 +499,7 @@ async def counts_by_relations(
     group: Mapping[str, str] | None = None,
     max_of: Sequence[str] = (),
     fresh: str | None = None,
+    pins: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, dict[Any, int]]: ...
 
 
@@ -518,6 +520,7 @@ async def counts_by_relations(
     group: Mapping[str, str] | None = None,
     max_of: Sequence[str] = (),
     fresh: str | None = None,
+    pins: None = None,
 ) -> dict[str, list[MarkedCount]]: ...
 
 
@@ -537,6 +540,7 @@ async def counts_by_relations(
     group: Mapping[str, str] | None = None,
     max_of: Sequence[str] = (),
     fresh: str | None = None,
+    pins: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, dict[Any, int]] | dict[str, list[MarkedCount]]:
     """:func:`counts_by` over several relations at once: one statement a batch, a ``UNION ALL`` of each relation's
     keyed count, so a warehouse answers every relation in the statements one relation took.
@@ -599,15 +603,24 @@ async def counts_by_relations(
     :param fresh: with ``since``, the stamp (among each relation's marks) past whose mark a group is :attr:`fresh
         <MarkedCount.fresh>`
     :ptype fresh: str | None
+    :param pins: label -> pins ANDed into that relation's part of the statement alone (as ``by``: a value, or an
+        :class:`AnyOf`, ``as_list`` honoured), beside ``by`` and ``where``: a relation keyed by a column the others
+        lack (one sorted by ``data_time`` among ones sorted by ``run_id``) is read by its own key in the same one
+        statement; packed too. Not with ``since``
+    :ptype pins: Mapping[str, Mapping[str, Any]] | None
     :return: label -> value -> its rows; every label present. With ``since``: label -> its groups past the marks
     :rtype: dict[str, dict[Any, int]] | dict[str, list[MarkedCount]]
     :raises ValueError: as :func:`counts_by`, when no relation is named, or packed with neither ``values`` nor
         ``groups``, or ``packed_rows`` under one; with ``since``, when a label has no marks, ``values`` is given, or
-        ``fresh`` is not a stamp of every relation's marks; ``group``, ``max_of`` or ``fresh`` without ``since``
+        ``fresh`` is not a stamp of every relation's marks; ``group``, ``max_of`` or ``fresh`` without ``since``;
+        ``pins`` naming a label ``tables`` does not, pinning ``column`` or a column ``by`` pins, or given with ``since``
     """
     quote_identifier(packed_as)
     if since is None:
         values, by = _counted_pin(column, values, by)
+    own = _own_pins(tables, column, by, pins)
+    if since is not None and own:
+        raise ValueError("pins= narrows a relation's count by its own key: it is not given with since=")
     if since is not None:
         return await _counts_since(
             conn,
@@ -639,10 +652,10 @@ async def counts_by_relations(
     counted: dict[str, dict[Any, int]] = {label: {} for label in labels}
     quoted = quote_identifier(column)
     if packed_rows is not None:
-        await _counts_packed(conn, tables, counted, column, values, where, pinned, packed_rows, groups, packed_as)
+        await _counts_packed(conn, tables, counted, column, values, where, pinned, packed_rows, groups, packed_as, own)
         return counted
     if values is not None and await _counts_each_key(conn, values, pinned):
-        await _counts_seeking(conn, tables, counted, column, values, where, pinned, batch)
+        await _counts_seeking(conn, tables, counted, column, values, where, pinned, batch, own)
         return counted
     if values is None:
         chunks: list[dict[str, Any]] = [{}]
@@ -658,15 +671,59 @@ async def counts_by_relations(
         for fragment in where:
             conditions.append(narrowing(fragment, len(params)))
             params += list(fragment.params)
-        clause = " AND ".join(conditions)
+        clauses = _branch_clauses(labels, conditions, params, own)
         parts = [
             f"SELECT {index} AS relation, {quoted} AS counted, count(*) AS held FROM {relation(tables[label], 'r')} "
-            f"WHERE {clause} GROUP BY {quoted}"
+            f"WHERE {clauses[label]} GROUP BY {quoted}"
             for index, label in enumerate(labels)
         ]
         for row in await sent_by(conn).fetch(" UNION ALL ".join(parts), *params):
             counted[labels[int(row["relation"])]][row["counted"]] = int(row["held"])
     return counted
+
+
+def _own_pins(
+    tables: Mapping[str, str | Derived],
+    column: str,
+    by: Mapping[str, Any] | None,
+    pins: Mapping[str, Mapping[str, Any]] | None,
+) -> dict[str, Mapping[str, Any]]:
+    """``counts_by_relations``' ``pins=`` checked: label -> its own pins, the labels with none left out.
+
+    :raises ValueError: for a label ``tables`` does not name, a pin of the counted column, or of a column ``by`` pins
+    """
+    own: dict[str, Mapping[str, Any]] = {}
+    for label, pinned in (pins or {}).items():
+        if label not in tables:
+            raise ValueError(f"pins= names {label!r}, which is not one of the relations counted")
+        for name in pinned:
+            if name == column:
+                raise ValueError(f"{column} is counted by, so it is not also pinned")
+            if name in (by or {}):
+                raise ValueError(f"{name} is pinned in every relation by by=, so not again for {label!r}")
+        if pinned:
+            own[label] = pinned
+    return own
+
+
+def _branch_clauses(
+    labels: Sequence[str],
+    conditions: Sequence[str],
+    params: list[Any],
+    own: Mapping[str, Mapping[str, Any]],
+    *,
+    alias: str | None = None,
+) -> dict[str, str]:
+    """each relation's ``WHERE``: the shared ``conditions``, then its own pins (``pins=``), their values appended to
+    ``params`` (one list for the whole ``UNION ALL``) and numbered after them."""
+    clauses: dict[str, str] = {}
+    for label in labels:
+        extra: list[str] = []
+        if label in own:
+            extra, values = by_conditions(own[label], first=len(params) + 1, alias=alias)
+            params += values
+        clauses[label] = " AND ".join([*conditions, *extra])
+    return clauses
 
 
 async def _counts_each_key(conn: Any, values: AnyOf, pinned: Mapping[str, Any]) -> bool:
@@ -689,6 +746,7 @@ async def _counts_seeking(
     where: Sequence[Fragment],
     pinned: Mapping[str, Any],
     batch: int,
+    own: Mapping[str, Mapping[str, Any]] = MappingProxyType({}),
 ) -> None:
     """count each value's rows with a seek of its own: ``FROM unnest($n::<cast>[]) AS counted_keys(counted_key) CROSS JOIN
     LATERAL (SELECT count(*) ... WHERE <by> AND column = counted_key)``, a value with no row answering none.
@@ -707,11 +765,14 @@ async def _counts_seeking(
             params += list(fragment.params)
         params.append(unique[start : start + size])
         keys = f"unnest(${len(params)}::{values.cast}[]) AS counted_keys(counted_key)"
-        clause = " AND ".join([*conditions, f"r.{quoted} = counted_keys.counted_key"])
         labels = list(tables)
+        clauses = _branch_clauses(
+            labels, [*conditions, f"r.{quoted} = counted_keys.counted_key"], params, own, alias="r"
+        )
         parts = [
             f"SELECT {index} AS relation, counted_keys.counted_key AS counted, c.held FROM {keys} CROSS JOIN LATERAL "
-            f"(SELECT count(*) AS held FROM {relation(tables[label], 'r')} WHERE {clause}) AS c WHERE c.held > 0"
+            f"(SELECT count(*) AS held FROM {relation(tables[label], 'r')} WHERE {clauses[label]}) AS c "
+            "WHERE c.held > 0"
             for index, label in enumerate(labels)
         ]
         for row in await sent_by(conn).fetch(" UNION ALL ".join(parts), *params):
@@ -738,6 +799,7 @@ async def _counts_packed(
     packed_rows: int,
     groups: int | None,
     packed_as: str = "packed",
+    own: Mapping[str, Mapping[str, Any]] = MappingProxyType({}),
 ) -> None:
     """every group of every relation counted in one statement, its texts packed several to a row (into ``counted``).
 
@@ -763,13 +825,13 @@ async def _counts_packed(
     for fragment in where:
         conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
-    clause = " AND ".join(conditions)
+    clauses = _branch_clauses(labels, conditions, params, own)
     quoted = quote_identifier(column)
     alias = quote_identifier(packed_as)
     texts = " UNION ALL ".join(
         f"SELECT '{index}' || CHR(31) || {_nullable_text(quoted)} || CHR(31) || CAST(count(*) AS {_PACKED_TEXT}) "
         f"AS {alias} "
-        f"FROM {relation(tables[label], 'r')} WHERE {clause} GROUP BY {quoted}"
+        f"FROM {relation(tables[label], 'r')} WHERE {clauses[label]} GROUP BY {quoted}"
         for index, label in enumerate(labels)
     )
     for fields in await _packed_rows(conn, texts, params, items, packed_rows, alias):
