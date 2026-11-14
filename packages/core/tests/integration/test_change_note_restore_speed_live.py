@@ -1,8 +1,9 @@
 """Integration: putting a lost change log back reads its coverage within twice the bare reads of it.
 
 A restore reads every note of the coverage (the current and the previous ring tables): ``_count_since`` counts
-them, ``_estimate`` sizes their records in the database, and ``_StreamedChanges._stream`` reads the whole-table notes
-and then the distinct keyed ones (declared ``whole_read(kind="cold_start")``, Pace 2026-11-14; the proof that only a
+them and bounds their records' size, ``_estimate`` sizes the distinct rows in the database only when that bound does
+not fit the log, and ``_StreamedChanges._stream`` reads the whole-table notes and then the keyed ones, folded to the
+distinct rows (declared ``whole_read(kind="cold_start")``, Pace 2026-11-14; the proof that only a
 restore reaches them is ``tests/unit/collections/test_change_note_restore_reads.py``). This seeds the current table
 with a night's notes, loses the log, and times the keeper's pass that restores it against the bare reads a restore
 needs on the same database: one count, one sized distinct read, and one read of every note.

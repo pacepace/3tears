@@ -111,6 +111,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 import asyncpg
+from pydantic import TypeAdapter
 from threetears.nats.change_log import ChangeLogState
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter, gauge
@@ -297,8 +298,12 @@ _KEY_SEPARATOR: Final = "\x1f"
 #: notes read per round trip when a restore streams the coverage
 _RESTORE_PAGE: Final = 5000
 
-#: distinct rows of one table per change a restore streams: the most it holds at once
+#: distinct rows of one table per change a restore streams: the most it holds at once (a chunk is cut only where the
+#: key changes, so a key noted with several invalidation columns may carry it a few past)
 _RESTORE_CHUNK_ROWS: Final = 5000
+
+#: a restored chunk's rows, validated as one list (:func:`_changed`)
+_CHANGED_ROWS: Final = TypeAdapter(list[ChangedRow])
 
 #: a restored row's bytes in its record beyond its key and columns, as the restore's estimate: generous,
 #: so a restore chosen to fit does fit
@@ -1577,8 +1582,8 @@ class ChangeNoteKeeper:
         began = time.monotonic()
         state = await self._log.log_state()
         budget = None if state is None or not state.max_bytes else state.max_bytes * RESTORE_BUDGET_RATIO - state.bytes
-        total = await self._count_since(ring, None)
-        chosen = await self._fitting(ring, lost, covered, budget)
+        total, bound = await self._count_since(ring, None)
+        chosen = await self._fitting(ring, lost, covered, budget, bound)
         if chosen is None:
             _RESTORES_REFUSED.inc()
             log.error(
@@ -1592,7 +1597,7 @@ class ChangeNoteKeeper:
             self._seen = None
             return None
         floor, since = chosen
-        kept = total if since is None else await self._count_since(ring, since)
+        kept = total if since is None else (await self._count_since(ring, since))[0]
         # streamed a page at a time, so the keeper's memory follows one change, not the coverage; should the log
         # have grown past the estimate meanwhile, finish_restore stops unlabelled and the next pass sizes again
         changes = self._changes_since(ring, since)
@@ -1643,20 +1648,33 @@ class ChangeNoteKeeper:
         )
         return incarnation
 
-    async def _count_since(self, ring: NoteRingState, since: datetime | None) -> int:
-        """how many notes of the coverage were written at or after ``since`` (all of them for ``None``).
+    async def _count_since(self, ring: NoteRingState, since: datetime | None) -> tuple[int, int]:
+        """how many notes of the coverage were written at or after ``since`` (all of them for ``None``), and a bound
+        no smaller than :meth:`_estimate` of them.
+
+        The bound sizes every note as :meth:`_estimate` sizes a distinct row (a row noted twice counted twice), so it
+        is never below the estimate: when it fits the budget the estimate does too, and the restore needs no read of
+        the distinct rows to know it. Summed per table, so the table count needs no sort of the notes.
+
+        WHY (o97, 2026-11-14, test_change_note_restore_speed_live at 200,000 notes): the count and the estimate were
+        two reads of the coverage, ~8 ms + ~68 ms on PG 16 and ~56 ms + ~105 ms on YugabyteDB, the estimate's distinct
+        rows a hash aggregate spilling to disk; this one read, grouped by table alone, answers both when the
+        coverage fits, as a restore's coverage nearly always does (the ring switches at half the restore budget).
 
         :param ring: the ring
         :ptype ring: NoteRingState
         :param since: the cut
         :ptype since: datetime | None
-        :return: the count
-        :rtype: int
+        :return: ``(notes, bound)``
+        :rtype: tuple[int, int]
         """
         rows = await whole_read(
             self._pool.fetch(
-                f"SELECT count(*) AS notes FROM {_coverage_sql(self._owner, ring.current, ring.previous)} n "  # noqa: S608 - trusted identifiers
-                "WHERE $1::timestamptz IS NULL OR n.noted_at >= $1",
+                "SELECT coalesce(sum(g.notes), 0) AS notes, count(*) AS tables, coalesce(sum(g.bytes), 0) AS bytes "  # noqa: S608 - trusted identifiers
+                "FROM (SELECT table_name, count(*) AS notes, sum(length(table_name) + coalesce(length(key_text), 0) "
+                "+ coalesce(length(columns::text), 0)) AS bytes "
+                f"FROM {_coverage_sql(self._owner, ring.current, ring.previous)} n "
+                "WHERE $1::timestamptz IS NULL OR n.noted_at >= $1 GROUP BY table_name) g",
                 since,
             ),
             kind="restore",
@@ -1665,7 +1683,11 @@ class ChangeNoteKeeper:
             proof="packages/core/tests/unit/collections/test_change_note_restore_reads.py::test_the_coverage_is_read_whole_only_by_a_restore",
             speed="packages/core/tests/integration/test_change_note_restore_speed_live.py::test_a_restore_reads_its_coverage_within_twice_the_bare_reads",
         )
-        return int(rows[0]["notes"])
+        row = rows[0]
+        notes = int(row["notes"])
+        return notes, (
+            int(row["bytes"]) + notes * _RESTORED_ROW_ESTIMATE + int(row["tables"]) * _RESTORED_TABLE_ESTIMATE
+        )
 
     async def _estimate(self, ring: NoteRingState, since: datetime | None) -> int:
         """the bytes the records of the coverage's notes since ``since`` would take, estimated in the database.
@@ -1704,7 +1726,7 @@ class ChangeNoteKeeper:
         )
 
     async def _fitting(
-        self, ring: NoteRingState, lost: str, covered: int | None, budget: float | None
+        self, ring: NoteRingState, lost: str, covered: int | None, budget: float | None, bound: int
     ) -> tuple[int | None, datetime | None] | None:
         """the oldest-reaching part of the coverage whose records fit ``budget``: its floor and its cut.
 
@@ -1721,11 +1743,14 @@ class ChangeNoteKeeper:
         :ptype covered: int | None
         :param budget: the bytes the restore may take; ``None`` unbounded
         :ptype budget: float | None
+        :param bound: a size no smaller than the whole coverage's estimate (:meth:`_count_since`): when it fits, the
+            whole coverage does, unsized
+        :ptype bound: int
         :return: ``(floor, cut)``, the cut ``None`` for the whole coverage; ``None`` when not even the newest
             part fits
         :rtype: tuple[int | None, datetime | None] | None
         """
-        if budget is None or await self._estimate(ring, None) <= budget:
+        if budget is None or bound <= budget or await self._estimate(ring, None) <= budget:
             return covered, None
         lag = self._wait(ring) / 2
         marks = [(int(mark["seq"]), mark["at"] - lag) for mark in await self.marks_past(lost, covered)]
@@ -1914,10 +1939,14 @@ class _StreamedChanges:
     async def _stream(self) -> AsyncIterator[NotedChange]:
         async with self._pool.acquire() as conn, conn.transaction():
             reaches: dict[tuple[str, str | None], list[Any]] = {}
+            # the whole notes that cover their tenant's rows (a load's names only its prefixes): read here once, so
+            # the keyed read below leaves those rows out against this short list, not a second read of the coverage
+            covering: dict[tuple[str, str | None], None] = {}
             for row in await whole_read(
                 conn.fetch(
                     # a whole note's columns are its write's reach (NOTE_REACH_SETTING): a load's prefixes, a reset
-                    f"SELECT DISTINCT table_name, tenant, columns::text AS reach FROM {_coverage_sql(self._owner, self._current, self._previous)} n "  # noqa: S608 - trusted identifiers
+                    f"SELECT DISTINCT table_name, tenant, columns::text AS reach, "  # noqa: S608 - trusted identifiers
+                    f"(columns IS NULL OR NOT columns ? 'prefixes') AS covers FROM {_coverage_sql(self._owner, self._current, self._previous)} n "
                     "WHERE n.key_text IS NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1)",
                     self._since,
                 ),
@@ -1929,22 +1958,31 @@ class _StreamedChanges:
             ):
                 pair = (str(row["table_name"]), None if row["tenant"] is None else str(row["tenant"]))
                 reaches.setdefault(pair, []).append(row["reach"])
+                if row["covers"]:
+                    covering[pair] = None
             for noted, tenant in sorted(reaches, key=lambda pair: (pair[0], pair[1] or "")):
                 self.tables += 1
                 # a whole-table change carries no row: under its schema for a schema table, else on _all
                 yield _whole_change(noted, tenant, reaches[(noted, tenant)])
             # a row its tenant's whole-table change (or the table's _all one) already covers is not named again; a
-            # load's names only its prefixes, so a row beside them is named (one inside them twice, which is harmless)
-            cursor = whole_read(
+            # load's names only its prefixes, so a row beside them is named (one inside them twice, which is harmless).
+            # WHY no DISTINCT and the byte ("C") order (o97, 2026-11-14, test_change_note_restore_speed_live at 200k
+            # notes, PG 16 best of 5): the old DISTINCT + NOT EXISTS over a second read of the coverage, sorted in the
+            # database's collation, took ~330 ms of the statement alone (a hash aggregate and a locale sort, both
+            # spilling) against ~90 ms for the bare read of every note; this read sorted in byte order takes ~180 ms.
+            # Grouping needs only equal values next to each other, which any order gives, and byte order skips the
+            # locale's comparisons. The fold below drops a row noted twice: equal keys are next to each other, and a
+            # chunk is cut only where the key changes, so a restored change names each distinct row once, as before.
+            cursor = await whole_read(
                 conn.cursor(
-                    f"SELECT DISTINCT table_name, tenant, key_text, keys, columns FROM {_coverage_sql(self._owner, self._current, self._previous)} n "  # noqa: S608 - trusted identifiers
+                    f"SELECT table_name, tenant, key_text, keys, columns FROM {_coverage_sql(self._owner, self._current, self._previous)} n "  # noqa: S608 - trusted identifiers
                     "WHERE n.key_text IS NOT NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1) "
-                    f"AND NOT EXISTS (SELECT 1 FROM {_coverage_sql(self._owner, self._current, self._previous)} w WHERE w.key_text IS NULL "
-                    "AND w.table_name = n.table_name AND (w.tenant IS NULL OR w.tenant = n.tenant) "
-                    "AND (w.columns IS NULL OR NOT w.columns ? 'prefixes') "
-                    "AND ($1::timestamptz IS NULL OR w.noted_at >= $1)) ORDER BY table_name, tenant",
+                    "AND NOT EXISTS (SELECT 1 FROM unnest($2::text[], $3::text[]) w(table_name, tenant) "
+                    "WHERE w.table_name = n.table_name AND (w.tenant IS NULL OR w.tenant = n.tenant)) "
+                    'ORDER BY n.table_name COLLATE "C", n.tenant COLLATE "C", n.key_text COLLATE "C"',
                     self._since,
-                    prefetch=_RESTORE_PAGE,
+                    [noted for noted, _ in covering],
+                    [tenant for _, tenant in covering],
                 ),
                 kind="restore",
                 reason="a lost change log is put back from every note of the ring's coverage, its current and previous slots",
@@ -1952,20 +1990,36 @@ class _StreamedChanges:
                 proof="packages/core/tests/unit/collections/test_change_note_restore_reads.py::test_the_coverage_is_read_whole_only_by_a_restore",
                 speed="packages/core/tests/integration/test_change_note_restore_speed_live.py::test_a_restore_reads_its_coverage_within_twice_the_bare_reads",
             )
-            group: tuple[str, str | None] | None = None
-            rows: dict[tuple[tuple[str, ...], tuple[tuple[str, str | None], ...]], None] = {}
-            async for note in cursor:
-                name = str(note["table_name"])
-                tenant = None if note["tenant"] is None else str(note["tenant"])
-                if group is not None and (group != (name, tenant) or len(rows) >= _RESTORE_CHUNK_ROWS):
-                    yield _change(group[0], rows, group[1])
-                    rows = {}
-                if group is None or group[0] != name:
-                    self.tables += 1
-                group = (name, tenant)
-                rows[(tuple(str(key) for key in note["keys"]), _columns_of(note["columns"]))] = None
-            if group is not None and rows:
-                yield _change(group[0], rows, group[1])
+            table: str | None = None
+            held_tenant: str | None = None
+            last: str | None = None
+            first: tuple[tuple[str, str | None], ...] = ()
+            others: set[tuple[tuple[str, str | None], ...]] | None = None
+            held: list[dict[str, Any]] = []
+            while batch := await cursor.fetch(_RESTORE_PAGE):
+                for noted, owner, key_text, keys, raw in batch:
+                    columns = () if raw is None else _columns_of(raw)
+                    if noted != table or owner != held_tenant:
+                        if held:
+                            yield _changed(table, held, held_tenant)
+                            held = []
+                        if noted != table:
+                            self.tables += 1
+                        table, held_tenant, last, first, others = noted, owner, key_text, columns, None
+                    elif key_text != last:
+                        if len(held) >= _RESTORE_CHUNK_ROWS:
+                            yield _changed(table, held, held_tenant)
+                            held = []
+                        last, first, others = key_text, columns, None
+                    elif columns == first or (others is not None and columns in others):
+                        continue  # the same row noted again
+                    elif others is None:
+                        others = {first, columns}
+                    else:
+                        others.add(columns)
+                    held.append({"ids": keys, "columns": dict(columns) if columns else None, "tenant": owner})
+            if held:
+                yield _changed(table, held, held_tenant)
 
 
 def _whole_change(table: str, tenant: str | None, reaches: Sequence[Any]) -> NotedChange:
@@ -2009,28 +2063,24 @@ def _whole_change(table: str, tenant: str | None, reaches: Sequence[Any]) -> Not
     )
 
 
-def _change(
-    table: str, rows: dict[tuple[tuple[str, ...], tuple[tuple[str, str | None], ...]], None], tenant: str | None
-) -> NotedChange:
-    """one table's folded rows of one tenant as a change.
+def _changed(table: str | None, rows: list[dict[str, Any]], tenant: str | None) -> NotedChange:
+    """one table's folded rows of one tenant as a change, the rows validated as one list.
 
-    :param table: the table
-    :ptype table: str
-    :param rows: each distinct row: its keys and its invalidation columns
-    :ptype rows: dict[tuple[tuple[str, ...], tuple[tuple[str, str | None], ...]], None]
+    WHY one list (o97, 2026-11-14): a :class:`ChangedRow` built a row at a time costs ~0.7 us in pydantic, ~130 ms
+    of a 195,000-row restore; one ``validate_python`` of the chunk's list makes the same models, checked the same
+    way, in ~0.45 us a row.
+
+    :param table: the table (never ``None``: a change is made only once a row of it was read)
+    :ptype table: str | None
+    :param rows: each distinct row: its ``ids``, its invalidation ``columns`` and its ``tenant``
+    :ptype rows: list[dict[str, Any]]
     :param tenant: the rows' tenant, ``None`` for ``_all``
     :ptype tenant: str | None
     :return: the change
     :rtype: NotedChange
     """
-    return NotedChange(
-        table=table,
-        tenant=tenant,
-        rows=tuple(
-            ChangedRow(ids=list(ids), columns=dict(columns) if columns else None, tenant=tenant)
-            for ids, columns in rows
-        ),
-    )
+    assert table is not None  # narrow: the stream makes a change only after reading a row of its table
+    return NotedChange(table=table, tenant=tenant, rows=tuple(_CHANGED_ROWS.validate_python(rows)))
 
 
 @dataclass(frozen=True, slots=True)
