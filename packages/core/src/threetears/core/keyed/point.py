@@ -23,6 +23,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Literal, overload
 
 from threetears.core.keyed._filters import Fragment, Lock, Selected, sent_by
+from threetears.core.keyed.page import yugabyte_index_hint
 from threetears.interfaces.keyed.page import Sort
 from threetears.interfaces.keyed.point import read_by_statement, read_row_statement
 
@@ -100,6 +101,8 @@ async def read_by(
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
     sql, params = read_by_statement(table, by=by, columns=columns, lock=lock, where=where, order=order)
+    # on YugabyteDB, an ordered read names the declared index that serves its pins and order
+    sql = (await yugabyte_index_hint(conn, table, by, order)) + sql
     rows = list(await sent_by(conn).fetch(sql, *params))
     return rows if records else [dict(row) for row in rows]
 

@@ -22,7 +22,7 @@ from typing import Any
 import asyncpg
 import pytest
 
-from threetears.core.keyed import Sort, keyset_page
+from threetears.core.keyed import DeclaredIndex, Sort, keyset_page, register_table_indexes
 from threetears.core.testing.plans import PlanRecorder
 from threetears.interfaces.keyed import keyset_cursor
 
@@ -32,6 +32,13 @@ pytestmark = pytest.mark.integration
 _TENANT = 1
 _ROWS = 5000
 _LIMIT = 20
+
+# the table's declaration, as its TableSchema would register it: a page names nl_label to YugabyteDB, whose planner
+# otherwise read the primary key (tenant, id) filtering the label
+register_table_indexes(
+    "nl",
+    [DeclaredIndex("nl_pkey", ("tenant", "id"), primary=True), DeclaredIndex("nl_label", ("tenant", "label", "id"))],
+)
 
 
 @pytest.fixture(params=[997, 23], ids=["few-ties", "many-ties"])

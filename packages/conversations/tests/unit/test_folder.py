@@ -588,7 +588,12 @@ class TestConversationFolderId:
             l3[str(row["conversation_id"])] = dict(row)
 
         pg = _make_conversation_pg_mock(l3)
-        pg.fetch = AsyncMock(return_value=rows)
+
+        async def fetch(sql: str, *_params: Any) -> list[dict[str, Any]]:
+            # a pool answers its database's version (the ordered read's YugabyteDB probe) as PostgreSQL's
+            return [{"v": "PostgreSQL 16.4"}] if sql.startswith("SELECT version()") else rows
+
+        pg.fetch = AsyncMock(side_effect=fetch)
 
         # record the rows pushed to L2 so the test can prove the
         # cache-coherent write path ran (not just a raw L3 UPDATE).
@@ -658,8 +663,10 @@ class TestConversationFolderId:
         result = await collection.find_by_folder(agent_id, folder_id)
 
         assert result == []
-        pg.fetch.assert_called_once()
-        sql, *params = pg.fetch.call_args.args
+        # an ordered read asks the pool's database once (a YugabyteDB probe, keyed.yugabyte_index_hint): the read is
+        # the one statement besides it
+        (read,) = [call for call in pg.fetch.call_args_list if not call.args[0].startswith("SELECT version()")]
+        sql, *params = read.args
         assert 't."agent_id" = $1' in sql
         assert 't."folder_id" = $2' in sql
         assert 'ORDER BY t."date_created" DESC' in sql

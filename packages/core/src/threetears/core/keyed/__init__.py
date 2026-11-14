@@ -101,7 +101,14 @@ from threetears.core.keyed.probes import access_probe_sql, probe_access
 from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_past_marks
 from threetears.core.keyed.options import with_options
 from threetears.core.keyed.point import read_by, read_row, read_value
-from threetears.interfaces.keyed.keys import TableKey, register_table_keys
+from threetears.interfaces.keyed.keys import (
+    DeclaredIndex,
+    TableKey,
+    index_hint,
+    register_table_indexes,
+    register_table_keys,
+    serving_index,
+)
 from threetears.core.keyed.page import KeyPage, Sort, copy_keyed, exists_keyed, keyset_cursor, keyset_page, keyset_rows
 from threetears.core.keyed.rows import (
     ANY_ROWS_CAP,
@@ -165,11 +172,14 @@ from threetears.core.keyed.writes import (
 
 __all__ = [
     "TableKey",
+    "register_table_indexes",
     "register_table_keys",
     "by_conditions",
     "narrowing",
     "renumbered",
     "selected_column",
+    "serving_index",
+    "index_hint",
     "SQL_DIALECT_ATTRIBUTE",
     "dialect_of",
     "row_hash_selected",
@@ -188,6 +198,7 @@ __all__ = [
     "AnyOf",
     "BoundedCount",
     "Count",
+    "DeclaredIndex",
     "Derived",
     "Dialect",
     "Fragment",

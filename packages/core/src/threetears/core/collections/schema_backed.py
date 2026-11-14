@@ -51,7 +51,14 @@ from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
-from threetears.interfaces.keyed.keys import TableKey, not_null_predicate, null_predicate, register_table_keys
+from threetears.interfaces.keyed.keys import (
+    DeclaredIndex,
+    TableKey,
+    not_null_predicate,
+    null_predicate,
+    register_table_indexes,
+    register_table_keys,
+)
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core.backends.protocol import (
     ANALYZE_AFTER_ROWS,
@@ -1157,6 +1164,26 @@ class TableSchema:
         self._validate_l2_order(pk_cols, by_name)
         # the keys a keyset read of this table must hold (its order and pins), for the pagers' run-time refusal
         register_table_keys(self.name, self._declared_keys(pk_cols, partition_column))
+        # the indexes a keyed read of it names to YugabyteDB, whose planner prefers the primary key (keys.serving_index)
+        register_table_indexes(self.name, self._declared_indexes(pk_cols))
+
+    def _declared_indexes(self, pk_cols: tuple[str, ...]) -> list[DeclaredIndex]:
+        """the B-tree indexes a keyed read's pins and order can be served by: the primary key, and each declared index
+        with no predicate, operator class, collation or other access method (a read must state a partial index's
+        predicate, and a collated or other index orders by something else).
+
+        :param pk_cols: the primary key's columns
+        :ptype pk_cols: tuple[str, ...]
+        :return: the indexes
+        :rtype: list[DeclaredIndex]
+        """
+        indexes = [DeclaredIndex("primary_key", pk_cols, primary=True)] if pk_cols else []
+        indexes.extend(
+            DeclaredIndex(index.name, tuple(index.columns), frozenset(index.desc))
+            for index in self.indexes
+            if index.where is None and index.using is None and not index.ops and not index.collate
+        )
+        return indexes
 
     def _declared_keys(self, pk_cols: tuple[str, ...], partition_column: str | None) -> list[TableKey]:
         """the keys this declaration says the table holds: its primary key, each ``UNIQUE`` constraint, each unique

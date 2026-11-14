@@ -576,8 +576,10 @@ class TestFindByRef:
         agent_id = uuid7()
         await collection.find_by_ref(agent_id, "scriob-object-chat", "midnight:character:chr-eli")
 
-        pg.fetch.assert_called_once()
-        sql, *params = pg.fetch.call_args.args
+        # an ordered read asks the pool's database once (a YugabyteDB probe, keyed.yugabyte_index_hint): the read is
+        # the one statement besides it
+        (read,) = [call for call in pg.fetch.call_args_list if not call.args[0].startswith("SELECT version()")]
+        sql, *params = read.args
         assert 't."agent_id" = $1' in sql
         assert 't."channel_type" = $2' in sql
         assert 't."conversation_ref" = $3' in sql

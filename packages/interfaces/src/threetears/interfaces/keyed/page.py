@@ -445,6 +445,7 @@ def page_statement(
     *,
     seek_legs: bool = False,
     chain_legs: bool = True,
+    hint: str = "",
 ) -> tuple[str, list[Any]]:
     """one page's statement: ``rows`` rows past ``past`` (the last row's sort values, as text where cast; the first
     page when None), and its parameters.
@@ -476,6 +477,9 @@ def page_statement(
     :param chain_legs: each leg asks only the rows the legs before it left short (:func:`_chained`); a reader whose
         engine may not take a ``LIMIT`` read from a subquery (a warehouse) passes False, and each leg asks a page
     :ptype chain_legs: bool
+    :param hint: the statement's first words, the index it reads its table by
+        (:func:`~threetears.interfaces.keyed.keys.index_hint`, YugabyteDB); none when empty
+    :ptype hint: str
     :return: the statement, and its parameters
     :rtype: tuple[str, list[Any]]
     :raises ValueError: for a sort whose ``nulls`` puts its NULLs anywhere but where a page steps past them (as the
@@ -552,7 +556,7 @@ def page_statement(
         sql = f"SELECT * FROM ({union}) AS u ORDER BY {outer} LIMIT {rows}"
     if lock is not None:
         sql += lock.of("t")
-    return sql, params
+    return hint + sql, params
 
 
 def _bound(sort: Sort, value: Any) -> Any:

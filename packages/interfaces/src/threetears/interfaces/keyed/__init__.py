@@ -64,7 +64,14 @@ from threetears.interfaces.keyed.rows import (
     keyed_read_statement,
     read_keyed_statements,
 )
-from threetears.interfaces.keyed.keys import TableKey, register_table_keys
+from threetears.interfaces.keyed.keys import (
+    DeclaredIndex,
+    TableKey,
+    index_hint,
+    register_table_indexes,
+    register_table_keys,
+    serving_index,
+)
 from threetears.interfaces.keyed.page import (
     CursorError,
     KeyPage,
@@ -125,6 +132,7 @@ from threetears.interfaces.keyed.changed import (
 
 __all__ = [
     "TableKey",
+    "register_table_indexes",
     "register_table_keys",
     "ANY_ROWS_CAP",
     "AnyOf",
@@ -134,6 +142,7 @@ __all__ = [
     "CursorError",
     "DEFAULT_KEY_BATCH",
     "DIRECT_KEY_BATCH",
+    "DeclaredIndex",
     "Derived",
     "Dialect",
     "Fragment",
@@ -201,6 +210,8 @@ __all__ = [
     "rows_affected",
     "seeks_by_row",
     "selected_column",
+    "serving_index",
+    "index_hint",
     "sqlite_numbered",
     "update_before_statement",
     "update_keyed_statements",

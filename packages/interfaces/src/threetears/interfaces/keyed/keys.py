@@ -26,6 +26,28 @@ judging it by another table's keys could refuse a read that holds its own key (a
 The refusal never refuses what the declarations cannot prove: a relation no declaration registers (a derived one, a
 warehouse's, one whose collection names it per instance) passes, and so does a unique index whose predicate is
 anything but one ``IS NOT NULL`` or ``IS NULL``. The static rule stays the gate; this catches the order a run builds.
+
+**Indexes, and the one a read names to YugabyteDB** (:func:`serving_index`, :func:`index_hint`).
+YugabyteDB's planner costs a secondary index it would have to read the table through above the primary key, even when
+the primary key holds only the read's tenant and the secondary index holds the tenant, the read's other pins and its
+order. One agent's conversations of one status, newest first: the primary key ``(agent_id, conversation_id)`` filtering
+the status read 13-17 rows for a page of 9, against 9 through ``(agent_id, status, conversation_id)``; it chose so on
+every one of 15 fresh worlds, its estimate one row whatever the statistics said (``ANALYZE`` and
+``yb_enable_optimizer_statistics`` on or off). So a keyed read names the index its declaration says serves it, as
+pg_hint_plan reads a statement's first comment: ``/*+ IndexOnlyScan(t <index>) */``, an index-only scan where the index
+holds every column read, else an index scan of that same index.
+
+What registers: each ``TableSchema`` (``threetears.core.collections.schema_backed``) on construction, its primary key
+and each plain B-tree index it declares (no predicate, no operator class, no collation, no other access method). A table
+is known by its identity, as for its keys: ``schema.table`` when declared so, else the bare name the search path
+finds.
+
+Which index serves a read (:func:`serving_index`): one whose leading columns are each pinned to one value by the read
+(``by``; a set, ``AnyOf``, is no single value), followed by the read's sort columns in its order (a sort column ``by``
+pins is a constant, and orders nothing), every one in the sort's direction or every one against it (a backward scan).
+Of those, the one holding the most pins; then the fewest columns; the primary key over a secondary index holding as
+many, which needs no hint. No index at all for a relation no declaration registers, a sort by an expression, or a read
+with nothing left to sort by.
 """
 
 from __future__ import annotations
@@ -39,11 +61,15 @@ from threetears.interfaces.keyed.filters import AnyOf
 from threetears.interfaces.keyed.page import Sort
 
 __all__ = [
+    "DeclaredIndex",
     "TableKey",
+    "index_hint",
     "not_null_predicate",
     "null_predicate",
     "refuse_non_unique_order",
+    "register_table_indexes",
     "register_table_keys",
+    "serving_index",
 ]
 
 
@@ -226,3 +252,117 @@ def refuse_non_unique_order(table: Any, by: Mapping[Any, Any], order: Sequence[S
         f"({', '.join(sort.column for sort in order)}) holds none of its keys {named}: every row sharing a page's "
         "last order values would be skipped; end the order with the key"
     )
+
+
+@dataclass(frozen=True)
+class DeclaredIndex:
+    """one B-tree index a table declares, as a read's pins and order can be served by it.
+
+    :ivar name: the index's name, a plain SQL identifier (the hint names it unquoted)
+    :ivar columns: its columns, in order
+    :ivar descending: the columns it sorts descending
+    :ivar primary: whether it is the table's primary key (the planner's own choice; never hinted)
+    """
+
+    name: str
+    columns: tuple[str, ...]
+    descending: frozenset[str] = frozenset()
+    primary: bool = False
+
+    def __post_init__(self) -> None:
+        """refuse an index naming anything but plain columns, or a name a hint could not carry unquoted.
+
+        :raises ValueError: for such an index
+        """
+        if not self.columns:
+            raise ValueError(f"index {self.name!r} names at least one column")
+        for name in (self.name, *self.columns, *self.descending):
+            if not isinstance(name, str) or _COLUMN.fullmatch(name) is None:
+                raise ValueError(f"a declared index names plain identifiers only, not {name!r}")
+        stray = self.descending - set(self.columns)
+        if stray:
+            raise ValueError(f"index {self.name!r}: descending names {sorted(stray)}, not among its columns")
+
+
+#: every ``(relation, index)`` a declaration registered, once each, appended only (as the keys are)
+_INDEXES: list[tuple[Relation, DeclaredIndex]] = []
+
+
+def register_table_indexes(table: str, indexes: Iterable[DeclaredIndex]) -> None:
+    """record the B-tree indexes of the L3 table ``table`` names, beside any another declaration of that same
+    relation registered.
+
+    :param table: the table's name as declared: ``schema.table``, or bare for the one the search path finds
+    :ptype table: str
+    :param indexes: its indexes
+    :ptype indexes: Iterable[DeclaredIndex]
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when ``table`` is no relation's name
+    """
+    relation = _relation(table)
+    if relation is None:
+        raise ValueError(f"{table!r} names no table (schema.table, or a bare table): its indexes cannot be registered")
+    _INDEXES.extend(pair for pair in {(relation, index) for index in indexes} if pair not in _INDEXES)
+
+
+def _rank(index: DeclaredIndex, pinned: set[str], sorts: Sequence[Sort]) -> tuple[int, int, bool] | None:
+    """how well ``index`` serves a read pinning ``pinned`` sorted by ``sorts`` (more pins held, then fewer columns,
+    then the primary key); None when it does not serve it."""
+    held = 0
+    while held < len(index.columns) and index.columns[held] in pinned:
+        held += 1
+    if held == 0 or index.columns[held : held + len(sorts)] != tuple(sort.column for sort in sorts):
+        return None
+    against = {(column in index.descending) != sort.descending for column, sort in zip(index.columns[held:], sorts)}
+    if len(against) > 1:
+        return None
+    return held, -len(index.columns), index.primary
+
+
+def serving_index(table: Any, by: Mapping[Any, Any], order: Sequence[Sort]) -> DeclaredIndex | None:
+    """the declared index that serves a keyed read of ``table`` pinning ``by``, in ``order``; None when none does.
+
+    :param table: the relation read (a derived relation, or a name no declaration registers, has none)
+    :ptype table: Any
+    :param by: the read's pins (a column to a value or None; an ``AnyOf`` pins no single value)
+    :ptype by: Mapping[Any, Any]
+    :param order: the read's sort
+    :ptype order: Sequence[Sort]
+    :return: the index, or None
+    :rtype: DeclaredIndex | None
+    """
+    relation = _relation(table) if isinstance(table, str) else None
+    if relation is None:
+        return None
+    pinned = {column for column, value in by.items() if isinstance(column, str) and not isinstance(value, AnyOf)}
+    sorts = [sort for sort in order if sort.expression is not None or sort.column not in pinned]
+    if not sorts or any(sort.expression is not None for sort in sorts):
+        return None
+    ranked = [
+        (rank, index)
+        for named, index in _INDEXES
+        if named == relation and (rank := _rank(index, pinned, sorts)) is not None
+    ]
+    if not ranked:
+        return None
+    return max(ranked, key=lambda pair: pair[0])[1]
+
+
+def index_hint(index: DeclaredIndex | None, alias: str = "t") -> str:
+    """the hint naming ``index`` as the read of ``alias``, as a statement's first words; nothing for no index or the
+    primary key (the planner's own choice).
+
+    ``IndexOnlyScan``: pg_hint_plan reads the index alone where it holds every column read, else scans that same index
+    and reads the table by it. Every leg of a page (each ``... FROM <table> AS t`` of its ``WITH``) takes it.
+
+    :param index: the index, or None
+    :ptype index: DeclaredIndex | None
+    :param alias: the alias the statement reads the table by
+    :ptype alias: str
+    :return: the hint and a space, or the empty string
+    :rtype: str
+    """
+    if index is None or index.primary:
+        return ""
+    return f"/*+ IndexOnlyScan({alias} {index.name}) */ "
