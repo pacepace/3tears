@@ -365,6 +365,45 @@ class TestOneOutageContract:
         assert store.calls == []
 
 
+class _RowsWatchingStore(CountingStore):
+    """A counting store whose narrowed read says when its rows were closed; it keeps the rows it handed out."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: Iterator[dict[str, Any]] | None = None
+        self.closed = False
+
+    def iter_narrowed(self, doc_type: str, scope_id: str, **kwargs: Any) -> Iterator[dict[str, Any]]:
+        inner = super().iter_narrowed(doc_type, scope_id, **kwargs)
+
+        def rows() -> Iterator[dict[str, Any]]:
+            try:
+                yield from inner
+            finally:
+                self.closed = True
+
+        self.rows = rows()
+        return self.rows
+
+
+def test_a_read_of_readings_left_part_way_closes_the_store_s_rows_when_its_block_ends() -> None:
+    store = _RowsWatchingStore()
+    storage = EvalStorage(store)
+    for index in range(3 * READINGS_PAGE):
+        storage.save_eval_result(make_eval_result(id=f"r-{index:05d}", eval_run_id="run-1"))
+
+    with storage.iter_result_readings(["run-1"], SCOPE) as read:
+        walk = iter(read)
+        assert next(walk).eval_run_id == "run-1"
+        assert not store.closed
+
+    # The walk and the store's rows are both still referenced here, so nothing but the block closed them.
+    assert store.rows is not None and store.closed
+    assert list(walk) == []
+    with pytest.raises(RuntimeError, match="walked once"):
+        list(read)
+
+
 class _PageWatchingStore(CountingStore):
     """A counting store that records, at each ``get_many``, how many rows it handed out are still alive."""
 

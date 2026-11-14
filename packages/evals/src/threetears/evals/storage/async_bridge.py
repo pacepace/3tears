@@ -44,7 +44,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 import inspect
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator, Mapping, Sequence
 from datetime import datetime
 from functools import partial
 from types import MappingProxyType
@@ -272,8 +272,11 @@ class _ReadingAsyncStoreBridge(AsyncStoreBridge):
                 exhausted = True
                 batch, exhausted = self._call(partial(_take, rows, _ROWS_PER_HOP))
         finally:
-            if not exhausted and isinstance(rows, AsyncGenerator):
-                self._call(rows.aclose)
+            # Any async iterator that can be closed is closed, not only an async generator: a store's own cursor class
+            # releases its cursor in ``aclose`` as a generator does.
+            aclose = getattr(rows, "aclose", None)
+            if not exhausted and callable(aclose):
+                self._call(aclose)
 
     def grouped(
         self,

@@ -908,10 +908,8 @@ def detectable_effects(
     # history read whole held every result of every run at once. The read holds one page of results and their readings
     # at a time, on either path; on the engine's path its key read is one call for every run.
     read_counts: dict[str, int] = {}
-    walk = _counted(
-        host.storage.iter_result_readings([run.id for run in runs], scope_id, in_store_order=True), read_counts
-    )
-    readings = planning_readings(runs, walk, profile=host.profile)
+    with host.storage.iter_result_readings([run.id for run in runs], scope_id, in_store_order=True) as read:
+        readings = planning_readings(runs, _counted(read, read_counts), profile=host.profile)
     hold_to_read_budget(
         _PLANNING_LENS,
         scope_id,

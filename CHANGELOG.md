@@ -31,6 +31,12 @@ real. Its `values` now hand such an integer back whole, as its own reads do, clo
 The port states that a `sum_int` past 64 bits is exact or refused with `TypeError`, never wrapped or rounded, and the
 readings kit's `grouped.sum_int` and `grouped.values_exact` check it (#1059 item 1).
 
+**Fixed:** a read abandoned part way closes the store's rows when it is closed, not when it is collected.
+`ReadingsRead` (what `EvalStorage.iter_result_readings` returns) has `close()` and is a context manager, and a walk of
+it closes the store's rows however it ends; the launch estimate's planning read holds its read in a `with` block.
+`bridge_async_store` closes an abandoned narrowed read's async iterator whenever it has `aclose`, where it closed only
+an async generator, so a driver's cursor class kept its cursor open (#1059 item 3).
+
 ### evals: export, seed and carry follow-ups
 
 **Added:** the definition seed gives a stored template the corpus's presentation names it lacks (`goal_check_names`,
