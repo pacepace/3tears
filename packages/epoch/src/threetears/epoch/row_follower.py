@@ -9,22 +9,75 @@ run each row's keyed read as a task, so the synchronous row callback never block
 The cache's one whole read is its cold start, at the process's start, ledgered where the cache writes it. A table
 dropped whole (an operator's reset) goes to ``on_table_dropped``, which never reads whole: the reset's refill reaches
 the cache row by row. A load from files names its reach (``on_partition``), read by that prefix.
+
+A cold read taken before the follow starts (a process's start reads its caches long before it follows them) is followed
+from the generation it was read at: :func:`cold_read_generations` reads each table's generation just BEFORE the cold
+read, and the follow (``RowFollower.follow(..., since=...)``, or :func:`follow_since` beside several followers) starts
+each table's mark there, so every change written between the cold read and the follow is walked from the change log
+and read by key. Without it the follow's first sight is taken as its mark, and such a change is missed until a
+restart.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from typing import Any
 
+from threetears.core.collections.generation import GenerationVerdict
 from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
 from threetears.observe import cancel_and_wait, get_logger
 
+from threetears.epoch.generation import EpochGenerationReader
 from threetears.epoch.table_follow import TableFollower, follow_tables
 
-__all__ = ["RowFollower"]
+__all__ = ["RowFollower", "cold_read_generations", "follow_since"]
 
 log = get_logger(__name__)
+
+
+async def cold_read_generations(reader: EpochGenerationReader, tables: Sequence[str]) -> dict[str, str | None]:
+    """each table's write generation, read just BEFORE a cold read: the mark the follow starts from.
+
+    A cache read cold holds every row as of a moment at or after these generations, so every change it can have missed
+    between its cold read and its follow (:func:`follow_since`) is an epoch after them.
+
+    :param reader: reads the epoch change log
+    :ptype reader: EpochGenerationReader
+    :param tables: the tables the cache follows
+    :ptype tables: Sequence[str]
+    :return: table -> its generation, ``None`` where the log holds none
+    :rtype: dict[str, str | None]
+    :raises GenerationUnavailableError: when the log cannot be read; a cache does not start blind to its gap
+    """
+    return {table: await reader.read(table) for table in tables}
+
+
+def follow_since(registry: CollectionRegistry, generations: Mapping[str, str | None]) -> None:
+    """start each table's mark at the generation read before a cold read, so no change after it is missed.
+
+    Call right after the follow (``RowFollower.follow``, which registers and starts the tables' watches without
+    yielding), before anything awaits: each watch's first push is the table's head, judged against this mark, so every
+    epoch written after the cold read began is walked and its rows read by key -- by this cache and every other derived
+    from the table, which re-read those keys harmlessly. Adopted after the follow, never before: a cache registers on
+    the registry in its follow, and a write heard before it is registered must not count as heard.
+
+    A mark the registry already holds at or before the cold read's (another follower of the table, started earlier) is
+    kept: its walk covers this gap too, since this cache is registered by now. A mark past it is moved back to it. A mark
+    under another incarnation is kept: the table's next judgement carries it over or falls behind, as for any follower.
+
+    :param registry: the registry the tables are followed on
+    :ptype registry: CollectionRegistry
+    :param generations: :func:`cold_read_generations`' answer
+    :ptype generations: Mapping[str, str | None]
+    :return: nothing
+    :rtype: None
+    :raises KeyError: when a table is not followed on ``registry`` yet
+    """
+    marks = registry.generation_marks
+    for table, generation in generations.items():
+        if marks.judge(table, generation) in (GenerationVerdict.FIRST_SIGHT, GenerationVerdict.CURRENT):
+            marks.adopt_generation(table, generation)
 
 
 class RowFollower:
@@ -146,7 +199,9 @@ class RowFollower:
         while self._tasks:
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
 
-    def follow(self, registry: CollectionRegistry, reader: Any) -> None:
+    def follow(
+        self, registry: CollectionRegistry, reader: Any, *, since: Mapping[str, str | None] | None = None
+    ) -> None:
         """register on ``registry`` for each table's rows and follow the tables' generations.
 
         Call once ``registry``'s invalidation listener runs; :meth:`stop` before it stops.
@@ -155,9 +210,17 @@ class RowFollower:
         :ptype registry: CollectionRegistry
         :param reader: reads and watches the epoch bucket
         :ptype reader: GenerationWatcher
+        :param since: the generations read before the cache's cold read (:func:`cold_read_generations`), when it was
+            read before this follow: each table is followed from there (:func:`follow_since`); None when the cache is
+            read cold only after its follow starts, which hears every change from then on
+        :ptype since: Mapping[str, str | None] | None
         :return: nothing
         :rtype: None
+        :raises ValueError: when ``since`` names a table this follower does not follow
         """
+        unknown = sorted(set(since or {}) - set(self._tables))
+        if unknown:
+            raise ValueError(f"{self._name}: since names {unknown}, which it does not follow")
         self._unregister = [
             registry.register_derived_cache(
                 table,
@@ -168,6 +231,8 @@ class RowFollower:
             for table in self._tables
         ]
         self._follower = follow_tables(registry, reader, self._tables)
+        if since is not None:
+            follow_since(registry, since)
         log.info("following tables by key: cache=%s tables=%s", self._name, sorted(self._tables))
 
     async def stop(self) -> None:

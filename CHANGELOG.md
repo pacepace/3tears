@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### epoch: `StandingRows` and follow-since -- a standing set read cold once, followed from its cold read
+
+**Added:** `threetears.epoch.StandingRows` / `Standing`: a table's standing rows held by key, read cold once through
+the caller's declared cold read, then kept by each changed row read by its whole key (`RowFollower`); `keys`, `count`,
+`held`, and `read` (by key, a page a statement, each row judged again). A failed row read is read again before the next
+answer; a reset reads cold at the next question.
+**Added:** follow-since: `cold_read_generations(reader, tables)` reads each table's generation just before a cold read,
+and `RowFollower.follow(..., since=...)` (or `follow_since(registry, since)` beside several followers) starts each
+table's mark there, so a row written between a cold read and its follow is read by key, not missed until a restart.
+
 ### core: `SchemaBackedCollection.truncate()` removed -- an operator's `reset()` is the one whole-table empty
 
 **Removed:** `truncate()` (no caller in any consumer; reports resets with `reset()`). A load clears by key prefix
