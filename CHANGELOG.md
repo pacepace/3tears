@@ -45,6 +45,31 @@ background delivery can name the upstream that served its calls: `AsyncDelivery.
 optional, never on a substituted entry), which the host fills and the engine folds into the `inner_agent` usage row
 (`RoleUsage.served_provider`, a key of the row); left unset it reads as not recorded.
 
+### evals: a new template borrows its launch price from its siblings, and a resume crosses a proof-rules change (#948, #920, #921)
+
+**Added:** `launch_estimate` and every launch priced by `history_launch_pricer` price an arm whose template has no
+priced history (its own or an earlier revision's) from sibling templates. A sibling has the same candidate kind, and
+only its runs on the same subject, model, cassette mode, judges, simulator, apparatus and overlays are drawn on. Its
+template must also leave what a run spends as the arm's does: judged dimensions and judge pins, conversation shape,
+world seed, allowed tools and kind spec. The price's `method_id` is `borrowed-history`
+(`threetears.evals.analysis.BORROWED_PREDICTION_METHOD`). Its basis names each sibling and its result count, and says
+the band holds only if the arm's cases cost as the siblings' do. The band is never narrower than a direct estimate's
+from the same results: it runs to the outer ends of the band over the observations and the band over each case's
+mean cost, never nearer its centre than 3% either side, and needs results over at least three cases
+(`compute_borrowed_cost`). A borrowed figure budgets a launch only. An arm still unpriced says what its own history
+lacks and what its siblings lack, naming a sibling that differs in a launch condition, its subject or its template.
+`ArmQuote` gains `overlays` (default empty), which the engine fills from the launch.
+
+**Changed:** `job_resume` takes up a run whose goal-check proof rules moved since it launched when the current rules
+prove the run's own goal checks as its stored proofs say. The run keeps the rules its proofs were derived under, so a
+`proven` from older rules still reads as unproven. A check proved otherwise still refuses, and the refusal names both
+rule versions. The take-up does not yet record the rules change on the run's lifetime (#920 stays open for it).
+
+**Changed, for callers of `threetears.evals.run.resume`:** the run, launch and sweep take-ups go through one `TakeUp`.
+`take_up_arms` returns a `TakeUp` (its `arms` by label) in place of a dict, and `read_job_to_take_up` reads and
+refuses a sweep's or a launch's record. `start_take_up` and `write_taken_up` are gone, replaced by `TakeUp.start` and
+`TakeUp.reopen`; `refuse_a_job_not_taken_up` is private. None of these was re-exported from `threetears.evals.run`.
+
 ### evals: export, seed and carry follow-ups
 
 **Added:** the definition seed gives a stored template the corpus's presentation names it lacks (`goal_check_names`,

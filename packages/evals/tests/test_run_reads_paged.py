@@ -214,10 +214,12 @@ class TestATakeUpPlansFromPages:
         paged, refused = await take_up_arms(launch, [("arm", run_id)], TOYHOST_SCOPE)
 
         assert not refused
-        assert paged["arm"].stored == whole["arm"].stored
-        assert paged["arm"].rows == whole["arm"].rows
-        assert paged["arm"].stored.done and paged["arm"].stored.replaced, "done cells and cells run again alike"
-        assert len(paged["arm"].rows) == len(stored)
+        assert paged.arms["arm"].stored == whole.arms["arm"].stored
+        assert paged.arms["arm"].rows == whole.arms["arm"].rows
+        assert paged.arms["arm"].stored.done and paged.arms["arm"].stored.replaced, (
+            "done cells and cells run again alike"
+        )
+        assert len(paged.arms["arm"].rows) == len(stored)
         assert store.row_reads() == [], "no read the take-up makes hands out a run's rows by type, nor the scope's"
         assert len(store.key_reads_of(run_id)) == 2, "its keys read once by the take-up, once by the pricer"
         assert store.id_reads and set(store.id_reads) == {1}, "every result it reads, one at a time"

@@ -3778,7 +3778,7 @@
     },
     "threetears.evals.run.ArmQuote": {
       "kind": "dataclass",
-      "signature": "ArmQuote(scope_id: str, template_id: str, subject_id: str, candidate_model: str, k_runs: int, case_count: int, n_variations: int, cassette_mode: CassetteMode, judge: PlannedJudge | None, simulator_model: str | None, apparatus_settings: Mapping[str, ApparatusSettingValue])",
+      "signature": "ArmQuote(scope_id: str, template_id: str, subject_id: str, candidate_model: str, k_runs: int, case_count: int, n_variations: int, cassette_mode: CassetteMode, judge: PlannedJudge | None, simulator_model: str | None, apparatus_settings: Mapping[str, ApparatusSettingValue], overlays: Mapping[str, Any] = dict())",
       "tier": "stable"
     },
     "threetears.evals.run.ArmVerdict": {
@@ -5008,6 +5008,11 @@
     },
     "threetears.evals.analysis.BaselineBarProposals": {
       "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.BORROWED_PREDICTION_METHOD": {
+      "kind": "constant (str)",
       "signature": "",
       "tier": "provisional"
     },

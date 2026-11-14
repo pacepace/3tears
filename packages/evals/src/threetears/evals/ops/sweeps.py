@@ -79,7 +79,6 @@ from threetears.evals.kernel.campaign import (
 from threetears.evals.kernel.errors import (
     EvalServiceError,
     JobFenced,
-    NotFoundError,
     ValidationFailedError,
 )
 from threetears.evals.kernel.refusals import job_refusal
@@ -90,29 +89,19 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops.analysis import CampaignDefinition, campaign_create
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, sweep_job_id, sweep_key
-from threetears.evals.kernel.remedies import FIND_JOB
 from threetears.evals.ops.runs import LaunchArguments
 from threetears.evals.run.arm_schedule import resolve_arm_schedule
 from threetears.evals.run.jobs import JOB_TIMEOUT_CAP_S
-from threetears.evals.run.launch import LaunchGroup, admit_resumed_run, launch_as_group, quote_launch, start_run
+from threetears.evals.run.launch import LaunchGroup, LaunchHost, launch_as_group, quote_launch, start_run
 from threetears.evals.kernel.job_leases import (
     SWEEP_JOB,
-    read_to_take_up,
     reopened_job_fields,
     require_held,
     write_held_record,
     write_reopened,
 )
 from threetears.evals.run.lifecycle import get_run
-from threetears.evals.run.resume import (
-    RunResumption,
-    next_epoch,
-    refuse_a_job_not_taken_up,
-    refused_as_one,
-    start_take_up,
-    take_up_arms,
-    write_taken_up,
-)
+from threetears.evals.run.resume import TakeUp, next_epoch, read_job_to_take_up, refused_as_one, take_up_arms
 from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
@@ -466,12 +455,7 @@ class _ArmEnded:
 
 @dataclass(frozen=True)
 class _ArmTakenUp:
-    """An arm whose run is taken up again, started as that run.
-
-    :ivar resumption: Its run's take-up, as planned in the call.
-    """
-
-    resumption: RunResumption
+    """An arm whose run is taken up again, started as that run (:attr:`_TakingUp.take_up` holds its run's take-up)."""
 
 
 @dataclass(frozen=True)
@@ -488,20 +472,24 @@ class _TakingUp:
     """What a sweep's job does with each of its arms, by label: set for every arm, so none is launched by default.
 
     :ivar arms: Each arm's take-up, by the arm's label.
+    :ivar take_up: The take-up of every arm whose run is taken up again; it holds none for a sweep starting fresh.
     """
 
     arms: dict[str, _ArmTakeUp]
+    take_up: TakeUp
 
     @classmethod
-    def fresh(cls, sweep: EvalSweep) -> _TakingUp:
+    def fresh(cls, host: LaunchHost, sweep: EvalSweep) -> _TakingUp:
         """A sweep starting fresh: every arm is launched.
 
+        :param host: The launching host.
+        :ptype host: LaunchHost
         :param sweep: The sweep.
         :ptype sweep: EvalSweep
         :return: Every arm launched.
         :rtype: _TakingUp
         """
-        return cls(arms={arm.label: _ArmLaunched() for arm in sweep.arms})
+        return cls(arms={arm.label: _ArmLaunched() for arm in sweep.arms}, take_up=TakeUp(host, {}))
 
     def of(self, label: str) -> _ArmTakeUp:
         """What the job does with one arm.
@@ -513,15 +501,6 @@ class _TakingUp:
         :raises KeyError: The arm has none: every arm's is set before the job starts, so this is a defect.
         """
         return self.arms[label]
-
-    @property
-    def resumptions(self) -> list[RunResumption]:
-        """Every arm's run taken up again, in the sweep's arm order.
-
-        :return: The take-ups.
-        :rtype: list[RunResumption]
-        """
-        return [arm.resumption for arm in self.arms.values() if isinstance(arm, _ArmTakenUp)]
 
 
 def _never_launched(sweep: EvalSweep, arm: SweepArmRecord) -> ValidationFailedError:
@@ -578,19 +557,7 @@ async def sweep_resume(
     """
     eval_host, launch = host.eval_host, host.launch
     storage, manager, leases = eval_host.storage, launch.job_manager, launch.job_leases
-    sweep, etag = await run_blocking(
-        eval_host.blocking_executor, read_to_take_up, storage, SWEEP_JOB, sweep_id, scope_id
-    )
-    if sweep is None:
-        raise NotFoundError("sweep", sweep_id, remedy=FIND_JOB)
-    refuse_a_job_not_taken_up(
-        "sweep",
-        sweep.id,
-        sweep.outcome,
-        sweep.detail,
-        live_here=manager.is_task_active(sweep.id),
-        start_again="sweep_launch",
-    )
+    sweep, etag = await read_job_to_take_up(launch, SWEEP_JOB, sweep_id, scope_id, start_again="sweep_launch")
     launched = [arm.run_id for arm in sweep.arms if arm.run_id is not None]
     runs = {
         run.id: run
@@ -620,9 +587,9 @@ async def sweep_resume(
             ended[arm.label] = _ArmEnded(run)
         else:
             unfinished.append((arm.label, run.id))
-    planned, refused = await take_up_arms(launch, unfinished, scope_id, max_cost_usd=max_cost_usd)
+    take_up, refused = await take_up_arms(launch, unfinished, scope_id, max_cost_usd=max_cost_usd)
     refusals += refused
-    notices = [notice for resuming in planned.values() for notice in resuming.notices]
+    notices = list(take_up.notices)
     for arm in never_launched:
         assert shared is not None  # an arm the sweep holds no arguments for was refused above
         try:
@@ -638,7 +605,7 @@ async def sweep_resume(
             refusals.append(refusal)
     if refusals:
         raise refused_as_one(f"sweep '{sweep.id}'", refusals)
-    if not planned and not never_launched:
+    if not take_up.arms and not never_launched:
         raise ValidationFailedError(
             f"every arm of sweep '{sweep.id}' has ended completed or failed, so there is nothing to take up",
             remedy="read how each arm ended with job_poll on the sweep",
@@ -664,15 +631,15 @@ async def sweep_resume(
     for arm in sweep.arms:
         if arm.label in ended:
             arms[arm.label] = ended[arm.label]
-        elif arm.label in planned:
-            arms[arm.label] = _ArmTakenUp(planned[arm.label])
+        elif arm.label in take_up.arms:
+            arms[arm.label] = _ArmTakenUp()
         elif arm.label in launching:
             arms[arm.label] = _ArmLaunched()
         else:
             raise RuntimeError(
                 f"sweep '{sweep.id}' arm {arm.label!r} was neither ended, taken up, launched nor refused"
             )
-    taking_up = _TakingUp(arms=arms)
+    taking_up = _TakingUp(arms=arms, take_up=take_up)
 
     async def work() -> None:
         await _run_sweep(host, reopened, budget_s=_budget_s(reopened), taking_up=taking_up)
@@ -690,7 +657,7 @@ async def sweep_resume(
         sweep.id,
         scope_id,
         epoch,
-        len(planned),
+        len(take_up.arms),
         len(never_launched),
         len(ended),
     )
@@ -798,7 +765,7 @@ async def _run_sweep(host: OpsHost, sweep: EvalSweep, *, budget_s: float, taking
     """
     manager = host.launch.job_manager
     scope_id = sweep.scope_id
-    run = _SweepRun(host, sweep, taking_up if taking_up is not None else _TakingUp.fresh(sweep))
+    run = _SweepRun(host, sweep, taking_up if taking_up is not None else _TakingUp.fresh(host.launch, sweep))
 
     def fenced(why: JobFenced) -> None:
         log.warning("eval.sweep sweep=%s scope=%s stopped: %s", sweep.id, scope_id, why)
@@ -1000,9 +967,9 @@ class _SweepRun:
                 raise
             try:
                 match arm:
-                    case _ArmTakenUp(resumption=resuming):
+                    case _ArmTakenUp():
                         # The notices its admission makes were told the caller when the sweep was taken up.
-                        run = (await start_take_up(self.host.launch, resuming)).record
+                        run = (await taking_up.take_up.start(record.label)).record
                     case _ArmLaunched():
                         (run,) = await start_run(
                             self.host.launch,
@@ -1060,9 +1027,8 @@ class _SweepRun:
             for record in going:
                 preparing[:] = [record.label]
                 match taking_up.of(record.label):
-                    case _ArmTakenUp(resumption=resuming):
-                        admitted = await admit_resumed_run(self.host.launch, resuming, launch_group=group)
-                        prepared += await admitted.start()
+                    case _ArmTakenUp():
+                        prepared += await taking_up.take_up.prepare(record.label, group)
                     case _ArmLaunched():
                         prepared += await start_run(
                             self.host.launch,
@@ -1086,9 +1052,6 @@ class _SweepRun:
             await self.require_held()
             return prepared
 
-        async def reopen(runs: list[EvalRun]) -> None:
-            await write_taken_up(self.host.launch, taking_up.resumptions, runs)
-
         try:
             runs = await launch_as_group(
                 self.host.launch,
@@ -1097,7 +1060,7 @@ class _SweepRun:
                 form=form,
                 prepare=prepare,
                 event="eval.sweep",
-                attach=reopen if taking_up.resumptions else None,
+                attach=taking_up.take_up.reopen if taking_up.take_up.arms else None,
             )
         # prawduct:ok-broad-except — any refusal of one arm ends the sweep, recorded on its record
         except Exception as refused:
