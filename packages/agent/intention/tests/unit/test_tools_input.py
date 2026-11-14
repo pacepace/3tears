@@ -432,7 +432,9 @@ _CREATE_REFUSALS: list[Exception] = [
 #: generation that could not advance, a row count the store did not report
 _SAVE_REFUSALS: list[Exception] = [
     DataLayerUnavailableError("broker down"),
-    ConcurrentModificationError("intentions", uuid4(), datetime.now(UTC)),
+    ConcurrentModificationError(
+        "intentions", UUID("00000000-0000-4000-8000-000000000601"), datetime(2026, 1, 1, tzinfo=UTC)
+    ),
     GenerationUnavailableError("generation not advanced"),
     RowcountUnreadableError("a successful update reply must carry row_count"),
 ]

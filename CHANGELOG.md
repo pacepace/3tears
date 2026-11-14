@@ -45,6 +45,15 @@ bundles stay in the app's NATS KV bucket: `NatsCheckpointL2Cache` opens the buck
 expire only if the app declared the bucket with one; an erasure deletes those keys too, or runs
 `aprune(..., strategy="delete")` through the app's own saver.
 
+### enforcement: the underscore-access scan parses each module once
+
+**Changed:** `threetears.enforcement.underscore_access` shapes A, C, D, E, F and I read each module's
+facts (private imports, module surface, `__all__` entries, class members and state, shape F's
+findings) from one parse, instead of each shape parsing the workspace again past the 8 MiB parse
+cache. The facts are a few kilobytes a module and current against a hash of its bytes, so a rewrite
+that keeps size, modification time and inode is still seen. On this repo the full scan went from
+97 s and 701 MiB peak RSS to 18 s and 93 MiB on one machine. Verdicts are unchanged.
+
 ### enforcement: an epoch-discipline allowlist is debt pinned by count, not a list that only shrinks
 
 **Changed:** the wording of the five `tests/enforcement/_epoch_*_allowlist.txt` headers, the
@@ -89,6 +98,25 @@ minutes. `--here` runs only the tests marked `docker` (they drive a Docker daemo
 credential) on this machine. `check-all.sh` runs the integration suite where the pool is reachable, and where it
 cannot (no testament installed, `CI` set, or `TESTAMENT=off`) it fails at the end saying the integration suite was
 not run, exit 2. CI's `integration` job is unchanged and keeps its own service containers.
+
+### core: a shared Arrow pool whose worker died between jobs recovers (#1158)
+
+**Fixed:** a `SharedArrowPool` worker that died with no job pending on it (killed between jobs, or by another
+caller's job before that job's future failed) left the executor refusing every later submission with
+`BrokenProcessPool` until the process restarted. The refused job is now given once more, to a fresh pool, and the
+broken pool is said once, reaped and swept as a failed job's pool is. Every replaced pool, broken or past its
+workers' private memory, is now shut down once, waited for and swept by a reaper thread, never also without waiting by
+the submission that replaces it; a pool replaced for its memory whose worker died between jobs is said too. Each pool
+has its own shutdown lock, so one finishing a long job holds up no other's, and `close()` also waits for the pools
+still being retired.
+
+### backup: a dump or restore stopped early no longer waits forever on its killed child (#1168)
+
+**Fixed:** `stream_stdout` and `pipe_through` kill the child when their consumer stops before the end, then wait on
+it. When that wait began before the event loop had seen the kill land, asyncio returned it only once every one of the
+child's pipes had closed, and the stopped consumer had left stdout's reader paused on a full buffer, so the wait never
+returned. Both now read the killed child's stdout to its end, dropping it, before they wait. A loaded test runner hit
+it as a 5 s timeout closing a `stream_stdout` that had read one chunk.
 
 ### core: a shared Arrow worker that dies leaves nothing behind (#1140)
 

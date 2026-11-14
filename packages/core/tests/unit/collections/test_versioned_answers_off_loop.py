@@ -12,8 +12,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import gzip
+import hashlib
 import json
-import os
 import random
 import threading
 import time
@@ -463,7 +463,11 @@ class TestARowIsStoredAndReadAsJsonWrites:
     @pytest.mark.parametrize(
         "row",
         [
-            {"version": "v1", "request": "ab" * 32, "body": base64.b64encode(os.urandom(3 << 20)).decode("ascii")},
+            {
+                "version": "v1",
+                "request": "ab" * 32,
+                "body": base64.b64encode(hashlib.shake_256(b"a large body").digest(3 << 20)).decode("ascii"),
+            },
             {"version": "v1", "request": "ab", "body": ""},
             {"version": "v1", "request": "ab", "body": 'a "quoted" \\ body'},
             {"version": "v1", "request": "ab", "body": "é"},
