@@ -2727,6 +2727,41 @@ def _python_mentions(text: str, name: str, *, mapping: bool) -> tuple[list[int],
     return sorted(set(used)), prose
 
 
+def _names_another(text: str, name: str, stem: str) -> bool:
+    """whether a module's mentions of ``name`` are of another constant than the one module ``stem`` binds: it binds
+    ``name`` at its top level and imports none, or imports ``name`` only from modules of another name.
+
+    :param text: the module's source
+    :ptype text: str
+    :param name: the constant's name
+    :ptype name: str
+    :param stem: the constant's module's own name (its file's stem)
+    :ptype stem: str
+    :return: whether they are
+    :rtype: bool
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:  # NOSILENT: a module that does not parse is judged by its text, as before
+        return False
+    bound = any(
+        isinstance(node, ast.Assign | ast.AnnAssign)
+        and any(
+            isinstance(target, ast.Name) and target.id == name
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        )
+        for node in tree.body
+    )
+    sources = [
+        (node.module or "").split(".")[-1]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and any((alias.asname or alias.name) == name for alias in node.names)
+    ]
+    if bound:
+        return not sources
+    return bool(sources) and stem not in sources and not re.search(rf"\b{re.escape(stem)}\.{re.escape(name)}\b", text)
+
+
 def _mentions(repo_root: Path, path: Path, name: str, *, mapping: bool = False) -> _Mentions:
     """every mention of a constant's name in the repo's other modules, migrations and declaration ledgers, sorted
     into uses, index purpose entries naming it, and prose.
@@ -2764,6 +2799,9 @@ def _mentions(repo_root: Path, path: Path, name: str, *, mapping: bool = False) 
             text = purpose.sub(relative + "::", text)
             if not pattern.search(text):
                 continue
+        if other.suffix == ".py" and _names_another(text, name, path.stem):
+            # a module binding a constant of its own under the same name, or importing one from another module
+            continue
         if other.suffix == ".py":
             used, prose = _python_mentions(text, name, mapping=mapping)
             found.used += [f"{where}:{number}" for number in used]
@@ -3548,7 +3586,10 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             elif method not in shape.methods and parsed.chain is not None:
                 problem = f"a chain of links sent by {method} (its rows are dicts: a fetch only)"
             elif (parsed.joins or parsed.chain is not None) and _read_by_position(module, call):
-                problem = "a joined read whose rows are read by position (read_by_joined answers dicts)"
+                problem = (
+                    "a read whose rows are read by position "
+                    f"({'read_link_chain' if parsed.chain is not None else 'read_by_joined'} answers dicts)"
+                )
             elif method not in shape.methods and parsed.aggregate:
                 problem = f"a count sent by {method}: read by a column name the helper does not answer under"
             elif method not in shape.methods:

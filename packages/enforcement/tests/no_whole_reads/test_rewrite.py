@@ -2000,3 +2000,30 @@ def test_a_chain_of_links_is_rewritten_onto_read_link_chain(tmp_path: Path) -> N
     (entry,) = json.loads(manifest.read_text(encoding="utf-8"))
     assert entry["chain"] == {"key": "id", "link": "origin_concept_id"}
     assert_source_says(tmp_path, entry)
+
+
+def test_a_constant_another_module_binds_under_the_same_name_is_not_named_elsewhere(tmp_path: Path) -> None:
+    """Flips if a module's own statement constant is refused as "named elsewhere" because another module binds a
+    constant of its own under the same name (the hub's two ``_ORIGIN_CHAIN_SQL``), or if a module importing it is
+    not counted as a use."""
+    src = tmp_path / "src"
+    sources = {
+        "pkg/tables.py": _CHAIN_TABLES,
+        "pkg/chains.py": _CHAINS.replace("    async def by_place", "    async def _unused_by_place"),
+        "pkg/others.py": _CHAINS.replace("concepts", "concepts").replace("async def origins", "async def more_origins"),
+    }
+    for name, source in sources.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+    config = NoWholeReadsConfig(
+        repo_root=tmp_path, src_roots=(src,), ledger_dir=tmp_path, dependency_schema=False, table_lists=()
+    )
+    rewrites, refusals = plan_chain_rewrites(config)
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert sorted(rewrite.function for rewrite in rewrites) == ["more_origins", "origins"], refused
+    (src / "pkg/user.py").write_text("from pkg.chains import _ORIGIN_CHAIN_SQL\n\nprint(_ORIGIN_CHAIN_SQL)\n")
+    rewrites, refusals = plan_chain_rewrites(config)
+    refused = {refusal.path: refusal.reason for refusal in refusals if refusal.function == "<module>"}
+    assert [rewrite.function for rewrite in rewrites] == ["more_origins"], refused
+    assert "named elsewhere" in refused["src/pkg/chains.py"], refused
