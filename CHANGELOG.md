@@ -8,6 +8,12 @@ packages (bumped in lock-step).
 
 ### evals: export, seed and carry follow-ups
 
+**Added:** the definition seed gives a stored template the corpus's presentation names it lacks (`goal_check_names`,
+`stratum_names`) on its current revision, fill-only: an entry the store holds is never overwritten, a name the stored
+template gives another entry is not given twice, and `updated_at` is unchanged, so a second boot writes nothing.
+`SeedOutcome.presentation_named` reports what was filled and `SeedOutcome.presentation_fill_failed` a write the store
+refused. A host's own boot pass filling these names through `update_template` can be dropped.
+
 **Fixed:** `python -m threetears.evals.harness export` removes its partial directory when interrupted too, not only
 when a write fails, and the directory it writes takes the mode the process's umask gives a new directory rather than
 the owner-only mode of a temporary one, so a mint run as another user can read it. The `campaign_closure` docstring

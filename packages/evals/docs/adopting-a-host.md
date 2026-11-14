@@ -1965,11 +1965,19 @@ scope holds no version of is minted over their stored ids through `mint_case_set
 and reported under `case_set` as `<name> v1`; a scope holding any version keeps it (the next version is
 `case_set_mint`'s), so a host's own minting script over `case_set_mint` can be dropped.
 
-**A stored template's presentation fields reach it through `update_template`.** The seed fills empty slots only, and
-the template digest a reset reads leaves `goal_check_names` and `stratum_names` out, so `update_template` is the one
-seam that gives a stored template a check's or a stratum's reader name. A name holds at most `DECLARED_NAME_CHARS`
-characters, and `check_names(checks, {})` over the host's seeded checks shows which the namer leaves `GOAL_CHECK`, the
-ones worth a declared name.
+**The seed gives a stored template the corpus's presentation names it lacks.** The template digest a reset reads
+leaves `goal_check_names` and `stratum_names` out, so a name your corpus later declares for a template the store
+already holds would never reach it through a reset. The seed fills it instead, on every boot, into the template's
+current revision: each goal check the stored template holds and names nothing, and each stratum it names nothing, is
+given the corpus's name, unless the stored template already gives that name to another check or stratum. An entry the
+store holds is never overwritten, whoever wrote it, only those two fields are written, and `updated_at` stays where it
+was, so no run reads the template as edited. Each template filled is reported under
+`SeedOutcome.presentation_named` with the entries written; a write your store refuses is reported under
+`SeedOutcome.presentation_fill_failed` with its reason, logged at WARNING, and tried again on the next boot. A second
+boot writes nothing. A host pass at boot that fills these names through `update_template` can be dropped;
+`update_template` stays the seam for an operator's own names, which the seed then leaves alone. A name holds at most
+`DECLARED_NAME_CHARS` characters, and `check_names(checks, {})` over the host's seeded checks shows which the namer
+leaves `GOAL_CHECK`, the ones worth a declared name.
 
 **A corpus edit reaches a seeded scope only through a reset.** The seed fills empty slots and never updates, so a
 template whose cases grew in git stays as first seeded. Every definition the seed writes records the digest of what it
