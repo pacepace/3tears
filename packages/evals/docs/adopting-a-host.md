@@ -271,7 +271,8 @@ one prompt get back what each got, whatever order the cells run in. A recording 
 and is still read: repeat `i` is served the call of index `i`, and otherwise the first call left. A prompt the recording does not hold, or one asked once more than it was, is
 refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
 an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. A judge that meets a
-`RecordingRefused` raises it too, rather than recording a failed call. To name a
+`RecordingRefused` raises it too, rather than recording a failed call: a run's scoring judge fails the run, naming the
+call, a writer's pairwise pass fails, and a judge kind's trial is excluded as `apparatus_failed`. To name a
 prompt that changed under its recording before a replay starts, hand
 `RecordedCompletions.check_covers(RECORDING, prompts, settings=...)` the prompts your code sends. A file holds one
 model's calls at one temperature, under any number of settings (one model at two efforts), and each client replays

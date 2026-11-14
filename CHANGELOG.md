@@ -12,8 +12,9 @@ packages (bumped in lock-step).
 withheld, and judged on the calls it still found. The judge's recordings are keyed on the pages it reads, so a change
 to a page's text moved the writer eval's replayed preference from 61/39 to 54/46 with no recorded judgment changed.
 `run_judge_llm` now raises the replay's `RecordingRefused` (any `ApparatusError`) instead. A writer's pairwise pass
-fails at the miss and the eval exits 1. A run's judging records the miss as the result's judge error, so the result is
-excluded and counted. A judge kind's trial whose replayed judge misses leaves `invoke` and is excluded
+fails at the miss and the eval exits 1. A run's scoring judge that misses fails the run, as a judge completion that
+breaks the protocol does (owner ruling): the cell is recorded `apparatus_failed` naming the call, and the run raises
+the miss. A judge kind's trial whose replayed judge misses leaves `invoke` and is excluded
 `apparatus_failed`, naming the call: it was graded `no_reply` and charged to the judge under test. A miss now names
 the prompt's key and where it parts from the recorded prompts: how many hold the same user message or open on the same
 80 characters, or the nearest recorded key and the character it parts at. Rung 5's recordings README says what to do
@@ -28,8 +29,9 @@ ruling). The first send is read streamed, so a response that began and was cut s
 was served and billed, is raised as before and never sent again. The provider may have served and billed the dropped
 send, so the resend says so, with the error's own text: a turn's `resent_after`, and a completion's new
 `resent_after` and `maybe_billed_sends`. A usage row counts those sends as `RoleUsage.maybe_billed_sends` (new,
-optional, left out while none is counted), beside `call_count` and never in its cost. A run's cost cap does not yet
-count them.
+optional, left out while none is counted), beside `call_count` and never in its cost. A run's cost cap counts each
+at its row's price per call (`kernel.usage_capture.maybe_billed_usd`), so a run never ends past its cap by what no
+row states.
 
 ### evals: a replayed completion names the upstream its recording kept (#1161)
 

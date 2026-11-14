@@ -141,6 +141,7 @@ from threetears.evals.kernel.usage_capture import (
     async_delivery_usage,
     blended_cost_roles,
     cell_cost,
+    maybe_billed_usd,
 )
 from threetears.evals.run.cassette_proxy import CassetteCell, CassetteLane
 from threetears.evals.run.executor import CellExecutor, InProcessCellExecutor
@@ -2052,6 +2053,12 @@ async def _run_judge_phase(
         # so it fails the run (as a kind's defect does) instead of becoming an error on each dimension.
         log.error("Eval run %s: a judge completion breaks the protocol; the run fails", eval_run_id)
         raise
+    except ApparatusError as fault:
+        # The rig could not serve a judge call (a replayed judge's recording holds none for its prompt): no judging
+        # outcome, and excluding the cell would let a replay read on fewer judgments in silence, so it fails the run
+        # naming the call (owner ruling, #1162).
+        log.error("Eval run %s: the judge's rig could not serve a call; the run fails: %s", eval_run_id, fault)
+        raise
     except Exception as e:  # prawduct:ok-broad-except — judge boundary; a judge failure must not wedge the slot
         # NOSILENT: the judge record names every dim the phase did not finish as failed with this cause.
         contain(e, log=log, what=f"Judge service failed during eval run {eval_run_id}", level="error")
@@ -3721,6 +3728,9 @@ async def judge_dims(
                             )
                         )
                     raise
+                except ApparatusError:
+                    # The rig could not serve the call (a replay's miss): it fails the run, never this dim alone.
+                    raise
                 except (
                     Exception
                 ) as e:  # prawduct:ok-broad-except — judge boundary; one dim's crash must not discard its siblings
@@ -4388,7 +4398,7 @@ async def execute_run(
     async def run_and_record(k: int, tc: EvalTestCase, sink: _CellSink) -> None:
         nonlocal done, unserved_in_a_row, unserved_cells, last_unserved
         cancelled_in_cell = False
-        run_defect: CandidateKindDefect | CompletionProtocolDefect | None = None
+        run_defect: CandidateKindDefect | CompletionProtocolDefect | ApparatusError | None = None
         try:
             async with host.cell_timeout(options.cell_timeout_s):
                 result, cell_trace = await run_one_result(
@@ -4502,10 +4512,12 @@ async def execute_run(
                 unfinished_judging=f"did not finish: {msg}",
             )
             cancelled_in_cell = True
-        except (CandidateKindDefect, CompletionProtocolDefect) as defect:
+        except (CandidateKindDefect, CompletionProtocolDefect, ApparatusError) as defect:
             # NOSILENT: the cell is recorded excluded with what it spent, and the defect is re-raised to fail the run.
             # The host's code — a kind contradicting its declaration, a judge completion short of the protocol —
-            # which every cell would meet, so it fails the run; it is re-raised below. But what the cell was billed
+            # which every cell would meet, so it fails the run; it is re-raised below. So does a judge call the rig
+            # could not serve (a replayed judge's miss; a candidate's is excluded in its cell and never reaches here):
+            # a replay must fail at the miss, never read on fewer judgments (owner ruling, #1162). But what the cell was billed
             # before it was found is real spend, and lives only on this sink: the cell is recorded excluded first,
             # so the run's totals and its cost cap count it, as a cancelled cell's are.
             log.error(
@@ -4617,7 +4629,11 @@ async def execute_run(
         # cap never counts it twice.
         in_flight.remove(sink)
         if on_cost is not None:
-            on_cost(result.cost_usd)
+            # Beside it, any send that broke before a response began and was sent again, which the provider may have
+            # billed and no row's cost holds: counted at its call's own price, so the cap counts what it cannot see.
+            on_cost(
+                None if result.cost_usd is None else result.cost_usd + maybe_billed_usd(result.usage, result.cost_roles)
+            )
         # The cell's metered calls land on the run in the step that records its result: the metered-call
         # ceiling is read against these and never against calls a running cell has made.
         if options.metered_calls is not None and sink.meter is not None:

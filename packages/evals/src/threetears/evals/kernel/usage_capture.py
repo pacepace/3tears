@@ -876,6 +876,29 @@ def async_delivery_usage(
     return [*inner.rows(), *external.rows()]
 
 
+def maybe_billed_usd(usage: Sequence[RoleUsage], cost_roles: Collection[UsageRole]) -> float:
+    """What the sends a cost cap must count beside ``usage``'s cost may have billed, priced at their calls' own price.
+
+    A send whose connection broke before any response began and that was sent again
+    (``RoleUsage.maybe_billed_sends``) may have been served and billed, and no row's ``cost_usd`` holds it. A cap
+    counts each at its row's price per call, the same request's price, so it never ends a run past its cap by what it
+    could not see. A row whose dollars or calls are unknown adds nothing here: its unknown dollars already leave the
+    cell's cost unpriced, which an enforcing cap stops on.
+
+    :param usage: A cell's usage rows.
+    :ptype usage: Sequence[RoleUsage]
+    :param cost_roles: The roles the cell's ``cost_usd`` sums.
+    :ptype cost_roles: Collection[UsageRole]
+    :return: The dollars, ``0.0`` when no row counts such a send.
+    :rtype: float
+    """
+    return math.fsum(
+        row.cost_usd / row.call_count * row.maybe_billed_sends
+        for row in usage
+        if row.role in cost_roles and row.maybe_billed_sends and row.cost_usd is not None and row.call_count
+    )
+
+
 def blended_cost(usage: list[RoleUsage], cost_roles: Collection[UsageRole]) -> float | None:
     """The blended spend of ``usage`` over ``cost_roles`` — or ``None`` when any of it went unpriced.
 
@@ -1261,6 +1284,7 @@ __all__ = [
     "async_delivery_usage",
     "blended_cost",
     "blended_cost_roles",
+    "maybe_billed_usd",
     "cell_cost",
     "count_substituted",
     "count_substituted_deliveries",

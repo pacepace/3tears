@@ -19,10 +19,12 @@ record the runner WROTE wrongly, so a hand-built result could not have shown any
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -93,6 +95,7 @@ from packages.evals.tests.fixtures.toyhost.kind import (
 )
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_run, toyhost_template, toyhost_test_cases
 from packages.evals.tests.off_loop import off_loop
+from threetears.evals.testing import RecordedCompletions, RecordingRefused
 
 # =============================================================================
 # The drive: one toy run through the real runner, as small as the case needs
@@ -661,6 +664,63 @@ async def test_a_running_cell_beside_the_defect_ends_as_a_run_stopping_cell_s_si
     # The sibling was waiting on its judge when the defect stopped the run: cancelled, its spend recorded; the
     # defect's own cell is recorded too, with what it was billed.
     assert sorted(result.termination for result in drive.results) == ["apparatus_failed", "cancelled"]
+
+
+async def test_a_replayed_scoring_judge_whose_recording_misses_fails_the_run_naming_the_call(tmp_path: Path):
+    """The judge replays a recording that holds none of the prompts this run asks, as after the page it reads moved.
+
+    It once failed the dim with the miss's text withheld, excluding the result, so a replay read on fewer judgments in
+    silence. A judge the rig cannot serve now fails the run, as a protocol defect does (owner ruling, #1162): the
+    cell is recorded excluded, naming the call, and the run raises the miss."""
+    recording = tmp_path / "judge.jsonl"
+    async with RecordedCompletions.record(
+        _ScriptedJudge(default=_scored(FAITHFULNESS_DIM)), recording, settings=None
+    ) as recorder:
+        await recorder.generate(system=f'A prompt this run never asks: the single key "{FAITHFULNESS_DIM}".', user="x")
+    replay = RecordedCompletions.replay(recording, settings=None)
+    drive, go = off_loop(_drive, judge=replay, template=_two_dim_template(), cell_timeout_s=30)
+
+    with pytest.raises(RecordingRefused, match=r"no call is recorded for the prompt .+ \(call 0, key [0-9a-f]{12}\)"):
+        await go()
+
+    (result,) = drive.results
+    assert result.termination == "apparatus_failed"
+    assert result.infra_error is not None and "RecordingRefused" in result.infra_error
+    assert "no call is recorded for the prompt" in result.infra_error and str(recording) in result.infra_error
+
+
+@dataclass(frozen=True)
+class _ResentCompletion(ToyJudgeCompletion):
+    """A judge reply whose first send broke before any response began and was sent again, as the shipped client
+    counts it: the provider may have billed that send too."""
+
+    maybe_billed_sends: int = 1
+
+
+@dataclass
+class _ResendingJudge(_ScriptedJudge):
+    """Every call's first send dropped before a response, then answered: each reply counts the dropped send."""
+
+    async def generate(
+        self, *, system: str, user: str, response_format: dict[str, str] | None = None
+    ) -> ToyJudgeCompletion:
+        reply = await super().generate(system=system, user=user, response_format=response_format)
+        return _ResentCompletion(**dataclasses.asdict(reply))
+
+
+async def test_a_judge_send_that_may_have_been_billed_twice_is_on_its_row_and_in_the_cap():
+    """The row's cost holds the answered call alone and counts the dropped send beside it; the cap counts the dropped
+    send at its call's own price, so a run never ends past its cap by what no row could state."""
+    cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
+    drive = await _driven(judge=_ResendingJudge(default=_scored(FAITHFULNESS_DIM), ceiling_usd=0.001), cap=cap)
+
+    (result,) = drive.results
+    judge_rows = [row for row in result.usage if row.role == "judge"]
+    assert judge_rows and all(row.maybe_billed_sends == row.call_count for row in judge_rows)
+    assert all(row.maybe_billed_sends is None for row in result.usage if row.role != "judge")
+    judged = sum(row.cost_usd or 0.0 for row in judge_rows)
+    assert result.cost_usd is not None and judged > 0
+    assert cap.accumulated_usd == pytest.approx(result.cost_usd + judged)
 
 
 class _EvidencelessKind(ToyExtractorKind):

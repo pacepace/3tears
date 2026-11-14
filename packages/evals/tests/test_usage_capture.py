@@ -13,6 +13,7 @@ from threetears.evals.kernel.usage_capture import (
     async_delivery_usage,
     cell_cost,
     count_substituted_deliveries,
+    maybe_billed_usd,
     production_replicating_cost,
     program_cost,
     resolve_result_usage,
@@ -655,3 +656,15 @@ def test_count_substituted_deliveries_of_an_unobserved_lifecycle_is_zero():
     assert count_substituted_deliveries(EvalResult(**base)) == 0
     substituted = EvalResult(**base, async_deliveries=_deliveries(substituted=True))
     assert count_substituted_deliveries(substituted) == 1
+
+
+def test_a_send_that_may_have_been_billed_is_priced_at_its_rows_price_per_call_for_the_cap():
+    """Only rows in the cost's roles count, and a row whose dollars or calls are unknown adds nothing here."""
+    rows = [
+        RoleUsage(role="judge", model="j", cost_usd=0.03, call_count=3, maybe_billed_sends=2),
+        RoleUsage(role="candidate", model="c", cost_usd=0.05, call_count=1),
+        RoleUsage(role="simulator", model="s", cost_usd=None, call_count=2, maybe_billed_sends=1),
+        RoleUsage(role="judge", model="k", cost_usd=0.04, call_count=None, maybe_billed_sends=1),
+    ]
+    assert maybe_billed_usd(rows, ["candidate", "judge", "simulator"]) == pytest.approx(0.02)
+    assert maybe_billed_usd(rows, ["candidate"]) == 0.0
