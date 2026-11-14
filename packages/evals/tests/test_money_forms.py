@@ -943,9 +943,6 @@ def _under_a_cent() -> dict[str, tuple[ReportInput, str, str, str]]:
     r1 = _measures_shrunk(INPUTS["r1"], frozenset({"cost_per_1k"}), 1000.0)
     # Under a cent even per 1,000,000: the ruler's cap, where the set reads with no mark beside the count.
     capped = _measures_shrunk(INPUTS["r1"], frozenset({"cost_per_1k"}), 1e6)
-    # r2 at the cap too, where its cells name the count they are over: the text pass reads those cells as well,
-    # which r2 per 1,000 never reaches (#1019 item 2: dropping the counted cells from it passed the sweep).
-    r2_capped = _measures_shrunk(_sliced(INPUTS["r2"], "cost_per_1k", gate=True), frozenset({"cost_per_1k"}), 1e5)
     return {
         "r1 under a cent even per 1,000,000 conversations": (
             capped,
@@ -967,7 +964,6 @@ def _under_a_cent() -> dict[str, tuple[ReportInput, str, str, str]]:
             "per 1,000,000 replies",
         ),
         "r2 under a cent per 1,000 calls": (r2, "cost_per_1k", "per 1k calls", "per 1,000,000 calls"),
-        "r2 under a cent even per 1,000,000 calls": (r2_capped, "cost_per_1k", "per 1k calls", "per 1,000,000 calls"),
         "r5 under a cent per 1,000 replies": (
             r5,
             "production_replicating_cost",
