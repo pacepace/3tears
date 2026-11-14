@@ -47,6 +47,7 @@ from threetears.core.keyed import (
     TableKey,
     delete_keyed,
     keyset_page,
+    read_by,
     read_row,
     register_table_keys,
     update_keyed,
@@ -114,10 +115,6 @@ _JOB_FIRES_SCHEMA = TableSchema(
         Column("date_created", DATETIMETZ_TYPE, server_default="now()", immutable=True),
     ],
 )
-
-
-#: every ``scheduled_jobs`` column, as the reads select them
-_SCHEDULED_JOBS_SELECT_COLUMNS = ", ".join(column.name for column in _SCHEDULED_JOBS_SCHEMA.columns)
 
 
 #: every ``job_fires`` column, as the reads select them
@@ -351,11 +348,27 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
             return []
         # cache-bypass: multi-row scan by partition_key is not pk-
         # addressable; L1 row cache cannot serve.
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_SCHEDULED_JOBS_SELECT_COLUMNS} "  # noqa: S608 - trusted column-list constant, no user input
-            "FROM scheduled_jobs WHERE partition_key = $1 "
-            "ORDER BY date_created DESC",
-            partition_key,
+        rows = await read_by(
+            self.l3_pool,
+            "scheduled_jobs",
+            by={"partition_key": partition_key},
+            columns=(
+                "partition_key",
+                "job_id",
+                "kind",
+                "payload",
+                "schedule_type",
+                "schedule_config",
+                "status",
+                "next_fire_at",
+                "last_fired_at",
+                "missed_fire_policy",
+                "name",
+                "date_created",
+                "date_updated",
+            ),
+            records=True,
+            order=[Sort("date_created", descending=True)],
         )
         return [ScheduledJobEntity(dict(row), is_new=False, collection=self) for row in rows]
 

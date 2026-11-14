@@ -714,7 +714,8 @@ class TestWorkspaceCollectionFindByAgent:
         assert {e.name for e in entities} == {"alpha", "beta"}
         for e in entities:
             assert e.agent_id == agent_id
-        issued_sql = pool.executed[0][0]
+        # the keyed helper's spelling, its identifiers quoted and the row named t, read as the plain statement
+        issued_sql = pool.executed[0][0].replace('"', "").replace("t.", "")
         assert "SELECT * FROM workspaces" in issued_sql
         assert "WHERE agent_id = $1" in issued_sql
         assert "date_deleted IS NULL" in issued_sql
@@ -745,7 +746,7 @@ class TestWorkspaceCollectionFindByAgent:
             executed.append((query, args))
             agent = args[0]
             rows = [r for r in [live, deleted] if r["agent_id"] == agent]
-            if "date_deleted IS NULL" in query:
+            if "date_deleted IS NULL" in query.replace('"', "").replace("t.", ""):
                 rows = [r for r in rows if r.get("date_deleted") is None]
             return rows
 
@@ -761,8 +762,9 @@ class TestWorkspaceCollectionFindByAgent:
         assert {e.name for e in all_rows} == {"live", "ghost"}
 
         # confirm we issued two distinct SQL shapes
-        assert "date_deleted IS NULL" in executed[0][0]
-        assert "date_deleted IS NULL" not in executed[1][0]
+        plain = [query.replace('"', "").replace("t.", "") for query, _ in executed]
+        assert "date_deleted IS NULL" in plain[0]
+        assert "date_deleted IS NULL" not in plain[1]
 
     async def test_find_by_agent_returns_empty_list_when_no_rows(
         self,
