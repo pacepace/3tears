@@ -48,6 +48,18 @@ it, where `needs_regeneration` stayed `None`. **Added (provisional):** `EvalStor
 scope_id)`, the cheap existence read the listing makes: one `get_many` keeping the snapshot's `id` alone, so its report
 input is never shipped. A snapshot stored but no longer reading is still left to the report read (#1020 item 1).
 
+**Changed:** `analysis_report` lays a `doc` analysis out as its stored report document's page on the document's own
+snapshot (`basis="analysis"`), as `campaign_report` lays out the campaign's reported one, where it laid out the
+interim code-only page whose first screen said "This page is the code-only page over the same evidence". Where this
+version no longer reads the document (its record, its snapshot, or its snapshot's bundle), the page is code's over the
+bundles frozen with the analysis, never the campaign's evidence now; its first screen carries the regenerate line
+naming the analysis (`unread_analysis_id`), and `needs_regeneration` adds why and that the page lays out the evidence
+frozen with the analysis. Over frozen bundles this build no longer reads, it is refused as before. **For hosts:**
+`analysis_report` takes an `AnalysisReportStore`: `AnalysisStore` and the new `ReportDocReads` (`load_report_doc`,
+`load_report_snapshot`), both in `threetears.evals.analysis` (provisional). `EvalStorage` satisfies both; a host
+passing its own `AnalysisStore` adds the two reads. `read_report_doc` and `stored_headline` take `ReportDocReads`
+(#1020 item 2).
+
 ### evals: export, seed and carry follow-ups
 
 **Added:** the definition seed gives a stored template the corpus's presentation names it lacks (`goal_check_names`,

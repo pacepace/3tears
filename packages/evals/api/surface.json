@@ -4896,6 +4896,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.AnalysisReportStore": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.AnalysisStore": {
       "kind": "protocol",
       "signature": "",
@@ -6453,6 +6458,11 @@
     },
     "threetears.evals.analysis.ReportBlock": {
       "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.ReportDocReads": {
+      "kind": "protocol",
       "signature": "",
       "tier": "provisional"
     },

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 from html import escape
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -52,9 +52,11 @@ from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_RE
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report.doc_page.store import read_report_doc
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.service import analysis_report, campaign_report
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel import EvalStorage
-from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.errors import NotFoundError, RefusedInput, ValidationFailedError
 from threetears.evals.kernel.report_doc import EvalReportSession
 from threetears.evals.kernel.report_snapshot import report_snapshot_id
 from threetears.evals.ops import JobStatus, ReportDocument, analyses_list, report_read
@@ -320,6 +322,74 @@ async def test_a_document_that_no_longer_reads_gets_the_code_only_page_and_the_l
     (said, *_) = _code_only_with_the_line(fixture, analysis.id, "doc")
 
     assert said.needs_regeneration is not None and _WHY[unread] in said.needs_regeneration
+
+
+class _EvidenceReadsCounted(_ReadsCounted):
+    """:class:`_ReadsCounted`, keeping the narrowed and grouped reads too: every way the campaign's evidence is read."""
+
+    def iter_narrowed(self, doc_type: str, scope_id: str, **options: Any) -> Iterator[dict[str, Any]]:
+        self.read.append(doc_type)
+        return super().iter_narrowed(doc_type, scope_id, **options)
+
+    def grouped(self, doc_type: str, scope_id: str, **options: Any) -> list[dict[str, Any]]:
+        self.read.append(doc_type)
+        return super().grouped(doc_type, scope_id, **options)
+
+
+async def test_an_analysis_read_by_its_id_is_its_document_s_page() -> None:
+    """``analysis_report`` lays a ``doc`` analysis out as ``campaign_report`` does: its stored document's page (#1020)."""
+    fixture = off_loop(ops_fixture)
+    analysis = await _generated(fixture)
+    storage = fixture.host.eval_host.storage
+
+    page = off_loop(analysis_report, storage, analysis.id, TOYHOST_SCOPE)
+    reported = off_loop(campaign_report, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE)
+
+    assert (page.basis, page.analysis_id, page.needs_regeneration) == ("analysis", analysis.id, None)
+    assert page.doc_page is not None and page.doc_page == reported.doc_page
+    assert page.report_doc is not None and page.report_doc == reported.report_doc
+    assert "This page is the code-only page over the same evidence" not in campaign_report_markdown(page)
+
+
+@pytest.mark.parametrize("unread", _UNREAD)
+async def test_an_analysis_whose_document_no_longer_reads_falls_back_to_its_frozen_bundles_and_says_so(
+    unread: str,
+) -> None:
+    store = _EvidenceReadsCounted()
+    fixture = off_loop(ops_fixture, store=store)
+    analysis = await _generated(fixture)
+    assert analysis.report_doc_id is not None
+    _no_longer_reads(store, fixture, analysis.report_doc_id, unread)
+    frozen = off_loop(analysis_report, fixture.host.eval_host.storage, analysis.id, TOYHOST_SCOPE)
+    assert frozen.needs_regeneration is not None
+    store.read.clear()
+
+    page = off_loop(analysis_report, fixture.host.eval_host.storage, analysis.id, TOYHOST_SCOPE)
+
+    assert (page.basis, page.analysis_id, page.unread_analysis_id) == ("code_only", None, analysis.id)
+    assert page.doc_page is None
+    said = page.needs_regeneration or ""
+    assert said.startswith(NO_LONGER_READS) and _WHY[unread] in said
+    assert "this page lays out the evidence frozen with the analysis, not the campaign's evidence now" in said
+    assert f"This campaign's analysis {analysis.id} was {NO_LONGER_READS}." in campaign_report_markdown(page)
+    # Never the campaign's evidence now: no run and no result is read to lay it out.
+    assert not {"eval_run", "eval_result"} & set(store.read), store.read
+
+
+async def test_the_frozen_fallback_is_refused_when_the_frozen_bundles_no_longer_read_either() -> None:
+    """Over bundles of a shape this build no longer reads, the page is refused, never laid out over evidence now."""
+    store = _EvidenceReadsCounted()
+    fixture = off_loop(ops_fixture, store=store)
+    analysis = await _generated(fixture)
+    assert analysis.report_doc_id is not None
+    _no_longer_reads(store, fixture, analysis.report_doc_id, "doc_deleted")
+    raw = _stored_record(store, analysis.id)
+    store.upsert({**raw, "campaign_bundle": {**raw["campaign_bundle"], "schema_version": 999}})
+    store.read.clear()
+
+    with pytest.raises(RefusedInput):
+        off_loop(analysis_report, fixture.host.eval_host.storage, analysis.id, TOYHOST_SCOPE)
+    assert not {"eval_run", "eval_result"} & set(store.read), store.read
 
 
 async def test_the_listing_marks_a_document_whose_snapshot_is_gone_as_the_report_read_does() -> None:

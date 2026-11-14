@@ -41,7 +41,7 @@ document names and ``drop_derived`` sweeps, and no document; the writing loop ra
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Final, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, Protocol
 
 from pydantic import ValidationError
 
@@ -66,6 +66,7 @@ from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 from threetears.evals.kernel.storage import EvalStorage
 
 __all__ = [
+    "ReportDocReads",
     "StoredReportPage",
     "doc_verdicts",
     "doc_verdicts_and_page",
@@ -78,6 +79,28 @@ __all__ = [
 
 #: The format of the generation record :func:`generation_record` writes and :func:`made_line` reads.
 _GENERATION_FORMAT: Final = 2
+
+
+class ReportDocReads(Protocol):
+    """The two reads a stored report document is read back through: its record, then the snapshot it was written from.
+
+    The consumer's port of :func:`read_report_doc` and :func:`stored_headline`, and of a reader laying out a stored
+    analysis as its document's page (``analysis_report``). Structural, so a host's own storage satisfies it by having
+    the methods: :class:`~threetears.evals.kernel.storage.EvalStorage` does. Positional parameters are positional-only.
+
+    **Provisional:** this protocol may change before it is declared part of the host contract.
+    """
+
+    def load_report_doc(self, report_id: str, scope_id: str, /) -> EvalReportDoc | None:
+        """One report document within a scope, or ``None``; raises ``ValidationError`` for one this build cannot
+        read."""
+        ...
+
+    def load_report_snapshot(self, snapshot_id: str, scope_id: str, /) -> EvalReportSnapshot | None:
+        """One report snapshot within a scope, or ``None``; raises ``ValidationError`` for one this build cannot
+        read."""
+        ...
+
 
 #: Which check a strict build's refusal is reported under, by the field it names: the first prefix it starts with.
 _REFUSED_UNDER: Final[tuple[tuple[str, InvariantNumber], ...]] = (
@@ -393,12 +416,12 @@ def _unread(report_doc_id: str, why: str) -> RefusedInput:
 
 
 def read_report_doc(
-    storage: EvalStorage, report_doc_id: str, scope_id: str, *, campaign_id: str | None = None
+    storage: ReportDocReads, report_doc_id: str, scope_id: str, *, campaign_id: str | None = None
 ) -> StoredReportPage:
     """A stored report document read back as its page, on its own snapshot (the module docstring's read). Blocking.
 
     :param storage: Where the document and its snapshot are stored.
-    :ptype storage: EvalStorage
+    :ptype storage: ReportDocReads
     :param report_doc_id: The document's id.
     :ptype report_doc_id: str
     :param scope_id: The scope it is stored in.
@@ -450,7 +473,7 @@ def read_report_doc(
     return StoredReportPage(record=record, page=page, snapshot=snapshot, made=made)
 
 
-def stored_headline(storage: EvalStorage, record: EvalReportDoc) -> str:
+def stored_headline(storage: ReportDocReads, record: EvalReportDoc) -> str:
     """A stored document's headline as its page prints it, without building the page. Blocking.
 
     Its figure keys are written out on the document's own snapshot by the page's reading rule
@@ -459,7 +482,7 @@ def stored_headline(storage: EvalStorage, record: EvalReportDoc) -> str:
     is not read.
 
     :param storage: Where the document's snapshot is stored.
-    :ptype storage: EvalStorage
+    :ptype storage: ReportDocReads
     :param record: The stored document, as :meth:`~threetears.evals.kernel.storage.EvalStorage.load_report_doc` read
         it.
     :ptype record: EvalReportDoc
@@ -482,3 +505,11 @@ def stored_headline(storage: EvalStorage, record: EvalReportDoc) -> str:
     except RefusedInput as refused:
         raise _unread(record.id, f"was written from a snapshot that no longer reads: {refused.fault}") from refused
     return written_prose(headline, report_input)
+
+
+if TYPE_CHECKING:
+
+    def _eval_storage_satisfies_the_port(storage: EvalStorage) -> None:
+        """Hold the engine's own store to this consumer's port, so a drifted signature fails typecheck."""
+        reads: ReportDocReads = storage
+        del reads
