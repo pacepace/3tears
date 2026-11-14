@@ -3531,6 +3531,10 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             if sender.keywords or not isinstance(module.parent(sender), ast.Await):
                 refuse("a clause builder's statement sent with keyword arguments, or not awaited where it is sent")
                 continue
+            if parsed.joins or parsed.chain is not None:
+                # a clause over a joined read names which relation's columns it filters: not one row ``t``
+                refuse("a clause builder's statement with joins (its clause is not over one row)")
+                continue
             selected = _top_select(" ".join(text.split()))
             assert selected is not None
             respelled = _respelled(clause.leading, {parsed.table, *filter(None, [selected.group("alias")])})
