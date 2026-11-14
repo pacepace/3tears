@@ -11,8 +11,10 @@ and not stored, a damaged or unwritable store to a recompute, and concurrent wri
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import sys
 import threading
 import types
 from collections.abc import Callable
@@ -237,6 +239,67 @@ def test_the_gates_cache_directory_is_ignored_by_git() -> None:
 
 
 # -- a computation that reads outside its key is answered and not stored -----------------------
+
+
+def test_outside_its_inputs_only_the_interpreters_own_code_may_be_opened(tmp_path: Path) -> None:
+    """the one allowance beyond the declared inputs: a module, or its bytecode, under the interpreter's prefix."""
+    inputs = ScanInputs(root=tmp_path)
+    accepted = [
+        Path(sys.prefix, "lib", "python3.14", "site-packages", "x", "__pycache__", "m.cpython-314.pyc.12345"),
+        Path(sys.base_prefix, "lib", "python3.14", "json", "decoder.py"),
+    ]
+    refused = [
+        Path(sys.prefix, "pyvenv.cfg"),
+        _REPO_ROOT / "packages" / "core" / "src" / "threetears" / "core" / "__pycache__" / "x.cpython-314.pyc",
+        tmp_path / "__pycache__" / "m.cpython-314.pyc",
+        tmp_path / "m.py",
+    ]
+
+    for path in accepted:
+        assert inputs.outside([("open", (str(path), "rb", 0))]) == [], f"{path} is the interpreter's code"
+    for path in refused:
+        assert inputs.outside([("open", (str(path), "rb", 0))]) == [f"open {path}"], f"{path} is not"
+
+
+_HOOKS_ADDED = """
+import json, sys
+added = []
+sys.addaudithook(lambda event, args: added.append(event) if event == "sys.addaudithook" else None)
+from pathlib import Path
+from tests.enforcement.scan_cache import ScanCache, ScanInputs
+directory, inputs = Path(sys.argv[1]), Path(sys.argv[2])
+cache = ScanCache(directory, "code")
+declared = lambda item: ScanInputs(root=inputs, files=(inputs / item,))
+counts = {"imported": len(added)}
+cache.memoised("s", ["a"], declared, lambda item: "stale")
+counts["after a hit"] = len(added)
+cache.memoised("s", ["a", "b"], declared, lambda item: item.upper())
+counts["after a miss"] = len(added)
+cache.memoised("s", ["a", "b", "c"], declared, lambda item: item.upper())
+counts["after another miss"] = len(added)
+print(json.dumps(counts))
+"""
+
+
+def test_the_audit_hook_is_added_on_the_first_computation_and_never_before(tmp_path: Path) -> None:
+    """a process that imports the cache and only hits its store runs without the hook, and one that computes adds it once."""
+    inputs = _inputs(tmp_path, a="alpha", b="beta", c="gamma")
+    warm = _Counted(inputs)
+    ScanCache(tmp_path / "cache", "code").memoised("s", ["a"], warm.declared, warm.compute)
+
+    # a fresh interpreter: this one may have added the hook already, and a hook is never removed
+    ran = subprocess.run(
+        [sys.executable, "-c", _HOOKS_ADDED, str(tmp_path / "cache"), str(inputs)],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    counts = json.loads(ran.stdout)
+
+    assert counts["after a hit"] == counts["imported"], "importing the cache or reading its store added a hook"
+    assert counts["after a miss"] == counts["imported"] + 1
+    assert counts["after another miss"] == counts["imported"] + 1, "the hook was added more than once"
 
 
 def _undeclared(tmp_path: Path, compute: Callable[[str], str], commands: frozenset[str] = frozenset()) -> ScanCache:

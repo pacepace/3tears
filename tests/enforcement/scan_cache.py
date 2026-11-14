@@ -19,8 +19,16 @@ interpreter's audit events report them (``open``, ``os.scandir``, ``os.listdir``
 ``subprocess.Popen`` and the ``os`` spawn calls), and when its inputs hash the same afterwards as
 before. A scan that starts reading something its key does not cover is answered and not stored,
 with a :class:`ScanCacheWarning`, so a key list that drifts from its scan costs speed, never a
-stale verdict. What the audit cannot see is a bare ``stat``: a scan that decides by whether a path
-exists, outside the files and directories it declares, is not caught by it.
+stale verdict. What the audit cannot see: a bare ``stat`` (a scan that decides by whether a path
+exists, outside the files and directories it declares); a read on another thread than the one
+computing (recording is per thread, and the scans start none); sockets and other non-file reads; a
+name learned from listing a declared directory, which is not keyed unless the file it names is
+declared; and a C extension reading through ``fopen``, which raises no event.
+
+**The hook costs nothing until a scan computes.** A Python audit hook runs a Python call for every
+audit event in the process (``id``, ``compile``, ``import``, ...) and cannot be removed once added,
+so it is added on the first computation that records, never at import: a process whose scans
+all come from the store, and every test that never asks for a scan, runs without it.
 
 **Concurrency.** Any number of processes may read and write one directory at once: up to four xdist
 workers in one checkout, a pool's batches in one workspace. A store is written whole to a temporary
@@ -55,6 +63,7 @@ from typing import Any
 from threetears.enforcement.common import clear_parse_cache, find_local_src_roots
 from threetears.enforcement.release import surface_at, surface_now
 from threetears.enforcement.underscore_access import PrivateBindingScan, scan_private_bindings
+from threetears.observe import BuildOnce
 
 #: where :meth:`ScanCache.for_repo` keeps its stores, under the repo root (gitignored)
 CACHE_DIRECTORY = Path(".cache") / "enforcement-scans"
@@ -88,12 +97,20 @@ _RECORDING = threading.local()
 
 def _audit(event: str, args: tuple[Any, ...]) -> None:
     """keep a watched event for the computation running on this thread, if one is."""
-    log = getattr(_RECORDING, "log", None)
-    if log is not None and event in _WATCHED_EVENTS:
-        log.append((event, args))
+    if event in _WATCHED_EVENTS:
+        log = getattr(_RECORDING, "log", None)
+        if log is not None:
+            log.append((event, args))
 
 
-sys.addaudithook(_audit)
+def _install_audit() -> bool:
+    """add :func:`_audit` to this process's audit hooks; :data:`_AUDIT` makes it once."""
+    sys.addaudithook(_audit)
+    return True
+
+
+#: the hook, added once per process on the first computation that records
+_AUDIT: BuildOnce[str, bool] = BuildOnce()
 
 
 class ScanCacheWarning(UserWarning):
@@ -247,6 +264,7 @@ class _Recorded:
     """record this thread's watched audit events while the block runs."""
 
     def __enter__(self) -> list[tuple[str, tuple[Any, ...]]]:
+        _AUDIT.get("audit", _install_audit)
         self.log: list[tuple[str, tuple[Any, ...]]] = []
         _RECORDING.log = self.log
         return self.log
