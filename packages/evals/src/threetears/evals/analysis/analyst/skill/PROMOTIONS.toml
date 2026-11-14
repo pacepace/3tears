@@ -62,3 +62,12 @@ date = 2026-11-10
 basis = "unmeasured"
 monthly_envelope_usd = 50
 reason = "the pass rule names every check that fails a trial and count.failures counts every failed trial; statistics.md and writing.md say what the keys now read, not measured"
+
+[[shipped]]
+skill = "be671b837e6622975580536072c94a1de3080401e1403722826c5670857d4843"
+analyst = "aa5cc516f0ced277b7054819f67b1d679ebc9e94c27770f47be516d0dee32eee"
+editor = "5409446fa1296dd9b80669c4ba95a86c4d078e02bf103c4851eef12fd8025a70"
+date = 2026-11-14
+basis = "unmeasured"
+monthly_envelope_usd = 50
+reason = "the owner's one-row ruling (#1124): charts.md states that a one-row change chart is refused and points a single gap to a compare chart of the pair, the rule the code now applies, not measured"
