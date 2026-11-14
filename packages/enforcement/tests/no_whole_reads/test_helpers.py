@@ -175,6 +175,40 @@ def test_a_keyed_count_is_a_keyed_count(schema: SchemaCatalog) -> None:
 
 
 @pytest.mark.parametrize(
+    "code",
+    [
+        # a count grouped by a column named at run time, its rows bound by a literal key pin (reports #55 ask 1)
+        'counts_by(c, "results", column=column, by={"state": s})',
+        'counts_by(c, "results", column=part.column, by={"state": AnyOf(ss)}, where=required)',
+        # a literal key pin beside a mapping merged in at run time: the merge only narrows it (reports #55 ask 2)
+        'counts_by(c, "results", column="geo", by={"state": AnyOf(ss), **others})',
+        'counts_by(c, "results", column=column, by={"state": AnyOf(ss), **others}, where=required)',
+        'counts_by_relations(c, {"a": "results"}, column=column, by={"state": AnyOf(ss), **others})',
+    ],
+)
+def test_a_count_judged_by_its_literal_pins_beside_run_time_parts(code: str, schema: SchemaCatalog) -> None:
+    """Flips if a grouped count whose literal ``by`` entry pins the key is left unknown because its grouped column or
+    the rest of its pins are named at run time (reports #55 asks 1 and 2)."""
+    assert _judged(code, schema) == [[("keyed-count", "results")]]
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # the literal entry pins no key: the merged pins may, but the walk cannot see them
+        'counts_by(c, "results", column=column, by={"kind": k, **others})',
+        'counts_by(c, "results", column="geo", by={"kind": AnyOf(ks), **others})',
+    ],
+)
+def test_a_count_whose_literal_pins_bind_no_key_is_still_found(code: str, schema: SchemaCatalog) -> None:
+    """Flips if a count beside run-time parts passes when its literal pins bind no key, or if its statement does not
+    say its pins were merged (the walk then names it unknown-predicate, never a guessed non-key read)."""
+    judged = _judged(code, schema)
+    assert judged != [[("keyed-count", "results")]] and judged != [[]], judged
+    assert [statement.merged for statement in helper_statements(_call(code))] == ["by"]
+
+
+@pytest.mark.parametrize(
     ("code", "kind"),
     [
         # a batch of a later key column alone: every row is read to find them
@@ -257,6 +291,10 @@ def test_a_helper_naming_no_key_is_a_whole_read(code: str, kind: str, schema: Sc
             "visible",
         ),
         ('counts_by(c, "results", column=name, values=AnyOf(g), by={"state": s})', "column"),
+        # a run-time column bound to a set of values: a predicate no one can see
+        ('counts_by(c, "results", column=name, values=AnyOf(g), by={"state": s, **others})', "column"),
+        # a merged mapping with no literal entry
+        ('counts_by(c, "results", column="geo", by={**others})', "by"),
         ('holds_any(c, "results", by={**pinned}, order=["state"])', "by"),
         ('holds_any(c, "results", by={"state": s})', "order"),
         ('count_at_most(c, "results", by={"state": s}, at_most=3)', "order"),

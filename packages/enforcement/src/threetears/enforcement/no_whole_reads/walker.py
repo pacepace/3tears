@@ -3573,8 +3573,14 @@ class _ModuleWalk(ast.NodeVisitor):
                 for finding in judge_sql(statement.sql, reader):
                     if finding.kind in {HEAD, KEYED_COUNT} or self._transient_table(finding.table):
                         continue
-                    symbol = f"{finding.kind} {finding.table}"
-                    if at is None or finding.kind.startswith("unknown-"):
+                    # pins merged in at run time beside the literal ones the statement holds: not keyed by those
+                    # alone, the read is one the walk cannot judge, as a wholly run-time ``by=`` is
+                    symbol = (
+                        f"unknown-predicate {statement.helper}({statement.merged})"
+                        if statement.merged
+                        else f"{finding.kind} {finding.table}"
+                    )
+                    if at is None or symbol.startswith("unknown-"):
                         hits.setdefault(symbol, statement.sql)
                     else:
                         passed.setdefault((at.path, at.line, at.function, symbol), statement.sql)

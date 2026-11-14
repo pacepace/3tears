@@ -238,11 +238,15 @@ class HelperStatement:
     :ivar sql: the statement in the helper's canonical shape; :data:`UNSEEN` when an argument it needs is not a
         literal the walk can read
     :ivar unseen: which argument was not read, when ``sql`` is :data:`UNSEEN`
+    :ivar merged: the argument holding pins merged in at run time beside its literal ones (``by={"run_id": ids,
+        **others}``): the statement holds only the literal ones, so it passes when they key it, and a read they do not
+        key is unknown (the merged pins may key it), never judged a non-key read on a guess
     """
 
     helper: str
     sql: str | None
     unseen: str = ""
+    merged: str = ""
 
 
 class _Unseen(Exception):
@@ -299,10 +303,19 @@ def _by(node: ast.expr | None, argument: str = "by") -> list[tuple[str, str]]:
         # bound, as the interpolation in SQL the caller wrote: the key when the walk hands it as ``pk`` (a declared
         # key source), else a predicate the rule cannot see
         return [("{" + _named(zipped, argument)[1:-1] + "}", "eq")]
-    if not isinstance(node, ast.Dict) or any(key is None for key in node.keys):
+    if not isinstance(node, ast.Dict):
+        raise _Unseen(argument)
+    if any(key is None for key in node.keys) and (
+        argument != "by" or all(key is None or not isinstance(key, ast.Constant) for key in node.keys)
+    ):
+        # a mapping merged in at run time (``{**others}``) names columns the walk cannot see; beside a literal entry
+        # (``{"run_id": AnyOf(ids), **others}``) it only narrows that pin -- every entry is ANDed -- so the call is
+        # judged by its literal entries (reports #55 ask 2); with none, nothing is seen
         raise _Unseen(argument)
     pinned = []
     for key, value in zip(node.keys, node.values, strict=True):
+        if key is None:
+            continue
         if isinstance(key, ast.Call):
             column = _pinned_expression(key, argument)
         elif argument == "by" and not isinstance(key, ast.Constant):
@@ -658,20 +671,34 @@ def _relation(node: ast.expr | None, argument: str) -> tuple[str, list[str]]:
 
 
 def _count_of(relation: str, column: str, call: ast.Call, *, values: bool) -> str:
+    """a grouped count's statement; ``column`` as the statement spells it (quoted, or a run-time interpolation)."""
     pinned, place = _conditions(_by(_argument(call, "by", None)))
     conditions = [*pinned]
     if values:
-        conditions.append(f"{_quoted(column)} = ANY(${place})")
+        conditions.append(f"{column} = ANY(${place})")
         place += 1
     filtered, _ = _filters(call, place)
     conditions += filtered
-    return f"SELECT {_quoted(column)}, count(*) FROM {relation} AS r{_where(conditions)} GROUP BY {_quoted(column)}"
+    return f"SELECT {column}, count(*) FROM {relation} AS r{_where(conditions)} GROUP BY {column}"
+
+
+def _counted_column(call: ast.Call, *, values: bool) -> str:
+    """the column a count groups by, as the statement spells it: a literal, quoted; one named at run time, its
+    interpolation, but only when no ``values=`` binds it (the count's rows are then bound by its pins and filters
+    alone, whatever column they are grouped by; a set of values of an unseen column is a predicate no one can see)
+    (reports #55 ask 1)."""
+    node = _argument(call, "column", None)
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return _quoted(node.value)
+    if values or not isinstance(node, ast.Name | ast.Attribute):
+        raise _Unseen("column")
+    return "{" + (node.id if isinstance(node, ast.Name) else node.attr) + "}"
 
 
 def _counts_by(call: ast.Call) -> list[str]:
     relation, own = _relation(_argument(call, "table", 1), "table")
-    column = _text(_argument(call, "column", None), "column")
     values = _argument(call, "values", None) is not None
+    column = _counted_column(call, values=values)
     if not values and _argument(call, "where", None) is None and _argument(call, "by", None) is None:
         # counted with nothing narrowing it: every value of the column, whatever the relation
         raise _Unseen("values")
@@ -682,8 +709,8 @@ def _counts_by_relations(call: ast.Call) -> list[str]:
     tables = _argument(call, "tables", 1)
     if not isinstance(tables, ast.Dict) or not tables.values:
         raise _Unseen("tables")
-    column = _text(_argument(call, "column", None), "column")
     values = _argument(call, "values", None) is not None
+    column = _counted_column(call, values=values)
     if not values and _argument(call, "where", None) is None and _argument(call, "by", None) is None:
         # counted with nothing narrowing it: every value of the column, whatever the relation
         raise _Unseen("values")
@@ -1153,8 +1180,10 @@ def helper_statements(call: ast.Call) -> Iterator[HelperStatement]:
     except _Unseen as unseen:
         yield HelperStatement(helper=helper, sql=UNSEEN, unseen=unseen.argument)
         return
+    pins = _argument(call, "by", None)
+    merged = "by" if isinstance(pins, ast.Dict) and any(key is None for key in pins.keys) else ""
     for sql in statements:
-        yield HelperStatement(helper=helper, sql=sql)
+        yield HelperStatement(helper=helper, sql=sql, merged=merged)
 
 
 #: the pagers whose every page after the first starts past the last row read, in their order: the argument naming
