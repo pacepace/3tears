@@ -28,7 +28,7 @@ from packages.evals.tests.report_doc_support import converted_doc, snapshot_of
 from packages.evals.tests.report_kit_support import chromium_unavailable, report_of, rendered
 from threetears.evals.analysis import report_html
 from threetears.evals.analysis.report.blocks import ChartBlock
-from threetears.evals.analysis.report.chart_levels import chart_level, levels_said
+from threetears.evals.analysis.report.chart_levels import levels_said
 from threetears.evals.analysis.report.charts import drawn_head
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
@@ -115,7 +115,14 @@ def test_a_chart_whose_head_the_rule_keeps_is_left_unset() -> None:
 def test_a_chart_alone_and_a_scatter_without_whiskers_keep_their_heads() -> None:
     assert _heads([_forest("95%")]) == ["95% intervals"]
     bare = _scatter(whiskered=False)
-    assert chart_level(bare) is None and chart_level(_scatter(whiskered=True)) == "98.3%"
+    # Two bare scatters beside a forest set no main level: the forest is the page's one stated level, left as it was.
+    assert _heads([_forest("95%"), bare, bare])[0] == "95% intervals"
+    # Two whiskered ones state 98.3%, so it is the main level and the forest is marked against it.
+    assert _heads([_forest("95%"), _scatter(whiskered=True), _scatter(whiskered=True)]) == [
+        "95% intervals, not 98.3%",
+        "98.3% intervals",
+        "",
+    ]
     # The bare scatter states no level, so the forests' 95% is stated once and the scatter's is not counted.
     assert [drawn_head(block.data) for block in levels_said([_forest("95%"), bare, _forest("95%")])][::2] == [
         "95% intervals",
@@ -182,13 +189,14 @@ def test_a_written_report_states_its_main_level_once_across_its_claims() -> None
     assert mixed == [adjusted] * 3 + ["95% intervals"] * 9, mixed
 
 
-def _levels(page: DocPage) -> list[str | None]:
+def _own_heads(page: DocPage) -> list[str]:
+    """The head each chart of a written report prints of its own level, before its page's rule moves any."""
     charts: list[Any] = [evidence.chart.chart for claim in page.claims for evidence in claim.evidence if evidence.chart]
-    return [chart_level(chart) if isinstance(chart, ChartBlock) else None for chart in charts]
+    return [drawn_head(chart.data) for chart in charts if isinstance(chart, ChartBlock) and chart.data is not None]
 
 
 def test_the_written_reports_draw_the_levels_the_test_reads() -> None:
     """The fixtures read above draw what the test says they draw, so a change to them fails here, not as a miscount."""
-    assert [level for level in _levels(_doc_page("prototype2/s2")) if level] == ["95%"] * 3
-    s1 = [level for level in _levels(_doc_page("prototype2/s1")) if level]
-    assert s1.count("95% (adjusted for 11 comparisons)") == 4 and s1.count("95%") == 3
+    assert [head for head in _own_heads(_doc_page("prototype2/s2")) if head] == ["95% intervals"] * 3
+    s1 = [head for head in _own_heads(_doc_page("prototype2/s1")) if head]
+    assert s1.count("95% intervals (adjusted for 11 comparisons)") == 4 and s1.count("95% intervals") == 3

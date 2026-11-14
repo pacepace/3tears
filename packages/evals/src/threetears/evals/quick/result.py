@@ -452,7 +452,9 @@ class Result:
 
         Quiet is the verdict, each arm's scoreboard and readings, the top misses and where the runs are stored. Never
         quieted: errors, exclusions and their causes, a run stopped short, unpriced spend, the self-judging warning,
-        and how the judge stands against people's labels.
+        and how the judge stands against people's labels. A failed run (a replay miss fails one) leads with its failure,
+        naming what failed, and prints no verdict: its readings follow, said to cover only the results recorded before
+        it failed.
 
         :param full: Every arm's whole summary and the whole report, Methods included, as Markdown.
         :ptype full: bool
@@ -474,7 +476,7 @@ class Result:
                 ]
             )
         one_arm = len(self.arms) == 1
-        lines = [self._verdict_line()]
+        lines = self._failed_lines() or [self._verdict_line()]
         # How far its judge can be trusted is read with the verdict: against people's labels, then on its examples.
         judged = self.calibration_lines() + (self.judge_examples.lines() if self.judge_examples is not None else [])
         if one_arm:
@@ -653,6 +655,26 @@ class Result:
         guardrail an arm is not shown safe on. The page, its lead, this line and the exit line say one sentence.
         """
         return f"{self.name}: {self._verdict().text}"
+
+    def _failed_lines(self) -> list[str]:
+        """The first lines of a failed run's print, in place of its verdict; empty when no arm's run failed.
+
+        Each failed arm's failure first, in the run's words (:attr:`EvalSummary.failed_text`: a replay miss names the
+        call its recording does not hold), then how many results the readings below it cover. A failed run prints no
+        verdict: the run ended at its failure (a replay miss fails it, owner ruling, #1162), so its results are
+        whichever cells happened to finish first, and a verdict over them is the reading the failure exists to stop.
+        """
+        failed = {arm: text for arm, summary in self.arms.items() if (text := summary.failed_text) is not None}
+        if not failed:
+            return []
+        lines = [
+            f"{self.name}: {'the run' if len(self.arms) == 1 else _shown_arm_name(arm)} failed, so there is no "
+            f"verdict: {one_line(text)}"
+            for arm, text in failed.items()
+        ]
+        recorded = sum(summary.n_results for summary in self.arms.values())
+        lines.append(f"the readings below cover only the {recorded} result(s) recorded before it failed")
+        return lines
 
     def _verdict(self) -> VerdictLine:
         """The eval's verdict line, as its aspect's page opens with it, led on its graders' order."""

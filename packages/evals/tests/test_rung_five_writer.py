@@ -248,6 +248,10 @@ def test_a_page_whose_text_moved_under_the_judge_s_recording_fails_the_pass_nami
 
     assert main(["writer.py"]) == 1
     printed = capsys.readouterr().out
+    # The print leads with the failure, naming the call, before any reading.
+    lead = printed.splitlines()[0]
+    assert lead.startswith("writer: the pairwise pass of lead-first did not complete: ended failed: RecordingRefused: ")
+    assert "recordings/judge.jsonl" in lead and "no call is recorded for the prompt" in lead, lead
     (failed,) = [line for line in printed.splitlines() if line.startswith("pairwise pass of lead-first: ")]
     assert "ended failed: RecordingRefused: recording " in failed and "recordings/judge.jsonl" in failed
     assert re.search(r"no call is recorded for the prompt .+ \(call 0, key [0-9a-f]{12}\)", failed), failed

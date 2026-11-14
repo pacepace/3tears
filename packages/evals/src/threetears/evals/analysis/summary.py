@@ -1029,6 +1029,20 @@ class EvalSummary(BaseModel):
             return self.stopped_because
         return f"stopped: {self.stopped_because}"
 
+    @property
+    def failed_text(self) -> str | None:
+        """Why the run failed, in the run's own words, or None: the error a ``failed`` or ``exhausted`` run recorded
+        last (the run's own come after its results' in :attr:`errors`), as its holding's ending reason reads it. A
+        replay miss is one: the line names the call the recording does not hold. A printed result leads with it, so a
+        failed run is never read as a finished one.
+
+        :return: The line, without indentation, or None for a run that did not fail, or failed recording no error.
+        :rtype: str | None
+        """
+        if self.status not in ("failed", "exhausted") or not self.errors:
+            return None
+        return self.errors[-1]
+
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
             "The spend ceiling the run was held to, or that nothing bounded it; null when the summary prints no cap "
