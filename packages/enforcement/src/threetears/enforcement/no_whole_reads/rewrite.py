@@ -540,7 +540,13 @@ def _probe_walk(parsed: PointSql, declared: Any) -> list[str] | str:
 
 def _key_completion(parsed: PointSql, declared: Any) -> list[dict[str, Any]] | str:
     """the sort terms that complete a first-of read's order by its table's key: none when the pins and the sort
-    already hold a declared key; else the primary key's columns they do not hold, ascending.
+    already hold a declared key; else, of the declared keys (the primary key first among equals, then each
+    ``UNIQUE``), the columns of the one they hold most of, ascending, when those are selected and an index holds them.
+
+    An index holds the completed order when, its leading columns pinned to one value set aside, it goes on with the
+    order's columns and then the completion's: only then does the first page read its rows off the index in order.
+    Without one the database reads every row the pins leave and sorts them (YugabyteDB has no incremental sort), so
+    the read is refused until such an index is declared.
 
     :param parsed: the read
     :ptype parsed: PointSql
@@ -551,17 +557,50 @@ def _key_completion(parsed: PointSql, declared: Any) -> list[dict[str, Any]] | s
     """
     if declared is None or not declared.primary_keys:
         return f"no declared key of {parsed.table} to complete its order with"
-    held = {pin.column.lower() for pin in parsed.pins if pin.kind in _ONE_VALUE_KINDS}
-    held |= {term["column"].lower() for term in parsed.order}
-    if any({column.lower() for column in key} <= held for key in [*declared.primary_keys, *declared.unique_keys]):
+    pinned = {pin.column.lower() for pin in parsed.pins if pin.kind in _ONE_VALUE_KINDS}
+    ordered = [term["column"].lower() for term in parsed.order]
+    held = pinned | set(ordered)
+    keys = [*declared.primary_keys, *(key for key in declared.unique_keys if key not in declared.primary_keys)]
+    if any({column.lower() for column in key} <= held for key in keys):
         return []
-    completing = [column for column in declared.primary_keys[0] if column.lower() not in held]
-    if parsed.columns is not None:
-        selected = {column.lower() for column in parsed.columns}
-        unselected = [column for column in completing if column.lower() not in selected]
+    selected = None if parsed.columns is None else {column.lower() for column in parsed.columns}
+    reasons: list[str] = []
+    for key in sorted(keys, key=lambda key: sum(column.lower() not in held for column in key)):
+        completing = [column for column in key if column.lower() not in held]
+        unselected = [column for column in completing if selected is not None and column.lower() not in selected]
         if unselected:
-            return f"the key column(s) {unselected} completing the order are not selected"
-    return [{"column": column, "descending": False, "nulls": None} for column in completing]
+            reasons.append(f"the key column(s) {unselected} completing the order are not selected")
+        elif not _index_holds(declared, pinned, [*ordered, *(column.lower() for column in completing)]):
+            reasons.append(
+                f"no declared index of {parsed.table} holds its order completed by the key "
+                f"({', '.join([*ordered, *completing])}, after the pins {sorted(pinned)}): declare that index first"
+            )
+        else:
+            return [{"column": column, "descending": False, "nulls": None} for column in completing]
+    return reasons[0]
+
+
+def _index_holds(declared: Any, pinned: set[str], order: list[str]) -> bool:
+    """whether a declared key or plain (not hnsw/gin) index of the table, its leading columns pinned to one value set
+    aside, goes on with ``order``'s lower-cased columns, so a read pinned and ordered so walks it in order.
+
+    :param declared: the table's declaration in the walk's schema catalogue
+    :ptype declared: Any
+    :param pinned: the read's columns pinned to one value, lower-cased
+    :ptype pinned: set[str]
+    :param order: the completed order's columns, lower-cased
+    :ptype order: list[str]
+    :return: whether one does
+    :rtype: bool
+    """
+    indexes = [index.columns for index in declared.indexes.values() if not index.method and index.columns]
+    for columns in [*declared.primary_keys, *declared.unique_keys, *indexes]:
+        walked = [column.lower() for column in columns]
+        while walked and walked[0] in pinned:
+            walked.pop(0)
+        if walked[: len(order)] == order:
+            return True
+    return False
 
 
 #: pin kinds holding a column to one value (or NULL) on every row read: no key column they hold needs ordering

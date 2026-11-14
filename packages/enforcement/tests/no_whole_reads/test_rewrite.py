@@ -1135,6 +1135,7 @@ def test_first_of_and_top_n_reads_are_rewritten_onto_keyset_page_s_first_page(tm
     or a read with a key column unselected, no order, or no LIMIT is taken."""
     config = _config(tmp_path)
     (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_FIRSTS), encoding="utf-8")
+    (tmp_path / "src/pkg/indexes.py").write_text(textwrap.dedent(_GEO_NAME_INDEX), encoding="utf-8")
     rewrites, refusals = plan_first_rewrites(config)
     assert sorted(rewrite.function for rewrite in rewrites) == ["first_id", "first_name", "top_names"]
     refused = {refusal.function: refusal.reason for refusal in refusals}
@@ -1160,6 +1161,51 @@ def test_first_of_and_top_n_reads_are_rewritten_onto_keyset_page_s_first_page(tm
     assert "next((row['geo_id'] for row in (await keyset_page(" in source
     for entry in entries.values():
         assert_source_says(tmp_path, entry)
+
+
+#: the index the first-of reads by state walk in name order, completed by the key's geo_id
+_GEO_NAME_INDEX = """
+    BY_NAME = "CREATE INDEX IF NOT EXISTS geos_by_name ON geos (state, name, geo_id)"
+"""
+
+_SLOTS = """
+    from threetears.core.collections.schema_backed import TableSchema
+
+    SLOTS_SCHEMA = TableSchema(name="slots", primary_key=("zone", "slot_id"), columns=[])
+    SLOT_ID = "CREATE UNIQUE INDEX IF NOT EXISTS slots_slot_id ON slots (slot_id)"
+    BY_KIND = (
+        "-- purpose: src/pkg/slots.py::first_due\\n"
+        "CREATE INDEX IF NOT EXISTS slots_by_kind ON slots (kind, due_at, slot_id)"
+    )
+
+
+    async def first_due(conn, kind):
+        return await conn.fetchrow(
+            "SELECT zone, slot_id, due_at FROM slots WHERE kind = $1 ORDER BY due_at LIMIT 1", kind
+        )
+"""
+
+
+def test_a_first_of_read_whose_completed_order_no_index_holds_is_refused(tmp_path: Path) -> None:
+    """Flips if a first-of read is rewritten with its order completed by a key no declared index holds after its
+    pins and sort (the database would then read and sort every row the pins leave: YugabyteDB has no incremental
+    sort), or if the completion is not the declared key (primary or ``UNIQUE``) the pins and sort hold most of."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_FIRSTS), encoding="utf-8")
+    rewrites, refusals = plan_first_rewrites(config)
+    assert [rewrite.function for rewrite in rewrites] == ["first_id"]
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    for function in ("top_names", "first_name"):
+        assert "no declared index of geos holds its order completed by the key (name, geo_id" in refused[function]
+
+    (tmp_path / "src/pkg/slots.py").write_text(textwrap.dedent(_SLOTS), encoding="utf-8")
+    rewrites, refusals = plan_first_rewrites(config)
+    slots = [rewrite for rewrite in rewrites if rewrite.path.endswith("slots.py")]
+    # the UNIQUE slot_id completes due_at (slots_by_kind holds it after the pinned kind), not the primary key
+    assert [rewrite.function for rewrite in slots] == ["first_due"], refusals
+    apply_rewrites(tmp_path, slots, ruff=None)
+    source = " ".join((tmp_path / "src/pkg/slots.py").read_text(encoding="utf-8").split())
+    assert "order=[Sort('due_at'), Sort('slot_id')]" in source, source
 
 
 _COUNTS = """

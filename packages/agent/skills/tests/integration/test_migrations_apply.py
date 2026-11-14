@@ -190,6 +190,7 @@ class TestSchemaShape:
                 "idx_skills_agent_user_enabled",
                 "idx_skill_invocations_skill_time",
                 "idx_skill_invocations_conv",
+                "idx_skill_invocations_conv_key",
             ):
                 assert await _index_exists(conn, schema, index_name), index_name
             for index_name in _DROPPED_GIN_INDEXES:

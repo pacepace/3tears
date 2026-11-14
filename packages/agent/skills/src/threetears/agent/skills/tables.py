@@ -306,4 +306,15 @@ def agent_skill_invocations_table(metadata: MetaData) -> Table:
             "conversation_id",
             sa_text("invoked_at DESC"),
         ),
+        Index(
+            "idx_skill_invocations_conv_key",
+            "agent_id",
+            "conversation_id",
+            sa_text("invoked_at DESC"),
+            sa_text("invocation_id ASC"),
+            info={
+                "purpose": "packages/agent/skills/src/threetears/agent/skills/collections.py::AgentSkillInvocationCollection.list_for_conversation",
+                "plan_test": "packages/agent/skills/tests/integration/test_index_plans.py::test_skill_invocations_conv_key",
+            },
+        ),
     )

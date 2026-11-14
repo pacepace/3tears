@@ -36,10 +36,16 @@ Version history:
 - v005 adds ``outcome_notes`` (TEXT) to ``agent_skill_invocations``: the
   agent's line on how a use went, kept apart from ``notes``, which holds the
   reason it gave when it invoked the skill.
+- v006 (expand) builds ``idx_skill_invocations_conv_key`` (``agent_id, conversation_id, invoked_at DESC,
+  invocation_id``): a conversation's page ordered by time completed by the key; v002's
+  ``idx_skill_invocations_conv`` stays until the contract step.
 """
 
 from __future__ import annotations
 
+from threetears.agent.skills.migrations.v006_conversation_key_index import (
+    add_conversation_key_index,
+)
 from threetears.agent.skills.migrations.v001_create_agent_skills import (
     create_agent_skills,
 )
@@ -87,6 +93,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(3)(drop_gin_indexes)
     pkg.version(4)(add_tool_call_columns)
     pkg.version(5)(add_outcome_notes)
+    pkg.version(6)(add_conversation_key_index)
     runner.register(pkg)
     return pkg
 
