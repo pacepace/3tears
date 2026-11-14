@@ -161,7 +161,10 @@ class TestTheLoopRunsWhileThreadsQueryTheCopy:
         self, tmp_path: Path, parts: dict[str, pa.Table]
     ) -> None:
         ticks, host, reads, mapped = await trusted(
-            lambda: _queried_while_published(tmp_path, parts), _window, host_may_be_late=LOOP_MAY_BE_LATE
+            lambda: _queried_while_published(tmp_path, parts),
+            _window,
+            host_may_be_late=LOOP_MAY_BE_LATE,
+            threads=READERS * READER_THREADS,
         )
         assert min(reads) > 0 and mapped > 1, (reads, mapped)
         added = added_lateness(ticks, host, every=TICK)
@@ -181,6 +184,7 @@ class TestTheLoopRunsWhileThreadsQueryTheCopy:
             lambda: _queried_while_published(tmp_path, parts, planted=lambda: hold_the_loop(0.03)),
             _window,
             host_may_be_late=LOOP_MAY_BE_LATE,
+            threads=READERS * READER_THREADS,
         )
         added = added_lateness(ticks, host, every=TICK)
         assert added >= LOOP_MAY_BE_LATE, f"a 30 ms block on the loop was judged {added * 1000:.1f} ms"
