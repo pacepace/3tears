@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a definitions reset fills the presentation names a template it leaves current lacks
+
+**Added:** `reset_definitions` runs the definition seed's fill-only presentation-name pass after its writes, on every
+corpus template reading `current` after the reset, named in the call or not. A template the reset left current that
+lacked a name the corpus declares (`goal_check_names`, `stratum_names`) got it only at the next boot's seed; it gets it
+from the reset now. The pass is the seed's own (`run.definition_seed.fill_presentation_names`): an entry the stored
+template holds is never overwritten, a name it gives another entry is not given twice, `updated_at` is unchanged, and a
+second reset writes nothing. The template write is not conditional, so an `update_template` landing between the
+reset's read and its write can be lost, as between two `update_template` calls. `DefinitionReset.render()` prints a
+line for each template given names and each whose write the store refused.
+
+**For hosts:** `DefinitionReset` gains `presentation_named: dict[str, dict[str, list[str]]]` and
+`presentation_fill_failed: dict[str, dict[str, str]]`, both defaulting to empty, with the same shapes and meaning as on
+`SeedOutcome`: keyed by doc type (`eval_template`), then template name, to the entries written (`goal check <check>`,
+`stratum <id>`) or the store's reason for refusing the write. Nothing to change; a host that reads the reset's outcome
+can report them.
+
 ### evals: a page states each interval level once (#1128)
 
 **Changed:** a page of several interval charts printed "95% intervals" over every one. It now states each level once

@@ -47,6 +47,15 @@ results of two revisions never pool (:mod:`threetears.evals.analysis.revisions`)
   same reset again writes nothing; a judge-case freeze of the same labels into the new revision names the copy. A
   case set outside the corpus that lists cases of the archived revision is not minted again; the result names each
   one (``DefinitionReset.stranded_case_sets``).
+- **A template left current is given the corpus's presentation names it lacks**, after the reset's writes, by the
+  seed's own fill-only pass (:func:`~threetears.evals.run.definition_seed.fill_presentation_names`): every corpus
+  template reading ``current`` after the reset, named or not, whose current revision names nothing for a goal check
+  or stratum the corpus names. The template digest leaves ``goal_check_names`` and ``stratum_names`` out, so a name
+  the corpus later declares never makes a template stale; without the pass it would arrive only at the next boot's
+  seed. An entry the store holds is never overwritten, ``updated_at`` is left as it is, and a second reset writes
+  nothing. The write is not conditional, so an ``update_template`` landing between the read and the write can be
+  lost, the race two ``update_template`` calls share. What was filled is ``DefinitionReset.presentation_named``, a
+  write the store refused ``DefinitionReset.presentation_fill_failed``; a refusal fails nothing else.
 - **Refused, all or nothing, before anything is written**, naming every refusal: a definition reading ``customized``
   or ``unknown`` (unless ``overwrite_customized``, as a prompt reset takes it); a judge template, or a template the
   corpus gives cases, whose current revision holds live cases the corpus does not carry, unless
@@ -87,6 +96,7 @@ from threetears.evals.run.definition_seed import (
     SeedTemplateCase,
     authored_seed_cases,
     criterion_missing_from_stored,
+    fill_presentation_names,
     seed_case_set_digest,
     stored_template_case_digest,
 )
@@ -213,10 +223,24 @@ class DefinitionReset(EvalBaseModel):
         "this reset archived: a reset mints no version of it, so it still points there until its next version is "
         "minted over the new revision's cases.",
     )
+    presentation_named: dict[str, dict[str, list[str]]] = Field(
+        default_factory=dict,
+        description="As on SeedOutcome: names of stored templates the reset left current that were given the "
+        "corpus's presentation names they lacked (`goal_check_names`, `stratum_names`), per doc type "
+        "(`eval_template`), each with the entries written (`goal check <check>`, `stratum <id>`). Fill-only: an entry "
+        "the stored template holds is never overwritten. Empty when nothing was filled.",
+    )
+    presentation_fill_failed: dict[str, dict[str, str]] = Field(
+        default_factory=dict,
+        description="As on SeedOutcome: names of stored templates whose presentation-name fill the store refused "
+        "(`StorageError`), each with the store's reason, per doc type (`eval_template`). Logged at WARNING; the next "
+        "seed or reset tries again.",
+    )
 
     def render(self) -> str:
-        """A printable account: each definition and what it became, each live case carried and its copy, each case
-        set left on an archived revision, then the drift after."""
+        """A printable account: each definition and what it became, each live case carried and its copy, each
+        template given presentation names and each whose fill the store refused, each case set left on an archived
+        revision, then the drift after."""
         lines = []
         for entry in self.reset:
             if not entry.written_id:
@@ -227,6 +251,16 @@ class DefinitionReset(EvalBaseModel):
                 line += f", replacing {entry.replaced_id}{' (discarded)' if entry.discarded else ''}"
             lines.append(line)
         lines += [f"carried {source} -> {copy}" for source, copy in self.carried.items()]
+        for doc_type, presented in self.presentation_named.items():
+            lines += [
+                f"{definition_key(doc_type, name)}: given presentation names from the corpus ({', '.join(entries)})"
+                for name, entries in presented.items()
+            ]
+        for doc_type, refused in self.presentation_fill_failed.items():
+            lines += [
+                f"{definition_key(doc_type, name)}: PRESENTATION NAMES REFUSED BY STORAGE ({reason})"
+                for name, reason in refused.items()
+            ]
         return "\n".join([*lines, *self.stranded_case_sets, self.after.summary()])
 
 
@@ -806,7 +840,8 @@ def reset_definitions(
     :ptype carry_live_cases: bool
     :param seeded_digests: As :func:`definition_drift` takes it.
     :ptype seeded_digests: Mapping[str, str] | None
-    :return: What was written, and the drift read after.
+    :return: What was written, the presentation names given to the templates it left current (and any fill the store
+        refused), and the drift read after.
     :rtype: DefinitionReset
     :raises ValidationFailedError: A key names no corpus definition, or a template or judge case authoring would refuse;
         nothing was written, every refusal named.
@@ -1018,12 +1053,28 @@ def reset_definitions(
             )
     if carried:
         log.info("eval.reset_definitions scope=%s carried %d live case(s) into new revisions", scope, len(carried))
+    after = definition_drift(host, corpus, seeded_digests=seeded_digests)
+    # The fill writes no field a digest reads, so the drift read before it is the drift after it.
+    left_current = {
+        reading.key.removeprefix("eval_template/")
+        for reading in after.readings
+        if reading.definition_type == "eval_template" and reading.state == "current"
+    }
+    named, fill_failed = fill_presentation_names(
+        host.storage,
+        scope,
+        [template for template in corpus.templates if template.name in left_current],
+        current_revisions(host.storage.query_templates(scope)),
+        event="eval.reset_definitions",
+    )
     return DefinitionReset(
         scope_id=scope,
         reset=entries,
         carried=carried,
         stranded_case_sets=stranded,
-        after=definition_drift(host, corpus, seeded_digests=seeded_digests),
+        presentation_named=named,
+        presentation_fill_failed=fill_failed,
+        after=after,
     )
 
 

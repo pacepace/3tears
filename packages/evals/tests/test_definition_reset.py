@@ -93,7 +93,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.host import TOYHOST_TEMPLATE_CHECKS, toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import FAITHFULNESS_DIM, toyhost_judged_template
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.fixtures.toyhost.run import TOY_EXTRACTOR_KIND, toyhost_template
+from packages.evals.tests.fixtures.toyhost.run import EVERY_FIELD_EMITTED, TOY_EXTRACTOR_KIND, toyhost_template
 from packages.evals.tests.clock_support import frozen_clock
 
 
@@ -1845,3 +1845,118 @@ async def test_the_reset_action_carries_live_cases_on_asking() -> None:
     assert refused.is_error and "carry_live_cases" in refused.text, refused.text
     assert not carried.is_error and f"carrying {LIVE} live case(s)" in carried.text, carried.text
     assert carried.text.splitlines()[-1] == "drift: 0 stale, 0 customized, 0 unknown, 0 absent, 9 current"
+
+
+# =============================================================================
+# A template the reset leaves current is given the corpus's presentation names it lacks, never one it holds
+# =============================================================================
+
+
+def _named_in_the_corpus() -> EvalTemplate:
+    """The toy template as a corpus that later named its goal check and two strata declares it."""
+    return _template().model_copy(
+        update={
+            "goal_check_names": {EVERY_FIELD_EMITTED: "All fields emitted"},
+            "stratum_names": {"lookalike": "Corpus lookalikes", "plain": "Plain invoices"},
+        }
+    )
+
+
+def _seeded_bare_then_named_by_an_operator() -> tuple[EvalStorage, InMemoryDocumentStore, EvalTemplate]:
+    """The toy template seeded with no names, then given one stratum's name as an operator's ``update_template``
+    would: a corpus naming it later still reads current, since no digest reads the names."""
+    storage, store = memory_storage()
+    _seed(storage, _corpus(_template()))
+    (stored,) = storage.query_templates(TOYHOST_SCOPE)
+    storage.save_template(stored.model_copy(update={"stratum_names": {"lookalike": "Operator's lookalikes"}}))
+    (stored,) = storage.query_templates(TOYHOST_SCOPE)
+    return storage, store, stored
+
+
+def test_a_template_the_reset_leaves_current_is_given_the_names_it_lacks_and_a_second_reset_writes_nothing() -> None:
+    storage, store, before = _seeded_bare_then_named_by_an_operator()
+    named = _corpus(_named_in_the_corpus())
+    assert _states(_drift(storage, named)) == {TEMPLATE_KEY: "current"}
+
+    reset = _reset(storage, named, [TEMPLATE_KEY])
+
+    (after,) = storage.query_templates(TOYHOST_SCOPE)
+    assert after.goal_check_names == {EVERY_FIELD_EMITTED: "All fields emitted"}
+    assert after.stratum_names == {"lookalike": "Operator's lookalikes", "plain": "Plain invoices"}, (
+        "an entry the store holds is never overwritten"
+    )
+    assert after.model_dump(exclude={"goal_check_names", "stratum_names"}) == before.model_dump(
+        exclude={"goal_check_names", "stratum_names"}
+    ), "only the two presentation fields are written: same id, revision, seed record and updated_at"
+    assert [(entry.key, entry.written_id) for entry in reset.reset] == [(TEMPLATE_KEY, "")], "left as it is"
+    assert reset.presentation_named == {
+        "eval_template": {after.name: [f"goal check {EVERY_FIELD_EMITTED}", "stratum plain"]}
+    }
+    assert reset.presentation_fill_failed == {}
+    assert (
+        f"{TEMPLATE_KEY}: given presentation names from the corpus (goal check {EVERY_FIELD_EMITTED}, stratum plain)"
+        in reset.render().splitlines()
+    ), reset.render()
+    assert set(_states(reset.after).values()) == {"current"}
+
+    written = copy.deepcopy(store.documents)
+    again = _reset(storage, named, [TEMPLATE_KEY])
+    assert store.documents == written, "a second reset writes nothing"
+    assert (again.presentation_named, again.presentation_fill_failed) == ({}, {})
+    assert "presentation" not in again.render()
+
+
+def test_a_template_the_reset_was_not_named_is_filled_when_it_reads_current_after() -> None:
+    storage, _, _ = _seeded_bare_then_named_by_an_operator()
+
+    reset = _reset(storage, _corpus(_named_in_the_corpus()), [])
+
+    assert reset.reset == []
+    assert set(reset.presentation_named["eval_template"]) == {toyhost_template().name}
+
+
+def test_a_template_the_reset_writes_carries_the_corpus_names_and_is_not_filled_again() -> None:
+    storage, _, _ = _seeded_bare_then_named_by_an_operator()
+    moved = _corpus(_named_in_the_corpus().model_copy(update={"description": "now five cases"}))
+
+    reset = _reset(storage, moved, [TEMPLATE_KEY])
+
+    written = storage.load_template_by_name(toyhost_template().name, TOYHOST_SCOPE)
+    assert written is not None and written.revision == 2
+    assert written.stratum_names == {"lookalike": "Corpus lookalikes", "plain": "Plain invoices"}
+    assert reset.presentation_named == {}, "the new revision was written with the corpus's names"
+
+
+class _TemplateRefusingStorage(EvalStorage):
+    """A store down for template writes."""
+
+    def save_template(self, template: EvalTemplate) -> None:
+        raise StorageError("the document store is read-only for maintenance")
+
+
+def test_a_presentation_fill_the_store_refuses_is_reported_with_its_reason_and_the_next_reset_fills_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    storage, store, _ = _seeded_bare_then_named_by_an_operator()
+    named = _corpus(_named_in_the_corpus())
+    name = toyhost_template().name
+
+    with caplog.at_level(logging.WARNING, logger="threetears.evals.run.definition_seed"):
+        refused = _reset(_TemplateRefusingStorage(store), named, [TEMPLATE_KEY])
+
+    assert refused.presentation_fill_failed == {
+        "eval_template": {name: "the document store is read-only for maintenance"}
+    }
+    assert refused.presentation_named == {}
+    assert (
+        f"{TEMPLATE_KEY}: PRESENTATION NAMES REFUSED BY STORAGE (the document store is read-only for maintenance)"
+        in refused.render().splitlines()
+    ), refused.render()
+    assert any(
+        r.levelno == logging.WARNING and "eval.reset_definitions" in r.getMessage() and name in r.getMessage()
+        for r in caplog.records
+    )
+    (stored,) = storage.query_templates(TOYHOST_SCOPE)
+    assert stored.stratum_names == {"lookalike": "Operator's lookalikes"}, "nothing was written"
+
+    assert set(_reset(storage, named, [TEMPLATE_KEY]).presentation_named["eval_template"]) == {name}
