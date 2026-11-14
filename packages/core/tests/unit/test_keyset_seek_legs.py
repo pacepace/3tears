@@ -150,3 +150,51 @@ def test_a_tie_of_the_cursor_is_a_closed_range_not_an_equality() -> None:
     )
     assert 't."stamp" = $' not in sql, sql
     assert 't."stamp" >= $2::text::timestamptz AND t."stamp" <= $2::text::timestamptz' in sql, sql
+
+
+def test_a_sort_column_by_pins_to_one_value_has_no_leg() -> None:
+    """Flips if a sort column ``by`` pins to one value still gets a leg past the cursor: ``status < $2`` beside the
+    pin ``status = $1`` asks no row, yet YugabyteDB read a page's worth for it (19 rows for a page of 9,
+    test_conv_agent_status's pinned page, 3tears #87). The pinned column is a constant: it orders nothing."""
+    order = _ORDERS["stamp desc, id desc"]
+    sql, params = page_statement(
+        "r",
+        ["stamp", "id"],
+        {"tenant": 1, "stamp": "2026-01-01 00:03:00+00"},
+        order,
+        9,
+        ["2026-01-01 00:03:00+00", "7"],
+        False,
+        (),
+        (),
+        None,
+        seek_legs=True,
+    )
+    assert "UNION ALL" not in sql and 't."stamp" <' not in sql and 't."stamp" >=' not in sql, sql
+    assert 't."id" < $3::text::integer' in sql, sql
+    assert params == [1, "2026-01-01 00:03:00+00", "7"], params
+
+
+def test_a_pinned_sort_column_s_page_answers_the_expansion_s_rows(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if dropping a pinned sort column from the page changes the rows it answers."""
+    order = _ORDERS["stamp desc, id desc"]
+    every = conn.execute(
+        "SELECT stamp, label, id FROM r WHERE tenant = 1 AND stamp = TIMESTAMPTZ '2026-01-01 00:03:00+00' "
+        "ORDER BY id DESC"
+    ).fetchall()
+    stamp = every[0][0]
+    for index in range(len(every) - 1):
+        sql, params = page_statement(
+            "r",
+            ["stamp", "label", "id"],
+            {"tenant": 1, "stamp": stamp},
+            order,
+            _LIMIT + 1,
+            [str(stamp), str(every[index][2])],
+            False,
+            (),
+            (),
+            None,
+            seek_legs=True,
+        )
+        assert [tuple(row) for row in conn.execute(sql, params).fetchall()] == every[index + 1 : index + 2 + _LIMIT]

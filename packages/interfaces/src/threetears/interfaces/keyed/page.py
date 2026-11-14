@@ -28,6 +28,7 @@ from datetime import date, datetime, time
 from typing import Any, Literal
 
 from threetears.interfaces.keyed.filters import (
+    AnyOf,
     Derived,
     Fragment,
     Lock,
@@ -486,6 +487,14 @@ def page_statement(
             f"a keyset page of {table} steps past NULLs as the largest value; {misplaced} place them otherwise "
             "(an ordering of a step takes that: keyed.ordered)"
         )
+    # a sort column ``by`` pins to one value is a constant on every row: it orders nothing, and the page past a
+    # cursor has no leg for it (``status < $2`` beside the pin ``status = $1`` asks no row, yet YugabyteDB read a
+    # page's worth for it: 19 rows for a page of 9, 3tears #87)
+    pinned = {column for column, value in by.items() if isinstance(column, str) and not isinstance(value, AnyOf)}
+    kept = [place for place, sort in enumerate(order) if sort.expression is not None or sort.column not in pinned]
+    if kept and len(kept) < len(order):
+        order = [order[place] for place in kept]
+        past = None if past is None else [past[place] for place in kept]
     conditions, params = by_conditions(by, alias="t")
     for fragment in where:
         conditions.append(narrowing(fragment, len(params)))
