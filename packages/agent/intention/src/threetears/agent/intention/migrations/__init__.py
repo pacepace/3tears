@@ -33,6 +33,9 @@ from __future__ import annotations
 from threetears.agent.intention.migrations.v001_create_intentions_table import (
     create_intentions_table,
 )
+from threetears.agent.intention.migrations.v002_contract_last_surfaced_index_dropped import (
+    drop_last_surfaced_index,
+)
 from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, check_embedding_dim
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -44,7 +47,9 @@ from threetears.core.data.store import DataStore
 PACKAGE_NAME = "agent_intention"
 
 
-def register(runner: MigrationRunner, *, embedding_dim: int = DEFAULT_EMBEDDING_DIM) -> PackageMigrations:
+def register(
+    runner: MigrationRunner, *, embedding_dim: int = DEFAULT_EMBEDDING_DIM, held_contract: bool = False
+) -> PackageMigrations:
     """
     register agent-intention migrations with the given runner.
 
@@ -68,6 +73,9 @@ def register(runner: MigrationRunner, *, embedding_dim: int = DEFAULT_EMBEDDING_
     :ptype runner: MigrationRunner
     :param embedding_dim: the embedding column's width; default 1024
     :ptype embedding_dim: int
+    :param held_contract: attach v002, the held contract step (drops the unread last-surfaced index): the test
+        schemas now, every deployment from the release after this one
+    :ptype held_contract: bool
     :return: populated package registration
     :rtype: PackageMigrations
     :raises ValueError: when ``embedding_dim`` is below 1 or above 16,000
@@ -90,6 +98,8 @@ def register(runner: MigrationRunner, *, embedding_dim: int = DEFAULT_EMBEDDING_
         await create_intentions_table(store, embedding_dim=embedding_dim)
 
     pkg.step(1, name=create_intentions_table.__name__)(create_at_width)
+    if held_contract:
+        pkg.version(2)(drop_last_surfaced_index)
     runner.register(pkg)
     return pkg
 

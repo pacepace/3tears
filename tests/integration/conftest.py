@@ -12,7 +12,9 @@ engine it does not name (PostgreSQL when it names none). Each module marks itsel
 
 The schema is built once a session, by each package's own migrations: the agent-scope packages (conversations, memory,
 skills, tools, workspace, langgraph, wake, intention, identity) and the platform-scope ones (acl, audit and the tools columns on its namespaces,
-core's coordination tables, epoch, mcp, scheduled-jobs). The datasources tables and
+core's coordination tables, epoch, mcp, scheduled-jobs, scrape), each package's held CONTRACT step included
+(``held_contract=True``: the indexes it drops are gone here, so every plan test proves its read without them). The
+datasources tables and
 ``impersonation_gates`` are created by the hub, not by a 3tears migration, so they are built from their declared
 :class:`TableSchema` (the hub's source too), an enum column's type first.
 The schema is dropped when the session ends.
@@ -59,6 +61,7 @@ from threetears.epoch.migrations import register as register_epoch
 from threetears.langgraph.migrations import register as register_langgraph
 from threetears.mcp.migrations import register as register_mcp
 from threetears.scheduled_jobs.migrations import register as register_scheduled_jobs
+from threetears.scrape.migrations import register as register_scrape
 
 #: the tables the hub creates from their declarations (no 3tears migration builds them)
 _DECLARED = (
@@ -124,14 +127,14 @@ async def _build(url: str, schema: str) -> bool:
         await conn.execute(f'CREATE SCHEMA "{schema}"')
         await conn.execute(f'SET search_path TO "{schema}", public')
         agent = MigrationRunner()
-        register_conversations(agent)
+        register_conversations(agent, held_contract=True)
         register_memory(agent)
-        register_skills(agent)
-        register_tools(agent)
+        register_skills(agent, held_contract=True)
+        register_tools(agent, held_contract=True)
         register_workspace(agent)
         register_langgraph(agent)
-        register_wake(agent)
-        register_intention(agent)
+        register_wake(agent, held_contract=True)
+        register_intention(agent, held_contract=True)
         register_identity(agent)
         await agent.apply_for_agent_schema(_Store(conn))  # type: ignore[arg-type]
         platform = MigrationRunner()
@@ -140,8 +143,9 @@ async def _build(url: str, schema: str) -> bool:
         register_tools_platform(platform, depends_on=("agent_acl",))
         register_coordination(platform)
         register_epoch(platform)
-        register_mcp(platform)
+        register_mcp(platform, held_contract=True)
         register_scheduled_jobs(platform)
+        register_scrape(platform, held_contract=True)
         await platform.apply_for_platform_schema(_Store(conn))  # type: ignore[arg-type]
         metadata = MetaData()
         for declared in _DECLARED:

@@ -44,9 +44,6 @@ from threetears.core.collections.schema_backed import (
     SchemaBackedCollection,
     TableSchema,
 )
-from threetears.core.collections.schema_backed import (
-    Index as SchemaIndex,
-)
 from threetears.core.entities.base import BaseEntity
 from threetears.core.keyed import read_row
 from threetears.core.tenancy import no_tenant
@@ -130,14 +127,6 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
                 server_default="now()",
             ),
         ],
-        indexes=(
-            SchemaIndex(
-                "idx_mcp_tool_grants_principal",
-                "principal_id",
-                "permission",
-            ),
-            SchemaIndex("idx_mcp_tool_grants_tool", "tool_name"),
-        ),
         # every committed grant write advances the table's generation and records the grant it changed,
         # so LocalGrantAuthorizer follows the table and reads each changed grant by key -- a lost
         # broadcast included -- never every grant again

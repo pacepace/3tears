@@ -105,9 +105,10 @@ async def conn(pg_schema: tuple[str, str]) -> AsyncIterator[asyncpg.Connection]:
     connection = await asyncpg.connect(url)
     await connection.execute(f'SET search_path TO "{schema}", public')
     runner = MigrationRunner()
-    register_conversations(runner)
-    register_skills(runner)
-    register_wake(runner)
+    # the held contract steps included: each read is proven with the indexes they drop gone
+    register_conversations(runner, held_contract=True)
+    register_skills(runner, held_contract=True)
+    register_wake(runner, held_contract=True)
     await runner.apply_for_agent_schema(AsyncpgStore(connection))
     agents = [uuid.uuid4() for _ in range(500)]
     users = [uuid.uuid4() for _ in range(250)]

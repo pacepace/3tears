@@ -61,11 +61,6 @@ def _reference_context_items_table(metadata: sa.MetaData) -> sa.Table:
             "context_type",
         ),
         SAIndex(
-            "ix_context_items_lru",
-            "conversation_id",
-            "date_accessed",
-        ),
-        SAIndex(
             "ix_context_items_agent_var_key",
             "conversation_id",
             "agent_id",

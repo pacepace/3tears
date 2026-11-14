@@ -87,7 +87,6 @@ def _reference_intentions_table(metadata: sa.MetaData) -> sa.Table:
             sa_text("salience DESC"),
             postgresql_where=sa_text("status = 'open'"),
         ),
-        sa.Index("idx_intentions_last_surfaced", "agent_id", "last_surfaced_at"),
         sa.Index(
             "ix_intentions_embedding_hnsw",
             "embedding",

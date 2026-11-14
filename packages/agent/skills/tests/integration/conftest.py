@@ -103,7 +103,8 @@ async def pg_schema(pg_url: str) -> AsyncIterator[tuple[str, str]]:
 
 
 async def _migrate_skills(conn: asyncpg.Connection, _schema: str) -> None:
-    """apply conversations + skills migrations into the schema ``conn``'s search path names.
+    """apply conversations + skills migrations, their held contract steps included, into the schema ``conn``'s
+    search path names.
 
     :param conn: a connection whose ``search_path`` is the schema
     :ptype conn: asyncpg.Connection
@@ -113,8 +114,9 @@ async def _migrate_skills(conn: asyncpg.Connection, _schema: str) -> None:
     :rtype: None
     """
     runner = MigrationRunner()
-    register_conversations(runner)
-    register_skills(runner)
+    # the held contract step included: the tests read the tables as they are once v007 drops v002's index
+    register_conversations(runner, held_contract=True)
+    register_skills(runner, held_contract=True)
     await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
 
 

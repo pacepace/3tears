@@ -36,6 +36,9 @@ version history:
 - v004 adds the ``tool_result`` dedup index.
 - v005 adds ``agent_id``, the agent whose turn wrote a row, backfilled from
   the conversation's own agent, and keys both upsert indexes by it.
+- v006 (CONTRACT, held) drops ``ix_context_items_lru`` (no read uses it):
+  attached only with ``held_contract=True`` (the test schemas now; every
+  deployment from the release after this one).
 """
 
 from __future__ import annotations
@@ -55,6 +58,9 @@ from threetears.agent.tools.migrations.v004_tool_result_dedup_index import (
 from threetears.agent.tools.migrations.v005_context_items_agent_id import (
     context_items_agent_id,
 )
+from threetears.agent.tools.migrations.v006_contract_lru_index_dropped import (
+    drop_lru_index,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -64,7 +70,7 @@ from threetears.core.data.migrations import (
 PACKAGE_NAME = "agent_tools"
 
 
-def register(runner: MigrationRunner) -> PackageMigrations:
+def register(runner: MigrationRunner, *, held_contract: bool = False) -> PackageMigrations:
     """
     register agent-tools migrations with the given runner.
 
@@ -74,6 +80,8 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 
     :param runner: canonical migration runner to register with
     :ptype runner: MigrationRunner
+    :param held_contract: attach v006, the held contract step (drops the unread LRU index)
+    :ptype held_contract: bool
     :return: populated package registration
     :rtype: PackageMigrations
     """
@@ -87,6 +95,8 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(3)(align_context_items_shape)
     pkg.version(4)(tool_result_dedup_index)
     pkg.version(5)(context_items_agent_id)
+    if held_contract:
+        pkg.version(6)(drop_lru_index)
     runner.register(pkg)
     return pkg
 

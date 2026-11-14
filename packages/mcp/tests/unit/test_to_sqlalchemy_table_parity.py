@@ -12,7 +12,6 @@ import sqlalchemy as sa
 from sqlalchemy import (
     Column as SAColumn,
     DateTime,
-    Index as SAIndex,
     Text,
 )
 from sqlalchemy import text as sa_text
@@ -45,12 +44,6 @@ def _reference_mcp_tool_grants_table(metadata: sa.MetaData) -> sa.Table:
             nullable=False,
             server_default=sa_text("now()"),
         ),
-        SAIndex(
-            "idx_mcp_tool_grants_principal",
-            "principal_id",
-            "permission",
-        ),
-        SAIndex("idx_mcp_tool_grants_tool", "tool_name"),
     )
 
 

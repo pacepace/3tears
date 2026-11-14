@@ -111,7 +111,8 @@ def _build_runner() -> MigrationRunner:
     runner = MigrationRunner()
     register_conversations(runner)
     register_skills(runner)
-    register_wake(runner)
+    # the factories describe the tables after the held contract step (v015 drops the unread indexes)
+    register_wake(runner, held_contract=True)
     return runner
 
 

@@ -14,6 +14,9 @@ version history:
 
 - v001 -- create the ``mcp_tool_grants`` table with surrogate UUID
   PK plus principal-and-tool lookup indexes.
+- v002 (CONTRACT, held) -- drop both lookup indexes (no read uses them):
+  attached only with ``held_contract=True`` (the test schemas now; every
+  deployment from the release after this one).
 """
 
 from __future__ import annotations
@@ -26,12 +29,15 @@ from threetears.core.data.migrations import (
 from threetears.mcp.migrations.v001_create_mcp_tool_grants import (
     create_mcp_tool_grants_table,
 )
+from threetears.mcp.migrations.v002_contract_lookup_indexes_dropped import (
+    drop_lookup_indexes,
+)
 from threetears.mcp.rbac import McpToolGrantCollection
 
 PACKAGE_NAME = "mcp"
 
 
-def register(runner: MigrationRunner) -> PackageMigrations:
+def register(runner: MigrationRunner, *, held_contract: bool = False) -> PackageMigrations:
     """register mcp migrations with the given runner.
 
     produces a platform-scoped :class:`PackageMigrations` with no
@@ -40,6 +46,8 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 
     :param runner: canonical migration runner to register with
     :ptype runner: MigrationRunner
+    :param held_contract: attach v002, the held contract step (drops the two unread lookup indexes)
+    :ptype held_contract: bool
     :return: populated package registration
     :rtype: PackageMigrations
     """
@@ -48,6 +56,8 @@ def register(runner: MigrationRunner) -> PackageMigrations:
         scope=MigrationScope.PLATFORM,
     )
     pkg.version(1)(create_mcp_tool_grants_table)
+    if held_contract:
+        pkg.version(2)(drop_lookup_indexes)
     # the grants are followed by write generation: the run that creates the table, and every run
     # after, gives it its write-mark and change-note triggers
     pkg.mark_write_generation(McpToolGrantCollection.schema)

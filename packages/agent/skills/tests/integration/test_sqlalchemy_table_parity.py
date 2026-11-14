@@ -64,7 +64,8 @@ def _build_runner() -> MigrationRunner:
     """
     runner = MigrationRunner()
     register_conversations(runner)
-    register_skills(runner)
+    # the factories describe the tables after the held contract step (v007 drops v002's conversation index)
+    register_skills(runner, held_contract=True)
     return runner
 
 

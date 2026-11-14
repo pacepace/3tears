@@ -242,13 +242,6 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
                 "reason": "agent_wake_schedules carries five indexes: the tick's due scan, the agent's and the user's reads",
             },
         ),
-        # v001's index over every schedule a conversation had: v013's partial index serves its reads; its drop waits
-        # for the held CONTRACT migration (old pods still plan through it mid-rollout)
-        Index(
-            "idx_wake_schedules_conv_status",
-            "conversation_id",
-            "status",
-        ),
         Index(
             "idx_wake_schedules_conv_active",
             "conversation_id",
@@ -369,13 +362,12 @@ def wake_fires_table(metadata: MetaData) -> Table:
             name="wake_fires_schedule_fk",
         ),
         # v014: a schedule's fire holds its schedule's conversation. Added NOT VALID (the expand step); the held
-        # CONTRACT migration validates it, and then this flag goes. A CREATE TABLE validates it anyway (an empty table).
+        # CONTRACT step v015 validates it, and the factories describe the tables after it.
         ForeignKeyConstraint(
             ["conversation_id", "schedule_id"],
             ["agent_wake_schedules.conversation_id", "agent_wake_schedules.schedule_id"],
             ondelete="CASCADE",
             name="wake_fires_schedule_conversation_fk",
-            postgresql_not_valid=True,
         ),
         ForeignKeyConstraint(
             ["webhook_subscription_id"],
@@ -442,11 +434,6 @@ def wake_fires_table(metadata: MetaData) -> Table:
                 "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_fires_conv_time",
                 "reason": "wake_fires carries five indexes: one conversation's newest fires, a page at a time",
             },
-        ),
-        Index(
-            "idx_wake_fires_started_conversation",
-            "started_conversation_id",
-            postgresql_where=sa_text("started_conversation_id IS NOT NULL"),
         ),
         # v011: the fires in flight, the reaper's sweep
         Index(
@@ -557,11 +544,6 @@ def webhook_subscriptions_table(metadata: MetaData) -> Table:
         CheckConstraint(
             "status IN ('active', 'paused')",
             name="webhook_subscriptions_status_check",
-        ),
-        Index(
-            "idx_webhook_subs_conv",
-            "conversation_id",
-            "status",
         ),
         Index(
             "idx_webhook_subs_user",

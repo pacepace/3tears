@@ -79,6 +79,9 @@ version history:
 - v013 -- a folder's conversations (agent_id, folder_id, date_created,
   conversation_id) and one ref's (agent_id, channel_type,
   conversation_ref, date_created, conversation_id) each read an index.
+- v014 (CONTRACT, held) -- drop ``idx_conv_customer`` and ``idx_conv_parent``
+  (no read uses them): attached only with ``held_contract=True`` (the test
+  schemas now; every deployment from the release after this one).
 """
 
 from __future__ import annotations
@@ -122,6 +125,9 @@ from threetears.conversations.migrations.v012_conversation_sort_indexes import (
 from threetears.conversations.migrations.v013_folder_and_ref_indexes import (
     add_folder_and_ref_indexes,
 )
+from threetears.conversations.migrations.v014_contract_unread_indexes_dropped import (
+    drop_unread_conversation_indexes,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -131,7 +137,7 @@ from threetears.core.data.migrations import (
 PACKAGE_NAME = "conversations"
 
 
-def register(runner: MigrationRunner) -> PackageMigrations:
+def register(runner: MigrationRunner, *, held_contract: bool = False) -> PackageMigrations:
     """
     register conversations migrations with the given runner.
 
@@ -141,6 +147,8 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 
     :param runner: canonical migration runner to register with
     :ptype runner: MigrationRunner
+    :param held_contract: attach v014, the held contract step (drops the two unread indexes)
+    :ptype held_contract: bool
     :return: populated package registration
     :rtype: PackageMigrations
     """
@@ -161,6 +169,8 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(11)(add_conversation_parent)
     pkg.version(12)(add_conversation_sort_indexes)
     pkg.version(13)(add_folder_and_ref_indexes)
+    if held_contract:
+        pkg.version(14)(drop_unread_conversation_indexes)
     runner.register(pkg)
     return pkg
 

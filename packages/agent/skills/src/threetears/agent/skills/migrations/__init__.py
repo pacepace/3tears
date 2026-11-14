@@ -39,6 +39,8 @@ Version history:
 - v006 (expand) builds ``idx_skill_invocations_conv_key`` (``agent_id, conversation_id, invoked_at DESC,
   invocation_id``): a conversation's page ordered by time completed by the key; v002's
   ``idx_skill_invocations_conv`` stays until the contract step.
+- v007 (CONTRACT, held) drops ``idx_skill_invocations_conv``: attached only with
+  ``held_contract=True`` (the test schemas now; every deployment from the release after v006's).
 """
 
 from __future__ import annotations
@@ -61,6 +63,9 @@ from threetears.agent.skills.migrations.v004_add_tool_call_columns import (
 from threetears.agent.skills.migrations.v005_add_outcome_notes import (
     add_outcome_notes,
 )
+from threetears.agent.skills.migrations.v007_contract_replaced_index_dropped import (
+    drop_replaced_conversation_index,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -70,7 +75,7 @@ from threetears.core.data.migrations import (
 PACKAGE_NAME = "agent_skills"
 
 
-def register(runner: MigrationRunner) -> PackageMigrations:
+def register(runner: MigrationRunner, *, held_contract: bool = False) -> PackageMigrations:
     """Register agent-skills migrations with ``runner``.
 
     Produces an agent-scoped :class:`PackageMigrations` declaring
@@ -80,6 +85,8 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 
     :param runner: canonical migration runner to register with
     :ptype runner: MigrationRunner
+    :param held_contract: attach v007, the held contract step (drops the index v006 replaced)
+    :ptype held_contract: bool
     :return: populated package registration
     :rtype: PackageMigrations
     """
@@ -94,6 +101,8 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(4)(add_tool_call_columns)
     pkg.version(5)(add_outcome_notes)
     pkg.version(6)(add_conversation_key_index)
+    if held_contract:
+        pkg.version(7)(drop_replaced_conversation_index)
     runner.register(pkg)
     return pkg
 

@@ -301,12 +301,6 @@ def agent_skill_invocations_table(metadata: MetaData) -> Table:
             sa_text("invoked_at DESC"),
         ),
         Index(
-            "idx_skill_invocations_conv",
-            "agent_id",
-            "conversation_id",
-            sa_text("invoked_at DESC"),
-        ),
-        Index(
             "idx_skill_invocations_conv_key",
             "agent_id",
             "conversation_id",

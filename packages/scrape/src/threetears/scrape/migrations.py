@@ -261,11 +261,13 @@ async def v010_create_scrape_target_health(store: DataStore) -> None:
     )
 
 
-def register(runner: MigrationRunner) -> PackageMigrations:
+def register(runner: MigrationRunner, *, held_contract: bool = False) -> PackageMigrations:
     """Register every 3tears-scrape migration version with the given runner.
 
     :param runner: canonical migration runner to register with
     :ptype runner: MigrationRunner
+    :param held_contract: attach v015, the held contract step (drops the three unread indexes)
+    :ptype held_contract: bool
     :return: populated package registration
     :rtype: PackageMigrations
     """
@@ -284,6 +286,8 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(12)(v012_target_health_robots_block)
     pkg.version(13)(v013_extraction_enrichment_status)
     pkg.version(14)(v014_target_health_walled_indexes)
+    if held_contract:
+        pkg.version(15)(v015_contract_unread_indexes_dropped)
     runner.register(pkg)
     return pkg
 
@@ -402,6 +406,21 @@ async def v014_target_health_walled_indexes(store: DataStore) -> None:
         "ON scrape_target_health (robots_blocked_at DESC, target_id DESC) "
         "WHERE robots_blocked_at IS NOT NULL AND last_blocked_at IS NULL"
     )
+
+
+async def v015_contract_unread_indexes_dropped(store: DataStore) -> None:
+    """CONTRACT, held: drop the three indexes no read uses.
+
+    ``scrape_extractions`` is written and read by its key alone (an extraction by ``id``), so v001's
+    ``scrape_extractions_target_id`` and ``scrape_extractions_retrieved_at`` serve nothing; v010's
+    ``scrape_target_health_circuit_state`` was never read either (v014's two partial indexes serve the one
+    non-key read, ``list_walled``). A pod of an older release may still plan through them mid-rollout, so the step
+    is held: :func:`register` attaches it only when asked (``held_contract=True``: the test schemas now, every
+    deployment from the release after this one). ``DROP INDEX IF EXISTS``, so re-running it is a no-op.
+    """
+    await store.execute("DROP INDEX IF EXISTS scrape_extractions_target_id")
+    await store.execute("DROP INDEX IF EXISTS scrape_extractions_retrieved_at")
+    await store.execute("DROP INDEX IF EXISTS scrape_target_health_circuit_state")
 
 
 def _json_value(raw: Any) -> Any:

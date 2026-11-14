@@ -35,6 +35,10 @@ subclasses in ``3tears-agent-tools``):
   schedule's conversation: ``(conversation_id, schedule_id)`` references the
   schedule's primary key, added ``NOT VALID`` (its ``VALIDATE`` waits for the
   held CONTRACT migration).
+- v015 (CONTRACT, held) drops ``idx_wake_schedules_conv_status``,
+  ``idx_webhook_subs_conv`` and ``idx_wake_fires_started_conversation`` (no read
+  uses them) and validates v014's key: attached only with ``held_contract=True``
+  (the test schemas now; every deployment from the release after v013's and v014's).
 
 The package declares
 ``depends_on=("conversations", "agent_skills")`` because:
@@ -134,6 +138,9 @@ from threetears.agent.wake.migrations.v013_active_schedules_index import (
 from threetears.agent.wake.migrations.v014_fire_schedule_conversation_fk import (
     add_fire_schedule_conversation_fk,
 )
+from threetears.agent.wake.migrations.v015_contract_unread_indexes_dropped import (
+    drop_unread_indexes_and_validate_fire_key,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -143,7 +150,7 @@ from threetears.core.data.migrations import (
 PACKAGE_NAME = "agent_wake"
 
 
-def register(runner: MigrationRunner) -> PackageMigrations:
+def register(runner: MigrationRunner, *, held_contract: bool = False) -> PackageMigrations:
     """Register agent-wake migrations with ``runner``.
 
     Produces an agent-scoped :class:`PackageMigrations` declaring
@@ -153,6 +160,8 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 
     :param runner: canonical migration runner to register with
     :ptype runner: MigrationRunner
+    :param held_contract: attach v015, the held contract step (drops the unread indexes, validates v014's key)
+    :ptype held_contract: bool
     :return: populated package registration
     :rtype: PackageMigrations
     """
@@ -175,6 +184,8 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(12)(range_shard_next_fire_index)
     pkg.version(13)(add_active_schedules_index)
     pkg.version(14)(add_fire_schedule_conversation_fk)
+    if held_contract:
+        pkg.version(15)(drop_unread_indexes_and_validate_fire_key)
     runner.register(pkg)
     return pkg
 

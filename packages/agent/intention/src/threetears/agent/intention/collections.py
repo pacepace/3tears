@@ -191,12 +191,6 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
                 where=f"status = '{IntentionStatus.OPEN.value}'",
                 desc="salience",
             ),
-            # the cooldown filter reads by last-surfaced recency.
-            SchemaIndex(
-                "idx_intentions_last_surfaced",
-                "agent_id",
-                "last_surfaced_at",
-            ),
             # HNSW over the embedding for the log-time dedup lookup.
             SchemaIndex(
                 "ix_intentions_embedding_hnsw",
