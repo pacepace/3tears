@@ -491,12 +491,15 @@ def compute_borrowed_cost(
     """Predict an arm's cost from other templates' priced results, for an arm whose template has none.
 
     The point estimate is what a direct estimate makes of the same results: their mean cost per observation times the
-    arm's ``n_cases × k_runs`` observations. The band is wider. The arm's cases are none of the cases those results
-    measured, so what varies is which cases it draws, and repeats of one case move together. So the band reaches the
-    outer ends of two: the prediction band over the results as observations, which is what a direct estimate draws
-    (:func:`_cost_band`), and one over each case's mean cost per observation, each case a draw, the arm's ``n_cases``
-    of them repeated ``k_runs`` times. It brackets the point estimate, as the first band does, and is never narrower
-    than it.
+    arm's ``n_cases × k_runs`` observations. The band is never narrower than a direct estimate's. The arm's cases are
+    none of the cases those results measured, so what varies is which cases it draws, and repeats of one case move
+    together. So the band reaches the outer ends of two: the prediction band over the results as observations, which
+    is what a direct estimate draws (:func:`_cost_band`), and one over each case's mean cost per observation, each
+    case a draw, the arm's ``n_cases`` of them repeated ``k_runs`` times. Neither end stands nearer the point estimate
+    than :data:`COST_BAND_SAFETY_MARGIN` of it: siblings whose costs agree measure how alike their own cases cost,
+    never how a new case will, so a borrowed band of no width would claim what borrowing cannot know; the margin is
+    the least headroom a cap is judged with. Its coverage rests on the arm's cases costing as the siblings' do, which
+    its ``band_basis`` says, and it says "wider" only where it is.
 
     :param observations: The siblings' results for the arm's model, launched as the arm will be.
     :ptype observations: Iterable[CostObservation]
@@ -540,7 +543,32 @@ def compute_borrowed_cost(
     observed_low, observed_high, _observed_basis = _cost_band(costs, n_observations, estimate)
     case_low, case_high, _case_basis = _cost_band(case_means, n_cases, n_cases * (sum(case_means) / len(case_means)))
     low, high = min(observed_low, k_runs * case_low), max(observed_high, k_runs * case_high)
-    level = PageForms.off_page().share(INTERVAL_LEVEL).text
+    # The floor: a borrowed band never stands nearer its centre than the cap's least headroom either side. Siblings
+    # whose costs agree measure how alike THEIR cases cost, never how a new case will, so a band of no width here
+    # would claim what borrowing cannot know.
+    margin = estimate * COST_BAND_SAFETY_MARGIN
+    floored = high - estimate < margin or estimate - low < margin
+    low, high = min(low, max(0.0, estimate - margin)), max(high, estimate + margin)
+    forms = PageForms.off_page()
+    level, share = forms.share(INTERVAL_LEVEL).text, forms.share(COST_BAND_SAFETY_MARGIN).text
+    n_obs, n_case = len(costs), len(case_means)
+    spread = (
+        f"The {n_obs} past observations show no spread, so nothing they hold measures how a new case's cost may differ."
+        if observed_low == observed_high
+        else f"If it does, this is at least a {level} prediction band: the outer ends of a band over the {n_obs} "
+        "observations and one over each case's mean cost, each case a draw and its repeats moving together."
+    )
+    wider = (
+        "It is wider than the band the observations alone give."
+        if low < observed_low or high > observed_high
+        else "It is as wide as the band the observations alone give: their cases' means spread no further."
+    )
+    floor = (
+        f" Neither end stands nearer the estimate than {share} of it: siblings that cost alike say nothing of how a new "
+        f"case costs, and {share} is the least headroom a cap is judged with."
+        if floored
+        else ""
+    )
     return BorrowedCost(
         n_historical=len(costs),
         n_cases=len(case_means),
@@ -554,10 +582,8 @@ def compute_borrowed_cost(
             computed_at=stamp,
         ),
         band_basis=(
-            f"At least {level} prediction band, borrowed: the arm's cases are none of the {len(case_means)} its "
-            f"{len(costs)} past observations measured, so the band runs to the outer ends of a band over those "
-            f"observations and one over each case's mean cost, each case a draw and its repeats moving together, "
-            "wider than a band from the template's own history would be."
+            f"Borrowed from {n_case} cases of other templates: the band holds only if the arm's cases cost as those "
+            f"do. {spread} {wider}{floor}"
         ),
     )
 
@@ -803,6 +829,8 @@ def compute_estimate_cost(
 
 
 __all__ = [
+    "BORROWED_PREDICTION_METHOD",
+    "BorrowedCost",
     "compute_borrowed_cost",
     "compute_estimate_cost",
     "COST_ESTIMATE_MIN_BASIS",

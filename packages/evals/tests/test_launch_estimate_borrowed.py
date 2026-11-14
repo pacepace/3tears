@@ -9,25 +9,29 @@ naming what is missing, when no sibling matches exactly. A borrowed figure budge
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
 
 from threetears.evals.analysis.lenses.cost_estimate import (
     BORROWED_PREDICTION_METHOD,
+    COST_BAND_SAFETY_MARGIN,
     COST_PREDICTION_METHOD,
     CostObservation,
     compute_borrowed_cost,
 )
 from threetears.evals.kernel import EvalStorage
-from threetears.evals.ops import history_launch_pricer
+from threetears.evals.ops import LaunchArguments, history_launch_pricer, launch_estimate, run_job_id, run_launch
 from threetears.evals.run import ArmPrice, ArmQuote
 from threetears.evals.schema.models import EvalTemplate
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import DEFAULT_SUBJECT, make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
-from packages.evals.tests.fixtures.toyhost.run import toyhost_template
+from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
+from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import launched_runs, ops_fixture, settled
 
 MODEL = "m-priced"
 
@@ -35,8 +39,8 @@ MODEL = "m-priced"
 #: cheap and varying by case more than by repeat.
 SIBLING_CASES = [0.0040, 0.0050, 0.0060, 0.0070, 0.0055, 0.0065]
 
-#: What the new template's own cases turn out to cost once it runs: other cases of the same work.
-LATER_CASES = [0.0045, 0.0052, 0.0061, 0.0068, 0.0058, 0.0049, 0.0063, 0.0057, 0.0050, 0.0066]
+#: The cases the new template's arm plans.
+NEW_CASES = 10
 
 
 def _priced_host() -> tuple[Any, EvalStorage]:
@@ -80,7 +84,7 @@ def _quote(template_id: str, **overrides: Any) -> ArmQuote:
         "subject_id": TOYHOST_SUBJECT.subject_id,
         "candidate_model": MODEL,
         "k_runs": 2,
-        "case_count": len(LATER_CASES),
+        "case_count": NEW_CASES,
         "n_variations": 0,
         "cassette_mode": "off",
         "judge": None,
@@ -91,7 +95,7 @@ def _quote(template_id: str, **overrides: Any) -> ArmQuote:
     return ArmQuote(**fields)
 
 
-def test_a_template_with_no_history_borrows_from_a_matching_sibling_says_so_and_its_later_run_lands_in_the_band():
+def test_a_template_with_no_history_borrows_from_a_matching_sibling_and_says_so():
     host, storage = _priced_host()
     sibling = _template(storage, "dj_character_v1")
     new = _template(storage, "dj_character_v2")
@@ -103,16 +107,47 @@ def test_a_template_with_no_history_borrows_from_a_matching_sibling_says_so_and_
     assert price.predicted_usd is not None and price.low_usd is not None and price.band_high_usd is not None
     assert price.basis.startswith(
         f"borrowed from template {sibling.name!r} ({sibling.id!r}), {2 * len(SIBLING_CASES)} result(s): template "
-        f"{new.name!r} has no priced result of its own; the same candidate kind, subject, model, judge"
+        f"{new.name!r} has no priced result of its own; the same candidate kind, subject, overlays, kind spec, model, "
+        "judge"
     ), price.basis
     assert "a budgeting figure only, never a reading" in price.basis
-    assert "prediction band, borrowed" in price.basis and "wider than a band from the template's own" in price.basis
+    assert (
+        f"Borrowed from {len(SIBLING_CASES)} cases of other templates: the band holds only if the arm's cases cost as "
+        "those do." in price.basis
+    )
 
-    # Once the new template runs, its own total lands inside the borrowed band, and its own history then prices it.
-    _ran(storage, new.id, LATER_CASES)
-    later = sum(cost * (1 + (0.04 if k % 2 else -0.04)) for cost in LATER_CASES for k in (1, 2))
-    assert price.low_usd <= later <= price.band_high_usd, (price.low_usd, later, price.band_high_usd)
+    # Once the new template has priced results of its own, they price it, and nothing is borrowed.
+    _ran(storage, new.id, SIBLING_CASES)
     assert history_launch_pricer(host)(_quote(new.id)).method_id == COST_PREDICTION_METHOD
+
+
+def test_siblings_that_cost_alike_give_a_band_no_nearer_its_centre_than_the_margin_and_say_why():
+    """A flat per-call rate gives every sibling result one cost; that bounds nothing about how a new case costs."""
+    host, storage = _priced_host()
+    sibling, new = _template(storage, "persona_a"), _template(storage, "persona_b")
+    _ran(storage, sibling.id, [0.005] * 4, repeats=1)
+
+    price = history_launch_pricer(host)(_quote(new.id))
+
+    assert price.central_usd is not None and price.low_usd is not None and price.band_high_usd is not None
+    assert price.low_usd == pytest.approx(price.central_usd * (1 - COST_BAND_SAFETY_MARGIN))
+    assert price.band_high_usd == pytest.approx(price.central_usd * (1 + COST_BAND_SAFETY_MARGIN))
+    assert "The 4 past observations show no spread" in price.basis, price.basis
+    assert "If it does, this is at least" not in price.basis, "no coverage is claimed for a spread nobody measured"
+    assert "Neither end stands nearer the estimate than 3% of it" in price.basis
+
+
+def test_a_borrowed_band_says_wider_only_where_it_is():
+    """Cases whose means spread no further than their observations, and a band past the margin: as wide, said so."""
+    borrowed = compute_borrowed_cost(
+        _observations({"a": [0.002, 0.008], "b": [0.002, 0.008], "c": [0.002, 0.008], "d": [0.002, 0.008]}),
+        n_cases=4,
+        k_runs=2,
+    )
+
+    assert borrowed is not None and borrowed.band_basis is not None
+    assert "It is as wide as the band the observations alone give" in borrowed.band_basis, borrowed.band_basis
+    assert "wider than" not in borrowed.band_basis and "Neither end" not in borrowed.band_basis
 
 
 def test_a_borrowed_band_is_wider_than_the_band_the_same_results_give_as_the_templates_own():
@@ -151,8 +186,9 @@ def test_a_template_with_no_sibling_reads_unpriced_saying_neither_it_nor_a_sibli
         ("m-other", {}, "candidate model ('m-other' there, 'm-priced' here)"),
         (MODEL, {"judge_model": "judge-cheap", "model_role_provenance": {"judge": "chosen"}}, "judge ("),
         (MODEL, {"subject_snapshot": DEFAULT_SUBJECT}, "subject ('subject-1' there, 'extractor-config-7' here)"),
+        (MODEL, {"overlays": {"page_limit": 40}}, "overlays ({'page_limit': 40} there, {} here)"),
     ],
-    ids=["another-model", "another-judge", "another-subject"],
+    ids=["another-model", "another-judge", "another-subject", "other-overlays"],
 )
 def test_a_sibling_differing_in_a_launch_condition_is_not_drawn_on_and_is_named(
     model: str, run_fields: dict[str, Any], named: str
@@ -179,18 +215,29 @@ def _ran_on(storage: EvalStorage, template_id: str, model: str, **run_fields: An
         )
 
 
-def test_a_sibling_whose_template_spends_otherwise_is_not_drawn_on_and_says_what_differs():
+@pytest.mark.parametrize(
+    ("sibling_changes", "new_changes", "named"),
+    [
+        ({"tools_allowed": ["search"]}, {"tools_allowed": ["search", "browse"]}, "the allowed tools"),
+        # A kind spec is often exactly what two templates of one kind differ in, and the engine cannot tell its cost.
+        ({"kind_spec": {"graded_fields": ["total"]}}, {}, "the kind spec"),
+    ],
+    ids=["allowed-tools", "kind-spec"],
+)
+def test_a_sibling_whose_template_spends_otherwise_is_not_drawn_on_and_says_what_differs(
+    sibling_changes: dict[str, Any], new_changes: dict[str, Any], named: str
+):
     host, storage = _priced_host()
-    sibling = _template(storage, "persona_a", tools_allowed=["search"])
-    new = _template(storage, "persona_b", tools_allowed=["search", "browse"])
+    sibling = _template(storage, "persona_a", **sibling_changes)
+    new = _template(storage, "persona_b", **new_changes)
     _ran(storage, sibling.id, SIBLING_CASES)
 
     basis = _unpriced(history_launch_pricer(host)(_quote(new.id)), new)
 
     assert (
-        f"template {sibling.name!r} ({sibling.id!r}) differs from the arm's in the allowed tools, across which a "
-        "case's cost cannot be scaled"
-    ) in basis
+        f"template {sibling.name!r} ({sibling.id!r}) differs from the arm's in {named}, across which a case's cost "
+        "cannot be scaled"
+    ) in basis, basis
 
 
 def test_a_sibling_template_of_another_kind_is_never_drawn_on():
@@ -254,3 +301,43 @@ def test_a_borrowed_estimate_brackets_its_point_estimate_and_counts_what_went_un
 
 def test_nothing_priced_borrows_nothing():
     assert compute_borrowed_cost(_observations({"a": [None, None]}), n_cases=3, k_runs=1) is None
+
+
+# =============================================================================
+# Through the toy host: a sibling launched, the new template estimated, then launched under the borrowed figure
+# =============================================================================
+
+
+async def test_a_new_template_launched_after_borrowing_lands_its_own_spend_inside_the_borrowed_band():
+    """Every figure here is the toy extractor's own spend through a real launch, never a figure the test chose.
+
+    The toy's scripts cost each document a fixed amount, so the new template's cases (the same three invoices under
+    another template) cost what the sibling's did; what this proves is the path: the sibling's launched history
+    priced the new template, the launch admitted it under that borrowed figure, and its spend fell inside the band.
+    """
+    host = off_loop(ops_fixture).host
+    storage = host.eval_host.storage
+    sibling, new = off_loop(_template, storage, "toy_sibling"), off_loop(_template, storage, "toy_new")
+
+    def arguments(template: EvalTemplate) -> LaunchArguments:
+        return LaunchArguments(
+            template_id=template.id, subject_id=TOYHOST_SUBJECT.subject_id, models=[RUN_MODELS[0]], k_runs=2
+        )
+
+    (sibling_run,) = await launched_runs(host, await run_launch(host, arguments(sibling), TOYHOST_SCOPE))
+    assert (await settled(host, run_job_id(sibling_run))).state == "completed"
+    priced = replace(host, launch=replace(host.launch, launch_pricer=history_launch_pricer(host.eval_host)))
+
+    estimate = await launch_estimate(priced, arguments(new), TOYHOST_SCOPE)
+    (arm,) = estimate.arms
+    assert arm.method_id == BORROWED_PREDICTION_METHOD, arm.basis
+    assert f"template {sibling.name!r} ({sibling.id!r}), " in arm.basis
+    assert arm.low_usd is not None and arm.band_high_usd is not None and arm.outcome == "admitted", arm
+
+    (new_run,) = await launched_runs(priced, await run_launch(priced, arguments(new), TOYHOST_SCOPE))
+    assert (await settled(priced, run_job_id(new_run))).state == "completed"
+    spent = sum(
+        result.cost_usd or 0.0 for result in off_loop(storage.query_eval_results_by_run, new_run, TOYHOST_SCOPE)
+    )
+    assert spent > 0.0, "the toy's calls report what they cost"
+    assert arm.low_usd <= spent <= arm.band_high_usd, (arm.low_usd, spent, arm.band_high_usd)

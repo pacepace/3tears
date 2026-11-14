@@ -58,8 +58,10 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.analysis.measurement_windows import measurement_window, measurement_window_disclosure
 from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure
 from threetears.evals.analysis.lenses.cost_estimate import (
+    BORROWED_PREDICTION_METHOD,
     COST_BAND_SAFETY_MARGIN,
     COST_ESTIMATE_MIN_BASIS,
+    BorrowedCost,
     CostObservation,
     compute_borrowed_cost,
     compute_estimate_cost,
@@ -1149,12 +1151,13 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
 
     **A template with no priced history, its own or its revisions', borrows from its siblings'.** A sibling is another
     template in the scope, of the same candidate kind and not a revision of the arm's own. Only its runs launched as
-    the arm will be are drawn on (the same candidate model, cassette mode, judges, simulator and apparatus), and only on
-    the arm's subject. A sibling whose template differs from the arm's in what a run spends (its judged dimensions with
-    their judge pins, conversation shape, world seed or allowed tools) is not drawn on, and is named: the estimate is
-    per case, and a case's cost cannot be scaled across such a change. The price says it is borrowed: its method is
-    ``borrowed-history`` and its basis names each sibling and its result count. Its band is wider than a direct
-    estimate's (:func:`~threetears.evals.analysis.lenses.cost_estimate.compute_borrowed_cost`), and needs results
+    the arm will be are drawn on (the same candidate model, cassette mode, judges, simulator, apparatus and overlays),
+    and only on the arm's subject. A sibling whose template differs from the arm's in what a run spends (its judged
+    dimensions with their judge pins, conversation shape, world seed, allowed tools or kind spec) is not drawn on, and
+    is named: the estimate is per case, and a case's cost cannot be scaled across such a change. The price says it is
+    borrowed: its method is ``borrowed-history`` and its basis names each sibling and its result count. Its band is
+    never narrower than a direct estimate's from the same results, nor than the cap's safety margin either side of
+    its centre (:func:`~threetears.evals.analysis.lenses.cost_estimate.compute_borrowed_cost`), and needs results
     over at least :data:`~threetears.evals.analysis.COST_ESTIMATE_MIN_BASIS` cases. A borrowed figure budgets a
     launch only; it never enters a reading, a cell, a pool or a recommendation. With no sibling to draw on, the arm
     reads unpriced, and its basis says what its own history and its siblings each lack.
@@ -1259,7 +1262,7 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
                 if differences := _closest_priced_sibling_differences(host, quote, runs_by_template[sibling_id]):
                     reasons.append(f"{named}'s priced runs differ in {differences}")
                 continue
-            if changed := _pricing_changes(sibling, template):
+            if changed := _sibling_shape_changes(sibling, template):
                 reasons.append(
                     f"{named} differs from the arm's in {', '.join(changed)}, across which a case's cost cannot be "
                     "scaled"
@@ -1276,7 +1279,9 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
             if n_priced:
                 observations += its_own
                 drawn_on.append(f"{named}, {n_priced} result(s)")
-        borrowing = compute_borrowed_cost(observations, n_cases=quote.case_count, k_runs=quote.k_runs)
+        borrowing: BorrowedCost | None = compute_borrowed_cost(
+            observations, n_cases=quote.case_count, k_runs=quote.k_runs
+        )
         if borrowing is None:
             missing = (
                 f"nor has any other template of kind {template.candidate_kind!r} a priced result on subject "
@@ -1308,7 +1313,8 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
             predicted,
             f"sibling templates on subject {quote.subject_id!r} {launched}",
             drawn_on=f"borrowed from {sources}: template {template.name!r} has no priced result of its own; the "
-            f"same candidate kind, subject, {_PRICING_UNCHANGED}; a budgeting figure only, never a reading; ",
+            f"same candidate kind, subject, overlays, kind spec, {_PRICING_UNCHANGED}; a budgeting figure only, never "
+            "a reading; ",
         )
 
     def or_borrowed(quote: ArmQuote, template: EvalTemplate | None, launched: str, basis: str) -> ArmPrice:
@@ -1440,9 +1446,29 @@ def _predecessor(host: EvalHost, template: EvalTemplate) -> EvalTemplate | None:
     return earlier[0] if len(earlier) == 1 else None
 
 
+def _sibling_shape_changes(sibling: EvalTemplate, template: EvalTemplate) -> list[str]:
+    """What of a sibling template moves what a run of it spends otherwise than ``template``: its pricing shape
+    (:func:`_pricing_shape`) and its kind spec, which between two templates of one kind is often exactly what differs
+    (a larger table the candidate or a judge reads), and whose bearing on cost the engine cannot tell. Empty when the
+    sibling's priced results price ``template``'s arm, case for case.
+
+    :param sibling: The sibling template.
+    :ptype sibling: EvalTemplate
+    :param template: The arm's template.
+    :ptype template: EvalTemplate
+    :return: Each difference, by the name a basis gives it.
+    :rtype: list[str]
+    """
+    changed = _pricing_changes(sibling, template)
+    if dict(sibling.kind_spec) != dict(template.kind_spec):
+        changed.append("the kind spec")
+    return changed
+
+
 def _sibling_differences(run: EvalRun, quote: ArmQuote) -> list[str]:
-    """The launch conditions a sibling template's ``run`` differs from ``quote``'s arm in, its subject among them: a
-    borrowed price crosses templates and nothing else (:func:`_launch_differences`, then the subject).
+    """The launch conditions a sibling template's ``run`` differs from ``quote``'s arm in, its subject and overlays
+    among them: a borrowed price crosses templates and nothing else (:func:`_launch_differences`, then the subject and
+    the overlays).
 
     :param run: A run of a sibling template.
     :ptype run: EvalRun
@@ -1455,6 +1481,8 @@ def _sibling_differences(run: EvalRun, quote: ArmQuote) -> list[str]:
     subject = run.subject_snapshot.subject_id
     if subject != quote.subject_id:
         differences.append(f"subject ({subject!r} there, {quote.subject_id!r} here)")
+    if dict(run.overlays) != dict(quote.overlays):
+        differences.append(f"overlays ({dict(run.overlays)!r} there, {dict(quote.overlays)!r} here)")
     return differences
 
 
@@ -1717,6 +1745,9 @@ def estimate_text(estimate: LaunchEstimate) -> str:
             if arm.predicted_usd is not None
             else "unpriced"
         )
+        if arm.method_id == BORROWED_PREDICTION_METHOD:
+            # Up front, beside the figure: a budgeting figure from other templates, which no reading may take as one.
+            figure += ", borrowed from sibling templates"
         # one line: an arm's description is its repr'd model and template id and its counts (run.launch)
         lines.append(f"- {arm.described}: {figure} — {arm.outcome}; {arm.basis}")
         if arm.call_ceiling_estimate:

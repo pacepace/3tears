@@ -164,7 +164,11 @@ from threetears.evals.analysis.reporting import (
 )
 from threetears.evals.analysis.lenses.aggregation import DEFAULT_WEIGHTING, WEIGHTING_EQUAL_PER_SCENARIO, metric_help
 from threetears.evals.analysis.lenses.comparison_sets import DECLARED_INPUT_ORIGIN, difference_was_declared_at_launch
-from threetears.evals.analysis.lenses.cost_estimate import COST_ESTIMATE_MIN_BASIS, COST_PREDICTION_METHOD
+from threetears.evals.analysis.lenses.cost_estimate import (
+    BORROWED_PREDICTION_METHOD,
+    COST_ESTIMATE_MIN_BASIS,
+    COST_PREDICTION_METHOD,
+)
 from threetears.evals.analysis.lenses.pivot import CELL_MEASURED, CELL_NOT_RUN, CELL_WITHHELD
 from threetears.evals.analysis.lenses.history import HISTORY_METRICS
 from threetears.evals.analysis.significance import format_significance, significance_disclosure
@@ -616,6 +620,7 @@ __all__ = [
     "report_html",
     "report_markdown",
     "ABSENT",
+    "BORROWED_PREDICTION_METHOD",
     "CELL_MEASURED",
     "CELL_NOT_RUN",
     "CELL_WITHHELD",
