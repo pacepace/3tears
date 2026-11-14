@@ -3277,11 +3277,23 @@ class _ModuleWalk(ast.NodeVisitor):
                 return ast.Dict(keys=[ast.Constant("")], values=[value])
             return value
 
+        def target(value: ast.expr) -> ast.expr:
+            # a delete's table a declared transient producer names (``self._stage_name(rows_stage)``, reports #56):
+            # the change set it is, as a step reads one
+            if isinstance(value, ast.Call) and self._produced_by(value) == TRANSIENT_PRODUCED:
+                return ast.Constant(TRANSIENT_PRODUCED)
+            return literal(value)
+
         mapped = _final(node) == "counts_by_relations"
+        deletes = _final(node) == "delete_matching"
         return ast.Call(
             func=node.func,
             args=[
-                tables(literal(argument)) if mapped and place == 1 else literal(argument)
+                tables(literal(argument))
+                if mapped and place == 1
+                else target(argument)
+                if deletes and place == 1
+                else literal(argument)
                 for place, argument in enumerate(node.args)
             ],
             keywords=[
@@ -3291,6 +3303,8 @@ class _ModuleWalk(ast.NodeVisitor):
                     if k.arg == "by"
                     else tables(literal(k.value))
                     if mapped and k.arg == "tables"
+                    else target(k.value)
+                    if deletes and k.arg == "table"
                     else literal(k.value),
                 )
                 for k in node.keywords
@@ -3589,7 +3603,22 @@ class _ModuleWalk(ast.NodeVisitor):
         else:
             if len(built.args) <= builder.parameter:
                 return [call]
-            found = self._column_choices(built.args[builder.parameter])
+            handed = built.args[builder.parameter]
+            found = self._column_choices(handed)
+            if found is None and self._key_sourced(handed):
+                # a declared key handed at run time (``_keyed_on(key)`` with ``key: Annotated[..., DeclaredKey]``,
+                # reports #56): one ``Match`` of the key, as ``apply_stage(key=list(key))`` is judged
+                keyed_on = ast.List(
+                    elts=[ast.Call(func=ast.Name("Match", ast.Load()), args=[ast.Name("pk", ast.Load())], keywords=[])],
+                    ctx=ast.Load(),
+                )
+                return [
+                    ast.Call(
+                        func=call.func,
+                        args=call.args,
+                        keywords=[k if k.arg != "on" else ast.keyword(arg="on", value=keyed_on) for k in call.keywords],
+                    )
+                ]
             if found is None:
                 return [call]
             choices = found

@@ -953,7 +953,11 @@ def _match_columns(node: ast.expr | None) -> list[str]:
         column = _argument(element, "column", 0)
         if column is None:
             raise _Unseen("on")
-        columns.append(column.value if isinstance(column, ast.Constant) and isinstance(column.value, str) else "{}")
+        if isinstance(column, ast.Constant) and isinstance(column.value, str):
+            columns.append(column.value)
+        else:
+            # the walk hands ``pk`` for a declared key named at run time: the key, as in SQL the caller wrote
+            columns.append("{pk}" if isinstance(column, ast.Name) and column.id == "pk" else "{}")
     if all(column == "{}" for column in columns):
         raise _Unseen("on")
     return columns
@@ -984,7 +988,7 @@ def _step(call: ast.Call) -> list[str]:
     if helper == "delete_matching":
         table, _ = _relation(_argument(call, "table", 1), "table")
         pinned = [
-            f"{column if column == '{}' else _quoted(column)} = ANY(${place})"
+            f"{column if column in {'{}', '{pk}'} else _quoted(column)} = ANY(${place})"
             for place, column in enumerate(_match_columns(_argument(call, "on", None)), 1)
         ]
         statements.append(f"DELETE FROM {table}{_where(pinned)}")

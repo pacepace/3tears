@@ -4600,6 +4600,61 @@ def test_a_delete_matching_on_built_by_a_function_over_a_copy_table_named_at_run
     assert "drops_by_run" in functions, found
 
 
+#: a follower's stage deletes (reports #56, ``aibots_reports.pod.follower_parts.Stages._add_keys``): ``on=`` built by
+#: a repo function over the followed table's declared key, a parameter annotated as one
+_DECLARED_KEY_DELETES = """
+    from collections.abc import Sequence
+    from typing import Annotated
+
+    from threetears.core import keyed
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.keyed import InlineDuckDB, run_inline
+    from threetears.interfaces.keyed import DeclaredKey, KeyColumns
+
+    RESULTS = TableSchema(name="results", primary_key=("state", "run_id"), columns=[])
+    _TYPED_KEYS = "_typed"
+
+
+    def _keyed_on(key: Sequence[str]) -> list[keyed.Match]:
+        return [keyed.Match(column) for column in key]
+
+
+    class Stages:
+        @staticmethod
+        def _stage_name(stage: str) -> str:
+            return stage
+
+        def _add_keys(self, db, key: Annotated[Sequence[str], DeclaredKey], rows_stage: str) -> None:
+            inline = InlineDuckDB(db)
+            run_inline(keyed.delete_matching(inline, self._stage_name(rows_stage), _TYPED_KEYS, on=_keyed_on(key)))
+
+        def drop_results(self, db, key: KeyColumns) -> None:
+            run_inline(keyed.delete_matching(InlineDuckDB(db), "results", _TYPED_KEYS, on=_keyed_on(list(key))))
+
+        def drop_by_columns(self, db, columns: Sequence[str]) -> None:
+            run_inline(keyed.delete_matching(InlineDuckDB(db), "results", _TYPED_KEYS, on=_keyed_on(columns)))
+"""
+
+
+def test_a_delete_matching_on_built_from_a_declared_key_parameter_is_judged_as_the_key(tmp_path: Path) -> None:
+    """Flips if ``delete_matching``'s ``on=`` built by a repo function over a parameter annotated as a declared key
+    (``Annotated[Sequence[str], DeclaredKey]``, ``KeyColumns``, or ``list()`` of one) is unseen instead of judged as
+    the key, as ``apply_stage(key=list(key))`` is (reports #56); or if one over a column list no declaration names
+    passes."""
+    found = _symbols(
+        _config(
+            tmp_path,
+            {"follower_parts.py": _DECLARED_KEY_DELETES},
+            transient_relations=r"^_typed$",
+            transient_producers=frozenset({"Stages._stage_name"}),
+        )
+    )
+    functions = {function for function, _ in found}
+    assert "Stages._add_keys" not in functions, found
+    assert "Stages.drop_results" not in functions, found
+    assert any(f == "Stages.drop_by_columns" and s.startswith("unknown-predicate") for f, s in found), found
+
+
 _UNTYPED_ARROW = """
     from threetears.core import keyed
     from threetears.core.collections.schema_backed import TableSchema
