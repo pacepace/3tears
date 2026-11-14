@@ -89,6 +89,7 @@ from threetears.core.keyed import (
     read_by,
     read_by_joined,
     read_link_chain,
+    read_reached,
     read_row,
     read_value,
     serving_index,
@@ -672,6 +673,9 @@ async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides:
     if entry.get("joins"):
         await _assert_join_same(conn, entry, overrides=overrides)
         return
+    if entry.get("chain") and "to" in entry["chain"]:
+        await _assert_reached_same(conn, entry)
+        return
     if entry.get("chain"):
         await _assert_chain_same(conn, entry)
         return
@@ -722,6 +726,81 @@ async def _assert_chain_same(conn: Any, entry: Mapping[str, Any]) -> None:
                 await transaction.rollback()
             if sorted(map(repr, old)) != sorted(map(repr, new)):
                 differences.append(f"from {start!r} at most {most}: the statement {old}, the helper {new}")
+    finally:
+        await conn.execute("SET session_replication_role = DEFAULT")
+    assert not differences, f"{entry['function']}: " + "; ".join(differences)
+
+
+#: a walk proof's links: (the node a row is reached by, the node it leads to, whether its follow / by pins hold);
+#: a cycle of three, a branch off it, a row whose pins do not hold (its node reached, never walked past), a row
+#: leading into the cycle from outside, and a node with no row
+_REACHED_LINKS: Final[tuple[tuple[int, int, bool], ...]] = (
+    (0, 1, True),
+    (1, 2, True),
+    (2, 0, True),
+    (1, 3, True),
+    (3, 4, False),
+    (4, 6, True),
+    (5, 1, True),
+)
+
+
+def _held_value(column: CatalogColumn, pin: Mapping[str, Any], *, held: bool) -> Any:
+    """a walk row's pinned column: the pin's literal (``held``), or another value."""
+    return _join_pin_value(column, pin, held=held)
+
+
+async def _assert_reached_same(conn: Any, entry: Mapping[str, Any]) -> None:
+    """a walk entry's ``read_reached`` call gives what its recursive statement gave: the table seeded with
+    :data:`_REACHED_LINKS` (a cycle, a branch, a row its pins stop, a way in from outside), walked from every node and
+    from one no row holds, every answered row compared (both answer distinct rows, in no promised order)."""
+    table, walk = entry["table"], entry["chain"]
+    on, to = walk["on"], walk["to"]
+    await _drop_checks(conn, table)
+    shape = await _catalog(conn, table)
+    pinned = [*walk["follow"], *walk["by"]]
+    for column in (on, to, *(pin["column"] for pin in (*pinned, *entry["pins"]))):
+        if column not in shape.columns:
+            raise AssertionError(f"{table}: the walk names {column}, which the table has no column of")
+    nodes = [_value(shape.columns[on], 700_000 + place) for place in range(8)]
+    rows = []
+    for source, target, held in _REACHED_LINKS:
+        row = {on: nodes[source], to: nodes[target]}
+        for pin in pinned:
+            row[pin["column"]] = _held_value(shape.columns[pin["column"]], pin, held=held)
+        rows.append(row)
+    # the start's own pins other than ``on`` (a downstream walk's source kind): the value the walked rows hold
+    held_by = {pin["column"]: rows[0][pin["column"]] for pin in pinned}
+    columns = tuple(entry["columns"])
+    differences = []
+    await conn.execute("SET session_replication_role = replica")
+    try:
+        for place in [*range(len(nodes)), None]:
+            node = _value(shape.columns[on], 799_999) if place is None else nodes[place]
+            params = []
+            for pin in entry["pins"]:
+                column = pin["column"]
+                params.append(node if column in (on, to) else held_by.get(column, rows[0].get(column)))
+            start = {pin["column"]: params[index] for index, pin in enumerate(entry["pins"])}
+            transaction = conn.transaction()
+            await transaction.start()
+            try:
+                await seed_rows(conn, table, rows)
+                old = [dict(row) for row in await conn.fetch(entry["old_sql"], *params)]
+                new = await read_reached(
+                    conn,
+                    table,
+                    start=start,
+                    on=on,
+                    to=to,
+                    columns=columns,
+                    by=_by({"pins": walk["by"]}, ()) or None,
+                    follow=_by({"pins": walk["follow"]}, ()) or None,
+                )
+            finally:
+                await transaction.rollback()
+            if sorted(map(repr, old)) != sorted(map(repr, new)):
+                differences.append(f"from {start!r}: the statement {old}, the helper {new}")
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")
     assert not differences, f"{entry['function']}: " + "; ".join(differences)
@@ -1483,6 +1562,8 @@ def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
     if entry.get("shape") == "write":
         return _write_says(call, entry)
     keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    if entry.get("chain") and "to" in entry["chain"]:
+        return _reached_says(call, entry)
     if entry.get("chain"):
         chained = (
             f"read_link_chain(c, {entry['table']!r}, key={entry['chain']['key']!r}, link={entry['chain']['link']!r}, "
@@ -1558,6 +1639,36 @@ def _part_says(call: ast.Call, entry: Mapping[str, Any], part: Mapping[str, Any]
         asked == {"columns"}
         and columns is not None
         and _same_expression(columns, repr(tuple(item["column"] for item in items)))
+    )
+
+
+def _reached_says(call: ast.Call, entry: Mapping[str, Any]) -> bool:
+    """whether a ``read_reached`` call is the entry's walk: its table, its start pinned as recorded, its ``on``,
+    ``to``, columns and its ``follow`` / ``by`` literals, and nothing else."""
+    walk = entry["chain"]
+    if len(call.args) != 2 or not (isinstance(call.args[1], ast.Constant) and call.args[1].value == entry["table"]):
+        return False
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    start = keywords.get("start")
+    if not isinstance(start, ast.Dict) or len(start.keys) != len(entry["pins"]):
+        return False
+    for key, value, pin in zip(start.keys, start.values, entry["pins"], strict=True):
+        if not (isinstance(key, ast.Constant) and key.value == pin["column"]) or not _pin_says(
+            value, pin, entry["args"]
+        ):
+            return False
+    expected = {"start", "on", "to", "columns"} | {argument for argument in ("follow", "by") if walk[argument]}
+    if set(keywords) != expected:
+        return False
+    for argument in ("follow", "by"):
+        if walk[argument]:
+            pinned = "{" + ", ".join(f"{pin['column']!r}: {_pin_text(pin)}" for pin in walk[argument]) + "}"
+            if not _same_expression(keywords[argument], pinned):
+                return False
+    return (
+        _same_expression(keywords["on"], repr(walk["on"]))
+        and _same_expression(keywords["to"], repr(walk["to"]))
+        and _same_expression(keywords["columns"], repr(tuple(entry["columns"])))
     )
 
 

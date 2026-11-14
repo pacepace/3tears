@@ -28,6 +28,7 @@ from threetears.enforcement.no_whole_reads.rewrite import (
     WriteSql,
     apply_rewrites,
     parse_aggregate,
+    parse_reached,
     parse_count,
     parse_first,
     parse_join,
@@ -37,6 +38,7 @@ from threetears.enforcement.no_whole_reads.rewrite import (
     plan_aggregate_rewrites,
     plan_count_rewrites,
     plan_chain_rewrites,
+    plan_reached_rewrites,
     plan_first_rewrites,
     plan_join_rewrites,
     plan_list_rewrites,
@@ -1374,6 +1376,105 @@ def test_a_first_of_read_bound_by_its_guards_alone_is_parsed() -> None:
         assert isinstance(refused, str) and "literals only" in refused, refused
     unguarded = parse_first("SELECT * FROM agents WHERE id > $1 ORDER BY id LIMIT $2")
     assert isinstance(unguarded, str) and "other than equality" in unguarded, unguarded
+
+
+_CLOSURE_SQL = (
+    "WITH RECURSIVE reachable(dataset_id, path) AS ( SELECT $1::uuid AS dataset_id, ARRAY[$1::uuid] AS path "
+    "UNION ALL SELECT s.source_id, r.path || s.source_id FROM dataset_sources s JOIN reachable r "
+    "ON s.dataset_id = r.dataset_id WHERE s.source_kind = 'dataset' AND NOT (s.source_id = ANY(r.path)) ) "
+    "SELECT DISTINCT s.source_kind AS source_kind, s.source_id AS source_id FROM dataset_sources s "
+    "JOIN reachable r ON s.dataset_id = r.dataset_id"
+)
+_DOWNSTREAM_SQL = (
+    "WITH RECURSIVE downstream(dataset_id, path) AS ( SELECT s.dataset_id, ARRAY[s.dataset_id] AS path "
+    "FROM dataset_sources s WHERE s.source_kind = $1 AND s.source_id = $2 UNION ALL "
+    "SELECT s.dataset_id, d.path || s.dataset_id FROM dataset_sources s JOIN downstream d "
+    "ON s.source_kind = 'dataset' AND s.source_id = d.dataset_id WHERE NOT (s.dataset_id = ANY(d.path)) ) "
+    "SELECT DISTINCT dataset_id FROM downstream"
+)
+
+
+def test_a_walk_of_links_written_as_a_recursive_statement_is_parsed() -> None:
+    """Flips if a closure (from a node by its parameter, following the rows whose pins hold, every row reached
+    answered) or a downstream walk (from the rows its parameters pin, each level pinned by literals) written as a
+    recursive statement with a path guard is not parsed into ``read_reached``'s start, ``on``, ``to``, ``follow`` and
+    ``by``; or if one with no path guard, answering a column under another name, or pinned per level by a parameter
+    is taken."""
+    closure = parse_reached(_CLOSURE_SQL)
+    assert isinstance(closure, PointSql), closure
+    assert (closure.table, closure.columns) == ("dataset_sources", ("source_kind", "source_id")), closure
+    assert [(pin.column, pin.kind, pin.param) for pin in closure.pins] == [("dataset_id", "param", 1)]
+    assert closure.chain is not None and (closure.chain["on"], closure.chain["to"]) == ("dataset_id", "source_id")
+    assert [(pin["column"], pin["literal"]) for pin in closure.chain["follow"]] == [("source_kind", "dataset")]
+    assert closure.chain["by"] == []
+    downstream = parse_reached(_DOWNSTREAM_SQL)
+    assert isinstance(downstream, PointSql), downstream
+    assert [(pin.column, pin.param) for pin in downstream.pins] == [("source_kind", 1), ("source_id", 2)]
+    assert downstream.columns == ("dataset_id",) and downstream.chain is not None
+    assert (downstream.chain["on"], downstream.chain["to"]) == ("source_id", "dataset_id"), downstream.chain
+    assert [(pin["column"], pin["literal"]) for pin in downstream.chain["by"]] == [("source_kind", "dataset")]
+    for refused in (
+        _CLOSURE_SQL.replace(" AND NOT (s.source_id = ANY(r.path))", ""),
+        _CLOSURE_SQL.replace("s.source_kind AS source_kind", "s.source_kind AS kind"),
+        _DOWNSTREAM_SQL.replace("ON s.source_kind = 'dataset'", "ON s.source_kind = $3"),
+    ):
+        assert isinstance(parse_reached(refused), str), refused
+
+
+_REACHED = (
+    """
+    async def closure(pool, dataset_id):
+        rows = await pool.fetch(_CLOSURE, dataset_id)
+        return [(row["source_kind"], row["source_id"]) for row in rows]
+
+
+    async def downstream(pool, kind, resource_id):
+        rows = await pool.fetch(_DOWNSTREAM, kind, resource_id)
+        return tuple(row["dataset_id"] for row in rows)
+
+
+    _CLOSURE = """
+    + repr(_CLOSURE_SQL)
+    + """
+    _DOWNSTREAM = """
+    + repr(_DOWNSTREAM_SQL.replace("dataset_sources", "dataset_links"))
+    + """
+"""
+)
+
+
+def test_walks_of_links_are_rewritten_onto_read_reached(tmp_path: Path) -> None:
+    """Flips if a closure and a downstream walk sent by ``fetch`` are not rewritten onto ``read_reached`` (its start,
+    ``on``, ``to``, ``follow`` / ``by`` and columns as parsed), each recorded and found by the source check."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/tables.py").write_text(
+        textwrap.dedent(_TABLES)
+        + 'SOURCES_SCHEMA = TableSchema(name="dataset_sources", primary_key=("dataset_id", "source_kind", "source_id"), '
+        + "columns=[])\n"
+        + 'LINKS_SCHEMA = TableSchema(name="dataset_links", primary_key=("source_kind", "source_id", "dataset_id"), '
+        + "columns=[])\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_REACHED), encoding="utf-8")
+    rewrites, refusals = plan_reached_rewrites(config)
+    assert sorted(rewrite.function for rewrite in rewrites) == ["closure", "downstream"], refusals
+    calls = {rewrite.function: rewrite.new_call for rewrite in rewrites}
+    assert calls["closure"] == (
+        "read_reached(pool, 'dataset_sources', start={'dataset_id': dataset_id}, on='dataset_id', to='source_id', "
+        "columns=('source_kind', 'source_id'), follow={'source_kind': 'dataset'})"
+    ), calls["closure"]
+    assert calls["downstream"] == (
+        "read_reached(pool, 'dataset_links', start={'source_kind': kind, 'source_id': resource_id}, "
+        "on='source_id', to='dataset_id', columns=('dataset_id',), by={'source_kind': 'dataset'})"
+    ), calls["downstream"]
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    source = (tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8")
+    assert "from threetears.core.keyed import read_reached" in source and "_CLOSURE" not in source, source
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    for entry in json.loads(manifest.read_text(encoding="utf-8")):
+        assert entry["shape"] == "reached" and entry["helper"] == "read_reached", entry
+        assert_source_says(tmp_path, entry)
 
 
 def test_aggregates_and_scalar_sub_selects_are_parsed() -> None:

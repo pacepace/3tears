@@ -240,7 +240,7 @@ class PointSql:
     joins: tuple[JoinSql, ...] = ()
     #: a chain of links's (shape ``chain``): ``{"key", "link"}``, the column a row is named by and the one naming the
     #: next; None for any other read
-    chain: dict[str, str] | None = None
+    chain: dict[str, Any] | None = None
     #: an aggregate read's (shape ``aggregate``): each relation's part, ``{"table", "sql", "pins", "guards",
     #: "items"}`` (its pins and guards as :class:`Pin` dicts in the statement's numbering, ``sql`` its own statement
     #: numbered from ``$1``, each item ``{"name", "function", "column"}``); none for any other read
@@ -330,7 +330,7 @@ class Rewrite:
     #: ``table``; not recorded for any other read
     joins: list[dict[str, Any]] = field(default_factory=list)
     #: a chain of links's (shape ``chain``, ``read_link_chain``): ``{"key", "link"}``; not recorded for any other read
-    chain: dict[str, str] | None = None
+    chain: dict[str, Any] | None = None
     #: an aggregate read's (shape ``aggregate``): each relation's part (:attr:`PointSql.parts`), one helper call each;
     #: not recorded for any other read
     parts: list[dict[str, Any]] = field(default_factory=list)
@@ -2684,6 +2684,26 @@ def _unkeyed_value(parsed: PointSql, schema: Any) -> str:
     return ""
 
 
+def _render_reached(rewrite: Rewrite, receiver: str) -> str:
+    """the ``read_reached`` call, written in the ``fetch`` call's place."""
+    assert rewrite.chain is not None
+    walk = rewrite.chain
+    start = "{" + ", ".join(f"{pin['column']!r}: {_value_text(pin, rewrite.args)}" for pin in rewrite.pins) + "}"
+    parts = [
+        receiver,
+        repr(rewrite.table),
+        f"start={start}",
+        f"on={walk['on']!r}",
+        f"to={walk['to']!r}",
+        f"columns={tuple(rewrite.columns or ())!r}",
+    ]
+    for argument in ("follow", "by"):
+        if walk[argument]:
+            pinned = ", ".join(f"{pin['column']!r}: {_value_text(pin, ())}" for pin in walk[argument])
+            parts.append(f"{argument}={{{pinned}}}")
+    return f"read_reached({', '.join(parts)})"
+
+
 def _sort_text(term: Mapping[str, Any]) -> str:
     """one ``ORDER BY`` term as the helper call writes it: ``Sort("col")``, with ``descending=True`` and ``nulls=`` as
     the statement wrote them (the engine's own NULL order otherwise, as before).
@@ -3945,6 +3965,167 @@ def parse_chain(sql: str, *, guards: bool = False) -> PointSql | str:
 _CHAIN_SHAPE: Final[_Shape] = _Shape("chain", parse_chain, frozenset({"fetch"}), finds="list", verb="with")
 
 
+_I: Final[str] = _IDENT
+#: a closure: from a node its parameter names, each next node the walked rows' ``to``, every row reached answered
+_CLOSURE: Final[re.Pattern[str]] = re.compile(
+    rf"^with\s+recursive\s+(?P<cte>{_I})\s*\(\s*(?P<node>{_I})\s*,\s*(?P<path>{_I})\s*\)\s+as\s*\(\s*"
+    rf"select\s+\$(?P<p>\d+)(?:::{_I})?\s+as\s+(?P=node)\s*,\s*array\s*\[\s*\$(?P=p)(?:::{_I})?\s*\]\s+as\s+(?P=path)\s+"
+    rf"union\s+all\s+select\s+(?P<s1>{_I})\.(?P<to>{_I})\s*,\s*(?P<r1>{_I})\.(?P=path)\s*\|\|\s*(?P=s1)\.(?P=to)\s+"
+    rf"from\s+(?P<table>{_I}(?:\.{_I})?)\s+(?:as\s+)?(?P=s1)\s+join\s+(?P=cte)\s+(?:as\s+)?(?P=r1)\s+on\s+"
+    rf"(?P=s1)\.(?P<on>{_I})\s*=\s*(?P=r1)\.(?P=node)\s+where\s+(?P<follow>.+?)\s+and\s+not\s*\(\s*(?P=s1)\.(?P=to)"
+    rf"\s*=\s*any\s*\(\s*(?P=r1)\.(?P=path)\s*\)\s*\)\s*\)\s*select\s+distinct\s+(?P<columns>.+?)\s+from\s+"
+    rf"(?P=table)\s+(?:as\s+)?(?P<s2>{_I})\s+join\s+(?P=cte)\s+(?:as\s+)?(?P<r2>{_I})\s+on\s+(?P=s2)\.(?P=on)\s*=\s*"
+    rf"(?P=r2)\.(?P=node)\s*;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+#: a downstream walk: from the rows its parameters pin, each level the rows whose ``on`` holds a node reached
+_DOWNSTREAM: Final[re.Pattern[str]] = re.compile(
+    rf"^with\s+recursive\s+(?P<cte>{_I})\s*\(\s*(?P<node>{_I})\s*,\s*(?P<path>{_I})\s*\)\s+as\s*\(\s*"
+    rf"select\s+(?P<s0>{_I})\.(?P<to>{_I})\s*,\s*array\s*\[\s*(?P=s0)\.(?P=to)\s*\]\s+as\s+(?P=path)\s+from\s+"
+    rf"(?P<table>{_I}(?:\.{_I})?)\s+(?:as\s+)?(?P=s0)\s+where\s+(?P<start>.+?)\s+union\s+all\s+select\s+"
+    rf"(?P<s1>{_I})\.(?P=to)\s*,\s*(?P<r1>{_I})\.(?P=path)\s*\|\|\s*(?P=s1)\.(?P=to)\s+from\s+(?P=table)\s+"
+    rf"(?:as\s+)?(?P=s1)\s+join\s+(?P=cte)\s+(?:as\s+)?(?P=r1)\s+on\s+(?P<on_clause>.+?)\s+where\s+not\s*\(\s*"
+    rf"(?P=s1)\.(?P=to)\s*=\s*any\s*\(\s*(?P=r1)\.(?P=path)\s*\)\s*\)\s*\)\s*select\s+distinct\s+(?P=node)\s+"
+    rf"from\s+(?P=cte)\s*;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _literal_pins(text: str, alias: str, table: str) -> list[Pin] | str:
+    """a walk's per-level pins: equalities to literals of its table's columns only."""
+    pinned = _pins(text, _QUOTED.sub(lambda hit: "'" + "x" * (len(hit.group()) - 2) + "'", text), {alias, table})
+    if isinstance(pinned, str):
+        return pinned
+    if any(pin.kind not in {"literal", "anylit", "null"} for pin in pinned):
+        return "a walk's level pinned by other than literals"
+    return pinned
+
+
+def parse_reached(sql: str, *, guards: bool = False) -> PointSql | str:
+    """a walk of a table's links, written as its own recursive statement with a path guard (shape ``reached``): a
+    closure from a node its parameter names (every row the nodes reached hold answered, the rows whose pins hold
+    walked on)::
+
+        WITH RECURSIVE reachable(dataset_id, path) AS (
+            SELECT $1::uuid AS dataset_id, ARRAY[$1::uuid] AS path
+          UNION ALL
+            SELECT s.source_id, r.path || s.source_id FROM dataset_sources s JOIN reachable r ON s.dataset_id = r.dataset_id
+             WHERE s.source_kind = 'dataset' AND NOT (s.source_id = ANY(r.path))
+        ) SELECT DISTINCT s.source_kind AS source_kind, s.source_id AS source_id
+            FROM dataset_sources s JOIN reachable r ON s.dataset_id = r.dataset_id
+
+    or a downstream walk from the rows its parameters pin, each level pinned by literals in its ``ON``, its nodes
+    answered (``SELECT DISTINCT <node> FROM <cte>``); as the :func:`~threetears.core.keyed.read_reached` call it is,
+    or why it is not one.
+
+    :param sql: the statement
+    :ptype sql: str
+    :param guards: unused (a walk has no guard)
+    :ptype guards: bool
+    :return: the parsed read (``chain`` holding ``on``, ``to``, ``follow`` and ``by``; its pins the start's), or the
+        refusal's reason
+    :rtype: PointSql | str
+    """
+    del guards
+    text = " ".join(sql.split())
+    if "{" in text or "}" in text:
+        return "interpolated"
+    closure = _CLOSURE.match(text)
+    if closure is not None:
+        table = closure.group("table").lower()
+        if int(closure.group("p")) != 1:
+            return "parameters not numbered $1..$n"
+        follow = _literal_pins(closure.group("follow"), closure.group("s1").lower(), table.split(".")[-1])
+        if isinstance(follow, str):
+            return follow
+        columns: list[str] = []
+        for item in _items(closure.group("columns")):
+            plain = _PLAIN_ITEM.match(item)
+            if plain is None or (plain.group("q") or "").lower() != closure.group("s2").lower():
+                return f"a walk answering other than its table's columns: {item!r}"
+            column = plain.group("column").lower()
+            if (plain.group("name") or column).lower() != column:
+                return f"a walk answering a column under a name other than its own: {item!r}"
+            columns.append(column)
+        on = closure.group("on").lower()
+        return PointSql(
+            table=table,
+            columns=tuple(columns),
+            pins=(Pin(on, "param", param=1),),
+            chain={
+                "on": on,
+                "to": closure.group("to").lower(),
+                "follow": [asdict(pin) for pin in follow],
+                "by": [],
+            },
+        )
+    downstream = _DOWNSTREAM.match(text)
+    if downstream is None:
+        return "not a walk of links (WITH RECURSIVE ... a path guard, from a node or the rows its parameters pin)"
+    table = downstream.group("table").lower()
+    to, node = downstream.group("to").lower(), downstream.group("node").lower()
+    if to != node:
+        return "a walk answering its nodes under a name other than their column's"
+    s0, s1, r1 = (downstream.group(name).lower() for name in ("s0", "s1", "r1"))
+    start_text = downstream.group("start")
+    start = _pins(start_text, _QUOTED.sub(lambda hit: "'" + "x" * (len(hit.group()) - 2) + "'", start_text), {s0})
+    if isinstance(start, str):
+        return start
+    numbers = sorted({number for pin in start for number in pin.numbers()})
+    if not numbers or numbers != list(range(1, len(numbers) + 1)):
+        return "parameters not numbered $1..$n"
+    on = ""
+    rest: list[str] = []
+    conjuncts = _conjuncts(downstream.group("on_clause"))
+    if isinstance(conjuncts, str):
+        return conjuncts
+    for written, _ in conjuncts:
+        pair = _COLUMN_PAIR.match(written)
+        if pair is not None:
+            sides = {
+                pair.group("lq").lower(): pair.group("lcol").lower(),
+                pair.group("rq").lower(): pair.group("rcol").lower(),
+            }
+            if set(sides) != {s1, r1} or sides[r1] != node or on:
+                return f"a walk's level joined other than by one column to the node reached: {written!r}"
+            on = sides[s1]
+            continue
+        rest.append(written)
+    if not on:
+        return "a walk's level joined to no node"
+    by: list[Pin] = []
+    if rest:
+        pinned = _literal_pins(" AND ".join(rest), s1, table.split(".")[-1])
+        if isinstance(pinned, str):
+            return pinned
+        by = pinned
+    return PointSql(
+        table=table,
+        columns=(to,),
+        pins=tuple(start),
+        chain={"on": on, "to": to, "follow": [], "by": [asdict(pin) for pin in by]},
+    )
+
+
+#: a walk of links (:func:`parse_reached`), found as a join, a count or a listing, sent by ``fetch``
+_REACHED_SHAPE: Final[_Shape] = _Shape(
+    "reached", parse_reached, frozenset({"fetch"}), finds="join,count,list", verb="with"
+)
+
+
+def plan_reached_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
+    """every join, count or listing finding of the repo that is a walk of links written as its own recursive
+    statement (:func:`parse_reached`), sent by ``fetch``, as the :func:`~threetears.core.keyed.read_reached` call it
+    takes, or the refusal it gets.
+
+    :param config: the repo's no-whole-reads config
+    :ptype config: NoWholeReadsConfig
+    :return: the rewrites, and the refusals
+    :rtype: tuple[list[Rewrite], list[Refusal]]
+    """
+    return _plan_reads(config, _REACHED_SHAPE)
+
+
 def plan_chain_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
     """every listing finding of the repo that is a chain of links written as its own recursive statement
     (:func:`parse_chain`), sent by ``fetch``, as the :func:`~threetears.core.keyed.read_link_chain` call it takes, or
@@ -4218,7 +4399,8 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             elif (parsed.joins or parsed.chain is not None) and _read_by_position(module, call):
                 problem = (
                     "a read whose rows are read by position "
-                    f"({'read_link_chain' if parsed.chain is not None else 'read_by_joined'} answers dicts)"
+                    f"({'read_by_joined' if parsed.chain is None else 'read_reached' if 'to' in parsed.chain else 'read_link_chain'}"
+                    " answers dicts)"
                 )
             elif method not in shape.methods and parsed.aggregate:
                 problem = f"a count sent by {method}: read by a column name the helper does not answer under"
@@ -4252,7 +4434,10 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 chain=parsed.chain,
             )
             spliced: ast.expr = call
-            if parsed.chain is not None:
+            if parsed.chain is not None and "to" in parsed.chain:
+                rewrite.helper = "read_reached"
+                rewrite.new_call = _render_reached(rewrite, module.segment(call.func.value))
+            elif parsed.chain is not None:
                 rewrite.helper = "read_link_chain"
                 rewrite.new_call = (
                     f"read_link_chain({module.segment(call.func.value)}, {parsed.table!r}, key={parsed.chain['key']!r}, "
@@ -4734,7 +4919,8 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(prog="threetears.enforcement.no_whole_reads.rewrite")
     parser.add_argument(
-        "shape", choices=["point", "list", "first", "write", "count", "aggregate", "join", "chain", "test-module"]
+        "shape",
+        choices=["point", "list", "first", "write", "count", "aggregate", "join", "chain", "reached", "test-module"],
     )
     parser.add_argument("--module", type=Path, help="test-module: where the generated test goes, repo-relative")
     parser.add_argument("--pg-fixture", default="conn")
@@ -4770,6 +4956,7 @@ def main(argv: list[str] | None = None) -> int:
         "aggregate": plan_aggregate_rewrites,
         "join": plan_join_rewrites,
         "chain": plan_chain_rewrites,
+        "reached": plan_reached_rewrites,
     }.get(options.shape, plan_point_rewrites)
     rewrites, refusals = planner(config)
     reasons = Counter(refusal.reason.split(":")[0].split(" (")[0] for refusal in refusals)

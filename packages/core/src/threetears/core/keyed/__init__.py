@@ -103,7 +103,7 @@ from threetears.core.keyed.literal import literal_select, literal_upsert
 from threetears.core.keyed.probes import access_probe_sql, probe_access
 from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_past_marks
 from threetears.core.keyed.options import with_options
-from threetears.core.keyed.joins import Joined, read_by_joined
+from threetears.core.keyed.joins import Joined, read_by_joined, read_reached
 from threetears.core.keyed.links import read_link_chain
 from threetears.core.keyed.point import read_by, read_row, read_value
 from threetears.interfaces.keyed.keys import (
@@ -263,6 +263,7 @@ __all__ = [
     "read_after",
     "read_by",
     "read_by_joined",
+    "read_reached",
     "read_link_chain",
     "read_joined",
     "read_keyed",

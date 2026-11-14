@@ -78,6 +78,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "read_joined",
         "read_by_joined",
         "read_link_chain",
+        "read_reached",
         "any_rows",
         "keyset_page",
         "keyset_rows",
@@ -734,6 +735,29 @@ def _read_by_joined(call: ast.Call) -> list[str]:
     return statements
 
 
+def _read_reached(call: ast.Call) -> list[str]:
+    """a walk of a table's links (``read_reached``): its first rows by ``start``'s pins, as :func:`_read_by` judges a
+    read, then each level's keyed batch by the column a row is reached by (``on``) with ``by`` beside, as
+    :func:`_read_joined` judges one."""
+    table = _argument(call, "table", 1) or ast.Name("_unseen", ast.Load())
+    first = ast.Call(
+        func=ast.Name("read_by", ast.Load()),
+        args=[ast.Name("c", ast.Load()), table],
+        keywords=[ast.keyword(arg="by", value=_argument(call, "start", None) or ast.Name("_unseen", ast.Load()))],
+    )
+    on = _argument(call, "on", None) or ast.Name("_unseen", ast.Load())
+    level = ast.Call(
+        func=ast.Name("read_joined", ast.Load()),
+        args=[],
+        keywords=[
+            ast.keyword(arg="table", value=table),
+            ast.keyword(arg="on", value=ast.Dict(keys=[on], values=[on])),
+            *([ast.keyword(arg="by", value=by)] if (by := _argument(call, "by", None)) is not None else []),
+        ],
+    )
+    return [*_read_by(first), *_read_joined(level)]
+
+
 def _read_link_chain(call: ast.Call) -> list[str]:
     """a chain of links (``read_link_chain``): the recursive statement it sends, the first row by its ``key`` and each
     next one by the ``key`` the row before links to, so keyed exactly when ``key`` leads the table's key."""
@@ -1179,6 +1203,7 @@ _SYNTHESIZERS: Final = {
     "read_joined": _read_joined,
     "read_by_joined": _read_by_joined,
     "read_link_chain": _read_link_chain,
+    "read_reached": _read_reached,
     "any_rows": _any_rows,
     "keyset_page": _keyset_page,
     "keyset_rows": _keyset_page,
@@ -1217,6 +1242,7 @@ _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
             "read_by",
             "read_by_joined",
             "read_link_chain",
+            "read_reached",
             "read_row",
             "read_value",
             "any_rows",

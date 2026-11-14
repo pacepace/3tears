@@ -505,6 +505,18 @@ def test_a_read_with_joins_is_judged_as_its_read_and_each_joined_table_s_keyed_b
     ].unseen
 
 
+def test_a_walk_of_links_is_judged_as_its_first_read_and_its_keyed_batch_a_level(schema: SchemaCatalog) -> None:
+    """Flips if ``read_reached`` is judged as anything but the statements it sends: its first rows by ``start``'s
+    pins (keyed by a leading part of the key, a whole read by a non-key column), then each level by the column it is
+    reached by and ``by`` beside (keyed when they lead the key, else a finding)."""
+    keyed = 'read_reached(c, "results", start={"state": s}, on="state", to="geo", columns=("geo",), by={"kind": "k"})'
+    assert _judged(keyed, schema) == [[], []]
+    unkeyed_start = keyed.replace('start={"state": s}', 'start={"geo": g}')
+    assert _judged(unkeyed_start, schema)[0] != []
+    unkeyed_walk = keyed.replace('on="state"', 'on="geo"')
+    assert _judged(unkeyed_walk, schema)[1] != []
+
+
 @pytest.mark.parametrize(
     "code",
     [
