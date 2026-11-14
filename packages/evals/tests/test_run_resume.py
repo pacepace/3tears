@@ -692,6 +692,35 @@ async def test_a_take_up_counts_what_its_rows_dropped_sends_may_have_billed_towa
         await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE, max_cost_usd=spent + dropped / 2)
 
 
+async def test_a_replaced_row_s_dropped_sends_move_with_its_spend_onto_the_row_written_over_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cell a cancel cut short had spent $0.05 on one call whose first send broke before any response began, so the
+    provider may have billed $0.05 more. Taken up, the cell runs again and its row is written over the old one: the
+    old attempt's spend moves onto it whole, the dropped send included, so a later take-up's cap still counts it."""
+    holder, run_id, _launched, store = await _interrupted(monkeypatch, "cancelled")
+    for document in list(store.documents.values()):
+        if document.get("eval_run_id") == run_id and document.get("termination") == "cancelled":
+            row = {
+                "role": "candidate",
+                "model": "toy",
+                "cost_usd": CUT_SHORT_USD,
+                "call_count": 1,
+                "maybe_billed_sends": 1,
+            }
+            store.upsert(document | {"cost_usd": CUT_SHORT_USD, "usage": [row]})
+    cut_short = [row for row in _rows(holder, run_id) if row.termination == "cancelled"]
+    assert cut_short and all(maybe_billed_usd(row.usage, row.cost_roles) == CUT_SHORT_USD for row in cut_short)
+
+    resumer = other_process(holder)
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+
+    after = {row.id: row for row in _rows(holder, run_id)}
+    for row in cut_short:
+        assert after[row.id].superseded_spend_usd == pytest.approx(2 * CUT_SHORT_USD), "the dropped send moved too"
+
+
 # =============================================================================
 # Old records
 # =============================================================================
