@@ -1073,6 +1073,24 @@ def _helper_statements(config: NoWholeReadsConfig) -> list[WrittenStatement]:
     :rtype: list[WrittenStatement]
     """
     hits, scan = _hits(config)
+    return _undeclared_statements(config, scan, hits)
+
+
+def _undeclared_statements(
+    config: NoWholeReadsConfig, scan: WholeReadScan, hits: list[WholeReadHit]
+) -> list[WrittenStatement]:
+    """a walk's statements but those a sound, accepted whole-read declaration covers: what the use-the-helper rule
+    judges, and so all its codemod may plan (a declared read is the one no keyed helper answers).
+
+    :param config: the repo's config
+    :ptype config: NoWholeReadsConfig
+    :param scan: the walk
+    :ptype scan: WholeReadScan
+    :param hits: every hit of the walk
+    :ptype hits: list[WholeReadHit]
+    :return: the statements
+    :rtype: list[WrittenStatement]
+    """
     accepted = _Declared(config, scan, hits).accepted
     return [
         statement

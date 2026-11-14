@@ -12,6 +12,7 @@ import pytest
 
 from threetears.core.declared import whole_read
 from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, no_whole_reads_findings, use_the_helper_findings
+from threetears.enforcement.no_whole_reads.rewrite import plan_list_rewrites
 
 _RULING = "Pace 2026-11-12: a backup's own count and checksum read whole"
 
@@ -336,6 +337,21 @@ def test_a_declared_statement_is_not_a_use_the_helper_finding(tmp_path: Path) ->
     assert plain != _STORE
     undeclared = use_the_helper_findings(_config(tmp_path, {"store.py": plain}))
     assert any("SELECT count(*) FROM items" in finding for finding in undeclared), undeclared
+
+
+def test_the_codemod_leaves_a_declared_cold_start_read_alone(tmp_path: Path) -> None:
+    """Flips if the use-the-helper codemod plans (rewrites or refuses) a read declared whole_read(kind="cold_start")
+    with its proof and speed tests -- the statement the use-the-helper rule already leaves alone -- or stops planning
+    the same statement undeclared."""
+
+    def planned(module: str) -> list[str]:
+        rewrites, refusals = plan_list_rewrites(_config(tmp_path, {"store.py": module}))
+        return [rewrite.old_sql for rewrite in rewrites] + [refusal.sql for refusal in refusals]
+
+    assert not any("SELECT id, body FROM items" in sql for sql in planned(_STORE)), planned(_STORE)
+    plain = _STORE.replace("whole_read(\n            conn.fetch(", "keep(\n            conn.fetch(")
+    assert plain != _STORE
+    assert any("SELECT id, body FROM items" in sql for sql in planned(plain)), planned(plain)
 
 
 def test_a_call_into_a_declared_constant_read_is_declared_there_too(tmp_path: Path) -> None:

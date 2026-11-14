@@ -89,7 +89,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final
 
-from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, _hits, _producers
+from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, _hits, _producers, _undeclared_statements
 from threetears.enforcement.no_whole_reads.use_the_helper import _helper_hits
 
 __all__ = ["main"]
@@ -1935,7 +1935,10 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
     hits = [
         hit
         for hit in _helper_hits(
-            scan.statements, config.helper_modules, _producers(config), caller_judged=config.caller_judged_modules
+            _undeclared_statements(config, scan, whole_hits),
+            config.helper_modules,
+            _producers(config),
+            caller_judged=config.caller_judged_modules,
         )
         if hit.shape == (shape.finds or shape.shape)
     ]
@@ -2102,7 +2105,10 @@ def plan_write_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
     hits = [
         hit
         for hit in _helper_hits(
-            scan.statements, config.helper_modules, _producers(config), caller_judged=config.caller_judged_modules
+            _undeclared_statements(config, scan, whole_hits),
+            config.helper_modules,
+            _producers(config),
+            caller_judged=config.caller_judged_modules,
         )
         if hit.shape == "write"
     ]
