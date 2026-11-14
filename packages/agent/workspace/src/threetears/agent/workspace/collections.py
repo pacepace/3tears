@@ -33,10 +33,9 @@ from threetears.core.collections.schema_backed import (
     Index as SchemaIndex,
 )
 from threetears.core.config import CoreConfig
-from threetears.core.keyed import read_by, read_row
+from threetears.core.keyed import Sort, TableKey, keyset_page, read_by, read_row, register_table_keys
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import get_logger
-from threetears.core.keyed import TableKey, register_table_keys
 
 __all__ = [
     "WorkspaceCollection",
@@ -549,11 +548,17 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
         :return: newest-first list of journal entities bounded by limit
         :rtype: list[WorkspaceFileVersion]
         """
-        rows = await self.required_l3_pool.fetch(
-            "SELECT * FROM workspace_file_versions WHERE workspace_id = $1 ORDER BY date_created DESC LIMIT $2",
-            workspace_id,
-            limit,
-        )
+        rows = (
+            await keyset_page(
+                self.required_l3_pool,
+                "workspace_file_versions",
+                columns=None,
+                by={"workspace_id": workspace_id},
+                order=[Sort("date_created", descending=True), Sort("version_id")],
+                limit=limit,
+                records=True,
+            )
+        ).rows
         entities: list[WorkspaceFileVersion] = []
         for row in rows:
             data = dict(row)
@@ -580,14 +585,17 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
         :return: newest-first list of journal entities bounded by limit
         :rtype: list[WorkspaceFileVersion]
         """
-        rows = await self.required_l3_pool.fetch(
-            "SELECT * FROM workspace_file_versions "
-            "WHERE workspace_id = $1 AND relative_path = $2 "
-            "ORDER BY date_created DESC LIMIT $3",
-            workspace_id,
-            relative_path,
-            limit,
-        )
+        rows = (
+            await keyset_page(
+                self.required_l3_pool,
+                "workspace_file_versions",
+                columns=None,
+                by={"workspace_id": workspace_id, "relative_path": relative_path},
+                order=[Sort("date_created", descending=True), Sort("version_id")],
+                limit=limit,
+                records=True,
+            )
+        ).rows
         entities: list[WorkspaceFileVersion] = []
         for row in rows:
             data = dict(row)

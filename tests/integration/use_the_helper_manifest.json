@@ -3077,5 +3077,163 @@
    "user_id",
    "date_created"
   ]
+ },
+ {
+  "args": [
+   "conversation_id",
+   "agent_id",
+   "limit"
+  ],
+  "columns": [
+   "conversation_id",
+   "item_id",
+   "item_type",
+   "short_desc",
+   "date_created",
+   "date_updated",
+   "agent_id"
+  ],
+  "function": "MemoryRefsCollection.find_by_conversation",
+  "helper": "keyset_page",
+  "key_from": 1,
+  "limit": {
+   "param": 3
+  },
+  "line": 4705,
+  "method": "fetch",
+  "new_call": "(await keyset_page(self.l3_pool, 'conversation_memory_refs', columns=('conversation_id', 'item_id', 'item_type', 'short_desc', 'date_created', 'date_updated', 'agent_id'), by={'conversation_id': conversation_id, 'agent_id': agent_id}, order=[Sort('date_created', descending=True), Sort('item_id')], limit=limit, records=True)).rows",
+  "old_sql": "SELECT conversation_id, item_id, item_type, short_desc, date_created, date_updated, agent_id FROM conversation_memory_refs WHERE conversation_id = $1 AND agent_id = $2 ORDER BY date_created DESC LIMIT $3",
+  "order": [
+   {
+    "column": "date_created",
+    "descending": true,
+    "nulls": null
+   },
+   {
+    "column": "item_id",
+    "descending": false,
+    "nulls": null
+   }
+  ],
+  "path": "packages/agent/memory/src/threetears/agent/memory/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "conversation_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "first",
+  "table": "conversation_memory_refs"
+ },
+ {
+  "args": [
+   "workspace_id",
+   "limit"
+  ],
+  "columns": null,
+  "function": "WorkspaceFileVersionCollection.find_by_workspace",
+  "helper": "keyset_page",
+  "key_from": 1,
+  "limit": {
+   "param": 2
+  },
+  "line": 553,
+  "method": "fetch",
+  "new_call": "(await keyset_page(self.required_l3_pool, 'workspace_file_versions', columns=None, by={'workspace_id': workspace_id}, order=[Sort('date_created', descending=True), Sort('version_id')], limit=limit, records=True)).rows",
+  "old_sql": "SELECT * FROM workspace_file_versions WHERE workspace_id = $1 ORDER BY date_created DESC LIMIT $2",
+  "order": [
+   {
+    "column": "date_created",
+    "descending": true,
+    "nulls": null
+   },
+   {
+    "column": "version_id",
+    "descending": false,
+    "nulls": null
+   }
+  ],
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "first",
+  "table": "workspace_file_versions"
+ },
+ {
+  "args": [
+   "workspace_id",
+   "relative_path",
+   "limit"
+  ],
+  "columns": null,
+  "function": "WorkspaceFileVersionCollection.find_by_workspace_and_path",
+  "helper": "keyset_page",
+  "key_from": 1,
+  "limit": {
+   "param": 3
+  },
+  "line": 584,
+  "method": "fetch",
+  "new_call": "(await keyset_page(self.required_l3_pool, 'workspace_file_versions', columns=None, by={'workspace_id': workspace_id, 'relative_path': relative_path}, order=[Sort('date_created', descending=True), Sort('version_id')], limit=limit, records=True)).rows",
+  "old_sql": "SELECT * FROM workspace_file_versions WHERE workspace_id = $1 AND relative_path = $2 ORDER BY date_created DESC LIMIT $3",
+  "order": [
+   {
+    "column": "date_created",
+    "descending": true,
+    "nulls": null
+   },
+   {
+    "column": "version_id",
+    "descending": false,
+    "nulls": null
+   }
+  ],
+  "path": "packages/agent/workspace/src/threetears/agent/workspace/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "workspace_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "relative_path",
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "first",
+  "table": "workspace_file_versions"
  }
 ]

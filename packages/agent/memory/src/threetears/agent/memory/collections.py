@@ -80,7 +80,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import CoreConfig
 from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, schema_with_embedding_dim
 from threetears.core.data.gin import gin_filter
-from threetears.core.keyed import AnyOf, Fragment, holds_any, read_by, update_keyed
+from threetears.core.keyed import AnyOf, Fragment, Sort, holds_any, keyset_page, read_by, update_keyed
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import get_logger
 
@@ -4701,14 +4701,25 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         # ``(conversation_id, item_id)`` lookups only. keeping the query on
         # the Collection preserves the single entry point + lets callers
         # share L2 invalidation channels.
-        rows = await self.l3_pool.fetch(
-            "SELECT conversation_id, item_id, item_type, short_desc, date_created, date_updated, agent_id"
-            " FROM conversation_memory_refs WHERE conversation_id = $1 AND agent_id = $2"
-            " ORDER BY date_created DESC LIMIT $3",
-            conversation_id,
-            agent_id,
-            limit,
-        )
+        rows = (
+            await keyset_page(
+                self.l3_pool,
+                "conversation_memory_refs",
+                columns=(
+                    "conversation_id",
+                    "item_id",
+                    "item_type",
+                    "short_desc",
+                    "date_created",
+                    "date_updated",
+                    "agent_id",
+                ),
+                by={"conversation_id": conversation_id, "agent_id": agent_id},
+                order=[Sort("date_created", descending=True), Sort("item_id")],
+                limit=limit,
+                records=True,
+            )
+        ).rows
         entities: list[MemoryRefEntity] = []
         for row in reversed(rows):
             data = self._coerce_row(dict(row))

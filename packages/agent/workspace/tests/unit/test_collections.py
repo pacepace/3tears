@@ -958,7 +958,8 @@ class TestWorkspaceFileVersionCollectionHistoryQueries:
         workspace_file_versions_l1: SQLiteBackend,
         config_always: DefaultCoreConfig,
     ) -> None:
-        """find_by_workspace issues ORDER BY date_created DESC LIMIT $2 and hydrates rows."""
+        """find_by_workspace reads one keyed page (keyset_page: the workspace pinned, newest first, the limit and its
+        one lookahead row) and hydrates rows."""
         registry = CollectionRegistry()
         registry.configure(l1_backend=workspace_file_versions_l1)
 
@@ -972,7 +973,7 @@ class TestWorkspaceFileVersionCollectionHistoryQueries:
         async def _fetch(query: str, *args: Any) -> list[dict[str, Any]]:
             executed.append((query, args))
             wid = args[0]
-            limit = args[1]
+            limit = int(query.rsplit("LIMIT ", 1)[1])
             return [r for r in rows if r["workspace_id"] == wid][:limit]
 
         pool = AsyncMock()
@@ -983,18 +984,18 @@ class TestWorkspaceFileVersionCollectionHistoryQueries:
         assert len(entities) == 2
         assert all(isinstance(e, WorkspaceFileVersion) for e in entities)
         issued_sql = executed[0][0]
-        assert "SELECT * FROM workspace_file_versions" in issued_sql
-        assert "WHERE workspace_id = $1" in issued_sql
-        assert "ORDER BY date_created DESC" in issued_sql
-        assert "LIMIT $2" in issued_sql
-        assert executed[0][1] == (workspace_id, 10)
+        assert 'FROM "workspace_file_versions"' in issued_sql
+        assert 'WHERE t."workspace_id" = $1' in issued_sql
+        assert 't."date_created" DESC' in issued_sql
+        assert issued_sql.endswith("LIMIT 11")
+        assert executed[0][1] == (workspace_id,)
 
     async def test_find_by_workspace_and_path_narrows_to_single_path(
         self,
         workspace_file_versions_l1: SQLiteBackend,
         config_always: DefaultCoreConfig,
     ) -> None:
-        """find_by_workspace_and_path emits SQL with AND relative_path = $2 and hydrates rows."""
+        """find_by_workspace_and_path pins the path beside the workspace (AND relative_path = $2) and hydrates rows."""
         registry = CollectionRegistry()
         registry.configure(l1_backend=workspace_file_versions_l1)
 
@@ -1007,7 +1008,8 @@ class TestWorkspaceFileVersionCollectionHistoryQueries:
 
         async def _fetch(query: str, *args: Any) -> list[dict[str, Any]]:
             executed.append((query, args))
-            wid, path, limit = args
+            wid, path = args
+            limit = int(query.rsplit("LIMIT ", 1)[1])
             return [r for r in rows if r["workspace_id"] == wid and r["relative_path"] == path][:limit]
 
         pool = AsyncMock()
@@ -1018,7 +1020,7 @@ class TestWorkspaceFileVersionCollectionHistoryQueries:
         assert len(entities) == 1
         assert entities[0].relative_path == "a.md"
         issued_sql = executed[0][0]
-        assert "AND relative_path = $2" in issued_sql
-        assert "ORDER BY date_created DESC" in issued_sql
-        assert "LIMIT $3" in issued_sql
-        assert executed[0][1] == (workspace_id, "a.md", 25)
+        assert 'AND t."relative_path" = $2' in issued_sql
+        assert 't."date_created" DESC' in issued_sql
+        assert issued_sql.endswith("LIMIT 26")
+        assert executed[0][1] == (workspace_id, "a.md")
