@@ -61,6 +61,7 @@ from threetears.enforcement.no_whole_reads.flow import (
 )
 from threetears.enforcement.no_whole_reads.helpers import (
     COPY_CALLS,
+    JUDGED_BY_STATEMENTS,
     KEYED_FRAGMENT_BUILDERS,
     BUILDER_CALLS,
     KEYED_HELPER_CALLS,
@@ -3825,6 +3826,10 @@ class _ModuleWalk(ast.NodeVisitor):
                 continue
             for statement in self._helper_statements(located):
                 if statement.sql is UNSEEN or statement.sql is None:
+                    if self._inside_keyed_helper():
+                        # a keyed helper's own call of another, over what its caller hands it: the walk judges each
+                        # of its callers by the statements it sends (helpers.py), never its body
+                        continue
                     if not self._source_bound(located, statement, site):
                         hits.setdefault(
                             f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(site)
@@ -5570,6 +5575,21 @@ class _ModuleWalk(ast.NodeVisitor):
             isinstance(before, ast.Constant)
             and isinstance(before.value, str)
             and _RELATION_POSITION.search(before.value) is not None
+        )
+
+    def _inside_keyed_helper(self) -> bool:
+        """whether the walk is in the body of a keyed helper of ``threetears/core/keyed`` each of whose calls it judges
+        as the statements it sends (:data:`JUDGED_BY_STATEMENTS`): a helper whose callers are judged otherwise (a
+        statement builder) has its inner calls judged in its body, as any function's.
+
+        :return: whether it is
+        :rtype: bool
+        """
+        function = self._function_node
+        return (
+            function is not None
+            and function.name in JUDGED_BY_STATEMENTS
+            and any(package in str(self.path) for package in _KEYED_PACKAGES)
         )
 
     def _helper_change_parameter(self, node: ast.expr) -> bool:

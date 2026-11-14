@@ -46,6 +46,7 @@ from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, PRODUCED_P
 
 __all__ = [
     "COPY_CALLS",
+    "JUDGED_BY_STATEMENTS",
     "KEYED_FRAGMENT_BUILDERS",
     "BUILDER_CALLS",
     "KEYED_HELPER_CALLS",
@@ -79,6 +80,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "read_joined",
         "read_by_joined",
         "read_link_chain",
+        "read_reached",
         "any_rows",
         "keyset_page",
         "keyset_rows",
@@ -730,13 +732,15 @@ def _read_joined(call: ast.Call) -> list[str]:
 
 
 def _read_by_joined(call: ast.Call) -> list[str]:
-    """a read with joins (``read_by_joined``): its read by its pins, as :func:`_read_by` judges one, then each joined
+    """a read with joins (``read_by_joined``): its read by its pins, as :func:`_read_by` judges one (a page of it,
+    ``limit=``, as :func:`_keyset_page` judges one), then each joined
     table's keyed batch by the columns it is joined on and its own pins, as :func:`_read_joined` judges one; joins the
     walk cannot read as a literal list of ``Joined(...)`` are unseen."""
     joins = _argument(call, "joins", None)
     if not isinstance(joins, ast.List | ast.Tuple):
         raise _Unseen("joins")
-    statements = _read_by(call)
+    # a page of it (``limit=``) is read as keyset_page reads one
+    statements = _keyset_page(call) if _argument(call, "limit", None) is not None else _read_by(call)
     for join in joins.elts:
         if not (isinstance(join, ast.Call) and _name(join) == "Joined"):
             raise _Unseen("joins")
@@ -751,6 +755,29 @@ def _read_by_joined(call: ast.Call) -> list[str]:
         )
         statements += _read_joined(joined)
     return statements
+
+
+def _read_reached(call: ast.Call) -> list[str]:
+    """a walk of a table's links (``read_reached``): its first rows by ``start``'s pins, as :func:`_read_by` judges a
+    read, then each level's keyed batch by the column a row is reached by (``on``) with ``by`` beside, as
+    :func:`_read_joined` judges one."""
+    table = _argument(call, "table", 1) or ast.Name("_unseen", ast.Load())
+    first = ast.Call(
+        func=ast.Name("read_by", ast.Load()),
+        args=[ast.Name("c", ast.Load()), table],
+        keywords=[ast.keyword(arg="by", value=_argument(call, "start", None) or ast.Name("_unseen", ast.Load()))],
+    )
+    on = _argument(call, "on", None) or ast.Name("_unseen", ast.Load())
+    level = ast.Call(
+        func=ast.Name("read_joined", ast.Load()),
+        args=[],
+        keywords=[
+            ast.keyword(arg="table", value=table),
+            ast.keyword(arg="on", value=ast.Dict(keys=[on], values=[on])),
+            *([ast.keyword(arg="by", value=by)] if (by := _argument(call, "by", None)) is not None else []),
+        ],
+    )
+    return [*_read_by(first), *_read_joined(level)]
 
 
 def _read_link_chain(call: ast.Call) -> list[str]:
@@ -1199,6 +1226,7 @@ _SYNTHESIZERS: Final = {
     "read_joined": _read_joined,
     "read_by_joined": _read_by_joined,
     "read_link_chain": _read_link_chain,
+    "read_reached": _read_reached,
     "any_rows": _any_rows,
     "keyset_page": _keyset_page,
     "keyset_rows": _keyset_page,
@@ -1228,6 +1256,11 @@ _SYNTHESIZERS: Final = {
 }
 
 
+#: the helpers whose every call the walk judges as the statements it sends (a synthesizer each): a call of one
+#: inside another's body, over what that one's caller hands it, is judged at that one's callers
+JUDGED_BY_STATEMENTS: Final[frozenset[str]] = frozenset(_SYNTHESIZERS)
+
+
 #: the argument naming the relation a keyed read reads, by helper: keyword and position
 _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
     **dict.fromkeys(
@@ -1237,6 +1270,7 @@ _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
             "read_by",
             "read_by_joined",
             "read_link_chain",
+            "read_reached",
             "read_row",
             "read_value",
             "read_nearest",

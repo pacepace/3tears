@@ -3842,6 +3842,36 @@ def test_a_keyed_helper_s_relation_parameter_is_judged_at_its_call_sites_not_in_
     assert {"any_rows", "_shared", "by_note", "from_chunk_by_note", "from_the_table"} <= functions, found
 
 
+_JOINED_HELPER_BODY = """
+    from threetears.core.keyed import read_joined
+
+    async def read_by_joined(conn, table, *, by, columns, joins):
+        rows = []
+        for join in joins:
+            await read_joined(conn, rows, join.table, on=dict(join.on), columns=list(join.columns))
+        return rows
+
+    async def gather(conn, rows, joins):
+        for join in joins:
+            await read_joined(conn, rows, join.table, on=dict(join.on), columns=list(join.columns))
+
+    async def read_each_joined(conn, rows, joins):
+        for join in joins:
+            await read_joined(conn, rows, join.table, on=dict(join.on), columns=list(join.columns))
+"""
+
+
+def test_a_keyed_helper_s_own_helper_calls_are_judged_at_its_callers(tmp_path: Path) -> None:
+    """Flips if a keyed helper's call of another keyed helper over what its caller hands it (a joined read's
+    ``read_joined`` of each ``Joined`` it is passed) is flagged unknown in its body, where the walk judges each of its
+    callers by the statements it sends; or if the same call passes in a function that is no keyed helper, or in a
+    function of the keyed package whose callers are not judged by its statements (``read_each_joined``)."""
+    found = _symbols(_config(tmp_path, {"threetears/core/keyed/joins.py": _JOINED_HELPER_BODY}))
+    functions = {function for function, _ in found}
+    assert "read_by_joined" not in functions, found
+    assert {"gather", "read_each_joined"} <= functions, found
+
+
 _VISIBLE_ROWS_BODY = """
     from threetears.core.keyed import Fragment, keyset_rows
 

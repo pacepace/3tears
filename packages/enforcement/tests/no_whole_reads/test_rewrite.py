@@ -27,14 +27,18 @@ from threetears.enforcement.no_whole_reads.rewrite import (
     PointSql,
     WriteSql,
     apply_rewrites,
+    parse_aggregate,
+    parse_reached,
     parse_count,
     parse_first,
     parse_join,
     parse_list,
     parse_point,
     parse_write,
+    plan_aggregate_rewrites,
     plan_count_rewrites,
     plan_chain_rewrites,
+    plan_reached_rewrites,
     plan_first_rewrites,
     plan_join_rewrites,
     plan_list_rewrites,
@@ -1373,6 +1377,260 @@ def test_counts_and_existence_tests_are_rewritten_onto_aggregate_keyed_and_holds
     assert [line.split(":")[1].split(" in ")[1] for line in left] == ["summed", "counted_row"], left
 
 
+_AGGREGATES = """
+    async def newest(conn, state):
+        return await conn.fetchval("SELECT MAX(pop) FROM geos WHERE state = $1", state)
+
+
+    async def spread(conn, state):
+        row = await conn.fetchrow(
+            "SELECT min(g.pop) AS low, max(g.pop) AS high, count(g.name) AS named FROM geos g WHERE g.state = $1",
+            state,
+        )
+        return row["high"] - row["low"]
+
+
+    async def status(conn, state, agent_id):
+        row = await conn.fetchrow(
+            '''SELECT (SELECT MAX(pop) FROM geos WHERE state = $1) AS high,
+                      (SELECT COUNT(*) FROM geos WHERE state = $1) AS geos,
+                      (SELECT name FROM agents WHERE id = $2) AS name,
+                      (SELECT slug FROM agents WHERE id = $2) AS slug''',
+            state,
+            agent_id,
+        )
+        return dict(row) if row is not None else {}
+
+
+    async def lone_count(conn, state):
+        return await conn.fetchval("SELECT count(*) FROM geos WHERE state = $1", state)
+
+
+    async def two_by_value(conn, state):
+        return await conn.fetchval("SELECT max(pop), min(pop) FROM geos WHERE state = $1", state)
+
+
+    async def unkeyed_value(conn, state):
+        row = await conn.fetchrow("SELECT (SELECT name FROM geos WHERE state = $1) AS name", state)
+        return row["name"]
+"""
+
+
+def test_a_first_of_read_bound_by_its_guards_alone_is_parsed() -> None:
+    """Flips if a first-of or top-n read whose only bound parameters are in guards (a keyset seek over the sort's
+    index, ``WHERE (date_created, id) > ($1, $2) ORDER BY date_created, id LIMIT $3``) is refused as a constant read,
+    or if a listing so bound (no LIMIT: every row past the seek), a read of literals only, or one without guards is
+    taken."""
+    seek = parse_first(
+        "SELECT * FROM agents t WHERE (t.date_created, t.id) > ($1, $2) ORDER BY t.date_created, t.id LIMIT $3",
+        guards=True,
+    )
+    assert isinstance(seek, PointSql) and seek.pins == () and seek.limit == {"param": 3}, seek
+    assert [(guard.params, guard.compared) for guard in seek.guards] == [((1, 2), ("date_created", "id"))], seek.guards
+    newest = parse_first(
+        "SELECT * FROM rates WHERE effective_from <= $1 ORDER BY effective_from DESC LIMIT 1", guards=True
+    )
+    assert isinstance(newest, PointSql) and newest.limit == {"literal": 1}, newest
+    for refused in (
+        parse_list("SELECT * FROM agents WHERE id > $1 ORDER BY id", guards=True),
+        parse_first("SELECT * FROM agents WHERE is_deleted = false ORDER BY id LIMIT 5", guards=True),
+    ):
+        assert isinstance(refused, str) and "literals only" in refused, refused
+    unguarded = parse_first("SELECT * FROM agents WHERE id > $1 ORDER BY id LIMIT $2")
+    assert isinstance(unguarded, str) and "other than equality" in unguarded, unguarded
+
+
+_CLOSURE_SQL = (
+    "WITH RECURSIVE reachable(dataset_id, path) AS ( SELECT $1::uuid AS dataset_id, ARRAY[$1::uuid] AS path "
+    "UNION ALL SELECT s.source_id, r.path || s.source_id FROM dataset_sources s JOIN reachable r "
+    "ON s.dataset_id = r.dataset_id WHERE s.source_kind = 'dataset' AND NOT (s.source_id = ANY(r.path)) ) "
+    "SELECT DISTINCT s.source_kind AS source_kind, s.source_id AS source_id FROM dataset_sources s "
+    "JOIN reachable r ON s.dataset_id = r.dataset_id"
+)
+_DOWNSTREAM_SQL = (
+    "WITH RECURSIVE downstream(dataset_id, path) AS ( SELECT s.dataset_id, ARRAY[s.dataset_id] AS path "
+    "FROM dataset_sources s WHERE s.source_kind = $1 AND s.source_id = $2 UNION ALL "
+    "SELECT s.dataset_id, d.path || s.dataset_id FROM dataset_sources s JOIN downstream d "
+    "ON s.source_kind = 'dataset' AND s.source_id = d.dataset_id WHERE NOT (s.dataset_id = ANY(d.path)) ) "
+    "SELECT DISTINCT dataset_id FROM downstream"
+)
+
+
+def test_a_walk_of_links_written_as_a_recursive_statement_is_parsed() -> None:
+    """Flips if a closure (from a node by its parameter, following the rows whose pins hold, every row reached
+    answered) or a downstream walk (from the rows its parameters pin, each level pinned by literals) written as a
+    recursive statement with a path guard is not parsed into ``read_reached``'s start, ``on``, ``to``, ``follow`` and
+    ``by``; or if one with no path guard, answering a column under another name, or pinned per level by a parameter
+    is taken."""
+    closure = parse_reached(_CLOSURE_SQL)
+    assert isinstance(closure, PointSql), closure
+    assert (closure.table, closure.columns) == ("dataset_sources", ("source_kind", "source_id")), closure
+    assert [(pin.column, pin.kind, pin.param) for pin in closure.pins] == [("dataset_id", "param", 1)]
+    assert closure.chain is not None and (closure.chain["on"], closure.chain["to"]) == ("dataset_id", "source_id")
+    assert [(pin["column"], pin["literal"]) for pin in closure.chain["follow"]] == [("source_kind", "dataset")]
+    assert closure.chain["by"] == []
+    downstream = parse_reached(_DOWNSTREAM_SQL)
+    assert isinstance(downstream, PointSql), downstream
+    assert [(pin.column, pin.param) for pin in downstream.pins] == [("source_kind", 1), ("source_id", 2)]
+    assert downstream.columns == ("dataset_id",) and downstream.chain is not None
+    assert (downstream.chain["on"], downstream.chain["to"]) == ("source_id", "dataset_id"), downstream.chain
+    assert [(pin["column"], pin["literal"]) for pin in downstream.chain["by"]] == [("source_kind", "dataset")]
+    for refused in (
+        _CLOSURE_SQL.replace(" AND NOT (s.source_id = ANY(r.path))", ""),
+        _CLOSURE_SQL.replace("s.source_kind AS source_kind", "s.source_kind AS kind"),
+        _DOWNSTREAM_SQL.replace("ON s.source_kind = 'dataset'", "ON s.source_kind = $3"),
+    ):
+        assert isinstance(parse_reached(refused), str), refused
+
+
+_REACHED = (
+    """
+    import enum
+
+
+    class Kind(enum.StrEnum):
+        DATASET = "dataset"
+
+
+    async def closure(pool, dataset_id):
+        rows = await pool.fetch(_CLOSURE, dataset_id)
+        return [(row["source_kind"], row["source_id"]) for row in rows]
+
+
+    async def downstream(pool, kind, resource_id):
+        rows = await pool.fetch(_DOWNSTREAM, kind, resource_id)
+        return tuple(row["dataset_id"] for row in rows)
+
+
+    _CLOSURE = f"""
+    + repr(_CLOSURE_SQL.replace("'dataset'", "'{Kind.DATASET.value}'"))
+    + """
+    _DOWNSTREAM = """
+    + repr(_DOWNSTREAM_SQL.replace("dataset_sources", "dataset_links"))
+    + """
+"""
+)
+
+
+def test_walks_of_links_are_rewritten_onto_read_reached(tmp_path: Path) -> None:
+    """Flips if a closure (a module constant f-string, its literal an enum member's value) and a downstream walk sent
+    by ``fetch`` are not rewritten onto ``read_reached`` (its start, ``on``, ``to``, ``follow`` / ``by`` and columns
+    as parsed), each recorded and found by the source check."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/tables.py").write_text(
+        textwrap.dedent(_TABLES)
+        + 'SOURCES_SCHEMA = TableSchema(name="dataset_sources", primary_key=("dataset_id", "source_kind", "source_id"), '
+        + "columns=[])\n"
+        + 'LINKS_SCHEMA = TableSchema(name="dataset_links", primary_key=("source_kind", "source_id", "dataset_id"), '
+        + "columns=[])\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_REACHED), encoding="utf-8")
+    rewrites, refusals = plan_reached_rewrites(config)
+    assert sorted(rewrite.function for rewrite in rewrites) == ["closure", "downstream"], refusals
+    calls = {rewrite.function: rewrite.new_call for rewrite in rewrites}
+    assert calls["closure"] == (
+        "read_reached(pool, 'dataset_sources', start={'dataset_id': dataset_id}, on='dataset_id', to='source_id', "
+        "columns=('source_kind', 'source_id'), follow={'source_kind': 'dataset'})"
+    ), calls["closure"]
+    assert calls["downstream"] == (
+        "read_reached(pool, 'dataset_links', start={'source_kind': kind, 'source_id': resource_id}, "
+        "on='source_id', to='dataset_id', columns=('dataset_id',), by={'source_kind': 'dataset'})"
+    ), calls["downstream"]
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    source = (tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8")
+    assert "from threetears.core.keyed import read_reached" in source and "_CLOSURE" not in source, source
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    for entry in json.loads(manifest.read_text(encoding="utf-8")):
+        assert entry["shape"] == "reached" and entry["helper"] == "read_reached", entry
+        assert_source_says(tmp_path, entry)
+
+
+def test_aggregates_and_scalar_sub_selects_are_parsed() -> None:
+    """Flips if a select list of aggregates (``count``, ``max``, ``min``, ``sum`` of ``*`` or a column, each under its
+    name) over a point read's rows, or of scalar sub-selects each such a read or one column of a row by its pins, is
+    not parsed into its parts (grouped by table and pins); or if a lone ``count(*)`` (the count shape's), an
+    expression, a sub-select correlated to nothing it reads, or a sub-select beside a FROM is taken."""
+    plain = parse_aggregate("SELECT min(g.pop) AS low, max(g.pop) AS high FROM geos g WHERE g.state = $1")
+    assert isinstance(plain, PointSql) and plain.aggregate == "aggregate", plain
+    assert [(part["table"], part["items"]) for part in plain.parts] == [
+        (
+            "geos",
+            [
+                {"name": "low", "function": "min", "column": "pop"},
+                {"name": "high", "function": "max", "column": "pop"},
+            ],
+        )
+    ], plain.parts
+    subs = parse_aggregate(
+        "SELECT (SELECT MAX(pop) FROM geos WHERE state = $1) AS high, (SELECT COUNT(*) FROM geos WHERE state = $1) "
+        "AS n, (SELECT name FROM agents WHERE id = $2) AS name"
+    )
+    assert isinstance(subs, PointSql), subs
+    assert [(part["table"], [item["name"] for item in part["items"]]) for part in subs.parts] == [
+        ("geos", ["high", "n"]),
+        ("agents", ["name"]),
+    ], subs.parts
+    assert [item["function"] for item in subs.parts[1]["items"]] == ["value"]
+    assert sorted({pin.param for pin in subs.pins}) == [1, 2]
+    for refused, reason in (
+        ("SELECT count(*) FROM geos WHERE state = $1", "count shape"),
+        ("SELECT COALESCE(MAX(pop), 0) + 1 AS next FROM geos WHERE state = $1", "aggregate"),
+        ("SELECT (SELECT MAX(pop) FROM geos WHERE state = $1) AS high, name FROM agents WHERE id = $2", "aggregate"),
+        ("SELECT (SELECT name AS n FROM agents WHERE id = $1) AS name", "its own name"),
+        ("SELECT (SELECT MAX(pop) FROM geos WHERE state = $1 GROUP BY name) AS high", "GROUP BY"),
+    ):
+        answer = parse_aggregate(refused)
+        assert isinstance(answer, str) and reason in answer, (refused, answer)
+
+
+def test_aggregates_and_scalar_sub_selects_are_rewritten_onto_aggregate_keyed_and_read_row(tmp_path: Path) -> None:
+    """Flips if a ``fetchval`` of one aggregate is not rewritten onto ``aggregate_keyed``'s one value, a ``fetchrow``
+    of aggregates onto its one row, a ``fetchrow`` of scalar sub-selects onto one dict of each table's call (a row's
+    columns by ``read_row`` over the key its pins hold, NULL each when no row holds it), each recorded with its parts
+    and found by the source check; or if a lone count, a ``fetchval`` of two values, or a row's column by pins that
+    hold no key is taken."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_AGGREGATES), encoding="utf-8")
+    rewrites, refusals = plan_aggregate_rewrites(config)
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert sorted(rewrite.function for rewrite in rewrites) == ["newest", "spread", "status"], refused
+    assert "count shape" in refused["lone_count"], refused
+    assert "fetchval of" in refused["two_by_value"], refused
+    assert "no declared key" in refused["unkeyed_value"], refused
+    calls = {rewrite.function: rewrite.new_call for rewrite in rewrites}
+    assert calls["newest"] == (
+        "(await aggregate_keyed(conn, 'geos', aggregates={'max': Max('t.\"pop\"')}, by={'state': state}))[0]['max']"
+    ), calls["newest"]
+    assert calls["spread"] == (
+        "(await aggregate_keyed(conn, 'geos', aggregates={'low': Min('t.\"pop\"'), 'high': Max('t.\"pop\"'), "
+        "'named': Count('t.\"name\"')}, by={'state': state}))[0]"
+    ), calls["spread"]
+    assert calls["status"] == (
+        "{**(await aggregate_keyed(conn, 'geos', aggregates={'high': Max('t.\"pop\"'), 'geos': Count()}, "
+        "by={'state': state}))[0], **(await read_row(conn, 'agents', by={'id': agent_id}, columns=('name', 'slug')) "
+        "or dict.fromkeys(('name', 'slug')))}"
+    ), calls["status"]
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    source = (tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8")
+    assert "from threetears.core.keyed import Count, Max, Min, aggregate_keyed, read_row" in source, source
+    ast.parse(source)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    entries = {entry["function"]: entry for entry in json.loads(manifest.read_text(encoding="utf-8"))}
+    assert {entry["shape"] for entry in entries.values()} == {"aggregate"}
+    assert [part["table"] for part in entries["status"]["parts"]] == ["geos", "agents"]
+    for entry in entries.values():
+        assert_source_says(tmp_path, entry)
+    left = [line for line in use_the_helper_findings(config) if "reads.py" in line]
+    assert sorted(line.split(":")[1].split(" in ")[1] for line in left) == [
+        "lone_count",
+        "two_by_value",
+        "unkeyed_value",
+    ], left
+
+
 _GUARDED = """
     async def big_geos(conn, state, floor):
         return await conn.fetchval("SELECT count(*) FROM geos WHERE state = $1 AND pop > $2", state, floor)
@@ -2115,6 +2373,36 @@ def test_a_point_read_with_joins_is_rewritten_onto_read_by_joined(tmp_path: Path
         assert_source_says(tmp_path, entry)
 
 
+def test_a_join_s_columns_out_of_name_order_are_found_by_the_source_check_after_the_manifest_sorts_them(
+    tmp_path: Path,
+) -> None:
+    """Flips if the source check misses a join whose added columns the code writes out of name order once the
+    manifest (written with sorted keys) has reordered them: a mapping's order says nothing about the join."""
+    config = _join_config(tmp_path)
+    (tmp_path / "src/pkg/joins.py").write_text(
+        textwrap.dedent(
+            """
+            async def two_columns(pool, key_id):
+                rows = await pool.fetch(
+                    "SELECT ak.id, c.slug AS slug, c.name AS customer_name FROM api_keys ak "
+                    "JOIN customers c ON c.id = ak.customer_id WHERE ak.id = $1",
+                    key_id,
+                )
+                return [(row["slug"], row["customer_name"]) for row in rows]
+            """
+        ),
+        encoding="utf-8",
+    )
+    rewrites, refusals = plan_join_rewrites(config)
+    assert [rewrite.function for rewrite in rewrites] == ["two_columns"], refusals
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    (entry,) = json.loads(manifest.read_text(encoding="utf-8"))
+    assert list(entry["joins"][0]["columns"]) == ["customer_name", "slug"], entry
+    assert_source_says(tmp_path, entry)
+
+
 @pytest.mark.parametrize(
     ("sql", "refused"),
     [
@@ -2135,6 +2423,88 @@ def test_a_joined_read_the_helper_cannot_send_is_refused(sql: str, refused: str)
     LIMIT, a RIGHT JOIN, an unqualified column, a LEFT JOIN read from its right side."""
     parsed = parse_join(sql, guards=True)
     assert isinstance(parsed, str) and refused in parsed, parsed
+
+
+def test_a_correlated_count_in_the_select_list_is_a_counted_join() -> None:
+    """Flips if a ``(SELECT COUNT(*) FROM <table> <alias> WHERE <alias.col = read.col ...> [AND alias.col IS NOT
+    NULL]) AS name`` beside the read's columns is not parsed as a counted join of that table (matched on its pairs, its
+    literal pins kept, each count under its name, ``IS NOT NULL`` / ``COUNT(col)`` counting by that column; two counts
+    of one table on the same pairs one join), with no ``JOIN`` in the statement too; or if one matched on nothing, on a
+    joined table, pinned by a parameter or by another predicate is taken."""
+    parsed = parse_join(
+        "SELECT dt.*, (SELECT COUNT(*) FROM datasource_columns dc WHERE dc.datasource_id = dt.datasource_id "
+        "AND dc.table_name = dt.table_name) as column_count, (SELECT COUNT(*) FROM datasource_columns dc "
+        "WHERE dc.datasource_id = dt.datasource_id AND dc.table_name = dt.table_name AND dc.description IS NOT NULL) "
+        "as described FROM datasource_tables dt WHERE dt.id = $1",
+        guards=True,
+    )
+    assert isinstance(parsed, PointSql), parsed
+    assert (parsed.table, parsed.columns, [pin.column for pin in parsed.pins]) == ("datasource_tables", None, ["id"])
+    (counted,) = parsed.joins
+    assert counted.table == "datasource_columns" and counted.columns == () and not counted.left, counted
+    assert dict(counted.on) == {"datasource_id": "datasource_id", "table_name": "table_name"}, counted
+    assert counted.counts == (("column_count", None), ("described", "description")), counted
+    record = counted.record()
+    assert record["counts"] == {"column_count": None, "described": "description"}, record
+    pinned = parse_join(
+        "SELECT a.id, c.name AS c_name, (SELECT count(b.note) FROM b WHERE b.a_id = a.id AND b.kind = 'x') AS notes "
+        "FROM a JOIN c ON c.id = a.c_id WHERE a.id = $1",
+        guards=True,
+    )
+    assert isinstance(pinned, PointSql), pinned
+    assert [(join.table, join.counts, [pin.literal for pin in join.pins]) for join in pinned.joins] == [
+        ("c", (), []),
+        ("b", (("notes", "note"),), ["x"]),
+    ], pinned.joins
+    for sql, refused in (
+        ("SELECT a.id, (SELECT COUNT(*) FROM b WHERE b.k = 'x') AS n FROM a WHERE a.id = $1", "matched on no"),
+        (
+            "SELECT a.id, c.x, (SELECT COUNT(*) FROM b WHERE b.c_id = c.id) AS n FROM a JOIN c ON c.id = a.c_id "
+            "WHERE a.id = $1",
+            "not the read's",
+        ),
+        ("SELECT a.id, (SELECT COUNT(*) FROM b WHERE b.a_id = a.id AND b.k = $2) AS n FROM a WHERE a.id = $1", "param"),
+        ("SELECT a.id, (SELECT COUNT(*) FROM b WHERE b.a_id = a.id AND b.n > 3) AS n FROM a WHERE a.id = $1", "count"),
+        ("SELECT a.id, (SELECT MAX(b.n) FROM b WHERE b.a_id = a.id) AS n FROM a WHERE a.id = $1", "JOIN"),
+        (
+            "SELECT a.id, c.x, (SELECT MAX(b.n) FROM b WHERE b.a_id = a.id) AS n FROM a JOIN c ON c.id = a.c_id "
+            "WHERE a.id = $1",
+            "expression",
+        ),
+        ("SELECT a.id FROM a WHERE a.id = $1", "JOIN"),
+    ):
+        answer = parse_join(sql, guards=True)
+        assert isinstance(answer, str) and refused in answer, (sql, answer)
+
+
+def test_a_page_of_a_left_joined_read_is_parsed_with_its_limit() -> None:
+    """Flips if a keyset page over LEFT JOINs (``WHERE (a, b) > ($1, $2) ORDER BY a, b LIMIT $3``, each join's match
+    flagged) is not parsed as a joined read with its order and limit, sought by its guard alone; or if a page over an
+    inner join, or a LIMIT whose parameter is not the last, is taken."""
+    page = parse_join(
+        "SELECT e.name, e.pod_id, (n.id IS NOT NULL) AS live FROM exports e LEFT JOIN namespaces n ON n.id = e.ns_id "
+        "WHERE (e.name, e.pod_id) > ($1, $2::uuid) ORDER BY e.name, e.pod_id LIMIT $3",
+        guards=True,
+    )
+    assert isinstance(page, PointSql), page
+    assert page.limit == {"param": 3} and [term["column"] for term in page.order] == ["name", "pod_id"], page
+    assert page.pins == () and [guard.params for guard in page.guards] == [(1, 2)], page
+    (joined,) = page.joins
+    assert joined.left and joined.matched == "live", joined
+    for sql, refused in (
+        (
+            "SELECT e.name, n.id AS ns FROM exports e JOIN namespaces n ON n.id = e.ns_id WHERE e.name > $1 "
+            "ORDER BY e.name LIMIT $2",
+            "inner join",
+        ),
+        (
+            "SELECT e.name, (n.id IS NOT NULL) AS live FROM exports e LEFT JOIN namespaces n ON n.id = e.ns_id "
+            "WHERE e.name > $2 ORDER BY e.name LIMIT $1",
+            "numbered",
+        ),
+    ):
+        answer = parse_join(sql, guards=True)
+        assert isinstance(answer, str) and refused in answer, (sql, answer)
 
 
 def test_a_correlated_exists_is_kept_as_a_guard_over_the_helper_s_row() -> None:

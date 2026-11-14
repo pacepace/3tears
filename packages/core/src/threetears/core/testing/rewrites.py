@@ -74,7 +74,10 @@ from threetears.core.keyed import (
     Fragment,
     Increment,
     Joined,
+    Max,
+    Min,
     Nearest,
+    Sum,
     keyset_page,
     Selected,
     Sort,
@@ -88,6 +91,7 @@ from threetears.core.keyed import (
     read_by_joined,
     read_nearest,
     read_link_chain,
+    read_reached,
     read_row,
     read_value,
     serving_index,
@@ -894,6 +898,14 @@ async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides:
     if entry.get("shape") == "write":
         await _assert_write_same(conn, entry, overrides=overrides)
         return
+    if entry.get("shape") == "aggregate":
+        for part in entry["parts"]:
+            sub = _part_entry(entry, part)
+            if sub["helper"] == "aggregate_keyed":
+                await _assert_count_same(conn, sub, overrides=overrides, nulled=False)
+            else:
+                await _assert_point_same(conn, sub, overrides=overrides, nulled=False)
+        return
     if entry.get("shape") == "count":
         await _assert_count_same(conn, entry, overrides=overrides, nulled=False)
         if any(pin["kind"] == "nullsafe" for pin in entry["pins"]):
@@ -901,6 +913,9 @@ async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides:
         return
     if entry.get("joins"):
         await _assert_join_same(conn, entry, overrides=overrides)
+        return
+    if entry.get("chain") and "to" in entry["chain"]:
+        await _assert_reached_same(conn, entry)
         return
     if entry.get("chain"):
         await _assert_chain_same(conn, entry)
@@ -952,6 +967,81 @@ async def _assert_chain_same(conn: Any, entry: Mapping[str, Any]) -> None:
                 await transaction.rollback()
             if sorted(map(repr, old)) != sorted(map(repr, new)):
                 differences.append(f"from {start!r} at most {most}: the statement {old}, the helper {new}")
+    finally:
+        await conn.execute("SET session_replication_role = DEFAULT")
+    assert not differences, f"{entry['function']}: " + "; ".join(differences)
+
+
+#: a walk proof's links: (the node a row is reached by, the node it leads to, whether its follow / by pins hold);
+#: a cycle of three, a branch off it, a row whose pins do not hold (its node reached, never walked past), a row
+#: leading into the cycle from outside, and a node with no row
+_REACHED_LINKS: Final[tuple[tuple[int, int, bool], ...]] = (
+    (0, 1, True),
+    (1, 2, True),
+    (2, 0, True),
+    (1, 3, True),
+    (3, 4, False),
+    (4, 6, True),
+    (5, 1, True),
+)
+
+
+def _held_value(column: CatalogColumn, pin: Mapping[str, Any], *, held: bool) -> Any:
+    """a walk row's pinned column: the pin's literal (``held``), or another value."""
+    return _join_pin_value(column, pin, held=held)
+
+
+async def _assert_reached_same(conn: Any, entry: Mapping[str, Any]) -> None:
+    """a walk entry's ``read_reached`` call gives what its recursive statement gave: the table seeded with
+    :data:`_REACHED_LINKS` (a cycle, a branch, a row its pins stop, a way in from outside), walked from every node and
+    from one no row holds, every answered row compared (both answer distinct rows, in no promised order)."""
+    table, walk = entry["table"], entry["chain"]
+    on, to = walk["on"], walk["to"]
+    await _drop_checks(conn, table)
+    shape = await _catalog(conn, table)
+    pinned = [*walk["follow"], *walk["by"]]
+    for column in (on, to, *(pin["column"] for pin in (*pinned, *entry["pins"]))):
+        if column not in shape.columns:
+            raise AssertionError(f"{table}: the walk names {column}, which the table has no column of")
+    nodes = [_value(shape.columns[on], 700_000 + place) for place in range(8)]
+    rows = []
+    for source, target, held in _REACHED_LINKS:
+        row = {on: nodes[source], to: nodes[target]}
+        for pin in pinned:
+            row[pin["column"]] = _held_value(shape.columns[pin["column"]], pin, held=held)
+        rows.append(row)
+    # the start's own pins other than ``on`` (a downstream walk's source kind): the value the walked rows hold
+    held_by = {pin["column"]: rows[0][pin["column"]] for pin in pinned}
+    columns = tuple(entry["columns"])
+    differences = []
+    await conn.execute("SET session_replication_role = replica")
+    try:
+        for place in [*range(len(nodes)), None]:
+            node = _value(shape.columns[on], 799_999) if place is None else nodes[place]
+            params = []
+            for pin in entry["pins"]:
+                column = pin["column"]
+                params.append(node if column in (on, to) else held_by.get(column, rows[0].get(column)))
+            start = {pin["column"]: params[index] for index, pin in enumerate(entry["pins"])}
+            transaction = conn.transaction()
+            await transaction.start()
+            try:
+                await seed_rows(conn, table, rows)
+                old = [dict(row) for row in await conn.fetch(entry["old_sql"], *params)]
+                new = await read_reached(
+                    conn,
+                    table,
+                    start=start,
+                    on=on,
+                    to=to,
+                    columns=columns,
+                    by=_by({"pins": walk["by"]}, ()) or None,
+                    follow=_by({"pins": walk["follow"]}, ()) or None,
+                )
+            finally:
+                await transaction.rollback()
+            if sorted(map(repr, old)) != sorted(map(repr, new)):
+                differences.append(f"from {start!r}: the statement {old}, the helper {new}")
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")
     assert not differences, f"{entry['function']}: " + "; ".join(differences)
@@ -1013,6 +1103,15 @@ def _joined_rows(
             rows.append(made(value, held=False))
     for stray in range(_JOIN_STRAYS):
         rows.append(made([_value(shape.columns[column], 800_000 + stray) for column in on], held=True))
+    # a counted join's table: every nullable column it does not join or pin on NULL on every other row (whatever the
+    # entry records it counts), so a count of the rows where a column holds a value differs from a count of every row
+    rows = [dict(made_row) for made_row in rows]
+    if join.get("counts"):
+        for column in shape.columns.values():
+            if column.name in fixed or not column.nullable or column.generated or not _seedable(column):
+                continue
+            for place, made_row in enumerate(rows):
+                made_row[column.name] = None if place % 2 == 1 else _value(column, 900_000 + place)
     return rows
 
 
@@ -1040,6 +1139,7 @@ async def _assert_join_same(conn: Any, entry: Mapping[str, Any], *, overrides: _
             left=join["left"],
             by=_by({"pins": join["pins"]}, ()) or None,
             matched=join["matched"] or None,
+            counts=dict(join.get("counts") or {}),
         )
         for join in entry["joins"]
     ]
@@ -1048,6 +1148,14 @@ async def _assert_join_same(conn: Any, entry: Mapping[str, Any], *, overrides: _
         for join in entry["joins"]:
             await seed_rows(c, join["table"], _joined_rows(joined_shapes[join["table"]], join, seeded))
 
+    # a page (``limit``): its LIMIT bound inside the seeded rows, compared exact before the boundary
+    limit = entry.get("limit")
+    rows: int | None = None
+    if limit is not None:
+        rows = _TOP_N if "param" in limit else int(limit["literal"])
+        if "param" in limit:
+            params = [*params, _TOP_N]
+    own = entry.get("order", ())[: entry["key_from"]] if limit is not None else entry.get("order", ())
     await conn.execute("SET session_replication_role = replica")
     try:
         await assert_same_results(
@@ -1056,10 +1164,13 @@ async def _assert_join_same(conn: Any, entry: Mapping[str, Any], *, overrides: _
             row=row,
             old_sql=entry["old_sql"],
             params=params,
-            helper=lambda c: read_by_joined(c, table, by=by, columns=columns, joins=joins, where=where, order=order),
-            order_by=[term["shown"] for term in entry.get("order", ())] or None,
+            helper=lambda c: read_by_joined(
+                c, table, by=by, columns=columns, joins=joins, where=where, order=order, limit=rows
+            ),
+            order_by=[term.get("shown", term["column"]) for term in own] or None,
             ordered=bool(order),
             related=related,
+            limited=limit is not None,
         )
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")
@@ -1174,6 +1285,60 @@ async def _assert_read_case(
     return [len(rows) for rows in answered]
 
 
+#: an aggregate's class, by its SQL function
+_AGGREGATES: Final[dict[str, Any]] = {"count": Count, "max": Max, "min": Min, "sum": Sum}
+
+
+def _aggregate_of(item: Mapping[str, Any]) -> Any:
+    """one aggregate item of an aggregate entry's part as ``aggregate_keyed`` takes it."""
+    column = item["column"]
+    made = _AGGREGATES[item["function"]]
+    return made() if column is None else made(f't."{column}"')
+
+
+def _aggregate_text(item: Mapping[str, Any]) -> str:
+    """one aggregate item as the codemod writes it: ``Count()``, ``Max('t."col"')``."""
+    made = _AGGREGATES[item["function"]].__name__
+    if item["column"] is None:
+        return f"{made}()"
+    expression = 't."' + item["column"] + '"'
+    return f"{made}({expression!r})"
+
+
+def _renumbered_pin(pin: Mapping[str, Any], place: Mapping[int, int]) -> dict[str, Any]:
+    return {
+        **pin,
+        "param": None if pin.get("param") is None else place[pin["param"]],
+        "params": [place[number] for number in pin.get("params") or ()],
+    }
+
+
+def _part_entry(entry: Mapping[str, Any], part: Mapping[str, Any]) -> dict[str, Any]:
+    """one part of an aggregate entry as an entry of its own: its statement (``sql``, numbered from ``$1``), its pins
+    and guards numbered as it is, its arguments; a count entry of its aggregates (``items``), or a ``read_row`` point
+    entry of its columns."""
+    numbers = sorted(
+        {
+            number
+            for pin in (*part["pins"], *part["guards"])
+            for number in ([pin["param"]] if pin.get("param") is not None else list(pin.get("params") or ()))
+        }
+    )
+    place = {number: index for index, number in enumerate(numbers, start=1)}
+    sub: dict[str, Any] = {
+        "path": entry.get("path"),
+        "function": entry.get("function"),
+        "table": part["table"],
+        "old_sql": part["sql"],
+        "pins": [_renumbered_pin(pin, place) for pin in part["pins"]],
+        "where": [_renumbered_pin(guard, place) for guard in part["guards"]],
+        "args": [entry["args"][number - 1] for number in numbers],
+    }
+    if part["items"][0]["function"] == "value":
+        return {**sub, "shape": "point", "helper": "read_row", "columns": [item["column"] for item in part["items"]]}
+    return {**sub, "shape": "count", "helper": "aggregate_keyed", "columns": None, "items": list(part["items"])}
+
+
 async def _assert_count_same(
     conn: Any, entry: Mapping[str, Any], *, overrides: _Overrides | None, nulled: bool
 ) -> None:
@@ -1195,6 +1360,9 @@ async def _assert_count_same(
             async def answered(c: Any, guards: list[Fragment] = case.where) -> list[dict[str, Any]]:
                 if entry["helper"] == "holds_any":
                     return [{"answer": await holds_any(c, table, order=entry["walk"], by=by)}]
+                if entry.get("items"):
+                    aggregates = {item["name"]: _aggregate_of(item) for item in entry["items"]}
+                    return await aggregate_keyed(c, table, aggregates=aggregates, by=by, where=guards)
                 counted = await aggregate_keyed(c, table, aggregates={"n": Count()}, by=by, where=guards)
                 return [{"answer": counted[0]["n"]}]
 
@@ -1202,12 +1370,18 @@ async def _assert_count_same(
                 conn,
                 table=table,
                 row=row,
-                old_sql=f'SELECT ({case.old_sql}) AS "answer"',  # noqa: S608 - the manifest's own statement
+                # the manifest's own statement: an aggregate entry's one row as it is, a count's one value
+                old_sql=(
+                    f"SELECT * FROM ({case.old_sql}) AS o"  # noqa: S608
+                    if entry.get("items")
+                    else f'SELECT ({case.old_sql}) AS "answer"'  # noqa: S608
+                ),
                 params=case.params,
                 helper=answered,
                 related=case.related,
             )
-            counted_by[case.subject] = [int(dict(rows[0])["answer"] or 0) for rows in olds]
+            if not entry.get("items"):
+                counted_by[case.subject] = [int(dict(rows[0])["answer"] or 0) for rows in olds]
         _assert_clause_restricts(entry, counted_by)
         await _assert_guards_decide(
             conn,
@@ -1782,6 +1956,8 @@ def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
     if entry.get("shape") == "write":
         return _write_says(call, entry)
     keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    if entry.get("chain") and "to" in entry["chain"]:
+        return _reached_says(call, entry)
     if entry.get("chain"):
         chained = (
             f"read_link_chain(c, {entry['table']!r}, key={entry['chain']['key']!r}, link={entry['chain']['link']!r}, "
@@ -1825,6 +2001,71 @@ def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
         return columns is None or (isinstance(columns, ast.Constant) and columns.value is None)
     written: list[Any] | None = _written_columns(columns, tree)
     return written is not None and written == list(entry["columns"])
+
+
+def _part_says(call: ast.Call, entry: Mapping[str, Any], part: Mapping[str, Any]) -> bool:
+    """whether a helper call is an aggregate entry's part: of its table, pinned and guarded as recorded, asking its
+    aggregates under their names (``aggregate_keyed``) or its columns (``read_row``; ``read_value`` its one column),
+    and nothing else."""
+    if len(call.args) != 2 or not (isinstance(call.args[1], ast.Constant) and call.args[1].value == part["table"]):
+        return False
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    by = keywords.get("by")
+    if not isinstance(by, ast.Dict) or len(by.keys) != len(part["pins"]):
+        return False
+    for key, value, pin in zip(by.keys, by.values, part["pins"], strict=True):
+        if not (isinstance(key, ast.Constant) and key.value == pin["column"]) or not _pin_says(
+            value, pin, entry["args"]
+        ):
+            return False
+    if not _where_says(keywords, {"where": part["guards"], "args": entry["args"]}):
+        return False
+    items = part["items"]
+    asked = set(keywords) - {"by", "where"}
+    assert isinstance(call.func, ast.Name)
+    if call.func.id == "aggregate_keyed":
+        aggregates = keywords.get("aggregates")
+        written = "{" + ", ".join(f"{item['name']!r}: {_aggregate_text(item)}" for item in items) + "}"
+        return asked == {"aggregates"} and aggregates is not None and _same_expression(aggregates, written)
+    if call.func.id == "read_value":
+        column = keywords.get("column")
+        return asked == {"column"} and isinstance(column, ast.Constant) and column.value == items[0]["column"]
+    columns = keywords.get("columns")
+    return (
+        asked == {"columns"}
+        and columns is not None
+        and _same_expression(columns, repr(tuple(item["column"] for item in items)))
+    )
+
+
+def _reached_says(call: ast.Call, entry: Mapping[str, Any]) -> bool:
+    """whether a ``read_reached`` call is the entry's walk: its table, its start pinned as recorded, its ``on``,
+    ``to``, columns and its ``follow`` / ``by`` literals, and nothing else."""
+    walk = entry["chain"]
+    if len(call.args) != 2 or not (isinstance(call.args[1], ast.Constant) and call.args[1].value == entry["table"]):
+        return False
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    start = keywords.get("start")
+    if not isinstance(start, ast.Dict) or len(start.keys) != len(entry["pins"]):
+        return False
+    for key, value, pin in zip(start.keys, start.values, entry["pins"], strict=True):
+        if not (isinstance(key, ast.Constant) and key.value == pin["column"]) or not _pin_says(
+            value, pin, entry["args"]
+        ):
+            return False
+    expected = {"start", "on", "to", "columns"} | {argument for argument in ("follow", "by") if walk[argument]}
+    if set(keywords) != expected:
+        return False
+    for argument in ("follow", "by"):
+        if walk[argument]:
+            pinned = "{" + ", ".join(f"{pin['column']!r}: {_pin_text(pin)}" for pin in walk[argument]) + "}"
+            if not _same_expression(keywords[argument], pinned):
+                return False
+    return (
+        _same_expression(keywords["on"], repr(walk["on"]))
+        and _same_expression(keywords["to"], repr(walk["to"]))
+        and _same_expression(keywords["columns"], repr(tuple(entry["columns"])))
+    )
 
 
 def _count_says(keywords: Mapping[str | None, ast.expr], entry: Mapping[str, Any]) -> bool:
@@ -1884,9 +2125,39 @@ def _joins_say(joins: ast.expr | None, recorded: Sequence[Mapping[str, Any]]) ->
             parts.append("by={" + pinned + "}")
         if join["matched"]:
             parts.append(f"matched={join['matched']!r}")
-        if not _same_expression(written, f"Joined({', '.join(parts)})"):
+        if join.get("counts"):
+            parts.append(f"counts={dict(join['counts'])!r}")
+        # a mapping's order says nothing about the join, and the manifest is written with sorted keys
+        if not _same_expression(
+            _keys_sorted(written), ast.unparse(_keys_sorted(_parsed(f"Joined({', '.join(parts)})")))
+        ):
             return False
     return True
+
+
+def _parsed(text: str) -> ast.expr:
+    """an expression's tree."""
+    return ast.parse(text, mode="eval").body
+
+
+def _keys_sorted(node: ast.expr) -> ast.expr:
+    """``node`` with each dict display whose keys are all string literals written in key order (a copy)."""
+
+    class _Sorting(ast.NodeTransformer):
+        def visit_Dict(self, display: ast.Dict) -> ast.AST:
+            self.generic_visit(display)
+            keys = display.keys
+            if all(isinstance(key, ast.Constant) and isinstance(key.value, str) for key in keys):
+                pairs = sorted(
+                    zip(keys, display.values, strict=True), key=lambda pair: str(getattr(pair[0], "value", ""))
+                )
+                display.keys = [key for key, _ in pairs]
+                display.values = [value for _, value in pairs]
+            return display
+
+    copied = ast.parse(ast.unparse(node), mode="eval").body
+    sorted_node: ast.expr = _Sorting().visit(copied)
+    return sorted_node
 
 
 def _pin_text(pin: Mapping[str, Any]) -> str:
@@ -1930,6 +2201,18 @@ def assert_source_says(repo_root: Path, entry: Mapping[str, Any]) -> None:
     tree = ast.parse((repo_root / entry["path"]).read_text(encoding="utf-8"))
     function = _function(tree, entry["function"])
     assert function is not None, f"{entry['path']}: no function {entry['function']}"
+    if entry.get("shape") == "aggregate":
+        for part in entry["parts"]:
+            helpers = {"aggregate_keyed"} if part["items"][0]["function"] != "value" else {"read_row", "read_value"}
+            sent = [
+                node
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in helpers
+            ]
+            assert any(_part_says(call, entry, part) for call in sent), (
+                f"{entry['path']}::{entry['function']}: no call of {part['table']} as the manifest's part records it"
+            )
+        return
     calls = [
         node
         for node in ast.walk(function)

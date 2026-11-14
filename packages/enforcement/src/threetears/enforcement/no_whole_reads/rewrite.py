@@ -240,7 +240,11 @@ class PointSql:
     joins: tuple[JoinSql, ...] = ()
     #: a chain of links's (shape ``chain``): ``{"key", "link"}``, the column a row is named by and the one naming the
     #: next; None for any other read
-    chain: dict[str, str] | None = None
+    chain: dict[str, Any] | None = None
+    #: an aggregate read's (shape ``aggregate``): each relation's part, ``{"table", "sql", "pins", "guards",
+    #: "items"}`` (its pins and guards as :class:`Pin` dicts in the statement's numbering, ``sql`` its own statement
+    #: numbered from ``$1``, each item ``{"name", "function", "column"}``); none for any other read
+    parts: tuple[dict[str, Any], ...] = ()
     #: a nearest-rows read's (shape ``first``, ``ORDER BY <column> OPERATOR(<schema>.<op>) $n::text::<schema>.vector
     #: LIMIT ...``): ``{"column", "param", "operator", "schema", "similarity"}`` (``similarity`` the name the select list
     #: gives ``1 - <distance>``, or None); None for any other read
@@ -330,7 +334,10 @@ class Rewrite:
     #: ``table``; not recorded for any other read
     joins: list[dict[str, Any]] = field(default_factory=list)
     #: a chain of links's (shape ``chain``, ``read_link_chain``): ``{"key", "link"}``; not recorded for any other read
-    chain: dict[str, str] | None = None
+    chain: dict[str, Any] | None = None
+    #: an aggregate read's (shape ``aggregate``): each relation's part (:attr:`PointSql.parts`), one helper call each;
+    #: not recorded for any other read
+    parts: list[dict[str, Any]] = field(default_factory=list)
     #: a nearest-rows read's (shape ``first``, ``read_nearest``): ``{"column", "param", "operator", "schema",
     #: "similarity"}``; not recorded for any other read
     nearest: dict[str, Any] | None = None
@@ -352,7 +359,7 @@ class Rewrite:
         entry = asdict(self)
         for kept_out in ("edits", "repoints", "notes", "imports"):
             entry.pop(kept_out)
-        if self.shape != "first":
+        if self.shape != "first" and not (self.joins and self.limit is not None):
             entry.pop("limit")
             entry.pop("key_from")
         if self.helper != "holds_any":
@@ -365,6 +372,8 @@ class Rewrite:
             entry.pop("joins")
         if self.chain is None:
             entry.pop("chain")
+        if not self.parts:
+            entry.pop("parts")
         if self.nearest is None:
             entry.pop("nearest")
         return entry
@@ -407,7 +416,12 @@ def _literal(text: str) -> str | bool | int:
 
 
 def parse_point(
-    sql: str, *, ordered: bool = False, guards: bool = False, beside: frozenset[int] = frozenset()
+    sql: str,
+    *,
+    ordered: bool = False,
+    guards: bool = False,
+    seeks: bool = False,
+    beside: frozenset[int] = frozenset(),
 ) -> PointSql | str:
     """a plain point read, or why it is not one.
 
@@ -418,6 +432,9 @@ def parse_point(
     :param guards: each ``WHERE`` conjunct other than an equality is kept as a guard (the helper's ``where=``), not
         refused; at least one equality must still bind a parameter
     :ptype guards: bool
+    :param seeks: a first-of read's: a guard binding a parameter is enough (a seek over the sort's index, the LIMIT
+        bounding the rows), with no equality binding one
+    :ptype seeks: bool
     :param beside: parameters the statement binds outside what is parsed here (a nearest read's vector, its order
         taken off), counted in its ``$1..$n``
     :ptype beside: frozenset[int]
@@ -472,7 +489,8 @@ def parse_point(
     numbers = sorted({number for pin in (*pins, *(kept or ())) for number in pin.numbers()} | beside)
     if numbers != list(range(1, len(numbers) + 1)):
         return "parameters not numbered $1..$n"
-    if not any(pin.kind in _BOUND_KINDS for pin in pins):
+    sought = seeks and any(guard.params for guard in kept or ())
+    if not any(pin.kind in _BOUND_KINDS for pin in pins) and not sought:
         return "no bound parameter (literals only): a constant read, judged by hand"
     return PointSql(
         table=match.group("table").lower(),
@@ -620,7 +638,9 @@ def parse_first(sql: str, *, guards: bool = False) -> PointSql | str:
             return parsed
         parsed = replace(parsed, nearest=near)
     else:
-        parsed = parse_point(text[: found.start()], ordered=True, guards=guards)
+        # a first-of read's parameters may all be its guards': a seek over the sort's index, its LIMIT bounding the
+        # rows
+        parsed = parse_point(text[: found.start()], ordered=True, guards=guards, seeks=True)
         if isinstance(parsed, str):
             return parsed
         if not parsed.order:
@@ -670,7 +690,9 @@ def _nearest_read(text: str) -> tuple[str, dict[str, Any]] | str | None:
         similarity = item.group("alias")
         body = body[: item.start()] + body[item.end() :]
     if similarity is None:
-        return f"a nearest-rows read selecting no similarity (1 - its distance): the proof compares rows by it: {text!r}"
+        return (
+            f"a nearest-rows read selecting no similarity (1 - its distance): the proof compares rows by it: {text!r}"
+        )
     if re.search(rf"\${param}(?!\d)", body):
         return f"the nearest vector's parameter ${param} read beside its order: {text!r}"
     return body, {
@@ -724,12 +746,250 @@ def parse_count(sql: str, *, guards: bool = False) -> PointSql | str:
     return replace(parsed, columns=None, aggregate=aggregate)
 
 
+#: one aggregate of an aggregate read's select list: ``count|max|min|sum(* | [q.]col) [AS name]``
+_AGGREGATE_ITEM: Final[re.Pattern[str]] = re.compile(
+    rf"^(?P<function>count|max|min|sum)\s*\(\s*(?:(?P<star>\*)|(?:(?P<q>{_IDENT})\.)?(?P<column>{_IDENT}))\s*\)"
+    rf"(?:\s+(?:as\s+)?(?P<name>{_IDENT}))?$",
+    re.IGNORECASE,
+)
+#: a scalar sub-select of an aggregate read's select list: ``(SELECT ... FROM ... WHERE ...) [AS] name``
+_SUB_SELECT_ITEM: Final[re.Pattern[str]] = re.compile(
+    rf"^\(\s*(?P<inner>select\s.+)\)\s+(?:as\s+)?(?P<name>{_IDENT})$", re.IGNORECASE | re.DOTALL
+)
+#: a plain column of a scalar sub-select's select list: ``[q.]col [AS name]``
+_PLAIN_ITEM: Final[re.Pattern[str]] = re.compile(
+    rf"^(?:(?P<q>{_IDENT})\.)?(?P<column>{_IDENT})(?:\s+(?:as\s+)?(?P<name>{_IDENT}))?$", re.IGNORECASE
+)
+#: the words a one-relation aggregate read never holds outside its parentheses
+_NOT_ONE_READ: Final[re.Pattern[str]] = re.compile(
+    r"\b(group\s+by|having|order\s+by|limit|offset|distinct|union|join|for\s+update|for\s+share)\b", re.IGNORECASE
+)
+
+
+def _blanked(text: str) -> str:
+    """``text`` with its quoted literals masked and everything inside a parenthesis blanked (``_``), so a pattern
+    over it sees the top level only; the same length as ``text``."""
+    masked = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", text)
+    blanked, depth = [], 0
+    for char in masked:
+        if char == ")":
+            depth -= 1
+        blanked.append(char if depth == 0 or char in "()" else "_")
+        if char == "(":
+            depth += 1
+    return "".join(blanked)
+
+
+def _items(text: str) -> list[str]:
+    """each top-level item of a select list, as written."""
+    masked = _QUOTED.sub(lambda hit: "'" + "x" * (len(hit.group()) - 2) + "'", text)
+    cuts = [-1, *_top_level_commas(masked), len(text)]
+    return [text[start + 1 : end].strip() for start, end in zip(cuts, cuts[1:], strict=False)]
+
+
+def _renumbered(sql: str, numbers: Sequence[int]) -> str:
+    """``sql`` with its parameters ``numbers`` (in that order) renumbered from ``$1``."""
+    place = {number: index for index, number in enumerate(numbers, start=1)}
+    masked = _QUOTED.sub(lambda hit: "'" + "x" * (len(hit.group()) - 2) + "'", sql)
+    pieces, last = [], 0
+    for found in re.finditer(r"\$(\d+)", masked):
+        pieces += [sql[last : found.start()], f"${place[int(found.group(1))]}"]
+        last = found.end()
+    return "".join([*pieces, sql[last:]])
+
+
+def _aggregate_part(text: str, *, guards: bool, sub: str | None) -> dict[str, Any] | str:
+    """one relation's read of an aggregate read: ``SELECT <aggregates> FROM <table> WHERE <pins>`` (or, a scalar
+    sub-select named ``sub``, one aggregate or one column under its own name), as its part; or why it is not one."""
+    top = _blanked(text)
+    found = _SELECT.match(top)
+    if found is None:
+        return "not SELECT <aggregates> FROM <table> WHERE ... (an aggregate read of one table)"
+    if _NOT_ONE_READ.search(top):
+        return "a GROUP BY / ORDER BY / LIMIT / DISTINCT / JOIN / row lock in an aggregate read"
+
+    def part(name: str) -> str:
+        start, end = found.span(name)
+        return text[start:end]
+
+    table = part("table").lower()
+    alias = (found.group("alias") or "").lower()
+    own = {table.split(".")[-1], *([alias] if alias else [])}
+    written = _items(part("columns"))
+    items: list[dict[str, Any]] = []
+    for item in written:
+        aggregate = _AGGREGATE_ITEM.match(item)
+        if aggregate is not None:
+            if aggregate.group("q") is not None and aggregate.group("q").lower() not in own:
+                return f"an aggregate of another relation's column: {item!r}"
+            function = aggregate.group("function").lower()
+            if aggregate.group("star") and function != "count":
+                return f"an aggregate of * other than count: {item!r}"
+            name = (aggregate.group("name") or function).lower()
+            column = None if aggregate.group("star") else aggregate.group("column").lower()
+            items.append({"name": sub or name, "function": function, "column": column})
+            continue
+        plain = _PLAIN_ITEM.match(item) if sub is not None else None
+        if plain is None:
+            return f"an expression other than an aggregate of a column (count, max, min, sum): {item!r}"
+        if plain.group("q") is not None and plain.group("q").lower() not in own:
+            return f"a sub-select's column of another relation: {item!r}"
+        column = plain.group("column").lower()
+        if (plain.group("name") or column).lower() != column or sub != column:
+            return f"a sub-select's column read under a name other than its own name: {item!r}"
+        items.append({"name": column, "function": "value", "column": column})
+    if sub is not None and len(items) != 1:
+        return "a scalar sub-select of more than one item"
+    if sub is None and len(items) == 1 and items[0]["function"] == "count" and items[0]["column"] is None:
+        return "a lone count(*) (the count shape's: a count sent by fetchval)"
+    where = part("where")
+    # a sub-select's parameters are the statement's: parsed numbered from $1, then numbered back
+    numbers = sorted({int(found) for found in re.findall(r"\$(\d+)", _QUOTED.sub("''", where))})
+    parsed = parse_point(
+        f"SELECT * FROM {part('table')}{' ' + alias if alias else ''} WHERE {_renumbered(where, numbers)}",
+        guards=guards,
+    )
+    if isinstance(parsed, str):
+        return parsed
+
+    def back(pin: Pin) -> dict[str, Any]:
+        return asdict(
+            replace(
+                pin,
+                param=None if pin.param is None else numbers[pin.param - 1],
+                params=tuple(numbers[number - 1] for number in pin.params),
+            )
+        )
+
+    return {
+        "table": table,
+        "alias": alias,
+        "where": where,
+        "pins": [back(pin) for pin in parsed.pins],
+        "guards": [back(pin) for pin in parsed.guards],
+        "items": items,
+    }
+
+
+def parse_aggregate(sql: str, *, guards: bool = False) -> PointSql | str:
+    """an aggregate read: ``SELECT <count|max|min|sum(* | col) [AS name], ...> FROM <table> WHERE <pins>``, or a select
+    list of scalar sub-selects with no ``FROM`` of its own, each one such aggregate, or one column of a row by its pins,
+    under its own name::
+
+        SELECT (SELECT MAX(date_introspected) FROM datasource_tables WHERE datasource_id = $1) AS date_introspected,
+               (SELECT COUNT(*) FROM datasource_tables WHERE datasource_id = $1) AS table_count,
+               (SELECT failed_scan_code FROM datasource_introspections WHERE datasource_id = $1) AS failed_scan_code
+
+    as its parts, one a relation and its pins (their aggregates one :func:`~threetears.core.keyed.aggregate_keyed`
+    call, their columns one :func:`~threetears.core.keyed.read_row`); or why it is not one. A lone ``count(*)`` is the
+    count shape's.
+
+    :param sql: the statement
+    :ptype sql: str
+    :param guards: as :func:`parse_point`'s
+    :ptype guards: bool
+    :return: the parsed read (``aggregate`` ``aggregate``, its ``parts``; every part's pins and guards its own), or the
+        refusal's reason
+    :rtype: PointSql | str
+    """
+    text = " ".join(sql.split())
+    if "{" in text or "}" in text:
+        return "interpolated"
+    if text.startswith("/*") or "--" in text:
+        return "a comment or hint in the statement"
+    top = _blanked(text)
+    found: list[dict[str, Any]] = []
+    if re.search(r"\bfrom\b", top, re.IGNORECASE):
+        one = _aggregate_part(text, guards=guards, sub=None)
+        if isinstance(one, str):
+            return one
+        found.append(one)
+    else:
+        listed = re.match(r"^select\s+(?P<columns>.+?)\s*;?\s*$", text, re.IGNORECASE | re.DOTALL)
+        if listed is None:
+            return "not SELECT <aggregates> FROM ... nor SELECT <scalar sub-selects>"
+        for item in _items(listed.group("columns")):
+            sub = _SUB_SELECT_ITEM.match(item)
+            if sub is None:
+                return f"a select list with no FROM holding other than scalar sub-selects: {item!r}"
+            one = _aggregate_part(sub.group("inner").strip(), guards=guards, sub=sub.group("name").lower())
+            if isinstance(one, str):
+                return f"a sub-select: {one}"
+            found.append(one)
+    names = [item["name"] for one in found for item in one["items"]]
+    if len(set(names)) != len(names):
+        return "two select-list items under one name"
+    parts: list[dict[str, Any]] = []
+    for one in found:
+        kind = "value" if one["items"][0]["function"] == "value" else "aggregate"
+        key = (one["table"], kind, repr(one["pins"]), repr(one["guards"]))
+        held = next((part for part in parts if part["key"] == key), None)
+        if held is None:
+            parts.append({**one, "key": key})
+        else:
+            held["items"] = [*held["items"], *one["items"]]
+    finished: list[dict[str, Any]] = []
+    for part in parts:
+        numbers = sorted(
+            {
+                number
+                for pin in (*part["pins"], *part["guards"])
+                for number in Pin(
+                    **{**pin, "params": tuple(pin["params"]), "compared": tuple(pin["compared"])}
+                ).numbers()
+            }
+        )
+        listed_items = ", ".join(
+            item["column"]
+            if item["function"] == "value"
+            else f"{item['function']}({item['column'] or '*'}) AS {item['name']}"
+            for item in part["items"]
+        )
+        statement = f"SELECT {listed_items} FROM {part['table']}{' ' + part['alias'] if part['alias'] else ''} WHERE {part['where']}"
+        finished.append(
+            {
+                "table": part["table"],
+                "sql": _renumbered(statement, numbers),
+                "pins": part["pins"],
+                "guards": part["guards"],
+                "items": part["items"],
+            }
+        )
+
+    def pins_of(key: str) -> tuple[Pin, ...]:
+        return tuple(
+            Pin(**{**pin, "params": tuple(pin["params"]), "compared": tuple(pin["compared"])})
+            for part in finished
+            for pin in part[key]
+        )
+
+    return PointSql(
+        table=finished[0]["table"],
+        columns=None,
+        pins=pins_of("pins"),
+        guards=pins_of("guards"),
+        aggregate="aggregate",
+        parts=tuple(finished),
+    )
+
+
 #: a joined read's top level: its select list, the table it reads FROM (and its alias), its joins, its ``WHERE``
 _JOIN_SELECT: Final[re.Pattern[str]] = re.compile(
     rf"^select\s+(?P<columns>.+?)\s+from\s+(?P<table>{_IDENT}(?:\.{_IDENT})?)"
     rf"(?:\s+(?:as\s+)?(?!(?:left|inner|join|right|full|cross|natural|where)\b)(?P<alias>{_IDENT}))?"
-    rf"(?P<joins>(?:\s+(?:left\s+(?:outer\s+)?|inner\s+)?join\s+.+?)+?)\s+where\s+(?P<where>.+?)\s*;?\s*$",
+    rf"(?P<joins>(?:\s+(?:left\s+(?:outer\s+)?|inner\s+)?join\s+.+?)*?)\s+where\s+(?P<where>.+?)\s*;?\s*$",
     re.IGNORECASE | re.DOTALL,
+)
+#: a correlated count in a joined read's select list: ``(SELECT COUNT(*|[k.]col) FROM <table> [k] WHERE ...) AS name``
+_COUNTED_ITEM: Final[re.Pattern[str]] = re.compile(
+    rf"^\(\s*select\s+count\s*\(\s*(?P<counted>\*|(?:(?P<cq>{_IDENT})\.)?(?P<ccol>{_IDENT}))\s*\)\s+"
+    rf"from\s+(?P<table>{_IDENT}(?:\.{_IDENT})?)(?:\s+(?:as\s+)?(?!where\b)(?P<alias>{_IDENT}))?\s+"
+    rf"where\s+(?P<where>.+)\)\s+(?:as\s+)?(?P<name>{_IDENT})$",
+    re.IGNORECASE | re.DOTALL,
+)
+#: ``k.col IS NOT NULL``: a correlated count's rows where a column holds a value (``COUNT(k.col)``)
+_NOT_NULL_TERM: Final[re.Pattern[str]] = re.compile(
+    rf"^(?:(?P<q>{_IDENT})\.)?(?P<column>{_IDENT})\s+is\s+not\s+null$", re.IGNORECASE
 )
 #: one join of a joined read: its kind, its table and alias; its ``ON`` runs to the next join
 _JOIN_CLAUSE: Final[re.Pattern[str]] = re.compile(
@@ -771,14 +1031,17 @@ class JoinSql:
     left: bool
     pins: tuple[Pin, ...] = ()
     matched: str = ""
+    #: a counted join's (a correlated ``(SELECT COUNT(*) ...) AS name``): each ``(name, the column counted when not
+    #: NULL, or None for every row)``; none for a join that widens the row
+    counts: tuple[tuple[str, str | None], ...] = ()
 
     def record(self) -> dict[str, Any]:
-        """the join as the manifest records it (``on`` and ``columns`` as mappings).
+        """the join as the manifest records it (``on``, ``columns`` and a counted join's ``counts`` as mappings).
 
         :return: the record
         :rtype: dict[str, Any]
         """
-        return {
+        recorded = {
             "table": self.table,
             "on": dict(self.on),
             "columns": dict(self.columns),
@@ -786,6 +1049,9 @@ class JoinSql:
             "pins": [asdict(pin) for pin in self.pins],
             "matched": self.matched,
         }
+        if self.counts:
+            recorded["counts"] = dict(self.counts)
+        return recorded
 
 
 @dataclass
@@ -813,6 +1079,65 @@ def _conjuncts(text: str) -> list[tuple[str, str]] | str:
 
 def _qualifiers(masked: str) -> set[str]:
     return {found.group("q").lower() for found in _QUALIFIED.finditer(masked)}
+
+
+def _counted_item(
+    item: str, base_alias: str, base_table: str
+) -> tuple[str, str, list[tuple[str, str]], list[Pin], str | None] | str:
+    """a correlated count in a joined read's select list, as ``(its name, its table, its pairs (its column, the read's
+    column), its literal pins, the column counted when not NULL or None)``; or why it is not one."""
+    found = _COUNTED_ITEM.match(item)
+    assert found is not None
+    table = found.group("table").lower()
+    alias = (found.group("alias") or table.split(".")[-1]).lower()
+    own = {alias, table.split(".")[-1]}
+    if alias == base_alias:
+        return f"a correlated count under the read's own alias: {item!r}"
+    counted = None if found.group("counted") == "*" else found.group("ccol").lower()
+    if found.group("cq") is not None and found.group("cq").lower() not in own:
+        return f"a correlated count of another table's column: {item!r}"
+    conjuncts = _conjuncts(found.group("where"))
+    if isinstance(conjuncts, str):
+        return conjuncts
+    pairs: list[tuple[str, str]] = []
+    rest: list[str] = []
+    for written, masked in conjuncts:
+        pair = _COLUMN_PAIR.match(written)
+        if pair is not None:
+            sides = {
+                pair.group("lq").lower(): pair.group("lcol").lower(),
+                pair.group("rq").lower(): pair.group("rcol").lower(),
+            }
+            if len(sides) != 2 or not own & set(sides):
+                return f"a correlated count matched on a pair not of its own table: {written!r}"
+            (other,) = set(sides) - own
+            if other not in {base_alias, base_table.split(".")[-1]}:
+                return f"a correlated count matched to a table not the read's: {written!r}"
+            (mine,) = own & set(sides)
+            pairs.append((sides[mine], sides[other]))
+            continue
+        flag = _NOT_NULL_TERM.match(written)
+        if flag is not None and (flag.group("q") is None or flag.group("q").lower() in own):
+            column = flag.group("column").lower()
+            if counted is not None and counted != column:
+                return f"a correlated count of one column where another is not NULL: {item!r}"
+            counted = column
+            continue
+        if _qualifiers(masked) - own:
+            return f"a correlated count's condition naming another table: {written!r}"
+        rest.append(written)
+    if not pairs:
+        return f"a correlated count matched on no pair of columns with the read: {item!r}"
+    pins: list[Pin] = []
+    if rest:
+        text = " AND ".join(rest)
+        pinned = _pins(text, _QUOTED.sub(lambda hit: "'" + "x" * (len(hit.group()) - 2) + "'", text), {*own, None})
+        if isinstance(pinned, str):
+            return f"a correlated count's condition: {pinned}"
+        if any(pin.kind in _BOUND_KINDS for pin in pinned):
+            return f"a correlated count pinned by a parameter: {item!r}"
+        pins = pinned
+    return found.group("name").lower(), table, pairs, pins, counted
 
 
 def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
@@ -844,6 +1169,13 @@ def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
         return "interpolated"
     if text.startswith("/*") or "--" in text:
         return "a comment or hint in the statement"
+    # a page of it: a trailing LIMIT after its ORDER BY, cut off and kept
+    limit: dict[str, int] | None = None
+    paged = _LIMIT.search(text)
+    if paged is not None and re.search(r"\border\s+by\b", text[: paged.start()], re.IGNORECASE):
+        written = paged.group("limit")
+        limit = {"param": int(written[1:])} if written.startswith("$") else {"literal": int(written)}
+        text = text[: paged.start()]
     masked_text = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", text)
     blanked, depth = [], 0
     for char in masked_text:
@@ -860,6 +1192,12 @@ def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
     found = _JOIN_SELECT.match(top)
     if found is None:
         return "not SELECT <columns> FROM <table> [LEFT] JOIN <table> ON ... WHERE ..."
+    counted_at = [
+        hit
+        for hit in re.finditer(r"\(\s*select\s+count\s*\(", text[found.start("columns") : found.end("columns")], re.I)
+    ]
+    if not found.group("joins") and not counted_at:
+        return "not SELECT <columns> FROM <table> [LEFT] JOIN <table> ON ... WHERE ..."
 
     def part(name: str) -> str:
         start, end = found.span(name)
@@ -872,7 +1210,7 @@ def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
     relations.append(_Relation(part("table").lower(), first_alias or part("table").split(".")[-1].lower(), False))
     joins_text, joins_top = part("joins"), top[found.start("joins") : found.end("joins")]
     clauses = list(_JOIN_CLAUSE.finditer(joins_top))
-    if not clauses or clauses[0].start() != 0:
+    if joins_top and (not clauses or clauses[0].start() != 0):
         return "not SELECT <columns> FROM <table> [LEFT] JOIN <table> ON ... WHERE ..."
     for index, clause in enumerate(clauses):
         alias = (clause.group("alias") or "").lower()
@@ -944,10 +1282,15 @@ def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
         if any(_PARAM_PIN.match(w) or _ANY_PIN.match(w) or _NULLSAFE_PIN.match(w) for w, _ in relation.where)
     ]
     left_joined = any(relation.left for relation in relations)
+    if limit is not None and any(not relation.left for relation in relations[1:]):
+        return "a page (LIMIT) over an inner join (the join drops rows past the page the read takes)"
     if relations[0] in bound_on:
         base = relations[0]
     elif len(bound_on) == 1 and not left_joined and len(relations) == 2:
         base = bound_on[0]
+    elif limit is not None and any("$" in written for written, _ in relations[0].where):
+        # a page sought by its guards alone (a keyset seek past the page before), the FROM table's
+        base = relations[0]
     else:
         return "no parameter pins the FROM table (a joined read is keyed by the table its pins bind)"
     others = [relation for relation in relations if relation is not base]
@@ -1011,8 +1354,21 @@ def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
     added: dict[str, list[tuple[str, str]]] = {relation.alias: [] for relation in others}
     matched: dict[str, str] = {}
     names: list[str] = []
+    counted_joins: dict[tuple[Any, ...], list[tuple[str, str | None]]] = {}
     for start, end in zip(cuts, cuts[1:], strict=False):
         item = columns_text[start + 1 : end].strip()
+        if _COUNTED_ITEM.match(item) is not None:
+            if base is not relations[0]:
+                return f"a correlated count in a read keyed by a joined table: {item!r}"
+            one = _counted_item(item, base.alias, base.table)
+            if isinstance(one, str):
+                return one
+            name, counted_table, counted_pairs, counted_pins, counted_column = one
+            counted_joins.setdefault((counted_table, tuple(counted_pairs), tuple(counted_pins)), []).append(
+                (name, counted_column)
+            )
+            names.append(name)
+            continue
         flag = _MATCHED_ITEM.match(item)
         if flag is not None:
             alias = flag.group("q").lower()
@@ -1094,8 +1450,13 @@ def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
     numbers = sorted({number for pin in (*base_pins, *base_guards) for number in pin.numbers()})
     if numbers != list(range(1, len(numbers) + 1)):
         return "parameters not numbered $1..$n"
-    if not any(pin.kind in _BOUND_KINDS for pin in base_pins):
+    sought = limit is not None and any(guard.params for guard in base_guards)
+    if not any(pin.kind in _BOUND_KINDS for pin in base_pins) and not sought:
         return "no bound parameter (literals only): a constant read, judged by hand"
+    if limit is not None and not order:
+        return "a LIMIT with no ORDER BY: which rows it keeps is the engine's choice"
+    if limit is not None and "param" in limit and limit["param"] != len(numbers) + 1:
+        return "the LIMIT's parameter is not the statement's last"
     joins = tuple(
         JoinSql(
             table=relation.table,
@@ -1106,6 +1467,9 @@ def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
             matched=matched.get(relation.alias, ""),
         )
         for relation in others
+    ) + tuple(
+        JoinSql(table=table, on=pairs, columns=(), left=False, pins=pins, counts=tuple(counts))
+        for (table, pairs, pins), counts in counted_joins.items()
     )
     return PointSql(
         table=base.table,
@@ -1114,6 +1478,7 @@ def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
         order=tuple(order),
         guards=tuple(base_guards),
         joins=joins,
+        limit=limit,
     )
 
 
@@ -1283,8 +1648,19 @@ def _guard(conjunct: str, qualifiers: set[str | None], row: str = "t") -> Pin | 
         if int(number) not in order:
             order.append(int(number))
     renumbered = _PARAMETER.sub(lambda found: f"${order.index(int(found.group(1))) + 1}", text)
+    # a row comparison (a keyset seek, ``(date_created, id) > ($1, $2)``): each parameter compared with the column in
+    # its place
+    in_rows: dict[int, str] = {}
+    for found in _ROW_COMPARISON.finditer(renumbered):
+        columns = [column.strip().lower() for column in found.group("columns").split(",")]
+        numbers = [int(number) for number in re.findall(r"\$(\d+)", found.group("params"))]
+        if len(columns) == len(numbers):
+            in_rows.update(zip(numbers, columns, strict=True))
     compared = []
     for place in range(1, len(order) + 1):
+        if place in in_rows:
+            compared.append(in_rows[place])
+            continue
         parameter = rf"\${place}(?!\d)(?:\s*::\s*{_IDENT}(?:\[\])?)*"
         paired = re.search(
             rf"(?P<column>{_IDENT})\s*{_COMPARISON}\s*{parameter}", renumbered, re.IGNORECASE
@@ -1304,6 +1680,12 @@ def _guard(conjunct: str, qualifiers: set[str | None], row: str = "t") -> Pin | 
     return Pin("", "guard", literal=" ".join(renumbered.split()), params=tuple(order), compared=tuple(compared))
 
 
+#: a row comparison of columns with parameters: ``(a, b) > ($1, $2::uuid)``
+_ROW_COMPARISON: Final[re.Pattern[str]] = re.compile(
+    rf"\(\s*(?P<columns>{_IDENT}(?:\s*,\s*{_IDENT})+)\s*\)\s*(?:<=|>=|<|>|=)\s*\(\s*(?P<params>\$\d+(?:\s*::\s*{_IDENT})?"
+    rf"(?:\s*,\s*\$\d+(?:\s*::\s*{_IDENT})?)+)\s*\)",
+    re.IGNORECASE,
+)
 #: a ``[NOT] EXISTS (SELECT ...)`` conjunct: a guard over the helper's row when correlated through it alone
 _EXISTS_GUARD: Final[re.Pattern[str]] = re.compile(
     r"^(?P<not>not\s+)?exists\s*\(\s*(?P<inner>select\b.+)\)$", re.IGNORECASE | re.DOTALL
@@ -2323,6 +2705,8 @@ def _joined_text(join: Mapping[str, Any]) -> str:
         parts.append(f"by={{{by}}}")
     if join["matched"]:
         parts.append(f"matched={join['matched']!r}")
+    if join.get("counts"):
+        parts.append(f"counts={dict(join['counts'])!r}")
     return f"Joined({', '.join(parts)})"
 
 
@@ -2337,6 +2721,9 @@ def _render_joined(rewrite: Rewrite, receiver: str) -> str:
         parts.append(_where_text(rewrite).removeprefix(", "))
     if rewrite.order:
         parts.append(f"order=[{', '.join(_sort_text(term) for term in rewrite.order)}]")
+    if rewrite.limit is not None:
+        written = rewrite.args[rewrite.limit["param"] - 1] if "param" in rewrite.limit else rewrite.limit["literal"]
+        parts.append(f"limit={written}")
     return f"read_by_joined({', '.join(parts)})"
 
 
@@ -2432,6 +2819,93 @@ def _render_count(rewrite: Rewrite, receiver: str) -> str:
         f"(await aggregate_keyed({receiver}, {rewrite.table!r}, aggregates={{'n': Count()}}, by={by}"
         f"{_where_text(rewrite)}))[0]['n']"
     )
+
+
+#: an aggregate rewrite's helpers, the first it calls named its ``helper``
+_AGGREGATE_HELPERS: Final[tuple[str, ...]] = ("aggregate_keyed", "read_row", "read_value")
+#: an aggregate's class, by its SQL function
+_AGGREGATE_CLASS: Final[dict[str, str]] = {"count": "Count", "max": "Max", "min": "Min", "sum": "Sum"}
+
+
+def _aggregate_text(item: Mapping[str, Any]) -> str:
+    """one aggregate as ``aggregate_keyed``'s ``aggregates=`` writes it: ``Count()``, ``Max('t."col"')``."""
+    column = item["column"]
+    argument = "" if column is None else repr(f't."{column}"')
+    return f"{_AGGREGATE_CLASS[item['function']]}({argument})"
+
+
+def _render_aggregate(rewrite: Rewrite, receiver: str) -> tuple[str, set[str]]:
+    """an aggregate read's helpers, written in the awaited ``fetchval`` / ``fetchrow``'s place: for each part, its
+    aggregates' one ``aggregate_keyed`` row, or its columns' ``read_row`` (each None when no row holds the pins); a
+    ``fetchval``'s one value, a ``fetchrow``'s one row (the parts' dicts merged). Answers the call and the names it
+    imports."""
+    used: set[str] = set()
+    texts: list[str] = []
+    for part in rewrite.parts:
+        by = "{" + ", ".join(f"{pin['column']!r}: {_value_text(pin, rewrite.args)}" for pin in part["pins"]) + "}"
+        where = (
+            f", where=[{', '.join(_value_text(guard, rewrite.args) for guard in part['guards'])}]"
+            if part["guards"]
+            else ""
+        )
+        items = part["items"]
+        table = repr(part["table"])
+        if items[0]["function"] == "value":
+            columns = tuple(item["column"] for item in items)
+            if rewrite.method == "fetchval":
+                used.add("read_value")
+                texts.append(f"(await read_value({receiver}, {table}, by={by}{where}, column={columns[0]!r}))")
+            else:
+                used.add("read_row")
+                texts.append(
+                    f"**(await read_row({receiver}, {table}, by={by}{where}, columns={columns!r}) "
+                    f"or dict.fromkeys({columns!r}))"
+                )
+            continue
+        used.add("aggregate_keyed")
+        used.update(_AGGREGATE_CLASS[item["function"]] for item in items)
+        aggregates = ", ".join(f"{item['name']!r}: {_aggregate_text(item)}" for item in items)
+        call = f"(await aggregate_keyed({receiver}, {table}, aggregates={{{aggregates}}}, by={by}{where}))[0]"
+        texts.append(f"{call}[{items[0]['name']!r}]" if rewrite.method == "fetchval" else f"**{call}")
+    if rewrite.method == "fetchval":
+        return texts[0], used
+    if len(texts) == 1 and texts[0].startswith("**(await aggregate_keyed"):
+        return texts[0][2:], used
+    return "{" + ", ".join(texts) + "}", used
+
+
+def _unkeyed_value(parsed: PointSql, schema: Any) -> str:
+    """why a scalar sub-select of a row's column is refused (its pins hold no declared key of its table, so more than
+    one row may answer: an error in SQL, the first row from ``read_row``), or ``""``."""
+    for part in parsed.parts:
+        if part["items"][0]["function"] != "value":
+            continue
+        declared = schema.table(part["table"])
+        pinned = {pin["column"].lower() for pin in part["pins"] if pin["kind"] in _ONE_VALUE_KINDS}
+        keys = [] if declared is None else [*declared.primary_keys, *declared.unique_keys]
+        if not any({column.lower() for column in key} <= pinned for key in keys):
+            return f"no declared key of {part['table']} its pins hold (a scalar sub-select of two rows is an error)"
+    return ""
+
+
+def _render_reached(rewrite: Rewrite, receiver: str) -> str:
+    """the ``read_reached`` call, written in the ``fetch`` call's place."""
+    assert rewrite.chain is not None
+    walk = rewrite.chain
+    start = "{" + ", ".join(f"{pin['column']!r}: {_value_text(pin, rewrite.args)}" for pin in rewrite.pins) + "}"
+    parts = [
+        receiver,
+        repr(rewrite.table),
+        f"start={start}",
+        f"on={walk['on']!r}",
+        f"to={walk['to']!r}",
+        f"columns={tuple(rewrite.columns or ())!r}",
+    ]
+    for argument in ("follow", "by"):
+        if walk[argument]:
+            pinned = ", ".join(f"{pin['column']!r}: {_value_text(pin, ())}" for pin in walk[argument])
+            parts.append(f"{argument}={{{pinned}}}")
+    return f"read_reached({', '.join(parts)})"
 
 
 def _sort_text(term: Mapping[str, Any]) -> str:
@@ -3203,7 +3677,7 @@ class _Shape:
     :ivar shape: the rewrite's shape
     :ivar parse: its statement parser
     :ivar methods: the connection methods it rewrites
-    :ivar finds: the use-the-helper shape whose findings it takes; ``shape`` when empty
+    :ivar finds: the use-the-helper shapes whose findings it takes, comma-separated; ``shape`` when empty
     """
 
     shape: str
@@ -3598,8 +4072,9 @@ _FIRST: Final[_Shape] = _Shape("first", parse_first, frozenset(_HELPER_OF), find
 _WRITE: Final[_Shape] = _Shape("write", parse_write, _WRITE_METHODS)
 #: a count or an existence test is sent by an awaited ``fetchval``: its one value
 _COUNT: Final[_Shape] = _Shape("count", parse_count, frozenset({"fetchval"}))
-#: a joined read (:func:`parse_join`), sent by ``fetch`` (its rows) or ``fetchrow`` (its first row)
-_JOIN: Final[_Shape] = _Shape("join", parse_join, frozenset({"fetch", "fetchrow"}))
+#: a joined read (:func:`parse_join`), sent by ``fetch`` (its rows) or ``fetchrow`` (its first row); a read whose
+#: only join is a correlated count is found as a point read of the counted table
+_JOIN: Final[_Shape] = _Shape("join", parse_join, frozenset({"fetch", "fetchrow"}), finds="join,point")
 
 
 def plan_point_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
@@ -3694,6 +4169,167 @@ def parse_chain(sql: str, *, guards: bool = False) -> PointSql | str:
 _CHAIN_SHAPE: Final[_Shape] = _Shape("chain", parse_chain, frozenset({"fetch"}), finds="list", verb="with")
 
 
+_I: Final[str] = _IDENT
+#: a closure: from a node its parameter names, each next node the walked rows' ``to``, every row reached answered
+_CLOSURE: Final[re.Pattern[str]] = re.compile(
+    rf"^with\s+recursive\s+(?P<cte>{_I})\s*\(\s*(?P<node>{_I})\s*,\s*(?P<path>{_I})\s*\)\s+as\s*\(\s*"
+    rf"select\s+\$(?P<p>\d+)(?:::{_I})?\s+as\s+(?P=node)\s*,\s*array\s*\[\s*\$(?P=p)(?:::{_I})?\s*\]\s+as\s+(?P=path)\s+"
+    rf"union\s+all\s+select\s+(?P<s1>{_I})\.(?P<to>{_I})\s*,\s*(?P<r1>{_I})\.(?P=path)\s*\|\|\s*(?P=s1)\.(?P=to)\s+"
+    rf"from\s+(?P<table>{_I}(?:\.{_I})?)\s+(?:as\s+)?(?P=s1)\s+join\s+(?P=cte)\s+(?:as\s+)?(?P=r1)\s+on\s+"
+    rf"(?P=s1)\.(?P<on>{_I})\s*=\s*(?P=r1)\.(?P=node)\s+where\s+(?P<follow>.+?)\s+and\s+not\s*\(\s*(?P=s1)\.(?P=to)"
+    rf"\s*=\s*any\s*\(\s*(?P=r1)\.(?P=path)\s*\)\s*\)\s*\)\s*select\s+distinct\s+(?P<columns>.+?)\s+from\s+"
+    rf"(?P=table)\s+(?:as\s+)?(?P<s2>{_I})\s+join\s+(?P=cte)\s+(?:as\s+)?(?P<r2>{_I})\s+on\s+(?P=s2)\.(?P=on)\s*=\s*"
+    rf"(?P=r2)\.(?P=node)\s*;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+#: a downstream walk: from the rows its parameters pin, each level the rows whose ``on`` holds a node reached
+_DOWNSTREAM: Final[re.Pattern[str]] = re.compile(
+    rf"^with\s+recursive\s+(?P<cte>{_I})\s*\(\s*(?P<node>{_I})\s*,\s*(?P<path>{_I})\s*\)\s+as\s*\(\s*"
+    rf"select\s+(?P<s0>{_I})\.(?P<to>{_I})\s*,\s*array\s*\[\s*(?P=s0)\.(?P=to)\s*\]\s+as\s+(?P=path)\s+from\s+"
+    rf"(?P<table>{_I}(?:\.{_I})?)\s+(?:as\s+)?(?P=s0)\s+where\s+(?P<start>.+?)\s+union\s+all\s+select\s+"
+    rf"(?P<s1>{_I})\.(?P=to)\s*,\s*(?P<r1>{_I})\.(?P=path)\s*\|\|\s*(?P=s1)\.(?P=to)\s+from\s+(?P=table)\s+"
+    rf"(?:as\s+)?(?P=s1)\s+join\s+(?P=cte)\s+(?:as\s+)?(?P=r1)\s+on\s+(?P<on_clause>.+?)\s+where\s+not\s*\(\s*"
+    rf"(?P=s1)\.(?P=to)\s*=\s*any\s*\(\s*(?P=r1)\.(?P=path)\s*\)\s*\)\s*\)\s*select\s+distinct\s+(?P=node)\s+"
+    rf"from\s+(?P=cte)\s*;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _literal_pins(text: str, alias: str, table: str) -> list[Pin] | str:
+    """a walk's per-level pins: equalities to literals of its table's columns only."""
+    pinned = _pins(text, _QUOTED.sub(lambda hit: "'" + "x" * (len(hit.group()) - 2) + "'", text), {alias, table})
+    if isinstance(pinned, str):
+        return pinned
+    if any(pin.kind not in {"literal", "anylit", "null"} for pin in pinned):
+        return "a walk's level pinned by other than literals"
+    return pinned
+
+
+def parse_reached(sql: str, *, guards: bool = False) -> PointSql | str:
+    """a walk of a table's links, written as its own recursive statement with a path guard (shape ``reached``): a
+    closure from a node its parameter names (every row the nodes reached hold answered, the rows whose pins hold
+    walked on)::
+
+        WITH RECURSIVE reachable(dataset_id, path) AS (
+            SELECT $1::uuid AS dataset_id, ARRAY[$1::uuid] AS path
+          UNION ALL
+            SELECT s.source_id, r.path || s.source_id FROM dataset_sources s JOIN reachable r ON s.dataset_id = r.dataset_id
+             WHERE s.source_kind = 'dataset' AND NOT (s.source_id = ANY(r.path))
+        ) SELECT DISTINCT s.source_kind AS source_kind, s.source_id AS source_id
+            FROM dataset_sources s JOIN reachable r ON s.dataset_id = r.dataset_id
+
+    or a downstream walk from the rows its parameters pin, each level pinned by literals in its ``ON``, its nodes
+    answered (``SELECT DISTINCT <node> FROM <cte>``); as the :func:`~threetears.core.keyed.read_reached` call it is,
+    or why it is not one.
+
+    :param sql: the statement
+    :ptype sql: str
+    :param guards: unused (a walk has no guard)
+    :ptype guards: bool
+    :return: the parsed read (``chain`` holding ``on``, ``to``, ``follow`` and ``by``; its pins the start's), or the
+        refusal's reason
+    :rtype: PointSql | str
+    """
+    del guards
+    text = " ".join(sql.split())
+    if "{" in text or "}" in text:
+        return "interpolated"
+    closure = _CLOSURE.match(text)
+    if closure is not None:
+        table = closure.group("table").lower()
+        if int(closure.group("p")) != 1:
+            return "parameters not numbered $1..$n"
+        follow = _literal_pins(closure.group("follow"), closure.group("s1").lower(), table.split(".")[-1])
+        if isinstance(follow, str):
+            return follow
+        columns: list[str] = []
+        for item in _items(closure.group("columns")):
+            plain = _PLAIN_ITEM.match(item)
+            if plain is None or (plain.group("q") or "").lower() != closure.group("s2").lower():
+                return f"a walk answering other than its table's columns: {item!r}"
+            column = plain.group("column").lower()
+            if (plain.group("name") or column).lower() != column:
+                return f"a walk answering a column under a name other than its own: {item!r}"
+            columns.append(column)
+        on = closure.group("on").lower()
+        return PointSql(
+            table=table,
+            columns=tuple(columns),
+            pins=(Pin(on, "param", param=1),),
+            chain={
+                "on": on,
+                "to": closure.group("to").lower(),
+                "follow": [asdict(pin) for pin in follow],
+                "by": [],
+            },
+        )
+    downstream = _DOWNSTREAM.match(text)
+    if downstream is None:
+        return "not a walk of links (WITH RECURSIVE ... a path guard, from a node or the rows its parameters pin)"
+    table = downstream.group("table").lower()
+    to, node = downstream.group("to").lower(), downstream.group("node").lower()
+    if to != node:
+        return "a walk answering its nodes under a name other than their column's"
+    s0, s1, r1 = (downstream.group(name).lower() for name in ("s0", "s1", "r1"))
+    start_text = downstream.group("start")
+    start = _pins(start_text, _QUOTED.sub(lambda hit: "'" + "x" * (len(hit.group()) - 2) + "'", start_text), {s0})
+    if isinstance(start, str):
+        return start
+    numbers = sorted({number for pin in start for number in pin.numbers()})
+    if not numbers or numbers != list(range(1, len(numbers) + 1)):
+        return "parameters not numbered $1..$n"
+    on = ""
+    rest: list[str] = []
+    conjuncts = _conjuncts(downstream.group("on_clause"))
+    if isinstance(conjuncts, str):
+        return conjuncts
+    for written, _ in conjuncts:
+        pair = _COLUMN_PAIR.match(written)
+        if pair is not None:
+            sides = {
+                pair.group("lq").lower(): pair.group("lcol").lower(),
+                pair.group("rq").lower(): pair.group("rcol").lower(),
+            }
+            if set(sides) != {s1, r1} or sides[r1] != node or on:
+                return f"a walk's level joined other than by one column to the node reached: {written!r}"
+            on = sides[s1]
+            continue
+        rest.append(written)
+    if not on:
+        return "a walk's level joined to no node"
+    by: list[Pin] = []
+    if rest:
+        pinned = _literal_pins(" AND ".join(rest), s1, table.split(".")[-1])
+        if isinstance(pinned, str):
+            return pinned
+        by = pinned
+    return PointSql(
+        table=table,
+        columns=(to,),
+        pins=tuple(start),
+        chain={"on": on, "to": to, "follow": [], "by": [asdict(pin) for pin in by]},
+    )
+
+
+#: a walk of links (:func:`parse_reached`), found as a join, a count or a listing, sent by ``fetch``
+_REACHED_SHAPE: Final[_Shape] = _Shape(
+    "reached", parse_reached, frozenset({"fetch"}), finds="join,count,list", verb="with"
+)
+
+
+def plan_reached_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
+    """every join, count or listing finding of the repo that is a walk of links written as its own recursive
+    statement (:func:`parse_reached`), sent by ``fetch``, as the :func:`~threetears.core.keyed.read_reached` call it
+    takes, or the refusal it gets.
+
+    :param config: the repo's no-whole-reads config
+    :ptype config: NoWholeReadsConfig
+    :return: the rewrites, and the refusals
+    :rtype: tuple[list[Rewrite], list[Refusal]]
+    """
+    return _plan_reads(config, _REACHED_SHAPE)
+
+
 def plan_chain_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
     """every listing finding of the repo that is a chain of links written as its own recursive statement
     (:func:`parse_chain`), sent by ``fetch``, as the :func:`~threetears.core.keyed.read_link_chain` call it takes, or
@@ -3719,6 +4355,27 @@ def plan_join_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[
     :rtype: tuple[list[Rewrite], list[Refusal]]
     """
     return _plan_reads(config, _JOIN)
+
+
+#: an aggregate read (:func:`parse_aggregate`), sent by an awaited ``fetchval`` (its one value) or ``fetchrow`` (its
+#: one row); found as a count, a point read or a listing of the first relation it reads
+_AGGREGATE_SHAPE: Final[_Shape] = _Shape(
+    "aggregate", parse_aggregate, frozenset({"fetchval", "fetchrow"}), finds="count,point,list"
+)
+
+
+def plan_aggregate_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
+    """every count, point or listing finding of the repo that is an aggregate read (:func:`parse_aggregate`: counts,
+    largest, smallest and sums of a point read's rows, or scalar sub-selects of such reads and of a row's columns by
+    its key), sent by an awaited ``fetchval`` or ``fetchrow``, as the :func:`~threetears.core.keyed.aggregate_keyed`
+    and :func:`~threetears.core.keyed.read_row` calls it takes, or the refusal it gets.
+
+    :param config: the repo's no-whole-reads config
+    :ptype config: NoWholeReadsConfig
+    :return: the rewrites, and the refusals
+    :rtype: tuple[list[Rewrite], list[Refusal]]
+    """
+    return _plan_reads(config, _AGGREGATE_SHAPE)
 
 
 def plan_count_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
@@ -3777,7 +4434,7 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             _producers(config),
             caller_judged=config.caller_judged_modules,
         )
-        if hit.shape == (shape.finds or shape.shape)
+        if hit.shape in (shape.finds or shape.shape).split(",")
     ]
     modules: dict[str, _Module] = {}
     rewrites: list[Rewrite] = []
@@ -3809,6 +4466,10 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
         unproven = _unseeded_guard(parsed)
         if unproven:
             refuse(unproven)
+            continue
+        unkeyed_value = _unkeyed_value(parsed, scan.schema)
+        if unkeyed_value:
+            refuse(unkeyed_value)
             continue
         completion: list[dict[str, Any]] = []
         if parsed.limit is not None and parsed.nearest is None:
@@ -3843,7 +4504,9 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
         if " ".join(old_sql.split()) != " ".join(text.split()):
             refuse("the literal at its line is not the statement the walk found")
             continue
-        if isinstance(literal, ast.JoinedStr) and not isinstance(module.parent(literal), ast.Call):
+        # an f-string whose every interpolation is a constant (an enum member's value) is a constant statement; one
+        # holding a clause builder's clause is sent where it is written
+        if isinstance(literal, ast.JoinedStr) and clauses and not isinstance(module.parent(literal), ast.Call):
             refuse("an interpolated statement not written at the call sending it")
             continue
         held_in = isinstance(literal, ast.Constant) and isinstance(module.parent(literal), ast.Dict)
@@ -3925,6 +4588,12 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 problem = f"{len(arguments)} arguments for {len(numbers)} parameters"
             elif any(count > 1 and not _plain_simple(arguments[number - 1]) for number, count in uses.items()):
                 problem = "a parameter used twice whose argument is not a plain name"
+            elif (
+                parsed.aggregate == "aggregate"
+                and method == "fetchval"
+                and (answered := sum(len(part["items"]) for part in parsed.parts)) != 1
+            ):
+                problem = f"fetchval of {answered} values (it answers the first; the helpers answer each by name)"
             elif method == "fetchval" and parsed.columns is None and not parsed.aggregate:
                 problem = "fetchval of SELECT *"
             elif method == "fetchval" and not isinstance((parsed.columns or ("",))[0], str):
@@ -3936,7 +4605,8 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             elif (parsed.joins or parsed.chain is not None) and _read_by_position(module, call):
                 problem = (
                     "a read whose rows are read by position "
-                    f"({'read_link_chain' if parsed.chain is not None else 'read_by_joined'} answers dicts)"
+                    f"({'read_by_joined' if parsed.chain is None else 'read_reached' if 'to' in parsed.chain else 'read_link_chain'}"
+                    " answers dicts)"
                 )
             elif method not in shape.methods and parsed.aggregate:
                 problem = f"a count sent by {method}: read by a column name the helper does not answer under"
@@ -3971,7 +4641,10 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 nearest=parsed.nearest,
             )
             spliced: ast.expr = call
-            if parsed.nearest is not None:
+            if parsed.chain is not None and "to" in parsed.chain:
+                rewrite.helper = "read_reached"
+                rewrite.new_call = _render_reached(rewrite, module.segment(call.func.value))
+            elif parsed.nearest is not None:
                 if method != "fetch":
                     refuse(f"a nearest-rows read sent by {method} (read_nearest answers its rows: a fetch only)")
                     planned = []
@@ -3997,6 +4670,14 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                         break
                     rewrite.new_call = f"next(iter(await {rewrite.new_call}), None)"
                     spliced = awaited
+            elif parsed.aggregate == "aggregate":
+                rewrite.parts = [dict(part) for part in parsed.parts]
+                rewrite.new_call, used = _render_aggregate(rewrite, module.segment(call.func.value))
+                rewrite.helper = next(name for name in _AGGREGATE_HELPERS if name in used)
+                rewrite.imports = {_HELPER_MODULE: used}
+                awaited = module.parent(call)
+                assert isinstance(awaited, ast.Await)
+                spliced = awaited
             elif parsed.aggregate:
                 rewrite.helper = "holds_any" if parsed.aggregate == "exists" else "aggregate_keyed"
                 rewrite.new_call = _render_count(rewrite, module.segment(call.func.value))
@@ -4277,7 +4958,7 @@ def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None
         path = repo_root / relative
         source = _splice(path.read_text(encoding="utf-8"), [edit for rewrite in mine for edit in rewrite.edits])
         names = {rewrite.helper for rewrite in mine}
-        if "aggregate_keyed" in names:
+        if any(rewrite.helper == "aggregate_keyed" and not rewrite.parts for rewrite in mine):
             names.add("Count")
         if any(pin["kind"] in {"now", "fragment"} for rewrite in mine for pin in rewrite.sets) or any(
             rewrite.where for rewrite in mine
@@ -4454,7 +5135,10 @@ def main(argv: list[str] | None = None) -> int:
     :rtype: int
     """
     parser = argparse.ArgumentParser(prog="threetears.enforcement.no_whole_reads.rewrite")
-    parser.add_argument("shape", choices=["point", "list", "first", "write", "count", "join", "chain", "test-module"])
+    parser.add_argument(
+        "shape",
+        choices=["point", "list", "first", "write", "count", "aggregate", "join", "chain", "reached", "test-module"],
+    )
     parser.add_argument("--module", type=Path, help="test-module: where the generated test goes, repo-relative")
     parser.add_argument("--pg-fixture", default="conn")
     parser.add_argument("--yb-fixture", default="yugabyte_conn")
@@ -4486,8 +5170,10 @@ def main(argv: list[str] | None = None) -> int:
         "list": plan_list_rewrites,
         "first": plan_first_rewrites,
         "count": plan_count_rewrites,
+        "aggregate": plan_aggregate_rewrites,
         "join": plan_join_rewrites,
         "chain": plan_chain_rewrites,
+        "reached": plan_reached_rewrites,
     }.get(options.shape, plan_point_rewrites)
     rewrites, refusals = planner(config)
     reasons = Counter(refusal.reason.split(":")[0].split(" (")[0] for refusal in refusals)

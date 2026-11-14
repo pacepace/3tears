@@ -14,6 +14,8 @@ __all__ = [
     "Count",
     "Dialect",
     "MarkedCount",
+    "Max",
+    "Min",
     "Range",
     "Sum",
     "rows_affected",
@@ -112,6 +114,30 @@ class Count:
 class Sum:
     """an aggregate's sum of ``expression`` (``SUM(t."input_tokens" + t."output_tokens")``); sums of two batches of
     values add, a sum of no row is None, as SQL's.
+
+    :param expression: a TRUSTED SQL expression over ``t``
+    :ptype expression: str
+    """
+
+    expression: str
+
+
+@dataclass(frozen=True)
+class Max:
+    """an aggregate's largest ``expression`` (``MAX(t."date_introspected")``); the larger of two batches' is kept, a
+    largest of no row (or of only NULLs) is None, as SQL's.
+
+    :param expression: a TRUSTED SQL expression over ``t``
+    :ptype expression: str
+    """
+
+    expression: str
+
+
+@dataclass(frozen=True)
+class Min:
+    """an aggregate's smallest ``expression`` (``MIN(t."ordinal_position")``); the smaller of two batches' is kept, a
+    smallest of no row (or of only NULLs) is None, as SQL's.
 
     :param expression: a TRUSTED SQL expression over ``t``
     :ptype expression: str
