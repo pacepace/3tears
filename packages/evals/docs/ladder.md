@@ -215,7 +215,8 @@ hides the judge's scores from you: they are in the report beside it, so reading 
 package's lock. Until a person has read, every judged reading is flagged as unchecked, never hidden.
 [Judges and calibration](judges-and-calibration.md) goes deeper: a spreadsheet in place of the page, two arms read as
 pairs, and a model as the reader (`Judge(reviewer=...)`), whose answers are read as "checked against a model", never
-as a person's.
+as a person's. A model's read is paid for; a file store keeps it, and `store=":memory:"` pays for it again on every
+run.
 
 ## Rung 3a: two prompts, compared
 

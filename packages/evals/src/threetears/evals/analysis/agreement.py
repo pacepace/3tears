@@ -658,8 +658,11 @@ def _agreement_numbers(scale: RubricScale, pairs: Sequence[_Pair]) -> _Agreement
 
 
 #: The one-sided confidence of the bound a tier is AWARDED on: a criterion is met only when its lower bound at
-#: this confidence reaches the bar, so a judge exactly at the bar is awarded the tier at most 5% of the time.
-#: Measured at most 3.6% at 20-40 results (``tests/test_simulated_agreement.py``).
+#: this confidence reaches the bar, so a judge exactly at the bar is awarded the tier at most 5% of the time, where
+#: each result is its own case. Measured at most 3.6% at 20-40 results (``tests/test_simulated_agreement.py``).
+#: Results clustered by case raise it: two results a case whose judge errors coincide, as a blind read of pairs
+#: gives, measure 5.3% at 20 cases and about 7% at 60 to 120 (``docs/open-problems.md``, "Two results of one case
+#: count as two").
 TIER_LOWER_CONFIDENCE: Final = 0.95
 
 #: The one-sided confidence of the bound a criterion is MISSED on: not met only when its upper bound at this

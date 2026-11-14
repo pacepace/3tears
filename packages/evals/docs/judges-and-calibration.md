@@ -43,6 +43,12 @@ path: `Judge(model, rubric, *, examples=(), labels=None, case_material=None, gua
     nobody picks a sample size first: 12 answered cases and 60 are both random. Answers out of order are not drawn
     at random: they still count toward κ and the tier, and the line says so. A skipped case, and one answered in
     part, are counted and said, since a rater skips by content.
+  - **Two results of one case raise the tier's error.** The tier is awarded on a bound that claims a judge exactly
+    at the bar earns it at most 5% of the time. That holds with one result a case. A read of pairs rates two results
+    of every case, and where the judge's errors on the two coincide the measured rate is about 7% (5.3% at 20 cases,
+    6.7% at 60, 7.0% at 120, pass/fail): see
+    [open problems](open-problems.md#two-results-of-one-case-count-as-two). Each line states its cases beside its
+    results for that reason.
   - **One result per case.** One answer is drawn per case among its repeats; with two arms an item is a pair in
     slots A and B, assigned by a seeded coin in blocks of two, and the control is the first arm against the first
     candidate.
@@ -79,7 +85,8 @@ path: `Judge(model, rubric, *, examples=(), labels=None, case_material=None, gua
     the judge, in no candidate's cost. The print states it on a `reviewer:` line.
   - **A case it answered is not asked again.** Beside a file store its answers are kept
     (`blind_reads/<read>.<model>.csv`, a labels file) and a later run over the same answers reads them back and
-    makes no call; a `Model(recording=...)` replays its calls like any other. A reply that cannot be used leaves its
+    makes no call; a `Model(recording=...)` replays its calls like any other. With `store=":memory:"`, or a host's
+    own store, nothing is kept and every run pays for the whole read again: run against a file store to pay once. A reply that cannot be used leaves its
     case not answered, counted and said, and the run completes.
   - **A labels file may say a row is a model's** (`rater_kind` `reference`, the model's id in `rater`, the model
     that served it in `served_model`). The file is taken at its word.

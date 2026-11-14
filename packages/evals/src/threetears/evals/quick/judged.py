@@ -310,7 +310,8 @@ class Judge:
             model. The judge's agreement with it is printed as checked against a model, never against people; it is
             not read as a check where it is the judge's own model. Its calls are held to the eval's cost cap, written
             to the out-of-run ledger, and printed with what they cost; beside a file store its answers are kept, so
-            the same answers are not read twice.
+            the same answers are not read twice. With ``store=":memory:"``, or a host's own store, nothing is kept
+            and every run pays for the whole read again: run against a file store to pay once.
         :ptype reviewer: str | CompletionClient | None
         :raises ValueError: A client naming no model; an empty rubric, a dimension the engine refuses, or two under one
             name; an example naming no dimension, giving a verdict its scale cannot hold, or whose case cannot be
