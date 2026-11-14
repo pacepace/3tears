@@ -94,6 +94,22 @@ async def test_stream_stdout_abort_does_not_hang() -> None:
     await asyncio.wait_for(gen.aclose(), timeout=5)  # regressions here would hang the suite
 
 
+#: a flood from a child that closed its stderr first: an abort's stderr drain is then already done, so nothing lets
+#: the loop see the kill land before the abort waits on the child
+_FLOOD_WITH_NO_STDERR = "exec 2>&-; yes 3tears | head -c 50000000"
+
+
+@pytest.mark.asyncio
+async def test_stream_stdout_abort_does_not_hang_when_the_child_s_exit_is_seen_after_its_wait_begins() -> None:
+    """#1168: ``wait()`` that began before the loop saw the kill returned only once every pipe closed, and the
+    stopped consumer had left stdout's reader paused on a full buffer, so it never returned."""
+    gen = stream_stdout(["sh", "-c", _FLOOD_WITH_NO_STDERR])
+    assert await anext(gen)
+    # the hazard, not a wait for an outcome: the flood fills the reader until it pauses, and the closed stderr is read
+    await asyncio.sleep(0.1)
+    await asyncio.wait_for(gen.aclose(), timeout=5)
+
+
 @pytest.mark.asyncio
 async def test_feed_stdin_early_exit_surfaces_backup_tool_error_not_broken_pipe() -> None:
     # child exits non-zero WITHOUT reading a large stdin stream -> the write side breaks; the real
@@ -255,4 +271,12 @@ class TestPipeThrough:
     async def test_a_consumer_that_stops_early_does_not_hang(self) -> None:
         gen = pipe_through(["cat"], _emit(b"y" * (50 * 1024 * 1024), chunk=64 * 1024))
         assert await anext(gen)
+        await asyncio.wait_for(gen.aclose(), timeout=5)
+
+    async def test_a_consumer_that_stops_early_does_not_hang_when_the_child_s_exit_is_seen_late(self) -> None:
+        """#1168, as ``stream_stdout``'s abort: the child's exit is seen only after the wait on it began."""
+        gen = pipe_through(["sh", "-c", "exec 2>&-; cat"], _emit(b"y" * (50 * 1024 * 1024), chunk=64 * 1024))
+        assert await anext(gen)
+        # the hazard, not a wait for an outcome: stdout's reader fills until it pauses, and the closed stderr is read
+        await asyncio.sleep(0.1)
         await asyncio.wait_for(gen.aclose(), timeout=5)

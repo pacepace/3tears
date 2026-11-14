@@ -90,6 +90,14 @@ credential) on this machine. `check-all.sh` runs the integration suite where the
 cannot (no testament installed, `CI` set, or `TESTAMENT=off`) it fails at the end saying the integration suite was
 not run, exit 2. CI's `integration` job is unchanged and keeps its own service containers.
 
+### backup: a dump or restore stopped early no longer waits forever on its killed child (#1168)
+
+**Fixed:** `stream_stdout` and `pipe_through` kill the child when their consumer stops before the end, then wait on
+it. When that wait began before the event loop had seen the kill land, asyncio returned it only once every one of the
+child's pipes had closed, and the stopped consumer had left stdout's reader paused on a full buffer, so the wait never
+returned. Both now read the killed child's stdout to its end, dropping it, before they wait. A loaded test runner hit
+it as a 5 s timeout closing a `stream_stdout` that had read one chunk.
+
 ### core: a shared Arrow worker that dies leaves nothing behind (#1140)
 
 **Fixed:** when a `SharedArrowPool` worker died holding a hand-off, a version or a result, the pool could hear the
