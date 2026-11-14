@@ -90,6 +90,14 @@ credential) on this machine. `check-all.sh` runs the integration suite where the
 cannot (no testament installed, `CI` set, or `TESTAMENT=off`) it fails at the end saying the integration suite was
 not run, exit 2. CI's `integration` job is unchanged and keeps its own service containers.
 
+### core: a shared Arrow pool whose worker died between jobs recovers (#1158)
+
+**Fixed:** a `SharedArrowPool` worker that died with no job pending on it (killed between jobs, or by another
+caller's job before that job's future failed) left the executor refusing every later submission with
+`BrokenProcessPool` until the process restarted. The refused job is now given once more, to a fresh pool, and the
+broken pool is said once, reaped and swept as a failed job's pool is. A broken pool is shut down by its reaper alone,
+never also by the submission that replaces it.
+
 ### core: a shared Arrow worker that dies leaves nothing behind (#1140)
 
 **Fixed:** when a `SharedArrowPool` worker died holding a hand-off, a version or a result, the pool could hear the
