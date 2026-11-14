@@ -59,6 +59,16 @@ _STATEMENT: Final = re.compile(
 _COUNTED: Final = re.compile(
     r'^\s*\d+\s+AS\s+relation\s*,\s*"?(\w+)"?\s+AS\s+counted\s*,\s*count\(\*\)\s+AS\s+held\s*$', re.I
 )
+#: a count that seeks each value apart (PostgreSQL L3: ``counts_by``'s ``unnest`` and ``LATERAL`` count of one relation)
+_SEEKING: Final = re.compile(
+    r"^\s*SELECT\s+0\s+AS\s+relation\s*,\s*counted_keys\.counted_key\s+AS\s+counted\s*,\s*c\.held\s+FROM\s+unnest\("
+    + _PLACE
+    + r"\)\s+AS\s+counted_keys\(counted_key\)\s+CROSS\s+JOIN\s+LATERAL\s+\(SELECT\s+count\(\*\)\s+AS\s+held\s+FROM\s+"
+    + _IDENT.replace("(\\w+)", "(?P<table>\\w+)")
+    + r"\s+AS\s+r\s+WHERE\s+(?P<where>.+)\s+AND\s+r\.\"?(?P<group>\w+)\"?\s*=\s*counted_keys\.counted_key\)\s+AS\s+c"
+    r"\s+WHERE\s+c\.held\s*>\s*0\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
 _ORDER_ITEM: Final = re.compile(_IDENT + r"(?:\s+(ASC|DESC))?(?:\s+NULLS\s+(FIRST|LAST))?$", re.IGNORECASE)
 _TUPLE_IN: Final = re.compile(r"^\(([^)]*)\)\s+IN\s+\(SELECT\s+(.+)\)$", re.IGNORECASE)
 _UNNEST: Final = re.compile(r"unnest\(" + _PLACE + r"\)", re.IGNORECASE)
@@ -204,6 +214,9 @@ def decode(sql: str, args: Sequence[Any]) -> KeyedStatement:
     :rtype: KeyedStatement
     :raises ValueError: when the statement, or one of its conditions, is not one the helpers write
     """
+    seeking = _SEEKING.match(sql)
+    if seeking is not None:
+        return _seeking_count(seeking, args)
     matched = _STATEMENT.match(sql)
     if matched is None:
         raise ValueError(f"not a statement the keyed helpers write: {sql}")
@@ -233,6 +246,30 @@ def decode(sql: str, args: Sequence[Any]) -> KeyedStatement:
         limit = int(args[int(limit[1:]) - 1]) if limit.startswith("$") else int(limit)
     columns = tuple(_column(item) for item in _split(parts["columns"], ","))
     return KeyedStatement(kind="select", table=table, columns=columns, order=order, limit=limit, **common)
+
+
+def _seeking_count(seeking: re.Match[str], args: Sequence[Any]) -> KeyedStatement:
+    """a count that seeks each value apart, read back as the group count of the same rows: its pins, and its group
+    column held to the values it unnests.
+
+    :param seeking: the statement, matched
+    :ptype seeking: re.Match[str]
+    :param args: its bound values, in placeholder order
+    :ptype args: Sequence[Any]
+    :return: the count
+    :rtype: KeyedStatement
+    """
+    group = seeking.group("group")
+    values = list(args[int(seeking.group(1)) - 1])
+    conditions = tuple(_condition(text, args) for text in _conjuncts(seeking.group("where")))
+    counted = _Condition(
+        f"{group} = counted_keys.counted_key",
+        lambda row: any(_same(row.get(group), value) for value in values),
+    )
+    pinned = dict(condition.pinned for condition in conditions if condition.pinned is not None)
+    return KeyedStatement(
+        kind="count", table=seeking.group("table"), group=group, pinned=pinned, conditions=(*conditions, counted)
+    )
 
 
 def _conjuncts(text: str) -> list[str]:

@@ -11,6 +11,8 @@ from typing import Any, Final
 
 import asyncpg
 from asyncpg.pool import PoolConnectionProxy
+from threetears.core.keyed.inline import InlineDuckDB
+from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
 from threetears.interfaces.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.interfaces.keyed.filters import (
     IN_SUBQUERY,
@@ -44,6 +46,7 @@ __all__ = [
     "by_conditions",
     "prefix_conditions",
     "quoted_table",
+    "reads_l3",
     "selected_column",
     "relation",
     "narrowing",
@@ -155,3 +158,21 @@ def sent_by(conn: Any) -> Any:
     """
     named = getattr(conn, SQL_DIALECT_ATTRIBUTE, None)
     return _OneUseEach(conn) if isinstance(named, Dialect) and named not in _TAKES_REUSE else conn
+
+
+def reads_l3(conn: Any) -> bool:
+    """whether a read on ``conn`` goes to L3, where the declared tables (their keys, their indexes) are: an in-process
+    DuckDB or SQLite does not, nor does a reader naming its dialect (a datasource's, a warehouse's, even one spelled as
+    PostgreSQL); an asyncpg connection, a pool, the rail's proxy do.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :return: whether it reads L3
+    :rtype: bool
+    """
+    if isinstance(conn, ThreadedDuckDB | ThreadedSQLite | InlineSQLite | InlineDuckDB):
+        return False
+    # looked up on the class (a reader's property, its class attribute) and the instance's own attributes: a mock
+    # answers any name it is asked, and is no datasource
+    named = getattr(type(conn), SQL_DIALECT_ATTRIBUTE, None)
+    return named is None and getattr(conn, "__dict__", {}).get(SQL_DIALECT_ATTRIBUTE) is None

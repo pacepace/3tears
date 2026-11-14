@@ -78,7 +78,9 @@ class _Store:
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         """the subscription's lookup by id, and the rate limit's window count (no fire in the window): the keyed
-        helpers' statements."""
+        helpers' statements; and the server's version, which a keyed count asks once (a pool on PostgreSQL)."""
+        if sql == "SELECT version() AS v":
+            return [{"v": "PostgreSQL 16.4"}]
         statement = decode(sql, args)
         if statement.kind == "count":
             assert statement.table == "wake_fires", sql

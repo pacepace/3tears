@@ -97,7 +97,10 @@ class _Collection:
 
 
 class _Recording:
-    """a reader that answers from a DuckDB connection and keeps every statement it was sent."""
+    """a reader that answers from a DuckDB connection and keeps every statement it was sent; it names its engine, as
+    the DuckDB reader it fronts is known by its type, so the helpers spell what DuckDB is sent and ask it nothing."""
+
+    sql_dialect = Dialect.DUCKDB
 
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
         self._inner = ThreadedDuckDB(conn)

@@ -39,6 +39,9 @@ class _Store:
         self.statements: list[str] = []
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if sql == "SELECT version() AS v":
+            # the server's version, which a keyed count asks once: a pool on PostgreSQL
+            return [{"v": "PostgreSQL 16.4"}]
         self.statements.append(sql)
         statement = decode(sql, args)
         if statement.kind == "update":

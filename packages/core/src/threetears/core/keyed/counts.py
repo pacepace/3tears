@@ -35,10 +35,12 @@ from threetears.core.keyed._filters import (
     Selected,
     by_conditions,
     narrowing,
+    reads_l3,
     relation,
     selected_column,
     sent_by,
 )
+from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.counts import (
     NO_MARK_FLOOR,
@@ -639,6 +641,9 @@ async def counts_by_relations(
     if packed_rows is not None:
         await _counts_packed(conn, tables, counted, column, values, where, pinned, packed_rows, groups, packed_as)
         return counted
+    if values is not None and await _counts_each_key(conn, values, pinned):
+        await _counts_seeking(conn, tables, counted, column, values, where, pinned, batch)
+        return counted
     if values is None:
         chunks: list[dict[str, Any]] = [{}]
     else:
@@ -662,6 +667,55 @@ async def counts_by_relations(
         for row in await sent_by(conn).fetch(" UNION ALL ".join(parts), *params):
             counted[labels[int(row["relation"])]][row["counted"]] = int(row["held"])
     return counted
+
+
+async def _counts_each_key(conn: Any, values: AnyOf, pinned: Mapping[str, Any]) -> bool:
+    """whether a count of ``values`` seeks each value apart (:func:`_counts_seeking`): on PostgreSQL L3, for values
+    bound as a typed array beside a pinned prefix (the near tie :func:`_counts_seeking` names is between the set and
+    the prefix; with no prefix the set is the only index condition). Not on YugabyteDB, which hands ``= ANY`` to
+    storage as one request (a seek a value there was 6.9 ms against 1.0 ms for 100 values); nor on a reader naming its
+    dialect (a warehouse's: Redshift has no ``LATERAL``) or an in-process DuckDB or SQLite."""
+    if not pinned or values.as_list or values.cast is None or not reads_l3(conn):
+        return False
+    return not await known_on_yugabyte(conn)
+
+
+async def _counts_seeking(
+    conn: Any,
+    tables: Mapping[str, str | Derived],
+    counted: dict[str, dict[Any, int]],
+    column: str,
+    values: AnyOf,
+    where: Sequence[Fragment],
+    pinned: Mapping[str, Any],
+    batch: int,
+) -> None:
+    """count each value's rows with a seek of its own: ``FROM unnest($n::<cast>[]) AS counted_keys(counted_key) CROSS JOIN
+    LATERAL (SELECT count(*) ... WHERE <by> AND column = counted_key)``, a value with no row answering none.
+
+    PostgreSQL 16 plans ``column = ANY($n)`` beside a pinned prefix as a near tie between the index condition holding
+    the set (each value's rows) and one holding the prefix alone, the set rechecked on every row of the prefix; which
+    one it takes moves with ``ANALYZE``'s sample: 15 of 40 samples read a state's 6,000 rows to count the 3,000 of 100
+    geographies. Each value its own seek reads only its rows, on every sample, and took 0.99 ms against 1.17 ms."""
+    unique = list(dict.fromkeys(values.values))
+    size = max(1, batch // len(tables))
+    quoted = quote_identifier(column)
+    for start in range(0, len(unique), size):
+        conditions, params = by_conditions(pinned, alias="r")
+        for fragment in where:
+            conditions.append(narrowing(fragment, len(params)))
+            params += list(fragment.params)
+        params.append(unique[start : start + size])
+        keys = f"unnest(${len(params)}::{values.cast}[]) AS counted_keys(counted_key)"
+        clause = " AND ".join([*conditions, f"r.{quoted} = counted_keys.counted_key"])
+        parts = [
+            f"SELECT {index} AS relation, counted_keys.counted_key AS counted, c.held FROM {keys} CROSS JOIN LATERAL "
+            f"(SELECT count(*) AS held FROM {relation(table, 'r')} WHERE {clause}) AS c WHERE c.held > 0"
+            for index, table in enumerate(tables.values())
+        ]
+        labels = list(tables)
+        for row in await sent_by(conn).fetch(" UNION ALL ".join(parts), *params):
+            counted[labels[int(row["relation"])]][row["counted"]] = int(row["held"])
 
 
 #: what joins a packed count's fields: the relation's place, the value's text, its count

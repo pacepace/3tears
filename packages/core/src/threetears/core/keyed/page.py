@@ -40,7 +40,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from threetears.core.backends.dialect import known_on_yugabyte
-from threetears.core.keyed._filters import Derived, Fragment, Lock, Selected, sent_by
+from threetears.core.keyed._filters import Derived, Fragment, Lock, Selected, reads_l3, sent_by
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
@@ -124,7 +124,7 @@ async def keyset_page(
     check_page(table, columns, order, limit)
     if cursor is not None:
         # a page past a cursor skips every row sharing its last row's order values unless the order holds a key
-        refuse_non_unique_order(table, by, order, l3=_reads_l3(conn))
+        refuse_non_unique_order(table, by, order, l3=reads_l3(conn))
     past = None if cursor is None else cursor_values(order, cursor)
     by_row = past is not None and await _steps_by_row(conn, order)
     legs = past is not None and lock is None and await _seeks_by_legs(conn, order)
@@ -170,27 +170,9 @@ async def yugabyte_index_hint(conn: Any, table: Any, by: Mapping[str, Any], orde
     :rtype: str
     """
     index = serving_index(table, by, order)
-    if index is None or index.primary or not _reads_l3(conn):
+    if index is None or index.primary or not reads_l3(conn):
         return ""
     return index_hint(index) if await known_on_yugabyte(conn) else ""
-
-
-def _reads_l3(conn: Any) -> bool:
-    """whether a read on ``conn`` goes to L3, where the declared tables whose keys a pager is held to are: an
-    in-process DuckDB or SQLite does not, nor does a reader naming its dialect (a datasource's, a warehouse's, even
-    one spelled as PostgreSQL); an asyncpg connection, a pool, the rail's proxy do.
-
-    :param conn: the connection or reader the read was handed
-    :ptype conn: Any
-    :return: whether it reads L3
-    :rtype: bool
-    """
-    if isinstance(conn, ThreadedDuckDB | ThreadedSQLite | InlineSQLite | InlineDuckDB):
-        return False
-    # looked up on the class (a reader's property, its class attribute) and the instance's own attributes: a mock
-    # answers any name it is asked, and is no datasource
-    named = getattr(type(conn), SQL_DIALECT_ATTRIBUTE, None)
-    return named is None and getattr(conn, "__dict__", {}).get(SQL_DIALECT_ATTRIBUTE) is None
 
 
 async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:
@@ -279,7 +261,7 @@ async def keyset_rows(
     """
     check_page(table, columns, order, page)
     # every statement after the first starts past the last row read: the order must hold a key
-    refuse_non_unique_order(table, by, order, l3=_reads_l3(conn))
+    refuse_non_unique_order(table, by, order, l3=reads_l3(conn))
     rows: list[dict[str, Any]] = []
     past: list[Any] | None = None
     by_row: bool | None = None
