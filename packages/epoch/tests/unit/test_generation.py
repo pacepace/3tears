@@ -151,3 +151,13 @@ class TestAWatchOnALogNotYetDeclaredWaitsForIt:
             assert await asyncio.wait_for(first, timeout=1) == written
             again = await EpochGenerationSource(client).advance(_TABLE)
             assert await asyncio.wait_for(anext(pushed), timeout=1) == again
+
+    @pytest.mark.asyncio
+    async def test_a_connection_that_closes_while_it_waits_ends_the_watch_as_a_close(self) -> None:
+        client = FakeNatsClient()
+        async with aclosing(EpochGenerationReader(client).watch(_TABLE)) as pushed:
+            first = asyncio.ensure_future(anext(pushed))
+            await asyncio.sleep(0.05)
+            client.is_closed = True  # type: ignore[attr-defined]
+            with pytest.raises(KvError, match="connection closed"):
+                await asyncio.wait_for(first, timeout=1)

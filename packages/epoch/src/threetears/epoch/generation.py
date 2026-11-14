@@ -363,6 +363,10 @@ class _ChangeLogReading:
             )
         while state is None:
             await asyncio.sleep(_ABSENT_LOG_POLL_SECONDS)
+            if self.closed:
+                # the close the docstring promises as KvError: a read through a closed client would
+                # surface as GenerationUnavailableError, which a caller takes for a log it may retry
+                raise KvError(f"the connection closed while {table_name!r} waited for the change log")
             state = await self._state()
         async with aclosing(self._log().watch(generation_kv_key(table_name))) as updates:
             async for update in updates:
