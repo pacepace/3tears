@@ -17,6 +17,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from threetears.core.backends.dialect import known_on_yugabyte
+
 __all__ = ["CapturedL3"]
 
 
@@ -47,6 +49,15 @@ class CapturedL3:
         self._value = value
         self._real = real
         self._passes = passes
+
+    async def answers_from_yugabyte(self) -> bool:
+        """whether the statements it records are spelled for YugabyteDB: its real connection's database, asked
+        nothing it records (``threetears.core.backends.dialect`` asks this); never without one.
+
+        :return: whether the real connection is YugabyteDB
+        :rtype: bool
+        """
+        return self._real is not None and await known_on_yugabyte(self._real)
 
     def _runs(self, query: str, params: tuple[Any, ...]) -> bool:
         """record a statement; whether it goes to the real connection."""

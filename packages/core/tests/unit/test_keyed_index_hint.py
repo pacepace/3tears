@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from threetears.core.testing.captured import CapturedL3
 from threetears.core.collections.schema_backed import STRING_TYPE, UUID_TYPE, Column, Index, TableSchema
 from threetears.core.keyed import (
     AnyOf,
@@ -153,3 +154,22 @@ class TestTheHintOnYugabyteOnly:
         await keyset_page(reader, _CONV, columns=("conversation_id",), by={"agent_id": 1}, order=_BY_ID, limit=8)
         await read_by(reader, _CONV, by={"agent_id": 1, "status": "a"})
         assert len(reader.asked) == 2 and not any("/*+" in sql or "version()" in sql for sql in reader.asked)
+
+
+class TestARecorderAnswersForItsConnection:
+    async def test_a_captured_pool_spells_for_its_real_connection_and_records_no_probe(self) -> None:
+        """Flips if a statement recorder in front of a YugabyteDB connection records the dialect probe, or records the
+        page without the hint its connection would be sent; or one with no connection is spelled for YugabyteDB."""
+        behind = _yugabyte()
+        captured = CapturedL3(real=behind, passes=lambda sql: "o88_hint" not in sql)
+        await keyset_page(
+            captured, _CONV, columns=("conversation_id", "status"), by={"agent_id": 1}, order=_BY_STATUS, limit=8
+        )
+        ((page, _),) = captured.asked
+        assert page.startswith("/*+ IndexOnlyScan(t o88_conv_agent_status) */ "), page
+        alone = CapturedL3()
+        await keyset_page(
+            alone, _CONV, columns=("conversation_id", "status"), by={"agent_id": 1}, order=_BY_STATUS, limit=8
+        )
+        ((page, _),) = alone.asked
+        assert "/*+" not in page, page

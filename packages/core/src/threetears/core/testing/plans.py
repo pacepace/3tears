@@ -272,6 +272,17 @@ class PlanRecorder:
         """
         return binds_native_arrays(self._conn)
 
+    async def answers_from_yugabyte(self) -> bool:
+        """whether its connection is YugabyteDB, asked without a statement it would record and explain
+        (``threetears.core.backends.dialect`` asks this).
+
+        :return: whether it is
+        :rtype: bool
+        """
+        if self._yugabyte is None:
+            self._yugabyte = await on_yugabyte(self._conn)
+        return self._yugabyte
+
     async def _explain(self, sql: str, args: Sequence[Any]) -> None:
         if self._yugabyte is None:
             self._yugabyte = await on_yugabyte(self._conn)

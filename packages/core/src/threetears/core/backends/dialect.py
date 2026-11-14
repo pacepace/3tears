@@ -18,6 +18,10 @@ from asyncpg.pool import PoolConnectionProxy
 
 __all__ = ["known_on_yugabyte", "l3_on_yugabyte"]
 
+#: the method (``async def answers_from_yugabyte(self) -> bool``) a reader standing in front of another defines to say
+#: which database the one behind it is, so no ``SELECT version()`` passes through it (a recorder would record it)
+_DIALECT_OF_READER: Final = "answers_from_yugabyte"
+
 #: the capability a hub's broker names in its replies' ``hub_capabilities`` when its database is YugabyteDB (the hub's
 #: ``DIALECT_CAPABILITY_PREFIX`` and the database it reads from ``version()`` at start, 14-eng-ai-bot 99a3266d6)
 _YUGABYTE_DIALECT_CAPABILITY: Final = "dialect:yugabyte"
@@ -30,7 +34,8 @@ async def l3_on_yugabyte(l3: Any) -> bool:
     """whether ``l3`` answers from YugabyteDB, asked each time: a reader asks once a whole read (beside it, one round
     trip), and the answer is kept nowhere a second caller could fill it twice.
 
-    :param l3: the rail's proxy (``hub_capabilities``), or anything with an asyncpg-shaped ``fetch``
+    :param l3: the rail's proxy (``hub_capabilities``), a reader in front of another (``answers_from_yugabyte``), or
+        anything with an asyncpg-shaped ``fetch``
     :ptype l3: Any
     :return: whether its database is YugabyteDB
     :rtype: bool
@@ -38,6 +43,10 @@ async def l3_on_yugabyte(l3: Any) -> bool:
     # looked up on the class: a mock's instance answers any name it is asked
     if callable(getattr(type(l3), "hub_capabilities", None)):
         return _YUGABYTE_DIALECT_CAPABILITY in await l3.hub_capabilities()
+    # a reader in front of another (a test's recorder of the statements a helper sends) answers for the one behind it,
+    # asking it nothing it would record
+    if callable(getattr(type(l3), _DIALECT_OF_READER, None)):
+        return bool(await getattr(l3, _DIALECT_OF_READER)())
     rows = await l3.fetch("SELECT version() AS v")
     return bool(rows) and _YUGABYTE_VERSION_MARK in str(rows[0]["v"])
 
