@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: export, seed and carry follow-ups
+
+**Fixed:** `python -m threetears.evals.harness export` removes its partial directory when interrupted too, not only
+when a write fails, and the directory it writes takes the mode the process's umask gives a new directory rather than
+the owner-only mode of a temporary one, so a mint run as another user can read it. The `campaign_closure` docstring
+says what `closure_keys_digest` detects: a document added, removed or replaced, not one edited in place under its id.
+
 ### evals: a page's forms, arm names and gate checks are worked out once per report input
 
 **Changed:** `PageForms.of`, `page_arm_names` and a `gate_check` read off any page (no `forms`) keep their results per

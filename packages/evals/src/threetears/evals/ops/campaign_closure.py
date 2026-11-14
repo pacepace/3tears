@@ -42,8 +42,13 @@ chunk of whole documents: a field read fetches ids first, every other field its 
 the documents a chunk at a time, so those reads leave a refused call holding the ceiling and one chunk. The three
 whole-type scans (rubric dims, launches, judge profiles) are outside that bound: each reads its small type whole in
 one read, however many documents it holds, and only the documents a scan keeps are counted. The command line and the function, which
-read the closure once in a process of their own, hold no ceiling and read each type in one read. Pages are not a snapshot: a write between two calls can drop a document or move the manifest, and the
-manifest's ``closure_keys_digest`` then differs from the first page's.
+read the closure once in a process of their own, hold no ceiling and read each type in one read.
+
+Pages are not a snapshot: a write between two calls can drop a document from the join or move the manifest. The
+manifest's ``closure_keys_digest`` hashes the closure's ``(doc_type, id)`` keys, not its documents, so it detects a
+document added, removed or replaced under another id between two calls, and a page whose digest differs from the first
+page's was read after the closure moved. It does not detect a document edited in place under its own id: an equal
+digest says the closure holds the same documents by key, not that none of them changed.
 """
 
 from __future__ import annotations

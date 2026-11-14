@@ -605,7 +605,13 @@ async def test_the_action_pages_the_closure_and_its_pages_join_to_the_export() -
         assert not outcome.is_error, outcome.text
         pages.append(CampaignExport.model_validate(outcome.structured))
         page = pages[-1].page
-        if page is None or page.next_after_doc_type is None:
+        assert page is not None, "a closure past one page is answered a page at a time"
+        assert (
+            "Pages are not a snapshot: when a page's manifest closure_keys_digest is not the first page's "
+            f"({pages[0].manifest.closure_keys_digest[:12]}…), the campaign moved between calls; read it again from "
+            "the first page."
+        ) in outcome.text
+        if page.next_after_doc_type is None:
             assert "More:" not in outcome.text
             break
         assert (
@@ -637,6 +643,7 @@ async def test_the_mint_hint_names_every_flag_the_mint_requires() -> None:
     assert not outcome.is_error, outcome.text
     for required in ("--documents", "--profile", "--host", "--campaign", "--name <case>", "--out <file>.json.gz"):
         assert required in outcome.text, required
+    assert "Pages are not a snapshot" not in outcome.text, "a closure inside one page is answered whole, unpaged"
 
 
 async def test_the_action_reads_the_callers_scope_and_refuses_a_campaign_it_does_not_hold() -> None:
