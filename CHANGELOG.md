@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a judge call its replay does not hold is named, never dropped (#1162)
+
+**Fixed:** a replayed judge whose recording held no call for a prompt read the miss as a failed call, its text
+withheld, and judged on the calls it still found. The judge's recordings are keyed on the pages it reads, so a change
+to a page's text moved the writer eval's replayed preference from 61/39 to 54/46 with no recorded judgment changed.
+`run_judge_llm` now raises the replay's `RecordingRefused` (any `ApparatusError`) instead. A writer's pairwise pass
+fails at the miss and the eval exits 1. A run's judging records the miss as the result's judge error, so the result is
+excluded and counted. A miss now names the prompt's key and where it parts from the recorded prompts: how many open on
+the same 80 characters, or the nearest recorded key and the character it parts at. Rung 5's recordings README says
+what to do when page text moves.
+
 ### evals: a page's forms, arm names and gate checks are worked out once per report input
 
 **Changed:** `PageForms.of`, `page_arm_names` and a `gate_check` read off any page (no `forms`) keep their results per

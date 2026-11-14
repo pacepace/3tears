@@ -53,6 +53,7 @@ from threetears.evals.kernel.provider import (
     sum_optional_tokens,
 )
 from threetears.evals.kernel.authored import strict_response_format
+from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.usage_capture import CallUsage
 from threetears.evals.schema.logs import contain, get_logger
 
@@ -470,6 +471,10 @@ async def run_judge_llm(
     :raises CompletionProtocolDefect: The client's completion does not meet the protocol (:func:`sent_temperature`), or
         its optional ``sent_settings`` holds something other than request settings or ``None``, carrying the
         calls made and what they cost.
+    :raises ApparatusError: The rig could not serve the call: a replayed judge's recording holds no answer for it
+        (:class:`~threetears.evals.testing.RecordingRefused`: its prompt changed since it was recorded, or it is asked
+        more often). Never a judging outcome, since dropping the call would move what the replay measures in silence;
+        whatever is judging fails at the miss, which names the call.
     """
     # Retry on parse-failure so a single malformed judge response can't
     # silently drop a rubric dimension. We retry on any parse failure of a FINISHED
@@ -563,6 +568,10 @@ async def run_judge_llm(
     for attempt in range(max_attempts):
         try:
             result = await client.generate(system=system_prompt, user=user_prompt, response_format=response_format)
+        except ApparatusError:
+            # The rig could not serve the call (a replay's miss): never the judge's answer. Raised, so a replay whose
+            # page text moved under its recording fails naming the missed call rather than judging on fewer calls.
+            raise
         except Exception as e:  # prawduct:ok-broad-except — LLM/network boundary; SDK can raise many types
             # Earlier attempts in this loop may already have spent tokens before this one
             # raised; report that spend rather than losing it to the error path.

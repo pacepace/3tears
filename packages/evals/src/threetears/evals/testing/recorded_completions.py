@@ -54,13 +54,18 @@ the inner client's, read through, so the recorder is a bound client exactly when
 
 **A miss is refused, never served live.** A prompt the recording does not hold, one it holds only under other request
 settings, or one asked more times than it was recorded, raises :class:`RecordingRefused` naming the prompt (its first
-80 characters) or the settings that differ, and the command that re-records it. Each call is served once per client:
+80 characters) or the settings that differ, and the command that re-records it. A prompt held under no key names its
+own key's first 12 hex digits and where it parts from the recorded prompts: how many open on the same 80 characters (a
+line keeps no more, so what changed lies past them), else the nearest recorded key and the character it parts at.
+Each call is served once per client:
 one whose every recorded call already went to another eval's run in the process (a ``Model`` shared by two evals, or
 an eval run twice on one) is refused for that cause, naming the eval, and the remedy is a client per eval, never a
 recording made again. It is an
 :class:`~threetears.evals.kernel.host.ApparatusError`: a replay that cannot serve is a fault of the rig, not of the code
-under test, so a candidate that raises it has its cell excluded rather than scored.
-:meth:`RecordedCompletions.check_covers` asks the same question of a list of prompts before any replay starts, which is
+under test, so a candidate that raises it has its cell excluded rather than scored. A judge call that meets one is
+never read as the judge's failed answer: :func:`~threetears.evals.run.run_judge_llm` raises it, so a writer's pairwise
+pass fails at the miss, and a run's judging records it, by its text, as the result's judge error, excluding the
+result. A page whose text moved under a judge's recording is named, never judged on the calls still found. :meth:`RecordedCompletions.check_covers` asks the same question of a list of prompts before any replay starts, which is
 how a test says by name that a prompt changed under its recording.
 
 **What is kept.** All ten :class:`~threetears.evals.schema.CompletionResult` members as the inner client returned
@@ -88,6 +93,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import threading
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass
@@ -132,6 +138,9 @@ _OLDEST_FORMAT = 2
 
 #: How much of a prompt's ``user`` a refusal quotes, so the prompt is recognisable without the message carrying all of it.
 _PROMPT_HEAD = 80
+
+#: How many hex digits of a call's key a refusal names it by.
+_KEY_DIGITS = 12
 
 #: The top-level members every format-2 line carries, and nothing else.
 _FORMAT_2_MEMBERS = frozenset(
@@ -271,6 +280,19 @@ _Recorded = tuple[ClientRequestSettings | None, list[ReplayedCompletion]]
 _Client = tuple[str, float | None]
 
 
+class _Read(NamedTuple):
+    """What a recording holds, as :func:`_read_recording` reads it.
+
+    :ivar recorded: Its calls by key, each with the request settings it was recorded under, in index order.
+    :ivar cells: The cell each call names, by key in index order (``None`` for a call that names none).
+    :ivar heads: The head of each key's user message, as its lines keep it: what a miss is compared with.
+    """
+
+    recorded: dict[str, _Recorded]
+    cells: dict[str, list[_CellAsk | None]]
+    heads: dict[str, str]
+
+
 class RecordedCompletions:
     """A completion client that records the calls an inner client answers, or replays a recording of them.
 
@@ -331,6 +353,9 @@ class RecordedCompletions:
         self._cells: dict[str, list[_CellAsk | None]] = {
             key: [None] * len(calls) for key, (_, calls) in recorded.items()
         }
+        #: Replaying, the head of each key's user message, as the file keeps it: what a miss names its nearest by. Set by
+        #: :meth:`replay`.
+        self._heads: dict[str, str] = {}
         #: Replaying, how many times each cell has asked each key, so a cell's second ask of a prompt is served its
         #: second call.
         self._asks: dict[tuple[str, _CellCoordinates], int] = {}
@@ -387,7 +412,7 @@ class RecordedCompletions:
         if replace:
             path.unlink(missing_ok=True)
         path.parent.mkdir(parents=True, exist_ok=True)
-        recorded, cells = _read_recording(path, _rerecord_remedy(path, None)) if path.exists() else ({}, {})
+        recorded, cells, _ = _read_recording(path, _rerecord_remedy(path, None)) if path.exists() else ({}, {}, {})
         client = cls(path, inner=inner, settings=settings, recorded=recorded)
         client._cells = cells
         return client
@@ -415,9 +440,10 @@ class RecordedCompletions:
         :raises RecordingRefused: ``path`` does not exist, holds no calls, holds a line this build cannot read, or holds
             one from a newer format.
         """
-        recorded, cells = _readable_replay(path, _rerecord_remedy(path, rerecord))
+        recorded, cells, heads = _readable_replay(path, _rerecord_remedy(path, rerecord))
         client = cls(path, inner=None, settings=settings, recorded=recorded, rerecord=rerecord)
         client._cells = cells
+        client._heads = heads
         return client
 
     @classmethod
@@ -448,7 +474,7 @@ class RecordedCompletions:
             one or more prompts, or holds them only under other request settings, each named.
         """
         remedy = _rerecord_remedy(path, rerecord)
-        recorded, _ = _readable_replay(path, remedy)
+        recorded, _, _ = _readable_replay(path, remedy)
         uncovered: list[str] = []
         for prompt, asked in _tally(prompts):
             key, others = _lookup(recorded, prompt, settings)
@@ -584,10 +610,13 @@ class RecordedCompletions:
                 self._remedy,
             )
         if key is None:
+            model, temperature = _client_of(self._recorded)
+            asked = _call_key(system, user, response_format, model, temperature, self._settings)
             raise RecordingRefused(
                 self.path,
-                f"no call is recorded for the prompt {_head(user)} (call 0): the prompt changed since it was recorded, "
-                "or the code now asks something it did not ask then",
+                f"no call is recorded for the prompt {_head(user)} (call 0, key {asked[:_KEY_DIGITS]}): the prompt "
+                f"changed since it was recorded, or the code now asks something it did not ask then; "
+                f"{_nearest(self._heads, user)}",
                 self._remedy,
             )
         cell = current_cell_identity()
@@ -750,8 +779,8 @@ class RecordedCompletions:
         key = _call_key(system, user, response_format, members["model"], members["temperature"], self._settings)
         with _APPEND_LOCK, self._lock:
             if _file_size(self.path) != self._size:
-                self._recorded, self._cells = (
-                    _read_recording(self.path, self._remedy) if self.path.exists() else ({}, {})
+                self._recorded, self._cells, _ = (
+                    _read_recording(self.path, self._remedy) if self.path.exists() else ({}, {}, {})
                 )
             if self._recorded and (held := _client_of(self._recorded)) != (members["model"], members["temperature"]):
                 raise RecordingRefused(
@@ -843,6 +872,29 @@ def _head(user: str) -> str:
     return repr(user[:_PROMPT_HEAD] + ("…" if len(user) > _PROMPT_HEAD else ""))
 
 
+def _nearest(heads: Mapping[str, str], user: str) -> str:
+    """Where a missed prompt parts from the recorded ones, as a clause: how many recorded keys open on the same text
+    (a line keeps the first :data:`_PROMPT_HEAD` characters of its user message, so what changed lies past them, or in
+    the system prompt or the reply's format), else the nearest recorded key and the character it parts at.
+    """
+    head = user[:_PROMPT_HEAD]
+    shared = {key: len(os.path.commonprefix([head, held])) for key, held in heads.items()}
+    alike = sorted(key for key, held in heads.items() if held == head)
+    if alike:
+        named = ", ".join(key[:_KEY_DIGITS] for key in alike[:3]) + (", ..." if len(alike) > 3 else "")
+        return (
+            f"{len(alike)} recorded key(s) open on the same {len(head)} characters ({named}), so what changed lies past "
+            "them, in the user message, or in the system prompt or the reply's format"
+        )
+    if not shared:
+        return "the recording keeps no prompt to compare it with"
+    nearest = min(shared, key=lambda key: (-shared[key], key))
+    return (
+        f"the nearest recorded key, {nearest[:_KEY_DIGITS]}, parts from it at character {shared[nearest] + 1} "
+        f"({_head(heads[nearest])})"
+    )
+
+
 def _stated(settings: ClientRequestSettings | None, names: Iterable[str]) -> str:
     if settings is None:
         return "no request settings"
@@ -875,14 +927,15 @@ def _settings_drift(held: Iterable[ClientRequestSettings | None], asked: ClientR
     return "; ".join(dict.fromkeys(_drift(settings, asked) for settings in held))
 
 
-def _readable_replay(path: Path, remedy: str) -> tuple[dict[str, _Recorded], dict[str, list[_CellAsk | None]]]:
-    """The calls a recording holds and the cells they name, refused when there is none to replay: no file, or no calls."""
+def _readable_replay(path: Path, remedy: str) -> _Read:
+    """The calls a recording holds, the cells they name and the head of each key's prompt, refused when there is none
+    to replay: no file, or no calls."""
     if not path.exists():
         raise RecordingRefused(path, "there is no recording at this path", remedy)
-    recorded, cells = _read_recording(path, remedy)
-    if not recorded:
+    read = _read_recording(path, remedy)
+    if not read.recorded:
         raise RecordingRefused(path, "the recording holds no calls, so it can serve none", remedy)
-    return recorded, cells
+    return read
 
 
 def _client_of(recorded: Mapping[str, _Recorded]) -> _Client:
@@ -1021,17 +1074,18 @@ def _completion_of(
     return ReplayedCompletion(**members, sent_settings=sent, extra=MappingProxyType(dict(extra)))
 
 
-def _read_recording(path: Path, remedy: str) -> tuple[dict[str, _Recorded], dict[str, list[_CellAsk | None]]]:
-    """Every call ``path`` holds, by key in index order with its settings, and the cell each names; each line checked,
-    and a bad line refuses all."""
+def _read_recording(path: Path, remedy: str) -> _Read:
+    """Every call ``path`` holds, by key in index order with its settings, the cell each names, and the head of each
+    key's prompt; each line checked, and a bad line refuses all."""
     recorded: dict[str, _Recorded] = {}
     cells: dict[str, list[_CellAsk | None]] = {}
+    heads: dict[str, str] = {}
     lines = path.read_text(encoding="utf-8").split("\n")
     if lines and lines[-1] == "":
         lines.pop()  # the newline that ends the last line
     client: _Client | None = None
     for number, text in enumerate(lines, start=1):
-        key, index, settings, completion, cell = _read_line(path, number, text, remedy)
+        key, index, settings, completion, cell, head = _read_line(path, number, text, remedy)
         if client is None:
             client = (completion.model, completion.temperature)
         elif (completion.model, completion.temperature) != client:
@@ -1062,7 +1116,8 @@ def _read_recording(path: Path, remedy: str) -> tuple[dict[str, _Recorded], dict
             )
         calls.append(completion)
         cells.setdefault(key, []).append(cell)
-    return recorded, cells
+        heads.setdefault(key, head)
+    return _Read(recorded, cells, heads)
 
 
 def _mismatch(expected: frozenset[str], found: Iterable[str]) -> str | None:
@@ -1133,7 +1188,7 @@ def _read_cell(path: Path, number: int, cell: Any, remedy: str) -> _CellAsk | No
 
 def _read_line(
     path: Path, number: int, text: str, remedy: str
-) -> tuple[str, int, ClientRequestSettings | None, ReplayedCompletion, _CellAsk | None]:
+) -> tuple[str, int, ClientRequestSettings | None, ReplayedCompletion, _CellAsk | None, str]:
     try:
         line = json.loads(text)
     except json.JSONDecodeError as undecodable:
@@ -1187,4 +1242,4 @@ def _read_line(
         raise _malformed(path, number, "its result's " + "; ".join(problems), remedy)
     members = {name: _normalised(name, result[name]) for name in COMPLETION_RESULT_ATTRIBUTES}
     cell = _read_cell(path, number, line.get("cell"), remedy)
-    return key, index, settings, _completion_of(members, sent, extra), cell
+    return key, index, settings, _completion_of(members, sent, extra), cell, line["user_head"]

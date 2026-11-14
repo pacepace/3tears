@@ -20,6 +20,8 @@ from pydantic import BaseModel, ConfigDict
 from threetears.evals.kernel import OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.eval_scope import eval_running
 from threetears.evals.kernel.host import ApparatusError
+from threetears.evals.providers import describe_failure
+from threetears.evals.run import run_judge_llm
 from threetears.evals.schema import (
     CellIdentity,
     ClientRequestSettings,
@@ -509,6 +511,49 @@ async def test_a_prompt_the_recording_does_not_hold_is_refused_by_name(tmp_path:
     for changed in ({"system": "Another system prompt."}, {"response_format": SCHEMA}):
         with pytest.raises(RecordingRefused, match="no call is recorded for the prompt 'My order never came.'"):
             await client.generate(**{"system": SYSTEM, "user": "My order never came.", **changed})
+
+
+async def test_a_missed_prompt_names_its_key_and_where_it_parts_from_the_recorded_ones(tmp_path: Path) -> None:
+    """Two judge prompts open on the same 80 characters, as every page-reading prompt does. A third that moved past
+    them is named with its key and the two recorded keys sharing its opening; one that moved within them is named with
+    the nearest recorded key and the character it parts at."""
+    path = tmp_path / "rec.jsonl"
+    opening = "# Scenario\n**Intent:** Write the report (writer).\n\n# Variation params\n(none)\n\n# Page"
+    await _record(path, (opening + " one", _Reply(content="4")), (opening + " two", _Reply(content="3")))
+    keys = sorted({line["key"][:12] for line in _lines(path)})
+    client = RecordedCompletions.replay(path, settings=BUDGETED)
+
+    with pytest.raises(RecordingRefused) as past:
+        await client.generate(system=SYSTEM, user=opening + " one, moved")
+    message = str(past.value)
+    asked = re.search(r"\(call 0, key ([0-9a-f]{12})\)", message)
+    assert asked is not None and asked[1] not in keys, message
+    assert f"2 recorded key(s) open on the same 80 characters ({keys[0]}, {keys[1]})" in message
+
+    with pytest.raises(RecordingRefused) as within:
+        await client.generate(system=SYSTEM, user="# Scenario\n**Intent:** Grade the reply.")
+    message = str(within.value)
+    # Both part from it after "# Scenario\n**Intent:** ", 23 characters: the first key in order is named.
+    assert f"the nearest recorded key, {keys[0]}, parts from it at character 24 " in message
+
+
+async def test_a_judge_call_its_replay_does_not_hold_raises_rather_than_failing_the_call(tmp_path: Path) -> None:
+    """The judge once caught the miss as a failed call, its text withheld, and a pass read its share off the calls
+    left. Now the miss leaves the judge, naming the call."""
+    path = tmp_path / "rec.jsonl"
+    await _record(path, ("Report A then B.", _Reply(content='{"reasoning": "B", "criteria_scores": {"preferred": 4}}')))
+    replay = RecordedCompletions.replay(path, settings=BUDGETED)
+
+    with pytest.raises(RecordingRefused, match=r"no call is recorded for the prompt 'Report A then B, moved\.'"):
+        await run_judge_llm(
+            replay,
+            SYSTEM,
+            "Report A then B, moved.",
+            [{"name": "preferred", "weight": 1.0}],
+            "Judge",
+            "case-1",
+            failure_describer=describe_failure,
+        )
 
 
 async def test_a_replayed_completion_is_the_recorded_ten_members_and_conforms(tmp_path: Path) -> None:

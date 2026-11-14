@@ -35,8 +35,10 @@ from packages.evals.tests.writer_eval_support import ScoredReply
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.harness import AnalystSkill, WriterEval, read_writer_cases
 from threetears.evals.harness.writer_turns import writer_turns
+from threetears.evals.ops.report_writer import writer_pairwise
 from threetears.evals.ops.report_writer.writer_bank import writer_group_side
 from threetears.evals.quick.files import load_evals, main
+from threetears.evals.schema import JudgeEvidence
 from threetears.evals.schema.turns import TurnText
 from threetears.evals.testing import RecordedCompletions
 
@@ -229,6 +231,30 @@ def _endings(directory: Path) -> dict[tuple[str, str], str]:
         for body in bodies
         if body["doc_type"] == "eval_result"
     }
+
+
+def test_a_page_whose_text_moved_under_the_judge_s_recording_fails_the_pass_naming_the_missed_call(
+    writer_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One word more on each page the pairwise judge reads moves every pass call's key off its recording. The pass
+    fails at its first call, naming it, and reads no share; it once dropped each missed call and read 54/46 off fewer."""
+    shipped = writer_pairwise.pair_evidence
+
+    def moved(a: JudgeEvidence, b: JudgeEvidence) -> JudgeEvidence:
+        paired = shipped(a, b)
+        return paired.model_copy(update={"artifact": paired.artifact + "\nprovider not recorded"})
+
+    monkeypatch.setattr(writer_pairwise, "pair_evidence", moved)
+
+    assert main(["writer.py"]) == 1
+    printed = capsys.readouterr().out
+    (failed,) = [line for line in printed.splitlines() if line.startswith("pairwise pass of lead-first: ")]
+    assert "ended failed: RecordingRefused: recording " in failed and "recordings/judge.jsonl" in failed
+    assert re.search(r"no call is recorded for the prompt .+ \(call 0, key [0-9a-f]{12}\)", failed), failed
+    assert "recorded key(s) open on the same 80 characters" in failed
+    assert "| lead-first | every pair |" not in printed, "no share is read off the calls the replay still found"
+    # The scoring judge read each page alone, which did not move: every result scored, none excluded.
+    assert printed.count("7 result(s): 7 scored, 0 excluded") == 2
 
 
 def test_with_nothing_recorded_the_door_refuses_naming_the_judge_s_file_and_its_key(

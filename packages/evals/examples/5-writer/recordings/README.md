@@ -14,6 +14,14 @@ The judge reads each report's page as the package lays it out, so a change to wh
 figures' precision) moves every judge call's key: the judge's calls are recorded again with the `RECORD=1` command
 below, and the writer's turns replay free.
 
+**When the page text moves, the replay says so.** A call whose prompt moved is no longer found, and it is never
+dropped in silence. A scoring call the recording does not hold excludes that report's result: its judge error names
+the miss, and the run's line counts the result excluded. The pairwise pass stops at the first call it does not hold
+and ends `failed`, so the run prints no share and exits 1. Either way the message names `judge.jsonl`, the prompt's
+opening, its key, and where it parts from the nearest recorded prompt. If you meant to change the page, record the
+judge again with the `RECORD=1` command below, and re-pin the tests that read its shares, saying why. If you did not,
+the message names the prompt that moved.
+
 A file deleted or gone stale is refused by name, with the key that would record it: `judge.jsonl` and
 `OPENROUTER_API_KEY`, or the writer's first turn file and `ANTHROPIC_API_KEY`.
 
