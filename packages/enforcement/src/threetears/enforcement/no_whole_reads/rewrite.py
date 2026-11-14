@@ -53,6 +53,16 @@ becomes the count's: ``status == "UPDATE n"`` / ``!=`` (the statement's own verb
 ``rows_affected(status)`` as the count, ``status.split()[-1] == "n"`` as ``count == n``. Any other read (returned,
 logged, another verb's tag) is refused, and a status parser the rewrite leaves unused is no longer imported.
 
+**Counts and existence** (shape ``count``, the use-the-helper ``count`` findings): a point read's ``FROM <table>
+WHERE <pins>`` under ``SELECT count(*) [AS <name>]``, or wrapped as ``SELECT EXISTS (SELECT 1 FROM <table> WHERE
+<pins>) [AS <name>]``, sent by an awaited ``fetchval``. A count becomes ``(await aggregate_keyed(conn, <table>,
+aggregates={"n": Count()}, by=<pins>))[0]["n"]`` (one row however many it counts, 0 for none); an existence test
+:func:`~threetears.core.keyed.holds_any` with ``order=`` the columns of the table's declared key or index its pins
+lead (the primary key first, then a unique key, then an index): one row read, at most. Refused: any other select list
+(a sum, a max, a column beside the count, a ``GROUP BY``), an ``EXISTS`` of anything but ``SELECT 1``, an existence
+test whose pins lead no declared key or index, a count sent by ``fetch`` / ``fetchrow`` (read by a column name the
+helper does not answer under), and every point-read refusal.
+
 Splicing is by the call's ``ast`` span; the touched files are then put through ``ruff check --select I --fix`` (the
 new import sorted in) and ``ruff format``, which every repo runs.
 
@@ -198,6 +208,9 @@ class PointSql:
     pins: tuple[Pin, ...]
     order: tuple[dict[str, Any], ...] = ()
     limit: dict[str, int] | None = None
+    #: a count's (shape ``count``): ``count`` for ``SELECT count(*)``, ``exists`` for ``SELECT EXISTS (SELECT 1 ...)``;
+    #: empty for every other read
+    aggregate: str = ""
 
 
 @dataclass(frozen=True)
@@ -267,6 +280,8 @@ class Rewrite:
     limit: dict[str, int] | None = None
     #: shape ``first``: how many of ``order``'s terms are the statement's own; the rest complete it by the key
     key_from: int | None = None
+    #: shape ``count``, an existence test (``holds_any``): the declared key or index its probe walks (``order=``)
+    walk: list[str] = field(default_factory=list)
     # the edits that make it, not recorded: (start line, start col, end line, end col, text) in the module's bytes
     edits: list[tuple[int, int, int, int, str]] = field(default_factory=list, repr=False)
     # not recorded: index purpose entries naming the replaced constant, each (repo-relative file, old text, new text)
@@ -288,6 +303,8 @@ class Rewrite:
         if self.shape != "first":
             entry.pop("limit")
             entry.pop("key_from")
+        if self.helper != "holds_any":
+            entry.pop("walk")
         return entry
 
 
@@ -408,6 +425,75 @@ def parse_first(sql: str) -> PointSql | str:
     if int(written[1:]) != len(numbers) + 1:
         return "the LIMIT's parameter is not the statement's last"
     return replace(parsed, limit={"param": int(written[1:])})
+
+
+#: ``count(*)``, alone in a count's select list, under any name
+_COUNT_ITEM: Final[re.Pattern[str]] = re.compile(rf"^count\s*\(\s*\*\s*\)(?:\s+(?:as\s+)?{_IDENT})?$", re.IGNORECASE)
+#: ``SELECT EXISTS (SELECT 1 FROM ...) [AS <name>]``: the inner read, its select list ``1``
+_EXISTS: Final[re.Pattern[str]] = re.compile(
+    rf"^select\s+exists\s*\(\s*select\s+1\s+(?P<inner>from\s+.+)\)(?:\s+(?:as\s+)?{_IDENT})?\s*;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def parse_count(sql: str) -> PointSql | str:
+    """a count (``SELECT count(*) FROM <table> WHERE <pins>``) or an existence test (``SELECT EXISTS (SELECT 1 FROM
+    <table> WHERE <pins>)``) of a point read's rows, or why it is not one.
+
+    :param sql: the statement
+    :ptype sql: str
+    :return: the parsed read, its ``aggregate`` ``count`` or ``exists`` and no columns, or the refusal's reason
+    :rtype: PointSql | str
+    """
+    text = " ".join(sql.split())
+    if "{" in text or "}" in text:
+        return "interpolated"
+    exists = _EXISTS.match(text)
+    if exists is not None:
+        parsed = parse_point(f"SELECT * {exists.group('inner')}")
+        aggregate = "exists"
+    else:
+        match = _SELECT.match(text)
+        if match is None:
+            return "not SELECT count(*) / EXISTS (SELECT 1 ...) FROM <table> WHERE ..."
+        if _COUNT_ITEM.match(match.group("columns").strip()) is None:
+            return "a select list other than count(*) alone (a sum, a max, a column, a GROUP BY)"
+        parsed = parse_point(f"{text[: match.start('columns')]}*{text[match.end('columns') :]}")
+        aggregate = "count"
+    if isinstance(parsed, str):
+        return parsed
+    return replace(parsed, columns=None, aggregate=aggregate)
+
+
+def _probe_walk(parsed: PointSql, declared: Any) -> list[str] | str:
+    """the columns an existence test's probe walks: those of the table's declared key or index whose leading columns
+    its pins hold most of (the primary key first among equals, then a unique key, then an index that covers every
+    row; a pin past the walked prefix narrows the rows walked), or why none leads with a pin.
+
+    :param parsed: the existence test
+    :ptype parsed: PointSql
+    :param declared: the table's declaration in the walk's schema catalogue, None when it has none
+    :ptype declared: Any
+    :return: the walk's columns, or the refusal's reason
+    :rtype: list[str] | str
+    """
+    if declared is None:
+        return f"no declared key or index of {parsed.table} for its probe to walk"
+    pinned = {pin.column.lower() for pin in parsed.pins}
+    indexes = [
+        index.columns for index in declared.indexes.values() if not index.partial and not index.method and index.columns
+    ]
+    best: tuple[str, ...] = ()
+    held = 0
+    for columns in [*declared.primary_keys, *declared.unique_keys, *indexes]:
+        lead = 0
+        while lead < len(columns) and columns[lead].lower() in pinned:
+            lead += 1
+        if lead > held:
+            best, held = tuple(columns), lead
+    if not held:
+        return f"its pins {sorted(pinned)} lead no declared key or index of {parsed.table}"
+    return list(best)
 
 
 def _key_completion(parsed: PointSql, declared: Any) -> list[dict[str, Any]] | str:
@@ -1116,6 +1202,16 @@ def _render_first(rewrite: Rewrite, receiver: str) -> str:
     return f"next((row[{rewrite.columns[0]!r}] for row in {page}.rows), None)"
 
 
+def _render_count(rewrite: Rewrite, receiver: str) -> str:
+    """a count's helper, written in the awaited ``fetchval``'s place: ``aggregate_keyed``'s one row's count, or the
+    awaited ``holds_any``."""
+    by = "{" + ", ".join(f"{pin['column']!r}: {_value_text(pin, rewrite.args)}" for pin in rewrite.pins) + "}"
+    if rewrite.helper == "holds_any":
+        walk = ", ".join(repr(column) for column in rewrite.walk)
+        return f"(await holds_any({receiver}, {rewrite.table!r}, order=[{walk}], by={by}))"
+    return f"(await aggregate_keyed({receiver}, {rewrite.table!r}, aggregates={{'n': Count()}}, by={by}))[0]['n']"
+
+
 def _sort_text(term: Mapping[str, Any]) -> str:
     """one ``ORDER BY`` term as the helper call writes it: ``Sort("col")``, with ``descending=True`` and ``nulls=`` as
     the statement wrote them (the engine's own NULL order otherwise, as before).
@@ -1777,6 +1873,8 @@ _LIST: Final[_Shape] = _Shape("list", parse_list, frozenset({"fetch"}))
 #: a first-of or top-n read is a listing finding with a trailing LIMIT, sent by any of the three
 _FIRST: Final[_Shape] = _Shape("first", parse_first, frozenset(_HELPER_OF), finds="list")
 _WRITE: Final[_Shape] = _Shape("write", parse_write, _WRITE_METHODS)
+#: a count or an existence test is sent by an awaited ``fetchval``: its one value
+_COUNT: Final[_Shape] = _Shape("count", parse_count, frozenset({"fetchval"}))
 
 
 def plan_point_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
@@ -1816,8 +1914,21 @@ def plan_first_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
     return _plan_reads(config, _FIRST)
 
 
+def plan_count_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list[Refusal]]:
+    """every count finding of the repo that is a ``count(*)`` or an ``EXISTS (SELECT 1 ...)`` of a point read's rows
+    sent by an awaited ``fetchval`` (:func:`parse_count`), as the :func:`~threetears.core.keyed.aggregate_keyed` or
+    :func:`~threetears.core.keyed.holds_any` call it takes, or the refusal it gets.
+
+    :param config: the repo's no-whole-reads config
+    :ptype config: NoWholeReadsConfig
+    :return: the rewrites, and the refusals
+    :rtype: tuple[list[Rewrite], list[Refusal]]
+    """
+    return _plan_reads(config, _COUNT)
+
+
 def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite], list[Refusal]]:
-    """every read finding of ``shape`` (``point`` or ``list``) in the repo, as the rewrite it takes or the refusal it
+    """every read finding of ``shape`` (``point``, ``list``, ``first`` or ``count``) in the repo, as the rewrite it takes or the refusal it
     gets."""
     whole_hits, scan = _hits(config)
     unkeyed: dict[tuple[str, int], str] = {(hit.path, hit.line): hit.symbol for hit in whole_hits}
@@ -1856,6 +1967,13 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 refuse(completed)
                 continue
             completion = completed
+        walk: list[str] = []
+        if parsed.aggregate == "exists":
+            walked = _probe_walk(parsed, scan.schema.table(parsed.table))
+            if isinstance(walked, str):
+                refuse(walked)
+                continue
+            walk = walked
         module = modules.get(statement.path)
         if module is None:
             module = modules[statement.path] = _Module.read(config.repo_root / statement.path)
@@ -1869,8 +1987,10 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             refuse("the literal at its line is not the statement the walk found")
             continue
         choice = _choice_of(module, literal)
-        if parsed.limit is not None and (isinstance(module.parent(literal), ast.Dict) or choice is not None):
-            refuse("a first-of read held in a dict or chosen by a branch")
+        if (parsed.limit is not None or parsed.aggregate) and (
+            isinstance(module.parent(literal), ast.Dict) or choice is not None
+        ):
+            refuse(f"a {'count' if parsed.aggregate else 'first-of read'} held in a dict or chosen by a branch")
             continue
         if isinstance(module.parent(literal), ast.Dict) or choice is not None:
             held = module.parent(literal) if choice is None else choice
@@ -1909,11 +2029,13 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 problem = f"{len(arguments)} arguments for {len(numbers)} parameters"
             elif any(count > 1 and not _plain_simple(arguments[number - 1]) for number, count in uses.items()):
                 problem = "a parameter used twice whose argument is not a plain name"
-            elif method == "fetchval" and parsed.columns is None:
+            elif method == "fetchval" and parsed.columns is None and not parsed.aggregate:
                 problem = "fetchval of SELECT *"
+            elif method not in shape.methods and parsed.aggregate:
+                problem = f"a count sent by {method}: read by a column name the helper does not answer under"
             elif method not in shape.methods:
                 problem = f"a listing sent by {method}: its first row is a first-of read, not a listing"
-            elif parsed.limit is not None and not isinstance(module.parent(call), ast.Await):
+            elif (parsed.limit is not None or parsed.aggregate) and not isinstance(module.parent(call), ast.Await):
                 problem = "not awaited where it is sent"
             if problem:
                 refuse(problem)
@@ -1934,9 +2056,16 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 order=[*parsed.order, *completion],
                 limit=parsed.limit,
                 key_from=len(parsed.order) if parsed.limit is not None else None,
+                walk=walk,
             )
             spliced: ast.expr = call
-            if parsed.limit is None:
+            if parsed.aggregate:
+                rewrite.helper = "holds_any" if parsed.aggregate == "exists" else "aggregate_keyed"
+                rewrite.new_call = _render_count(rewrite, module.segment(call.func.value))
+                awaited = module.parent(call)
+                assert isinstance(awaited, ast.Await)
+                spliced = awaited
+            elif parsed.limit is None:
                 rewrite.new_call = _render(rewrite, module.segment(call.func.value))
             else:
                 rewrite.helper = "keyset_page"
@@ -2182,6 +2311,8 @@ def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None
         path = repo_root / relative
         source = _splice(path.read_text(encoding="utf-8"), [edit for rewrite in mine for edit in rewrite.edits])
         names = {rewrite.helper for rewrite in mine}
+        if "aggregate_keyed" in names:
+            names.add("Count")
         if any(pin["kind"] in {"now", "fragment"} for rewrite in mine for pin in rewrite.sets):
             names.add("Fragment")
         if any(pin["kind"] == "increment" for rewrite in mine for pin in rewrite.sets):
@@ -2333,8 +2464,9 @@ def _say(line: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """the command line: ``point`` (reads), ``list`` (listings in their ``ORDER BY``), ``write`` (keyed ``UPDATE`` /
-    ``DELETE`` by equality), ``test-module``.
+    """the command line: ``point`` (reads), ``list`` (listings in their ``ORDER BY``), ``first`` (first-of and top-n
+    reads), ``write`` (keyed ``UPDATE`` / ``DELETE`` by equality), ``count`` (counts and existence tests),
+    ``test-module``.
 
     :param argv: the arguments
     :ptype argv: list[str] | None
@@ -2342,7 +2474,7 @@ def main(argv: list[str] | None = None) -> int:
     :rtype: int
     """
     parser = argparse.ArgumentParser(prog="threetears.enforcement.no_whole_reads.rewrite")
-    parser.add_argument("shape", choices=["point", "list", "first", "write", "test-module"])
+    parser.add_argument("shape", choices=["point", "list", "first", "write", "count", "test-module"])
     parser.add_argument("--module", type=Path, help="test-module: where the generated test goes, repo-relative")
     parser.add_argument("--pg-fixture", default="conn")
     parser.add_argument("--yb-fixture", default="yugabyte_conn")
@@ -2369,9 +2501,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     config = _config(repo, options.config)
     before, _ = _hits(config)
-    planner = {"write": plan_write_rewrites, "list": plan_list_rewrites, "first": plan_first_rewrites}.get(
-        options.shape, plan_point_rewrites
-    )
+    planner = {
+        "write": plan_write_rewrites,
+        "list": plan_list_rewrites,
+        "first": plan_first_rewrites,
+        "count": plan_count_rewrites,
+    }.get(options.shape, plan_point_rewrites)
     rewrites, refusals = planner(config)
     reasons = Counter(refusal.reason.split(":")[0].split(" (")[0] for refusal in refusals)
     _say(f"{options.shape}: {len(rewrites)} rewrites, {len(refusals)} refusals")

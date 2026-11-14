@@ -26,10 +26,12 @@ from threetears.enforcement.no_whole_reads.rewrite import (
     PointSql,
     WriteSql,
     apply_rewrites,
+    parse_count,
     parse_first,
     parse_list,
     parse_point,
     parse_write,
+    plan_count_rewrites,
     plan_first_rewrites,
     plan_list_rewrites,
     plan_point_rewrites,
@@ -1158,3 +1160,88 @@ def test_first_of_and_top_n_reads_are_rewritten_onto_keyset_page_s_first_page(tm
     assert "next((row['geo_id'] for row in (await keyset_page(" in source
     for entry in entries.values():
         assert_source_says(tmp_path, entry)
+
+
+_COUNTS = """
+    #: whether a state holds any geo
+    _HELD_SQL = "SELECT EXISTS (SELECT 1 FROM geos WHERE state = $1) AS held"
+
+
+    async def geo_count(conn, state):
+        return await conn.fetchval("SELECT count(*) FROM geos WHERE state = $1", state)
+
+
+    async def any_geo(conn, state):
+        return await conn.fetchval(_HELD_SQL, state)
+
+
+    async def live_agents(conn, ids):
+        return await conn.fetchval(
+            "SELECT COUNT(*) AS n FROM agents WHERE id = ANY($1::uuid[]) AND NOT is_deleted", ids
+        )
+
+
+    async def named_geo(conn, state, name):
+        return await conn.fetchval("SELECT EXISTS (SELECT 1 FROM geos WHERE name = $2 AND state = $1)", state, name)
+
+
+    async def summed(conn, state):
+        return await conn.fetchval("SELECT sum(pop) FROM geos WHERE state = $1", state)
+
+
+    async def counted_row(conn, state):
+        row = await conn.fetchrow("SELECT count(*) AS n FROM geos WHERE state = $1", state)
+        return row["n"]
+"""
+
+
+def test_a_count_and_an_existence_test_are_parsed() -> None:
+    """Flips if ``SELECT count(*)`` / ``SELECT EXISTS (SELECT 1 ...)`` of a point read's rows is not read as a count
+    with its pins, or another select list, an ``EXISTS`` of other than ``1``, or a range is taken."""
+    counted = parse_count("SELECT COUNT(*) AS cnt FROM agents a WHERE a.id = $1 AND a.status = 'active'")
+    assert isinstance(counted, PointSql) and counted.aggregate == "count" and counted.columns is None, counted
+    assert [pin.kind for pin in counted.pins] == ["param", "literal"]
+    held = parse_count("SELECT EXISTS(SELECT 1 FROM geos WHERE state = $1 AND geo_id = $2)")
+    assert isinstance(held, PointSql) and held.aggregate == "exists" and held.table == "geos", held
+    for refused in (
+        "SELECT sum(pop) FROM geos WHERE state = $1",
+        "SELECT count(*), max(pop) FROM geos WHERE state = $1",
+        "SELECT count(*) FROM geos WHERE state = $1 GROUP BY name",
+        "SELECT EXISTS (SELECT name FROM geos WHERE state = $1)",
+        "SELECT count(*) FROM geos WHERE state = $1 AND pop > $2",
+        "SELECT count(*) FROM {table} WHERE state = $1",
+    ):
+        assert isinstance(parse_count(refused), str), refused
+
+
+def test_counts_and_existence_tests_are_rewritten_onto_aggregate_keyed_and_holds_any(tmp_path: Path) -> None:
+    """Flips if a count sent by ``fetchval`` is not rewritten onto ``aggregate_keyed``'s one row's count, an
+    ``EXISTS`` onto ``holds_any`` walking the declared key its pins lead, each recorded and found by the source check;
+    or a sum, or a count read off a row by its name, is taken."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_COUNTS), encoding="utf-8")
+    rewrites, refusals = plan_count_rewrites(config)
+    assert sorted(rewrite.function for rewrite in rewrites) == ["any_geo", "geo_count", "live_agents", "named_geo"]
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert refused.keys() == {"summed", "counted_row"}, refused
+    assert "fetchrow" in refused["counted_row"]
+
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, rewrites)
+    entries = {entry["function"]: entry for entry in json.loads(manifest.read_text(encoding="utf-8"))}
+    assert {entry["shape"] for entry in entries.values()} == {"count"}
+    assert entries["any_geo"]["helper"] == "holds_any" and entries["any_geo"]["walk"] == ["state", "geo_id"]
+    assert entries["geo_count"]["helper"] == "aggregate_keyed" and "walk" not in entries["geo_count"]
+    # a pin past the key's lead it walks (name) narrows the walk: the key's leading state is the one it holds
+    assert entries["named_geo"]["walk"] == ["state", "geo_id"]
+    source = " ".join((tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8").split())
+    assert "_HELD_SQL" not in source
+    assert "from threetears.core.keyed import AnyOf, Count, aggregate_keyed, holds_any" in source
+    assert "(await aggregate_keyed(conn, 'geos', aggregates={'n': Count()}, by={'state': state}))[0]['n']" in source
+    assert "return (await holds_any(conn, 'geos', order=['state', 'geo_id'], by={'state': state}))" in source
+    assert "by={'id': AnyOf(ids, cast='uuid'), 'is_deleted': False}" in source
+    for entry in entries.values():
+        assert_source_says(tmp_path, entry)
+    left = [line for line in use_the_helper_findings(config) if "reads.py" in line]
+    assert [line.split(":")[1].split(" in ")[1] for line in left] == ["summed", "counted_row"], left

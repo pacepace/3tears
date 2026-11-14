@@ -16,6 +16,11 @@ ONE generated test module per repo walks the manifest and, for each entry:
 - :func:`assert_source_says` checks the module still holds the helper call the manifest records, in the function it
   names, its table, columns and each pin bound to the same argument: the proof is of the code that runs.
 
+**Counts** (``"shape": "count"``): a ``count(*)`` replaced by :func:`~threetears.core.keyed.aggregate_keyed`'s one
+row's count, or an ``EXISTS (SELECT 1 ...)`` by :func:`~threetears.core.keyed.holds_any` walking the entry's ``walk``.
+Over the same seed cases, the old statement's one value (``SELECT (<old>) AS answer``) is compared with the helper's:
+the same count, the same yes or no, an empty table included.
+
 **Sweeps** (``"shape": "sweep"``): an expiry ``DELETE`` replaced by :func:`~threetears.core.keyed.delete_before`. Its
 table is seeded with rows expired before the cutoff, rows after it, rows on it and rows with no expiry; each statement
 runs in a transaction rolled back after it, with a batch holding every expired row and one holding fewer. With room
@@ -64,12 +69,15 @@ from uuid import NAMESPACE_OID, uuid5
 from threetears.core.collections.asyncpg_init import register_vector_text_codec
 from threetears.core.keyed import (
     AnyOf,
+    Count,
     Fragment,
     Increment,
     keyset_page,
     Sort,
+    aggregate_keyed,
     delete_before,
     delete_keyed,
+    holds_any,
     read_by,
     read_row,
     read_value,
@@ -451,6 +459,11 @@ async def assert_rewrite_same(conn: Any, entry: Mapping[str, Any], *, overrides:
     if entry.get("shape") == "write":
         await _assert_write_same(conn, entry, overrides=overrides)
         return
+    if entry.get("shape") == "count":
+        await _assert_count_same(conn, entry, overrides=overrides, nulled=False)
+        if any(pin["kind"] == "nullsafe" for pin in entry["pins"]):
+            await _assert_count_same(conn, entry, overrides=overrides, nulled=True)
+        return
     await _assert_point_same(conn, entry, overrides=overrides, nulled=False)
     if any(pin["kind"] == "nullsafe" for pin in entry["pins"]):
         await _assert_point_same(conn, entry, overrides=overrides, nulled=True)
@@ -517,6 +530,37 @@ async def _assert_point_same(
                 params=params,
                 helper=one_value,
             )
+    finally:
+        await conn.execute("SET session_replication_role = DEFAULT")
+
+
+async def _assert_count_same(
+    conn: Any, entry: Mapping[str, Any], *, overrides: _Overrides | None, nulled: bool
+) -> None:
+    """a count entry's helper answers what its old statement answered, over every seed case: the count of the rows
+    its pins name (``aggregate_keyed``), or whether any is held (``holds_any``)."""
+    table = entry["table"]
+    await _drop_checks(conn, table)
+    shape = await _catalog(conn, table)
+    row, params = row_factory(shape, entry, (overrides or {}).get(table, {}), nulled=nulled)
+    by = _by(entry, params)
+
+    async def answered(c: Any) -> list[dict[str, Any]]:
+        if entry["helper"] == "holds_any":
+            return [{"answer": await holds_any(c, table, order=entry["walk"], by=by)}]
+        counted = await aggregate_keyed(c, table, aggregates={"n": Count()}, by=by)
+        return [{"answer": counted[0]["n"]}]
+
+    await conn.execute("SET session_replication_role = replica")
+    try:
+        await assert_same_results(
+            conn,
+            table=table,
+            row=row,
+            old_sql=f'SELECT ({entry["old_sql"]}) AS "answer"',  # noqa: S608 - the manifest's own statement
+            params=params,
+            helper=answered,
+        )
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")
 
@@ -878,6 +922,8 @@ def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
             return False
         if not _pin_says(value, pin, entry["args"]):
             return False
+    if entry.get("shape") == "count":
+        return _count_says(keywords, entry)
     if entry["helper"] == "read_value":
         column = keywords.get("column")
         return isinstance(column, ast.Constant) and column.value == entry["columns"][0]
@@ -893,6 +939,23 @@ def _says(call: ast.Call, entry: Mapping[str, Any], tree: ast.Module) -> bool:
         return columns is None or (isinstance(columns, ast.Constant) and columns.value is None)
     written: list[Any] | None = _written_columns(columns, tree)
     return written is not None and written == list(entry["columns"])
+
+
+def _count_says(keywords: Mapping[str | None, ast.expr], entry: Mapping[str, Any]) -> bool:
+    """whether a count's helper call walks the entry's ``walk`` (``holds_any``) or counts every row
+    (``aggregate_keyed(aggregates={"n": Count()})``), and asks nothing else."""
+    if entry["helper"] == "holds_any":
+        order = keywords.get("order")
+        if not isinstance(order, ast.List | ast.Tuple):
+            return False
+        written = [element.value for element in order.elts if isinstance(element, ast.Constant)]
+        return written == list(entry["walk"]) and set(keywords) == {"order", "by"}
+    aggregates = keywords.get("aggregates")
+    return (
+        aggregates is not None
+        and _same_expression(aggregates, '{"n": Count()}')
+        and set(keywords) == {"aggregates", "by"}
+    )
 
 
 def _first_says(keywords: Mapping[str | None, ast.expr], entry: Mapping[str, Any]) -> bool:

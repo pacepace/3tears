@@ -170,6 +170,13 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
         return "0"
 
     async def _fetch(query: str, *args: object) -> list[dict]:
+        if "SELECT 1 AS held" in query:
+            # count_by_user's existence probe (holds_any): agent_id $1, user_id $2, one row at most
+            held = any(
+                str(row.get("agent_id")) == str(args[0]) and str(row.get("user_id")) == str(args[1])
+                for row in store.values()
+            )
+            return [{"held": 1}] if held else []
         # find_by_user: agent_id $1, customer_id $2, user_id $3
         agent_id = str(args[0]) if args else None
         user_id = str(args[2]) if len(args) > 2 else None

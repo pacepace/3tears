@@ -3035,5 +3035,47 @@
   "sets": [],
   "shape": "list",
   "table": "folders"
+ },
+ {
+  "args": [
+   "agent_id",
+   "user_id"
+  ],
+  "columns": null,
+  "function": "MemoriesCollection.count_by_user",
+  "helper": "holds_any",
+  "line": 1419,
+  "method": "fetchval",
+  "new_call": "(await holds_any(self.l3_pool, 'memories', order=['agent_id', 'user_id', 'date_created'], by={'agent_id': agent_id, 'user_id': user_id}))",
+  "old_sql": "SELECT EXISTS(SELECT 1 FROM memories WHERE agent_id = $1 AND user_id = $2)",
+  "order": [],
+  "path": "packages/agent/memory/src/threetears/agent/memory/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "user_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "count",
+  "table": "memories",
+  "walk": [
+   "agent_id",
+   "user_id",
+   "date_created"
+  ]
  }
 ]

@@ -80,7 +80,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import CoreConfig
 from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, schema_with_embedding_dim
 from threetears.core.data.gin import gin_filter
-from threetears.core.keyed import AnyOf, Fragment, read_by, update_keyed
+from threetears.core.keyed import AnyOf, Fragment, holds_any, read_by, update_keyed
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import get_logger
 
@@ -1415,10 +1415,11 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # cache-bypass: existence probe is not primary-key-addressable;
         # L1 row cache would not help. method on Collection preserves
         # single entry point.
-        value = await self.l3_pool.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM memories WHERE agent_id = $1 AND user_id = $2)",
-            agent_id,
-            user_id,
+        value = await holds_any(
+            self.l3_pool,
+            "memories",
+            order=["agent_id", "user_id", "date_created"],
+            by={"agent_id": agent_id, "user_id": user_id},
         )
         return bool(value)
 
