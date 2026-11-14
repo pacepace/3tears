@@ -4783,16 +4783,20 @@ def _wedged_l3() -> _WedgedL3:
     return _WedgedL3([{"county": "c1", "state": "TX", "votes": 1}, {"county": "c2", "state": "DE", "votes": 2}])
 
 
-async def test_a_catch_up_beside_a_write_whose_read_never_answers_lets_the_claim_go_and_ends() -> None:
+async def test_a_catch_up_beside_a_write_whose_read_never_answers_lets_the_claim_go_and_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """cobalt prod, 2026-10-31: a write committed during a catch-up's first attempt ("before scope 'AL'; reading
     again"), the next attempt found the next write in progress and caught up beside it, and its first read never
     answered. Nothing more was logged for 90 minutes and more, and the claim, renewed every 40 s by its own task, kept
     every replica's catch-up out all night. A holder that makes no progress for the stall bound lets the claim go and
-    its catch-up ends; the pointer watch applying another replica's publishes meanwhile is not its progress."""
+    its catch-up ends; the pointer watch applying another replica's publishes meanwhile is not its progress.
+
+    The snapshot's clock moves only once the watch has applied a publish, 50 ms a publish, so a 0.5 s bound is ten
+    applied publishes on any box: a loaded runner took ~0.1 s a publish and fit only five in 0.5 s of its own time
+    (#1140)."""
     l3 = _wedged_l3()
-    # a 2 s stall bound, not 0.5 s: the publishes below must outnumber five within it, and a loaded runner took
-    # ~0.1 s a publish, so 0.5 s fit only five (#1146's pool run, 2026-11-11)
-    snapshot, pointers, store, _ = _snapshot(l3=l3, rebuild_stall=timedelta(seconds=2))
+    snapshot, pointers, store, _ = _snapshot(l3=l3, rebuild_stall=timedelta(seconds=0.5))
     await _started(snapshot, pointers)
     writer, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
     await writer.start()
@@ -4807,18 +4811,24 @@ async def test_a_catch_up_beside_a_write_whose_read_never_answers_lets_the_claim
             l3.writing, l3.pending, l3.wedge = True, {"TX"}, "DE"
 
     l3.after_read = next_write_begins
+    clock = _Clock(still=True)
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
     catching = asyncio.create_task(snapshot.catch_up_from_l3())
     await _until(lambda: l3.wedged > 0, what="the read beside the write to wedge")
     assert "enr.rebuild" in pointers.entries, "the catch-up does not hold the claim while it reads"
     assert "catching up beside a write" in snapshot.status().detail, snapshot.status()
     applied: list[int] = []
 
+    async def publish_and_see_it_applied(epoch: int) -> None:
+        await writer.publish("TX", epoch, {"results": [{"county": "c1", "state": "TX", "votes": epoch}]})
+        await _until(lambda: (snapshot.applied_epoch("TX") or 0) >= epoch, what=f"the watch to apply epoch {epoch}")
+        applied.append(snapshot.applied_epoch("TX") or 0)
+
     async def publishing() -> None:
         # another replica keeps publishing TX: this replica's watch applies each, which is not the holder's progress
         for epoch in range(2, 1000):
-            await writer.publish("TX", epoch, {"results": [{"county": "c1", "state": "TX", "votes": epoch}]})
-            await asyncio.sleep(0.05)
-            applied.append(snapshot.applied_epoch("TX") or 0)
+            await publish_and_see_it_applied(epoch)
+            clock.ahead += 0.05
 
     publisher = asyncio.create_task(publishing())
     await _until(lambda: "enr.rebuild" not in pointers.entries, what="the stuck holder to let its claim go")
@@ -5986,18 +5996,24 @@ async def test_a_retained_table_whose_kept_rows_went_from_l3_is_read_whole_alone
 
 
 class _EndlessL3(_VersionedL3):
-    """a versioned L3 whose reads of TX's results, once ``endless``, never end: page after page, each answered, never
-    the last (a read of c1 alone, or of the whole scope)."""
+    """a versioned L3 whose reads of TX's results, once it is given the snapshot's ``clock``, never end: page after
+    page, each answered, never the last (a read of c1 alone, or of the whole scope). Each such page moves the clock on
+    by ``page_seconds``, as though the page took that long, so the pages a stall bound lets through are a count, not
+    a race with the box."""
 
-    endless = False
+    def __init__(self, *, page_seconds: float) -> None:
+        super().__init__()
+        self.page_seconds = page_seconds
+        self.clock: _Clock | None = None
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         # c1 alone, pinned (= $2) or as the one value of a set (= ANY($2))
         pinned = ('"county" = $2' in sql and args[1] == "c1") or ('"county" = ANY($2' in sql and args[1] == ["c1"])
         whole = '"county" = ' not in sql and '"results"' in sql and "count(*)" not in sql and "DISTINCT" not in sql
-        if self.endless and args and args[0] == "TX" and (pinned or whole):
+        if self.clock is not None and args and args[0] == "TX" and (pinned or whole):
             self.diff_reads += 1
-            await asyncio.sleep(0.01)
+            self.clock.ahead += self.page_seconds
+            await asyncio.sleep(0.001)
             given = 2 if pinned else 1  # the cursor follows the pinned values
             cursor = args[given] if len(args) > given else None
             after = int(str(cursor)[1:]) if cursor is not None else 0
@@ -6005,17 +6021,21 @@ class _EndlessL3(_VersionedL3):
         return await super().fetch(sql, *args)
 
 
-async def test_a_catch_up_whose_reads_keep_answering_but_land_nothing_lets_the_claim_go() -> None:
+async def test_a_catch_up_whose_reads_keep_answering_but_land_nothing_lets_the_claim_go(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """election night: the claim was held 04:38:57-04:58Z while its holder's last progress was at 04:42:31; every page
     its reads answered counted as progress and renewed nothing but the claim. A catch-up is watched by what it
-    lands, so one that reads on and lands nothing lets the claim go within the bound."""
-    l3 = _EndlessL3()
-    # a 2 s stall bound, not 0.5 s: more than twenty pages must be read within it, and on a loaded pool runner 0.5 s
-    # fit twenty or fewer (5 of 44 pool runs to 2026-11-11, testament `tests fails_most`)
-    writer, replica, pointers, _, _ = await _diffed_pair(l3, rebuild_stall=timedelta(seconds=2))
+    lands, so one that reads on and lands nothing lets the claim go within the bound.
+
+    The snapshot's clock moves only with the pages, 10 ms each, so a 0.5 s bound is fifty answered pages on any box:
+    a loaded runner read twenty or fewer in 0.5 s of its own time (#1140)."""
+    l3 = _EndlessL3(page_seconds=0.01)
+    writer, replica, pointers, _, _ = await _diffed_pair(l3, rebuild_stall=timedelta(seconds=0.5))
     l3.write(2, "results", {"county": "c1", "state": "TX", "votes": 10})
     l3.epochs["TX"] = 2
-    l3.endless = True
+    l3.clock = _Clock(still=True)
+    monkeypatch.setattr(scoped_snapshot_module, "time", l3.clock)
 
     catching = asyncio.create_task(replica.catch_up())
     await _until(lambda: l3.diff_reads > 0, what="the catch-up to read")
@@ -6023,7 +6043,7 @@ async def test_a_catch_up_whose_reads_keep_answering_but_land_nothing_lets_the_c
     outcome = await asyncio.wait_for(catching, timeout=10)
 
     assert outcome.result is CatchUpResult.STALLED, outcome
-    assert l3.diff_reads > 20, "the reads stopped answering: this is not the case under test"
+    assert l3.diff_reads >= 50, "the reads stopped answering: this is not the case under test"
     await writer.stop()
     await replica.stop()
 
