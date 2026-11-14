@@ -532,6 +532,33 @@ def test_a_fingerprint_stored_under_version_2_is_reproduced_through_like(name: s
         assert aspect.fingerprint().startswith("v3:")
 
 
+def _without_key(node: Any, key: str) -> Any:
+    if isinstance(node, dict):
+        return {name: _without_key(value, key) for name, value in node.items() if name != key}
+    if isinstance(node, list):
+        return [_without_key(value, key) for value in node]
+    return node
+
+
+def test_a_field_the_bundle_gained_since_version_2_is_no_part_of_a_version_2_fingerprint() -> None:
+    """The version 2 pre-image is frozen: ``RunSummary.ended_because`` (#1173) joined the bundle after the last
+    ``v2:`` fingerprint a host stored, so a ``v2:`` record over a run that did not complete still matches. The same
+    holds for the manifest itself and for any top-level field the bundle gains."""
+    host, campaign = _corpus_host()
+    run = host.storage.load_eval_run(sorted(campaign.run_ids)[0], campaign.scope_id)
+    assert run is not None
+    host.storage.save_eval_run(run.model_copy(update={"status": "cancelled", "cancellation_reason": "stopped by hand"}))
+    document = _aspect(host, campaign).to_dict()
+    assert "ended_because" in json.dumps(document), "the cancelled run's summary must say why it ended"
+
+    as_stored_then = _without_key(document, "ended_because")
+
+    assert evidence_digest(document, like="v2:") == evidence_digest(as_stored_then, like="v2:")
+    grown = {**document, "a_field_added_later": {"anything": 1.5}}
+    assert evidence_digest(grown, like="v2:") == evidence_digest(document, like="v2:")
+    assert evidence_digest(grown) == evidence_digest(document)
+
+
 def _stored_under_v2(bundle: AnalysisContextBundle) -> dict[str, Any]:
     """The bundle's document as a build before version 3 stored it: no manifest."""
     document = bundle.to_dict()
