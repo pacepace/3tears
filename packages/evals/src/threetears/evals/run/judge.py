@@ -510,6 +510,9 @@ async def run_judge_llm(
     # record names one value only when every attempt reported the same one: a fold of unlike or unreported sends
     # reads as unverified, never as one of them.
     attempt_sent: list[ClientRequestSettings | None] = []
+    # Sends the attempts' clients said broke before any response began and were sent again, which the provider may
+    # have billed: summed, ``None`` until an attempt counts one.
+    total_maybe_billed: int | None = None
     attempts_made = 0
     max_attempts = JUDGE_CALL_ATTEMPTS
 
@@ -535,6 +538,7 @@ async def run_judge_llm(
             # row must count them all — not just the one that finally parsed.
             calls=attempts_made,
             sent_settings=_agreed_sent_settings(attempt_sent),
+            maybe_billed_sends=total_maybe_billed,
         )
 
     def _thread_spend(defect: CompletionProtocolDefect) -> None:
@@ -615,7 +619,9 @@ async def run_judge_llm(
         judge_model = getattr(result, "model", "") or judge_model
         judge_price_source = getattr(result, "price_source", None) or judge_price_source
         attempt_served.add(getattr(result, "served_model", None) or None)
-        attempt_upstream.add(CallUsage.billed(result).served_provider)
+        billed = CallUsage.billed(result)
+        attempt_upstream.add(billed.served_provider)
+        total_maybe_billed = sum_optional_tokens(total_maybe_billed, billed.maybe_billed_sends)
         # What this attempt's request carried, as its client reports it. Absent is unverified and recorded so; a value
         # of the wrong type is the host's defect, raised like a missing temperature, with the spend threaded on. Read
         # here, before the reply is judged usable, so a cut-short or unparsable attempt's spend row says it too.

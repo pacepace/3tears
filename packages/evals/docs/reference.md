@@ -190,7 +190,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 15`
+  <br>`= 16`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
@@ -960,7 +960,7 @@ The completion client: a model id in, the engine's completion port out, over eac
 - **`AnthropicPublishedRates`** · class · The default pricer: Anthropic's published rates for a direct Anthropic call, the catalogue for anything else.
 - **`Catalogue`** · *host contract* · class · OpenRouter's model catalogue, refreshed every `refresh_after`, and what providers refused, for every model that reads it.
 - **`Clients`** · *host contract* · class · A host's role factory (`EvalHost.clients`): one `Model` per role, model id and temperature.
-- **`Completion`** · dataclass · One reply: the completion port's ten members, and five of the client's own.
+- **`Completion`** · dataclass · One reply: the completion port's ten members, and seven of the client's own.
 - **`Pricer`** · protocol · What a call is billed at, as the host knows it: the port a `Model` is handed (`pricer=`), or `AnthropicPublishedRates` by default (the module docstring says when).
 - **`PriceRefresh`** · *host contract* · dataclass · What one read of the price catalogue found: what `Model.refresh_prices()` and `Clients.refresh_prices()` return, and `Model.last_price_refresh` keeps.
 - **`PriceSource`** · *host contract* · enum · The words the shipped client writes as a completion's `price_source`: who priced the call.
@@ -1921,6 +1921,7 @@ The engine's own measures (`METRIC_DESCRIPTORS`), grouped by family in the order
 | `call_count` | — | — | calls | How many calls a role made — and it counts a different thing per role: LLM rounds for the candidate, attempts including parse retries for the judge, searches for external. |
 | `unanswered_retried` | — | — | calls | A usage row's calls a forced tool choice was refused on and that were answered unforced in the same call: beside the row's call_count, never in it, and in no cost. |
 | `unanswered_lost` | — | — | calls | A usage row's calls sent and never answered, so the turn they belonged to ended in error: beside the row's call_count, never in it, and in no cost. |
+| `maybe_billed_sends` | — | — | calls | A usage row's sends whose connection broke before any response began and that were sent again: the provider may have served and billed each, and the row's cost holds none of it. |
 | `provider_units` | — | — | provider-defined | Units of a provider's own metered quantity that an external role consumed — a search API's credits, a video API's quota units — named by the row's provider_unit. |
 | `context_tokens_in` | — | — | tokens | How much context the candidate was carrying — a stratification covariate, not a quality measure. |
 | `reasoning_ratio` | — | — | — | How much of the candidate's output was reasoning. |

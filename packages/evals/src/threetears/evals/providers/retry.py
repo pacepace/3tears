@@ -14,10 +14,12 @@ sent again after a wait, up to ``turn_failure_attempts`` attempts in all, within
 resends. A completion is not: its failure stays the call's outcome, as before. When the last attempt fails too, its
 answer is raised and stays the candidate's, as any failure is charged.
 
-**A first send the server dropped with no response is sent again once**, a completion's or a tool turn's, whatever
-``turn_failure_attempts`` says (``httpx.RemoteProtocolError``, "Server disconnected without sending a response"). The
-request changes nothing but what it bills, so the resend costs at most a second call, where an unretried drop would end
-a whole report. The provider may have served and billed the first, so the resend names the drop.
+**A first send whose connection broke before any response began is sent again once**, a completion's or a tool
+turn's, whatever ``turn_failure_attempts`` says (``httpx.RemoteProtocolError`` out of sending it, "Server disconnected
+without sending a response"). The request changes nothing but what it bills, so the resend costs at most a second
+call, where an unretried drop would end a whole report. The provider may have served and billed the first, so the
+resend names the drop, with its own text, and the completion or turn carries it (``resent_after``). A response that
+began and was cut short while its body was read was served and billed: it is raised as it came, never resent.
 """
 
 from __future__ import annotations

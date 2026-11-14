@@ -1064,6 +1064,20 @@ _SEED: tuple[MetricDescriptor, ...] = (
         ),
     ),
     _d(
+        name="maybe_billed_sends",
+        reader_name="Sends maybe billed twice",
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="subsystem",
+        unit="calls",
+        description=(
+            "A usage row's sends whose connection broke before any response began and that were sent again: the "
+            "provider may have served and billed each, and the row's cost holds none of it. Beside the row's "
+            "call_count, never in it. Absent where the row counted none."
+        ),
+    ),
+    _d(
         name="provider_units",
         reader_name="Provider units",
         data_type="numeric",

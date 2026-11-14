@@ -194,6 +194,17 @@ def test_the_model_a_deliverys_responses_named_is_its_inner_agent_rows_served_mo
     assert unnamed.served_model is None
 
 
+def test_the_upstream_a_delivery_names_is_its_inner_agent_rows_served_provider_and_keys_it():
+    """The host fills it; work two upstreams served is two rows, and work naming none is not recorded."""
+    rows = async_delivery_usage(
+        [_work(cost_usd=0.01, served_provider="Acme Cloud"), _work(cost_usd=0.02, served_provider="Other Cloud")],
+        rate_table=None,
+    )
+    assert [(row.served_provider, row.cost_usd) for row in rows] == [("Acme Cloud", 0.01), ("Other Cloud", 0.02)]
+    (unnamed,) = async_delivery_usage([_work(cost_usd=0.01)], rate_table=None)
+    assert unnamed.served_provider is None and "served_provider" not in unnamed.model_dump(mode="json")
+
+
 def test_work_one_model_had_answered_by_two_is_two_rows():
     rows = async_delivery_usage(
         [_work(cost_usd=0.01, served_model="inner-a"), _work(cost_usd=0.02, served_model="inner-b")], rate_table=None

@@ -231,8 +231,8 @@ async def test_a_turn_the_server_dropped_with_no_response_is_sent_again_once_nam
 
     assert messages.sent == 2 and waits.asked == [1.0]
     assert answered.resent_after == (
-        "the server disconnected without sending a response (RemoteProtocolError), so the provider may have served "
-        "and billed it",
+        "the connection broke before any response began (RemoteProtocolError: Server disconnected without sending a "
+        "response.), so the provider may have served and billed the call",
     )
 
 

@@ -13,7 +13,7 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -33,6 +33,7 @@ from threetears.evals.providers import (
     ProviderError,
     describe_failure,
 )
+from threetears.evals.kernel import RoleUsageLedger
 from threetears.evals.schema import ClientRequestSettings, ProviderFailure
 from threetears.evals.testing import (
     RecordedCompletions,
@@ -930,6 +931,17 @@ async def test_a_call_the_server_dropped_with_no_response_is_sent_again_once() -
     waits = Waits()
     completion = await answering(dropped_then_answered, waits).generate(system="", user="x")
     assert len(sent) == 2 and waits.asked == [1.0] and completion.content == "answered"
+    # The first send may have been served and billed: the completion names it and counts it, and so does its usage row.
+    assert completion.resent_after == (
+        "the connection broke before any response began (RemoteProtocolError: Server disconnected without sending a "
+        "response.), so the provider may have served and billed the call",
+    )
+    assert completion.maybe_billed_sends == 1
+    ledger = RoleUsageLedger(role="judge")
+    ledger.add_llm_result(completion)
+    (row,) = ledger.rows()
+    assert (row.call_count, row.maybe_billed_sends) == (1, 1)
+    assert row.model_dump(mode="json")["maybe_billed_sends"] == 1
 
     drops: list[httpx.RemoteProtocolError] = []
 
@@ -940,6 +952,38 @@ async def test_a_call_the_server_dropped_with_no_response_is_sent_again_once() -
     with pytest.raises(httpx.RemoteProtocolError) as raised:
         await answering(always_dropped, Waits()).generate(system="", user="x")
     assert len(drops) == 2 and raised.value is drops[0] and raised.value.__cause__ is drops[1]
+
+
+class _CutShort(httpx.AsyncByteStream):
+    """A response body the connection broke part-way through: the response began, so the call was served."""
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield b'{"model": "claude-haiku-5-5", "content": ['
+        raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+
+
+async def test_a_response_cut_short_while_its_body_is_read_is_raised_never_sent_again() -> None:
+    """The same exception type as a drop with no response, but the provider served this one and billed it."""
+    sent: list[int] = []
+
+    def begun_then_cut(request: httpx.Request) -> httpx.Response:
+        sent.append(1)
+        return httpx.Response(200, headers={"content-type": "application/json"}, stream=_CutShort())
+
+    waits = Waits()
+    with pytest.raises(httpx.RemoteProtocolError, match="peer closed connection"):
+        await answering(begun_then_cut, waits).generate(system="", user="x")
+    assert len(sent) == 1 and waits.asked == []
+
+
+async def test_a_call_answered_first_time_names_no_resend_and_its_row_counts_none() -> None:
+    status, reply = message("answered")
+    completion = await answering(Answers((status, reply, {})), Waits()).generate(system="", user="x")
+    assert (completion.resent_after, completion.maybe_billed_sends) == ((), 0)
+    ledger = RoleUsageLedger(role="judge")
+    ledger.add_llm_result(completion)
+    (row,) = ledger.rows()
+    assert row.maybe_billed_sends is None and "maybe_billed_sends" not in row.model_dump(mode="json")
 
 
 async def test_a_derived_model_keeps_its_retry_policy() -> None:

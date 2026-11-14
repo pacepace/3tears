@@ -2052,8 +2052,10 @@ round declares no actors at all, and its conversation makes no simulator call.
 ## Background work, payloads and spend
 
 **Background work** a candidate hands off and gets back turns later is recorded as `async_deliveries`,
-one `AsyncDelivery` each: who asked, when it was acknowledged and delivered, on what model, whether a
-harness supplied it, and what it spent — its tokens, model calls, `cost_usd` with its own
+one `AsyncDelivery` each: who asked, when it was acknowledged and delivered, on what model, which upstream
+served its calls where the replies named one (`served_provider`: you fill it, as `RoleUsage.served_provider` is
+filled for a completion; left unset it reads as not recorded, never as a guess), whether a harness supplied it, and
+what it spent — its tokens, model calls, `cost_usd` with its own
 `price_source`, and any paid non-LLM calls (`external_spend`) — their calls, the provider's own units, and
 `money` where the provider itself billed a figure. The engine folds that spend into the result's
 `inner_agent` and `external` usage, for work still in flight when the cell ended as well as work that
@@ -2075,6 +2077,12 @@ was answered keeps a row of its own (`RoleUsage.answers_nothing`): its `call_cou
 nothing, and no cost reads it. A reader that keys rows on `call_count` should expect that row. Each count you leave
 out reads as not counted, never as zero. So where your rate measures need the counts on every row, mark a row whose
 calls were all answered with `add_unanswered(model=..., retried=0, lost=0)` on its key.
+
+**Sends your client sent again after a drop.** When a send's connection broke before any response began and your
+client sent it again, the provider may have served and billed the first, and no completion carries that cost. Put
+the count on your completion as the optional `maybe_billed_sends` member (the shipped `Model`'s completions carry
+it), or pass `maybe_billed_sends=` to `RoleUsageLedger.add`. The row counts them as `RoleUsage.maybe_billed_sends`,
+beside its `call_count` and never in its cost, and leaves it unset while none is counted.
 
 ## Cassettes: recording and replaying tools
 

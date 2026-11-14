@@ -176,6 +176,10 @@ class CallUsage:
     #: the shipped client's: OpenRouter names the provider it routed to); ``None`` when it named none, or when the
     #: folded attempts named different ones. Keys the row beside ``served_model``.
     served_provider: str | None = None
+    #: How many sends of the call broke before any response began and were sent again (a completion's optional
+    #: ``maybe_billed_sends``, the shipped client's): the provider may have served and billed each, and ``cost_usd``
+    #: holds none of it. ``None`` when the completion counts none; summed over folded attempts.
+    maybe_billed_sends: int | None = None
 
     @classmethod
     def billed(cls, completion: Any) -> CallUsage:
@@ -198,7 +202,10 @@ class CallUsage:
         read["model"] = read["model"] or None
         read["served_model"] = read["served_model"] or None
         return cls(
-            **read, pricing_failure=_pricing_failure_of(completion), served_provider=_served_provider_of(completion)
+            **read,
+            pricing_failure=_pricing_failure_of(completion),
+            served_provider=_served_provider_of(completion),
+            maybe_billed_sends=_maybe_billed_sends_of(completion),
         )
 
     @classmethod
@@ -233,6 +240,21 @@ def _pricing_failure_of(completion: object) -> str | None:
     """
     said = getattr(completion, "pricing_failure", None)
     return said if isinstance(said, str) and said else None
+
+
+def _maybe_billed_sends_of(completion: object) -> int | None:
+    """How many sends ``completion`` says broke before any response began and were sent again, or ``None``.
+
+    Reads the optional ``maybe_billed_sends`` member the shipped client's completions carry. A disclosure, never a
+    refusal: an absent member, or one that is no whole number of at least 0, says nothing.
+
+    :param completion: A completion, or a usage record standing for one.
+    :ptype completion: object
+    :return: The count, or ``None``.
+    :rtype: int | None
+    """
+    said = getattr(completion, "maybe_billed_sends", None)
+    return said if isinstance(said, int) and not isinstance(said, bool) and said >= 0 else None
 
 
 def _served_provider_of(completion: object) -> str | None:
@@ -299,6 +321,9 @@ class _ModelTotals:
     sent_unverified: bool = False
     #: Each distinct reason a contribution gave for being unpriced, first seen first: the row's ``unpriced_reasons``.
     unpriced_reasons: list[str] = field(default_factory=list)
+    #: Sends of the row's calls that broke before any response began and were sent again, which the provider may have
+    #: billed: the row's ``maybe_billed_sends``, ``None`` until a contribution counts one.
+    maybe_billed_sends: int | None = None
     #: The row's unanswered calls (:meth:`RoleUsageLedger.add_unanswered`), beside ``call_count`` and never in it:
     #: ``None`` until something counts them, on the same missing-is-not-zero rule as every count here.
     unanswered_retried: int | None = None
@@ -374,6 +399,7 @@ class RoleUsageLedger:
         purpose: KnownSimulatorPurpose | None = None,
         sent_settings: ClientRequestSettings | None = None,
         unpriced_reason: str | None = None,
+        maybe_billed_sends: int | None = None,
     ) -> None:
         """Fold one call's usage into this role's totals.
 
@@ -423,6 +449,11 @@ class RoleUsageLedger:
         ``unpriced_reason`` is why an unpriced contribution is unpriced, as its pricer said; the row keeps each distinct
         one as its ``unpriced_reasons`` while its dollars are unknown.
 
+        ``maybe_billed_sends`` is how many of the contribution's sends broke before any response began and were sent
+        again: the provider may have served and billed each, and ``cost_usd`` holds none of it. The row sums them as
+        its ``maybe_billed_sends``, left unset while none is counted, so a row of calls that met no drop is stored as
+        before. Not part of the key.
+
         :raises ValueError: ``actor_id`` or ``purpose`` was given to a role other than ``simulator``.
         """
         if (actor_id is not None or purpose is not None) and self.role != "simulator":
@@ -452,6 +483,8 @@ class RoleUsageLedger:
             totals.cost_unpriced = True
             if unpriced_reason and unpriced_reason not in totals.unpriced_reasons:
                 totals.unpriced_reasons.append(unpriced_reason)
+        if maybe_billed_sends:
+            totals.maybe_billed_sends = (totals.maybe_billed_sends or 0) + maybe_billed_sends
         if sent_settings is None:
             totals.sent_unverified = True
         else:
@@ -507,6 +540,7 @@ class RoleUsageLedger:
             purpose=purpose,
             sent_settings=read.sent_settings,
             unpriced_reason=read.pricing_failure,
+            maybe_billed_sends=read.maybe_billed_sends,
         )
 
     def add_external(self, spend: ExternalSpend) -> None:
@@ -737,6 +771,7 @@ class RoleUsageLedger:
                     unanswered_retried=totals.unanswered_retried,
                     unanswered_lost=totals.unanswered_lost,
                     unanswered_reasons=dict(totals.unanswered_reasons) or None,
+                    maybe_billed_sends=totals.maybe_billed_sends,
                 )
             )
         return _unanswered_folded(rows)
@@ -825,6 +860,8 @@ def async_delivery_usage(
                 # What the responses named, never the requested `model`: it keys the row beside it, so work one
                 # requested model had answered by another is a row of its own.
                 served_model=entry.served_model,
+                # The upstream the host says served the work, which keys the row as a completion's does.
+                served_provider=entry.served_provider,
                 prompt_tokens=entry.input_tokens,
                 completion_tokens=entry.output_tokens,
                 reasoning_tokens=entry.reasoning_tokens,

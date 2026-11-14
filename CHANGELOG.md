@@ -13,21 +13,31 @@ withheld, and judged on the calls it still found. The judge's recordings are key
 to a page's text moved the writer eval's replayed preference from 61/39 to 54/46 with no recorded judgment changed.
 `run_judge_llm` now raises the replay's `RecordingRefused` (any `ApparatusError`) instead. A writer's pairwise pass
 fails at the miss and the eval exits 1. A run's judging records the miss as the result's judge error, so the result is
-excluded and counted. A miss now names the prompt's key and where it parts from the recorded prompts: how many open on
-the same 80 characters, or the nearest recorded key and the character it parts at. Rung 5's recordings README says
-what to do when page text moves.
+excluded and counted. A judge kind's trial whose replayed judge misses leaves `invoke` and is excluded
+`apparatus_failed`, naming the call: it was graded `no_reply` and charged to the judge under test. A miss now names
+the prompt's key and where it parts from the recorded prompts: how many hold the same user message or open on the same
+80 characters, or the nearest recorded key and the character it parts at. Rung 5's recordings README says what to do
+when page text moves.
 
-### evals: a request the server dropped with no response is sent again once (#1137)
+### evals: a request whose connection broke before any response began is sent again once, and counted (#1137; core v15.16)
 
-**Fixed:** a first send the server dropped without a response (`httpx.RemoteProtocolError`) was raised unretried, and
-one such drop ended a live writer run 34 turns in. `Model` now sends it again once, after the first backoff wait, for
-a completion and a tool turn alike. The provider may have served and billed the first, so a turn's `resent_after`
-names the drop, and the resend is logged at WARNING.
+**Fixed:** a first send whose connection broke before any response began (`httpx.RemoteProtocolError`, "Server
+disconnected without sending a response") was raised unretried, and one such drop ended a live writer run 34 turns
+in. `Model` now sends it again once, after the first backoff wait, for a completion and a tool turn alike (owner
+ruling). The first send is read streamed, so a response that began and was cut short while its body was read, which
+was served and billed, is raised as before and never sent again. The provider may have served and billed the dropped
+send, so the resend says so, with the error's own text: a turn's `resent_after`, and a completion's new
+`resent_after` and `maybe_billed_sends`. A usage row counts those sends as `RoleUsage.maybe_billed_sends` (new,
+optional, left out while none is counted), beside `call_count` and never in its cost. A run's cost cap does not yet
+count them.
 
 ### evals: a replayed completion names the upstream its recording kept (#1161)
 
 **Fixed:** a recording keeps a completion's `served_provider` under `extra`, and a replay did not hand it back, so a
-replayed call's usage row named no upstream. `ReplayedCompletion.served_provider` now reads it from `extra`.
+replayed call's usage row named no upstream. `ReplayedCompletion.served_provider` now reads it from `extra`. A
+background delivery can name the upstream that served its calls: `AsyncDelivery.served_provider` (core v15.16, new,
+optional, never on a substituted entry), which the host fills and the engine folds into the `inner_agent` usage row
+(`RoleUsage.served_provider`, a key of the row); left unset it reads as not recorded.
 
 ### evals: a page's forms, arm names and gate checks are worked out once per report input
 

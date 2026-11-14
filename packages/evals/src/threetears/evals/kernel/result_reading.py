@@ -177,6 +177,8 @@ class UsageView(Protocol):
     def unanswered_lost(self) -> int | None: ...
     @property
     def unanswered_reasons(self) -> Mapping[str, int] | None: ...
+    @property
+    def maybe_billed_sends(self) -> int | None: ...
 
 
 class LatencyView(Protocol):
@@ -557,6 +559,7 @@ class UsageReading:
     unanswered_retried: int | None
     unanswered_lost: int | None
     unanswered_reasons: Mapping[str, int] | None
+    maybe_billed_sends: int | None
 
     @classmethod
     def of(cls, row: RoleUsage, shared: SharedValues) -> UsageReading:
@@ -582,6 +585,7 @@ class UsageReading:
             unanswered_retried=row.unanswered_retried,
             unanswered_lost=row.unanswered_lost,
             unanswered_reasons=None if (reasons := row.unanswered_reasons) is None else shared.mapping(reasons),
+            maybe_billed_sends=row.maybe_billed_sends,
         )
 
 
