@@ -537,6 +537,22 @@ async def test_a_missed_prompt_names_its_key_and_where_it_parts_from_the_recorde
     assert f"the nearest recorded key, {keys[0]}, parts from it at character 24 " in message
 
 
+async def test_a_miss_whose_whole_user_message_is_recorded_says_only_the_system_prompt_or_format_moved(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "rec.jsonl"
+    await _record(path, ("Short and kept whole.", _Reply(content="ok")))
+    key = _lines(path)[0]["key"][:12]
+    client = RecordedCompletions.replay(path, settings=BUDGETED)
+    with pytest.raises(RecordingRefused) as moved:
+        await client.generate(system="Another system prompt.", user="Short and kept whole.")
+    message = str(moved.value)
+    assert f"1 recorded key(s) hold the same user message ({key}), so what changed is the system prompt or the " in (
+        message
+    )
+    assert "in the user message" not in message
+
+
 async def test_a_judge_call_its_replay_does_not_hold_raises_rather_than_failing_the_call(tmp_path: Path) -> None:
     """The judge once caught the miss as a failed call, its text withheld, and a pass read its share off the calls
     left. Now the miss leaves the judge, naming the call."""
