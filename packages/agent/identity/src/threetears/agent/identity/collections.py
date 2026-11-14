@@ -25,26 +25,27 @@ from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import MetaData, Table
-
-from threetears.core.collections.schema_backed import (
-    DATETIMETZ_TYPE,
-    ENUM_TYPE,
-    STRING_TYPE,
-    UUID_TYPE,
-    Column,
-    Index as SchemaIndex,
-    SchemaBackedCollection,
-    TableSchema,
-)
-from threetears.observe import get_logger
-
 from threetears.agent.identity.entities import IdentityVersionEntity
 from threetears.agent.identity.types import (
     IDENTITY_BLOCK_KEY_VALUES,
     IDENTITY_STATUS_VALUES,
     IdentityVersionStatus,
 )
+from threetears.core.collections.schema_backed import (
+    DATETIMETZ_TYPE,
+    ENUM_TYPE,
+    STRING_TYPE,
+    UUID_TYPE,
+    Column,
+    SchemaBackedCollection,
+    TableSchema,
+)
+from threetears.core.collections.schema_backed import (
+    Index as SchemaIndex,
+)
+from threetears.core.keyed import Sort, read_by
 from threetears.core.tenancy import TENANT_BY_SCHEMA
+from threetears.observe import get_logger
 
 __all__ = [
     "IdentityVersionsCollection",
@@ -288,18 +289,35 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
         """
         if self.l3_pool is None:
             return []
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_IDENTITY_SELECT_COLUMNS} FROM identity_versions "
-            "WHERE agent_id = $1 "
-            "AND customer_id IS NOT DISTINCT FROM $2 "
-            "AND user_id IS NOT DISTINCT FROM $3 "
-            "AND block_key = $4 AND variant = $5 "
-            "ORDER BY date_created DESC",
-            agent_id,
-            customer_id,
-            user_id,
-            block_key,
-            variant,
+        rows = await read_by(
+            self.l3_pool,
+            "identity_versions",
+            by={
+                "agent_id": agent_id,
+                "customer_id": customer_id,
+                "user_id": user_id,
+                "block_key": block_key,
+                "variant": variant,
+            },
+            columns=(
+                "version_id",
+                "agent_id",
+                "customer_id",
+                "user_id",
+                "block_key",
+                "variant",
+                "content",
+                "rationale",
+                "content_hash",
+                "parent_version_id",
+                "status",
+                "proposer_agent_id",
+                "consenter_user_id",
+                "date_created",
+                "date_updated",
+            ),
+            records=True,
+            order=[Sort("date_created", descending=True)],
         )
         return [self._row_to_entity(row) for row in rows]
 
@@ -320,12 +338,28 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
         """
         if self.l3_pool is None:
             return []
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_IDENTITY_SELECT_COLUMNS} FROM identity_versions "
-            "WHERE agent_id = $1 AND user_id IS NOT DISTINCT FROM $2 "
-            f"AND status = '{IdentityVersionStatus.PROPOSED.value}' "
-            "ORDER BY date_created ASC",
-            agent_id,
-            user_id,
+        rows = await read_by(
+            self.l3_pool,
+            "identity_versions",
+            by={"agent_id": agent_id, "user_id": user_id, "status": "proposed"},
+            columns=(
+                "version_id",
+                "agent_id",
+                "customer_id",
+                "user_id",
+                "block_key",
+                "variant",
+                "content",
+                "rationale",
+                "content_hash",
+                "parent_version_id",
+                "status",
+                "proposer_agent_id",
+                "consenter_user_id",
+                "date_created",
+                "date_updated",
+            ),
+            records=True,
+            order=[Sort("date_created")],
         )
         return [self._row_to_entity(row) for row in rows]

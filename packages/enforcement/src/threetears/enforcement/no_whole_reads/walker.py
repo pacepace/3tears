@@ -1006,6 +1006,9 @@ def _constant_text(value: ast.expr, constants: dict[str, str], depth: int = 0) -
         text = value.value
     elif isinstance(value, ast.Name):
         text = constants.get(value.id)
+    elif isinstance(value, ast.Attribute) and (dotted(value) or "").endswith(".value"):
+        # a text enum member's value (``{IntentionStatus.OPEN.value}`` -> ``open``): :func:`_enum_strings`
+        text = constants.get(dotted(value) or "")
     elif isinstance(value, ast.Call) and len(value.args) == 1 and _final(value) in _QUOTERS:
         text = _constant_text(value.args[0], constants, depth + 1)
     elif (
@@ -7658,6 +7661,9 @@ def _module_strings(tree: ast.Module) -> dict[str, str]:
     found: dict[str, str] = {}
     twice: set[str] = set()
     for statement in tree.body:
+        if isinstance(statement, ast.ClassDef):
+            found.update(_enum_strings(statement))
+            continue
         if (
             isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
             and statement.body
@@ -7682,6 +7688,35 @@ def _module_strings(tree: ast.Module) -> dict[str, str]:
             if text is not None:
                 found[target.id] = text
     return {name: text for name, text in found.items() if name not in twice}
+
+
+#: the enum bases whose members' values are text: a member is its literal (``OPEN = "open"``)
+_TEXT_ENUM_BASES: Final[frozenset[str]] = frozenset({"Enum", "StrEnum", "enum.Enum", "enum.StrEnum"})
+
+
+def _enum_strings(node: ast.ClassDef) -> dict[str, str]:
+    """a text enum's members' values, each under ``<class>.<member>.value``: what a statement interpolating one
+    (``f"status = '{IntentionStatus.OPEN.value}'"``) sends. A class deriving an enum base, each member bound once to a
+    string literal; anything else in the class body is skipped.
+
+    :param node: the class
+    :ptype node: ast.ClassDef
+    :return: ``<class>.<member>.value`` onto the member's text
+    :rtype: dict[str, str]
+    """
+    if not any(dotted(base) in _TEXT_ENUM_BASES for base in node.bases):
+        return {}
+    found: dict[str, str] = {}
+    for statement in node.body:
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and isinstance(statement.value, ast.Constant)
+            and isinstance(statement.value.value, str)
+        ):
+            found[f"{node.name}.{statement.targets[0].id}.value"] = statement.value.value
+    return found
 
 
 def _method_templates(tree: ast.Module, strings: dict[str, str]) -> dict[str, str]:
@@ -7740,6 +7775,14 @@ def _imported_strings(tree: ast.Module, strings: dict[str, dict[str, str]]) -> d
         for alias in statement.names:
             if source is not None and alias.name in source:
                 found[alias.asname or alias.name] = source[alias.name]
+            if source is not None:
+                # an imported text enum: its members' values, under the name it is imported as
+                prefix = f"{alias.name}."
+                found.update(
+                    (f"{alias.asname or alias.name}.{key.removeprefix(prefix)}", text)
+                    for key, text in source.items()
+                    if key.startswith(prefix)
+                )
             if source is not None and _TEMPLATE.format(alias.name) in source:
                 found[_TEMPLATE.format(alias.asname or alias.name)] = source[_TEMPLATE.format(alias.name)]
     return found

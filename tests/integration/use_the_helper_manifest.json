@@ -4197,5 +4197,372 @@
    "row_scope",
    "namespace_id"
   ]
+ },
+ {
+  "args": [
+   "agent_id",
+   "customer_id",
+   "user_id",
+   "block_key",
+   "variant"
+  ],
+  "columns": [
+   "version_id",
+   "agent_id",
+   "customer_id",
+   "user_id",
+   "block_key",
+   "variant",
+   "content",
+   "rationale",
+   "content_hash",
+   "parent_version_id",
+   "status",
+   "proposer_agent_id",
+   "consenter_user_id",
+   "date_created",
+   "date_updated"
+  ],
+  "function": "IdentityVersionsCollection.find_versions_for_block",
+  "helper": "read_by",
+  "line": 292,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'identity_versions', by={'agent_id': agent_id, 'customer_id': customer_id, 'user_id': user_id, 'block_key': block_key, 'variant': variant}, columns=('version_id', 'agent_id', 'customer_id', 'user_id', 'block_key', 'variant', 'content', 'rationale', 'content_hash', 'parent_version_id', 'status', 'proposer_agent_id', 'consenter_user_id', 'date_created', 'date_updated'), records=True, order=[Sort('date_created', descending=True)])",
+  "old_sql": "SELECT version_id, agent_id, customer_id, user_id, block_key, variant, content, rationale, content_hash, parent_version_id, status, proposer_agent_id, consenter_user_id, date_created, date_updated FROM identity_versions WHERE agent_id = $1 AND customer_id IS NOT DISTINCT FROM $2 AND user_id IS NOT DISTINCT FROM $3 AND block_key = $4 AND variant = $5 ORDER BY date_created DESC",
+  "order": [
+   {
+    "column": "date_created",
+    "descending": true,
+    "nulls": null
+   }
+  ],
+  "path": "packages/agent/identity/src/threetears/agent/identity/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "customer_id",
+    "compared": [],
+    "kind": "nullsafe",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "user_id",
+    "compared": [],
+    "kind": "nullsafe",
+    "literal": null,
+    "param": 3,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "block_key",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 4,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "variant",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 5,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "list",
+  "table": "identity_versions"
+ },
+ {
+  "args": [
+   "agent_id",
+   "user_id"
+  ],
+  "columns": [
+   "version_id",
+   "agent_id",
+   "customer_id",
+   "user_id",
+   "block_key",
+   "variant",
+   "content",
+   "rationale",
+   "content_hash",
+   "parent_version_id",
+   "status",
+   "proposer_agent_id",
+   "consenter_user_id",
+   "date_created",
+   "date_updated"
+  ],
+  "function": "IdentityVersionsCollection.find_pending",
+  "helper": "read_by",
+  "line": 324,
+  "method": "fetch",
+  "new_call": "read_by(self.l3_pool, 'identity_versions', by={'agent_id': agent_id, 'user_id': user_id, 'status': 'proposed'}, columns=('version_id', 'agent_id', 'customer_id', 'user_id', 'block_key', 'variant', 'content', 'rationale', 'content_hash', 'parent_version_id', 'status', 'proposer_agent_id', 'consenter_user_id', 'date_created', 'date_updated'), records=True, order=[Sort('date_created')])",
+  "old_sql": "SELECT version_id, agent_id, customer_id, user_id, block_key, variant, content, rationale, content_hash, parent_version_id, status, proposer_agent_id, consenter_user_id, date_created, date_updated FROM identity_versions WHERE agent_id = $1 AND user_id IS NOT DISTINCT FROM $2 AND status = 'proposed' ORDER BY date_created ASC",
+  "order": [
+   {
+    "column": "date_created",
+    "descending": false,
+    "nulls": null
+   }
+  ],
+  "path": "packages/agent/identity/src/threetears/agent/identity/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "user_id",
+    "compared": [],
+    "kind": "nullsafe",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "status",
+    "compared": [],
+    "kind": "literal",
+    "literal": "proposed",
+    "param": null,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "list",
+  "table": "identity_versions"
+ },
+ {
+  "args": [
+   "agent_id",
+   "user_id"
+  ],
+  "columns": null,
+  "function": "ConversationsCollection.find_by_user",
+  "helper": "read_by",
+  "line": 573,
+  "method": "fetch",
+  "new_call": "read_by(self.required_l3_pool, 'conversations', by={'agent_id': agent_id, 'user_id': user_id}, records=True, order=[Sort('date_created', descending=True)])",
+  "old_sql": "SELECT * FROM conversations WHERE agent_id = $1 AND user_id = $2 ORDER BY date_created DESC",
+  "order": [
+   {
+    "column": "date_created",
+    "descending": true,
+    "nulls": null
+   }
+  ],
+  "path": "packages/conversations/src/threetears/conversations/collection.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "user_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "list",
+  "table": "conversations"
+ },
+ {
+  "args": [
+   "agent_id",
+   "user_id",
+   "\"closed\""
+  ],
+  "columns": null,
+  "function": "ConversationsCollection.find_by_user",
+  "helper": "read_by",
+  "line": 579,
+  "method": "fetch",
+  "new_call": "read_by(self.required_l3_pool, 'conversations', by={'agent_id': agent_id, 'user_id': user_id}, where=[Fragment('status != $1', (\"closed\",))], records=True, order=[Sort('date_created', descending=True)])",
+  "old_sql": "SELECT * FROM conversations WHERE agent_id = $1 AND user_id = $2 AND status != $3 ORDER BY date_created DESC",
+  "order": [
+   {
+    "column": "date_created",
+    "descending": true,
+    "nulls": null
+   }
+  ],
+  "path": "packages/conversations/src/threetears/conversations/collection.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "user_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "list",
+  "table": "conversations",
+  "where": [
+   {
+    "cast": null,
+    "column": "",
+    "compared": [
+     "status"
+    ],
+    "kind": "guard",
+    "literal": "status != $1",
+    "param": null,
+    "params": [
+     3
+    ]
+   }
+  ]
+ },
+ {
+  "args": [
+   "agent_id",
+   "folder_id"
+  ],
+  "columns": null,
+  "function": "ConversationsCollection.find_by_folder",
+  "helper": "read_by",
+  "line": 621,
+  "method": "fetch",
+  "new_call": "read_by(self.required_l3_pool, 'conversations', by={'agent_id': agent_id, 'folder_id': folder_id}, records=True, order=[Sort('date_created', descending=True)])",
+  "old_sql": "SELECT * FROM conversations WHERE agent_id = $1 AND folder_id = $2 ORDER BY date_created DESC",
+  "order": [
+   {
+    "column": "date_created",
+    "descending": true,
+    "nulls": null
+   }
+  ],
+  "path": "packages/conversations/src/threetears/conversations/collection.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "folder_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "list",
+  "table": "conversations"
+ },
+ {
+  "args": [
+   "agent_id",
+   "channel_type",
+   "conversation_ref"
+  ],
+  "columns": null,
+  "function": "ConversationsCollection.find_by_ref",
+  "helper": "read_by",
+  "line": 721,
+  "method": "fetch",
+  "new_call": "read_by(self.required_l3_pool, 'conversations', by={'agent_id': agent_id, 'channel_type': channel_type, 'conversation_ref': conversation_ref}, records=True, order=[Sort('date_created', descending=True)])",
+  "old_sql": "SELECT * FROM conversations WHERE agent_id = $1 AND channel_type = $2 AND conversation_ref = $3 ORDER BY date_created DESC",
+  "order": [
+   {
+    "column": "date_created",
+    "descending": true,
+    "nulls": null
+   }
+  ],
+  "path": "packages/conversations/src/threetears/conversations/collection.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "agent_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "channel_type",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "conversation_ref",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 3,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "list",
+  "table": "conversations"
  }
 ]

@@ -100,7 +100,9 @@ from pathlib import Path
 from typing import Any, Final
 
 from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, _hits, _producers, _undeclared_statements
+from threetears.enforcement.no_whole_reads.sql import Reader, judge_sql
 from threetears.enforcement.no_whole_reads.use_the_helper import _helper_hits
+from threetears.enforcement.no_whole_reads.walker import WholeReadScan, _enum_strings
 
 __all__ = ["main"]
 
@@ -1560,6 +1562,12 @@ def _fstring_text(module: _Module, node: ast.JoinedStr) -> tuple[str, str] | str
             walked.append(part.value)
             continue
         assert isinstance(part, ast.FormattedValue)
+        member = _enum_value(module, part.value) if part.conversion == -1 and part.format_spec is None else None
+        if member is not None:
+            # a text enum member's value (``{IntentionStatus.OPEN.value}``): the literal the walk writes in
+            sent.append(member)
+            walked.append(member)
+            continue
         if part.conversion != -1 or part.format_spec is not None or not isinstance(part.value, ast.Name):
             return f"interpolated: {{{module.segment(part.value)}}} is not a module constant"
         text = _module_text(module, part.value)
@@ -1568,6 +1576,37 @@ def _fstring_text(module: _Module, node: ast.JoinedStr) -> tuple[str, str] | str
         sent.append(text)
         walked.append("{}")
     return "".join(sent), "".join(walked)
+
+
+def _enum_value(module: _Module, value: ast.expr) -> str | None:
+    """the text of a text enum member's value (``IntentionStatus.OPEN.value``), its class written in the module or
+    imported by ``from <module> import <class>`` from a module beside it under one of the file's source roots; None
+    for anything else."""
+    if not (isinstance(value, ast.Attribute) and value.attr == "value" and isinstance(value.value, ast.Attribute)):
+        return None
+    owner = value.value.value
+    if not isinstance(owner, ast.Name):
+        return None
+    key = f"{owner.id}.{value.value.attr}.value"
+    for statement in module.tree.body:
+        if isinstance(statement, ast.ClassDef) and statement.name == owner.id:
+            return _enum_strings(statement).get(key)
+    for statement in module.tree.body:
+        if not (isinstance(statement, ast.ImportFrom) and statement.module and not statement.level):
+            continue
+        named = next((alias for alias in statement.names if (alias.asname or alias.name) == owner.id), None)
+        if named is None:
+            continue
+        relative = Path(*statement.module.split(".")).with_suffix(".py")
+        source = next((root / relative for root in module.path.parents if (root / relative).is_file()), None)
+        if source is None:
+            return None
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name == named.name:
+                return _enum_strings(node).get(f"{named.name}.{value.value.attr}.value")
+        return None
+    return None
 
 
 def _literal_sent(module: _Module, literal: ast.Constant | ast.JoinedStr) -> str:
@@ -2272,6 +2311,36 @@ def plan_count_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
     return _plan_reads(config, _COUNT)
 
 
+#: a null-safe pin's comparison, ``col IS NOT DISTINCT FROM $n``
+_NULL_SAFE: Final[re.Pattern[str]] = re.compile(r"\bIS\s+NOT\s+DISTINCT\s+FROM\b", re.IGNORECASE)
+
+
+def _keyed_once_sent(scan: WholeReadScan, statement: Any) -> bool:
+    """whether a statement the rule finds unkeyed for its null-safe pins reads through a declared key or index once
+    each is sent as the helper sends it: ``col IS NOT DISTINCT FROM $n`` is no index condition (both engines filter
+    it), where the helper's ``by=`` sends ``col = $n``, or ``col IS NULL`` for a None, each one. Judged with every
+    declared index counted as purposed (the index-purpose tool's walk), so that tool then names the rewritten read
+    as its index's purpose; a statement unkeyed for anything else stays refused.
+
+    :param scan: the walk the findings came from (its schema)
+    :ptype scan: WholeReadScan
+    :param statement: the finding's statement
+    :ptype statement: Any
+    :return: whether it is keyed once sent through the helper
+    :rtype: bool
+    """
+    text = str(statement.text)
+    if not _NULL_SAFE.search(text):
+        return False
+    schema = scan.schema
+    was, schema.discovering = schema.discovering, True
+    try:
+        reader = Reader(schema=schema, names=frozenset({f"{statement.path}::{statement.function}"}))
+        return not judge_sql(_NULL_SAFE.sub("=", text), reader)
+    finally:
+        schema.discovering = was
+
+
 def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite], list[Refusal]]:
     """every read finding of ``shape`` (``point``, ``list``, ``first`` or ``count``) in the repo, as the rewrite it takes or the refusal it
     gets."""
@@ -2301,7 +2370,7 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 Refusal(statement.path, statement.line, statement.function, hit.shape, hit.table, reason, one_line)
             )
 
-        if (statement.path, statement.line) in unkeyed:
+        if (statement.path, statement.line) in unkeyed and not _keyed_once_sent(scan, statement):
             refuse(
                 f"the no-whole-reads rule finds it unkeyed ({unkeyed[statement.path, statement.line]}): a real fix first"
             )

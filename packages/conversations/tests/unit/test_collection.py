@@ -578,10 +578,10 @@ class TestFindByRef:
 
         pg.fetch.assert_called_once()
         sql, *params = pg.fetch.call_args.args
-        assert "agent_id = $1" in sql
-        assert "channel_type = $2" in sql
-        assert "conversation_ref = $3" in sql
-        assert "ORDER BY date_created DESC" in sql
+        assert 't."agent_id" = $1' in sql
+        assert 't."channel_type" = $2' in sql
+        assert 't."conversation_ref" = $3' in sql
+        assert 'ORDER BY t."date_created" DESC' in sql
         assert params[0] == agent_id
         assert params[1] == "scriob-object-chat"
         assert params[2] == "midnight:character:chr-eli"

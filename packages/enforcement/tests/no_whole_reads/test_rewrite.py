@@ -1472,3 +1472,69 @@ def test_an_f_string_of_module_constants_is_rewritten_as_the_statement_it_sends(
         assert_source_says(tmp_path, entry)
     left = [line for line in use_the_helper_findings(config) if "reads.py" in line]
     assert sorted(line.split(":")[1].split(" in ")[1] for line in left) == ["by_local", "computed"], left
+
+
+_NULL_SAFE_KINDS = """
+    from enum import Enum
+
+
+    class Status(str, Enum):
+        PROPOSED = "proposed"
+        ACTIVE = "active"
+"""
+
+_NULL_SAFE_TABLES = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+
+    VERSIONS = TableSchema(
+        name="versions",
+        primary_key=("agent_id", "version_id"),
+        columns=[],
+        indexes=(Index("versions_pending", "agent_id", "user_id", where="status = 'proposed'"),),
+    )
+"""
+
+_NULL_SAFE_READS = """
+    from pkg.kinds import Status
+
+
+    async def pending(conn, agent_id, user_id):
+        return await conn.fetch(
+            "SELECT version_id FROM versions WHERE agent_id = $1 AND user_id IS NOT DISTINCT FROM $2 "
+            f"AND status = '{Status.PROPOSED.value}'",
+            agent_id,
+            user_id,
+        )
+
+
+    async def by_owner(conn, owner):
+        return await conn.fetch("SELECT version_id FROM versions WHERE owner IS NOT DISTINCT FROM $1", owner)
+"""
+
+
+def test_null_safe_pins_and_text_enum_values_are_rewritten_onto_the_helper(tmp_path: Path) -> None:
+    """Flips if a read the rule finds unkeyed only because a pin is null-safe (``IS NOT DISTINCT FROM``, which no
+    index binds) is refused when the helper's spelling (``= $n``, ``IS NULL`` for None) reads a declared index, if an
+    f-string interpolating a text enum member's value is not read as that literal, or if a null-safe read no index
+    serves even so is taken."""
+    config = _config(tmp_path)
+    for name, source in {
+        "kinds.py": _NULL_SAFE_KINDS,
+        "tables.py": _NULL_SAFE_TABLES,
+        "reads.py": _NULL_SAFE_READS,
+    }.items():
+        (tmp_path / "src/pkg" / name).write_text(textwrap.dedent(source), encoding="utf-8")
+    rewrites, refusals = plan_point_rewrites(config)
+    refused = {refusal.function: refusal.reason for refusal in refusals}
+    assert [rewrite.function for rewrite in rewrites] == ["pending"], refused
+    assert "unkeyed" in refused["by_owner"], refused
+    (rewrite,) = rewrites
+    assert rewrite.old_sql == (
+        "SELECT version_id FROM versions WHERE agent_id = $1 AND user_id IS NOT DISTINCT FROM $2 "
+        "AND status = 'proposed'"
+    )
+    apply_rewrites(tmp_path, rewrites, ruff=None)
+    source = " ".join((tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8").split())
+    assert "read_by(conn, 'versions', by={'agent_id': agent_id, 'user_id': user_id, 'status': 'proposed'}" in source, (
+        source
+    )

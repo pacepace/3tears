@@ -25,6 +25,7 @@ from uuid import UUID
 from threetears.conversations.entity import Conversation
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.keyed import Fragment, Sort, read_by
 
 if TYPE_CHECKING:
     from threetears.conversations.buffer import ConversationWriteBuffer
@@ -36,14 +37,16 @@ from threetears.core.collections.schema_backed import (
     TSVECTOR_TYPE,
     UUID_TYPE,
     Column,
-    Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
 )
+from threetears.core.collections.schema_backed import (
+    Index as SchemaIndex,
+)
 from threetears.core.config import CoreConfig
 from threetears.core.data.gin import gin_filter
-from threetears.observe import get_logger
 from threetears.core.tenancy import TENANT_BY_SCHEMA
+from threetears.observe import get_logger
 
 __all__ = [
     "ConversationsCollection",
@@ -100,10 +103,10 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
     # v0.8.0 hygiene enrichment: ``search_vector`` (TSVECTOR,
     # immutable, trigger-maintained per v005 migration);
     # ``language`` server default ``'english'`` matches v006
-    # migration. Indexes mirror the v001 migration:
-    # ``idx_conv_user`` / ``idx_conv_customer`` (composite by
-    # date_created) + ``idx_conv_status``, plus v011's
-    # ``idx_conv_parent``. There is no GIN over
+    # migration. Indexes mirror the migrations after the held
+    # contract step (v014 drops v001's ``idx_conv_customer`` and v011's
+    # ``idx_conv_parent``, which no read uses): ``idx_conv_user``
+    # (composite by date_created) + ``idx_conv_status``. There is no GIN over
     # ``search_vector``: v010 dropped the one v005 created, because
     # :meth:`search` filters through ``gin_filter`` (YugabyteDB's ybgin
     # refuses a multi-entry scan), so the index had no reader.
@@ -167,14 +170,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_user",
                 reason="conversations carries twelve indexes: one person's conversations by owner, for an erasure",
             ),
-            SchemaIndex(
-                "idx_conv_customer",
-                "customer_id",
-                "date_created",
-            ),
             SchemaIndex("idx_conv_status", "status"),
-            # v011: "every conversation this thing started" in one scan.
-            SchemaIndex("idx_conv_parent", "parent_type", "parent_id"),
             # v012: the listing's sorts (Pace's ruling B). status and date_created under the agent, agent+user and
             # agent+status pins; date_updated under the agent only (a user / status filter walks it and filters);
             # message_count's sort is deprecated and has none. Each ends in the page's tie-break.
@@ -576,19 +572,21 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         :rtype: list[Conversation]
         """
         if include_closed:
-            rows = await self.required_l3_pool.fetch(
-                "SELECT * FROM conversations WHERE agent_id = $1 AND user_id = $2 ORDER BY date_created DESC",
-                agent_id,
-                user_id,
+            rows = await read_by(
+                self.required_l3_pool,
+                "conversations",
+                by={"agent_id": agent_id, "user_id": user_id},
+                records=True,
+                order=[Sort("date_created", descending=True)],
             )
         else:
-            rows = await self.required_l3_pool.fetch(
-                "SELECT * FROM conversations "
-                "WHERE agent_id = $1 AND user_id = $2 AND status != $3 "
-                "ORDER BY date_created DESC",
-                agent_id,
-                user_id,
-                "closed",
+            rows = await read_by(
+                self.required_l3_pool,
+                "conversations",
+                by={"agent_id": agent_id, "user_id": user_id},
+                where=[Fragment("status != $1", ("closed",))],
+                records=True,
+                order=[Sort("date_created", descending=True)],
             )
         entities: list[Conversation] = []
         for row in rows:
@@ -624,10 +622,12 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             ``agent_id``, newest-first
         :rtype: list[Conversation]
         """
-        rows = await self.required_l3_pool.fetch(
-            "SELECT * FROM conversations WHERE agent_id = $1 AND folder_id = $2 ORDER BY date_created DESC",
-            agent_id,
-            folder_id,
+        rows = await read_by(
+            self.required_l3_pool,
+            "conversations",
+            by={"agent_id": agent_id, "folder_id": folder_id},
+            records=True,
+            order=[Sort("date_created", descending=True)],
         )
         entities: list[Conversation] = []
         for row in rows:
@@ -724,13 +724,12 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         :return: conversations matching the ref under the agent + channel, newest-first
         :rtype: list[Conversation]
         """
-        rows = await self.required_l3_pool.fetch(
-            "SELECT * FROM conversations "
-            "WHERE agent_id = $1 AND channel_type = $2 AND conversation_ref = $3 "
-            "ORDER BY date_created DESC",
-            agent_id,
-            channel_type,
-            conversation_ref,
+        rows = await read_by(
+            self.required_l3_pool,
+            "conversations",
+            by={"agent_id": agent_id, "channel_type": channel_type, "conversation_ref": conversation_ref},
+            records=True,
+            order=[Sort("date_created", descending=True)],
         )
         entities: list[Conversation] = []
         for row in rows:

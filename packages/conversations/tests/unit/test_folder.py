@@ -660,8 +660,8 @@ class TestConversationFolderId:
         assert result == []
         pg.fetch.assert_called_once()
         sql, *params = pg.fetch.call_args.args
-        assert "agent_id = $1" in sql
-        assert "folder_id = $2" in sql
-        assert "ORDER BY date_created DESC" in sql
+        assert 't."agent_id" = $1' in sql
+        assert 't."folder_id" = $2' in sql
+        assert 'ORDER BY t."date_created" DESC' in sql
         assert params[0] == agent_id
         assert params[1] == folder_id
