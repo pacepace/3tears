@@ -46,6 +46,7 @@ from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, PRODUCED_P
 
 __all__ = [
     "COPY_CALLS",
+    "JUDGED_BY_STATEMENTS",
     "KEYED_FRAGMENT_BUILDERS",
     "BUILDER_CALLS",
     "KEYED_HELPER_CALLS",
@@ -1233,6 +1234,11 @@ _SYNTHESIZERS: Final = {
     "apply_stage": _apply_stage,
     "update_from": _update_from,
 }
+
+
+#: the helpers whose every call the walk judges as the statements it sends (a synthesizer each): a call of one
+#: inside another's body, over what that one's caller hands it, is judged at that one's callers
+JUDGED_BY_STATEMENTS: Final[frozenset[str]] = frozenset(_SYNTHESIZERS)
 
 
 #: the argument naming the relation a keyed read reads, by helper: keyword and position

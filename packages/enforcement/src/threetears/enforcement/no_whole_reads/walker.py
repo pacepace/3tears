@@ -61,6 +61,7 @@ from threetears.enforcement.no_whole_reads.flow import (
 )
 from threetears.enforcement.no_whole_reads.helpers import (
     COPY_CALLS,
+    JUDGED_BY_STATEMENTS,
     KEYED_FRAGMENT_BUILDERS,
     BUILDER_CALLS,
     KEYED_HELPER_CALLS,
@@ -5577,8 +5578,9 @@ class _ModuleWalk(ast.NodeVisitor):
         )
 
     def _inside_keyed_helper(self) -> bool:
-        """whether the walk is in the body of a keyed helper of ``threetears/core/keyed`` (one of
-        :data:`KEYED_HELPER_CALLS`), each of whose calls the walk judges by the statements it sends.
+        """whether the walk is in the body of a keyed helper of ``threetears/core/keyed`` each of whose calls it judges
+        as the statements it sends (:data:`JUDGED_BY_STATEMENTS`): a helper whose callers are judged otherwise (a
+        statement builder) has its inner calls judged in its body, as any function's.
 
         :return: whether it is
         :rtype: bool
@@ -5586,7 +5588,7 @@ class _ModuleWalk(ast.NodeVisitor):
         function = self._function_node
         return (
             function is not None
-            and function.name in KEYED_HELPER_CALLS
+            and function.name in JUDGED_BY_STATEMENTS
             and any(package in str(self.path) for package in _KEYED_PACKAGES)
         )
 
