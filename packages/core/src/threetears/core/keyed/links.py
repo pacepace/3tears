@@ -27,7 +27,6 @@ from threetears.core.keyed._filters import sent_by
 from threetears.interfaces.keyed.filters import quote_identifier, quoted_table
 
 __all__ = [
-    "link_chain_statement",
     "read_link_chain",
 ]
 
@@ -35,7 +34,7 @@ __all__ = [
 _DEPTH = "link_chain_depth"
 
 
-def link_chain_statement(table: str, *, key: str, link: str, columns: Sequence[str]) -> str:
+def _link_chain_statement(table: str, *, key: str, link: str, columns: Sequence[str]) -> str:
     """the recursive statement :func:`read_link_chain` sends: ``$1`` the first row's key, ``$2`` the most rows.
 
     :param table: the table, a TRUSTED identifier
@@ -92,5 +91,5 @@ async def read_link_chain(
     """
     if isinstance(most, bool) or most < 1:
         raise ValueError(f"a link chain walks at least one row, not {most!r}")
-    statement = link_chain_statement(table, key=key, link=link, columns=columns)
+    statement = _link_chain_statement(table, key=key, link=link, columns=columns)
     return [dict(row) for row in await sent_by(conn).fetch(statement, start, most)]
