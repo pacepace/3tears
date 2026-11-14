@@ -27,7 +27,10 @@ the first stays short on its own record. :func:`resume_run` continues the run it
   the run keeps the launch's. Nor is the engine's build (``EvalRun.package_version``, ``package_rev``): a run taken
   up across an engine upgrade goes ahead, and keeps the launch's build, the only one it records, since a holding
   records none (``RunLifetime``). So a resumed run can span engine builds, and the framing its judge is sent may
-  change between holdings with no judge-prompt digest recording it.
+  change between holdings with no judge-prompt digest recording it. Nor is the version of the goal-check proof rules
+  (``EvalRun.goal_check_proof_rules``): the launch re-proves the run's own goal checks under the rules in force, and
+  only a check proved otherwise than the run's proof refuses. The run keeps the rules its proofs were derived under,
+  so a ``proven`` from older rules still reads as unproven.
 - **One holding at a time.** The run is reopened under its lease's next epoch, conditionally on the record as read,
   so two take-ups of one run cannot both win, and a holding the run has passed from writes nothing more into it.
 - **Its spend counts.** What its stored rows spent seeds its cost cap, and the metered calls they landed seed its
@@ -115,6 +118,11 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
         "variant_levers",
         "test_case_ids",
         "template_digest",
+        # Held by its outcome, never its number: the take-up's launch re-proves the run's own goal checks under the
+        # proof rules in force (``goal_check_proofs``, pinned), so a rules change that proves them as the run's own
+        # proofs did is taken up. The run keeps the rules its proofs were derived under, so a ``proven`` from older
+        # rules still reads as unproven (``goal_check_proofs_as_read``).
+        "goal_check_proof_rules",
         # Replayed as the run recorded them by the take-up's launch (``admit_resumed_run``), so equal by construction:
         # its template, its candidate, its repeats, its margins, its latency declaration and its arm order. The case
         # set's name is a label on the case ids, which are held.
@@ -373,7 +381,7 @@ def _resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profi
     for name in _PINNED_FIELDS:
         before, after = getattr(stored, name), getattr(fresh, name)
         if before != after:
-            differences.append(f"{name} ({_shown(before)} -> {_shown(after)})")
+            differences.append(f"{name} ({_shown(before)} -> {_shown(after)}{_proof_rules_moved(name, stored, fresh)})")
     # The case set reaches no key, so it is held here: a take-up runs the cases the run froze, never others. Compared
     # over the sorted ids, as `case_set_fingerprint` compares them, so the same cases in another order are no change;
     # the template that fingerprint also digests is named by the context component that holds it.
@@ -392,6 +400,18 @@ def _resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profi
             "the edit changed the measurement cannot be told"
         )
     return differences
+
+
+def _proof_rules_moved(name: str, stored: EvalRun, fresh: EvalRun) -> str:
+    """What a refusal adds to a goal-check proof difference when the proof rules moved too: the two rule versions,
+    so an operator reads that the current rules prove the run's own checks otherwise; empty for any other field, or
+    when the rules did not move."""
+    if name != "goal_check_proofs" or stored.goal_check_proof_rules == fresh.goal_check_proof_rules:
+        return ""
+    return (
+        f", re-proved under proof rules {fresh.goal_check_proof_rules}; the run's were derived under "
+        f"{stored.goal_check_proof_rules}"
+    )
 
 
 def _case_set_drift(was: Sequence[str], now: Sequence[str]) -> str:

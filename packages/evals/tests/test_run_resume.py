@@ -61,7 +61,7 @@ from threetears.evals.run import (
 from threetears.evals.run.definition_digests import measured_template_digest
 from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.schema import EvalResult, EvalRun, EvalTemplate, JobLease
-from threetears.evals.schema.models import RunLifetime, cell_result_id, eval_trace_doc_id
+from threetears.evals.schema.models import GOAL_CHECK_PROOF_RULES, RunLifetime, cell_result_id, eval_trace_doc_id
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_run, make_template
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_COST_CEILING_USD, TOYHOST_SUBJECT
@@ -610,6 +610,61 @@ async def test_a_run_whose_template_was_edited_in_nothing_it_measures_is_taken_u
     run = await _assert_ends_as_the_control(holder, run_id, launched)
     first, second = run.lifetimes
     assert (first.template_edited_at, second.template_edited_at) == (None, EDITED_AT), "the holding after it says so"
+
+
+#: The proof rules a run is rewritten as stored under: older than the ones in force.
+OLDER_PROOF_RULES = GOAL_CHECK_PROOF_RULES - 1
+
+
+def _as_proved_under_older_rules(store: ClockedStore, run_id: str, **proofs: str) -> None:
+    """Rewrite a run's record as a build with older goal-check proof rules stored it, its proofs as given (each
+    check's own when none is)."""
+    document = store.get(run_id, TOYHOST_SCOPE)
+    assert document is not None
+    document["goal_check_proof_rules"] = OLDER_PROOF_RULES
+    document["goal_check_proofs"] = {**document["goal_check_proofs"], **proofs}
+    store.upsert(document)
+
+
+async def test_a_run_whose_checks_the_current_proof_rules_prove_alike_is_taken_up_keeping_its_own_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder, run_id, launched, store = await _interrupted(monkeypatch, "cancelled")
+    assert launched.goal_check_proofs, "the toy's template has goal checks to prove"
+    _as_proved_under_older_rules(store, run_id)
+    resumer = other_process(holder)
+
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+
+    run = await _assert_ends_as_the_control(holder, run_id, launched)
+    assert run.goal_check_proofs == launched.goal_check_proofs
+    assert run.goal_check_proof_rules == OLDER_PROOF_RULES, (
+        "its proofs were derived under the older rules, so a `proven` among them still reads as unproven"
+    )
+
+
+async def test_a_run_whose_checks_the_current_proof_rules_prove_otherwise_is_refused_naming_both_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder, run_id, launched, store = await _interrupted(monkeypatch, "cancelled")
+    assert launched.goal_check_proofs
+    check = sorted(launched.goal_check_proofs)[0]
+    other = "refuted" if launched.goal_check_proofs[check] != "refuted" else "unproven"
+    _as_proved_under_older_rules(store, run_id, **{check: other})
+    before = off_loop(_run, holder, run_id)
+
+    with pytest.raises(ValidationFailedError) as refused:
+        await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
+
+    message = refused.value.message
+    assert "goal_check_proofs (" in message, message
+    assert (
+        f"re-proved under proof rules {GOAL_CHECK_PROOF_RULES}; the run's were derived under {OLDER_PROOF_RULES}"
+        in message
+    ), message
+    assert "goal_check_proof_rules (" not in message, "the rules' number alone is never a difference"
+    assert off_loop(_run, holder, run_id) == before, "nothing was written"
 
 
 # =============================================================================
