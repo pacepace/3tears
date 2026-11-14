@@ -395,8 +395,8 @@ PASS_HAT_K_CELL_READING = (
     "An arm's frontier pass^k, with its interval, bar and verdict, reads its headline pass^k cell alone: one "
     "measurement context, template revision, apparatus provenance and served model, whatever cases each run covered "
     "and whenever it ran. A run of another such cell is named below with why and its own pass^k, and is kept out of "
-    "that headline only: the arm's tables, composite, cost and latency still count it, and so do its cells, which "
-    "pool the runs of the variant under one rig that one candidate model answered."
+    "that headline only: the arm's tables, cells, composite, cost and latency still count it, pooling every run of the "
+    "variant under one rig."
 )
 
 #: Each reason a pass^k cell stands apart, as a reader is told it.

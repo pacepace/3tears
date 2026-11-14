@@ -79,11 +79,11 @@ CELL_MODEL_VERSION: int = 14
 #: The dimension a cell is split on where the observations of one variant under one rig were answered by more than
 #: one candidate model, or some by a model nothing named (:func:`split_on_served_model`). The confound of the same
 #: name is what a comparison ACROSS arms carries; this is what keeps one arm's cell to one answering model.
-SERVED_CANDIDATE_DIMENSION = "served_model:candidate"
+_SERVED_CANDIDATE_DIMENSION = "served_model:candidate"
 
-#: The level :data:`SERVED_CANDIDATE_DIMENSION` records for an observation whose candidate made no model call, in a
+#: The level :data:`_SERVED_CANDIDATE_DIMENSION` records for an observation whose candidate made no model call, in a
 #: cell that is split: it recorded that nothing answered, which is neither a model nor a silence.
-NO_CANDIDATE_CALL = "no candidate call"
+_NO_CANDIDATE_CALL = "no candidate call"
 
 
 class ApparatusClass(EvalDocumentModel):
@@ -568,7 +568,7 @@ def split_on_served_model(
 
     A variant is keyed at launch by the model it asked for, before any response names the one that answered. So
     the observations of one variant under one rig are read for what answered them, and where they do not all say
-    one thing they are classed apart, each under a class that adds :data:`SERVED_CANDIDATE_DIMENSION` to the rig's:
+    one thing they are classed apart, each under a class that adds :data:`_SERVED_CANDIDATE_DIMENSION` to the rig's:
     recorded at the answering model, or unrecorded where a response named none. The split classes keep the rig's id
     (``rig_class_id``), so each is still compared with the control under that rig, and the pooling that follows
     (:func:`pool_observations`) states the refusal between them as it does any other.
@@ -592,7 +592,7 @@ def split_on_served_model(
         reference: the given ones and each split class.
     :rtype: tuple[list[Observation], dict[str, ApparatusClass]]
     :raises KeyError: An observation references an apparatus class not in ``classes``.
-    :raises ValueError: A host's own apparatus dimension is named :data:`SERVED_CANDIDATE_DIMENSION`, so a split
+    :raises ValueError: A host's own apparatus dimension is named :data:`_SERVED_CANDIDATE_DIMENSION`, so a split
         class could not say which of the two it recorded.
     """
     # What each calling observation of one batch and variant said, for the observations there that made no call.
@@ -610,7 +610,7 @@ def split_on_served_model(
         )
         if len(said) == 1:
             return True, next(iter(said))
-        return False, NO_CANDIDATE_CALL
+        return False, _NO_CANDIDATE_CALL
 
     levels = {obs.id: level_of(obs) for obs in observations}
     said_by_cell: dict[tuple[str, str], set[tuple[bool, str | None]]] = defaultdict(set)
@@ -626,13 +626,13 @@ def split_on_served_model(
             placed.append(obs)
             continue
         rig = classes[obs.apparatus_class_id]
-        if SERVED_CANDIDATE_DIMENSION in rig.recorded or SERVED_CANDIDATE_DIMENSION in rig.unknown_dimensions:
+        if _SERVED_CANDIDATE_DIMENSION in rig.recorded or _SERVED_CANDIDATE_DIMENSION in rig.unknown_dimensions:
             raise ValueError(
                 f"apparatus class {rig.apparatus_class_id} already holds a dimension named "
-                f"{SERVED_CANDIDATE_DIMENSION}, the name a cell is split on by the model that answered"
+                f"{_SERVED_CANDIDATE_DIMENSION}, the name a cell is split on by the model that answered"
             )
         split = apparatus_class_of(
-            {**rig.recorded, SERVED_CANDIDATE_DIMENSION: levels[obs.id][1]},
+            {**rig.recorded, _SERVED_CANDIDATE_DIMENSION: levels[obs.id][1]},
             provenance=rig.provenance,
             dimensions=rig.unknown_dimensions,
         ).model_copy(update={"rig_class_id": rig.rig_class_id or rig.apparatus_class_id})
@@ -928,8 +928,6 @@ def subject_key_instabilities(observed: Iterable[tuple[str, str]]) -> list[Subje
 
 __all__ = [
     "CELL_MODEL_VERSION",
-    "NO_CANDIDATE_CALL",
-    "SERVED_CANDIDATE_DIMENSION",
     "ApparatusClass",
     "Cell",
     "NextExperiment",
