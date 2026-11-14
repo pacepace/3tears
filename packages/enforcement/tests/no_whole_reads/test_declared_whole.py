@@ -168,9 +168,10 @@ def test_a_constant_named_elsewhere_is_not_the_declaration_s_alone(tmp_path: Pat
     assert any("in <module>: whole-aggregate items" in finding for finding in findings), findings
 
 
-def test_a_call_into_a_declared_read_is_declared_there_with_the_same_kind(tmp_path: Path) -> None:
-    """Flips if an undeclared call into a function holding a declared read passes, if the call declared with the
-    same kind is refused, or if one declared with another kind passes."""
+def test_a_call_into_a_declared_read_is_not_flagged_again(tmp_path: Path) -> None:
+    """Flips if an undeclared call into a function whose every whole read is declared is flagged again (coordinator
+    ruling 2026-11-13: the callee's declaration, proof and speed test cover it), if the call declared with the same
+    kind is refused, or if one declared with another kind passes (it covers nothing)."""
     caller = """
     from threetears.core.declared import whole_read
     from store import fill
@@ -206,14 +207,15 @@ def test_a_call_into_a_declared_read_is_declared_there_with_the_same_kind(tmp_pa
         "    ",
     )
     findings = _findings(tmp_path, {"store.py": _STORE, "restore.py": caller}, proofs)
-    assert any("in plain: calls-whole-read fill" in finding for finding in findings), findings
-    assert any("in other: calls-whole-read fill" in finding for finding in findings), findings
+    assert not any("in plain:" in finding for finding in findings), findings
+    assert any(" other whole_read(kind='backup_verification'): covers no" in finding for finding in findings), findings
     assert not any("in same:" in finding or " same whole_read" in finding for finding in findings), findings
 
 
-def test_a_call_into_a_declared_drain_is_declared_there_with_the_same_kind(tmp_path: Path) -> None:
+def test_a_call_into_a_declared_drain_is_not_flagged_again(tmp_path: Path) -> None:
     """Flips if a drain cannot be declared at a call into the function holding it (flush_pending's call of
-    WriteBuffer.drain), if an undeclared call into it passes, or if a call declared with another kind passes."""
+    WriteBuffer.drain), if an undeclared call into it is flagged again, or if a call declared with another kind
+    passes."""
     reason = "the process's own buffer (never L3): every pending write is taken whole to flush"
     held = f"""
     from threetears.core.declared import whole_read
@@ -250,10 +252,79 @@ def test_a_call_into_a_declared_drain_is_declared_there_with_the_same_kind(tmp_p
         "".join(f"\ndef test_{name}_entry():\n    assert {name}\n" for name in ("held", "same", "other")), "    "
     )
     findings = _findings(tmp_path, {"held.py": held, "caller.py": caller}, proofs)
-    assert any("in plain: calls-whole-read held" in finding for finding in findings), findings
-    assert any("in other: calls-whole-read held" in finding for finding in findings), findings
+    assert not any("in plain:" in finding for finding in findings), findings
+    # declared with another kind: refused (here for its missing speed test; with one, it would cover nothing)
+    assert any(" other whole_read(kind='cold_start'): " in finding for finding in findings), findings
     assert not any("in same:" in finding or " same whole_read" in finding for finding in findings), findings
     assert not any(" held whole_read" in finding or "in held:" in finding for finding in findings), findings
+
+
+def test_a_call_into_an_undeclared_or_partly_declared_read_is_still_flagged(tmp_path: Path) -> None:
+    """Flips if a call into a function holding a whole read nobody declared passes, or into one holding a declared
+    read beside an undeclared one (the declaration covers its own read, never the function's other)."""
+    module = (
+        _STORE
+        + """
+    async def bare(conn):
+        return await conn.fetch("SELECT id FROM items")
+
+    async def mixed(conn):
+        await fill(conn)
+        return await conn.fetch("SELECT body FROM items")
+"""
+    )
+    caller = """
+    from store import bare, fill, mixed
+
+    async def reaches_bare(conn):
+        return await bare(conn)
+
+    async def reaches_mixed(conn):
+        return await mixed(conn)
+
+    async def reaches_fill(conn):
+        return await fill(conn)
+"""
+    findings = _findings(tmp_path, {"store.py": module, "restore.py": caller})
+    assert any("in reaches_bare: calls-whole-read bare" in finding for finding in findings), findings
+    assert any("in reaches_mixed: calls-whole-read mixed" in finding for finding in findings), findings
+    assert not any("in reaches_fill:" in finding for finding in findings), findings
+
+
+def test_a_call_into_a_ledger_exempt_read_is_not_flagged_again(tmp_path: Path) -> None:
+    """Flips if a call into a function the exemptions ledger exempts soundly (its proof and speed test hold) is
+    flagged again at the caller (the hub's announce_platform_migrations -> CollectionAnnouncementLedger.applied), or
+    a call into one whose ledger line is unsound passes."""
+    module = """
+    from threetears.core.collections.schema_backed import TableSchema
+
+    ITEMS = TableSchema(name="items", primary_key="id", columns=[])
+
+    async def warm(conn):
+        return await conn.fetch("SELECT id, body FROM items")
+
+    async def cold(conn):
+        return await conn.fetch("SELECT id FROM items")
+
+    async def start(conn):
+        await warm(conn)
+        return await cold(conn)
+"""
+    proofs = _PROOFS + textwrap.indent(
+        "\ndef test_warm_entry():\n    assert warm\n\ndef test_warm_speed():\n    budget_problem(warm)\n", "    "
+    )
+    config = _config(tmp_path, {"store.py": module}, proofs)
+    reason = "an empty copy is filled once at its cold start, nothing in L2 yet"
+    (tmp_path / "_no_whole_reads_exemptions.txt").write_text(
+        f"src/store.py :: warm :: 1 :: cold-start :: tests/test_backup.py::test_warm_entry :: "
+        f"tests/test_backup.py::test_warm_speed :: {reason}\n"
+        f"src/store.py :: cold :: 1 :: cold-start :: tests/test_backup.py::test_cold_entry :: "
+        f"tests/test_backup.py::test_cold_speed :: {reason}\n",
+        encoding="utf-8",
+    )
+    findings = no_whole_reads_findings(config)
+    assert not any("in start: calls-whole-read warm" in finding for finding in findings), findings
+    assert any("in start: calls-whole-read cold" in finding for finding in findings), findings
 
 
 def test_a_declared_statement_is_not_a_use_the_helper_finding(tmp_path: Path) -> None:
@@ -606,7 +677,8 @@ def test_a_whole_call_into_a_declared_function_is_declared_there_with_the_same_k
     assert any("in plain: whole-call rebuild_declared" in finding for finding in findings), findings
     assert any("in other: whole-call rebuild_declared" in finding for finding in findings), findings
     assert any("in unchained: whole-call rebuild_bare" in finding for finding in findings), findings
-    assert any("in rebuild_bare: calls-whole-read duplicates" in finding for finding in findings), findings
+    # a plain call into the declared read is not flagged again; a call NAMED whole (a rebuild) still declares its kind
+    assert not any("in rebuild_bare: calls-whole-read duplicates" in finding for finding in findings), findings
     assert not any("in same:" in finding or " same whole_read" in finding for finding in findings), findings
     assert not any("in rebuild_declared:" in finding or "in duplicates:" in finding for finding in findings), findings
 

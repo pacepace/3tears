@@ -50,8 +50,10 @@ in the wrapped expression, or in a module constant only it names; the reason is 
 names Pace and a date; ``proof`` names a test that names the enclosing function (it proves the statement is reached
 only in that situation); ``speed``, for the kinds reading our own tables at size, names a test calling
 ``budget_problem``; a ``drain`` or ``unbounded_by_warehouse`` read is never of a declared L3 table. A call into a
-function holding a declared read is still ``calls-whole-read`` unless that call is declared with the same kind. A
-declaration covering no whole read is a finding. The gate prints every one it accepts, and the use-the-helper rule
+function whose every whole read is declared (or exempt in the ledger) is not flagged again at the caller (coordinator
+ruling 2026-11-13: the callee's declaration, proof and speed test cover it wherever it is reached); a call into a
+function holding any undeclared whole read is still ``calls-whole-read``. A call declared with another kind than the
+callee's covers nothing. A declaration covering no whole read is a finding. The gate prints every one it accepts, and the use-the-helper rule
 does not count its statement (no keyed helper answers it).
 
 **The one way out for a cold start or schema change: the exemptions ledger.** A function that is a true cold start, or a schema change, is listed
@@ -711,6 +713,18 @@ def declaration_defects(repo_root: Path, declared: DeclaredWhole) -> list[str]:
     return defects
 
 
+def _reached_function(hit: WholeReadHit) -> tuple[str, str]:
+    """the function a ``calls-whole-read`` hit reaches.
+
+    :param hit: the hit
+    :ptype hit: WholeReadHit
+    :return: its path and qualified name
+    :rtype: tuple[str, str]
+    """
+    reached = _REACHED.search(hit.statement)
+    return (reached.group("path") if reached else "", hit.symbol.split(" ", 1)[-1])
+
+
 class _Declared:
     """the repo's declarations judged: which are sound, and which hits each covers."""
 
@@ -802,8 +816,7 @@ class _Declared:
         :return: its path and qualified name
         :rtype: tuple[str, str]
         """
-        reached = _REACHED.search(hit.statement)
-        return (reached.group("path") if reached else "", hit.symbol.split(" ", 1)[-1])
+        return _reached_function(hit)
 
     def _bare_functions(
         self, sound: list[DeclaredWhole], hits: list[WholeReadHit], pattern: re.Pattern[str]
@@ -850,6 +863,69 @@ class _Declared:
         return True
 
 
+class _Settled:
+    """which functions' whole reads are all settled: each covered by a sound declaration, inside a sound exemption,
+    or a call into a function so settled. A call into one is not flagged again at its caller (coordinator ruling,
+    2026-11-13): the callee's declaration or exemption, with its proof and speed tests, covers the read wherever it
+    is reached from. A call into a function holding any read neither declared nor exempt is still flagged."""
+
+    def __init__(self, hits: list[WholeReadHit], covered: set[WholeReadHit], exemptions: list[_Exemption]) -> None:
+        """index the hits by module.
+
+        :param hits: every hit
+        :ptype hits: list[WholeReadHit]
+        :param covered: the hits sound declarations cover
+        :ptype covered: set[WholeReadHit]
+        :param exemptions: the sound exemptions
+        :ptype exemptions: list[_Exemption]
+        """
+        self._by_path: dict[str, list[WholeReadHit]] = {}
+        for hit in hits:
+            self._by_path.setdefault(hit.path, []).append(hit)
+        self._covered = covered
+        self._exemptions = exemptions
+        self._known: dict[tuple[str, str], bool] = {}
+
+    def __call__(self, target: tuple[str, str], seen: frozenset[tuple[str, str]] = frozenset()) -> bool:
+        """whether every whole read of a function (and of the functions defined inside it) is settled.
+
+        :param target: the function's path and qualified name
+        :ptype target: tuple[str, str]
+        :param seen: the functions on the call chain being judged (a cycle settles nothing)
+        :ptype seen: frozenset[tuple[str, str]]
+        :return: whether it is
+        :rtype: bool
+        """
+        if target in self._known:
+            return self._known[target]
+        path, function = target
+        own = [
+            hit
+            for hit in self._by_path.get(path, [])
+            if hit.function == function or hit.function.startswith(f"{function}.")
+        ]
+        answer = bool(own) and all(self._settled(hit, seen | {target}) for hit in own)
+        self._known[target] = answer
+        return answer
+
+    def _settled(self, hit: WholeReadHit, seen: frozenset[tuple[str, str]]) -> bool:
+        """whether one hit is settled.
+
+        :param hit: the hit
+        :ptype hit: WholeReadHit
+        :param seen: the call chain being judged
+        :ptype seen: frozenset[tuple[str, str]]
+        :return: whether it is
+        :rtype: bool
+        """
+        if hit in self._covered or any(_inside(hit, exemption) for exemption in self._exemptions):
+            return True
+        if hit.kind != "calls-whole-read":
+            return False
+        target = _reached_function(hit)
+        return target not in seen and self(target, seen)
+
+
 def _announce_declared(accepted: list[DeclaredWhole]) -> list[str]:
     """print and warn each declaration the gate accepts, so every one is seen on every run.
 
@@ -892,8 +968,10 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
     )
     exemptions, defects = _parse(config.ledger_dir / _EXEMPTIONS_NAME)
     findings.extend(defects)
+    sound: list[_Exemption] = []
     for exemption in exemptions:
         where = f"{_EXEMPTIONS_NAME}:{exemption.file_line}"
+        before = len(findings)
         if f"{exemption.path}::{exemption.function}" not in scan.definitions:
             findings.append(f"{where}: {exemption.path} :: {exemption.function} names no function the walk found")
         have = sum(1 for hit in hits if _inside(hit, exemption))
@@ -908,6 +986,8 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
         speed = _proving_test_defect(config.repo_root, exemption, test=exemption.speed_test, calls="budget_problem")
         if speed is not None:
             findings.append(f"{where}: the speed test {speed}")
+        if len(findings) == before:
+            sound.append(exemption)
     findings.extend(_operator_mark_findings(config, scan))
     declared = _Declared(config, scan, hits)
     findings.extend(declared.findings)
@@ -927,8 +1007,13 @@ def no_whole_reads_findings(config: NoWholeReadsConfig) -> list[str]:
             consumer_purposes=config.consumer_purposes,
         )
     )
+    settled = _Settled(hits, declared.covered, sound)
     for hit in hits:
         if _marked(hit, scan.operators, scan.schema) or hit in declared.covered:
+            continue
+        if hit.kind == "calls-whole-read" and settled(_reached_function(hit)):
+            # the callee's whole reads are each declared or exempt, with their proofs and speed tests: its caller
+            # is not flagged again for reaching them
             continue
         if not any(_inside(hit, exemption) for exemption in exemptions):
             findings.append(f"{hit.path}:{hit.line} in {hit.function}: {hit.symbol} -- {hit.statement} -- {_ADVICE}")
