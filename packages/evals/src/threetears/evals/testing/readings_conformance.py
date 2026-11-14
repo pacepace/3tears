@@ -528,6 +528,24 @@ def _a_grouping_the_port_does_not_define_is_refused(
         _expect_refused(ValueError, partial(_grouped, store, by, measures), f"grouped with {what}")
 
 
+def _reads_are_copies(store: DocumentStore, _install: Callable[[Callable[[], None]], None]) -> None:
+    def stored() -> dict[str, Any]:
+        return _doc("k1", run="a", nested={"v": [1, {"w": 2}]}, scores=[{"value": 1, "notes": {"n": [3]}}])
+
+    _write(store, stored())
+    for row in _narrowed(store, exclude_in_items={"scores": ["reasoning"]}):
+        row["nested"]["v"].append(42)
+        row["nested"]["v"][1]["w"] = 42
+        row["scores"][0]["notes"]["n"].append(42)
+    for group in _grouped(store, ["run"], {"nested": ("values", "nested"), "scores": ("values", "scores")}):
+        for _, value in (*group["nested"], *group["scores"]):
+            if isinstance(value, dict):
+                value["v"].append(42)
+            elif isinstance(value, list):
+                value[0]["notes"]["n"].append(42)
+    _expect_equal(store.get("k1", _SCOPE), stored(), "the stored document after a reader mutated what it was handed")
+
+
 # --- empty answers and failures ---------------------------------------------------------------------
 
 
@@ -637,6 +655,12 @@ RESULT_READINGS_CONFORMANCE_CASES: tuple[ResultReadingsConformanceCase, ...] = (
         "grouped.undefined_grouping_refused",
         "an unknown kind, a count naming a path, a measure naming none, or a measure named as a by path is refused",
         _a_grouping_the_port_does_not_define_is_refused,
+    ),
+    ResultReadingsConformanceCase(
+        "reads.copied_out",
+        "mutating a narrowed row or a grouped value, or any object or list inside it, never reaches the stored "
+        "document",
+        _reads_are_copies,
     ),
     ResultReadingsConformanceCase(
         "empty.answers",

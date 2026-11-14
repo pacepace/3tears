@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: store reads (#1052)
+
+**Changed:** `InMemoryDocumentStore` copies each object and list a caller writes or is handed, and shares strings,
+numbers, booleans and nulls, where it deep-copied every value of every row on each read and write: about a third of
+the copy time, which inflated every profile run on it. The store conformance kit's `write.copied_in_and_out` now
+checks every read and `merge_fields`, at every depth, inside objects and list items, and the readings kit gains
+`reads.copied_out` (a narrowed row, a grouped value); a host store that hands out what it holds fails them.
+
 ### evals: export, seed and carry follow-ups
 
 **Added:** the definition seed gives a stored template the corpus's presentation names it lacks (`goal_check_names`,

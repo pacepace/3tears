@@ -143,6 +143,17 @@ class _SharesReferences(InMemoryDocumentStore):
         return self.documents.get((scope_id, doc_id))
 
 
+class _CopiesOneLevel(InMemoryDocumentStore):
+    """``by_doc_type`` copies each document's top level only, so a reader shares every object and list inside it."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        return [
+            dict(document)
+            for (scope, _), document in self.documents.items()
+            if scope == scope_id and document.get("doc_type") == doc_type
+        ]
+
+
 def _exclude_top_level(document: dict[str, Any], paths: Sequence[str]) -> dict[str, Any]:
     return {key: value for key, value in document.items() if key not in {path.split(".")[0] for path in paths}}
 
@@ -682,6 +693,7 @@ _FAULTS: dict[type[DocumentStore], frozenset[str]] = {
     _InjectsItsEtag: frozenset({"read.document_as_written"}),
     _UpsertMerges: frozenset({"write.upsert_replaces"}),
     _SharesReferences: frozenset({"write.copied_in_and_out"}),
+    _CopiesOneLevel: frozenset({"write.copied_in_and_out"}),
     _ExcludeDropsTheTopField: frozenset({"projection.exclude_drops_one_leaf"}),
     _ExcludeTruncatesAtANonObject: frozenset({"projection.exclude_ignores_dead_paths"}),
     _KeepFillsNone: frozenset({"projection.keep_named_fields"}),

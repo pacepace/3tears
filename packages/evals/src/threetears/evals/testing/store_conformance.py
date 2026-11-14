@@ -251,18 +251,41 @@ def _upsert_replaces_the_whole_document(store: DocumentStore) -> None:
 
 
 def _documents_are_copied_in_and_out(store: DocumentStore) -> None:
-    written = _doc("d1", nested={"v": 1}, items=[1])
+    def stored() -> dict[str, Any]:
+        return _doc("d1", nested={"v": 1, "deep": {"w": [2]}}, items=[1, {"i": 3}])
+
+    written = stored()
     store.upsert(written)
     written["nested"]["v"] = 99
+    written["nested"]["deep"]["w"].append(99)
     written["items"].append(99)
+    written["items"][1]["i"] = 99
     read = _found(store, "d1")
-    _expect_equal(read, _doc("d1", nested={"v": 1}, items=[1]), "the stored document after the writer mutated its dict")
-    read["nested"]["v"] = 42
-    _expect_equal(
-        store.get("d1", _SCOPE),
-        _doc("d1", nested={"v": 1}, items=[1]),
-        "the stored document after a reader mutated its copy",
+    _expect_equal(read, stored(), "the stored document after the writer mutated its dict")
+
+    def spoil(document: dict[str, Any] | None) -> None:
+        # Every container a reader is handed, at every depth, inside objects and inside list items.
+        if document is None:
+            return
+        document["nested"]["v"] = 42
+        document["nested"]["deep"]["w"].append(42)
+        document["items"].append(42)
+        document["items"][1]["i"] = 42
+        document["added"] = 42
+
+    reads: tuple[tuple[str, Callable[[], dict[str, Any] | None]], ...] = (
+        ("get", lambda: store.get("d1", _SCOPE)),
+        ("get_with_etag", lambda: store.get_with_etag("d1", _SCOPE)[0]),
+        ("get_many", lambda: next(iter(store.get_many(_TYPE, ["d1"], _SCOPE)), None)),
+        ("by_doc_type", lambda: next(iter(store.by_doc_type(_TYPE, _SCOPE)), None)),
     )
+    for name, read_one in reads:
+        spoil(read_one())
+        _expect_equal(store.get("d1", _SCOPE), stored(), f"the stored document after a reader mutated its {name} copy")
+    merged = {"nested": {"v": 1, "deep": {"w": [2]}}}
+    _expect(store.merge_fields("d1", _SCOPE, merged), "merge_fields missed d1, which was just written")
+    merged["nested"]["deep"]["w"].append(7)
+    _expect_equal(store.get("d1", _SCOPE), stored(), "the stored document after the merger mutated its fields")
 
 
 # --- projection -------------------------------------------------------------------------------------
@@ -825,7 +848,7 @@ STORE_CONFORMANCE_CASES: tuple[StoreConformanceCase, ...] = (
     ),
     StoreConformanceCase(
         "write.copied_in_and_out",
-        "mutating a written or read dict never reaches the stored document",
+        "mutating a written, merged or read dict, or any object or list inside it, never reaches the stored document",
         _documents_are_copied_in_and_out,
     ),
     StoreConformanceCase(

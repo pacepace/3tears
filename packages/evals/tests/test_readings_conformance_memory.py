@@ -343,6 +343,28 @@ class _PythonEquality(_PlainFold):
         )
 
 
+class _SharesStoredValues(InMemoryDocumentStore):
+    """``iter_narrowed`` narrows the stored documents without copying them, so a reader shares what is stored."""
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> Iterator[dict[str, Any]]:
+        return iter(
+            [
+                narrow_items(omit_paths(document, exclude), exclude_in_items)
+                for (scope, _), document in self.documents.items()
+                if scope == scope_id and document.get("doc_type") == doc_type
+            ]
+        )
+
+
 class _SwallowsFailures(InMemoryDocumentStore):
     """A backend failure reads as an empty answer."""
 
@@ -374,6 +396,7 @@ _FAULTS: dict[type[DocumentStore], frozenset[str]] = {
     _AcceptsAnyMeasure: frozenset({"grouped.undefined_grouping_refused"}),
     _GroupOfNothing: frozenset({"empty.answers"}),
     _SwallowsFailures: frozenset({"failure.raises"}),
+    _SharesStoredValues: frozenset({"reads.copied_out"}),
 }
 
 
