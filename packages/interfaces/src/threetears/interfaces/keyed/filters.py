@@ -9,7 +9,7 @@ YugabyteDB, DuckDB and SQLite each read it the same way. Pure: text and binds, n
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
@@ -361,6 +361,7 @@ def by_conditions(
     first: int = 1,
     alias: str | None = None,
     quote: Callable[[str], str] = quote_identifier,
+    stated: Collection[tuple[str, str]] = (),
 ) -> tuple[list[str], list[Any]]:
     """the conditions keeping only ``by``'s rows, placeholders numbered from ``first``, and their values.
 
@@ -373,6 +374,10 @@ def by_conditions(
     :ptype alias: str | None
     :param quote: how each column is spelled
     :ptype quote: Callable[[str], str]
+    :param stated: ``(column, text)`` pairs a declared partial index's predicate names as ``column = 'text'``
+        (:func:`threetears.interfaces.keyed.keys.stated_literals`): a pin of exactly that text is written as the
+        literal, as a boolean pin is, so a generic plan can prove the predicate; every other text stays ``$n``
+    :ptype stated: Collection[tuple[str, str]]
     :return: one condition a column, and the values in placeholder order
     :rtype: tuple[list[str], list[Any]]
     """
@@ -401,6 +406,11 @@ def by_conditions(
             # ``WHERE flag = false`` under a generic plan (PostgreSQL's after five runs of a prepared statement), so
             # the planner would pass over the index the read pins; ``flag = false`` states the predicate every time
             conditions.append(f"{spelled} = {'TRUE' if value else 'FALSE'}")
+        elif isinstance(value, str) and not isinstance(column, Pin) and (column, value) in stated:
+            # coordinator ruling 2026-11-14 (as Pace's boolean ruling): a text a declared partial index's predicate
+            # names (``WHERE status = 'proposed'``) is written as that literal, for the same reason; it comes from
+            # the declaration, so only a value the code itself declared is ever written into the statement
+            conditions.append(f"{spelled} = '{value.replace(chr(39), chr(39) * 2)}'")
         else:
             conditions.append(f"{spelled} = ${place}")
             values.append(value)

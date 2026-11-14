@@ -26,6 +26,8 @@ from threetears.core.keyed import (
     read_row,
     read_value,
 )
+from threetears.interfaces.keyed.keys import register_partial_predicates
+from threetears.interfaces.keyed.point import read_by_statement
 
 
 @pytest.fixture
@@ -102,6 +104,27 @@ async def test_each_pin_is_bound_as_the_hand_written_statement_bound_it(db: duck
         ('SELECT t."b" FROM "t" AS t WHERE t."a" = $1 AND t."flag" = FALSE AND t."b" = $2', ("k1", 5)),
         ('SELECT t."b" FROM "t" AS t WHERE t."flag" = TRUE AND t."a" = $1', ("k0",)),
     ]
+
+
+async def test_a_text_a_declared_partial_predicate_names_is_written_as_its_literal(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if a pin of a text a declared partial index's predicate names (``WHERE a = 'k-stated'``) is sent as
+    ``= $n`` (a generic plan cannot prove the predicate, so the planner passes over the index), or if any other pin is
+    written as a literal: another text of that column, the same text of another table, or a pinned column no
+    predicate names (coordinator ruling 2026-11-14, as Pace's boolean ruling)."""
+    register_partial_predicates("t", ["a = 'k-stated' AND flag = FALSE", "v IS NOT NULL"])
+    reader = _Recording(db)
+    assert await read_by(reader, "t", by={"a": "k-stated", "b": 5}, columns=("b",), records=True) == []
+    await read_by(reader, "t", by={"a": "k1", "b": 5}, columns=("b",), records=True)
+    assert reader.statements == [
+        ('SELECT t."b" FROM "t" AS t WHERE t."a" = \'k-stated\' AND t."b" = $1', (5,)),
+        ('SELECT t."b" FROM "t" AS t WHERE t."a" = $1 AND t."b" = $2', ("k1", 5)),
+    ]
+    assert read_by_statement("u", by={"a": "k-stated"}, columns=("b",)) == (
+        'SELECT t."b" FROM "u" AS t WHERE t."a" = $1',
+        ["k-stated"],
+    )
 
 
 async def test_read_row_asks_for_one_row_and_answers_none_for_none(db: duckdb.DuckDBPyConnection) -> None:

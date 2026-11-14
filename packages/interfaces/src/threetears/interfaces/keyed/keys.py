@@ -70,6 +70,8 @@ __all__ = [
     "register_table_indexes",
     "register_table_keys",
     "serving_index",
+    "register_partial_predicates",
+    "stated_literals",
 ]
 
 
@@ -282,6 +284,62 @@ class DeclaredIndex:
         stray = self.descending - set(self.columns)
         if stray:
             raise ValueError(f"index {self.name!r}: descending names {sorted(stray)}, not among its columns")
+
+
+#: every ``(relation, column, text)`` a declared partial index's predicate names as ``column = 'text'``, once each,
+#: appended only (as the keys are): a keyed read pinning that column to that text writes it as the literal
+#: (:func:`stated_literals`, ``by_conditions(stated=)``)
+_STATED: list[tuple[Relation, str, str]] = []
+
+#: one conjunct of a partial index's predicate naming a column equal to a text literal: ``status = 'proposed'``
+_STATED_EQUALITY: Final[re.Pattern[str]] = re.compile(r"\s*\(?\s*\"?(\w+)\"?\s*=\s*'((?:[^']|'')*)'\s*\)?\s*")
+
+
+def register_partial_predicates(table: str, predicates: Iterable[str]) -> None:
+    """record each ``column = 'text'`` a partial index of the L3 table ``table`` names in its predicate (each conjunct
+    of an ``AND``), beside any another declaration of that same relation registered. A predicate of any other shape
+    names none; nothing is written as a literal for it.
+
+    WHY (coordinator ruling 2026-11-14, as Pace's boolean ruling): ``status = $3`` cannot prove a partial index's
+    ``WHERE status = 'proposed'`` under PostgreSQL's generic plan (a prepared statement's after five runs), so the
+    planner passes over the index the read pins; written ``status = 'proposed'`` it states the predicate every time.
+
+    :param table: the table's name as declared: ``schema.table``, or bare for the one the search path finds
+    :ptype table: str
+    :param predicates: its partial indexes' predicates, as declared
+    :ptype predicates: Iterable[str]
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when ``table`` is no relation's name
+    """
+    relation = _relation(table)
+    if relation is None:
+        raise ValueError(
+            f"{table!r} names no table (schema.table, or a bare table): its predicates cannot be registered"
+        )
+    for predicate in predicates:
+        for conjunct in re.split(r"\s+AND\s+", predicate, flags=re.IGNORECASE):
+            found = _STATED_EQUALITY.fullmatch(conjunct)
+            if found is None:
+                continue
+            stated = (relation, found.group(1).lower(), found.group(2).replace("''", "'"))
+            if stated not in _STATED:
+                _STATED.append(stated)
+
+
+def stated_literals(table: Any) -> frozenset[tuple[str, str]]:
+    """the ``(column, text)`` pairs the partial indexes declared for the relation ``table`` names state; none for a
+    relation no declaration registers (a derived one, a warehouse's), which writes every pin as ``$n``.
+
+    :param table: the relation a read names
+    :ptype table: Any
+    :return: the pairs
+    :rtype: frozenset[tuple[str, str]]
+    """
+    relation = _relation(table) if isinstance(table, str) else None
+    if relation is None:
+        return frozenset()
+    return frozenset((column, text) for named, column, text in list(_STATED) if named == relation)
 
 
 #: every ``(relation, index)`` a declaration registered, once each, appended only (as the keys are)

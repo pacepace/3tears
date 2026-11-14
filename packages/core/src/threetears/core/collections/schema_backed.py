@@ -56,6 +56,7 @@ from threetears.interfaces.keyed.keys import (
     TableKey,
     not_null_predicate,
     null_predicate,
+    register_partial_predicates,
     register_table_indexes,
     register_table_keys,
 )
@@ -1166,6 +1167,9 @@ class TableSchema:
         register_table_keys(self.name, self._declared_keys(pk_cols, partition_column))
         # the indexes a keyed read of it names to YugabyteDB, whose planner prefers the primary key (keys.serving_index)
         register_table_indexes(self.name, self._declared_indexes(pk_cols))
+        # the texts its partial indexes' predicates name, which a keyed read pinning them writes as literals, so a
+        # generic plan can prove the predicate (keys.register_partial_predicates)
+        register_partial_predicates(self.name, (index.where for index in self.indexes if index.where is not None))
 
     def _declared_indexes(self, pk_cols: tuple[str, ...]) -> list[DeclaredIndex]:
         """the B-tree indexes a keyed read's pins and order can be served by: the primary key, and each declared index

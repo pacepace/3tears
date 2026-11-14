@@ -30,6 +30,7 @@ from threetears.interfaces.keyed.filters import (
     relation,
     selected_column,
 )
+from threetears.interfaces.keyed.keys import stated_literals
 from threetears.interfaces.keyed.page import Sort, order_by_terms
 
 __all__ = ["Nearest", "read_by_statement", "read_nearest_statement", "read_row_statement"]
@@ -77,7 +78,8 @@ def _sql(
     selected = "t.*" if columns is None else ", ".join(selected_column(column) for column in columns)
     if also:
         selected = f"{selected}, {also}"
-    conditions, params = by_conditions(by, alias="t")
+    # a text a declared partial index's predicate names is written as its literal (keys.stated_literals)
+    conditions, params = by_conditions(by, alias="t", stated=stated_literals(table))
     for fragment in where:
         conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
@@ -236,7 +238,11 @@ def read_nearest_statement(
     """
     if limit < 0:
         raise ValueError(f"a nearest read of {table} asks for no fewer than no rows, got {limit}")
-    place = 1 + len(by_conditions(by, alias="t")[1]) + sum(len(fragment.params) for fragment in where)
+    place = (
+        1
+        + len(by_conditions(by, alias="t", stated=stated_literals(table))[1])
+        + sum(len(fragment.params) for fragment in where)
+    )
     distance = nearest.distance(place)
     also = "" if nearest.similarity is None else f"1 - ({distance}) AS {quote_identifier(nearest.similarity)}"
     sql, params = _sql(table, by, columns, limit=False, where=where, also=also)
