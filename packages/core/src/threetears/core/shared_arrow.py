@@ -2647,17 +2647,22 @@ class SharedArrowPool:
         self._stale = False
         #: held while a thread picks, makes or shuts a pool: never by the event loop
         self._lock = threading.Lock()
-        #: the retired pools a thread is reaping, each once (:meth:`_retire`), and the pools whose worker's death
-        #: was said, each once (:meth:`_broken`); a lock of their own, since the executor's thread takes it while
-        #: holding the executor's lock, which :meth:`_submit` takes under ``_lock``
+        #: the retired pools a thread is reaping, each once (:meth:`_retire`), the reaping threads :meth:`close`
+        #: waits for, the pools whose worker's death was said, each once (:meth:`_broken`), and each pool's
+        #: shutdown lock; a lock of their own, since the executor's thread takes it while holding the executor's
+        #: lock, which :meth:`_submit` takes under ``_lock``
         self._reaping: weakref.WeakSet[ProcessPoolExecutor] = weakref.WeakSet()
+        self._reapers: set[threading.Thread] = set()
         self._dead: weakref.WeakSet[ProcessPoolExecutor] = weakref.WeakSet()
+        #: one per pool, held across its waiting shutdown, so a retired pool's reaper (:meth:`_reap`) and
+        #: :meth:`close` never shut one executor down at once: ``ProcessPoolExecutor.shutdown`` closes its result
+        #: queue unlocked, and two at once close the same pipe twice -- ``OSError: [Errno 9] Bad file descriptor``
+        #: at best, or another file that took the number in between. Per pool, so a retired pool finishing a long
+        #: job holds up no other pool's shutdown. never taken under ``_lock``.
+        self._shutdown_locks: weakref.WeakKeyDictionary[ProcessPoolExecutor, threading.Lock] = (
+            weakref.WeakKeyDictionary()
+        )
         self._reaping_lock = threading.Lock()
-        #: held across a waiting shutdown, so a retired pool's reaper (:meth:`_reap`) and :meth:`close` never shut
-        #: one executor down at once: ``ProcessPoolExecutor.shutdown`` closes its result queue unlocked, and two at
-        #: once close the same pipe twice -- ``OSError: [Errno 9] Bad file descriptor`` at best, or another file
-        #: that took the number in between. never taken under ``_lock``.
-        self._shutdown_lock = threading.Lock()
         self._jobs = 0
         self._replaced = 0
 
@@ -2851,6 +2856,8 @@ class SharedArrowPool:
                 initializer=self._initializer,
                 initargs=self._initargs,
             )
+            with self._reaping_lock:
+                self._shutdown_locks[self._pool] = threading.Lock()
             self._stale = False
             for _ in range(self._workers):
                 self._pool.submit(_spawned)
@@ -2906,11 +2913,18 @@ class SharedArrowPool:
         :return: nothing
         :rtype: None
         """
+        reaper = threading.Thread(target=self._reap, args=(pool,), name=f"shared-arrow-reap-{self._name}")
         with self._reaping_lock:
             if pool in self._reaping:
                 return
             self._reaping.add(pool)
-        threading.Thread(target=self._reap, args=(pool,), name=f"shared-arrow-reap-{self._name}").start()
+            self._reapers.add(reaper)
+        try:
+            reaper.start()
+        except BaseException:
+            with self._reaping_lock:
+                self._reapers.discard(reaper)
+            raise
 
     def _reap(self, pool: ProcessPoolExecutor) -> None:
         """wait until a retired pool's jobs are done and its processes reaped, then sweep what they left
@@ -2926,9 +2940,15 @@ class SharedArrowPool:
             self._store.sweep()
         except Exception as exc:  # noqa: BLE001 -- a thread has no caller to raise to; contained, so it is counted
             contain(exc, log=log, what="a retired shared Arrow pool's hand-offs, versions or results went unswept")
+        finally:
+            with self._reaping_lock:
+                self._reapers.discard(threading.current_thread())
 
     async def close(self) -> None:
         """shut the workers down, waiting for them: what they map and hold goes back to the system.
+
+        Waits, too, for every pool replaced earlier and still being retired: for the jobs it was given, as for the
+        current pool's, then its sweep. A job that never ends holds close() as long.
 
         :return: nothing
         :rtype: None
@@ -2945,10 +2965,19 @@ class SharedArrowPool:
             pool, self._pool = self._pool, None
         if pool is not None:
             self._shut_down(pool)
+        # a reaper may start while one is joined (the closed pool's worker died meanwhile): until none is left
+        while True:
+            with self._reaping_lock:
+                reapers = list(self._reapers)
+            if not reapers:
+                break
+            for reaper in reapers:
+                reaper.join()
         self._store.sweep()
 
     def _shut_down(self, pool: ProcessPoolExecutor) -> None:
-        """shut *pool* down and wait for its processes, one waiting shutdown at a time (``_shutdown_lock``).
+        """shut *pool* down and wait for its processes, one waiting shutdown of it at a time (its lock in
+        ``_shutdown_locks``).
 
         a second shutdown of the same executor, after the first, finds nothing left to close.
 
@@ -2957,5 +2986,7 @@ class SharedArrowPool:
         :return: nothing
         :rtype: None
         """
-        with self._shutdown_lock:
+        with self._reaping_lock:
+            lock = self._shutdown_locks[pool]
+        with lock:
             pool.shutdown(wait=True)

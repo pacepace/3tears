@@ -1143,6 +1143,40 @@ class TestADeadWorkersPoolIsReplaced:
         assert len(executors) == 2, "each shut down once"
         assert all(wait for _, wait in shutdowns), "each waited for"
 
+    async def test_a_retired_pool_finishing_a_long_job_holds_up_no_other_retired_pool(
+        self, store: SharedArrowStore, where: Path
+    ) -> None:
+        # every job leaves its pool past its bound, so each next submission retires the pool before it
+        signals = where / "signals"
+        bounded = SharedArrowPool(store, workers=2, private_bytes=0, name="bounded")
+        long = None
+        try:
+            store.publish("v1", {TABLE: _table(1)})
+            await bounded.run(jobs.process_id, read=False)
+            # the second pool: one worker on the long job, the other's short job leaves the pool stale
+            long = asyncio.ensure_future(
+                bounded.run(jobs.write_on_signal, str(signals), read=False, result_bytes=1 << 20)
+            )
+            await _until(lambda: (signals / "started").exists(), "the long job started")
+            await bounded.run(jobs.process_id, read=False)
+            # the third pool, retired (by the next job) while the second still runs the long job
+            mapping = (await bounded.run(jobs.process_id)).value
+            store.publish("v2", {TABLE: _table(2)})
+            assert set(store.versions()) == {"v1", "v2"}, "the third pool's worker still maps v1"
+            await bounded.run(jobs.process_id, read=False)
+
+            await _until(lambda: _reaped(mapping), "the third pool's worker shut down")
+            await _until(lambda: store.versions() == ("v2",), "the third pool's v1 swept")
+            assert not long.done(), "the long job still runs"
+        finally:
+            (signals / "go").touch()
+            if long is not None:
+                result = await long
+                assert result.segment is not None
+                result.segment.close()
+            await bounded.close()
+        assert bounded.replaced == 3
+
 
 class TestAWorkersResultBecomesAPart:
     def test_a_claimed_result_is_linked_into_a_version_never_copied(self, store: SharedArrowStore) -> None:

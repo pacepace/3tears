@@ -97,7 +97,9 @@ caller's job before that job's future failed) left the executor refusing every l
 `BrokenProcessPool` until the process restarted. The refused job is now given once more, to a fresh pool, and the
 broken pool is said once, reaped and swept as a failed job's pool is. Every replaced pool, broken or past its
 workers' private memory, is now shut down once, waited for and swept by a reaper thread, never also without waiting by
-the submission that replaces it; a pool replaced for its memory whose worker died between jobs is said too.
+the submission that replaces it; a pool replaced for its memory whose worker died between jobs is said too. Each pool
+has its own shutdown lock, so one finishing a long job holds up no other's, and `close()` also waits for the pools
+still being retired.
 
 ### core: a shared Arrow worker that dies leaves nothing behind (#1140)
 
