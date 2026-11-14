@@ -76,6 +76,9 @@ version history:
   status and date_created under the agent, agent+user and agent+status
   pins (five indexes), plus one (agent_id, date_updated, conversation_id)
   for "last updated"; message_count's sort is deprecated and gets none.
+- v013 -- a folder's conversations (agent_id, folder_id, date_created,
+  conversation_id) and one ref's (agent_id, channel_type,
+  conversation_ref, date_created, conversation_id) each read an index.
 """
 
 from __future__ import annotations
@@ -116,6 +119,9 @@ from threetears.conversations.migrations.v011_conversation_parent import (
 from threetears.conversations.migrations.v012_conversation_sort_indexes import (
     add_conversation_sort_indexes,
 )
+from threetears.conversations.migrations.v013_folder_and_ref_indexes import (
+    add_folder_and_ref_indexes,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -154,6 +160,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(10)(drop_search_vector_gin_index)
     pkg.version(11)(add_conversation_parent)
     pkg.version(12)(add_conversation_sort_indexes)
+    pkg.version(13)(add_folder_and_ref_indexes)
     runner.register(pkg)
     return pkg
 

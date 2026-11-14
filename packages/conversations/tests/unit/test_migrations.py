@@ -15,6 +15,7 @@ import pytest
 from threetears.core.testing.migrations import uncontended_ddl_lock_rows
 
 from threetears.conversations.migrations.v012_conversation_sort_indexes import add_conversation_sort_indexes
+from threetears.conversations.migrations.v013_folder_and_ref_indexes import add_folder_and_ref_indexes
 from threetears.conversations.migrations import (
     PACKAGE_NAME,
     add_conversation_language_column,
@@ -147,7 +148,7 @@ class TestRegisterConversationsMigrations:
         pkg = register(runner)
         assert pkg.depends_on == ()
 
-    async def test_register_populates_versions_one_through_twelve(self) -> None:
+    async def test_register_populates_versions_one_through_thirteen(self) -> None:
         """register wires v001 (create), v002 (message_count), v003
         (name), v004 (datetimetz), v005 (search_vector + trigger),
         v006 (language column + trigger update), v007 (rename id
@@ -156,20 +157,20 @@ class TestRegisterConversationsMigrations:
         unique + conversation->folder FK ON DELETE SET NULL), v010
         (drop the search_vector GIN index), v011 (the conversation's
         parent: type + id, both-or-neither check, index), v012 (the
-        listing's six sort indexes)."""
+        listing's six sort indexes), v013 (the folder and ref indexes)."""
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}
 
-    async def test_apply_runs_twelve_versions_then_idempotent(self) -> None:
-        """apply records v1..v12 and re-running is a no-op."""
+    async def test_apply_runs_thirteen_versions_then_idempotent(self) -> None:
+        """apply records v1..v13 and re-running is a no-op."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_for_agent_schema(store)
-        assert first_count == 12
+        assert first_count == 13
         assert store.migrations_table_created is True
-        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 
@@ -734,6 +735,28 @@ class TestAddConversationSortIndexesMigration:
         store = _FakeDataStore()
         await add_conversation_sort_indexes(store)  # type: ignore[arg-type]
         assert "message_count" not in _joined_executed_sql(store)
+
+
+class TestAddFolderAndRefIndexesMigration:
+    """tests for v013: a folder's conversations and one ref's each read an agent-led index."""
+
+    async def test_direct_call_builds_exactly_the_two_indexes(self) -> None:
+        """one CREATE INDEX IF NOT EXISTS per index, agent-led, the read's pins then its order and the tie-break."""
+        store = _FakeDataStore()
+        await add_folder_and_ref_indexes(store)  # type: ignore[arg-type]
+        statements = [" ".join(sql.split()) for sql, _params in store.executed]
+        assert statements == [
+            "CREATE INDEX IF NOT EXISTS idx_conv_agent_folder_created"
+            " ON conversations (agent_id, folder_id, date_created, conversation_id)",
+            "CREATE INDEX IF NOT EXISTS idx_conv_agent_ref_created"
+            " ON conversations (agent_id, channel_type, conversation_ref, date_created, conversation_id)",
+        ]
+
+    async def test_it_drops_nothing(self) -> None:
+        """the expand step only adds: a drop waits for the contract migration."""
+        store = _FakeDataStore()
+        await add_folder_and_ref_indexes(store)  # type: ignore[arg-type]
+        assert "DROP" not in _joined_executed_sql(store).upper()
 
 
 class TestDuplicateVersionGuard:

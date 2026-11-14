@@ -15,8 +15,11 @@ from typing import Any
 import asyncpg
 import pytest
 import pytest_asyncio
+from threetears.conversations import ConversationsCollection
 from threetears.conversations.merge import repoint_user
 from threetears.conversations.migrations import register as register_conversations
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.keyed import Sort, keyset_page
 from threetears.core.testing.captured import CapturedL3
@@ -39,7 +42,8 @@ _ROWS = 6000
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def world(pg_url: str) -> AsyncIterator[tuple[asyncpg.Connection, uuid.UUID, uuid.UUID]]:
     """a fresh schema with the conversations table built and seeded: 6000 conversations over three agents, three
-    hundred users and three statuses; yields the connection, an agent and a user of it."""
+    hundred users, three statuses, three hundred folders and six hundred refs; yields the connection, an agent and a
+    user of it."""
     schema = f"conv_plans_{uuid.uuid4().hex[:12]}"
     conn = await asyncpg.connect(pg_url)
     await conn.execute(f'CREATE SCHEMA "{schema}"')
@@ -49,14 +53,25 @@ async def world(pg_url: str) -> AsyncIterator[tuple[asyncpg.Connection, uuid.UUI
     await runner.apply_for_agent_schema(AsyncpgStore(conn))
     agents = [uuid.uuid4() for _ in range(3)]
     users = [uuid.uuid4() for _ in range(300)]
+    # folder i is agent i % 3's, so conversation g (agent g % 3) is filed in a folder of its own agent
+    await conn.execute(
+        "INSERT INTO folders (agent_id, folder_id, customer_id, user_id, name, date_created, date_updated)"
+        " SELECT ($1::uuid[])[1 + g % 3], ($2::uuid[])[1 + g], gen_random_uuid(), ($3::uuid[])[1 + g],"
+        " 'folder ' || g, now(), now() FROM generate_series(0, 299) g",
+        agents,
+        _FOLDERS,
+        users,
+    )
     await conn.execute(
         "INSERT INTO conversations (agent_id, conversation_id, customer_id, user_id, channel_type, status,"
-        " date_created, date_updated, message_count)"
+        " date_created, date_updated, message_count, folder_id, conversation_ref)"
         " SELECT ($1::uuid[])[1 + g % 3], gen_random_uuid(), gen_random_uuid(), ($2::uuid[])[1 + g % 300], 'web',"
         " (ARRAY['active', 'closed', 'archived', 'active', 'active'])[1 + g % 5], now() - g * interval '1 minute',"
-        f" now() - (g * 7 % {_ROWS}) * interval '1 minute', 0 FROM generate_series(1, {_ROWS}) g",
+        f" now() - (g * 7 % {_ROWS}) * interval '1 minute', 0, ($3::uuid[])[1 + g % 300], 'ref-' || g % 600"
+        f" FROM generate_series(1, {_ROWS}) g",
         agents,
         users,
+        _FOLDERS,
     )
     await conn.execute("ANALYZE conversations")
     try:
@@ -77,6 +92,18 @@ async def test_conv_user(world: tuple[asyncpg.Connection, uuid.UUID, uuid.UUID])
 
 #: the hub's person erasure statement (``aibots.hub.customers.person_erasure.OWNED_CONVERSATIONS_SQL``)
 _OWNED_CONVERSATIONS_SQL = "SELECT conversation_id FROM conversations WHERE user_id = $1"
+
+
+#: the seeded folders: folder i belongs to agent i % 3
+_FOLDERS = [uuid.uuid4() for _ in range(300)]
+
+
+def _captured_collection() -> tuple[ConversationsCollection, CapturedL3]:
+    """the collection over a pool that records each statement it is asked (and answers none)."""
+    captured = CapturedL3()
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=captured)
+    return ConversationsCollection(registry, DefaultCoreConfig(), captured), captured
 
 
 #: the page size: a user holds twenty conversations, so a page of eight leaves a second and a third
@@ -171,6 +198,24 @@ async def test_conv_agent_user_created(world: tuple[asyncpg.Connection, uuid.UUI
     assert plan_uses_index(repoint, "idx_conv_agent_user_created") or plan_uses_index(
         repoint, "idx_conv_agent_user_status"
     ), repoint.plan
+    # find_by_user, open or with the closed ones too: the user's conversations newest first. At twenty rows a user the
+    # planners differ: YugabyteDB walks idx_conv_agent_user_created, which declares the read; PostgreSQL takes its
+    # sibling led by the same (agent_id, user_id) and sorts the twenty. Either way it reads only the user's rows
+    for include_closed in (True, False):
+        collection, asked = _captured_collection()
+        await collection.find_by_user(agent, user, include_closed=include_closed)
+        (sql, args), *rest = asked.asked
+        assert not rest, asked.asked
+        plan = await explain_statement(conn, sql, *args)
+        assert any(plan_uses_index(plan, index) for index in _USER_INDEXES), plan.plan
+        assert plan.rows_scanned <= _ROWS_PER_USER, plan
+
+
+#: the indexes led by find_by_user's pins (agent_id, user_id): the first declares the read
+_USER_INDEXES = ("idx_conv_agent_user_created", "idx_conv_agent_user_status")
+
+#: the conversations one seeded user holds
+_ROWS_PER_USER = _ROWS // 300
 
 
 async def test_conv_agent_user_status(world: tuple[asyncpg.Connection, uuid.UUID, uuid.UUID]) -> None:
@@ -192,3 +237,32 @@ async def test_conv_agent_updated(world: tuple[asyncpg.Connection, uuid.UUID, uu
     conn, agent, _user = world
     plan = await _resumed_plan(conn, {"agent_id": agent}, "date_updated")
     assert plan_uses_index(plan, "idx_conv_agent_updated"), plan.plan
+
+
+async def test_conv_agent_folder_created(world: tuple[asyncpg.Connection, uuid.UUID, uuid.UUID]) -> None:
+    """Flips if one folder's conversations, newest first, or their count, stop reading idx_conv_agent_folder_created
+    (each would read every conversation of the agent)."""
+    conn, _agent, _user = world
+    # folder 1 is agent 1's, as the world's agent is
+    agent, folder = await conn.fetchrow("SELECT agent_id, folder_id FROM folders WHERE folder_id = $1", _FOLDERS[1])
+    collection, asked = _captured_collection()
+    await collection.find_by_folder(agent, folder)
+    await collection.count_by_folder(agent, folder)
+    assert len(asked.asked) == 2, asked.asked
+    for sql, args in asked.asked:
+        plan = await explain_statement(conn, sql, *args)
+        assert plan_uses_index(plan, "idx_conv_agent_folder_created"), plan.plan
+
+
+async def test_conv_agent_ref_created(world: tuple[asyncpg.Connection, uuid.UUID, uuid.UUID]) -> None:
+    """Flips if one ref's conversations on a channel, newest first, stop reading idx_conv_agent_ref_created (it would
+    read every conversation of the agent)."""
+    conn, _agent, _user = world
+    # ref 1 is held by conversations 1, 601, ...: agent 1 + 1 % 3's
+    agent = await conn.fetchval("SELECT agent_id FROM conversations WHERE conversation_ref = 'ref-1' LIMIT 1")
+    collection, asked = _captured_collection()
+    await collection.find_by_ref(agent, "web", "ref-1")
+    (sql, args), *rest = asked.asked
+    assert not rest, asked.asked
+    plan = await explain_statement(conn, sql, *args)
+    assert plan_uses_index(plan, "idx_conv_agent_ref_created"), plan.plan

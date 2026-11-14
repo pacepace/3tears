@@ -165,7 +165,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 "date_created",
                 purpose="src/aibots/hub/customers/person_erasure.py::_anonymize_checkpoints",
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_user",
-                reason="conversations carries ten indexes: one person's conversations by owner, for an erasure",
+                reason="conversations carries twelve indexes: one person's conversations by owner, for an erasure",
             ),
             SchemaIndex(
                 "idx_conv_customer",
@@ -185,7 +185,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 "conversation_id",
                 purpose="src/aibots/hub/admin/conversations.py::fetch_conversation_page",
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_created",
-                reason="conversations carries ten indexes: one agent's conversations by creation date",
+                reason="conversations carries twelve indexes: one agent's conversations by creation date",
             ),
             SchemaIndex(
                 "idx_conv_agent_status",
@@ -194,7 +194,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 "conversation_id",
                 purpose="src/aibots/hub/admin/conversations.py::fetch_conversation_page",
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_status",
-                reason="conversations carries ten indexes: one agent's conversations by status, or of one status",
+                reason="conversations carries twelve indexes: one agent's conversations by status, or of one status",
             ),
             SchemaIndex(
                 "idx_conv_agent_user_created",
@@ -204,10 +204,12 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 "conversation_id",
                 purpose=(
                     "src/aibots/hub/admin/conversations.py::fetch_conversation_page; "
-                    "packages/core/src/threetears/core/collections/merge.py::repoint_user_rows"
+                    "packages/core/src/threetears/core/collections/merge.py::repoint_user_rows; "
+                    "packages/conversations/src/threetears/conversations/collection.py::"
+                    "ConversationsCollection.find_by_user"
                 ),
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_user_created",
-                reason="conversations carries ten indexes: one user's conversations by creation date",
+                reason="conversations carries twelve indexes: one user's conversations by creation date",
             ),
             SchemaIndex(
                 "idx_conv_agent_user_status",
@@ -220,7 +222,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                     "packages/core/src/threetears/core/collections/merge.py::repoint_user_rows"
                 ),
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_user_status",
-                reason="conversations carries ten indexes: one user's conversations by status",
+                reason="conversations carries twelve indexes: one user's conversations by status",
             ),
             SchemaIndex(
                 "idx_conv_agent_status_created",
@@ -230,7 +232,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 "conversation_id",
                 purpose="src/aibots/hub/admin/conversations.py::fetch_conversation_page",
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_status_created",
-                reason="conversations carries ten indexes: one status's conversations by creation date",
+                reason="conversations carries twelve indexes: one status's conversations by creation date",
             ),
             SchemaIndex(
                 "idx_conv_agent_updated",
@@ -239,8 +241,36 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 "conversation_id",
                 purpose="src/aibots/hub/admin/conversations.py::fetch_conversation_page",
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_updated",
-                reason="conversations carries ten indexes: one agent's conversations by last update, the one "
+                reason="conversations carries twelve indexes: one agent's conversations by last update, the one "
                 "index the per-message date_updated write pays for",
+            ),
+            # v013: a folder's conversations and one ref's, newest first (each read every conversation of the agent)
+            SchemaIndex(
+                "idx_conv_agent_folder_created",
+                "agent_id",
+                "folder_id",
+                "date_created",
+                "conversation_id",
+                purpose=(
+                    "packages/conversations/src/threetears/conversations/collection.py::"
+                    "ConversationsCollection.find_by_folder; "
+                    "packages/conversations/src/threetears/conversations/collection.py::"
+                    "ConversationsCollection.count_by_folder"
+                ),
+                plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_folder_created",
+                reason="conversations carries twelve indexes: one folder's conversations, newest first, and its count",
+            ),
+            SchemaIndex(
+                "idx_conv_agent_ref_created",
+                "agent_id",
+                "channel_type",
+                "conversation_ref",
+                "date_created",
+                "conversation_id",
+                purpose="packages/conversations/src/threetears/conversations/collection.py::"
+                "ConversationsCollection.find_by_ref",
+                plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_ref_created",
+                reason="conversations carries twelve indexes: one ref's conversations on a channel, newest first",
             ),
         ),
     )
