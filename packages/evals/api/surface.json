@@ -3988,7 +3988,7 @@
     },
     "threetears.evals.run.DefinitionReset": {
       "kind": "model",
-      "signature": "DefinitionReset(scope_id: str, reset: list[ResetDefinition], after: DefinitionDrift, carried: dict[str, str] = dict(), stranded_case_sets: list[str] = list())",
+      "signature": "DefinitionReset(scope_id: str, reset: list[ResetDefinition], after: DefinitionDrift, carried: dict[str, str] = dict(), stranded_case_sets: list[str] = list(), presentation_named: dict[str, dict[str, list[str]]] = dict(), presentation_fill_failed: dict[str, dict[str, str]] = dict())",
       "tier": "host-contract"
     },
     "threetears.evals.run.DefinitionState": {
