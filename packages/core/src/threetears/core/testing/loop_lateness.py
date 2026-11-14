@@ -16,10 +16,10 @@ A measurement is trusted only when the host's idle loop itself stayed within a d
 measured path that runs on several threads (DuckDB's) needs more than one free core, and a many-core host can be busy
 enough to stretch it while a 1 ms idle loop stays punctual (a real-size serving read went 2.0x on a 10-core host at
 load ~9, its idle loop on time). So such a measurement also names its threads, and before and after it a fixed spin
-off the interpreter lock (:func:`cpu_crowding`) runs on that many threads at once (held to the performance cores),
+off the interpreter lock (:func:`_cpu_crowding`) runs on that many threads at once (held to the performance cores),
 against the fastest this host has ever run it on that many -- a record kept per host under the user's cache dir, and
 this session's first take, the lower of the two. With that many cores free it takes about as long; when fewer are
-free its threads wait their turn, and past :data:`CPU_MAY_BE_CROWDED` the window is untrusted. A host with no record
+free its threads wait their turn, and past :data:`_CPU_MAY_BE_CROWDED` the window is untrusted. A host with no record
 whose idle loop was late over the session's first take has no reference, and nothing in that session is trusted. An
 untrusted measurement is never a pass and never a skip: it is retaken, a bounded number of times
 (:data:`MEASURE_ATTEMPTS`), and when no window is trusted the test fails with :class:`CouldNotMeasure` ("could not
@@ -58,14 +58,11 @@ from pathlib import Path
 from typing import Any, Final, TypeVar
 
 __all__ = [
-    "CPU_MAY_BE_CROWDED",
     "MEASURE_ATTEMPTS",
     "CouldNotMeasure",
     "HostTicker",
     "Tick",
     "added_lateness",
-    "cpu_crowding",
-    "spin_threads",
     "hold_the_loop",
     "host_lateness",
     "latest",
@@ -83,7 +80,7 @@ MEASURE_ATTEMPTS: Final[int] = 3
 
 #: the most a spin on a measured path's threads at once may take over the host's fastest spin on as many for the window
 #: to be trusted: about as long with that many cores free; half again as long means some of them waited for a core
-CPU_MAY_BE_CROWDED: Final[float] = 1.5
+_CPU_MAY_BE_CROWDED: Final[float] = 1.5
 
 #: the most the host's idle loop may be late over a session's first spin for it to stand as the reference on a host
 #: with no record yet
@@ -258,13 +255,13 @@ def _spun(threads: int) -> float:
     return time.perf_counter() - began
 
 
-def cpu_crowding(threads: int) -> float:
+def _cpu_crowding(threads: int) -> float:
     """how much longer a fixed spin takes on ``threads`` threads at once now than the fastest this host has ever run it
     on that many: about 1 with that many cores free, more as fewer are.
 
     The spin hashes a block off the interpreter lock (:data:`_SPIN_BLOCK`), so its threads run at once wherever cores
     are free; it is taken :data:`_SPIN_TAKES` times and its fastest kept. ``threads`` is held to the host's performance
-    cores (:func:`spin_threads`), so a host of fast and slow cores is compared on its fast ones alone. The reference is
+    cores (:func:`_spin_threads`), so a host of fast and slow cores is compared on its fast ones alone. The reference is
     the lower of this session's first take and the host's record (:func:`_reference`), so a session busy from start to
     finish cannot calibrate itself busy; a faster take lowers the record. With no record and a first take the host's
     idle loop was late for, there is no reference: the answer is infinite, and nothing in the session is trusted.
@@ -274,7 +271,7 @@ def cpu_crowding(threads: int) -> float:
     :return: the spin's seconds now over the reference's
     :rtype: float
     """
-    threads = spin_threads(threads)
+    threads = _spin_threads(threads)
     reference = _reference(threads)
     if math.isinf(reference):
         # no quiet reference: nothing this session takes is recorded (a busy take must never become the host's)
@@ -284,7 +281,7 @@ def cpu_crowding(threads: int) -> float:
     return now / reference
 
 
-def spin_threads(threads: int) -> int:
+def _spin_threads(threads: int) -> int:
     """the threads a spin for a path on ``threads`` runs on: no more than the host's performance cores.
 
     :param threads: the threads the path runs on
@@ -435,7 +432,7 @@ async def trusted(
     host_may_be_late: float,
     attempts: int = MEASURE_ATTEMPTS,
     threads: int | None = None,
-    cpu_may_be_crowded: float = CPU_MAY_BE_CROWDED,
+    cpu_may_be_crowded: float = _CPU_MAY_BE_CROWDED,
 ) -> _Measured:
     """the first of up to ``attempts`` measurements over which the host's idle loop was late by at most
     ``host_may_be_late`` (and, for a path on ``threads`` threads, its cores were free before and after it).
@@ -450,9 +447,9 @@ async def trusted(
     :param attempts: how many measurements to take at most
     :ptype attempts: int
     :param threads: the threads the measured path runs on, when more than the loop's own: the window is then trusted
-        only when :func:`cpu_crowding` on that many threads, before and after it, is at most ``cpu_may_be_crowded``
+        only when :func:`_cpu_crowding` on that many threads, before and after it, is at most ``cpu_may_be_crowded``
     :ptype threads: int | None
-    :param cpu_may_be_crowded: the most :func:`cpu_crowding` may be
+    :param cpu_may_be_crowded: the most :func:`_cpu_crowding` may be
     :ptype cpu_may_be_crowded: float
     :return: the trusted measurement
     :rtype: _Measured
@@ -477,7 +474,7 @@ def quietly(
     host_may_be_late: float,
     attempts: int = MEASURE_ATTEMPTS,
     threads: int | None = None,
-    cpu_may_be_crowded: float = CPU_MAY_BE_CROWDED,
+    cpu_may_be_crowded: float = _CPU_MAY_BE_CROWDED,
 ) -> _Measured:
     """the first of up to ``attempts`` runs of ``measure()`` over which the host's idle loop, ticking beside it in a
     process of its own (:class:`HostTicker`), was late by at most ``host_may_be_late``: :func:`trusted` for a
@@ -496,7 +493,7 @@ def quietly(
     :ptype attempts: int
     :param threads: the threads the measured path runs on, as :func:`trusted` takes them
     :ptype threads: int | None
-    :param cpu_may_be_crowded: the most :func:`cpu_crowding` may be
+    :param cpu_may_be_crowded: the most :func:`_cpu_crowding` may be
     :ptype cpu_may_be_crowded: float
     :return: the trusted measurement
     :rtype: _Measured
@@ -519,8 +516,8 @@ def quietly(
 
 
 def _crowding(threads: int | None) -> float | None:
-    """:func:`cpu_crowding` on ``threads`` threads; None when the measurement names none (a loop's ticks alone)."""
-    return None if threads is None else cpu_crowding(threads)
+    """:func:`_cpu_crowding` on ``threads`` threads; None when the measurement names none (a loop's ticks alone)."""
+    return None if threads is None else _cpu_crowding(threads)
 
 
 def _untrusted(
@@ -530,7 +527,7 @@ def _untrusted(
 
     :param late: the host's idle loop's worst lateness over the window
     :ptype late: float
-    :param crowding: :func:`cpu_crowding` before and after it (None when not asked)
+    :param crowding: :func:`_cpu_crowding` before and after it (None when not asked)
     :ptype crowding: tuple[float | None, float | None]
     :param host_may_be_late: the most ``late`` may be
     :ptype host_may_be_late: float

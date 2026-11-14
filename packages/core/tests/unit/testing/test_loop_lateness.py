@@ -22,12 +22,10 @@ from threetears.core.testing.loop_lateness import (
     HostTicker,
     Tick,
     added_lateness,
-    cpu_crowding,
     hold_the_loop,
     host_lateness,
     latest,
     quietly,
-    spin_threads,
     ticks_while,
     trusted,
 )
@@ -242,7 +240,7 @@ def crowded(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[float]], list[int
             asked.append(threads)
             return next(scripted)
 
-        monkeypatch.setattr(loop_lateness, "cpu_crowding", crowding)
+        monkeypatch.setattr(loop_lateness, "_cpu_crowding", crowding)
         return asked
 
     return script
@@ -329,9 +327,9 @@ def test_the_reference_is_the_host_s_fastest_spin_and_a_faster_take_lowers_it(
     scripted([0.0])
     spins(_takes(0.010, 0.012, 0.008, 0.012))
 
-    assert cpu_crowding(4) == pytest.approx(1.2)
-    assert cpu_crowding(4) == pytest.approx(0.8), "0.008 is the fastest yet"
-    assert cpu_crowding(4) == pytest.approx(1.5), "judged against the faster record"
+    assert loop_lateness._cpu_crowding(4) == pytest.approx(1.2)  # noqa: SLF001 - the probe itself
+    assert loop_lateness._cpu_crowding(4) == pytest.approx(0.8), "0.008 is the fastest yet"  # noqa: SLF001 - the probe itself
+    assert loop_lateness._cpu_crowding(4) == pytest.approx(1.5), "judged against the faster record"  # noqa: SLF001 - the probe itself
 
 
 def test_a_session_busy_from_its_start_judges_against_the_host_s_record(
@@ -341,12 +339,12 @@ def test_a_session_busy_from_its_start_judges_against_the_host_s_record(
     host's record, so its slow windows read crowded."""
     scripted([0.0])
     spins(_takes(0.010, 0.010))
-    cpu_crowding(4)
+    loop_lateness._cpu_crowding(4)  # noqa: SLF001 - the probe itself
     loop_lateness._SESSION.clear()  # noqa: SLF001 - a new session on the same host
     scripted([0.0])
     spins(_takes(0.030, 0.030))
 
-    assert cpu_crowding(4) == pytest.approx(3.0)
+    assert loop_lateness._cpu_crowding(4) == pytest.approx(3.0)  # noqa: SLF001 - the probe itself
 
 
 def test_a_host_with_no_record_and_a_busy_start_trusts_nothing(
@@ -368,7 +366,7 @@ def test_a_spin_runs_on_the_performance_cores_at_most(monkeypatch: pytest.Monkey
     """Flips if a path's threads past the host's performance cores spin on its efficiency cores too (an idle Apple
     host of 4 + 6 cores read 2x across all ten)."""
     monkeypatch.setattr(loop_lateness, "_performance_cores", lambda: 4)
-    assert [spin_threads(n) for n in (1, 2, 4, 8, 10)] == [1, 2, 4, 4, 4]
+    assert [loop_lateness._spin_threads(n) for n in (1, 2, 4, 8, 10)] == [1, 2, 4, 4, 4]  # noqa: SLF001 - the probe itself
 
 
 def _hogged(threads: int) -> Callable[[], None]:
@@ -396,7 +394,7 @@ def test_a_spin_planted_on_the_path_s_threads_makes_the_window_untrusted_and_a_q
     """Red first: a spin on the path's threads beside the measurement makes it untrusted ("could not measure"); the
     same measurement on a quiet host is trusted -- on a host of fast and slow cores too, asked for more threads than
     it has fast cores (the efficiency cores alone must not trip it)."""
-    threads = spin_threads(64)
+    threads = loop_lateness._spin_threads(64)  # noqa: SLF001 - the probe itself
 
     assert quietly(lambda: 1, host_may_be_late=0.020, threads=64) == 1
     stop = _hogged(threads)
