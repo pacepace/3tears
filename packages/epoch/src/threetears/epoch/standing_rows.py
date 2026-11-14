@@ -211,11 +211,7 @@ class StandingRows:
         :raises Exception: what the cold read, or a missed row's second read, raises
         """
         async with self._lock:
-            if not self._loaded:
-                await self._load()
-            for key in sorted(self._missed):
-                await self._apply(key)
-                self._missed.discard(key)
+            await self._settle()
             return {key: dict(row) for key, row in self._held.items()}
 
     async def keys(self, where: Callable[[Mapping[str, Any]], bool] | None = None) -> list[tuple[Any, ...]]:
@@ -226,8 +222,11 @@ class StandingRows:
         :return: the keys
         :rtype: list[tuple[Any, ...]]
         """
-        held = await self.held()
-        return sorted(key for key, row in held.items() if where is None or where(row))
+        async with self._lock:
+            await self._settle()
+            if where is None:
+                return sorted(self._held)
+            return sorted(key for key, row in self._held.items() if where(row))
 
     async def count(self, where: Callable[[Mapping[str, Any]], bool] | None = None) -> int:
         """how many rows stand; ``where`` narrows them by their held columns.
@@ -237,7 +236,23 @@ class StandingRows:
         :return: the count
         :rtype: int
         """
-        return len(await self.keys(where))
+        async with self._lock:
+            await self._settle()
+            if where is None:
+                return len(self._held)
+            return sum(1 for row in self._held.values() if where(row))
+
+    async def _settle(self) -> None:
+        """make what is held answerable: read cold when nothing is held, then each missed row again. Under the lock.
+
+        :return: nothing
+        :rtype: None
+        """
+        if not self._loaded:
+            await self._load()
+        for key in sorted(self._missed):
+            await self._apply(key)
+            self._missed.discard(key)
 
     async def read(
         self,
