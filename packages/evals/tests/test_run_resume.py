@@ -39,7 +39,7 @@ from threetears.evals.kernel import ConflictError, EvalStorage, ValidationFailed
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink
 from threetears.evals.kernel.errors import StorageError
 from threetears.evals.kernel.host import HostProfile
-from threetears.evals.kernel.identity import IDENTITY_VERSION
+from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_context_key
 from threetears.evals.kernel.scoring import compute_pass_hat_k
 from threetears.evals.kernel.usage_capture import maybe_billed_usd
 from threetears.evals.ops import OpsHost, job_poll, run_job_id
@@ -61,7 +61,7 @@ from threetears.evals.run import (
 )
 from threetears.evals.run.definition_digests import measured_template_digest
 from threetears.evals.run.jobs import EvalJobManager
-from threetears.evals.schema import EvalResult, EvalRun, EvalTemplate, JobLease
+from threetears.evals.schema import ContextComponents, EvalResult, EvalRun, EvalTemplate, JobLease
 from threetears.evals.schema.models import (
     GOAL_CHECK_PROOF_RULES,
     RunLifetime,
@@ -626,6 +626,55 @@ async def test_a_run_stored_before_it_froze_its_template_is_taken_up_while_its_t
     run = await _assert_ends_as_the_control(holder, run_id, launched)
     assert run.template_digest == launched.template_digest, "frozen from the take-up on"
     assert [holding.template_edited_at for holding in run.lifetimes] == [None, None]
+
+
+def _as_stored_before_measure_definitions(store: ClockedStore, run_id: str) -> None:
+    """Rewrite a run's record as a build before runs recorded their host's measure definitions stored it."""
+    document = store.get(run_id, TOYHOST_SCOPE)
+    assert document is not None
+    document.pop("measure_definitions")
+    document["context_components"].pop("measure_definitions")
+    document["context_key"] = compute_context_key(ContextComponents.model_validate(document["context_components"]))
+    store.upsert(document)
+
+
+async def test_a_run_interrupted_before_runs_recorded_measure_definitions_is_taken_up_and_stays_unrecorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An upgrade loses no run in flight, and the take-up stamps nothing the run did not record: it stays out of
+    every pool its host measures would join, until its host attests or re-measures it."""
+    holder, run_id, _, store = await _interrupted(monkeypatch, "cancelled")
+    _as_stored_before_measure_definitions(store, run_id)
+    stored = off_loop(_run, holder, run_id)
+    assert stored.measure_definitions is None
+    resumer = other_process(holder)
+
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+
+    run = off_loop(_run, holder, run_id)
+    assert run.status == "completed"
+    assert run.measure_definitions is None and run.measure_attestation is None
+    assert run.context_key == stored.context_key, "the key it had, never today's"
+
+
+async def test_a_run_that_recorded_other_measure_definitions_than_the_hosts_current_ones_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder, run_id, launched, store = await _interrupted(monkeypatch, "cancelled")
+    assert launched.measure_definitions, "the launch recorded the toy host's definitions"
+    moved = sorted(launched.measure_definitions)[0]
+    document = store.get(run_id, TOYHOST_SCOPE)
+    assert document is not None
+    document["measure_definitions"][moved] = "the-digest-of-an-earlier-definition"
+    store.upsert(document)
+    before = off_loop(_run, holder, run_id)
+
+    with pytest.raises(ValidationFailedError) as refused:
+        await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
+
+    assert f"measure definitions ({moved})" in refused.value.message, refused.value.message
+    assert off_loop(_run, holder, run_id) == before, "nothing was written"
 
 
 async def test_a_run_whose_template_was_edited_in_nothing_it_measures_is_taken_up_and_the_edit_disclosed(

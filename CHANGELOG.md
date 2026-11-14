@@ -6,32 +6,46 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: runs read under two definitions of a host measure never pool, and a run can be re-measured (#1160)
+### evals: pass^k keeps runs read under two definitions of a host measure apart, and a stored run can be attested or re-measured (#1160)
 
 **Changed:** a run records the definition digest of every measure its host declares (`EvalRun.measure_definitions`),
-and the map is a component of its measurement context (`IDENTITY_VERSION` 26, core minor 15.18). Two runs that recorded
-different definitions of one measure are two pass^k cells (`other_measure_definition`), a comparison set holding both is
-badged `measure_definitions_differ` and names the measures, and a take-up across the change is refused. A run that
-recorded none (owner ruling, 2026-11-14: a silence is never a match) is a cell of its own
-(`no_recorded_measure_definitions`) and pools with nothing. The digest covers what a stored value counts
-(`MEASURE_DEFINITION_FIELDS`: type, unit, range, categories, formula, family, and the new `definition_revision` and
-`shapes_run`), never a name, a description or how the value is read.
+and the map is an additive component of its measurement context: composed into the context key only where it is
+non-empty, so `IDENTITY_VERSION` stays 25 and a run with no host measure keeps its key (core minor 15.18). In the
+frontier's pass^k, two runs that recorded different definitions are two cells (`other_measure_definition`), and a run
+whose results hold a host measure and that recorded none is a cell of its own (`no_recorded_measure_definitions`),
+pooling with no other run (owner ruling, 2026-11-14: a silence is never a match). A comparison set names both
+(`measure_definitions_differ`, `context_incomplete`, `measure_definition_disclosure`). A take-up of a run that recorded
+other definitions than the host's current ones is refused; one that recorded none is taken up and stays unrecorded.
 
-**Added:** `threetears.evals.run.remeasure_run(host, run_id, scope_id, apply=False)` reads a stored run's host measures
-again from what its cells stored, through the host's `HostProfile.measure_rereader`, and records it: each result keeps
-the values it held (`EvalResult.measure_rereads`), the run records the definitions its values now hold and that it was
-re-measured (`EvalRun.measure_remeasures`), and it joins the cell of those definitions. Nothing is interpolated: a
-stored value the reader does not answer refuses the run before anything is written, and so does a moved measure that
-declares `shapes_run`.
+**Added:** `threetears.evals.run.attest_measure_definitions` records a host's statement of the definitions stored runs
+ran under (`EvalRun.measure_attestation`: who, when, what), touching no result and refusing a run that already records
+definitions. `threetears.evals.run.remeasure_run(host, run_id, scope_id, apply=False)` reads a stored run's host
+measures again from what its cells stored, through `HostProfile.measure_rereader`: each result keeps the values it
+held (`EvalResult.measure_rereads`), the run is marked (`EvalRun.measure_remeasures`) and joins the cell of the
+definitions it was read under. Nothing is interpolated: an unanswered stored value, a missing reader or a moved
+measure that declares `shapes_run` refuses the run before anything is written.
 
-**Not yet:** a campaign bundle's cells (`analysis/cells.py`, variant by apparatus class) do not read the definitions,
-so a campaign page still pools such runs; that needs a new rig dimension, `CELL_MODEL_VERSION` 15 and regenerated
-goldens.
+**Not yet:** a campaign's own cells (variant by rig), and so its tables, composites, bars and history, do not read
+measure definitions and still pool such runs. The comparison disclosure says so on the page.
 
-**For hosts:** every run stored before this release recorded no definitions and pools with nothing in pass^k until it
-is re-measured; wire `measure_rereader` and call `remeasure_run`, or run again. Raise `definition_revision` on a
-measure whenever its reading code changes what it counts. A host that assembles runs itself sets
-`measure_definitions=profile.measures.definition_digests()`. `packages/evals/MIGRATIONS.toml` has the detail.
+**For hosts:**
+- *Marking a change:* raise `MetricDescriptor.definition_revision` (default 0) on a measure whenever its reading code
+  changes what it counts. A measure whose definition decides what a run does declares `shapes_run=True`.
+- *What moves a definition:* only the fields below. Editing a measure's `description`, reader name or prose,
+  `nonnegative` flag, better end, margin, merit axis or population moves nothing, and cuts no run off.
+- *How the digest is derived:* sha256 of the canonical JSON of the descriptor's `name`, `data_type`, `family`, `unit`,
+  `value_range`, `categories`, `formula`, `pass_fail`, `contained_by`, `definition_revision` and
+  `shapes_run` (`measure_definition_digest`). Names, descriptions and how a value is read move nothing.
+- *On upgrade:* nothing to migrate and no stored key moves. Stored runs whose results hold a host measure each stand
+  alone in pass^k until backfilled. A host that assembles runs itself sets
+  `measure_definitions=profile.measures.definition_digests()`.
+- *Backfilling old runs:* call `attest_measure_definitions(host, run_ids, scope_id, definitions, attested_by=...)`
+  with the digests of the descriptors as they were when those runs ran
+  (`MeasureRegistry(descriptors_then).definition_digests()`), and with today's for runs made since the change. It
+  reads no result or trace, takes any number of runs, and may be run twice: a run already attested with the same
+  definitions is left as it was (`Attested.already_attested`), and one attested with other definitions is refused. To read
+  an old run under the current definition, wire `measure_rereader` and call `remeasure_run`.
+  `packages/evals/MIGRATIONS.toml` has the detail.
 
 ### evals: a definitions reset fills the presentation names a template it leaves current lacks
 

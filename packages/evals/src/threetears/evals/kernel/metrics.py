@@ -120,7 +120,7 @@ if TYPE_CHECKING:
 __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why the aliases are exported
     "declaration_of",
     "MEASURE_DEFINITION_FIELDS",
-    "MEASURE_READING_FIELDS",
+    "holds_host_measure",
     "measure_definition_digest",
     "measure_definition_digests",
     "OUTCOME_DIM_ID",
@@ -711,7 +711,6 @@ MEASURE_DEFINITION_FIELDS: Final[frozenset[str]] = frozenset(
         "family",
         "unit",
         "value_range",
-        "nonnegative",
         "categories",
         "formula",
         "pass_fail",
@@ -725,9 +724,11 @@ MEASURE_DEFINITION_FIELDS: Final[frozenset[str]] = frozenset(
 #: (:data:`MEASURE_PRESENTATION_FIELDS`, its description), its better end, margin, merit axis and population, and how
 #: far it transfers. A reader applies today's to every pooled value alike, so a change to one leaves two runs' stored
 #: values the same quantity, and none is in the definition digest.
-MEASURE_READING_FIELDS: Final[frozenset[str]] = MEASURE_PRESENTATION_FIELDS | frozenset(
+_MEASURE_READING_FIELDS: Final[frozenset[str]] = MEASURE_PRESENTATION_FIELDS | frozenset(
     {
         "description",
+        # Where an interval on the measure's mean is floored: how a summary is drawn, never what a value counts.
+        "nonnegative",
         "transferability_class",
         "attribution_scope",
         "higher_is_better",
@@ -742,12 +743,37 @@ MEASURE_READING_FIELDS: Final[frozenset[str]] = MEASURE_PRESENTATION_FIELDS | fr
 )
 
 
+def _checked_definition_fields() -> frozenset[str]:
+    """:data:`MEASURE_DEFINITION_FIELDS`, once every field of :class:`MetricDescriptor` is what the measure is or how
+    it is read, and none is both.
+
+    Checked when this module is imported, so a field the descriptor gains is classified before it can silently join
+    the definition digest or silently miss it.
+
+    :return: The definition fields.
+    :rtype: frozenset[str]
+    :raises TypeError: A descriptor field is in neither set or in both, or a set names no field of the descriptor.
+    """
+    fields = set(MetricDescriptor.model_fields)
+    both = MEASURE_DEFINITION_FIELDS & _MEASURE_READING_FIELDS
+    if MEASURE_DEFINITION_FIELDS | _MEASURE_READING_FIELDS != fields or both:
+        named = MEASURE_DEFINITION_FIELDS | _MEASURE_READING_FIELDS
+        raise TypeError(
+            f"MetricDescriptor's fields and the definition digest disagree: unclassified {sorted(fields - named)}, "
+            f"named but no field {sorted(named - fields)}, both {sorted(both)}"
+        )
+    return MEASURE_DEFINITION_FIELDS
+
+
+_DEFINITION_FIELDS: Final[frozenset[str]] = _checked_definition_fields()
+
+
 def measure_definition_digest(descriptor: MetricDescriptor) -> str:
     """Digest what a measure is, so two runs can be shown to have read it under one definition.
 
     Over :data:`MEASURE_DEFINITION_FIELDS` alone, every one present whatever its value, through
     :func:`~threetears.evals.schema.hashing.canonical_digest`: the order a store hands the keys back in cannot move
-    it, and neither can a reader name, a description or a better end (:data:`MEASURE_READING_FIELDS`). A change in
+    it, and neither can a reader name, a description or a better end. A change in
     the host's reading code behind an unchanged descriptor reaches it only through ``definition_revision``, which
     the host raises.
 
@@ -756,7 +782,7 @@ def measure_definition_digest(descriptor: MetricDescriptor) -> str:
     :return: A 64-character hex digest.
     :rtype: str
     """
-    return canonical_digest({name: getattr(descriptor, name) for name in MEASURE_DEFINITION_FIELDS})
+    return canonical_digest({name: getattr(descriptor, name) for name in _DEFINITION_FIELDS})
 
 
 def measure_definition_digests(descriptors: Iterable[MetricDescriptor]) -> dict[str, str]:
@@ -2942,6 +2968,23 @@ def engine_owned_names(names: Iterable[str], *, written_by_the_engine: frozenset
             or name.startswith(CLASSIFIER_LABEL_MEASURE_PREFIX)
         )
     )
+
+
+def holds_host_measure(names: Iterable[str]) -> bool:
+    """Whether a result's ``host_measures`` keys hold a measure the HOST defines: any key that is not engine-owned.
+
+    The engine's own keys there (the classifier track's ``match`` and ``confusion_cell``, a goal check's or a label's
+    namespaced name) mean what the engine says they mean, so they do not put a run's values under a definition its
+    host could have moved. What a run that recorded no measure definitions is read by: holding one, nothing says
+    which definition its values were read under, and it pools with nothing.
+
+    :param names: The keys of one result's ``host_measures``.
+    :ptype names: Iterable[str]
+    :return: True when any key is a host's own.
+    :rtype: bool
+    """
+    listed = list(names)
+    return len(engine_owned_names(listed, written_by_the_engine=frozenset())) < len(set(listed))
 
 
 def undeclarable_host_measures(names: Iterable[str]) -> list[str]:

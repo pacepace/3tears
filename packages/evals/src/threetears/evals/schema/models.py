@@ -2899,10 +2899,9 @@ class ContextComponents(EvalDocumentModel, CoreShapeModel):
             "-> digest (EvalRun.measure_definitions): what each of the host's measures counted when the run's "
             "values were read. Its own component because a host changes what a measure counts and keeps its key, "
             "and runs read under two definitions of one measure are not repeats of one condition. Kept as the map, "
-            "as subject_state is, so a badge names WHICH measure moved. None where the run recorded none (stored "
-            "before runs recorded it, or assembled without a launch), on the all-or-none rule: such a context is "
-            "partial and its run pools with nothing. An empty MAP is a recording (the host declared no measure of "
-            "its own) and hashes."
+            "as subject_state is, so a badge names WHICH measure moved. Additive: None where the run recorded none "
+            "or an empty map (stored before runs recorded it, assembled without a launch, or a host with no measure "
+            "of its own), and then left out of the key, which is what it was before the component existed."
         ),
     )
     scope: str | None = Field(
@@ -3648,6 +3647,15 @@ class MeasureRemeasure(EvalBaseModel, CoreShapeModel):
     """
 
     remeasured_at: str = Field(default_factory=utc_now_iso)
+    completed_at: str | None = Field(
+        default=None,
+        description=(
+            "When the re-measure finished: every result written, then the run's measure_definitions moved to "
+            "``now``. None = it began and has not finished (it is written on the run before any result is), so the "
+            "run's results may hold values read under two definitions and the run pools with nothing until a "
+            "re-measure finishes it."
+        ),
+    )
     was: dict[str, str] | None = Field(
         description=(
             "The run's measure_definitions before this re-measure, measure key -> digest. None = it recorded none."
@@ -3662,6 +3670,23 @@ class MeasureRemeasure(EvalBaseModel, CoreShapeModel):
         ),
     )
     results_reread: int = Field(default=0, ge=0, description="How many of the run's results had a value read again.")
+
+
+class MeasureAttestation(EvalBaseModel, CoreShapeModel):
+    """A host's statement, after the fact, of the measure definitions a stored run ran under.
+
+    Written by ``threetears.evals.run.attest_measure_definitions`` on a run that recorded none. It is the host's word
+    and never the engine's guess: the host knows which revision of its reading code was live when the run was made.
+    No result is touched. The run's ``measure_definitions`` then hold the attested map, and this entry is what tells
+    it from a map the launch recorded.
+    """
+
+    attested_at: str = Field(default_factory=utc_now_iso)
+    attested_by: str = Field(min_length=1, description="Who stated it, as the host names them: a person or a job.")
+    definitions: dict[str, str] = Field(
+        min_length=1, description="The definitions stated, measure key -> digest: the run's measure_definitions."
+    )
+    note: str | None = Field(default=None, description="Why the host knows, in its own words; None when it gave none.")
 
 
 class RunLifetime(EvalBaseModel, CoreShapeModel):
@@ -4508,10 +4533,21 @@ class EvalRun(CoreDocumentModel):
             "The definition digest of each measure the host declared when this run was launched, measure key -> "
             "digest (MeasureRegistry.definition_digests()): what each host measure on this run's results counted "
             "when it was read. Stamped by the launch before the context key, which composes it "
-            "(ContextComponents.measure_definitions), and moved only by a re-measure. None = NOT RECORDED: stored "
-            "before runs recorded it, or assembled by its host without a launch. Such a run pools with nothing "
-            "until it is re-measured, since nothing says which definition its values were read under. {} is a "
-            "recording: the host declared no measure of its own."
+            "(ContextComponents.measure_definitions) when it is non-empty, and moved afterwards only by a host's "
+            "attestation (measure_attestation) or a re-measure (measure_remeasures). None = NOT RECORDED: stored "
+            "before runs recorded it, or assembled by its host without a launch. Where such a run's results hold a "
+            "host measure it pools with nothing, since nothing says which definition its values were read under; "
+            "where they hold none it pools as it always did. {} is a recording: the host declared no measure of "
+            "its own."
+        ),
+    )
+    measure_attestation: MeasureAttestation | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The host's statement of the definitions this run ran under, made after the run by "
+            "attest_measure_definitions on a run that recorded none. None = never attested: measure_definitions, "
+            "where set, is the launch's own record."
         ),
     )
     measure_remeasures: list[MeasureRemeasure] = Field(
@@ -7110,6 +7146,7 @@ __all__ = [
     "RUN_LABELS_MAX",
     "RUN_LABEL_MAX_LENGTH",
     "run_label_problem",
+    "MeasureAttestation",
     "MeasureDeclaration",
     "MeasureRemeasure",
     "MeasureReread",

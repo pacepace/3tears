@@ -120,10 +120,12 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
         "variant_levers",
         "test_case_ids",
         "template_digest",
-        # Held by the context identity too, as its ``measure_definitions`` component: a take-up across a change to
-        # what a host measure counts is refused there, naming the measure. The record of a re-measure is what was
-        # done to the stored run, which a fresh launch has none of.
+        # Held by :func:`_resume_drift` in its own way: a run that recorded definitions other than the host's current
+        # ones is refused, naming the measure, and one that recorded none is taken up and stays unrecorded. The
+        # records of an attestation and of a re-measure are what was done to the stored run, which a fresh launch
+        # has none of.
         "measure_definitions",
+        "measure_attestation",
         "measure_remeasures",
         # Held by its outcome, never its number: the take-up's launch re-proves the run's own goal checks under the
         # proof rules in force (``goal_check_proofs``, pinned), so a rules change that proves them as the run's own
@@ -358,14 +360,30 @@ def _resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profi
     if was is not None and now is not None:
         for name in type(was).model_fields:
             before, after = getattr(was, name), getattr(now, name)
-            if before == after:
+            if before == after or name == "measure_definitions":
+                # The definitions are held below, off the run's own record: a run that recorded none is no drift.
                 continue
             if isinstance(before, Mapping) and isinstance(after, Mapping):
                 moved = sorted(key for key in {*before, *after} if before.get(key) != after.get(key))
                 differences.append(f"context component {name} ({', '.join(moved)})")
             else:
                 differences.append(f"context component {name} ({_shown(before)} -> {_shown(after)})")
-    if was_identity.context_key != now_identity.context_key and not differences:
+    # A run stored before runs recorded measure definitions (or assembled without a launch) recorded none: it is
+    # taken up and stays unrecorded, the take-up stamping nothing on it, so it pools with nothing where its results
+    # hold a host measure until its host attests or re-measures it. One that recorded definitions is held to them.
+    definitions_moved = sorted(
+        name
+        for name in {*(stored.measure_definitions or {}), *(fresh.measure_definitions or {})}
+        if stored.measure_definitions is not None
+        and stored.measure_definitions.get(name) != (fresh.measure_definitions or {}).get(name)
+    )
+    if definitions_moved:
+        differences.append(
+            f"measure definitions ({', '.join(definitions_moved)}): the host defines them otherwise than when the run "
+            "started, so the cells left to run would be read under another definition than its stored ones"
+        )
+    unrecorded = stored.measure_definitions is None and fresh.measure_definitions
+    if was_identity.context_key != now_identity.context_key and not differences and not unrecorded:
         differences.append(
             f"context key ({_shown(was_identity.context_key)} -> {_shown(now_identity.context_key)}, at identity "
             f"version {now_identity.identity_version})"

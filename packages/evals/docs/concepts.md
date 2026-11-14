@@ -252,16 +252,18 @@ judged kind, `callable-judged`, seats the judge and nothing else.
 #### Measurement context
 Everything pinned around a run that is not the variant: the subject and its state, the template, the resolved
 judge and simulator models, judge configs, cassette mode and corpus, tool bound, scope, world seed, apparatus
-settings, and the definition of each measure your host declares (`compute_context_components`). Its digest is
-the context key, stamped once at launch. The frozen case set is not in it: more cases, or more repeats, under one
+settings, and, where your host declares any measure, each one's definition (`compute_context_components`). Its
+digest is the context key, stamped once at launch. The frozen case set is not in it: more cases, or more repeats, under one
 context are more samples of one condition.
 
 A measure's definition is what one stored value of it counts: the descriptor's type, unit, range, categories,
 formula and family, and `definition_revision`, which you raise when your reading code changes what the measure
 counts and the descriptor stays as it is (`measure_definition_digest`). A name, a description or a better end is
 how a value is read, and moves nothing. A run records every measure's digest at launch
-(`EvalRun.measure_definitions`). Runs that recorded two definitions of one measure are two conditions; a run that
-recorded none (stored before runs recorded them, or assembled without a launch) pools with nothing.
+(`EvalRun.measure_definitions`). Runs that recorded two definitions of one measure are two conditions. A run that
+recorded none (stored before runs recorded them, or assembled without a launch) pools with nothing where its
+results hold a host measure, and as it always did where they hold none. `attest_measure_definitions` records your
+statement of the definitions such runs ran under, touching no result (`EvalRun.measure_attestation`).
 `remeasure_run` reads a stored run again from what its cells stored, through your `HostProfile.measure_rereader`,
 and the run then joins the cell of the definitions it was read under, marked (`EvalRun.measure_remeasures`).
 Nothing is guessed: a stored value your reader does not answer refuses the run, and so does a moved measure that
@@ -277,8 +279,8 @@ that pools, then most runs, most results and the first run id); every other cell
 pass^k and the reason it is not the headline (`FrontierPoint.pass_hat_k_cells`), named on the frontier's text and the report page.
 A run kept out of the headline is kept out of the frontier's pass^k, bar and verdict
 only: the arm's tables, its cells (see [Apparatus class](#apparatus-class)), composite, cost and latency still
-count it. A run that froze no template digest, a run that recorded no measure definitions, and a run with a
-candidate call whose response named no model, is a cell of its own: a silence is never evidence of a match, so it pools with nothing and is named with what it did
+count it. A run that froze no template digest, a run whose results hold a host measure and that recorded no
+measure definitions, and a run with a candidate call whose response named no model, is a cell of its own: a silence is never evidence of a match, so it pools with nothing and is named with what it did
 not record, the headline too when every run is silent and others are kept out beside it. A run whose candidate made no model call recorded
 that, and pools on everything else.
 
