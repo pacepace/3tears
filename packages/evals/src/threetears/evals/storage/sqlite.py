@@ -178,6 +178,21 @@ def _dotted(path: str) -> str:
 #: A stored value's JSON type, with absent read as null.
 _TYPE = "coalesce(json_type(body, ?), 'null')"
 
+#: A stored JSON integer outside SQLite's 64-bit integers, which ``json_extract`` reads back as a real.
+_WIDE = f"({_TYPE} = 'integer' AND typeof(json_extract(body, ?)) = 'real')"
+
+#: A stored JSON integer that ``json_extract`` reads back as the integer it is.
+_NARROW = f"({_TYPE} = 'integer' AND typeof(json_extract(body, ?)) = 'integer')"
+
+#: The exact JSON text of a value: ``json_extract`` over two paths answers a JSON array of both values, written from
+#: the stored text, so an integer of any width comes back whole where one path would read it as a real.
+_EXACT = "json_extract(body, ?, ?)"
+
+
+def _exact(texts: str | None) -> list[int]:
+    """The integers in a space-joined run of :data:`_EXACT` texts, each ``[n,n]``, read whole."""
+    return [json.loads(text)[0] for text in texts.split(" ")] if texts else []
+
 
 def _measure_columns(kind: str, path: str | None) -> tuple[list[str], list[Any]]:
     """The aggregate columns one measure needs, and their parameters.
@@ -191,12 +206,16 @@ def _measure_columns(kind: str, path: str | None) -> tuple[list[str], list[Any]]
     if kind == "count_null":
         return [f"count(*) FILTER (WHERE {_TYPE} = 'null')"], [json_path]
     if kind == "sum_int":
+        # Exact at any width, in the one statement: each 64-bit integer summed as its high and low 32 bits, whose sums
+        # cannot overflow (SQLite's sum raises on overflow rather than widening), and each wider one read as its text.
         return (
             [
-                f"coalesce(sum(json_extract(body, ?)) FILTER (WHERE {_TYPE} = 'integer'), 0)",
+                f"sum(json_extract(body, ?) >> 32) FILTER (WHERE {_NARROW})",
+                f"sum(json_extract(body, ?) & 4294967295) FILTER (WHERE {_NARROW})",
+                f"group_concat({_EXACT}, ' ') FILTER (WHERE {_WIDE})",
                 f"count(*) FILTER (WHERE {_TYPE} NOT IN ('integer', 'null'))",
             ],
-            [json_path, json_path, json_path],
+            [*[json_path] * 3, *[json_path] * 3, *[json_path] * 2, *[json_path] * 2, json_path],
         )
     extreme = "min" if kind == "min" else "max"
     return (
@@ -209,12 +228,15 @@ def _measure_columns(kind: str, path: str | None) -> tuple[list[str], list[Any]]
     )
 
 
-def _stored_value(json_type: str | None, value: Any) -> Any:
+def _stored_value(json_type: str | None, value: Any, exact: str | None = None) -> Any:
     """A value as stored, from its JSON type (``None`` when absent) and what ``json_extract`` read.
 
     ``json_extract`` reads ``true`` as ``1`` and an object or a list as its JSON text; a real comes back as the stored
-    double exactly, and an integer as an integer.
+    double exactly, and an integer as an integer, except one wider than 64 bits, which it reads as a real: ``exact``
+    is that integer's :data:`_EXACT` text, and ``None`` for every other value.
     """
+    if exact is not None:
+        return _exact(exact)[0]
     if json_type == "true":
         return True
     if json_type == "false":
@@ -233,10 +255,10 @@ def _measure_answer(name: str, kind: str, path: str | None, columns: Sequence[An
     if kind in ("count", "count_null"):
         return columns[0]
     if kind == "sum_int":
-        total, refused = columns
+        high, low, wide, refused = columns
         if refused:
             raise TypeError(f"measure {name!r} sums JSON integers, and {path!r} holds {refused} value(s) that are not")
-        return total
+        return ((high or 0) << 32) + (low or 0) + sum(_exact(wide))
     numbers, texts, refused = columns
     if refused:
         raise TypeError(
@@ -554,13 +576,13 @@ class SqliteDocumentStore:
 
         SQLite groups and aggregates: each ``by`` path by its JSON type and its value (``json_extract`` reads
         ``true`` as ``1``, so the type keeps them apart), ``sum_int`` over values whose ``json_type`` is
-        ``integer``, and ``min``/``max`` with the binary collation (code-point order for text). The refusals are
+        ``integer`` (each 64-bit one as its high and low 32 bits, whose sums cannot overflow, and each wider one read
+        whole from its JSON text, so the sum is exact at any width), and ``min``/``max`` with the binary collation (code-point order for text). The refusals are
         counted in the same statement and raised here. ``values`` rides the same statement as a ``UNION ALL`` of one
         row per matching document (its seq, id, group key, and each path's ``json_type`` and ``json_extract``),
         ordered by seq and grouped here: never through SQLite's JSON text, which writes a real at 15 significant
-        digits, so every double comes back to its last bit. One known exception: an integer of 2**63 or more comes
-        back from ``values`` as a float, though this store's own reads (``by_doc_type``, ``iter_narrowed``) return it
-        exactly, because ``json_extract`` reads it as a real.
+        digits, so every double comes back to its last bit. An integer wider than 64 bits, which ``json_extract``
+        reads as a real, comes back whole, read from its JSON text, as this store's own reads return it.
         See :meth:`~threetears.evals.schema.ResultReadings.grouped`.
 
         :param doc_type: The discriminator to select on.
@@ -611,7 +633,7 @@ class SqliteDocumentStore:
             spans.append((name, kind, measure_path, len(measure_columns)))
             aggregates += measure_columns
             aggregate_params += measure_params
-        listed_padding = ["NULL"] * (2 * len(listed))
+        listed_padding = ["NULL"] * (3 * len(listed))
         sql = (
             f"SELECT 'group', count(*), NULL, {', '.join([*key_columns, *aggregates, *listed_padding]) or 'NULL'} "  # noqa: S608
             f"FROM documents WHERE {clause}"
@@ -622,13 +644,17 @@ class SqliteDocumentStore:
         if listed:
             # Each value as a row of its own, never through SQLite's JSON text, which writes a real at 15 digits:
             # json_extract hands back the stored double exactly, and the seq puts the rows in insertion order here.
-            value_columns = [f"{column}(body, ?)" for _, _ in listed for column in ("json_type", "json_extract")]
+            value_columns = [
+                column
+                for _, _ in listed
+                for column in ("json_type(body, ?)", "json_extract(body, ?)", f"CASE WHEN {_WIDE} THEN {_EXACT} END")
+            ]
             sql += (
                 f" UNION ALL SELECT 'value', seq, id, "  # noqa: S608
                 f"{', '.join([*key_columns, *(['NULL'] * len(aggregates)), *value_columns])} "
                 f"FROM documents WHERE {clause}"
             )
-            params += [*key_params, *[path for _, path in listed for _ in range(2)], *where_params]
+            params += [*key_params, *[path for _, path in listed for _ in range(6)], *where_params]
         with self._lock:
             rows = self._db.execute(sql, params).fetchall()
         answers: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -655,8 +681,8 @@ class SqliteDocumentStore:
         for row in sorted(listed_rows, key=lambda listed_row: listed_row[1]):
             answer = answers[tuple(row[3 : 3 + 2 * len(by)])]
             for index, (name, _) in enumerate(listed):
-                json_type, value = row[at_values + 2 * index], row[at_values + 2 * index + 1]
-                answer[name].append([row[2], _stored_value(json_type, value)])
+                json_type, value, exact = row[at_values + 3 * index : at_values + 3 * index + 3]
+                answer[name].append([row[2], _stored_value(json_type, value, exact)])
         return [{name: answer[name] for name in [*by, *measures]} for answer in answers.values()]
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:

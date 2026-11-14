@@ -796,15 +796,15 @@ class ResultReadings(Protocol):
 
         * ``("count", None)``: the rows in the group.
         * ``("count_null", path)``: the rows whose value is absent or null.
-        * ``("sum_int", path)``: the sum of the JSON integers, skipping absent and null values. A boolean is not an
+        * ``("sum_int", path)``: the exact sum of the JSON integers, skipping absent and null values; a sum or a
+          value past 64 bits is exact or refused with ``TypeError``, never wrapped or rounded. A boolean is not an
           integer. A group with no integers sums to ``0``.
         * ``("min", path)``, ``("max", path)``: the least or greatest value, skipping absent and null values. Numbers
           compare as numbers and strings by code point (binary collation). A group with no values gives ``None``.
         * ``("values", path)``: ``[[row_id, value], ...]``, one pair per row, in :meth:`iter_narrowed`'s order, with
           ``None`` for an absent value, each value exactly as this store's own reads return it (every double to its
-          last bit; a store may normalise a value as it writes it, as jsonb stores ``-0.0`` as ``0.0``). The SQLite
-          store has one known gap: an integer of 2**63 or more comes back from ``values`` as a float, though its own
-          reads return it exactly. ``row_id`` is the row's ``id``. The reader folds a float from these, in this
+          last bit, and every integer whole at any width; a store may normalise a value as it writes it, as jsonb
+          stores ``-0.0`` as ``0.0``). ``row_id`` is the row's ``id``. The reader folds a float from these, in this
           order, so its answer does not depend on how the store adds.
 
         :param doc_type: The discriminator to select on.

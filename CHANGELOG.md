@@ -25,6 +25,12 @@ the copy time, which inflated every profile run on it. The store conformance kit
 checks every read and `merge_fields`, at every depth, inside objects and list items, and the readings kit gains
 `reads.copied_out` (a narrowed row, a grouped value); a host store that hands out what it holds fails them.
 
+**Fixed:** the SQLite store's `grouped` sums `sum_int` exactly at any width, in its one statement: a sum past a
+signed 64-bit integer raised SQLite's `integer overflow`, and an integer wider than 64 bits was summed as a rounded
+real. Its `values` now hand such an integer back whole, as its own reads do, closing the gap the docstrings stated.
+The port states that a `sum_int` past 64 bits is exact or refused with `TypeError`, never wrapped or rounded, and the
+readings kit's `grouped.sum_int` and `grouped.values_exact` check it (#1059 item 1).
+
 ### evals: export, seed and carry follow-ups
 
 **Added:** the definition seed gives a stored template the corpus's presentation names it lacks (`goal_check_names`,

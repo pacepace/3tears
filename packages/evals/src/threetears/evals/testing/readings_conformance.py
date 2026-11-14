@@ -412,6 +412,18 @@ def _sum_int_sums_integers_only(store: DocumentStore, _install: Callable[[Callab
         [{"run": "b", "tokens": 0}],
         "sum_int over a group with no integers",
     )
+    # Past 64 bits the port promises an exact sum or a TypeError, never a sum that wrapped or was rounded: sums that
+    # overflow a signed 64-bit integer, and integers wider than one.
+    wide = (2**62, 2**62, 2**62, -(2**63), 2**64 + 1, -(2**70) - 3, 7)
+    _write(store, *(_doc(f"g{index}", run="wide", tokens=value) for index, value in enumerate(wide)))
+    _write(store, *(_doc(f"h{index}", run="over", tokens=2**62) for index in range(4)))
+    for run, total in (("wide", sum(wide)), ("over", 2**64)):
+        try:
+            answer = _grouped(store, ["run"], {"tokens": ("sum_int", "tokens")}, run=run)
+        except TypeError:
+            # NOSILENT: a refusal is one of the two answers the port allows past 64 bits
+            continue
+        _expect_equal(answer, [{"run": run, "tokens": total}], f"sum_int past 64 bits ({run}), when not refused")
     for run in ("bool", "float", "whole_float", "text"):
         _expect_refused(
             TypeError,
@@ -480,7 +492,7 @@ def _values_come_in_stored_order(store: DocumentStore, _install: Callable[[Calla
 
 #: Values a store that carries numbers through text, or compares with Python's ``==``, would hand back changed: a
 #: double needing 17 significant digits, the largest finite double, negative zero, an integral real beside its
-#: integer, and ``false`` beside ``0``.
+#: integer, ``false`` beside ``0``, and integers at and past the edge of 64 bits.
 _EXACT_VALUES: tuple[Any, ...] = (
     0.1 + 0.2,
     123456789.12345678,
@@ -491,6 +503,9 @@ _EXACT_VALUES: tuple[Any, ...] = (
     1.0,
     0,
     False,
+    2**63,
+    -(2**64) - 1,
+    2**63 - 1,
     "0.1",
     [1, 2.5, {"k": 0.30000000000000004}],
     None,
@@ -632,7 +647,8 @@ RESULT_READINGS_CONFORMANCE_CASES: tuple[ResultReadingsConformanceCase, ...] = (
     ),
     ResultReadingsConformanceCase(
         "grouped.sum_int",
-        "sum_int sums JSON integers, skips nulls, gives 0 for none, and refuses booleans and non-integers",
+        "sum_int sums JSON integers, exactly or refused past 64 bits, skips nulls, gives 0 for none, and refuses "
+        "booleans and non-integers",
         _sum_int_sums_integers_only,
     ),
     ResultReadingsConformanceCase(
@@ -648,7 +664,8 @@ RESULT_READINGS_CONFORMANCE_CASES: tuple[ResultReadingsConformanceCase, ...] = (
     ResultReadingsConformanceCase(
         "grouped.values_exact",
         "values gives each value exactly as this store's own by_doc_type returns it: every double to its last bit, "
-        "negative zero, 1 apart from 1.0, false apart from 0, wherever its reads keep them apart",
+        "every integer whole at any width, negative zero, 1 apart from 1.0, false apart from 0, wherever its reads "
+        "keep them apart",
         _values_are_exact,
     ),
     ResultReadingsConformanceCase(
