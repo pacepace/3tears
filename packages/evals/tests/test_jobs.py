@@ -478,6 +478,47 @@ async def test_an_exhausted_account_is_its_own_terminal_status_with_its_reason_a
     assert persisted.budget_stop_reason is None
 
 
+@pytest.mark.parametrize("stopped_by", ["account_refused", "model_unserved"])
+async def test_an_exhausted_run_keeps_the_cost_caps_record_of_the_cells_it_set_aside(stopped_by: str) -> None:
+    """The account's refusal or the unserved-model circuit stopped the run first, and the cost cap then set a running
+    cell's judging aside: the run ends ``exhausted`` for what gave out, and the cap's record, with its count of the
+    cells it left unjudged, is kept on the run beside it, never lost with the stop it lost the race to."""
+    from threetears.evals.run.budget import AccountExhaustedError, ModelUnservedError
+    from threetears.evals.schema.models import BudgetStop
+
+    storage = InMemoryRunStore()
+    manager = EvalJobManager(storage)
+    run = make_eval_run()
+    cap = BudgetStop(
+        currency="cost_usd",
+        ceiling=0.6,
+        landed_at_stop=0.25,
+        landed_final=0.5,
+        cells_in_flight=1,
+        cells_not_started=0,
+        cells_not_judged=1,
+    )
+
+    async def work(progress: Any) -> None:
+        if stopped_by == "account_refused":
+            raise AccountExhaustedError(
+                1, 2, accumulated_usd=0.5, unpriced_results=0, detail="apparatus: refused (payment)", stops=[cap]
+            )
+        raise ModelUnservedError(
+            1, 2, model="m", accumulated_usd=0.5, unpriced_results=0, detail="apparatus: retired", stops=[cap]
+        )
+
+    await manager.start_group([(run, work, None)])
+    await settled(manager, run.id, timeout=2)
+
+    persisted = storage.runs[run.id]
+    assert (persisted.status, persisted.exhausted_because) == ("exhausted", stopped_by)
+    assert persisted.budget_stops == [cap]
+    [reason] = persisted.error_details
+    assert "the cost cap had too little left to judge 1 cell(s)" in reason
+    assert persisted.budget_stop_reason is None, "the cap did not end the run; what gave out did"
+
+
 async def test_a_genuine_failure_still_lands_among_the_errors() -> None:
     """The counterpart to the two designed stops: a real fault keeps the error channel.
 

@@ -878,8 +878,10 @@ class EvalSummary(BaseModel):
         operator gave for a cancel, the line written from the run's stop records when a per-run ceiling (its cost
         cap or its metered-call ceiling) stopped it (:func:`budget_stop_line`), or the reason its wall-clock
         budget gave.
-        ``None`` for a run nothing stopped, and for a cancel given no reason. A stop is never one of
-        :attr:`errors`, which are faults.
+        ``None`` for a run nothing stopped, for a cancel given no reason, and for an ``exhausted`` run, whose
+        account or model stopped it as its :attr:`errors` say: a cost cap record such a run carries counts the cells
+        the cap refused judging beside that stop (the results line counts them), and is never read as its stop. A
+        stop is never one of :attr:`errors`, which are faults.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -1442,7 +1444,8 @@ def summarize_runs(
     cases, results, spend, errors   every run's together, cases in the order the runs were given
     status                          ``completed`` when every run's is, else the first other status met
     spend ceiling                   the runs' ceilings summed; ``None`` when any run had none
-    stop reasons                    the first run's that has one; budget stops, every run's
+    stop reasons                    the first run's that has one; budget stops, every run's but an
+                                    ``exhausted`` one's, whose cap record counts cells beside its stop
     run id, schedule, settings      the first run's
     template, model, repeats,       must agree: batches of one arm are launched alike, so runs that differ
     judge, overlays                 in any of them are refused rather than read as one arm
@@ -1481,7 +1484,7 @@ def summarize_runs(
             "arm; summarise each with summarize_run"
         )
     caps = [run.max_cost_usd for run in runs]
-    stops = [stop for run in runs for stop in run.budget_stops or ()]
+    stops = _ceiling_stops(runs)
     merged = first.model_copy(
         update={
             "test_case_ids": [case_id for run in runs for case_id in run.test_case_ids],
@@ -1494,6 +1497,15 @@ def summarize_runs(
         }
     )
     return _summary(host, merged, runs, scope_id, case_names or {})
+
+
+def _ceiling_stops(runs: Sequence[EvalRun]) -> list[BudgetStop]:
+    """The records of the per-run ceilings that stopped ``runs``, each read by its own run's status.
+
+    An ``exhausted`` run's account or model stopped it, which its errors name; a cost cap record it carries counts the
+    cells the cap refused judging beside that stop (the results line counts them), and is never a stop line's.
+    """
+    return [stop for run in runs if run.status != "exhausted" for stop in run.budget_stops or ()]
 
 
 def _summary(
@@ -1516,6 +1528,8 @@ def _summary(
     ]
     second_costs = [row.cost_usd for row in second_rows]
     outcomes = tally.outcomes
+    # Read from each run's own status, never the merged one: an exhausted batch's cap record is no stop.
+    stops = _ceiling_stops(runs)
     return EvalSummary(
         run_id=run.id,
         scope_id=scope_id,
@@ -1546,8 +1560,7 @@ def _summary(
         # Templates are edited in place: one edited since the launch no longer holds what the judge read.
         intent=template.intent if template is not None and template.updated_at <= run.created_at else None,
         errors=errors,
-        stopped_because=run.cancellation_reason
-        or (budget_stop_line(run.budget_stops) if run.budget_stops else run.budget_stop_reason),
+        stopped_because=run.cancellation_reason or (budget_stop_line(stops) if stops else run.budget_stop_reason),
         arm_schedule=run.arm_schedule,
         max_cost_usd=run.max_cost_usd,
         max_cost_usd_origin=run.max_cost_usd_origin,

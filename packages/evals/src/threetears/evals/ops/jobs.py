@@ -413,7 +413,13 @@ def _run_status(run: EvalRun) -> JobStatus:
     # A ceiling stop is worded from its typed records, as the run's summary words it, never from the run
     # package's own account of the stop in `budget_stop_reason`.
     budget_stop = budget_stop_line(run.budget_stops) if run.budget_stops else run.budget_stop_reason
-    detail = run.cancellation_reason or budget_stop or ("; ".join(run.error_details) or None)
+    errors = "; ".join(run.error_details) or None
+    if run.status == "exhausted":
+        # What gave out is the account or the model, which its error names, with the cells the cost cap refused
+        # judging beside it; a cap record the run carries is that count, never its stop, so no stop line is read.
+        detail = errors
+    else:
+        detail = run.cancellation_reason or budget_stop or errors
     if run.lost is not None:
         detail = run.lost.cause
     return JobStatus(

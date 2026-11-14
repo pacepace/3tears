@@ -54,7 +54,7 @@ from threetears.evals.ops import (
 )
 from threetears.evals.analysis import judge_agreement
 from threetears.evals.run import LAUNCH_CANCEL_REASON
-from threetears.evals.analysis.summary import budget_stop_line
+from threetears.evals.analysis.summary import budget_stop_line, summarize_runs
 from threetears.evals.schema.models import BudgetStop
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
@@ -203,6 +203,90 @@ async def test_a_run_its_ceiling_stopped_reads_the_stop_from_its_records_on_ever
     status = await job_poll(fixture.host, run_job_id(run.id), TOYHOST_SCOPE)
     summary = off_loop(run_get, fixture.host.eval_host, run.id, TOYHOST_SCOPE)
     assert status.detail == summary.stopped_text == budget_stop_line([stop])
+
+
+async def test_an_exhausted_run_carrying_the_caps_record_reads_what_gave_out_first() -> None:
+    """A run the account's refusal stopped, whose running cell's judging the cost cap then set aside, carries the
+    cap's record as a count beside that stop, never as the stop: its job status is the refusal alone (which names the
+    count), and its summary claims no stop of the cap's, the refusal being among its errors."""
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+    run = off_loop(storage.load_eval_run, fixture.campaign.run_ids[0], TOYHOST_SCOPE)
+    assert run is not None
+    stop = BudgetStop(
+        currency="cost_usd",
+        ceiling=0.6,
+        landed_at_stop=0.25,
+        landed_final=0.5,
+        cells_in_flight=1,
+        cells_not_started=0,
+        cells_not_judged=1,
+    )
+    refusal = (
+        "eval run stopped: the provider account refused a candidate call after 1/2 results ($0.5 spent) — refused; "
+        "beside it, the cost cap had too little left to judge 1 cell(s), which a re-judge takes up"
+    )
+    update = {
+        "status": "exhausted",
+        "exhausted_because": "account_refused",
+        "error_details": [refusal],
+        "budget_stops": [stop],
+    }
+    off_loop(storage.save_eval_run, run.model_copy(update=update))
+
+    status = await job_poll(fixture.host, run_job_id(run.id), TOYHOST_SCOPE)
+    assert status.detail == refusal
+
+    summary = off_loop(run_get, fixture.host.eval_host, run.id, TOYHOST_SCOPE)
+    assert summary.stopped_because is None and summary.stopped_text is None
+    assert refusal in summary.errors
+    assert not any(line.lstrip().startswith("stopped") for line in summary.render().splitlines())
+
+
+@pytest.mark.parametrize("exhausted_first", [False, True], ids=["cap-stopped-batch-first", "exhausted-batch-first"])
+def test_an_arms_batches_read_their_stop_off_the_batch_its_cap_stopped_never_the_exhausted_ones_count(
+    exhausted_first: bool,
+) -> None:
+    """One arm in two batches: one its cost cap stopped, one the account's refusal stopped, which carries the cap's
+    count of a cell it refused judging. Whichever came first, the arm's stop line is the cap-stopped batch's alone:
+    the exhausted batch's record is a count beside its own stop, and none of its figures reach the line."""
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+    run = off_loop(storage.load_eval_run, fixture.campaign.run_ids[0], TOYHOST_SCOPE)
+    assert run is not None
+    capped = BudgetStop(
+        currency="cost_usd", ceiling=2, landed_at_stop=2.25, landed_final=2.5, cells_in_flight=1, cells_not_started=4
+    )
+    counted = BudgetStop(
+        currency="cost_usd",
+        ceiling=0.6,
+        landed_at_stop=0.25,
+        landed_final=0.5,
+        cells_in_flight=1,
+        cells_not_started=7,
+        cells_not_judged=1,
+    )
+    stopped = run.model_copy(
+        update={"status": "budget_stopped", "budget_stop_reason": "stopped by its cost cap", "budget_stops": [capped]}
+    )
+    exhausted = run.model_copy(
+        update={
+            "id": f"{run.id}-exhausted",
+            "status": "exhausted",
+            "exhausted_because": "account_refused",
+            "error_details": ["eval run stopped: the provider account refused a candidate call"],
+            "budget_stops": [counted],
+        }
+    )
+    off_loop(storage.save_eval_run, stopped)
+    off_loop(storage.save_eval_run, exhausted)
+    batches = [exhausted.id, stopped.id] if exhausted_first else [stopped.id, exhausted.id]
+
+    summary = off_loop(summarize_runs, fixture.host.eval_host, batches, TOYHOST_SCOPE)
+
+    line = summary.stopped_because
+    assert line is not None and line == budget_stop_line([capped])
+    assert "$0.6" not in line and "7 cells" not in line and "not judged" not in line
 
 
 async def test_cancelling_a_run_that_has_ended_is_refused() -> None:

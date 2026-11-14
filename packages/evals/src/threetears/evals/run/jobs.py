@@ -1244,10 +1244,17 @@ class EvalJobManager:
             # stops do: nobody configured the account to run dry, and an operator has to act on it
             # (top up, raise the key's limit) before another launch can measure anything. The
             # message carries the spend the run had already incurred.
+            # The cost cap's record rides beside it when the cap set a running cell's judging aside after the
+            # refusal, so the cells it left unjudged are counted on the run however it stopped.
             # NOSILENT: written below as the run's ``exhausted`` status, the refusal in its error_details.
             log.warning("Job %s stopped: %s", run_id, exhausted)
             await self._set_status(
-                run_id, scope_id, "exhausted", error=str(exhausted), exhausted_because="account_refused"
+                run_id,
+                scope_id,
+                "exhausted",
+                error=str(exhausted),
+                budget_stops=list(exhausted.stops) or None,
+                exhausted_because="account_refused",
             )
         except ModelUnservedError as unserved:
             # The provider does not serve the model the run's candidate names: every call naming it meets the same
@@ -1259,7 +1266,12 @@ class EvalJobManager:
             # error_details.
             log.warning("Job %s stopped: %s", run_id, unserved)
             await self._set_status(
-                run_id, scope_id, "exhausted", error=str(unserved), exhausted_because="model_unserved"
+                run_id,
+                scope_id,
+                "exhausted",
+                error=str(unserved),
+                budget_stops=list(unserved.stops) or None,
+                exhausted_because="model_unserved",
             )
         except EvalJobTimeout as timed_out:
             # A designed stop, on the cost cap's terms: the budget is sized to the run's matrix
