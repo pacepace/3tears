@@ -1,5 +1,8 @@
 # epoch-discipline allowlist, rule ttl-safety-net: today's violations, each with the fix that removes it.
-# <path> :: <function> :: <symbol> :: <count> :: <fix>. Counts are pinned: the list only shrinks.
+# <path> :: <function> :: <symbol> :: <count> :: <fix>. The list is debt, pinned by count.
+# A count above what the code has fails until it is lowered, or the line deleted.
+# A new line only when the code needs the violation and its fix is not feasible now; its fix names what removes it.
+# The easy way out is never a reason. A site that is not a violation goes in _epoch_waivers.txt, not here.
 # Grammar and rules: threetears.enforcement.epoch_discipline; gate: test_epoch_discipline.py.
 packages/core/src/threetears/core/coordination/tables.py :: CoordinationRevocationsCollection :: negative_cache_max_age= :: 1 :: evict negative revocation entries from the revocation write's epoch change set instead of an age
 packages/nats/src/threetears/nats/persisted_copy.py :: PersistedCopyBucket._declare_once :: ensure_kv_bucket(ttl=) :: 1 :: the persisted copy is kept by epochs; drop its bucket ttl once its writer announces each change

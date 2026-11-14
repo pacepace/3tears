@@ -86,6 +86,30 @@ threads' L1 and shared L2 bundles, raising if an eviction fails. An unknown meta
 is kept: the `metadata` channel is working state the graph reads on resume. Run it on
 threads that are not in a live turn.
 
+### Pruning history
+
+```python
+result = await saver.aprune(thread_ids)  # strategy="keep_latest"
+```
+
+Keeps the newest checkpoint of every namespace (root and nested) and the writes recorded
+against it, and deletes the rest at every tier, so a paused run still resumes. A namespace
+whose state lives in its ancestors (a LangGraph `DeltaChannel`) is left whole and counted.
+`strategy="delete"` removes the threads entirely. Returns a `CheckpointPruneResult`.
+
+To see what the tables hold and clean them from a shell, against any app's database:
+
+```bash
+python -m threetears.langgraph.checkpoint_maintenance report --dsn "$DSN" --owned-sql "SELECT id::text FROM sessions"
+python -m threetears.langgraph.checkpoint_maintenance prune --dsn "$DSN" --dry-run
+python -m threetears.langgraph.checkpoint_maintenance delete-unowned --dsn "$DSN" --owned-sql "..." --yes
+```
+
+The owned-threads query returns thread ids as stored (`"<customer>/<thread>"` under a
+customer-scoped saver). Deleted rows free space inside the tables after `VACUUM`; only
+`VACUUM FULL` or `pg_repack` returns it to the operating system. `--help` says what each
+action leaves in an app's caches.
+
 ## Middleware
 
 The package ships platform-level [`AgentMiddleware`](https://docs.langchain.com/oss/python/langchain/middleware) for `langchain.agents.create_agent` — the framework-aligned successor to the old hand-rolled `AgentNodeHook` / `ToolNodeHook` protocols. Consumer-specific policy lives in each consumer as its own middleware; only the reusable platform seams live here:

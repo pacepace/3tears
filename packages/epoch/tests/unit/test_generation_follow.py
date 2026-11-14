@@ -707,5 +707,7 @@ class TestAKeyWatcherFollowsWithoutAPass:
 
     async def test_a_reader_whose_bucket_cannot_be_opened_cannot_watch(self, bus: _Lossy) -> None:
         follower = _Pod(bus, scope="follower")
+        # a log not yet declared is waited for (test_generation.py); one that cannot be read is a failure
+        _log(bus).unreachable = KvError("broker unreachable")
         with pytest.raises(GenerationUnavailableError):
             await follow_generation_key(follower.registry, follower.reader, _TABLE)

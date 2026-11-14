@@ -1,5 +1,8 @@
 # epoch-discipline allowlist, rule whole-drop: today's violations, each with the fix that removes it.
-# <path> :: <function> :: <symbol> :: <count> :: <fix>. Counts are pinned: the list only shrinks.
+# <path> :: <function> :: <symbol> :: <count> :: <fix>. The list is debt, pinned by count.
+# A count above what the code has fails until it is lowered, or the line deleted.
+# A new line only when the code needs the violation and its fix is not feasible now; its fix names what removes it.
+# The easy way out is never a reason. A site that is not a violation goes in _epoch_waivers.txt, not here.
 # Grammar and rules: threetears.enforcement.epoch_discipline; gate: test_epoch_discipline.py.
 packages/agent/acl/src/threetears/agent/acl/access_tables.py :: bind_acl_cache_to_access_tables.on_group :: invalidate_all :: 1 :: ACL caches evict exactly the groups/members/roles the epoch change set names, not invalidate_all
 packages/agent/acl/src/threetears/agent/acl/caller_cache.py :: CallerAccessCache.followed_by :: invalidate_all :: 1 :: ACL caches evict exactly the groups/members/roles the epoch change set names, not invalidate_all

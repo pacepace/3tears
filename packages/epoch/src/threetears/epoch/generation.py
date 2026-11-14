@@ -103,6 +103,13 @@ _RESTORED_RECORD_OVERHEAD: Final = 160
 _RESTORE_WAIT: Final = timedelta(seconds=10)
 _RESTORE_POLL_SECONDS: Final = 0.1
 
+#: how often a watch on a log not yet declared looks again. A follower starts before the first write
+#: declares the log, and an absent log is a table with no epoch, not a failure: the watch waits for it.
+#: Nothing is missed meanwhile -- a key watch pushes the key's newest record first -- but an epoch whose
+#: broadcasts were lost is caught only once the watch binds, so this bounds how late that is: one
+#: second, a follower's first restart delay, never backed off.
+_ABSENT_LOG_POLL: Final = timedelta(seconds=1)
+
 
 def _changes_refused() -> Any:
     """the count of change records the log refused, fetched where it is moved, never held at import."""
@@ -215,13 +222,21 @@ class _ChangeLogReading:
     newest of them.
     """
 
-    def __init__(self, nats_client: ChangeLogBinder, *, tenants: PodTenants | None = None) -> None:
+    def __init__(
+        self,
+        nats_client: ChangeLogBinder,
+        *,
+        tenants: PodTenants | None = None,
+        absent_log_poll: timedelta = _ABSENT_LOG_POLL,
+    ) -> None:
         """capture the client and the tenants it reads; no I/O.
 
         :param nats_client: a connected client that binds change logs
         :ptype nats_client: ChangeLogBinder
         :param tenants: the pod's tenants; ``None`` reads every tenant
         :ptype tenants: PodTenants | None
+        :param absent_log_poll: how often a watch on a log not yet declared looks again
+        :ptype absent_log_poll: timedelta
         :return: nothing
         :rtype: None
         :raises TypeError: when ``tenants`` is anything but a :class:`~threetears.core.tenancy.PodTenants`
@@ -231,6 +246,7 @@ class _ChangeLogReading:
         self._nats = nats_client
         self._tenants = tenants
         self._tenants_of: dict[str, tuple[str, ...]] = {}
+        self._absent_log_poll = absent_log_poll
 
     def _table_tenants(self, pod: PodTenants, table_name: str) -> tuple[str, ...]:
         """the tenants this pod reads ``table_name`` under, by the table's declared tenancy.
@@ -538,12 +554,22 @@ class _ChangeLogReading:
         :ptype table_name: str
         :return: the generation tokens, in order
         :rtype: AsyncGenerator[str | None]
-        :raises GenerationUnavailableError: when the log is absent, or cannot be read or watched
+        :raises GenerationUnavailableError: when the log cannot be read or watched
         :raises KvError: when the connection closes, so nothing can ever be delivered again
         """
         state = await self._state()
         if state is None:
-            raise GenerationUnavailableError(f"write generation for {table_name!r} could not be watched: no log")
+            log.info(
+                "the epoch change log is not declared yet; the table is watched once its first write declares it",
+                extra={"extra_data": {"table": table_name, "poll_seconds": self._absent_log_poll.total_seconds()}},
+            )
+        while state is None:
+            await asyncio.sleep(self._absent_log_poll.total_seconds())
+            if self.closed:
+                # the close the docstring promises as KvError: a read through a closed client would
+                # surface as GenerationUnavailableError, which a caller takes for a log it may retry
+                raise KvError(f"the connection closed while {table_name!r} waited for the change log")
+            state = await self._state()
         async with aclosing(self._watch_keys(table_name)) as updates:
             async for update in updates:
                 # the incarnation is read with each push: a log lost and declared again numbers from
@@ -1117,7 +1143,12 @@ class EpochGenerationReader(_ChangeLogReading):
     """
 
     def __init__(
-        self, nats_client: ChangeLogBinder, *, create_if_missing: bool = False, tenants: PodTenants | None = None
+        self,
+        nats_client: ChangeLogBinder,
+        *,
+        create_if_missing: bool = False,
+        tenants: PodTenants | None = None,
+        absent_log_poll: timedelta = _ABSENT_LOG_POLL,
     ) -> None:
         """capture the client and the tenants it reads; no I/O.
 
@@ -1128,8 +1159,12 @@ class EpochGenerationReader(_ChangeLogReading):
         :param tenants: an agent or tool pod's tenants, each table read under the keys its declared tenancy
             names; ``None`` reads every tenant, for a platform service
         :ptype tenants: PodTenants | None
+        :param absent_log_poll: how often a watch on a log not yet declared looks again; a second by
+            default, which bounds how late an epoch whose broadcasts were lost is caught after the log's
+            first write
+        :ptype absent_log_poll: timedelta
         :return: nothing
         :rtype: None
         """
-        super().__init__(nats_client, tenants=tenants)
+        super().__init__(nats_client, tenants=tenants, absent_log_poll=absent_log_poll)
         self._create_if_missing = create_if_missing

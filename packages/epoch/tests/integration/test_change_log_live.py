@@ -8,7 +8,8 @@ What a fake cannot prove:
 - a follower walks a table's epochs past other tables' records between them;
 - a log the broker lost is put back from the change notes under a new incarnation that names the lost
   one and the floor its notes cover it from;
-- a full log refuses an append loudly, and its fill is measured.
+- a full log refuses an append loudly, and its fill is measured;
+- a follower that watches before any write declared the log is pushed the first write once it is.
 
 Uses the session-scoped ``nats_container`` fixture; a checkout without docker skips cleanly.
 """
@@ -18,8 +19,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from contextlib import aclosing
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 
 import pytest
 
@@ -87,6 +87,17 @@ async def test_concurrent_writers_each_get_an_epoch_and_none_is_refused(nats_con
         assert sorted(row.ids[0] for change in walk.changes for row in change.rows) == sorted(
             f"m{i}" for i in range(32)
         )
+
+
+async def test_a_watch_started_before_the_log_is_declared_is_pushed_its_first_write(nats_container: str) -> None:
+    async with _client(nats_container) as nc:
+        assert await nc.change_log(EPOCH_CHANGES_BUCKET).state() is None
+        async with aclosing(EpochGenerationReader(nc).watch(_TABLE)) as pushed:
+            first = asyncio.ensure_future(anext(pushed))
+            await asyncio.sleep(0.2)
+            assert not first.done(), "a watch on an absent log pushed or failed instead of waiting"
+            written = await EpochGenerationSource(nc).advance(_TABLE)
+            assert await asyncio.wait_for(first, timeout=10) == written
 
 
 async def test_a_retried_append_records_once(nats_container: str) -> None:
