@@ -673,6 +673,16 @@ class Caveats(_Part):
     latency: str | None = Field(default=None, description="Why latency is not compared, when it is not.")
     short_runs: list[ShortRun] = Field(default_factory=list, description="Runs short of usable measurements.")
     unreported: list[str] = Field(default_factory=list, description="Observations recorded but not reported.")
+    # Left out of the document while empty, so an input over runs that all finished reads, and is keyed, as one did
+    # before the field existed.
+    unfinished: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda said: not said,
+        description=(
+            "What stopped each run that did not finish, a sentence each in code's words, then what the readings "
+            "cover: what a page opens with in place of a verdict. Empty where every run completed."
+        ),
+    )
 
 
 class RequestSettings(_Part):

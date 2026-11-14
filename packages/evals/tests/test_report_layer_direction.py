@@ -229,6 +229,7 @@ _NUMBERS_MODULES = frozenset(
         "report_margins",
         "reporting",
         "revisions",
+        "run_ending",
         "said",
         "separation",
         "significance",
