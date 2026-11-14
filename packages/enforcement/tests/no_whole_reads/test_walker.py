@@ -2171,6 +2171,68 @@ def test_sets_spread_beside_a_bound_id_only_narrow(tmp_path: Path) -> None:
     assert ("by_family", "unknown-predicate {}") in found, found
 
 
+_SOURCE_DERIVED = """
+    from threetears.core import keyed
+    from threetears.core.operator import source_change_read
+
+
+    class Lsf:
+        @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+        async def race_states(self, relation, run_ids):
+            paired = keyed.Derived(f"SELECT *, office_key || state AS race_state FROM ({relation.sql}) AS race_rows")
+            return await keyed.counts_by(
+                self._reader, paired, column="race_state", by={"run_id": keyed.AnyOf(run_ids, as_list=True)}
+            )
+
+        @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+        async def race_states_by_fragment(self, relation, run_ids):
+            paired = keyed.Derived(f"SELECT * FROM ({relation.sql}) AS race_rows")
+            return await keyed.counts_by(
+                self._reader, paired, column="race_state", where=[keyed.Fragment("run_id = ANY($1)", run_ids)]
+            )
+
+        @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+        async def produced_by_runs(self, relation, run_ids):
+            return await keyed.counts_by(
+                self._reader, long_derived(relation), column="race_state", by={"run_id": keyed.AnyOf(run_ids)}
+            )
+
+        @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+        async def race_states_by_family(self, relation, families):
+            paired = keyed.Derived(f"SELECT * FROM ({relation.sql}) AS race_rows")
+            return await keyed.counts_by(
+                self._reader, paired, column="race_state", by={"family": keyed.AnyOf(families, as_list=True)}
+            )
+
+        @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+        async def produced_by_family(self, relation, families):
+            return await keyed.counts_by(
+                self._reader, long_derived(relation), column="race_state", by={"family": keyed.AnyOf(families)}
+            )
+
+        async def race_states_unmarked(self, relation, run_ids):
+            paired = keyed.Derived(f"SELECT * FROM ({relation.sql}) AS race_rows")
+            return await keyed.counts_by(
+                self._reader, paired, column="race_state", by={"run_id": keyed.AnyOf(run_ids, as_list=True)}
+            )
+"""
+
+
+def test_a_source_read_over_a_run_time_relation_is_bounded_by_its_marked_id_pin(tmp_path: Path) -> None:
+    """Flips if, inside ``@source_change_read(ids=...)``, a keyed helper over a run-time ``Derived`` relation or a
+    keyless declared producer's relation is a finding when the call pins one of the mark's id columns (``by=`` or a
+    literal ``Fragment``); or passes with no such pin, or outside the mark (reports #48 item 2)."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_source.py").write_text("async def test_runs(lsf):\n    assert lsf\n", encoding="utf-8")
+    with pytest.warns(UserWarning):
+        found = _symbols(_config(tmp_path, {"lsf.py": _SOURCE_DERIVED}, relation_producers={"long_derived": ()}))
+    functions = {function for function, _ in found}
+    for bounded in ("Lsf.race_states", "Lsf.race_states_by_fragment", "Lsf.produced_by_runs"):
+        assert bounded not in functions, found
+    for unbounded in ("Lsf.race_states_by_family", "Lsf.produced_by_family", "Lsf.race_states_unmarked"):
+        assert unbounded in functions, found
+
+
 _HELPED = """
     from threetears.core.collections.schema_backed import TableSchema
     from threetears.core.keyed import KeyBatch, Sort, keyset_page, read_keyed
@@ -2908,6 +2970,42 @@ _FORMAT_VIEWS = """
     def _keyed_exclude_sql(view, table):
         return f"CREATE OR REPLACE VIEW {view} AS SELECT * EXCLUDE (state) FROM main.{table}"
 """
+
+
+_VIEW_PARTS = """
+    def needle_view_sql(schema, projections, moves, extra):
+        parts = [f"SELECT p.state AS state, p.office_key AS office_key FROM main.{projections} AS p WHERE p.k = 'x'"]
+        if moves is not None:
+            parts.append(f"SELECT m.state, m.office_key FROM main.{moves} AS m")
+        if extra is not None:
+            parts.append(f"SELECT e.office_key FROM main.{extra} AS e")
+        return f"CREATE VIEW {schema}.lsf_needle AS {' UNION ALL '.join(parts)}"
+
+    def needle_dropped_sql(schema, projections, moves):
+        parts = [f"SELECT p.state AS state FROM main.{projections} AS p"]
+        if moves is not None:
+            parts.append(f"SELECT upper(m.state) AS state FROM main.{moves} AS m")
+        return f"CREATE VIEW {schema}.lsf_needle AS {' UNION ALL '.join(parts)}"
+
+    def not_a_producer(conn, projections):
+        return conn.execute(f"SELECT p.state FROM main.{projections} AS p").fetchall()
+"""
+
+
+def test_a_view_producer_s_parts_written_apart_are_judged_as_its_view(tmp_path: Path) -> None:
+    """Flips if a declared view producer whose view is joined from SELECTs written as separate strings has those parts
+    judged as reads (they read nothing: the view is judged at its readers by the producer's keys), or a part passing
+    none of the producer's keys stops being a finding, or the same SELECT outside a producer passes (reports #48
+    item 3)."""
+    producers = {"needle_view_sql": (("office_key",), ("state",)), "needle_dropped_sql": (("state",),)}
+    found = _symbols(
+        _config(tmp_path, {"needle.py": _VIEW_PARTS}, view_producers=producers, local_relations={"*": ("state",)})
+    )
+    assert not any(function == "needle_view_sql" for function, _ in found), found
+    assert any(
+        function == "needle_dropped_sql" and symbol.startswith("view-key-not-passed") for function, symbol in found
+    ), found
+    assert any(function == "not_a_producer" for function, _ in found), found
 
 
 def test_a_view_written_around_its_key_and_a_keyless_producers_view_are_judged_by_their_declarations(

@@ -76,6 +76,7 @@ from threetears.enforcement.no_whole_reads.helpers import (
     narrows,
     pager_order,
     templated,
+    with_relation,
 )
 from threetears.enforcement.no_whole_reads.keys import KeySources, annotated_key, declared_key_sources
 from threetears.enforcement.no_whole_reads.sentinels import SentinelTemplates, declared_templates
@@ -423,6 +424,10 @@ _OPERATOR_MARKS: Final[dict[str, frozenset[str]]] = {
 
 #: a function no source change read marks
 _NO_SOURCE: Final[tuple[frozenset[str], frozenset[str], bool]] = (frozenset(), frozenset(), False)
+
+#: the name a ``source_change_read`` function's run-time relation is judged under (:meth:`_Walker._source_bound`): one
+#: no declaration names, so only the mark's terms (its ids pinned at the call, its stamps, a whole static unit) key it
+_SOURCE_RELATION: Final = "__source_change_read__"
 
 #: the marks reachable only from their own entry: every caller in the repo carries the same mark
 _ENTRY_ONLY_MARKS: Final[frozenset[str]] = frozenset({"operator_reset", "operator_command"})
@@ -3527,7 +3532,10 @@ class _ModuleWalk(ast.NodeVisitor):
                     hits.setdefault(*unique)
             for statement in self._helper_statements(located):
                 if statement.sql is UNSEEN or statement.sql is None:
-                    hits.setdefault(f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(site))
+                    if not self._source_bound(located, statement, site):
+                        hits.setdefault(
+                            f"unknown-predicate {statement.helper}({statement.unseen})", self._spelled(site)
+                        )
                     continue
                 reader = self._reader(site)
                 if _on_a_local_database(call) or self._bound_to_a_local_database(call):
@@ -3546,6 +3554,32 @@ class _ModuleWalk(ast.NodeVisitor):
             self.hits.append(
                 WholeReadHit(path, line, function, symbol, _one_line(f"{statement_text} (passed to {self._function})"))
             )
+
+    def _source_bound(self, call: ast.Call, statement: HelperStatement, site: ast.Call) -> bool:
+        """whether a keyed helper call whose relation is made at run time (a ``Derived`` over a relation's text) reads
+        the source by its own change record, as the enclosing ``source_change_read`` mark says: the call, its
+        relation named as one no declaration names, keyed by the mark's terms alone (one of its id columns pinned at
+        the call, ``by=`` or a literal ``Fragment``). Without such a pin, or outside a mark, it stays unseen.
+
+        :param call: the helper call, its arguments resolved
+        :ptype call: ast.Call
+        :param statement: its unseen statement
+        :ptype statement: HelperStatement
+        :param site: where its findings are recorded
+        :ptype site: ast.Call
+        :return: whether it is
+        :rtype: bool
+        """
+        reader = self._reader(site)
+        if statement.unseen not in {"table", "relation"} or not (reader.source_ids or reader.stamps):
+            return False
+        named = with_relation(call, _SOURCE_RELATION)
+        sent = [] if named is None else list(helper_statements(named))
+        return bool(sent) and all(
+            isinstance(each.sql, str)
+            and not any(finding.kind not in {HEAD, KEYED_COUNT} for finding in judge_sql(each.sql, reader))
+            for each in sent
+        )
 
     def _bound_to_a_local_database(self, call: ast.Call) -> bool:
         """whether a helper call's connection is a name the enclosing function binds only to a connection over a

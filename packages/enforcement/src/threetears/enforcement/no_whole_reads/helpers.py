@@ -61,6 +61,7 @@ __all__ = [
     "narrows",
     "pager_order",
     "templated",
+    "with_relation",
 ]
 
 #: the calls answering a local copy's relation by its table's name (``snapshot.relation(NAME)``)
@@ -665,7 +666,8 @@ def _counts_by(call: ast.Call) -> list[str]:
     relation, own = _relation(_argument(call, "table", 1), "table")
     column = _text(_argument(call, "column", None), "column")
     values = _argument(call, "values", None) is not None
-    if not values and _argument(call, "where", None) is None:
+    if not values and _argument(call, "where", None) is None and _argument(call, "by", None) is None:
+        # counted with nothing narrowing it: every value of the column, whatever the relation
         raise _Unseen("values")
     return [_count_of(relation, column, call, values=values), *own]
 
@@ -676,7 +678,8 @@ def _counts_by_relations(call: ast.Call) -> list[str]:
         raise _Unseen("tables")
     column = _text(_argument(call, "column", None), "column")
     values = _argument(call, "values", None) is not None
-    if not values and _argument(call, "where", None) is None:
+    if not values and _argument(call, "where", None) is None and _argument(call, "by", None) is None:
+        # counted with nothing narrowing it: every value of the column, whatever the relation
         raise _Unseen("values")
     statements: list[str] = []
     for node in tables.values:
@@ -1086,23 +1089,37 @@ def templated(call: ast.Call) -> ast.Call | None:
     where = _READ_RELATION.get(_name(call))
     if where is None:
         return None
-    keyword, position = where
-    named = _argument(call, keyword, position)
+    named = _argument(call, *where)
     if isinstance(named, ast.Call) and len(named.args) == 1 and not named.keywords:
         # the name passed through one spelling call (``_relation(self._table)``, a quoter or a lower-caser)
         named = named.args[0]
     if not isinstance(named, ast.Name | ast.Attribute):
         return None
-    template = ast.Constant("{}")
+    return with_relation(call, "{}")
+
+
+def with_relation(call: ast.Call, relation: str) -> ast.Call | None:
+    """the keyed read (or write, or builder) with the relation it reads named ``relation``, whatever its caller
+    passes; None for a helper whose relation argument is not known.
+
+    :param call: a keyed helper call
+    :ptype call: ast.Call
+    :param relation: the relation's name as a literal
+    :ptype relation: str
+    :return: the call reading ``relation``, or None
+    :rtype: ast.Call | None
+    """
+    where = _READ_RELATION.get(_name(call))
+    if where is None:
+        return None
+    keyword, position = where
+    named = ast.Constant(relation)
     by_keyword = any(given.arg == keyword for given in call.keywords)
     return ast.Call(
         func=call.func,
-        args=[
-            template if index == position and not by_keyword else argument for index, argument in enumerate(call.args)
-        ],
+        args=[named if index == position and not by_keyword else argument for index, argument in enumerate(call.args)],
         keywords=[
-            ast.keyword(arg=given.arg, value=template if given.arg == keyword else given.value)
-            for given in call.keywords
+            ast.keyword(arg=given.arg, value=named if given.arg == keyword else given.value) for given in call.keywords
         ],
     )
 

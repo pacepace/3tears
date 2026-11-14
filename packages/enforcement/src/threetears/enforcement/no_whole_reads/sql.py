@@ -51,7 +51,7 @@ once (``where = "WHERE id = $1"``), so a predicate built that way is judged as w
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Final
 
@@ -1563,6 +1563,21 @@ def _outer_columns(text: str, depths: list[int], start: int, depth: int) -> set[
     return {atom.column[1] for p in _conjuncts(where) for atom in _atoms(p) if atom.kind == "eq"}
 
 
+def _keyless(relation: _Relation, reader: Reader) -> bool:
+    """whether a relation is declared with no key (a declared producer's run-time relation, ``relation_producers``
+    ``()``): judged by a ``source_change_read`` mark's terms, as an undeclared one is.
+
+    :param relation: the relation
+    :ptype relation: _Relation
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :return: whether it is
+    :rtype: bool
+    """
+    declared = reader.schema.table(relation.name)
+    return declared is not None and not declared.primary_keys and not declared.unique_keys
+
+
 def _source_read(level: _Level, reader: Reader) -> bool:
     """whether a read of a relation no declaration names reads the source by its own change record, as the
     function's ``source_change_read`` mark says: past its stamps, by the ids its runs record named, or a whole static
@@ -1718,7 +1733,7 @@ def _judge_select(
         )
         if probe and len(level.relations) == 1 and not unseen:
             return None
-        if not known[index] and _source_read(level, reader):
+        if (not known[index] or _keyless(relation, reader)) and _source_read(level, reader):
             continue
         kind = "unknown-predicate" if unseen else _unkeyed_kind(level, known[index], aggregate)
         shown = table if relation is first else relation.name
@@ -1837,7 +1852,11 @@ def judge_sql(sql: str, reader: Reader | None = None) -> list[_SqlFinding]:
     ctes |= {name.lower() for name in ctes}
     bound_ctes = frozenset(_bound_ctes(text, depths, ctes, reader))
     findings = _judge_write(text, depths, ctes, bound_ctes, reader)
-    if _VIEW.match(text) is None:
+    if reader.view_keys and not findings and _VIEW.match(text) is None and _BARE_SELECT.match(text) is not None:
+        # a declared view producer's SELECT written apart from its CREATE VIEW (parts joined into the view later): a
+        # part of the view it builds, which reads nothing; judged by whether it passes one of the producer's keys
+        findings.extend(_judge_view_part(text, reader))
+    elif _VIEW.match(text) is None:
         for match in _SELECT.finditer(text):
             judged = _judge_select(text, depths, match.start(), ctes, bound_ctes, reader)
             if judged is not None:
@@ -1918,16 +1937,61 @@ def _judge_view(text: str, reader: Reader) -> list[_SqlFinding]:
     )
     if declared is None and not reader.view_keys:
         return [_SqlFinding("undeclared-view", name)]
-    passed = _passed_through(text[match.end() :])
+    body = text[match.end() :]
+    if declared is None and body.strip() == "{}":
+        # a producer's body joined from parts it writes apart: each part is judged where it is written
+        # (:func:`_judge_view_part`)
+        return []
+    passed = _passed_through(body)
     if passed is None:
         return []
     if declared is None:
-        # a producer's views are of tables keyed each its own way: a view passing any one key it declares is keyed
-        short = [sorted(column for column in key if column not in passed) for key in keys]
-        missing = [] if any(not columns for columns in short) else min(short, key=len)
+        missing = _producer_key_missing(passed, keys)
     else:
         missing = sorted(column for key in keys for column in key if column not in passed)
     return [_SqlFinding("view-key-not-passed", f"{name}.{missing[0]}")] if missing else []
+
+
+def _producer_key_missing(passed: set[str], keys: Sequence[tuple[str, ...]]) -> list[str]:
+    """the columns of a producer's shortest key a view's body does not pass through; none when it passes any one: a
+    producer's views are of tables keyed each its own way.
+
+    :param passed: the columns the body passes through
+    :ptype passed: set[str]
+    :param keys: the producer's keys
+    :ptype keys: Sequence[tuple[str, ...]]
+    :return: the missing columns
+    :rtype: list[str]
+    """
+    short = [sorted(column for column in key if column not in passed) for key in keys]
+    return [] if not short or any(not columns for columns in short) else min(short, key=len)
+
+
+#: a statement that is a plain ``SELECT`` (no ``WITH``, no write)
+_BARE_SELECT: Final[re.Pattern[str]] = re.compile(r"^\s*\(?\s*SELECT\b", re.IGNORECASE)
+
+
+def _judge_view_part(text: str, reader: Reader) -> list[_SqlFinding]:
+    """a part of the view a declared producer builds, written apart from its ``CREATE VIEW``: it reads nothing (the
+    view is judged where it is queried, by the producer's keys), and passes one of those keys through, or it is
+    ``view-key-not-passed`` on the relation it selects from.
+
+    :param text: the ``SELECT``, cleaned
+    :ptype text: str
+    :param reader: the judgement's context, its ``view_keys`` the producer's
+    :ptype reader: Reader
+    :return: the finding, if any
+    :rtype: list[_SqlFinding]
+    """
+    passed = _passed_through(text)
+    if passed is None:
+        return []
+    keys = [tuple(column.lower() for column in key) for key in reader.view_keys]
+    missing = _producer_key_missing(passed, keys)
+    if not missing:
+        return []
+    relations = data_relations(text, reader)
+    return [_SqlFinding("view-key-not-passed", f"{relations[0] if relations else '{}'}.{missing[0]}")]
 
 
 #: a relation a statement names: after ``FROM``, ``JOIN``, ``UPDATE`` or ``INTO``
