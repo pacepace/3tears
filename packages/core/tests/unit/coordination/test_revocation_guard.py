@@ -22,13 +22,14 @@ The ledger contract:
 from __future__ import annotations
 
 import asyncio
-import functools
 import itertools
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from freezegun import freeze_time
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.l2_order import l2_order_of
@@ -43,14 +44,15 @@ _SCOPE = "denylist-principal"
 _DB_NAMES = itertools.count(1)
 
 #: a revocation is remembered for a ttl measured FROM the revocation, so a moment far in the past
-#: is an entry that expired before it was written. These tests stand near the wall clock for the
-#: same reason production does.
+#: is an entry that expired before it was written. The clock is frozen here for the whole module, so
+#: that ttl and every expiry read, the code under test's included, is relative to a known instant.
+_NOW = datetime(2026, 11, 14, 12, 0, 0, tzinfo=UTC)
 
 
-@functools.cache
-def _now() -> datetime:
-    """the wall clock, read on first use inside a test run (never at import) and then held steady."""
-    return datetime.now(UTC).replace(microsecond=0)
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    with freeze_time(_NOW, real_asyncio=True):
+        yield
 
 
 class _Nats(FakeNatsClient):
@@ -168,8 +170,8 @@ class TestRevocationGuard:
     @pytest.mark.asyncio
     async def test_record_and_read_back_round_trips(self) -> None:
         guard = _guard()
-        await guard.record_revocation("sub:p1", revoked_at=_now())
-        assert await guard.revoked_at("sub:p1") == _now()
+        await guard.record_revocation("sub:p1", revoked_at=_NOW)
+        assert await guard.revoked_at("sub:p1") == _NOW
 
     @pytest.mark.asyncio
     async def test_unrevoked_key_has_no_stored_timestamp(self) -> None:
@@ -177,50 +179,50 @@ class TestRevocationGuard:
 
     @pytest.mark.asyncio
     async def test_unrevoked_key_is_not_revoked_before_anything(self) -> None:
-        assert await _guard().is_revoked_before("sub:never", moment=_now()) is False
+        assert await _guard().is_revoked_before("sub:never", moment=_NOW) is False
 
     @pytest.mark.asyncio
     async def test_session_started_before_revocation_is_blocked(self) -> None:
         guard = _guard()
-        await guard.record_revocation("sub:p1", revoked_at=_now())
-        assert await guard.is_revoked_before("sub:p1", moment=_now() - timedelta(minutes=5)) is True
+        await guard.record_revocation("sub:p1", revoked_at=_NOW)
+        assert await guard.is_revoked_before("sub:p1", moment=_NOW - timedelta(minutes=5)) is True
 
     @pytest.mark.asyncio
     async def test_session_started_after_revocation_is_unaffected(self) -> None:
         # otherwise every future login to a once-revoked principal is permanently denylisted,
         # which is not what recovery or offboarding mean.
         guard = _guard()
-        await guard.record_revocation("sub:p1", revoked_at=_now())
-        assert await guard.is_revoked_before("sub:p1", moment=_now() + timedelta(minutes=5)) is False
+        await guard.record_revocation("sub:p1", revoked_at=_NOW)
+        assert await guard.is_revoked_before("sub:p1", moment=_NOW + timedelta(minutes=5)) is False
 
     @pytest.mark.asyncio
     async def test_session_started_exactly_at_revocation_is_unaffected(self) -> None:
         guard = _guard()
-        await guard.record_revocation("sub:p1", revoked_at=_now())
-        assert await guard.is_revoked_before("sub:p1", moment=_now()) is False
+        await guard.record_revocation("sub:p1", revoked_at=_NOW)
+        assert await guard.is_revoked_before("sub:p1", moment=_NOW) is False
 
     @pytest.mark.asyncio
     async def test_distinct_keys_do_not_affect_each_other(self) -> None:
         guard = _guard()
-        await guard.record_revocation("sub:p1", revoked_at=_now())
-        assert await guard.is_revoked_before("sub:p2", moment=_now() - timedelta(days=1)) is False
+        await guard.record_revocation("sub:p1", revoked_at=_NOW)
+        assert await guard.is_revoked_before("sub:p2", moment=_NOW - timedelta(days=1)) is False
 
     @pytest.mark.asyncio
     async def test_distinct_purposes_do_not_collide(self) -> None:
         registry = _registry(_Nats(), _Store())
         sessions = _guard(registry, purpose="sessions")
         customers = _guard(registry, purpose="customers")
-        await sessions.record_revocation("id-1", revoked_at=_now())
+        await sessions.record_revocation("id-1", revoked_at=_NOW)
         assert await customers.revoked_at("id-1") is None
 
     @pytest.mark.asyncio
     async def test_second_record_call_overwrites_the_stored_moment(self) -> None:
         # an operator re-running offboarding, or narrowing an earlier cutoff.
         guard = _guard()
-        await guard.record_revocation("sub:p1", revoked_at=_now())
+        await guard.record_revocation("sub:p1", revoked_at=_NOW)
         # narrowed within the ttl: a cutoff moved further back than the ttl is an entry whose
         # blocked sessions have all ended anyway, which is the point of measuring from it.
-        narrowed = _now() - timedelta(minutes=5)
+        narrowed = _NOW - timedelta(minutes=5)
         await guard.record_revocation("sub:p1", revoked_at=narrowed)
         assert await guard.revoked_at("sub:p1") == narrowed
 
@@ -228,8 +230,8 @@ class TestRevocationGuard:
     async def test_hashed_keys_keep_similar_keys_distinct(self) -> None:
         store = _Store()
         guard = _guard(_registry(_Nats(), store))
-        await guard.record_revocation("sub:p1", revoked_at=_now())
-        await guard.record_revocation("sub:p10", revoked_at=_now() + timedelta(minutes=1))
+        await guard.record_revocation("sub:p1", revoked_at=_NOW)
+        await guard.record_revocation("sub:p10", revoked_at=_NOW + timedelta(minutes=1))
         assert len(store.rows) == 2
         assert all("sub:p1" not in key for _purpose, key in store.rows)
 
@@ -239,10 +241,10 @@ class TestRevocationGuard:
         # session valid again.
         nats, store, generations = _Nats(), _Store(), _FakeGenerations()
         guard = _guard(_registry(nats, store, generations))
-        await guard.record_revocation("sub:p1", revoked_at=_now())
+        await guard.record_revocation("sub:p1", revoked_at=_NOW)
         (await nats.kv_bucket(name="collections")).wipe()
         fresh = _guard(_registry(nats, store, generations))
-        assert await fresh.is_revoked_before("sub:p1", moment=_now() - timedelta(minutes=5)) is True
+        assert await fresh.is_revoked_before("sub:p1", moment=_NOW - timedelta(minutes=5)) is True
 
     @pytest.mark.asyncio
     async def test_the_common_answer_reaches_l3_once_per_pod_per_generation(self) -> None:
@@ -251,12 +253,12 @@ class TestRevocationGuard:
         nats, store, generations = _Nats(), _Store(), _FakeGenerations()
         reader = _guard(_registry(nats, store, generations))
         peer = _guard(_registry(nats, store, generations))
-        assert await reader.is_revoked_before("sub:quiet", moment=_now()) is False
+        assert await reader.is_revoked_before("sub:quiet", moment=_NOW) is False
         for _ in range(5):
-            assert await reader.is_revoked_before("sub:quiet", moment=_now()) is False
+            assert await reader.is_revoked_before("sub:quiet", moment=_NOW) is False
         assert store.fetches == 1, "a recorded absence was not reused"
         for _ in range(3):
-            assert await peer.is_revoked_before("sub:quiet", moment=_now()) is False
+            assert await peer.is_revoked_before("sub:quiet", moment=_NOW) is False
         assert store.fetches == 2, "the peer's recorded absence was not reused"
 
     @pytest.mark.asyncio
@@ -264,9 +266,9 @@ class TestRevocationGuard:
         nats, store, generations = _Nats(), _Store(), _FakeGenerations()
         reader = _guard(_registry(nats, store, generations))
         writer = _guard(_registry(nats, store, generations))
-        assert await reader.is_revoked_before("sub:p1", moment=_now() - timedelta(minutes=5)) is False
-        await writer.record_revocation("sub:p1", revoked_at=_now())
-        assert await reader.is_revoked_before("sub:p1", moment=_now() - timedelta(minutes=5)) is True, (
+        assert await reader.is_revoked_before("sub:p1", moment=_NOW - timedelta(minutes=5)) is False
+        await writer.record_revocation("sub:p1", revoked_at=_NOW)
+        assert await reader.is_revoked_before("sub:p1", moment=_NOW - timedelta(minutes=5)) is True, (
             "a recorded absence hid a revocation"
         )
 
@@ -276,8 +278,8 @@ class TestRevocationGuard:
         # With the broker unreachable, the write still commits to L3 and the check still reads it,
         # so the answer is right rather than merely refused.
         guard = _guard(_registry(_FailingNats(), _Store()))
-        await guard.record_revocation("sub:p1", revoked_at=_now())
-        assert await guard.is_revoked_before("sub:p1", moment=_now() - timedelta(minutes=5)) is True
+        await guard.record_revocation("sub:p1", revoked_at=_NOW)
+        assert await guard.is_revoked_before("sub:p1", moment=_NOW - timedelta(minutes=5)) is True
 
     @pytest.mark.asyncio
     async def test_with_no_l3_an_l2_outage_refuses_the_revocation_rather_than_dropping_it(self) -> None:
@@ -286,7 +288,7 @@ class TestRevocationGuard:
         guard = _guard(_registry(_FailingNats()))
         # the read of the existing entry is refused first: L2 is the store, so it raises too
         with pytest.raises(KvError, match="kv down"):
-            await guard.record_revocation("sub:p1", revoked_at=_now())
+            await guard.record_revocation("sub:p1", revoked_at=_NOW)
 
     @pytest.mark.asyncio
     async def test_with_no_l3_a_revocation_write_l2_refused_raises(self) -> None:
@@ -295,14 +297,14 @@ class TestRevocationGuard:
         bucket = await nats.kv_bucket(name="collections")
         bucket.put = AsyncMock(side_effect=KvError("kv down"))  # type: ignore[method-assign]
         with pytest.raises(L2WriteRefusedError, match="was not saved: L2 is this collection's only store"):
-            await guard.record_revocation("sub:p1", revoked_at=_now())
+            await guard.record_revocation("sub:p1", revoked_at=_NOW)
 
     @pytest.mark.asyncio
     async def test_with_no_l3_an_unreadable_denylist_is_not_read_as_not_revoked(self) -> None:
         # fail closed: with L2 the only store, "could not read" must never answer "never revoked"
         guard = _guard(_registry(_FailingNats()))
         with pytest.raises(KvError):
-            await guard.is_revoked_before("sub:p1", moment=_now())
+            await guard.is_revoked_before("sub:p1", moment=_NOW)
 
     @pytest.mark.asyncio
     async def test_an_l3_failure_propagates_so_the_caller_denies(self) -> None:
@@ -316,7 +318,7 @@ class TestRevocationGuard:
 
         store.fetch_one = _refuse  # type: ignore[method-assign]
         with pytest.raises(DataLayerUnavailableError):
-            await guard.is_revoked_before("sub:p1", moment=_now())
+            await guard.is_revoked_before("sub:p1", moment=_NOW)
 
     @pytest.mark.asyncio
     async def test_naive_revoked_at_is_rejected(self) -> None:
@@ -334,9 +336,9 @@ class TestRevocationGuard:
         # past the sessions it exists to block.
         store = _Store()
         guard = _guard(_registry(_Nats(), store), ttl_seconds=3600)
-        await guard.record_revocation("sub:p1", revoked_at=_now())
+        await guard.record_revocation("sub:p1", revoked_at=_NOW)
         row = next(iter(store.rows.values()))
-        assert row["expires_at"] == _now() + timedelta(hours=1)
+        assert row["expires_at"] == _NOW + timedelta(hours=1)
 
     @pytest.mark.asyncio
     async def test_recording_a_revocation_drives_this_table_s_sweep(self) -> None:
@@ -354,7 +356,7 @@ class TestRevocationGuard:
             return 0
 
         collection.sweep_expired_if_due = _record_sweep  # type: ignore[method-assign]
-        await guard.record_revocation("sub:p1", revoked_at=_now())
+        await guard.record_revocation("sub:p1", revoked_at=_NOW)
         assert swept == ["coordination_revocations"], "nothing sweeps the revocations table"
 
     def test_a_non_positive_ttl_is_refused(self) -> None:
