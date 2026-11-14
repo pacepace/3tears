@@ -282,7 +282,7 @@ def _documents_are_copied_in_and_out(store: DocumentStore) -> None:
     for name, read_one in reads:
         spoil(read_one())
         _expect_equal(store.get("d1", _SCOPE), stored(), f"the stored document after a reader mutated its {name} copy")
-    merged = {"nested": {"v": 1, "deep": {"w": [2]}}}
+    merged: dict[str, Any] = {"nested": {"v": 1, "deep": {"w": [2]}}}
     _expect(store.merge_fields("d1", _SCOPE, merged), "merge_fields missed d1, which was just written")
     merged["nested"]["deep"]["w"].append(7)
     _expect_equal(store.get("d1", _SCOPE), stored(), "the stored document after the merger mutated its fields")

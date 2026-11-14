@@ -4921,11 +4921,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.AnalysisReportStore": {
-      "kind": "protocol",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.AnalysisStore": {
       "kind": "protocol",
       "signature": "",

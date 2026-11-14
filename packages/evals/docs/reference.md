@@ -622,6 +622,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 **Constants**
 
+- **`BORROWED_PREDICTION_METHOD`** · constant (str) · The `method_id` of a prediction borrowed from other templates' history (`compute_borrowed_cost`): an arm whose template has no priced result of its own, priced from sibling templates launched as it will be.
+  <br>`= 'borrowed-history'`
 - **`CELL_MODEL_VERSION`** · *host contract* · constant (int) · The cell model this module implements, stamped onto every analysis generated under it (`GenerationProvenance.cell_model_version`).
   <br>`= 14`
 - **`DECLARED_NAME_CHARS`** · *host contract* · constant (int) · The most characters a declared display name holds: an aspect's short name, a goal check's name, a stratum's name.
