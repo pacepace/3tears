@@ -86,7 +86,7 @@ _FILL_WARN_RATIO: Final = EPOCH_CHANGES_FILL_WARN_RATIO
 #: Nothing is missed meanwhile -- a key watch pushes the key's newest record first -- but an epoch whose
 #: broadcasts were lost is caught only once the watch binds, so this bounds how late that is: one
 #: second, a follower's first restart delay, never backed off.
-_ABSENT_LOG_POLL_SECONDS: Final = 1.0
+_ABSENT_LOG_POLL: Final = timedelta(seconds=1)
 
 #: the key restore fills a sequence the L3 log holds nothing for, so every restored record keeps its number
 _RESTORE_FILLER_KEY: Final = "_restored-gap"
@@ -197,15 +197,18 @@ def _token(incarnation: str, seq: int) -> str:
 class _ChangeLogReading:
     """what a source and a reader share: reading the change log, never declaring it."""
 
-    def __init__(self, nats_client: Any) -> None:
+    def __init__(self, nats_client: Any, *, absent_log_poll: timedelta = _ABSENT_LOG_POLL) -> None:
         """capture the client; no I/O.
 
         :param nats_client: a connected client that binds change logs
         :ptype nats_client: Any
+        :param absent_log_poll: how often a watch on a log not yet declared looks again
+        :ptype absent_log_poll: timedelta
         :return: nothing
         :rtype: None
         """
         self._nats = nats_client
+        self._absent_log_poll = absent_log_poll
 
     def _log(self) -> _ChangeLogLike:
         """the change log, bound through the client.
@@ -359,10 +362,10 @@ class _ChangeLogReading:
         if state is None:
             log.info(
                 "the epoch change log is not declared yet; the table is watched once its first write declares it",
-                extra={"extra_data": {"table": table_name, "poll_seconds": _ABSENT_LOG_POLL_SECONDS}},
+                extra={"extra_data": {"table": table_name, "poll_seconds": self._absent_log_poll.total_seconds()}},
             )
         while state is None:
-            await asyncio.sleep(_ABSENT_LOG_POLL_SECONDS)
+            await asyncio.sleep(self._absent_log_poll.total_seconds())
             if self.closed:
                 # the close the docstring promises as KvError: a read through a closed client would
                 # surface as GenerationUnavailableError, which a caller takes for a log it may retry
@@ -622,15 +625,21 @@ class EpochGenerationReader(_ChangeLogReading):
     with, and "no generation yet" is itself something its mark records.
     """
 
-    def __init__(self, nats_client: Any, *, create_if_missing: bool = False) -> None:
+    def __init__(
+        self, nats_client: Any, *, create_if_missing: bool = False, absent_log_poll: timedelta = _ABSENT_LOG_POLL
+    ) -> None:
         """capture the client; no I/O.
 
         :param nats_client: connected client able to bind the change log
         :ptype nats_client: Any
         :param create_if_missing: kept for the callers that pass it; a reader never creates the log
         :ptype create_if_missing: bool
+        :param absent_log_poll: how often a watch on a log not yet declared looks again; a second by
+            default, which bounds how late an epoch whose broadcasts were lost is caught after the log's
+            first write
+        :ptype absent_log_poll: timedelta
         :return: nothing
         :rtype: None
         """
-        super().__init__(nats_client)
+        super().__init__(nats_client, absent_log_poll=absent_log_poll)
         self._create_if_missing = create_if_missing
