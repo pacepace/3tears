@@ -4523,6 +4523,36 @@ def test_a_read_counted_part_is_judged_by_its_filters_against_its_relations_key(
     assert ("LsfWarehouse.read_ok", "non-key-where produced.lsfrelations__relation") in found, found
 
 
+#: hub #72 H4: a binding check over an external datasource's table, by the bounded-look helpers and by hand
+_BOUNDED_LOOK = """
+    from threetears.datasources.bounded_look import count_matching_at_most, sample_matching
+
+
+    async def check_by_helpers(driver, schema, table, fragment):
+        counted = await count_matching_at_most(driver, schema, table, fragment, at_most=1000)
+        sample = await sample_matching(driver, schema, table, fragment, limit=3)
+        return counted, sample
+
+
+    async def check_by_hand(driver, schema, table, fragment):
+        counted = await driver.fetch(
+            f'SELECT COUNT(*) AS match_count FROM (SELECT 1 AS matched FROM "{schema}"."{table}" WHERE {fragment} '
+            "LIMIT 1000) AS capped"
+        )
+        sample = await driver.fetch(f'SELECT * FROM "{schema}"."{table}" WHERE {fragment} LIMIT 3')
+        return counted, sample
+"""
+
+
+def test_a_bounded_look_through_its_helpers_is_no_finding(tmp_path: Path) -> None:
+    """Flips if a binding check through ``count_matching_at_most`` / ``sample_matching`` (hub #72 H4: bounded by
+    their LIMIT, no key needed) is a finding, or if the same statements written by hand stop being findings."""
+    found = _symbols(_config(tmp_path, {"look.py": _BOUNDED_LOOK}))
+    functions = {function for function, _ in found}
+    assert "check_by_helpers" not in functions, found
+    assert sum(function == "check_by_hand" for function, _ in found) >= 1, found
+
+
 def test_a_producer_s_mapping_with_no_producer_declared_stays_unseen(tmp_path: Path) -> None:
     """Flips if a producer's mapping of relations passes, or is judged against any key, with no producer declared."""
     found = _symbols(_config(tmp_path, {"lsf.py": _COUNTED}))

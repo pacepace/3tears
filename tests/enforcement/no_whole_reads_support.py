@@ -54,6 +54,8 @@ NO_WHOLE_READS_CONFIG = NoWholeReadsConfig(
         "packages/datasources/src/threetears/datasources/query_client.py",
         "packages/datasources/src/threetears/datasources/export_read.py",
         "packages/datasources/src/threetears/datasources/drivers/base.py",
+        # a bounded look (count to a cap, a few rows) over the warehouse table a binding names
+        "packages/datasources/src/threetears/datasources/bounded_look.py",
     ),
     # every shipped migration: its text is never edited again, so an index in one is declared in the ledger
     # (_index_declarations.txt, written by python -m threetears.enforcement.no_whole_reads.index_purposes)

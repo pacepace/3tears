@@ -1,6 +1,9 @@
 # Public names whose callers live outside this repo, for tests/enforcement/test_public_api_has_a_caller.py.
 # One `<module path>:<name>  # <who calls it, and where>` per line. A name nothing calls belongs nowhere:
 # make it private and test it through the front door instead.
+packages/datasources/src/threetears/datasources/bounded_look.py:SAMPLE_LIMIT_MAX  # bluelabsio/14-eng-ai-bot-agents: the hub's knowledge/concept_routes.py _check_binding (validate_binding off @operator_command, hub #72 H4) keeps its sample under it
+packages/datasources/src/threetears/datasources/bounded_look.py:count_matching_at_most  # bluelabsio/14-eng-ai-bot-agents: the hub's knowledge/concept_routes.py _check_binding (validate_binding off @operator_command, hub #72 H4) counts a binding's rows to 1,000
+packages/datasources/src/threetears/datasources/bounded_look.py:sample_matching  # bluelabsio/14-eng-ai-bot-agents: the hub's knowledge/concept_routes.py _check_binding (validate_binding off @operator_command, hub #72 H4) samples 3 rows
 packages/datasources/src/threetears/datasources/partitioned_export.py:CountedFile  # bluelabsio/14-eng-ai-bot-agent-reports: the element type of CountedPartitionedExport.files, which src/aibots_reports/pod/loader.py and lsf_export.py read
 packages/datasources/src/threetears/datasources/partitioned_export.py:CountedPartitionedExport  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/loader.py and lsf_export.py hold one per LSF export
 packages/datasources/src/threetears/datasources/partitioned_export.py:delete_counted_export  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/loader.py and lsf_export.py delete each export after its load
