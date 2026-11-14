@@ -282,9 +282,10 @@ frozen with the analysis. Over frozen bundles this build no longer reads, it is 
 (`DOC_WRITTEN`) and `report_doc_blocks` are removed, and so is the `report_doc_id` parameter of the provisional
 `build_campaign_report` and `build_campaign_report_in_aspect_forms`, which printed it and which nothing passed.
 **For hosts:**
-`analysis_report` takes an `AnalysisReportStore`: `AnalysisStore` and the new `ReportDocReads` (`load_report_doc`,
-`load_report_snapshot`), both in `threetears.evals.analysis` (provisional). `EvalStorage` satisfies both; a host
-passing its own `AnalysisStore` adds the two reads. `read_report_doc` and `stored_headline` take `ReportDocReads`
+`analysis_report` reads its store as both `AnalysisStore` and the new `ReportDocReads` (`load_report_doc`,
+`load_report_snapshot`, provisional, in `threetears.evals.analysis`); the protocol joining the two is the service's
+own, private, and a host never names it. `EvalStorage` satisfies both, so a host passing its `EvalStorage` changes
+nothing; a host passing its own `AnalysisStore` adds the two reads. `read_report_doc` and `stored_headline` take `ReportDocReads`
 (#1020 item 2).
 
 **Added (provisional):** `ResultReadings.grouped` (and `AsyncResultReadings.grouped`) takes `exclude_in_items`, with
