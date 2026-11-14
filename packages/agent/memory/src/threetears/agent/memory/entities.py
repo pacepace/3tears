@@ -272,7 +272,7 @@ class MemoryEntity(BaseEntity):
         """JSON array of label strings (v025), or ``None``.
 
         JSONB in the DB. The schema-generated read path decodes it to a
-        list; the raw ``_MEMORIES_SELECT_COLUMNS`` fetch path (no codec
+        list; the raw ``_MEMORIES_SELECTED`` fetch path (no codec
         registered) yields a JSON string. :func:`decode_jsonb` normalises
         both to a Python list.
         """

@@ -29,11 +29,16 @@ _COLLECTIONS_SRC = (
     Path(__file__).resolve().parent.parent.parent / "src" / "threetears" / "agent" / "memory" / "collections.py"
 )
 
-#: the call a filtered method of each collection makes, so a chunk read cannot filter on its own tags
+#: the call a filtered method of each collection makes, so a chunk read cannot filter on its own tags: the clause
+#: spliced into a hand-written statement, or the same clause as a keyed helper's ``where=`` guards (its row ``t``)
 _APPLIES = {
-    MemoriesCollection: ('filter_clause(self.read_filter, "memories.tags"', 'filter_clause(self.read_filter, "m.tags"'),
-    MemoryChunkCollection: ("_chunk_parent_clause(self.read_filter",),
-    MediaContentCollection: ("_media_parent_clause(self.read_filter",),
+    MemoriesCollection: (
+        'filter_clause(self.read_filter, "memories.tags"',
+        'filter_clause(self.read_filter, "m.tags"',
+        'filter_guards(self.read_filter, "t.tags"',
+    ),
+    MemoryChunkCollection: ("_chunk_parent_clause(self.read_filter", "_chunk_parent_guards(self.read_filter"),
+    MediaContentCollection: ("_media_parent_clause(self.read_filter", "_media_parent_guards(self.read_filter"),
 }
 
 FILTERED: dict[type, frozenset[str]] = {

@@ -33,7 +33,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Protocol
 
-__all__ = ["ReadFilter", "ReadFiltered", "filter_clause"]
+from threetears.core.keyed import Fragment
+
+__all__ = ["ReadFilter", "ReadFiltered", "as_guards", "filter_clause", "filter_guards"]
 
 
 class ReadFilter(Protocol):
@@ -83,6 +85,40 @@ def filter_clause(read_filter: ReadFilter | None, tags: str, args: list[Any]) ->
         del args[start:]
         return ""
     return f" AND ({fragment})"
+
+
+def as_guards(clause: str, args: list[Any]) -> tuple[Fragment, ...]:
+    """a clause one of the builders here answered over an empty ``args`` (`` AND (...)`` numbered from ``$1``, or
+    ``""``), as a keyed helper's ``where=`` guards: none when nothing restricts the read.
+
+    The helper ANDs each guard after its pins and renumbers it past them, so the filter is written once, by the same
+    builder the hand-written statements use.
+
+    :param clause: the builder's answer, built over ``args`` when they were empty
+    :ptype clause: str
+    :param args: the values the builder bound
+    :ptype args: list[Any]
+    :return: the guards
+    :rtype: tuple[Fragment, ...]
+    """
+    if not clause:
+        return ()
+    return (Fragment(clause.removeprefix(" AND "), tuple(args)),)
+
+
+def filter_guards(read_filter: ReadFilter | None, tags: str) -> tuple[Fragment, ...]:
+    """the host's filter for one keyed-helper read (``read_row``, ``read_by``, ``aggregate_keyed``), as its
+    ``where=`` guards: :func:`filter_clause` over the helper's row, whose ``tags`` is written ``t.tags``.
+
+    :param read_filter: the host's filter, or ``None``
+    :ptype read_filter: ReadFilter | None
+    :param tags: SQL expression for the filtered row's tags array (``t.tags``)
+    :ptype tags: str
+    :return: the guards; none when nothing restricts this read
+    :rtype: tuple[Fragment, ...]
+    """
+    args: list[Any] = []
+    return as_guards(filter_clause(read_filter, tags, args), args)
 
 
 class ReadFiltered:

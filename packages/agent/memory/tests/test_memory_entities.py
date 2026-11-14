@@ -321,7 +321,7 @@ class TestMemoryEntityTags:
         assert MemoryEntity(data).tags == ["persona", "identity"]
 
     def test_tags_decodes_raw_json_string(self) -> None:
-        # the raw _MEMORIES_SELECT_COLUMNS fetch path has no JSONB codec,
+        # the raw _MEMORIES_SELECTED fetch path has no JSONB codec,
         # so asyncpg yields a JSON string; the accessor decodes it.
         data = _sample_data()
         data["tags"] = '["identity"]'

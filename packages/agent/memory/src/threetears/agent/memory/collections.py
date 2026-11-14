@@ -41,7 +41,7 @@ from threetears.agent.memory.entities import (
     MemoryEntity,
     MemoryRefEntity,
 )
-from threetears.agent.memory.read_filter import ReadFilter, ReadFiltered, filter_clause
+from threetears.agent.memory.read_filter import ReadFilter, ReadFiltered, as_guards, filter_clause, filter_guards
 from threetears.agent.memory.retrieval_scope import (
     RetrievalScope,
     build_scope_conditions,
@@ -80,7 +80,19 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import CoreConfig
 from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, schema_with_embedding_dim
 from threetears.core.data.gin import gin_filter
-from threetears.core.keyed import AnyOf, Fragment, Sort, holds_any, keyset_page, read_by, update_keyed
+from threetears.core.keyed import (
+    AnyOf,
+    Count,
+    Fragment,
+    Selected,
+    Sort,
+    aggregate_keyed,
+    holds_any,
+    keyset_page,
+    read_by,
+    read_row,
+    update_keyed,
+)
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import get_logger
 
@@ -572,25 +584,37 @@ def _merge_chunk_search_rows(
     return _admit_and_rank(candidates, similarity_threshold=similarity_threshold)
 
 
-# explicit column list for raw SELECTs over the ``memories`` table. the
+# explicit column list (a keyed helper's ``columns=``) for whole ``memories`` rows read on the raw pool. the
 # ``embedding`` (pgvector) column is cast to ``::text`` so asyncpg can decode
 # it on the no-codec L3 pool -- a bare ``SELECT *`` returns the raw ``vector``
 # type (OID 8078) that asyncpg has no codec for and raises
 # ``UnsupportedClientFeatureError``. the entity deserializer parses the
-# bracketed-text form. mirrors the schema-backed generated SELECT's ::text
-# cast; keep in sync with the memories migration column set.
-_MEMORIES_SELECT_COLUMNS = (
-    "memory_id, agent_id, customer_id, user_id, type_memory, content, "
-    "date_created, date_updated, embedding::text AS embedding, "
-    "conversation_id, message_id_source, summary, search_vector, alias, "
-    # v024 salience substrate -- keep in sync with the memories migration
-    # column set so raw-SQL read paths hydrate the full entity.
-    "salience, last_decayed_at, last_accessed, evergreen, superseded_by, "
-    # v025 tags JSONB label set. No codec is registered on the raw fetch
-    # pool, so asyncpg yields this column as a JSON string here; the
-    # entity accessor decodes it (schema-generated reads decode it too).
-    "tags"
+# bracketed-text form. tags arrive as their JSON string (no codec) and the
+# entity accessor decodes them. keep in sync with the memories migration column set.
+_MEMORIES_SELECTED: tuple[str | Selected, ...] = (
+    "memory_id",
+    "agent_id",
+    "customer_id",
+    "user_id",
+    "type_memory",
+    "content",
+    "date_created",
+    "date_updated",
+    Selected("t.embedding::text", "embedding"),
+    "conversation_id",
+    "message_id_source",
+    "summary",
+    "search_vector",
+    "alias",
+    "salience",
+    "last_decayed_at",
+    "last_accessed",
+    "evergreen",
+    "superseded_by",
+    "tags",
 )
+#: newest first, as every owner listing of memories reads them
+_NEWEST_FIRST = (Sort("date_created", descending=True),)
 
 
 #: A retracted memory (:func:`~threetears.agent.memory.revisions.retract`) no
@@ -668,6 +692,30 @@ def _chunk_parent_clause(read_filter: ReadFilter | None, chunk: str, args: list[
         f" AND EXISTS (SELECT 1 FROM memories pm WHERE pm.agent_id = {chunk}.agent_id "
         f"AND pm.memory_id = {chunk}.memory_id{probe})"
     )
+
+
+def _chunk_parent_guards(read_filter: ReadFilter | None) -> tuple[Fragment, ...]:
+    """:func:`_chunk_parent_clause` over a keyed helper's chunk row (``t``), as its ``where=`` guards.
+
+    :param read_filter: the host's filter, or ``None``
+    :ptype read_filter: ReadFilter | None
+    :return: the guards; none when nothing restricts this read
+    :rtype: tuple[Fragment, ...]
+    """
+    args: list[Any] = []
+    return as_guards(_chunk_parent_clause(read_filter, "t", args), args)
+
+
+def _media_parent_guards(read_filter: ReadFilter | None) -> tuple[Fragment, ...]:
+    """:func:`_media_parent_clause` over a keyed helper's content row (``t``), as its ``where=`` guards.
+
+    :param read_filter: the host's filter, or ``None``
+    :ptype read_filter: ReadFilter | None
+    :return: the guards; none when nothing restricts this read
+    :rtype: tuple[Fragment, ...]
+    """
+    args: list[Any] = []
+    return as_guards(_media_parent_clause(read_filter, "t", args), args)
 
 
 def _media_parent_clause(read_filter: ReadFilter | None, content: str, args: list[Any]) -> str:
@@ -1111,13 +1159,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # user_id) is not primary-key addressable; L1 row cache
         # would not help. method on Collection preserves single
         # entry point.
-        args: list[Any] = [agent_id, customer_id, user_id]
-        allowed = filter_clause(self.read_filter, "memories.tags", args)
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories "
-            f"WHERE agent_id = $1 AND customer_id = $2 AND user_id = $3{allowed} "
-            "ORDER BY date_created DESC",
-            *args,
+        rows = await read_by(
+            self.l3_pool,
+            "memories",
+            by={"agent_id": agent_id, "customer_id": customer_id, "user_id": user_id},
+            columns=_MEMORIES_SELECTED,
+            where=filter_guards(self.read_filter, "t.tags"),
+            order=_NEWEST_FIRST,
         )
         entities: list[MemoryEntity] = []
         for row in rows:
@@ -1188,23 +1236,19 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # Collection preserves single entry point + rbac gating. each owner
         # form's statement writes its owner out, so the read's key is in its
         # own text.
-        params: list[object] = [agent_id]
-        if customer_id is None:
-            params.append(user_id)
-            allowed = filter_clause(self.read_filter, "memories.tags", params)
-            rows = await self.l3_pool.fetch(
-                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE agent_id = $1 AND user_id = $2{allowed}"
-                " ORDER BY date_created DESC",
-                *params,
-            )
-        else:
-            params.extend((customer_id, user_id))
-            allowed = filter_clause(self.read_filter, "memories.tags", params)
-            rows = await self.l3_pool.fetch(
-                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories"
-                f" WHERE agent_id = $1 AND customer_id = $2 AND user_id = $3{allowed} ORDER BY date_created DESC",
-                *params,
-            )
+        owner: dict[str, Any] = (
+            {"agent_id": agent_id, "user_id": user_id}
+            if customer_id is None
+            else {"agent_id": agent_id, "customer_id": customer_id, "user_id": user_id}
+        )
+        rows = await read_by(
+            self.l3_pool,
+            "memories",
+            by=owner,
+            columns=_MEMORIES_SELECTED,
+            where=filter_guards(self.read_filter, "t.tags"),
+            order=_NEWEST_FIRST,
+        )
 
         entities: list[MemoryEntity] = []
         for row in rows:
@@ -2441,11 +2485,12 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # is a SECURITY control (cross-user leak prevention) that the
         # L1 row cache cannot enforce. the authoritative read must
         # stay at the database.
-        args: list[Any] = [agent_id, memory_id, user_id]
-        allowed = filter_clause(self.read_filter, "memories.tags", args)
-        row = await self.l3_pool.fetchrow(
-            f"SELECT content FROM memories WHERE agent_id = $1 AND memory_id = $2 AND user_id = $3{allowed}",
-            *args,
+        row = await read_row(
+            self.l3_pool,
+            "memories",
+            by={"agent_id": agent_id, "memory_id": memory_id, "user_id": user_id},
+            columns=["content"],
+            where=filter_guards(self.read_filter, "t.tags"),
         )
         if row is None:
             return None
@@ -2501,23 +2546,17 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # multi-partition projection. method on Collection preserves
         # single entry point and is decorated @spans_partitions so the
         # AST walker treats agent_id as deliberately fanned-out.
-        args: list[Any] = [list(agent_ids)]
+        owners: dict[str, Any] = {"agent_id": AnyOf(list(agent_ids), cast="uuid"), "user_id": user_id}
         if customer_id is not None:
-            args.extend((customer_id, user_id))
-            allowed = filter_clause(self.read_filter, "memories.tags", args)
-            rows = await self.l3_pool.fetch(
-                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE agent_id = ANY($1::uuid[])"
-                f" AND customer_id = $2 AND user_id = $3{allowed} ORDER BY date_created DESC",
-                *args,
-            )
-        else:
-            args.append(user_id)
-            allowed = filter_clause(self.read_filter, "memories.tags", args)
-            rows = await self.l3_pool.fetch(
-                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE agent_id = ANY($1::uuid[])"
-                f" AND user_id = $2{allowed} ORDER BY date_created DESC",
-                *args,
-            )
+            owners["customer_id"] = customer_id
+        rows = await read_by(
+            self.l3_pool,
+            "memories",
+            by=owners,
+            columns=_MEMORIES_SELECTED,
+            where=filter_guards(self.read_filter, "t.tags"),
+            order=_NEWEST_FIRST,
+        )
         entities: list[MemoryEntity] = []
         for row in rows:
             data = dict(row)
@@ -2677,7 +2716,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # addressable, so the L1 row cache cannot serve it; keeping the SQL
         # on the Collection preserves the single-entry-point contract.
         # embedding::text so asyncpg decodes it on the no-codec L3 pool
-        # (same cast as _MEMORIES_SELECT_COLUMNS); decode_vector parses the
+        # (same cast as _MEMORIES_SELECTED); decode_vector parses the
         # bracketed text back to list[float] below. The self-healing
         # supersession filter is a NOT EXISTS against a live gist row.
         params: list[object] = [agent_id]
@@ -3513,11 +3552,12 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
             return None
         # cache-bypass: by-ID fetch scoped by (agent_id, user_id) --
         # both are security predicates the L1 cache cannot enforce.
-        args: list[Any] = [agent_id, content_id, user_id]
-        allowed = _media_parent_clause(self.read_filter, "media_content", args)
-        row = await self.l3_pool.fetchrow(
-            f"SELECT content FROM media_content WHERE agent_id = $1 AND content_id = $2 AND user_id = $3{allowed}",
-            *args,
+        row = await read_row(
+            self.l3_pool,
+            "media_content",
+            by={"agent_id": agent_id, "content_id": content_id, "user_id": user_id},
+            columns=["content"],
+            where=_media_parent_guards(self.read_filter),
         )
         if row is None:
             return None
@@ -4065,14 +4105,14 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         if self.l3_pool is None:
             return 0
         # cache-bypass: an aggregate over one memory's passages.
-        args: list[Any] = [agent_id, memory_id, user_id, customer_id]
-        allowed = _chunk_parent_clause(self.read_filter, "mc", args)
-        total = await self.l3_pool.fetchval(
-            "SELECT count(*) FROM memory_chunks mc "
-            f"WHERE mc.agent_id = $1 AND mc.memory_id = $2 AND mc.user_id = $3 AND mc.customer_id = $4{allowed}",
-            *args,
+        (counted,) = await aggregate_keyed(
+            self.l3_pool,
+            "memory_chunks",
+            aggregates={"n": Count()},
+            by={"agent_id": agent_id, "memory_id": memory_id, "user_id": user_id, "customer_id": customer_id},
+            where=_chunk_parent_guards(self.read_filter),
         )
-        return int(total or 0)
+        return int(counted["n"] or 0)
 
     async def fetch_content_for_recall(
         self,
@@ -4107,12 +4147,12 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
             return None
         # cache-bypass: by-ID fetch scoped by (agent_id, user_id) --
         # both are security predicates the L1 cache cannot enforce.
-        args: list[Any] = [agent_id, chunk_id, user_id]
-        allowed = _chunk_parent_clause(self.read_filter, "memory_chunks", args)
-        row = await self.l3_pool.fetchrow(
-            "SELECT content, memory_id FROM memory_chunks "
-            f"WHERE agent_id = $1 AND chunk_id = $2 AND user_id = $3{allowed}",
-            *args,
+        row = await read_row(
+            self.l3_pool,
+            "memory_chunks",
+            by={"agent_id": agent_id, "chunk_id": chunk_id, "user_id": user_id},
+            columns=["content", "memory_id"],
+            where=_chunk_parent_guards(self.read_filter),
         )
         if row is None:
             return None
@@ -4264,22 +4304,28 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         # (the pk is ``(agent_id, chunk_id)``). index
         # ix_memory_chunks_memory backs (memory_id, chunk_index); the
         # auth triple is enforced on every row.
-        args: list[Any] = [agent_id, memory_id, user_id, customer_id, wanted]
-        allowed = _chunk_parent_clause(self.read_filter, "mc", args)
-        rows = await self.l3_pool.fetch(
-            f"""
-            SELECT mc.chunk_id, mc.chunk_index, mc.content, mc.summary,
-                   mc.message_id_start, mc.message_id_end,
-                   mc.token_count, mc.date_created
-            FROM memory_chunks mc
-            WHERE mc.agent_id = $1
-              AND mc.memory_id = $2
-              AND mc.user_id = $3
-              AND mc.customer_id = $4
-              AND mc.chunk_index = ANY($5){allowed}
-            ORDER BY mc.chunk_index ASC
-            """,
-            *args,
+        rows = await read_by(
+            self.l3_pool,
+            "memory_chunks",
+            by={
+                "agent_id": agent_id,
+                "memory_id": memory_id,
+                "user_id": user_id,
+                "customer_id": customer_id,
+                "chunk_index": AnyOf(wanted, cast="integer"),
+            },
+            columns=[
+                "chunk_id",
+                "chunk_index",
+                "content",
+                "summary",
+                "message_id_start",
+                "message_id_end",
+                "token_count",
+                "date_created",
+            ],
+            where=_chunk_parent_guards(self.read_filter),
+            order=[Sort("chunk_index")],
         )
         return [dict(row) for row in rows]
 
