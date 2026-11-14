@@ -1,7 +1,7 @@
 """YugabyteDB's resumed page (``page_statement(..., seek_legs=True)``) answers the rows the one-condition form did.
 
-On YugabyteDB a page past a cursor is a ``UNION ALL`` of legs, each an equality prefix of the cursor and one range
-(``c1 = $1 AND c2 < $2``, then ``c1 < $1``), so no condition is left to filter after the index read and the page's
+On YugabyteDB a page past a cursor is a ``UNION ALL`` of legs, each the cursor's tied prefix and one range (``c1 >= $1
+AND c1 <= $1 AND c2 < $2``, then ``c1 < $1``), so no condition is left to filter after the index read and the page's
 ``LIMIT`` reaches storage. Run on an in-process DuckDB here, against the expansion it replaces, at every cursor
 position of a table with ties, NULLs in a later sort column and mixed directions; the plan it reads on YugabyteDB is
 the conversations listing's plan test (``packages/conversations/tests/integration/test_index_plans.py``).
@@ -103,7 +103,9 @@ def test_the_legs_are_ranges_with_nothing_left_to_filter() -> None:
     )
     assert " OR " not in sql, sql
     assert sql.count("UNION ALL") == 1, sql
-    assert 't."stamp" = $2::text::timestamptz AND t."id" < $3::text::integer' in sql, sql
+    assert (
+        't."stamp" >= $2::text::timestamptz AND t."stamp" <= $2::text::timestamptz AND t."id" < $3::text::integer'
+    ) in sql, sql
     assert 't."stamp" < $2::text::timestamptz' in sql, sql
     assert params == [1, "2026-01-01 00:03:00+00", "7"]
 
@@ -117,7 +119,34 @@ def test_each_leg_asks_only_what_the_legs_before_it_left_short() -> None:
         "r", ["label", "id"], {"tenant": 1}, order, 9, ["l2", "7"], False, (), (), None, seek_legs=True
     )
     assert sql.startswith("WITH l0 AS ("), sql
-    assert 't."label" = $2::text AND t."id" > $3::text::integer' in sql.split("l1 AS (")[0], sql
+    assert (
+        't."label" >= $2::text AND t."label" <= $2::text AND t."id" > $3::text::integer' in sql.split("l1 AS (")[0]
+    ), sql
     assert "LIMIT 9 - (SELECT count(*) FROM l0))" in sql, sql
     assert "LIMIT 9 - (SELECT count(*) FROM l0) - (SELECT count(*) FROM l1))" in sql, sql
     assert 't."label" IS NULL' in sql.split("l2 AS (")[1], sql
+
+
+def test_a_tie_of_the_cursor_is_a_closed_range_not_an_equality() -> None:
+    """Flips if a leg states the cursor's tie on an earlier sort column as an equality. ``status = $2`` makes the
+    column a constant to the planner, which drops it from the leg's order, so an index that does not hold it (the
+    primary key ``(agent_id, conversation_id)``) answers the order too and YugabyteDB walked it, filtering the status:
+    27-65 rows read for a page of 9 (test_conv_agent_status, 3tears #86). A closed range (``status >= $2 AND status <=
+    $2``) keeps the column in the order, so only an index ordered by the sort serves the leg, every condition its
+    range."""
+    order = _ORDERS["stamp desc, id desc"]
+    sql, _ = page_statement(
+        "r",
+        ["stamp", "id"],
+        {"tenant": 1},
+        order,
+        9,
+        ["2026-01-01 00:03:00+00", "7"],
+        False,
+        (),
+        (),
+        None,
+        seek_legs=True,
+    )
+    assert 't."stamp" = $' not in sql, sql
+    assert 't."stamp" >= $2::text::timestamptz AND t."stamp" <= $2::text::timestamptz' in sql, sql

@@ -8,6 +8,7 @@ planner would rather scan (three agents, three hundred users), takes the stateme
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -163,7 +164,7 @@ async def _resumed_plan(conn: asyncpg.Connection, by: dict[str, Any], sort: str)
     plan = await explain_statement(conn, sql, *args)
     assert plan.rows_returned == _PAGE + 1, plan
     if await on_yugabyte(conn):
-        assert plan.rows_scanned <= 2 * (_PAGE + 1), plan
+        assert plan.rows_scanned <= 2 * (_PAGE + 1), (plan, json.dumps(plan.plan)[:4000])
     return plan
 
 

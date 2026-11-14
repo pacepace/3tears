@@ -285,12 +285,25 @@ def _after_ranges(sort: Sort, mark: str | None) -> list[str]:
     return [beyond, f"{column} IS NULL"] if sort.nullable and not sort.descending else [beyond]
 
 
+def _tied(sort: Sort, mark: str | None) -> str:
+    """the rows tied with the cursor in one sort column, as a leg states them: ``IS NULL`` for a NULL; for a value a
+    closed range (``c >= $1 AND c <= $1``), never ``c = $1``. An equality makes the column a constant to the planner,
+    which drops it from the leg's order, so an index that does not hold it answers that order too: YugabyteDB walked
+    the primary key ``(agent_id, conversation_id)`` filtering the status, 27-65 rows for a page of 9, rather than
+    ``(agent_id, status, conversation_id)`` (3tears #86). The range keeps the column in the order: only an index
+    ordered by the sort serves the leg, with every condition its range (PostgreSQL's B-tree too: a ``<=`` on a column
+    lets the next column's bound position the scan)."""
+    if mark is None:
+        return f"{sort.sorted_by} IS NULL"
+    return f"{sort.sorted_by} >= {mark} AND {sort.sorted_by} <= {mark}"
+
+
 def _seek_legs(
     order: Sequence[Sort], values: Sequence[Any], first: int
 ) -> tuple[list[tuple[str, Sequence[Sort]]], list[Any]]:
     """the rows after the cursor as legs each an index reads as one range with no filter beside it: for each sort
-    column, the columns before it equal to the cursor's and the column past it (``c1 = $1 AND c2 < $2``, then
-    ``c1 < $1``), its NULLs a leg of their own where they follow; each leg in the whole sort's order. And the
+    column, the columns before it tied with the cursor's and the column past it (``c1 >= $1 AND c1 <= $1 AND c2 < $2``,
+    then ``c1 < $1``; :func:`_tied`), its NULLs a leg of their own where they follow; each leg in the whole sort's order. And the
     parameters, numbered from ``first``, every leg shares.
 
     For YugabyteDB, which pushes a page's ``LIMIT`` down to storage only when no condition is left to filter after
@@ -301,7 +314,7 @@ def _seek_legs(
     marks, params = _marks(order, values, first)
     legs: list[tuple[str, Sequence[Sort]]] = []
     for depth in reversed(range(len(order))):
-        equal = [_same(sort, mark) for sort, mark in zip(order[:depth], marks[:depth], strict=True)]
+        equal = [_tied(sort, mark) for sort, mark in zip(order[:depth], marks[:depth], strict=True)]
         legs.extend((" AND ".join([*equal, after]), order) for after in _after_ranges(order[depth], marks[depth]))
     return legs, params
 
