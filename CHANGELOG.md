@@ -13,6 +13,13 @@ when a write fails, and the directory it writes takes the mode the process's uma
 the owner-only mode of a temporary one, so a mint run as another user can read it. The `campaign_closure` docstring
 says what `closure_keys_digest` detects: a document added, removed or replaced, not one edited in place under its id.
 
+**Changed:** `DefinitionReset.render()` prints each live case a carry copied as `carried <source> -> <copy>`. A reset
+refused for live cases beside a corpus case reading `unknown` (a store seeded before `.30`) names the host's
+`seeded_digests` with the carry, so the first remedy is the call that succeeds, and the carry's own refusal names them
+ahead of the overwrite. A refusal of a template's own case says "its template", not "its judge template"; a host
+matching that text must update the match. A store failing part-way through a carry raises a `StorageError` naming each
+live case not yet carried, which stays only on the archived revision, since a retried reset does not carry it.
+
 ### evals: a page's forms, arm names and gate checks are worked out once per report input
 
 **Changed:** `PageForms.of`, `page_arm_names` and a `gate_check` read off any page (no `forms`) keep their results per
