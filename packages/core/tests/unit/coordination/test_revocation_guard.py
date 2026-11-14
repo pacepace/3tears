@@ -22,12 +22,14 @@ The ledger contract:
 from __future__ import annotations
 
 import asyncio
-import uuid
+import itertools
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from freezegun import freeze_time
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.l2_order import l2_order_of
@@ -39,11 +41,18 @@ from threetears.core.testing.kv import FakeNatsClient
 from threetears.nats import KvError
 
 _SCOPE = "denylist-principal"
+_DB_NAMES = itertools.count(1)
 
 #: a revocation is remembered for a ttl measured FROM the revocation, so a moment far in the past
-#: is an entry that expired before it was written. These tests stand near the wall clock for the
-#: same reason production does.
-_NOW = datetime.now(UTC).replace(microsecond=0)
+#: is an entry that expired before it was written. The clock is frozen here for the whole module, so
+#: that ttl and every expiry read, the code under test's included, is relative to a known instant.
+_NOW = datetime(2026, 11, 14, 12, 0, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    with freeze_time(_NOW, real_asyncio=True):
+        yield
 
 
 class _Nats(FakeNatsClient):
@@ -127,7 +136,7 @@ def _registry(
     store: _Store | None = None,
     generations: _FakeGenerations | None = None,
 ) -> CollectionRegistry:
-    l1 = SQLiteBackend(db_name=f"denylist_{uuid.uuid4().hex[:8]}")
+    l1 = SQLiteBackend(db_name=f"denylist_{next(_DB_NAMES)}")
     registry = CollectionRegistry()
     registry.configure(
         l1_backend=l1,

@@ -10,7 +10,7 @@ compare the whole rendered result.
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from langchain_core.embeddings import Embeddings
 
@@ -34,9 +34,9 @@ CHUNK_ID_2 = UUID("00000000-0000-4000-8000-000000000005")
 MEDIA_ID_2 = UUID("00000000-0000-4000-8000-000000000006")
 CONTENT_ID_2 = UUID("00000000-0000-4000-8000-000000000007")
 
-AGENT_ID = uuid4()
-CUSTOMER_ID = uuid4()
-USER_ID = uuid4()
+AGENT_ID = UUID("00000000-0000-4000-8000-000000000201")
+CUSTOMER_ID = UUID("00000000-0000-4000-8000-000000000202")
+USER_ID = UUID("00000000-0000-4000-8000-000000000203")
 
 
 class FakeEmbeddings(Embeddings):

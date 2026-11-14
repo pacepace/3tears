@@ -7,7 +7,7 @@ through :func:`threetears.nats.hub_requests.ask_hub`, so its rules are pinned on
 from __future__ import annotations
 
 from datetime import timedelta
-from uuid import UUID, uuid7
+from uuid import UUID
 
 import pytest
 from pydantic import BaseModel
@@ -53,7 +53,7 @@ class _Hub:
         return self.answer
 
 
-_ID = uuid7()
+_ID = UUID("019a0000-0000-7000-8000-000000001101")
 
 
 async def _ask(answer: bytes | Exception) -> _Reply:
@@ -102,9 +102,16 @@ class TestAskHub:
         "answer",
         [
             pytest.param({"success": True}, id="a success with no id"),
-            pytest.param({"success": True, "correlation_id": str(uuid7())}, id="a success under another id"),
             pytest.param(
-                {"success": False, "correlation_id": str(uuid7()), "error_code": "IDENTITY_REFUSED"},
+                {"success": True, "correlation_id": str(UUID("019a0000-0000-7000-8000-000000001102"))},
+                id="a success under another id",
+            ),
+            pytest.param(
+                {
+                    "success": False,
+                    "correlation_id": str(UUID("019a0000-0000-7000-8000-000000001103")),
+                    "error_code": "IDENTITY_REFUSED",
+                },
                 id="a refusal under another id",
             ),
         ],
