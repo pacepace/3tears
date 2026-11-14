@@ -621,11 +621,11 @@ def test_the_analysis_root_launders_presentation_to_a_numbers_module_that_import
 
 
 def test_every_pair_is_a_finding_and_none_is_exempt() -> None:
-    planted = ("analysis.stats", "analysis.report.said")
+    planted = ("analysis.stats", "analysis.report.forms")
     assert pair_findings({}) == []
     (finding,) = pair_findings({planted: 7})
     assert finding.startswith(
-        "analysis.stats (line 7) imports analysis.report.said: numbers never import presentation."
+        "analysis.stats (line 7) imports analysis.report.forms: numbers never import presentation."
     )
 
 

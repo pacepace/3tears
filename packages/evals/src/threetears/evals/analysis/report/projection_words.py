@@ -5,8 +5,6 @@ Reading a floor is numbers, and lives in :mod:`threetears.evals.analysis.floors`
 cases that would settle an unclear one (:class:`~threetears.evals.analysis.floors.SampleProjection`). What stays here
 is the wording a page gives a projection, each count and cost printed by the page's forms: :func:`projected_cell` and
 :func:`projection_note`.
-
-Every name that moved is re-exported from this path, so an import written against it still resolves.
 """
 
 from __future__ import annotations
@@ -14,33 +12,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from threetears.evals.analysis.floors import (
-    CasesNeeded,
-    FloorDecision,
-    FloorOutcome,
-    FloorReadings,
-    FloorState,
-    FloorStatus,
-    FloorVerdict,
-    NeedKind,
-    RateReading,
-    RateVerdict,
-    SampleProjection,
-    aspect_pass_rate,
-    case_cost_usd,
-    control_cannot_show,
-    evaluate_floor,
-    floor_projection,
-    floor_readings,
-    floor_statement,
-    floor_subject,
-    floors_projection,
-    project_rate,
-    project_sample,
-    rate_projections,
-    read_floor,
-    reading_words,
-)
+from threetears.evals.analysis.floors import CasesNeeded, SampleProjection
 from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.kernel.numbers import MoneyForm
 
@@ -125,31 +97,6 @@ def projection_note(
 
 
 __all__ = [
-    "CasesNeeded",
-    "FloorDecision",
-    "FloorOutcome",
-    "FloorReadings",
-    "FloorState",
-    "FloorStatus",
-    "FloorVerdict",
-    "NeedKind",
-    "RateReading",
-    "RateVerdict",
-    "SampleProjection",
-    "aspect_pass_rate",
-    "case_cost_usd",
-    "control_cannot_show",
-    "evaluate_floor",
-    "floor_projection",
-    "floor_readings",
-    "floor_statement",
-    "floor_subject",
-    "floors_projection",
-    "project_rate",
-    "project_sample",
     "projected_cell",
     "projection_note",
-    "rate_projections",
-    "read_floor",
-    "reading_words",
 ]

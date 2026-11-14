@@ -49,7 +49,7 @@ from threetears.evals.analysis.bundle.trials import read_trial
 from threetears.evals.analysis.campaign_readings import reading_name
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaigns import set_campaign_control
-from threetears.evals.analysis.report.decision import floor_subject
+from threetears.evals.analysis.floors import floor_subject
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.words import input_arm_tags, printed_arm_labels, reader_arm_labels
 from threetears.evals.analysis.service import analysis_report, assemble_campaign_bundle, campaign_report

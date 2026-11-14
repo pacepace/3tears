@@ -32,7 +32,7 @@ from threetears.evals.analysis.bundle.schema import JudgedArm, JudgedMeasure
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.analysis import report_html, report_markdown
 from threetears.evals.analysis.report.aspect.question import FLOORS_WARN_ONLY
-from threetears.evals.analysis.report.decision import (
+from threetears.evals.analysis.floors import (
     FloorReadings,
     FloorVerdict,
     RateReading,
@@ -41,7 +41,7 @@ from threetears.evals.analysis.report.decision import (
     read_floor,
 )
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report.said import Said
+from threetears.evals.analysis.said import Said
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_interval, difference_interval
 from threetears.evals.kernel.declaration import (
     CostLower,

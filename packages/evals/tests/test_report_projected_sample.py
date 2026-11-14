@@ -32,7 +32,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.bundle.schema import ArmScoreboard, MultipleComparisons
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report.decision import (
+from threetears.evals.analysis.floors import (
     CasesNeeded,
     FloorReadings,
     FloorVerdict,
@@ -42,11 +42,10 @@ from threetears.evals.analysis.report.decision import (
     floors_projection,
     project_rate,
     project_sample,
-    projected_cell,
-    projection_note,
     rate_projections,
     read_floor,
 )
+from threetears.evals.analysis.report.projection_words import projected_cell, projection_note
 from threetears.evals.analysis import stats
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.stats import (

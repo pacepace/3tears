@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from threetears.evals.analysis.campaign_readings import CampaignReadings, FloorStatus
 from threetears.evals.analysis.report.campaign.common import floor_of
 from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
-from threetears.evals.analysis.report.decision import floor_statement
+from threetears.evals.analysis.floors import floor_statement
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import DisclosureBlock, Report, ReportBlock
 from threetears.evals.analysis.style import code

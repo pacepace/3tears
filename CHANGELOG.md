@@ -14,7 +14,8 @@ campaign's readings, the report input) imports a presentation module, by any rou
 or an action prints changed. What moved:
 
 - Reading a floor is numbers: `analysis/report/decision.py` is now `analysis/floors.py`. The two functions that word
-  a projection in a page's forms (`projected_cell`, `projection_note`) stay in `analysis/report/decision.py`.
+  a projection in a page's forms (`projected_cell`, `projection_note`) are in
+  `analysis/report/projection_words.py`.
 - A sentence held as words and typed figures (`Said`, `SaidFigure`) is numbers: `analysis/report/said.py` is now
   `analysis/said.py`.
 - A judge's tier sentence is wording: `tier_sentence_in` moved from `analysis/agreement.py` to
@@ -25,11 +26,11 @@ or an action prints changed. What moved:
   and `spell_ledger_dollars` (a ledger's dollars, to four decimals); `PageForms.share` and `PageForms.money_ledger`
   call them. `tests/test_one_owner_of_number_forms.py` holds the numbers side to that route on the engine's terms.
 
-**For hosts:** nothing, if you import from the public roots. `threetears.evals.analysis.report.decision`,
-`threetears.evals.analysis.report.said` and `threetears.evals.analysis.report.words` still export every name they
-did. One path has no forwarding import: `tier_sentence_in` is imported from `threetears.evals.analysis.lens_text`, no
-longer from `threetears.evals.analysis.agreement`; `threetears.evals.analysis.tier_sentence` is unchanged.
-### evals: a run that did not finish never opens with a verdict, on any surface (#1173)
+**For hosts:** nothing, if you import from the public roots, whose names are unchanged. Each moved name has one
+home and no forwarding import, so an import written against a module below a root follows it: the floor names from
+`threetears.evals.analysis.floors`, `projected_cell` and `projection_note` from
+`threetears.evals.analysis.report.projection_words`, `Said` and `SaidFigure` from `threetears.evals.analysis.said`, `judged_name` from
+`threetears.evals.analysis.style`, `tier_sentence_in` from `threetears.evals.analysis.lens_text`.
 
 **Changed:** a failed run's print opened on its failure with no verdict; its HTML and Markdown report, and every
 surface of a cancelled, budget-stopped or exhausted run, still opened with a verdict over the results recorded before

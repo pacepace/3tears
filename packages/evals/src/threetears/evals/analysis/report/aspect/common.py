@@ -16,7 +16,7 @@ from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.quantities import PERCENT, is_money
 from threetears.evals.analysis.references import resolve_reading
-from threetears.evals.analysis.report.decision import FloorVerdict, floor_readings, read_floor
+from threetears.evals.analysis.floors import FloorVerdict, floor_readings, read_floor
 from threetears.evals.analysis.report.figures import ContrastPlaces, MeasureRuler, reply_cost_ruler
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (

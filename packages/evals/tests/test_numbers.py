@@ -271,6 +271,68 @@ class TestAnEffectSize:
         assert spell_effect(value) == ABSENT
 
 
+_SHARES = [
+    (0.0, "0%"),
+    (0.004, "0%"),
+    (0.37, "37%"),
+    (0.374, "37%"),
+    (0.5, "50%"),
+    (0.95, "95%"),
+    (0.995, "100%"),
+    (1.0, "100%"),
+    (1.25, "125%"),
+    (-0.2, "-20%"),
+]
+
+_LEDGER_DOLLARS = [
+    (0.0, "$0.0000"),
+    (0.0012, "$0.0012"),
+    (0.00004, "$0.0000"),
+    (0.00005, "$0.0001"),
+    (0.5, "$0.5000"),
+    (12.5, "$12.5000"),
+    (1234.56789, "$1234.5679"),
+]
+
+
+class TestAShare:
+    """A share of a whole reads in whole percent, off a page and on one, by the one function."""
+
+    @pytest.mark.parametrize(("value", "text"), _SHARES)
+    def test_a_share_reads_in_whole_percent(self, value, text):
+        assert numbers.spell_share(value) == text
+
+    @pytest.mark.parametrize("value", [None, math.nan, math.inf, -math.inf])
+    def test_an_absent_share_reads_as_absent(self, value):
+        assert numbers.spell_share(value) == ABSENT
+
+    @pytest.mark.parametrize("value", [*(value for value, _ in _SHARES), None, math.nan, math.inf])
+    def test_a_page_s_share_is_the_rule_s(self, value):
+        """``PageForms.share`` prints what the rule spells, so a page's share and an off-page line's never part."""
+        printed = report_forms.PageForms.off_page().share(value)
+        assert printed.text == numbers.spell_share(value)
+
+    def test_the_forms_hold_the_rule_s_own_function(self):
+        assert report_forms.spell_share is numbers.spell_share
+
+
+class TestLedgerDollars:
+    """A ledger's dollars read to four decimals, off a page and on one, by the one function."""
+
+    @pytest.mark.parametrize(("amount", "text"), _LEDGER_DOLLARS)
+    def test_a_ledger_amount_reads_to_four_decimals_behind_its_sign(self, amount, text):
+        assert numbers.spell_ledger_dollars(amount) == text
+
+    @pytest.mark.parametrize("amount", [amount for amount, _ in _LEDGER_DOLLARS])
+    def test_a_page_s_ledger_dollars_are_the_rule_s(self, amount):
+        """``PageForms.money_ledger`` prints what the rule spells, so a ledger reads alike wherever it is printed."""
+        printed = report_forms.PageForms.off_page().money_ledger(amount)
+        assert printed.text == numbers.spell_ledger_dollars(amount)
+
+    def test_the_forms_hold_the_rule_s_own_function(self):
+        assert report_forms.spell_ledger_dollars is numbers.spell_ledger_dollars
+
+
 class TestThereIsOneImplementation:
     def test_every_surface_that_spells_numbers_holds_the_same_function(self):
         """The quantities and a page's forms, which spell every figure the report's builder states, spell their values

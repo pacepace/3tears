@@ -7,7 +7,7 @@ moves only what a sentence held, each read again off facts the bundle keeps:
 
 - each floor status holds its decision as facts where it held its reason (``readings.floors[].reason`` becomes
   ``.decision``): the floor is read again on its aspect's frozen bundle
-  (:func:`~threetears.evals.analysis.report.decision.evaluate_floor`), every other field of its status must come back
+  (:func:`~threetears.evals.analysis.floors.evaluate_floor`), every other field of its status must come back
   as stored, and the decision, worded as a page words it, must say the stored reason word for word;
 - each derived arm whose label code spelled from several levers carries its spelling (``arm_spellings``), read off its
   lever map as :func:`~threetears.evals.analysis.campaigns.campaign_arms_spelled` reads it, and refused unless it spells
@@ -60,7 +60,7 @@ from threetears.evals.analysis.arms import (
 )
 from threetears.evals.analysis.campaign_bundle import CAMPAIGN_BUNDLE_SHAPE, ArmSpelling
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_aggregate
-from threetears.evals.analysis.report.decision import evaluate_floor, floor_readings, floor_subject
+from threetears.evals.analysis.floors import evaluate_floor, floor_readings, floor_subject
 from threetears.evals.kernel.campaign import CampaignDeclaration, VariantIndexEntry
 from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER
 from threetears.evals.kernel.identity import compute_variant_key

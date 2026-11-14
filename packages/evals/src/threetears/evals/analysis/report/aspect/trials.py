@@ -38,7 +38,8 @@ from threetears.evals.analysis.report.verdict import (
     fail_words,
     loss_words,
 )
-from threetears.evals.analysis.report.words import judged_name, trial_dimension
+from threetears.evals.analysis.report.words import trial_dimension
+from threetears.evals.analysis.style import judged_name
 from threetears.evals.analysis.style import check_held, code
 from threetears.evals.kernel.metrics import MATCH_MEASURE, goal_check_of
 

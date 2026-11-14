@@ -41,7 +41,7 @@ from threetears.evals.analysis.report.model import (
     TableColumn,
 )
 from threetears.evals.analysis.report.verdict import arm_exclusions, cause_short, loss_words
-from threetears.evals.analysis.report.words import judged_name
+from threetears.evals.analysis.style import judged_name
 from threetears.evals.analysis.style import (
     CANNOT_TELL_APART,
     GOAL_CHECK,

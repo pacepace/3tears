@@ -10,11 +10,11 @@ from threetears.evals.analysis.report.words import (
     arm_tags,
     aspect_stratum_key,
     given_name,
-    judged_name,
     reader_arm_name,
     text_levers,
     told_apart,
 )
+from threetears.evals.analysis.style import judged_name
 from threetears.evals.analysis.report_input import Arm, ReportInput
 from threetears.evals.analysis.report_margins import aspect_of
 from threetears.evals.analysis.style import check_names, measure_name

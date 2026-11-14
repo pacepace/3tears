@@ -71,7 +71,14 @@ _SOURCE_ROOTS = tuple(
 #: public with no caller in this repo, and empty the map once the release that made the move is the baseline:
 #: the baseline then holds the new modules, and the pool ships release tags' trees, not the history between them.
 #: The 3tears-interfaces consolidation (media-contracts into threetears.interfaces.media) shipped in v0.93.0.
-_MOVED_MODULES: tuple[tuple[str, str], ...] = ()
+#: Reading a floor moved from the page's package to the numbers side of the evals analysis package: ``NeedKind`` (a
+#: field's type, exported from threetears.evals.analysis) and ``project_sample`` were public there with no caller here.
+_MOVED_MODULES: tuple[tuple[str, str], ...] = (
+    (
+        "packages/evals/src/threetears/evals/analysis/report/decision.py",
+        "packages/evals/src/threetears/evals/analysis/floors.py",
+    ),
+)
 
 
 def _public_at_baseline(

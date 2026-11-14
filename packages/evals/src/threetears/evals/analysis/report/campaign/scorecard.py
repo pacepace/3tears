@@ -70,7 +70,7 @@ from threetears.evals.analysis.report.number_forms.printed import Printed
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.analysis.report.campaign.common import floor_of
 from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
-from threetears.evals.analysis.report.decision import (
+from threetears.evals.analysis.floors import (
     CasesNeeded,
     RateReading,
     RateVerdict,
@@ -79,10 +79,10 @@ from threetears.evals.analysis.report.decision import (
     case_cost_usd,
     control_cannot_show,
     floor_readings,
-    projected_cell,
     rate_projections,
     read_floor,
 )
+from threetears.evals.analysis.report.projection_words import projected_cell
 from threetears.evals.analysis.report.blocks import bare_columns
 from threetears.evals.analysis.report.model import (
     CellValue,
@@ -97,7 +97,8 @@ from threetears.evals.analysis.report.model import (
 from threetears.evals.analysis.report.verdict import interval_words, passed_clause
 from threetears.evals.analysis.report.keys.vocabulary import joint_guarantee
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
-from threetears.evals.analysis.report.words import PASS_RATE, judged_name, label_case, reason_words
+from threetears.evals.analysis.report.words import PASS_RATE, label_case, reason_words
+from threetears.evals.analysis.style import judged_name
 from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart
@@ -574,7 +575,7 @@ def table_blocks(
 
 class _PassRates:
     """Each row's overall pass rate against the control
-    (:func:`~threetears.evals.analysis.report.decision.aspect_pass_rate`), read once per scorecard: the matrix's
+    (:func:`~threetears.evals.analysis.floors.aspect_pass_rate`), read once per scorecard: the matrix's
     baselines and the lines reconciling a contrast both read it."""
 
     def __init__(self, reports: Mapping[str, Report], control: str) -> None:
@@ -780,7 +781,7 @@ def _control_cell(
     it is read from (``baselines``), which is its trials passed (``18 of 20 cases``) where the two agree, else the mean
     of the cases the changes read (``mean of 380 cases``), its trial count left to the fold. Where the candidates'
     changes read different cases, it is its trials passed, and each candidate's cell names its own baseline. Marked
-    where it cannot move (:func:`~threetears.evals.analysis.report.decision.control_cannot_show`, the rule the writer's
+    where it cannot move (:func:`~threetears.evals.analysis.floors.control_cannot_show`, the rule the writer's
     view flags too)."""
     row = rows[0]
     if not row.control_trials:
@@ -1307,7 +1308,7 @@ def _sizings(
 
 
 def _deciding_rate(rates: Sequence[tuple[RateVerdict, SampleProjection]]) -> RateVerdict:
-    """Of a floor's unclear rates and their projections (:func:`~threetears.evals.analysis.report.decision.
+    """Of a floor's unclear rates and their projections (:func:`~threetears.evals.analysis.floors.
     rate_projections`), the one deciding the floor's as-observed count, the column a decision reads first: the one
     needing the most there, then with no difference, the first of equals."""
     best, chosen = rates[0]

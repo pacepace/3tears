@@ -942,7 +942,6 @@ __all__ = [
     "aspect_stratum_key",
     "given_name",
     "judged_heading",
-    "judged_name",
     "trial_dimension",
     "label_case",
     "table_label",

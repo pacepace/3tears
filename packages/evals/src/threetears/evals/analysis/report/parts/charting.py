@@ -81,7 +81,8 @@ from threetears.evals.analysis.report.keys.figure import Figure
 from threetears.evals.analysis.report.keys.names import input_check_name, reader_name
 from threetears.evals.analysis.report.keys.resolve import figure_unit, held_kind, resolve
 from threetears.evals.analysis.report.parts.look import PageLook, Quantity, quantity, series_token
-from threetears.evals.analysis.report.words import judged_name, label_case
+from threetears.evals.analysis.report.words import label_case
+from threetears.evals.analysis.style import judged_name
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.words import (
     ASPECT_MEASURE_TEMPLATE,
