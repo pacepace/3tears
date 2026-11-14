@@ -14,6 +14,26 @@
   "table": "audit_events"
  },
  {
+  "index": "idx_folders_user",
+  "pins": [
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "user_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "purpose": "packages/conversations/src/threetears/conversations/folder_collection.py::FolderCollection.find_by_user",
+  "sql": "SELECT * FROM \"folders\" AS t WHERE t.\"agent_id\" = $1 AND t.\"user_id\" = $2",
+  "table": "folders"
+ },
+ {
   "index": "idx_identity_variant_history",
   "pins": [
    {
@@ -141,6 +161,32 @@
   ],
   "purpose": "constraint",
   "refuses": true,
+  "table": "context_items"
+ },
+ {
+  "index": "ix_context_items_type",
+  "pins": [
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "conversation_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   },
+   {
+    "column": "context_type",
+    "kind": "param",
+    "literal": null,
+    "param": 3
+   }
+  ],
+  "purpose": "packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.count_results; packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.evict_lru",
+  "sql": "SELECT * FROM \"context_items\" AS t WHERE t.\"agent_id\" = $1 AND t.\"conversation_id\" = $2 AND t.\"context_type\" = $3",
   "table": "context_items"
  },
  {

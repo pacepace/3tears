@@ -4,7 +4,8 @@ YugabyteDB read one agent's conversations of one status through the primary key 
 filtering the status, on every one of 15 fresh worlds (3tears #87's live7: 13-17 rows for a page of 9), rather than the
 declared ``(agent_id, status, conversation_id)``; statistics did not move it. Every ``TableSchema`` registers its plain
 B-tree indexes (``threetears.interfaces.keyed.keys``); ``keyset_page``, ``keyset_rows`` and an ordered ``read_by``
-start their statement with ``/*+ IndexOnlyScan(t <index>) */`` there, and nowhere else.
+start their statement with ``/*+ IndexOnlyScan(t <index>) */`` there, and nowhere else; so does an unordered
+read_by when a declared index binds more of its pins than the primary key (coordinator ruling, #96).
 """
 
 from __future__ import annotations
@@ -101,7 +102,22 @@ class TestServingIndex:
         assert serving_index(_CONV, {"agent_id": 1}, [Sort("status"), Sort("conversation_id", descending=True)]) is None
         assert serving_index("o88_never_declared", {"agent_id": 1}, _BY_STATUS) is None
         assert serving_index(_CONV, {"status": "a"}, _BY_ID) is None
-        assert serving_index(_CONV, {"agent_id": 1, "status": "a"}, [Sort("status")]) is None
+        assert serving_index(_CONV, {"status": "a"}, []) is None
+        assert serving_index("o88_never_declared", {"agent_id": 1, "status": "a"}, []) is None
+
+    def test_an_unordered_read_takes_the_index_binding_more_pins_than_the_primary_key(self) -> None:
+        """Flips if an unordered read (no sort, or one sorting only pinned columns) pinning more of a declared index's
+        leading columns than of the primary key's is not served by that index (the one binding most, then the
+        narrower), or one the primary key binds as far, or a point read by the whole primary key, is handed a secondary
+        index (coordinator ruling, #96)."""
+        for order in ([], [Sort("status")]):
+            served = serving_index(_CONV, {"agent_id": 1, "status": "a"}, order)
+            assert served is not None and served.name == "o88_conv_agent_status", order
+        held = serving_index(_CONV, {"agent_id": 1, "user_id": 2, "status": "a"}, [])
+        assert held is not None and held.name == "o88_conv_agent_user_status"
+        for by in ({"agent_id": 1}, {"agent_id": 1, "conversation_id": 2, "status": "a"}):
+            index = serving_index(_CONV, by, [])
+            assert index is not None and index.primary and index_hint(index) == "", by
 
     def test_a_declared_index_names_plain_identifiers(self) -> None:
         """Flips if an index a hint could not name unquoted, or one sorting a column it lacks, is accepted."""
@@ -148,12 +164,21 @@ class TestTheHintOnYugabyteOnly:
         assert len(reader.asked) - len(reads) == 1
 
     async def test_a_read_no_secondary_index_serves_asks_nothing_more(self) -> None:
-        """Flips if a read the primary key serves, or an unordered read_by, asks the database which it is, or carries
-        a hint."""
+        """Flips if a read the primary key serves, ordered or not, asks the database which it is, or carries a hint."""
         reader = _yugabyte()
         await keyset_page(reader, _CONV, columns=("conversation_id",), by={"agent_id": 1}, order=_BY_ID, limit=8)
-        await read_by(reader, _CONV, by={"agent_id": 1, "status": "a"})
-        assert len(reader.asked) == 2 and not any("/*+" in sql or "version()" in sql for sql in reader.asked)
+        await read_by(reader, _CONV, by={"agent_id": 1})
+        await read_by(reader, _CONV, by={"agent_id": 1, "conversation_id": 2, "status": "a"})
+        assert len(reader.asked) == 3 and not any("/*+" in sql or "version()" in sql for sql in reader.asked)
+
+    async def test_an_unordered_read_by_names_the_index_on_yugabyte_only(self) -> None:
+        """Flips if an unordered read_by pinning the agent and a status does not start with the hint naming
+        (agent_id, status, conversation_id) on YugabyteDB, or carries any hint on PostgreSQL."""
+        for reader, hinted in ((_yugabyte(), True), (_postgres(), False)):
+            await read_by(reader, _CONV, by={"agent_id": 1, "status": "a"})
+            (read,) = [sql for sql in reader.asked if not sql.startswith("SELECT version()")]
+            assert read.startswith("/*+ IndexOnlyScan(t o88_conv_agent_status) */ ") is hinted, read
+            assert ("/*+" in read) is hinted, read
 
 
 class TestARecorderAnswersForItsConnection:

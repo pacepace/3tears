@@ -46,7 +46,8 @@ so a copy read under an older fence is covered too -- and it empties only the id
 away from two switches back, at least one wait ago. So a copy naming it expired at least half a fence
 before the emptying began, and any statement that took it had the other half to end: no write can still
 reach the table being emptied. The emptying is recorded in the ring row (``emptied``), and the ring never
-switches into a table whose emptying has not finished: such a switch waits, logged and counted
+switches into a table whose emptying has not finished: such a switch waits, logged at ERROR on every pass it is held
+(the current table grows past its planned size, so the restore budget is at risk) and counted
 (``threetears_change_notes_switch_waits_total``).
 
 **What the coverage vouches for.** When the wait after a switch has passed, the keeper reads the log's
@@ -110,6 +111,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 import asyncpg
+from pydantic import TypeAdapter
 from threetears.nats.change_log import ChangeLogState
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter, gauge
@@ -138,6 +140,7 @@ from threetears.core.ddl.change_notes import (
     trigger_function_sql,
 )
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
+from threetears.core.keyed import Fragment, Sort, delete_before, keyset_rows
 from threetears.core.ddl.index_health import ddl_body, rebuild_unusable_indexes
 from threetears.core.declared import whole_read
 from threetears.core.ddl.errors import DdlLockTimeoutError
@@ -176,6 +179,21 @@ _SWITCHES_PER_BUDGET: Final = 2
 
 #: marks of the log's position per fence: a suffix restore can start at one every fence / this
 _MARKS_PER_FENCE: Final = 20
+
+#: the columns a restore reads of the coverage's notes
+_COVERAGE_COLUMNS: Final = "table_name, key_text, keys, columns, tenant, noted_at"
+
+#: the marks a switch's sweep deletes a statement. Why a paged delete_before over the (at, id) index: the marks
+#: table had no index but its id, so the old one-statement ``DELETE ... WHERE at < $1`` read every mark; a keeper
+#: writes one mark per fence/20 and a switch drops the ones older than the coverage, about 20-40, so the sweep is one
+#: statement in practice and 500 only bounds a sweep after a long outage. Measured (a local A/B on Postgres 17,
+#: best of 5, 20 marks swept): 1.1 vs 1.5 ms at 60 marks, 1.4 vs 1.7 ms at 2,000, 2.8 vs 1.7 ms at 20,000
+#: (old vs new); its plan test proves the index read on Postgres and YugabyteDB
+#: (test_change_note_ring_plans::test_threetears_change_note_marks_at_reads_a_switchs_sweep).
+_MARKS_SWEEP_PAGE: Final = 500
+
+#: a lost log's marks, in position order (two marks may share a position: the id breaks the tie)
+_MARKS_ORDER: Final = (Sort("seq"), Sort("id"))
 
 #: notes deleted per statement when the keeper empties the idle table; each batch is its own transaction
 _EMPTY_BATCH: Final = 1000
@@ -280,8 +298,12 @@ _KEY_SEPARATOR: Final = "\x1f"
 #: notes read per round trip when a restore streams the coverage
 _RESTORE_PAGE: Final = 5000
 
-#: distinct rows of one table per change a restore streams: the most it holds at once
+#: distinct rows of one table per change a restore streams: the most it holds at once (a chunk is cut only where the
+#: key changes, so a key noted with several invalidation columns may carry it a few past)
 _RESTORE_CHUNK_ROWS: Final = 5000
+
+#: a restored chunk's rows, validated as one list (:func:`_changed`)
+_CHANGED_ROWS: Final = TypeAdapter(list[ChangedRow])
 
 #: a restored row's bytes in its record beyond its key and columns, as the restore's estimate: generous,
 #: so a restore chosen to fit does fit
@@ -315,6 +337,23 @@ _EMPTIED_ROWS = counter(
 _SWITCH_WAITS = counter(
     "threetears_change_notes_switch_waits_total",
     description="ring switches that were due but waited because the table to switch into was not yet empty",
+)
+# A held switch is loud on purpose: while the switch waits for the idle table's emptying, the current note table
+# keeps taking every write's note past the size the ring planned for it (switch_at), and a restore reads the current
+# and the previous tables whole -- so the longer a switch is held, the closer the coverage comes to not fitting the
+# log's restore budget (RESTORE_BUDGET_RATIO), when a lost log could no longer be put back whole. Every held pass logs
+# at ERROR, and these say for how long and how far past plan (metrics only; Grafana alerts on them).
+_SWITCH_HELD_SINCE = gauge(
+    "threetears_change_notes_switch_held_since_timestamp_seconds",
+    description="when the due ring switch began waiting for the idle table's emptying (unix seconds); 0 when not held",
+)
+_CURRENT_BYTES = gauge(
+    "threetears_change_notes_current_bytes",
+    description="bytes of change records the log took since the ring's last switch: the current note table's size",
+)
+_SWITCH_AT_BYTES = gauge(
+    "threetears_change_notes_switch_at_bytes",
+    description="the bytes at which the ring plans to switch its current note table (its planned size)",
 )
 _RING_READS = counter(
     "threetears_change_notes_ring_reads_total",
@@ -762,6 +801,8 @@ class ChangeNoteKeeper:
         self._scrub_every = fence / _SCRUBS_PER_FENCE if scrub_every is None else scrub_every
         self._scrubbed_at: float | None = None
         self._marks = f"{self._owner}.{quote_identifier(MARKS_TABLE)}"
+        #: the same, as the keyed helpers name a table (``schema.table``, quoted a segment at a time by them)
+        self._marks_table = f"{notes_schema}.{MARKS_TABLE}"
         self._mark_every = fence / _MARKS_PER_FENCE
         self._marked_at: float | None = None
         self._switch_notes = switch_notes
@@ -774,6 +815,10 @@ class ChangeNoteKeeper:
         self._empty_budget = empty_budget
         #: the switch number whose due switch already waited for an emptying, so it is logged once
         self._waited_switch: int | None = None
+        #: when (unix seconds) the due switch began waiting for the idle table's emptying; None when not held
+        self._held_since: float | None = None
+        #: the current table's notes at the last count (capped at the switch's note count: a count never reads more)
+        self._notes_seen = 0
         #: the newest epoch the scrub has checked, and the log's head at the previous pass (what it checks up to)
         self._scrubbed: tuple[str, int] | None = None
         self._seen: tuple[str, int] | None = None
@@ -1082,17 +1127,23 @@ class ChangeNoteKeeper:
                 result.emptied = idle
         switch_at = self._switch_bytes or _switch_threshold(state.max_bytes)
         notes_full = await self._current_notes_full(ring, switch_at)
-        if ring.fence_seq is not None and (
-            (switch_at and _taken_bytes(state, ring.switched_seq) >= switch_at) or notes_full
-        ):
+        taken = _taken_bytes(state, ring.switched_seq)
+        _CURRENT_BYTES.set(taken)
+        _SWITCH_AT_BYTES.set(switch_at or 0)
+        held = False
+        if ring.fence_seq is not None and ((switch_at and taken >= switch_at) or notes_full):
             if ring.emptied:
                 switched = await self._switch(ring, state)
                 if switched is not None:
                     ring = switched
                     result.switched_to = ring.current
             else:
+                held = True
                 result.switch_waited = True
-                self._switch_waits(ring)
+                self._switch_waits(ring, taken, switch_at)
+        if not held:
+            self._held_since = None
+            _SWITCH_HELD_SINCE.set(0)
         now = time.monotonic()
         if self._scrubbed_at is None or now - self._scrubbed_at >= self._scrub_every.total_seconds():
             self._scrubbed_at = now
@@ -1136,6 +1187,25 @@ class ChangeNoteKeeper:
             fence_seq=None if ring.fence_seq is None else start,
         )
 
+    # WHY BATCHED DELETES AND NEVER TRUNCATE (measured; docs/runbook-epoch-write-cost.md, "Recorded results": "The
+    # cached slot and batched-delete emptying, 2026-11-08" and "The change note (declared+notes), 2026-11-08"; 3tears
+    # 44216b89e, 63a8c70a3, c9cb7c317, 1c636600f). Do not change the batch, pause, budget or band walk without
+    # measuring again with scripts/measure-epoch-write-cost.py.
+    # - TRUNCATE invalidates every session's cached plan of the note function, so every save overlapping an emptying
+    #   replans: on Postgres at 8 writers those saves rose to an 18.8 ms p99 (40 ms max) in run 2.
+    # - TRUNCATE takes ACCESS EXCLUSIVE on the table: every writer still inserting a note waits behind it.
+    # - On YugabyteDB TRUNCATE is a DDL-like operation (a catalog change), not a row write.
+    # - The batches: _EMPTY_BATCH (1000) notes a statement, each its own short transaction, _EMPTY_PAUSE (20 ms)
+    #   between batches, _EMPTY_BUDGET (1 s) a pass, the next pass carrying on. Measured with them: saves overlapping
+    #   a batch kept the run's p99 at 1 and 8 writers on YugabyteDB (13.6 vs 15.2 ms, 11.1 vs 13.8 ms).
+    # - The walk: a batch picking its notes from the table's start stepped over every tombstone the batches before
+    #   it left, about 200 ms of tombstones a batch by 200,000 notes on YugabyteDB (N^2/2/batch reads). So the
+    #   batches walk the key in its own order: _delete_band by bands of yb_hash_code on YugabyteDB, _delete_past by
+    #   id elsewhere (test_note_emptying_live: within twice a one-statement keyed delete of as many rows).
+    # - The local YugabyteDB tserver crashes seen on 2026-11-08 were the kernel (yugabyte-db #33458, tcmalloc per-CPU
+    #   caches on Linux 6.19 to 7.0.14 arm64), NOT TRUNCATE and not b118 (runbook, "Correction (2026-11-08)"): that
+    #   is not the reason, and TRUNCATE is not the fix for anything here.
+    # The gate's ring_empty kind (Pace 2026-11-14) declares these deletes; it changes nothing of how they run.
     async def empty_slot(self, index: int) -> tuple[bool, int]:
         """empty the ring's idle note table at ``index`` with batched deletes; never ``TRUNCATE``.
 
@@ -1193,6 +1263,7 @@ class ChangeNoteKeeper:
         )
         return True, deleted
 
+    # why batches, this walk and never TRUNCATE: the measured reasons above empty_slot; keep them as they are
     async def _delete_band(self, table: str, index: int) -> tuple[int, bool]:
         """delete the notes of the next band of key hashes (YugabyteDB); how many, and whether the walk is done.
 
@@ -1224,10 +1295,17 @@ class ChangeNoteKeeper:
             self._band = max(1, min(_HASH_SPACE, _HASH_SPACE * self._empty_batch // held))
         start = int(self._reached(index) or 0)
         end = min(start + self._band, _HASH_SPACE)
-        status = await self._pool.execute(
-            f"DELETE FROM {table} WHERE yb_hash_code(id) >= $1 AND yb_hash_code(id) < $2",  # noqa: S608 - trusted identifiers
-            start,
-            end,
+        status = await whole_read(
+            self._pool.execute(
+                f"DELETE FROM {table} WHERE yb_hash_code(id) >= $1 AND yb_hash_code(id) < $2",  # noqa: S608 - trusted identifiers
+                start,
+                end,
+            ),
+            kind="ring_empty",
+            reason="the idle ring slot two switches back is emptied whole: no write can reach it any more",
+            ruling="Pace 2026-11-14: emptying a used-up change-notes ring table goes on the whole-drop list, as TRUNCATE (11-11)",
+            proof="packages/core/tests/unit/collections/test_change_note_restore_reads.py::test_a_ring_slot_is_emptied_whole_only_when_idle",
+            speed="packages/core/tests/integration/test_note_emptying_live.py::test_an_idle_table_is_emptied_once_each_note_within_twice_a_keyed_delete",
         )
         count = _status_count(status)
         self._emptying_at = (index, end)
@@ -1249,6 +1327,7 @@ class ChangeNoteKeeper:
             return None
         return self._emptying_at[1]
 
+    # why batches, this walk and never TRUNCATE: the measured reasons above empty_slot; keep them as they are
     async def _delete_past(self, table: str, index: int) -> tuple[int, bool]:
         """delete the next ``empty_batch`` notes past the last id deleted, in id order; how many, and whether done.
 
@@ -1259,31 +1338,58 @@ class ChangeNoteKeeper:
         :return: notes deleted, and whether the batch reached the table's end
         :rtype: tuple[int, bool]
         """
-        rows = await self._pool.fetch(
-            f"DELETE FROM {table} WHERE id IN (SELECT id FROM {table} "  # noqa: S608 - trusted identifiers
-            "WHERE $2::uuid IS NULL OR id > $2 ORDER BY id LIMIT $1) RETURNING id",
-            self._empty_batch,
-            self._reached(index),
+        rows = await whole_read(
+            self._pool.fetch(
+                f"DELETE FROM {table} WHERE id IN (SELECT id FROM {table} "  # noqa: S608 - trusted identifiers
+                "WHERE $2::uuid IS NULL OR id > $2 ORDER BY id LIMIT $1) RETURNING id",
+                self._empty_batch,
+                self._reached(index),
+            ),
+            kind="ring_empty",
+            reason="the idle ring slot two switches back is emptied whole: no write can reach it any more",
+            ruling="Pace 2026-11-14: emptying a used-up change-notes ring table goes on the whole-drop list, as TRUNCATE (11-11)",
+            proof="packages/core/tests/unit/collections/test_change_note_restore_reads.py::test_a_ring_slot_is_emptied_whole_only_when_idle",
+            speed="packages/core/tests/integration/test_note_emptying_live.py::test_an_idle_table_is_emptied_once_each_note_within_twice_a_keyed_delete",
         )
         if rows:
             self._emptying_at = (index, max(row["id"] for row in rows))
         return len(rows), len(rows) < self._empty_batch
 
-    def _switch_waits(self, ring: NoteRingState) -> None:
-        """say once per switch that it is due but waits for the idle table's emptying.
+    def _switch_waits(self, ring: NoteRingState, taken: int, switch_at: int | None) -> None:
+        """say, at ERROR on every keeper pass while it lasts, that a due switch waits for the idle table's emptying:
+        for how long, and how far the current table has grown past the size planned for it (the why is above
+        ``_SWITCH_HELD_SINCE``: a held switch puts the restore budget at risk). Counted once per switch.
 
         :param ring: the ring
         :ptype ring: NoteRingState
+        :param taken: bytes of change records the log took since the last switch (the current table's size)
+        :ptype taken: int
+        :param switch_at: the planned switch size in bytes, None when the ring switches on its note count alone
+        :ptype switch_at: int | None
         :return: nothing
         :rtype: None
         """
-        if self._waited_switch == ring.switch_no:
-            return
-        self._waited_switch = ring.switch_no
-        _SWITCH_WAITS.inc()
-        log.warning(
-            "a change-note ring switch is due but waits: the table it would switch into is still being emptied",
-            extra={"extra_data": {"switch": ring.switch_no, "waiting_on": note_table(ring.oldest)}},
+        now = time.time()
+        if self._held_since is None:
+            self._held_since = now
+        _SWITCH_HELD_SINCE.set(self._held_since)
+        if self._waited_switch != ring.switch_no:
+            self._waited_switch = ring.switch_no
+            _SWITCH_WAITS.inc()
+        log.error(
+            "a change-note ring switch is HELD: the table it would switch into is still being emptied, so the "
+            "current note table keeps growing past its planned size and the restore budget is at risk",
+            extra={
+                "extra_data": {
+                    "switch": ring.switch_no,
+                    "held_seconds": round(now - self._held_since, 1),
+                    "current": note_table(ring.current),
+                    "current_notes_at_least": self._notes_seen,
+                    "current_bytes": taken,
+                    "switch_at_bytes": switch_at,
+                    "waiting_on": note_table(ring.oldest),
+                }
+            },
         )
 
     async def _switch(self, ring: NoteRingState, state: ChangeLogState) -> NoteRingState | None:
@@ -1315,16 +1421,53 @@ class ChangeNoteKeeper:
         self._counted_at = None
         _SWITCHES.inc()
         # a mark older than the table the coverage now starts with can floor no restore
-        await self._pool.execute(
-            f"DELETE FROM {self._marks} WHERE at < $1",  # noqa: S608 - trusted identifiers
-            ring.switched_at - self._wait(ring),
-        )
+        await self.drop_marks_before(ring.switched_at - self._wait(ring))
         log.info(
             "the change-note ring switched",
             extra={"extra_data": {"current": after.current, "switch": after.switch_no, "floor": after.floor}},
         )
         await self.count_ring_reads(ring.current)
         return after
+
+    async def drop_marks_before(self, at: datetime) -> int:
+        """delete the marks written before ``at``, a page at a time through the marks' time index (no cache serves
+        the keeper's own table).
+
+        :param at: the time: every mark older is deleted
+        :ptype at: datetime
+        :return: the marks deleted
+        :rtype: int
+        """
+        swept = await delete_before(
+            self._marks_table,
+            collection=None,
+            key=("id",),
+            column="at",
+            before=at,
+            page=_MARKS_SWEEP_PAGE,
+            conn=self._pool,
+        )
+        return swept.deleted
+
+    async def marks_past(self, incarnation: str, floor: int | None) -> list[dict[str, Any]]:
+        """the marks of the log ``incarnation`` names past the position ``floor``, in position order: a page at a time
+        through the marks' position index.
+
+        :param incarnation: the log's incarnation
+        :ptype incarnation: str
+        :param floor: the position the marks are past; every mark when None
+        :ptype floor: int | None
+        :return: the marks (``seq``, ``at``, ``id``)
+        :rtype: list[dict[str, Any]]
+        """
+        return await keyset_rows(
+            self._pool,
+            self._marks_table,
+            columns=("seq", "at", "id"),
+            by={"log_incarnation": incarnation},
+            order=_MARKS_ORDER,
+            where=[Fragment('t."seq" > $1', (-1 if floor is None else floor,))],
+        )
 
     async def count_ring_reads(self, index: int) -> None:
         """count, per table, the notes of the table just switched away from whose statement read the ring row.
@@ -1373,7 +1516,8 @@ class ChangeNoteKeeper:
             f"SELECT count(*) AS notes FROM (SELECT 1 FROM {self._ring_table(ring.current)} LIMIT $1) n",  # noqa: S608 - trusted identifiers
             threshold,
         )
-        self._notes_full = int(rows[0]["notes"]) >= threshold
+        self._notes_seen = int(rows[0]["notes"])
+        self._notes_full = self._notes_seen >= threshold
         return self._notes_full
 
     async def _mark(self, read_at: datetime, state: ChangeLogState) -> None:
@@ -1438,8 +1582,8 @@ class ChangeNoteKeeper:
         began = time.monotonic()
         state = await self._log.log_state()
         budget = None if state is None or not state.max_bytes else state.max_bytes * RESTORE_BUDGET_RATIO - state.bytes
-        total = await self._count_since(ring, None)
-        chosen = await self._fitting(ring, lost, covered, budget)
+        total, bound = await self._count_since(ring, None)
+        chosen = await self._fitting(ring, lost, covered, budget, bound)
         if chosen is None:
             _RESTORES_REFUSED.inc()
             log.error(
@@ -1453,7 +1597,7 @@ class ChangeNoteKeeper:
             self._seen = None
             return None
         floor, since = chosen
-        kept = total if since is None else await self._count_since(ring, since)
+        kept = total if since is None else (await self._count_since(ring, since))[0]
         # streamed a page at a time, so the keeper's memory follows one change, not the coverage; should the log
         # have grown past the estimate meanwhile, finish_restore stops unlabelled and the next pass sizes again
         changes = self._changes_since(ring, since)
@@ -1504,36 +1648,46 @@ class ChangeNoteKeeper:
         )
         return incarnation
 
-    def _coverage(self, ring: NoteRingState) -> str:
-        """the SQL of the coverage's notes: the current and the previous table, one relation.
+    async def _count_since(self, ring: NoteRingState, since: datetime | None) -> tuple[int, int]:
+        """how many notes of the coverage were written at or after ``since`` (all of them for ``None``), and a bound
+        no smaller than :meth:`_estimate` of them.
 
-        :param ring: the ring
-        :ptype ring: NoteRingState
-        :return: a parenthesized ``UNION ALL``
-        :rtype: str
-        """
-        columns = "table_name, key_text, keys, columns, tenant, noted_at"
-        return (
-            f"(SELECT {columns} FROM {self._ring_table(ring.current)} "  # noqa: S608 - trusted identifiers
-            f"UNION ALL SELECT {columns} FROM {self._ring_table(ring.previous)})"
-        )
+        The bound sizes every note as :meth:`_estimate` sizes a distinct row (a row noted twice counted twice), so it
+        is never below the estimate: when it fits the budget the estimate does too, and the restore needs no read of
+        the distinct rows to know it. Summed per table, so the table count needs no sort of the notes.
 
-    async def _count_since(self, ring: NoteRingState, since: datetime | None) -> int:
-        """how many notes of the coverage were written at or after ``since`` (all of them for ``None``).
+        WHY (o97, 2026-11-14, test_change_note_restore_speed_live at 200,000 notes): the count and the estimate were
+        two reads of the coverage, ~8 ms + ~68 ms on PG 16 and ~56 ms + ~105 ms on YugabyteDB, the estimate's distinct
+        rows a hash aggregate spilling to disk; this one read, grouped by table alone, answers both when the
+        coverage fits, as a restore's coverage nearly always does (the ring switches at half the restore budget).
 
         :param ring: the ring
         :ptype ring: NoteRingState
         :param since: the cut
         :ptype since: datetime | None
-        :return: the count
-        :rtype: int
+        :return: ``(notes, bound)``
+        :rtype: tuple[int, int]
         """
-        rows = await self._pool.fetch(
-            f"SELECT count(*) AS notes FROM {self._coverage(ring)} n "  # noqa: S608 - trusted identifiers
-            "WHERE $1::timestamptz IS NULL OR n.noted_at >= $1",
-            since,
+        rows = await whole_read(
+            self._pool.fetch(
+                "SELECT coalesce(sum(g.notes), 0) AS notes, count(*) AS tables, coalesce(sum(g.bytes), 0) AS bytes "  # noqa: S608 - trusted identifiers
+                "FROM (SELECT table_name, count(*) AS notes, sum(length(table_name) + coalesce(length(key_text), 0) "
+                "+ coalesce(length(columns::text), 0)) AS bytes "
+                f"FROM {_coverage_sql(self._owner, ring.current, ring.previous)} n "
+                "WHERE $1::timestamptz IS NULL OR n.noted_at >= $1 GROUP BY table_name) g",
+                since,
+            ),
+            kind="restore",
+            reason="a lost change log is put back from every note of the ring's coverage, its current and previous slots",
+            ruling="Pace 2026-11-14: the restore's full read of the coverage is a cold-start read (whole_read), as TRUNCATE (11-11)",
+            proof="packages/core/tests/unit/collections/test_change_note_restore_reads.py::test_the_coverage_is_read_whole_only_by_a_restore",
+            speed="packages/core/tests/integration/test_change_note_restore_speed_live.py::test_a_restore_reads_its_coverage_within_twice_the_bare_reads",
         )
-        return int(rows[0]["notes"])
+        row = rows[0]
+        notes = int(row["notes"])
+        return notes, (
+            int(row["bytes"]) + notes * _RESTORED_ROW_ESTIMATE + int(row["tables"]) * _RESTORED_TABLE_ESTIMATE
+        )
 
     async def _estimate(self, ring: NoteRingState, since: datetime | None) -> int:
         """the bytes the records of the coverage's notes since ``since`` would take, estimated in the database.
@@ -1548,12 +1702,21 @@ class ChangeNoteKeeper:
         :return: the estimate
         :rtype: int
         """
-        rows = await self._pool.fetch(
-            "SELECT count(*) AS rows, count(DISTINCT table_name) AS tables, coalesce(sum(length(table_name) + "  # noqa: S608 - trusted identifiers
-            "coalesce(length(key_text), 0) + coalesce(length(columns::text), 0)), 0) AS bytes "
-            f"FROM (SELECT DISTINCT table_name, key_text, columns FROM {self._coverage(ring)} n "
-            "WHERE $1::timestamptz IS NULL OR n.noted_at >= $1) d",
-            since,
+        rows = await whole_read(
+            self._pool.fetch(
+                # summed per table first, so the table count needs no sort of every distinct row
+                "SELECT coalesce(sum(g.rows), 0) AS rows, count(*) AS tables, coalesce(sum(g.bytes), 0) AS bytes "  # noqa: S608 - trusted identifiers
+                "FROM (SELECT table_name, count(*) AS rows, sum(length(table_name) + coalesce(length(key_text), 0) "
+                "+ coalesce(length(columns::text), 0)) AS bytes "
+                f"FROM (SELECT DISTINCT table_name, key_text, columns FROM {_coverage_sql(self._owner, ring.current, ring.previous)} n "
+                "WHERE $1::timestamptz IS NULL OR n.noted_at >= $1) d GROUP BY table_name) g",
+                since,
+            ),
+            kind="restore",
+            reason="a lost change log is put back from every note of the ring's coverage, its current and previous slots",
+            ruling="Pace 2026-11-14: the restore's full read of the coverage is a cold-start read (whole_read), as TRUNCATE (11-11)",
+            proof="packages/core/tests/unit/collections/test_change_note_restore_reads.py::test_the_coverage_is_read_whole_only_by_a_restore",
+            speed="packages/core/tests/integration/test_change_note_restore_speed_live.py::test_a_restore_reads_its_coverage_within_twice_the_bare_reads",
         )
         row = rows[0]
         return (
@@ -1563,7 +1726,7 @@ class ChangeNoteKeeper:
         )
 
     async def _fitting(
-        self, ring: NoteRingState, lost: str, covered: int | None, budget: float | None
+        self, ring: NoteRingState, lost: str, covered: int | None, budget: float | None, bound: int
     ) -> tuple[int | None, datetime | None] | None:
         """the oldest-reaching part of the coverage whose records fit ``budget``: its floor and its cut.
 
@@ -1580,21 +1743,17 @@ class ChangeNoteKeeper:
         :ptype covered: int | None
         :param budget: the bytes the restore may take; ``None`` unbounded
         :ptype budget: float | None
+        :param bound: a size no smaller than the whole coverage's estimate (:meth:`_count_since`): when it fits, the
+            whole coverage does, unsized
+        :ptype bound: int
         :return: ``(floor, cut)``, the cut ``None`` for the whole coverage; ``None`` when not even the newest
             part fits
         :rtype: tuple[int | None, datetime | None] | None
         """
-        if budget is None or await self._estimate(ring, None) <= budget:
+        if budget is None or bound <= budget or await self._estimate(ring, None) <= budget:
             return covered, None
         lag = self._wait(ring) / 2
-        marks = [
-            (int(mark["seq"]), mark["at"] - lag)
-            for mark in await self._pool.fetch(
-                f"SELECT seq, at FROM {self._marks} WHERE log_incarnation = $1 AND seq > $2 ORDER BY seq",  # noqa: S608 - trusted identifiers
-                lost,
-                -1 if covered is None else covered,
-            )
-        ]
+        marks = [(int(mark["seq"]), mark["at"] - lag) for mark in await self.marks_past(lost, covered)]
         low, high = 0, len(marks)
         while low < high:  # the first (oldest-reaching) mark whose part fits; sizes fall along the list
             middle = (low + high) // 2
@@ -1614,7 +1773,7 @@ class ChangeNoteKeeper:
         :return: the changes, as an async iterable
         :rtype: _StreamedChanges
         """
-        return _StreamedChanges(self._pool, self._coverage(ring), since)
+        return _StreamedChanges(self._pool, self._owner, (ring.current, ring.previous), since)
 
     async def _scrub(self, ring: NoteRingState, state: ChangeLogState) -> ScrubPass:
         """check that the epochs after the floor, up to the log's head one pass ago, have their notes.
@@ -1741,6 +1900,25 @@ class ChangeNoteKeeper:
         return found
 
 
+def _coverage_sql(owner: str, current: int, previous: int) -> str:
+    """the SQL of the coverage's notes: the ring's current and previous tables, one relation.
+
+    :param owner: the ring's schema, quoted
+    :ptype owner: str
+    :param current: the current table's place in the ring
+    :ptype current: int
+    :param previous: the previous table's
+    :ptype previous: int
+    :return: a parenthesized ``UNION ALL``
+    :rtype: str
+    """
+    return (
+        # the slots spelled as the ring's DDL names them (note_table), so the gate reads the ring's template here
+        f'(SELECT {_COVERAGE_COLUMNS} FROM {owner}."threetears_change_notes_{current:d}" '  # noqa: S608 - trusted identifiers
+        f'UNION ALL SELECT {_COVERAGE_COLUMNS} FROM {owner}."threetears_change_notes_{previous:d}")'
+    )
+
+
 class _StreamedChanges:
     """the coverage's notes folded into changes as a cursor reads them: whole tables first, then each table's
     distinct rows in chunks of :data:`_RESTORE_CHUNK_ROWS`, so memory holds one chunk.
@@ -1748,9 +1926,10 @@ class _StreamedChanges:
     :ivar tables: the tables streamed so far
     """
 
-    def __init__(self, pool: _Pool, coverage: str, since: datetime | None) -> None:
+    def __init__(self, pool: _Pool, owner: str, slots: tuple[int, int], since: datetime | None) -> None:
         self._pool = pool
-        self._coverage = coverage
+        self._owner = owner
+        self._current, self._previous = slots
         self._since = since
         self.tables = 0
 
@@ -1760,44 +1939,87 @@ class _StreamedChanges:
     async def _stream(self) -> AsyncIterator[NotedChange]:
         async with self._pool.acquire() as conn, conn.transaction():
             reaches: dict[tuple[str, str | None], list[Any]] = {}
-            for row in await conn.fetch(
-                # a whole note's columns are its write's reach (NOTE_REACH_SETTING): a load's prefixes, a reset
-                f"SELECT DISTINCT table_name, tenant, columns::text AS reach FROM {self._coverage} n "  # noqa: S608 - trusted identifiers
-                "WHERE n.key_text IS NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1)",
-                self._since,
+            # the whole notes that cover their tenant's rows (a load's names only its prefixes): read here once, so
+            # the keyed read below leaves those rows out against this short list, not a second read of the coverage
+            covering: dict[tuple[str, str | None], None] = {}
+            for row in await whole_read(
+                conn.fetch(
+                    # a whole note's columns are its write's reach (NOTE_REACH_SETTING): a load's prefixes, a reset
+                    f"SELECT DISTINCT table_name, tenant, columns::text AS reach, "  # noqa: S608 - trusted identifiers
+                    f"(columns IS NULL OR NOT columns ? 'prefixes') AS covers FROM {_coverage_sql(self._owner, self._current, self._previous)} n "
+                    "WHERE n.key_text IS NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1)",
+                    self._since,
+                ),
+                kind="restore",
+                reason="a lost change log is put back from every note of the ring's coverage, its current and previous slots",
+                ruling="Pace 2026-11-14: the restore's full read of the coverage is a cold-start read (whole_read), as TRUNCATE (11-11)",
+                proof="packages/core/tests/unit/collections/test_change_note_restore_reads.py::test_the_coverage_is_read_whole_only_by_a_restore",
+                speed="packages/core/tests/integration/test_change_note_restore_speed_live.py::test_a_restore_reads_its_coverage_within_twice_the_bare_reads",
             ):
                 pair = (str(row["table_name"]), None if row["tenant"] is None else str(row["tenant"]))
                 reaches.setdefault(pair, []).append(row["reach"])
+                if row["covers"]:
+                    covering[pair] = None
             for noted, tenant in sorted(reaches, key=lambda pair: (pair[0], pair[1] or "")):
                 self.tables += 1
                 # a whole-table change carries no row: under its schema for a schema table, else on _all
                 yield _whole_change(noted, tenant, reaches[(noted, tenant)])
             # a row its tenant's whole-table change (or the table's _all one) already covers is not named again; a
-            # load's names only its prefixes, so a row beside them is named (one inside them twice, which is harmless)
-            cursor = conn.cursor(
-                f"SELECT DISTINCT table_name, tenant, key_text, keys, columns FROM {self._coverage} n "  # noqa: S608 - trusted identifiers
-                "WHERE n.key_text IS NOT NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1) "
-                f"AND NOT EXISTS (SELECT 1 FROM {self._coverage} w WHERE w.key_text IS NULL "
-                "AND w.table_name = n.table_name AND (w.tenant IS NULL OR w.tenant = n.tenant) "
-                "AND (w.columns IS NULL OR NOT w.columns ? 'prefixes') "
-                "AND ($1::timestamptz IS NULL OR w.noted_at >= $1)) ORDER BY table_name, tenant",
-                self._since,
-                prefetch=_RESTORE_PAGE,
+            # load's names only its prefixes, so a row beside them is named (one inside them twice, which is harmless).
+            # WHY no DISTINCT and the byte ("C") order (o97, 2026-11-14, test_change_note_restore_speed_live at 200k
+            # notes, PG 16 best of 5): the old DISTINCT + NOT EXISTS over a second read of the coverage, sorted in the
+            # database's collation, took ~330 ms of the statement alone (a hash aggregate and a locale sort, both
+            # spilling) against ~90 ms for the bare read of every note; this read sorted in byte order takes ~180 ms.
+            # Grouping needs only equal values next to each other, which any order gives, and byte order skips the
+            # locale's comparisons. The fold below drops a row noted twice: equal keys are next to each other, and a
+            # chunk is cut only where the key changes, so a restored change names each distinct row once, as before.
+            cursor = await whole_read(
+                conn.cursor(
+                    f"SELECT table_name, tenant, key_text, keys, columns FROM {_coverage_sql(self._owner, self._current, self._previous)} n "  # noqa: S608 - trusted identifiers
+                    "WHERE n.key_text IS NOT NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1) "
+                    "AND NOT EXISTS (SELECT 1 FROM unnest($2::text[], $3::text[]) w(table_name, tenant) "
+                    "WHERE w.table_name = n.table_name AND (w.tenant IS NULL OR w.tenant = n.tenant)) "
+                    'ORDER BY n.table_name COLLATE "C", n.tenant COLLATE "C", n.key_text COLLATE "C"',
+                    self._since,
+                    [noted for noted, _ in covering],
+                    [tenant for _, tenant in covering],
+                ),
+                kind="restore",
+                reason="a lost change log is put back from every note of the ring's coverage, its current and previous slots",
+                ruling="Pace 2026-11-14: the restore's full read of the coverage is a cold-start read (whole_read), as TRUNCATE (11-11)",
+                proof="packages/core/tests/unit/collections/test_change_note_restore_reads.py::test_the_coverage_is_read_whole_only_by_a_restore",
+                speed="packages/core/tests/integration/test_change_note_restore_speed_live.py::test_a_restore_reads_its_coverage_within_twice_the_bare_reads",
             )
-            group: tuple[str, str | None] | None = None
-            rows: dict[tuple[tuple[str, ...], tuple[tuple[str, str | None], ...]], None] = {}
-            async for note in cursor:
-                name = str(note["table_name"])
-                tenant = None if note["tenant"] is None else str(note["tenant"])
-                if group is not None and (group != (name, tenant) or len(rows) >= _RESTORE_CHUNK_ROWS):
-                    yield _change(group[0], rows, group[1])
-                    rows = {}
-                if group is None or group[0] != name:
-                    self.tables += 1
-                group = (name, tenant)
-                rows[(tuple(str(key) for key in note["keys"]), _columns_of(note["columns"]))] = None
-            if group is not None and rows:
-                yield _change(group[0], rows, group[1])
+            table: str | None = None
+            held_tenant: str | None = None
+            last: str | None = None
+            first: tuple[tuple[str, str | None], ...] = ()
+            others: set[tuple[tuple[str, str | None], ...]] | None = None
+            held: list[dict[str, Any]] = []
+            while batch := await cursor.fetch(_RESTORE_PAGE):
+                for noted, owner, key_text, keys, raw in batch:
+                    columns = () if raw is None else _columns_of(raw)
+                    if noted != table or owner != held_tenant:
+                        if held:
+                            yield _changed(table, held, held_tenant)
+                            held = []
+                        if noted != table:
+                            self.tables += 1
+                        table, held_tenant, last, first, others = noted, owner, key_text, columns, None
+                    elif key_text != last:
+                        if len(held) >= _RESTORE_CHUNK_ROWS:
+                            yield _changed(table, held, held_tenant)
+                            held = []
+                        last, first, others = key_text, columns, None
+                    elif columns == first or (others is not None and columns in others):
+                        continue  # the same row noted again
+                    elif others is None:
+                        others = {first, columns}
+                    else:
+                        others.add(columns)
+                    held.append({"ids": keys, "columns": dict(columns) if columns else None, "tenant": owner})
+            if held:
+                yield _changed(table, held, held_tenant)
 
 
 def _whole_change(table: str, tenant: str | None, reaches: Sequence[Any]) -> NotedChange:
@@ -1841,28 +2063,24 @@ def _whole_change(table: str, tenant: str | None, reaches: Sequence[Any]) -> Not
     )
 
 
-def _change(
-    table: str, rows: dict[tuple[tuple[str, ...], tuple[tuple[str, str | None], ...]], None], tenant: str | None
-) -> NotedChange:
-    """one table's folded rows of one tenant as a change.
+def _changed(table: str | None, rows: list[dict[str, Any]], tenant: str | None) -> NotedChange:
+    """one table's folded rows of one tenant as a change, the rows validated as one list.
 
-    :param table: the table
-    :ptype table: str
-    :param rows: each distinct row: its keys and its invalidation columns
-    :ptype rows: dict[tuple[tuple[str, ...], tuple[tuple[str, str | None], ...]], None]
+    WHY one list (o97, 2026-11-14): a :class:`ChangedRow` built a row at a time costs ~0.7 us in pydantic, ~130 ms
+    of a 195,000-row restore; one ``validate_python`` of the chunk's list makes the same models, checked the same
+    way, in ~0.45 us a row.
+
+    :param table: the table (never ``None``: a change is made only once a row of it was read)
+    :ptype table: str | None
+    :param rows: each distinct row: its ``ids``, its invalidation ``columns`` and its ``tenant``
+    :ptype rows: list[dict[str, Any]]
     :param tenant: the rows' tenant, ``None`` for ``_all``
     :ptype tenant: str | None
     :return: the change
     :rtype: NotedChange
     """
-    return NotedChange(
-        table=table,
-        tenant=tenant,
-        rows=tuple(
-            ChangedRow(ids=list(ids), columns=dict(columns) if columns else None, tenant=tenant)
-            for ids, columns in rows
-        ),
-    )
+    assert table is not None  # narrow: the stream makes a change only after reading a row of its table
+    return NotedChange(table=table, tenant=tenant, rows=tuple(_CHANGED_ROWS.validate_python(rows)))
 
 
 @dataclass(frozen=True, slots=True)

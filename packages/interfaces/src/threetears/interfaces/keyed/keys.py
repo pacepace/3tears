@@ -309,9 +309,7 @@ def register_table_indexes(table: str, indexes: Iterable[DeclaredIndex]) -> None
 def _rank(index: DeclaredIndex, pinned: set[str], sorts: Sequence[Sort]) -> tuple[int, int, bool] | None:
     """how well ``index`` serves a read pinning ``pinned`` sorted by ``sorts`` (more pins held, then fewer columns,
     then the primary key); None when it does not serve it."""
-    held = 0
-    while held < len(index.columns) and index.columns[held] in pinned:
-        held += 1
+    held = _leading_held(index, pinned)
     if held == 0 or index.columns[held : held + len(sorts)] != tuple(sort.column for sort in sorts):
         return None
     against = {(column in index.descending) != sort.descending for column, sort in zip(index.columns[held:], sorts)}
@@ -320,8 +318,41 @@ def _rank(index: DeclaredIndex, pinned: set[str], sorts: Sequence[Sort]) -> tupl
     return held, -len(index.columns), index.primary
 
 
+def _leading_held(index: DeclaredIndex, pinned: set[str]) -> int:
+    """how many of ``index``'s leading columns ``pinned`` binds."""
+    held = 0
+    while held < len(index.columns) and index.columns[held] in pinned:
+        held += 1
+    return held
+
+
+def _unordered_serving(relation: Relation, pinned: set[str]) -> DeclaredIndex | None:
+    """the declared index that serves an unordered read of ``relation`` pinning ``pinned``: a secondary index binding
+    more pinned leading columns than the primary key (the one binding most, then the narrower); else the primary key
+    where it binds any (always when it binds all its columns: a point read); else None.
+
+    YugabyteDB plans such a read through the primary key's prefix and filters the rest (3tears #95: 100 rows scanned
+    for 20); the coordinator's ruling (#96) names the index that binds more of the pins."""
+    indexes = [index for named, index in _INDEXES if named == relation]
+    primary = next((index for index in indexes if index.primary), None)
+    floor = _leading_held(primary, pinned) if primary is not None else 0
+    if primary is not None and floor == len(primary.columns):
+        return primary
+    ranked = [
+        ((held, -len(index.columns)), index)
+        for index in indexes
+        if not index.primary and (held := _leading_held(index, pinned)) > floor
+    ]
+    if ranked:
+        return max(ranked, key=lambda pair: pair[0])[1]
+    return primary if floor else None
+
+
 def serving_index(table: Any, by: Mapping[Any, Any], order: Sequence[Sort]) -> DeclaredIndex | None:
     """the declared index that serves a keyed read of ``table`` pinning ``by``, in ``order``; None when none does.
+
+    An unordered read (no sort, or one sorting only pinned columns) is served by the index binding most of its pins
+    (:func:`_unordered_serving`).
 
     :param table: the relation read (a derived relation, or a name no declaration registers, has none)
     :ptype table: Any
@@ -337,7 +368,9 @@ def serving_index(table: Any, by: Mapping[Any, Any], order: Sequence[Sort]) -> D
         return None
     pinned = {column for column, value in by.items() if isinstance(column, str) and not isinstance(value, AnyOf)}
     sorts = [sort for sort in order if sort.expression is not None or sort.column not in pinned]
-    if not sorts or any(sort.expression is not None for sort in sorts):
+    if not sorts:
+        return _unordered_serving(relation, pinned)
+    if any(sort.expression is not None for sort in sorts):
         return None
     ranked = [
         (rank, index)
