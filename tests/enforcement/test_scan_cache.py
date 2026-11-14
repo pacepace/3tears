@@ -16,7 +16,6 @@ import os
 import subprocess
 import sys
 import threading
-import types
 from collections.abc import Callable
 from pathlib import Path
 
@@ -26,9 +25,12 @@ from tests.enforcement.scan_cache import (
     CACHE_DIRECTORY,
     ScanCache,
     ScanCacheWarning,
+    SCANNER_MODULES,
     ScanInputs,
     code_key,
     files_key,
+    installed_module_file,
+    module_closure,
     module_names,
     private_binding_scan,
     surfaces_at,
@@ -108,23 +110,81 @@ def test_a_store_written_by_other_code_is_never_read(tmp_path: Path) -> None:
     assert fresh.calls == ["a"]
 
 
-def test_the_code_key_moves_with_the_source_of_a_loaded_module(tmp_path: Path) -> None:
-    source = tmp_path / "probe.py"
-    source.write_text("ANSWER = 1\n")
-    module = types.ModuleType("threetears.probe")
-    module.__file__ = str(source)
-    before = code_key([module], [], tmp_path)
+def test_the_code_key_follows_the_scanners_import_closure_and_nothing_else(tmp_path: Path) -> None:
+    """a dependency's edit moves the key; a module the scanner never imports does not."""
+    _write(
+        tmp_path,
+        {
+            "threetears/scanner/__init__.py": "from threetears.scanner.walk import walk\n",
+            "threetears/scanner/walk.py": "from threetears.dep import util\nfrom .rules import RULES\n",
+            "threetears/scanner/rules.py": "RULES = ()\n",
+            "threetears/dep/__init__.py": "",
+            "threetears/dep/util.py": "def helper():\n    return 1\n",
+            "threetears/unrelated/__init__.py": "X = 1\n",
+        },
+    )
 
-    source.write_text("ANSWER = 2\n")
+    def locate(name: str) -> Path | None:
+        base = tmp_path.joinpath(*name.split("."))
+        return next((path for path in (base / "__init__.py", base.with_suffix(".py")) if path.is_file()), None)
 
-    assert code_key([module], [], tmp_path) != before
+    def key() -> str:
+        return code_key(module_closure(["threetears.scanner.walk"], locate), [], tmp_path)
+
+    assert sorted(module_closure(["threetears.scanner.walk"], locate)) == [
+        "threetears.dep",
+        "threetears.dep.util",
+        "threetears.scanner",
+        "threetears.scanner.rules",
+        "threetears.scanner.walk",
+    ]
+    before = key()
+    _write(tmp_path, {"threetears/unrelated/__init__.py": "X = 2\n"})
+    assert key() == before, "a module outside the closure moved the key"
+    _write(tmp_path, {"threetears/dep/util.py": "def helper():\n    return 2\n"})
+    assert key() != before, "an edit to a dependency of the scanner left the key"
 
 
-def test_the_gates_cache_is_keyed_by_the_code_loaded() -> None:
-    cache = ScanCache.for_repo(_REPO_ROOT)
+_CODE_KEY = """
+import importlib, importlib.util, json, sys
+from pathlib import Path
+extra = []
+if sys.argv[2] == "extras":
+    for name in sys.argv[3:]:
+        if importlib.util.find_spec(name) is not None:
+            importlib.import_module(name)
+            extra.append(name)
+from tests.enforcement.scan_cache import ScanCache
+print(json.dumps({"code": ScanCache.for_repo(Path(sys.argv[1])).code, "extra": extra}))
+"""
 
-    assert cache.directory == _REPO_ROOT / CACHE_DIRECTORY
-    assert cache.code == ScanCache.for_repo(_REPO_ROOT).code
+
+def test_two_processes_that_imported_different_modules_compute_one_code_key() -> None:
+    """the key is the scanners' code, not whatever else the session collected first."""
+    closure = module_closure(SCANNER_MODULES, installed_module_file)
+    unrelated = [
+        name
+        for name in ("threetears.geo", "threetears.agent.memory", "threetears.evals", "threetears.models")
+        if name not in closure
+    ]
+
+    def code(*argv: str) -> dict[str, object]:
+        ran = subprocess.run(
+            [sys.executable, "-c", _CODE_KEY, str(_REPO_ROOT), *argv],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        loaded: dict[str, object] = json.loads(ran.stdout)
+        return loaded
+
+    plain, loaded = code("plain"), code("extras", *unrelated)
+
+    assert loaded["extra"], "no unrelated threetears package was importable; the comparison proves nothing"
+    assert plain["code"] == loaded["code"]
+    assert ScanCache.for_repo(_REPO_ROOT).code == plain["code"]
+    assert ScanCache.for_repo(_REPO_ROOT).directory == _REPO_ROOT / CACHE_DIRECTORY
 
 
 def test_a_value_whose_input_moved_while_it_was_computed_is_not_stored(tmp_path: Path) -> None:
