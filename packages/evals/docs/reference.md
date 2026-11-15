@@ -192,7 +192,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 17`
+  <br>`= 18`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
@@ -1022,6 +1022,7 @@ Everything the engine knows about one consuming product.
 | `observed_model_levers` | `Mapping[str, str]` | `dict()` | Levers whose INHERITED value is recoverable from what a run observably did. |
 | `action_parameters` | `ActionParameterReader \| None` | `None` | How a goal check learns which of a call's recorded parameters are closed values. |
 | `tool_actions` | `ToolActionReader \| None` | `None` | How a goal check learns which actions a tool has, so a misspelled one is refused at authoring. |
+| `measure_rereader` | `MeasureRereader \| None` | `None` | How this host reads a stored result's measures again under its current definitions. See `MeasureRereader`. |
 | `kinds` | `tuple[KindContract, ...]` | `()` | What each candidate kind's runs carry beyond the engine's own fields: its overlays and its spec. |
 | `listing_elisions` | `frozenset[str]` | `frozenset()` | Paths inside `EvalRun.host_payload` that a read LISTING many runs leaves out. |
 | `release_label` | `str \| None` | `None` | The `label` sweepable whose value names the BUILD of the product that ran — an app version. |
@@ -1533,6 +1534,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `run_label` | `write` | `run_id`, `run_labels` | Name a run with labels (or clear them): runs_list lists runs by one, no key moves. |
 | `campaign_archive` | `write` | `campaign_id`, `archived?` | Archive a campaign (or restore it): out of listings, nothing destroyed. |
 | `result_regrade` | `write` | `result_id`, `checks?`, `judges?`, `apply?` | Grade one stored result again from its trace: report every verdict that moves, store on apply. |
+| `run_remeasure` | `write` | `run_id`, `apply?` | Read one stored run's host measures again under the host's current definitions: report, store on apply. |
+| `runs_attest_definitions` | `write` | `run_ids`, `definitions?`, `note?` | State the measure definitions stored runs ran under, for runs that recorded none; no result is touched. |
 | `result_rate` | `write` | `result_id`, `rubric_dim`, `score`, `rating_reason` | Rate one judged dimension of one result, as an agent — kept beside people's ratings, never pooled. |
 | `result_rate_person` | `write` | `result_id`, `rubric_dim`, `score`, `rating_reason`, `person`, `rating_source`, `rated_at?` | Record a person's rating of one judged dimension, relayed by a caller the host attests for them. |
 | `analysis_archive` | `write` | `analysis_id`, `archived`, `archive_reason?` | Archive a stored analysis (or restore it): marked, its insights retracted, nothing destroyed. |
@@ -1549,7 +1552,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `analysis_id` (on `analysis_archive`, `analysis_delete`) | `string` | A stored analysis's id, as analyses_list names it. |
 | `analysis_id` (on `campaign_record`, `writer_case_mint`) | `string` or `null` | A stored analysis's id, as analyses_list names it. |
 | `apparatus_settings` | `object` or `null` | Host-declared apparatus values to set the runs' rig up with, by apparatus dimension (e.g. who sits in an adjudicator's seat) — each a string, a bool or a number, and one the template's kind reads; refused otherwise. Recorded on every run and part of its measurement context, so one template can be compared at two. |
-| `apply` | `boolean` | Store the re-graded check verdicts; false (the default) reports and writes nothing. |
+| `apply` (on `result_regrade`) | `boolean` | Store the re-graded check verdicts; false (the default) reports and writes nothing. |
+| `apply` (on `run_remeasure`) | `boolean` | Store the values read again and mark the run; false (the default) reports and writes nothing. |
 | `archive_reason` | `string` or `null` | Why the record is archived (an analysis shown false or superseded, a writer case that can no longer measure anything); cleared on restore. |
 | `archived` | `boolean` | The state to set: true retires the record, false restores it. |
 | `arm` | `string` | The decided arm, by the label the campaign's page shows it under or by its variant key. |
@@ -1592,6 +1596,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `criterion_dim` | `string` or `null` | Only the profiles of this criterion's dim; omitted lists every one. |
 | `criterion_template_id` | `string` | The subject template whose rubric dimension the case is judged on, as templates_list names it. |
 | `cursor` | `string` or `null` | The next of the page before, to read the page after it; unset reads the first page. |
+| `definitions` | `object` or `null` | measure key -> the definition digest those runs ran under, as the host computes it from the measure descriptors as they were. Omitted: the host's current definitions, for runs made since its last definition change. |
 | `description` (on `campaign_create`) | `string` | A longer description of the campaign. |
 | `description` (on `campaign_update`) | `string` or `null` | A longer description of the campaign. |
 | `dev_set` | `string` | The set the cases a change is tuned on join. |
@@ -1641,7 +1646,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `n_variations` | `integer` | New cases to generate from the template's variation axes; 0 runs its stored cases. |
 | `name` (on `campaign_create`) | `string` | The campaign's name, as an operator reads it in a list: at most 32 characters. Put the detail (the arms, the round, the case count) in question or description, never in the name. |
 | `name` (on `campaign_update`) | `string` or `null` | The campaign's name, as an operator reads it in a list: at most 32 characters. Put the detail (the arms, the round, the case count) in question or description, never in the name. |
-| `note` | `string` | Why the output must get that verdict, in the author's words. |
+| `note` (on `judge_case_author`) | `string` | Why the output must get that verdict, in the author's words. |
+| `note` (on `runs_attest_definitions`) | `string` or `null` | Why the host knows which definitions the runs ran under. |
 | `offset` | `integer` | Skip this many rows; the previous page's next_offset. |
 | `output` | `string` | The output under review, as the judge reads it. |
 | `overlays` | `object` or `null` | The knobs this launch turns on the template's kind, by field. |
@@ -1664,7 +1670,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `row_factor` | `string` | The coordinate the rows are: a declared one (model, template_id, ...) or a lever the host registers. |
 | `rubric_dim` | `string` | The judged dimension rated, spelled as the result's score spells it. |
 | `run_id` | `string` | A run's id, as runs_list or a launch's job names it. |
-| `run_ids` | array of `string` | Runs, by id, as runs_list names them; every one in the caller's scope. |
+| `run_ids` (on `campaign_runs_add`, `campaign_runs_remove`) | array of `string` | Runs, by id, as runs_list names them; every one in the caller's scope. |
+| `run_ids` (on `runs_attest_definitions`) | array of `string` | The stored runs that recorded no measure definitions, by id; any number. |
 | `run_labels` | array of `string` | The run's labels, replacing any it has; [] clears them. Each 1 to 64 characters, stored sorted and each once. A label names the run (a baseline, a production snapshot) and moves no key or fingerprint. |
 | `run_status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `string` | Read only runs with this status, or 'all'. Completed unless named: a run still going is still adding results. |
 | `sample_fraction` | `number` | The share of the run's judged results the second judge is asked about. |

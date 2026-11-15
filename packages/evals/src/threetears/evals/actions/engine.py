@@ -183,12 +183,16 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
 from threetears.evals.run import (
+    Attested,
     JudgeCaseFreezeReport,
     JudgeTemperatureEstimate,
     Regrade,
+    Remeasure,
     ResumableJobs,
     SecondJudgeEstimate,
+    attest_measure_definitions,
     regrade,
+    remeasure_run,
     resumable_jobs,
     run_blocking,
 )
@@ -964,6 +968,36 @@ class ResultRegradeParams(EvalBaseModel):
     ] = False
 
 
+class RunRemeasureParams(EvalBaseModel):
+    """``run_remeasure``."""
+
+    run_id: RunId
+    apply: Annotated[
+        bool,
+        Field(
+            description="Store the values read again and mark the run; false (the default) reports and writes nothing."
+        ),
+    ] = False
+
+
+class RunsAttestDefinitionsParams(EvalBaseModel):
+    """``runs_attest_definitions``."""
+
+    run_ids: Annotated[
+        list[str],
+        Field(min_length=1, description="The stored runs that recorded no measure definitions, by id; any number."),
+    ]
+    definitions: Annotated[
+        dict[str, str] | None,
+        Field(
+            description="measure key -> the definition digest those runs ran under, as the host computes it from the "
+            "measure descriptors as they were. Omitted: the host's current definitions, for runs made since its "
+            "last definition change."
+        ),
+    ] = None
+    note: Annotated[str | None, Field(description="Why the host knows which definitions the runs ran under.")] = None
+
+
 SecondJudgeModel = Annotated[
     str, Field(min_length=1, description="The model the second judge sends every judged dimension to.")
 ]
@@ -1618,6 +1652,20 @@ async def _result_regrade(host: OpsHost, caller: Caller, params: ResultRegradePa
             "through regrade(..., apply=True)",
         )
     return await regrade(eval_host, params.result_id, caller.scope_id, **options, apply=True)
+
+
+async def _run_remeasure(host: OpsHost, caller: Caller, params: RunRemeasureParams) -> Remeasure:
+    return await remeasure_run(host.eval_host, params.run_id, caller.scope_id, apply=params.apply)
+
+
+async def _runs_attest_definitions(host: OpsHost, caller: Caller, params: RunsAttestDefinitionsParams) -> Attested:
+    eval_host = host.eval_host
+    definitions = (
+        params.definitions if params.definitions is not None else eval_host.profile.measures.definition_digests()
+    )
+    return await attest_measure_definitions(
+        eval_host, params.run_ids, caller.scope_id, definitions, attested_by=caller.identity, note=params.note
+    )
 
 
 async def _result_rate(host: OpsHost, caller: Caller, params: ResultRateParams) -> ResultRated:
@@ -3146,6 +3194,42 @@ def engine_actions() -> tuple[Action, ...]:
                 "asked: asking a judge spends, so applying while any is named is refused, and the host asks them "
                 "through regrade. Without apply nothing is written; with it the moved check verdicts are stored, "
                 "refused if the result changed since it was read. A run still being written is refused."
+            ),
+        ),
+        Action(
+            name="run_remeasure",
+            summary="Read one stored run's host measures again under the host's current definitions: report, store on apply.",
+            workflow=CURATE,
+            permission="write",
+            params=RunRemeasureParams,
+            result=Remeasure,
+            handler=_run_remeasure,
+            render=render.render_model,
+            example={"run_id": run_id, "apply": False},
+            detail=(
+                "For a run whose host measures were read under another definition than the host's current one, or "
+                "that recorded none. The host's reader (HostProfile.measure_rereader) reads each stored result "
+                "again from what its cell stored; no model is called and nothing is guessed. A stored value the "
+                "reader does not answer, a host with no reader, or a moved measure that shaped the run refuses it "
+                "before anything is written. Applied, each result keeps the value it held, the run is marked "
+                "re-measured and pools with the runs of the current definitions."
+            ),
+        ),
+        Action(
+            name="runs_attest_definitions",
+            summary="State the measure definitions stored runs ran under, for runs that recorded none; no result is touched.",
+            workflow=CURATE,
+            permission="write",
+            params=RunsAttestDefinitionsParams,
+            result=Attested,
+            handler=_runs_attest_definitions,
+            render=render.render_model,
+            example={"run_ids": [run_id], "note": "made after the last definition change"},
+            detail=(
+                "The host's statement, recorded as one: who stated it (the caller), when, and the definitions, on "
+                "each run (measure_attestation). A run so stamped pools in pass^k only with runs whose definitions "
+                "match. Stating the same definitions twice changes nothing; a run that already records other "
+                "definitions (its launch's, a re-measure's, another statement's) is refused, and nothing is written."
             ),
         ),
         Action(

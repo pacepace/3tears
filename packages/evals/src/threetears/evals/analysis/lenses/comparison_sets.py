@@ -18,7 +18,6 @@ from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.identity import case_set_fingerprint, resolve_context_identity
 from threetears.evals.kernel.metrics import holds_host_measure
-from threetears.evals.kernel.numbers import spell_count
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.analysis.reporting import _subject_id_of
 from threetears.evals.analysis.measurement_windows import measurement_window, measurement_window_disclosure
@@ -200,18 +199,18 @@ BADGE_CASSETTE_MODE_DIFFERS = "cassette_mode_differs"
 # measures. Only RECORDED definitions evidence a difference: a run whose results hold a host
 # measure and that recorded none is ``context_incomplete``'s to carry, and the disclosure says
 # which runs those are.
-BADGE_MEASURE_DEFINITIONS_DIFFER = "measure_definitions_differ"
+_BADGE_MEASURE_DEFINITIONS_DIFFER = "measure_definitions_differ"
 
-#: How many run ids a disclosure names before it counts the rest: a group may hold hundreds of stored runs.
+#: How many run ids a disclosure names before it says there are others: a group may hold hundreds of stored runs.
+#: It states no count of the rest, so it decides no number's form; ``run_ids`` on the set holds every id.
 _RUNS_NAMED_IN_A_DISCLOSURE = 5
 
 
 def _listed(run_ids: Iterable[str]) -> str:
-    """Run ids as a sentence lists them, sorted: the first few named, the rest counted."""
+    """Run ids as a sentence lists them, sorted: the first few named, then "and others"."""
     ordered = sorted(run_ids)
     named = ", ".join(ordered[:_RUNS_NAMED_IN_A_DISCLOSURE])
-    more = len(ordered) - _RUNS_NAMED_IN_A_DISCLOSURE
-    return f"{named} and {spell_count(more)} more" if more > 0 else named
+    return f"{named} and others" if len(ordered) > _RUNS_NAMED_IN_A_DISCLOSURE else named
 
 
 class MeasureDefinitionReading(NamedTuple):
@@ -266,7 +265,7 @@ def measure_definition_disclosure(
             by_definitions.setdefault(held, []).append(run.id)
         groups = "; ".join(_listed(run_ids) for _held, run_ids in sorted(by_definitions.items(), key=lambda kv: kv[1]))
         sentences.append(
-            f"The host defined {', '.join(moved)} in {spell_count(len(by_definitions))} ways across these runs "
+            f"The host defined {', '.join(moved)} in more than one way across these runs "
             f"(runs read under one definition together: {groups}), so their values are not one quantity. pass^k keeps "
             "them in separate cells; the arm's tables, composites, bars and history still pool them, so read "
             f"{', '.join(moved)} there as a mixture. A re-measure reads a run again under the current definitions."
@@ -579,7 +578,7 @@ def compute_comparison_sets(
             badges.append(BADGE_CASSETTE_MODE_DIFFERS)
         definitions = measure_definition_disclosure(grouped, results_by_run)
         if definitions.differ:
-            badges.append(BADGE_MEASURE_DEFINITIONS_DIFFER)
+            badges.append(_BADGE_MEASURE_DEFINITIONS_DIFFER)
         if definitions.silent and BADGE_CONTEXT_INCOMPLETE not in badges:
             badges.append(BADGE_CONTEXT_INCOMPLETE)
 
@@ -620,7 +619,6 @@ __all__ = [
     "BADGE_CASSETTE_MODE_DIFFERS",
     "BADGE_CONTEXT_DIFFERS",
     "BADGE_CONTEXT_INCOMPLETE",
-    "BADGE_MEASURE_DEFINITIONS_DIFFER",
     "BADGE_MEASUREMENT_WINDOWS_DISJOINT",
     "BADGE_ROLES_DIFFER",
     "BADGE_TOOL_CONFIG_DIFFERS",

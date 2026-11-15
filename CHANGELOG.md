@@ -17,7 +17,8 @@ pooling with no other run (owner ruling, 2026-11-14: a silence is never a match)
 (`measure_definitions_differ`, `context_incomplete`, `measure_definition_disclosure`). A take-up of a run that recorded
 other definitions than the host's current ones is refused; one that recorded none is taken up and stays unrecorded.
 
-**Added:** `threetears.evals.run.attest_measure_definitions` records a host's statement of the definitions stored runs
+**Added:** two actions reach the doors below, `runs_attest_definitions` and `run_remeasure` (both `write`).
+`threetears.evals.run.attest_measure_definitions` records a host's statement of the definitions stored runs
 ran under (`EvalRun.measure_attestation`: who, when, what), touching no result and refusing a run that already records
 definitions. `threetears.evals.run.remeasure_run(host, run_id, scope_id, apply=False)` reads a stored run's host
 measures again from what its cells stored, through `HostProfile.measure_rereader`: each result keeps the values it
@@ -35,7 +36,7 @@ measure definitions and still pool such runs. The comparison disclosure says so 
   `nonnegative` flag, better end, margin, merit axis or population moves nothing, and cuts no run off.
 - *How the digest is derived:* sha256 of the canonical JSON of the descriptor's `name`, `data_type`, `family`, `unit`,
   `value_range`, `categories`, `formula`, `pass_fail`, `contained_by`, `definition_revision` and
-  `shapes_run` (`measure_definition_digest`). Names, descriptions and how a value is read move nothing.
+  `shapes_run` (read it with `MeasureRegistry.definition_digests()`). Names, descriptions and how a value is read move nothing.
 - *On upgrade:* nothing to migrate and no stored key moves. Stored runs whose results hold a host measure each stand
   alone in pass^k until backfilled. A host that assembles runs itself sets
   `measure_definitions=profile.measures.definition_digests()`.

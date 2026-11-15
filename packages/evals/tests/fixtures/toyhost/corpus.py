@@ -43,8 +43,7 @@ from threetears.evals.schema import (
     omit_paths,
 )
 from threetears.evals.kernel import EvalAnalysis, EvalInsight, EvalJudgeProfile, ResultKey, resolve_variant_identity
-from threetears.evals.kernel.host import HostProfile
-from threetears.evals.kernel.metrics import measure_definition_digests
+from threetears.evals.kernel.host import HostProfile, MeasureRegistry
 from threetears.evals.schema import SubjectSnapshot, SweepableValue
 from threetears.evals.schema import WorldPlacement
 from packages.evals.tests.fixtures.toyhost.kind import FIELD_ACCURACY, TOY_EXTRACTOR_KIND
@@ -203,9 +202,9 @@ def toyhost_observation(**toyhost_values: Any) -> EvalRun:
 
 def _toyhost_measure_definitions() -> dict[str, str]:
     """The toy host's measure definitions, by measure key. Imported here: the profile module reads this one."""
-    from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES
+    from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_EXTRACTION_FAMILY, TOYHOST_MEASURES
 
-    return measure_definition_digests(TOYHOST_MEASURES)
+    return MeasureRegistry(TOYHOST_MEASURES, families=(TOYHOST_EXTRACTION_FAMILY,)).definition_digests()
 
 
 #: Two observations differing in exactly one lever. The confound scan must report nothing: this

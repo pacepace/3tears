@@ -21,8 +21,9 @@ from typing import Any
 
 import pytest
 
+from threetears.evals.actions import Caller, eval_catalogue, standard_tools
 from threetears.evals.analysis import comparison_sets
-from threetears.evals.analysis.lenses.comparison_sets import BADGE_CONTEXT_INCOMPLETE, BADGE_MEASURE_DEFINITIONS_DIFFER
+from threetears.evals.analysis.lenses.comparison_sets import BADGE_CONTEXT_INCOMPLETE
 from threetears.evals.analysis.lenses.frontier import PassHatKCellReading
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.kernel.host import HostProfile, MeasureRegistry, MeasureRereadRequest
@@ -34,7 +35,6 @@ from threetears.evals.kernel.identity import (
     derive_variant_identity,
     resolve_context_identity,
 )
-from threetears.evals.kernel.metrics import measure_definition_digest
 from threetears.evals.kernel.scoring import pass_hat_k_cell
 from threetears.evals.ops import LaunchArguments, OpsHost, run_launch
 from threetears.evals.ops.lenses import scope_frontier
@@ -54,6 +54,15 @@ from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import launched_runs
 
 _MODEL = RUN_MODELS[0]
+
+#: The badge a comparison set carries when its runs recorded two definitions of one host measure, as served.
+BADGE_MEASURE_DEFINITIONS_DIFFER = "measure_definitions_differ"
+
+
+def measure_definition_digest(descriptor: Any) -> str:
+    """One measure's definition digest, through the door a host reads it by: its registry."""
+    families = toyhost_profile().measures.families
+    return MeasureRegistry([descriptor], families=families).definition_digests()[descriptor.name]
 
 
 def _strict_accuracy(request: MeasureRereadRequest) -> dict[str, bool | float | str]:
@@ -439,6 +448,36 @@ async def test_a_run_with_no_stored_artifacts_is_attested_like_any_other() -> No
     assert attested.run_ids == [bare.id]
     run = off_loop(storage.load_eval_run, bare.id, TOYHOST_SCOPE)
     assert run is not None and run.measure_definitions == profile.measures.definition_digests()
+
+
+async def test_a_host_reaches_both_doors_through_the_action_catalogue() -> None:
+    """A production host calls the engine through its actions: the statement records the caller as who stated it,
+    and the re-measure reports before it writes."""
+    store, storage = off_loop(_store)
+    then, now = _profile(revision=0), _profile(revision=1, rereader=_strict_accuracy)
+    old = await _launch(storage, then)
+    since = await _launch(storage, now)
+    off_loop(_as_stored_before_definitions, store, since.id)
+    launch, _client = toyhost_launch_host(profile=now, storage=storage)
+    host = OpsHost(launch=launch)
+    (tool, *_) = eval_catalogue().mount_all(standard_tools())
+    caller = Caller(scope_id=TOYHOST_SCOPE, identity="agent:backfill")
+
+    stated = await tool.call({"action": "runs_attest_definitions", "run_ids": [since.id]}, host=host, caller=caller)
+    reported = await tool.call({"action": "run_remeasure", "run_id": old.id}, host=host, caller=caller)
+    applied = await tool.call({"action": "run_remeasure", "run_id": old.id, "apply": True}, host=host, caller=caller)
+
+    assert not stated.is_error and stated.structured is not None, stated.text
+    assert stated.structured["run_ids"] == [since.id]
+    run = off_loop(storage.load_eval_run, since.id, TOYHOST_SCOPE)
+    assert run is not None and run.measure_attestation is not None
+    assert run.measure_attestation.attested_by == "agent:backfill"
+    assert run.measure_definitions == now.measures.definition_digests(), "omitted: the host's current definitions"
+    assert not reported.is_error and reported.structured is not None, reported.text
+    assert reported.structured["applied"] is False and reported.structured["moved"] == [FIELD_ACCURACY]
+    assert not applied.is_error and applied.structured is not None and applied.structured["applied"] is True
+    (pooled,) = _cells(storage, now)
+    assert pooled.run_ids == sorted([old.id, since.id])
 
 
 # =============================================================================

@@ -258,7 +258,7 @@ context are more samples of one condition.
 
 A measure's definition is what one stored value of it counts: the descriptor's type, unit, range, categories,
 formula and family, and `definition_revision`, which you raise when your reading code changes what the measure
-counts and the descriptor stays as it is (`measure_definition_digest`). A name, a description or a better end is
+counts and the descriptor stays as it is (`MeasureRegistry.definition_digests()`). A name, a description or a better end is
 how a value is read, and moves nothing. A run records every measure's digest at launch
 (`EvalRun.measure_definitions`). Runs that recorded two definitions of one measure are two conditions. A run that
 recorded none (stored before runs recorded them, or assembled without a launch) pools with nothing where its

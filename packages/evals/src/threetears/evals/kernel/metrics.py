@@ -119,9 +119,7 @@ if TYPE_CHECKING:
 
 __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why the aliases are exported
     "declaration_of",
-    "MEASURE_DEFINITION_FIELDS",
     "holds_host_measure",
-    "measure_definition_digest",
     "measure_definition_digests",
     "OUTCOME_DIM_ID",
     "TIME_UNITS",
@@ -592,7 +590,7 @@ class MetricDescriptor(EvalBaseModel):
         description=(
             "The revision of the code that reads this measure. Raise it whenever what the measure counts changes "
             "while this descriptor stays as it is (the reader counts something more, or something less), so the "
-            "change reaches the measure's definition digest (`measure_definition_digest`): a run records that "
+            "change reaches the measure's definition digest (`_measure_definition_digest`): a run records that "
             "digest in its measurement context, and runs read under two definitions of one measure never pool."
         ),
     )
@@ -703,8 +701,8 @@ class MetricDescriptor(EvalBaseModel):
 
 
 #: The descriptor fields that say what a measure IS: what one stored value of it counts, in what unit and over what
-#: values, and which revision of its reader wrote it. Digested by :func:`measure_definition_digest`.
-MEASURE_DEFINITION_FIELDS: Final[frozenset[str]] = frozenset(
+#: values, and which revision of its reader wrote it. Digested by :func:`_measure_definition_digest`.
+_MEASURE_DEFINITION_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "name",
         "data_type",
@@ -744,7 +742,7 @@ _MEASURE_READING_FIELDS: Final[frozenset[str]] = MEASURE_PRESENTATION_FIELDS | f
 
 
 def _checked_definition_fields() -> frozenset[str]:
-    """:data:`MEASURE_DEFINITION_FIELDS`, once every field of :class:`MetricDescriptor` is what the measure is or how
+    """:data:`_MEASURE_DEFINITION_FIELDS`, once every field of :class:`MetricDescriptor` is what the measure is or how
     it is read, and none is both.
 
     Checked when this module is imported, so a field the descriptor gains is classified before it can silently join
@@ -755,23 +753,23 @@ def _checked_definition_fields() -> frozenset[str]:
     :raises TypeError: A descriptor field is in neither set or in both, or a set names no field of the descriptor.
     """
     fields = set(MetricDescriptor.model_fields)
-    both = MEASURE_DEFINITION_FIELDS & _MEASURE_READING_FIELDS
-    if MEASURE_DEFINITION_FIELDS | _MEASURE_READING_FIELDS != fields or both:
-        named = MEASURE_DEFINITION_FIELDS | _MEASURE_READING_FIELDS
+    both = _MEASURE_DEFINITION_FIELDS & _MEASURE_READING_FIELDS
+    if _MEASURE_DEFINITION_FIELDS | _MEASURE_READING_FIELDS != fields or both:
+        named = _MEASURE_DEFINITION_FIELDS | _MEASURE_READING_FIELDS
         raise TypeError(
             f"MetricDescriptor's fields and the definition digest disagree: unclassified {sorted(fields - named)}, "
             f"named but no field {sorted(named - fields)}, both {sorted(both)}"
         )
-    return MEASURE_DEFINITION_FIELDS
+    return _MEASURE_DEFINITION_FIELDS
 
 
 _DEFINITION_FIELDS: Final[frozenset[str]] = _checked_definition_fields()
 
 
-def measure_definition_digest(descriptor: MetricDescriptor) -> str:
+def _measure_definition_digest(descriptor: MetricDescriptor) -> str:
     """Digest what a measure is, so two runs can be shown to have read it under one definition.
 
-    Over :data:`MEASURE_DEFINITION_FIELDS` alone, every one present whatever its value, through
+    Over :data:`_MEASURE_DEFINITION_FIELDS` alone, every one present whatever its value, through
     :func:`~threetears.evals.schema.hashing.canonical_digest`: the order a store hands the keys back in cannot move
     it, and neither can a reader name, a description or a better end. A change in
     the host's reading code behind an unchanged descriptor reaches it only through ``definition_revision``, which
@@ -786,7 +784,7 @@ def measure_definition_digest(descriptor: MetricDescriptor) -> str:
 
 
 def measure_definition_digests(descriptors: Iterable[MetricDescriptor]) -> dict[str, str]:
-    """Each measure's definition digest (:func:`measure_definition_digest`), by its key, sorted.
+    """Each measure's definition digest (:func:`_measure_definition_digest`), by its key, sorted.
 
     What a run records as ``EvalRun.measure_definitions``. An empty catalogue gives ``{}``, which is a recording:
     the host declared no measure of its own.
@@ -796,7 +794,7 @@ def measure_definition_digests(descriptors: Iterable[MetricDescriptor]) -> dict[
     :return: Measure key to digest.
     :rtype: dict[str, str]
     """
-    return dict(sorted((descriptor.name, measure_definition_digest(descriptor)) for descriptor in descriptors))
+    return dict(sorted((descriptor.name, _measure_definition_digest(descriptor)) for descriptor in descriptors))
 
 
 def strictest_class(*classes: TransferabilityClass) -> TransferabilityClass:
