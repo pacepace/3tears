@@ -1326,9 +1326,16 @@ def process(rmap: RerootMap, options: Options) -> tuple[Report, dict[Path, str]]
         header = generated_header(text)
         current = text
         renamed: list[Pending] = []
+        broken = None
         for table in tables:
             outcome = one_pass(table, current, path)
             current, applied = apply_edits(current, outcome.edits)
+            if applied and path.suffix in PYTHON_SUFFIXES:
+                try:
+                    ast.parse(current, filename=relative)
+                except SyntaxError as error:
+                    broken = f"{relative}:{error.lineno}: does not parse after rewriting: {error.msg}"
+                    break
             for item in renamed:
                 item.offset = shift_offset(item.offset, applied)
             renamed += [
@@ -1338,6 +1345,9 @@ def process(rmap: RerootMap, options: Options) -> tuple[Report, dict[Path, str]]
                 report.counts.update(edit.count for edit in applied)
             elif applied or outcome.sites:
                 break
+        if broken is not None:
+            report.refused.append(broken)
+            continue
         if header is not None:
             if current != text or renamed or any(one_pass(t, text, path).sites for t in tables):
                 report.sites.append(Site(relative, 1, "generated", f"generated ({header}); regenerate it, do not edit"))
@@ -1345,12 +1355,6 @@ def process(rmap: RerootMap, options: Options) -> tuple[Report, dict[Path, str]]
                 report.counts["files_skipped"] += 1
                 report.skipped.append(f"{relative}: generated")
             continue
-        if current != text and path.suffix in PYTHON_SUFFIXES:
-            try:
-                ast.parse(current, filename=relative)
-            except SyntaxError as error:
-                report.refused.append(f"{relative}:{error.lineno}: does not parse after rewriting: {error.msg}")
-                continue
         # What is left is read off the converged text, so a re-run lists the same sites at the same lines; a pass
         # that would still change it means the rewrite did not converge, which is refused rather than written.
         lines = Lines(current)
