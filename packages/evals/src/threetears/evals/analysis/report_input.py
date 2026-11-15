@@ -1131,10 +1131,12 @@ UnsizedReason = Literal["no_interval", "no_spread", "on_the_line", "no_count", "
 #: Why no catalogue action takes a step: ``unclassed_kind``, an analyst's own kind, outside the package's classes;
 #: ``method_only``, a kind that only ever lands in the method section and qualifies no answer;
 #: ``no_interval_to_gain``, a figure the engine states no interval for at any size (a percentile, or a mean read from
-#: enough cases that still states none), so no added case gives it one; ``lift_not_shown``, a re-run no sequence of
-#: the catalogue's actions has been shown, followed as written, to lift: what went wrong (an answering model split by
-#: the provider, a rig, recording, a replay, cases run at once, a confound no launch setting holds alike) is not a
-#: parameter a launch sets, so the step names its remedy and makes no call.
+#: enough cases that still states none), so no added case gives it one; ``lift_not_shown``, a step no sequence of the
+#: catalogue's actions has been driven, followed as written, to lift, so it names its remedy and makes no call: a
+#: re-run whose fault (an answering model split by the provider, a rig, recording, a replay, a confound no launch
+#: setting holds alike) is not a parameter a launch sets; the serial re-run of cases run at once, which a launch can
+#: ask for (``measure_latency``) but which has not been driven; and more cases on a contrast where every arm the
+#: caveat names but the control would run in a call of its own, which adds no pair (``unpaired_arms``).
 NoActionReason = Literal["unclassed_kind", "method_only", "no_interval_to_gain", "lift_not_shown"]
 
 #: A value one argument of a catalogue action's call takes.
@@ -1263,9 +1265,12 @@ class RemedyStep(_Part):
     ] = Field(
         default_factory=list,
         description="What following the step as written cannot guarantee. unpaired_arms: an arm that differs from the "
-        "control beyond its model is launched in a call of its own, whose new cases the control does not run; a "
-        "contrast pairs only the cases both sides ran, so those runs add no pair and the planned size does not hold "
-        "for it (unpaired_arms names each). axis_may_not_generate: n_variations writes unseen cases only on a template "
+        "control beyond its model would run in a launch call of its own, whose new cases the control does not run; a "
+        "contrast pairs only the cases both sides ran, so such runs add no pair to it (unpaired_arms names each). A "
+        "step whose caveat reads a contrast on this report launches no such arm, and makes no call where no arm it "
+        "names is left beside the control (no_action lift_not_shown); a confirmation launches it, and the planned "
+        "size does not hold for it. A gate or a figure reads each arm's own cases, so its step names none. "
+        "axis_may_not_generate: n_variations writes unseen cases only on a template "
         "axis a model writes (llm); on an axis of stated values (enum, sample) a launch reuses stored cases with the "
         "same values and keeps fewer where they run out, and a kind that generates none refuses it. The reading holds "
         "no template's axes, so the cases are new only where the launch reports reused 0 and kept the planned count; "
@@ -1277,7 +1282,8 @@ class RemedyStep(_Part):
     )
     unpaired_arms: list[str] = Field(
         default_factory=list,
-        description="For limits unpaired_arms: the arms launched in a call of their own, by id.",
+        description="For limits unpaired_arms: the arms whose new cases no call of the control's runs, by id: "
+        "launched in a call of their own on a confirmation, not launched on a step that reads this report's contrast.",
     )
 
     @model_validator(mode="after")

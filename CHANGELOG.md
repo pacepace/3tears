@@ -35,11 +35,15 @@ report input built from a bundle now carries `caveat_list` and `first_screen`.
   where following it through the real actions on a fixture campaign does what it says
   (`test_caveat_steps_driven.py`): more cases on arms that differ only in their model, a re-run that holds an
   apparatus confound's dimension at one value on every call (`alike`) with the control re-run beside it, and a
-  confirmation. A re-run whose fault no launch parameter sets (an answering model the provider split, a rig,
-  recording, a replay, cases run at once, a confound no setting holds alike) has no sequence shown to lift it, and
-  makes no call (`no_action`: `lift_not_shown`). What following a step cannot guarantee is stated, typed
-  (`limits`): an arm that moved beyond its model is launched in a call of its own whose new cases the control does
-  not run, so it gains no pair (`unpaired_arms`, naming each); the reading holds no template's axes, so new cases are
+  confirmation. A re-run with no sequence driven to lift it makes no call (`no_action`: `lift_not_shown`): one whose
+  fault no launch parameter sets (an answering model the provider split, a rig, recording, a replay, a confound no
+  setting holds alike), and the serial re-run of cases run at once, which a launch can ask for (`measure_latency`)
+  but which has not been driven. What following a step cannot guarantee is stated, typed (`limits`): an arm that
+  moved beyond its model would run in a launch call of its own whose new cases the control does not run, so it gains
+  no pair (`unpaired_arms`, naming each). A step whose caveat reads a contrast (an unsettled result) launches no such
+  arm, and where no arm it names is left beside the control, as in an A/B of two prompts on one model, it makes no
+  call (`lift_not_shown`) and states no size; a confirmation launches it and names it; a gate's or a figure's step
+  reads each arm's own cases and names none. The reading holds no template's axes, so new cases are
   new only on an axis a model writes (`axis_may_not_generate`); a confirmation leaves this report's caveat raised
   (`this_report_stays_flagged`). A late criterion or a pick among many is confirmed on unseen cases in a new
   campaign: `campaign_create` first with its criteria and floors, then the launch of that many new cases, its runs

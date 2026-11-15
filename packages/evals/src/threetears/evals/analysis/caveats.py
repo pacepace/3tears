@@ -46,11 +46,15 @@ criteria, launches, joins the runs and names the control from them as soon as th
 scored. A step ships a sequence only where following it through the real actions on a fixture campaign has been shown
 to do what it says (``test_caveat_steps_driven.py``): more cases on arms that differ only in their model, a re-run that
 holds an apparatus confound's dimension alike, and a confirmation. What following one cannot guarantee is stated,
-typed (``RemedyStep.limits``): an arm launched in a call of its own pairs with no new case of the control's; the
-reading holds no template's axes, so the cases are new only where the launch generated them; a confirmation leaves
-this report's caveat raised and is read in the campaign it creates; and its control reads late if named after the
-first result. A re-run whose fault no launch parameter sets (an answering model the provider split, a rig, recording,
-a replay, cases run at once, a confound no setting holds alike) has no sequence shown to lift it, and makes no call.
+typed (``RemedyStep.limits``): an arm launched in a call of its own pairs with no new case of the control's, so a
+step whose caveat reads a contrast against the control launches no such arm, and makes no call where no arm it names
+is left beside the control, while a confirmation launches it and names it (a gate or a figure reads each arm's own
+cases, and names none); the reading holds no template's axes, so the cases are new only where the launch generated
+them; a confirmation leaves this report's caveat raised and is read in the campaign it creates; and its control reads
+late if named after the first result. A re-run with no sequence driven to lift it makes no call: one whose fault no
+launch parameter sets (an answering model the provider split, a rig, recording, a replay, a confound no setting holds
+alike), and the serial re-run of cases run at once, which a launch can ask for (``measure_latency``) but no sequence
+here has followed through.
 
 **A step that is more evidence is planned** (:func:`plan_of`) against the rule that lifts its caveat, on the
 interval that rule reads: a gate's borderline is lifted when the figure's two-sided interval, at its table's stated
@@ -306,8 +310,10 @@ _LAUNCH: Final = StepRule(
     "run_launch", spends=True, priced_by="launch_estimate", needs=_LAUNCH_NEEDS, launches=True, replaces=True
 )
 
-#: A re-run no sequence of the catalogue's actions has been shown to lift: what went wrong is no parameter a launch
-#: sets, so the step names its remedy and makes no call.
+#: A step no sequence of the catalogue's actions has been driven to lift, so it names its remedy and makes no call:
+#: a re-run whose fault is no parameter a launch sets, the serial re-run (a launch's ``measure_latency`` runs cases one
+#: at a time, but no sequence has followed it through), and more cases on a contrast whose arms the control's new cases
+#: would not pair.
 _NOT_SHOWN: Final = StepRule(None, no_action="lift_not_shown")
 
 #: The reading holds no template's axes, so a launch's new cases are new only where its template generates them.
@@ -1426,11 +1432,13 @@ def _follow(
 
 
 class _Launching(NamedTuple):
-    """A launching step's first call, the calls that follow it, and what the head step states of the launch."""
+    """A launching step's first call, the calls that follow it, and what the head step states of the launch: the arms
+    it cannot pair, and whether no arm the caveat names but the control is left to launch, so no call can lift it."""
 
     first: RemedyStep
     then: list[RemedyStep]
     unpaired: list[str]
+    stranded: bool = False
 
 
 def _launching(
@@ -1444,10 +1452,17 @@ def _launching(
     cases: int | None,
     setup: Setup,
     alike: Sequence[str] = (),
+    contrast: bool = False,
 ) -> _Launching:
     """A launch that repeats the arms' set-up, and the calls that finish it: its runs joined to the campaign it is
     read in, the runs it replaces taken out, or, for a confirmation, the campaign created before it and its control
-    named from its runs. A caveat that names no arm is on every arm the aspect holds."""
+    named from its runs. A caveat that names no arm is on every arm the aspect holds.
+
+    Only a reading of a contrast against the control pairs cases, so only a step whose caveat reads one
+    (``contrast``), and a confirmation, whose new campaign reads its contrasts, state the arms a generating launch
+    cannot pair; a gate or a figure reads each arm's own cases. On this report's contrast, a call the control is not
+    in adds no pair, so it is not made, and where that leaves no arm the caveat names but the control, the step is
+    stranded: no call it could make lifts the caveat."""
     aspect = _aspect_of(readings, setup)
     held = setup.arms.get(aspect, {}) if aspect is not None else {}
     arms = list(arms) or list(held)
@@ -1461,21 +1476,27 @@ def _launching(
     if rule.sized_by is not None and cases is not None:
         base[rule.sized_by] = cases
     built = _launch_calls(base, arms, held, setup.control)
+    # A re-run on the template's stored cases runs one set in every call; only cases a call generates are its own.
+    unpaired = built.unpaired if generates and (contrast or rule.new_campaign) else []
+    calls, call_arms, stranded = built.calls, built.arms, False
+    if unpaired and not rule.new_campaign:
+        # The contrast pairs only the cases both sides ran: a call the control is not in adds no pair to it.
+        kept = [index for index, named in enumerate(built.arms) if setup.control in named]
+        calls, call_arms = [built.calls[index] for index in kept], [built.arms[index] for index in kept]
+        stranded = not [arm for named in call_arms for arm in named if arm != setup.control and arm in arms]
     setting = [*_ARM_SETUP, *(_GENERATING_SETUP if generates else ()), *(_RERUN_SETUP if rule.replaces else ())]
     launch = RemedyStep(
         remedy=remedied,
         closes=closes,
         action="run_launch",
-        calls=built.calls,
-        call_arms=built.arms,
+        calls=calls,
+        call_arms=call_arms,
         needs=[name for name in _LAUNCH_NEEDS if name not in base and name not in built.filled],
         as_launched=[name for name in setting if name not in base and name not in built.filled],
         alike=list(alike),
         spends=True,
         priced_by="launch_estimate",
     )
-    # A re-run on the template's stored cases runs one set in every call; only cases a call generates are its own.
-    unpaired = built.unpaired if generates else []
     if rule.new_campaign:
         # The new campaign's aspect is the one its taker declares: each run joins the aspect on the template it ran.
         created: dict[str, Any] = {"campaign_id": "created_campaign"}
@@ -1507,7 +1528,7 @@ def _launching(
             then.append(_follow(remedied, closes, "campaign_runs_remove", {"run_ids": replaced}, needs=["campaign_id"]))
         else:
             then.append(_follow(remedied, closes, "campaign_runs_remove", {}, needs=["campaign_id", "run_ids"]))
-    return _Launching(launch, then, unpaired)
+    return _Launching(launch, then, unpaired, stranded)
 
 
 def next_step(
@@ -1524,6 +1545,7 @@ def next_step(
     no_action: NoActionReason | None = None,
     setup: Setup = Setup(),
     alike: Sequence[str] = (),
+    contrast: bool = False,
 ) -> RemedyStep:
     """The step that takes one remedy, filled from what the caveat (or the gate) names (:data:`STEP_OF_REMEDY`): one
     call of its action per run it names where the action takes one run, else one call, each with the arguments the
@@ -1535,7 +1557,11 @@ def next_step(
     first, joins the runs to it and names its control from them. Each call that follows names what only an earlier
     call's result holds (``after``), and the step states, typed, what following it cannot guarantee (``limits``). A
     re-run that balances a confound runs every arm it touches beside the control, with the confound's dimensions held
-    at one value on every call (``alike``); one with no dimension a launch sets makes no call.
+    at one value on every call (``alike``); one with no dimension a launch sets makes no call. A step whose caveat
+    reads a contrast against the control (``contrast``) launches only the arms whose new cases the control runs too,
+    since the contrast pairs only those, and names the rest (``unpaired_arms``); where no arm the caveat names but the
+    control is left, it makes no call (``lift_not_shown``) and states no size. A gate or a figure reads each arm's own
+    cases, so pairing does not apply to its step.
 
     :param remedied: The remedy.
     :ptype remedied: Remedy
@@ -1562,6 +1588,9 @@ def next_step(
     :ptype setup: Setup
     :param alike: For a re-run that balances a confound: the apparatus dimensions it holds at one value.
     :ptype alike: Sequence[str]
+    :param contrast: Whether the rule that lifts the caveat reads a contrast against the control on this report,
+        which pairs only the cases both sides ran.
+    :ptype contrast: bool
     :return: The step.
     :rtype: RemedyStep
     """
@@ -1591,19 +1620,25 @@ def next_step(
             cases=sized.cases,
             setup=setup,
             alike=alike if rule.balances else (),
+            contrast=contrast,
         )
-        first, then = launching.first, launching.then
-        limits = [*rule.limits, *(["unpaired_arms"] if launching.unpaired else [])]
-        head = {
-            "action": first.action,
-            "calls": first.calls,
-            "call_arms": first.call_arms,
-            "needs": first.needs,
-            "as_launched": first.as_launched,
-            "alike": first.alike,
-            "limits": limits,
-            "unpaired_arms": launching.unpaired,
-        }
+        if launching.stranded:
+            # Every arm the caveat names but the control would run on new cases the control never runs, which its
+            # contrast cannot pair: no call lifts it, so the step makes none, states no size and names the arms.
+            rule, sized = _NOT_SHOWN, Plan()
+            head = {"limits": ["unpaired_arms"], "unpaired_arms": launching.unpaired}
+        else:
+            first, then = launching.first, launching.then
+            head = {
+                "action": first.action,
+                "calls": first.calls,
+                "call_arms": first.call_arms,
+                "needs": first.needs,
+                "as_launched": first.as_launched,
+                "alike": first.alike,
+                "limits": [*rule.limits, *(["unpaired_arms"] if launching.unpaired else [])],
+                "unpaired_arms": launching.unpaired,
+            }
     elif rule.action is not None:
         needs = list(rule.needs)
         if rule.per_run is not None and runs:
@@ -1673,6 +1708,7 @@ def caveat_step(
         no_action=_no_action(caveat) if remedied == "no_action" else None,
         setup=setup,
         alike=[caveat.id.partition(":")[2]] if caveat.kind == "apparatus" else (),
+        contrast=caveat.kind == "unsettled",
     )
 
 

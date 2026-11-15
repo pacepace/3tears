@@ -472,21 +472,28 @@ _ARM_SETUP = {
 }
 
 
+#: The held arms with one more, ``b``, that moved a lever beyond its model: on one model with the control, as a prompt
+#: A/B is, so a launch takes it in a call of its own.
+_MOVED = _HELD._replace(arms={"accuracy": {**_HELD.arms["accuracy"], "b": ArmRuns(("run-b",), "model-c", 5, True)}})
+
+
 def _steps_of(remedied: Remedy) -> Iterator[RemedyStep]:
-    for setup, arms in ((Setup(), ["a"]), (_HELD, ["a", "c"]), (_HELD, [])):
+    for setup, arms in ((Setup(), ["a"]), (_HELD, ["a", "c"]), (_HELD, []), (_MOVED, ["b", "c"])):
         for runs in ((), ("run-1", "run-2")):
             for coordinate in (None, "served_model", "measure_definition"):
                 for alike in ((), ("reviewer_pool",)):
-                    yield next_step(
-                        remedied,
-                        arms=arms,
-                        runs=runs,
-                        readings=["accuracy/passed"],
-                        coordinate=coordinate,
-                        plan=Plan(3),
-                        setup=setup,
-                        alike=alike,
-                    )
+                    for contrast in (False, True):
+                        yield next_step(
+                            remedied,
+                            arms=arms,
+                            runs=runs,
+                            readings=["accuracy/passed"],
+                            coordinate=coordinate,
+                            plan=Plan(3),
+                            setup=setup,
+                            alike=alike,
+                            contrast=contrast,
+                        )
 
 
 def _parts(step: RemedyStep) -> Iterator[RemedyStep]:
@@ -507,7 +514,9 @@ def test_every_call_a_step_makes_is_one_its_catalogue_action_accepts(remedied: R
     for step in _steps_of(remedied):
         if step.action is None:
             assert step.calls == [] and step.needs == [] and step.then == []
-            assert not step.limits and not step.alike
+            assert not step.alike and step.planned_cases is None and not step.spends
+            # The one statement a step with no call keeps: a contrast's arms its launch could not pair.
+            assert not step.limits or (step.limits, step.no_action) == (["unpaired_arms"], "lift_not_shown")
             continue
         for part in _parts(step):
             action = _CATALOGUE[part.action or ""]
@@ -619,38 +628,92 @@ def test_a_launch_repeats_the_arms_set_up_as_their_runs_were_launched() -> None:
     assert launch.call_arms == [list(step.arms)]
 
 
-def test_an_arm_that_moved_beyond_its_model_is_launched_alone_and_the_step_says_it_pairs_with_no_new_case() -> None:
-    """One launch call takes one set of overlays for all its models, so an arm that moved a lever beyond its model is
-    launched in a call of its own; that call's new cases are its own, which the control never runs, and a contrast pairs
-    only cases both sides ran. The step states it (``unpaired_arms``) rather than promise a size that pairs: the case-set
-    sequence that would share the cases has not been driven end to end. Each call says which arms it runs, and an arm
-    whose runs differ from the others in repeats, latency or schedule takes its own call at its own values."""
-    moved = {
-        **_HELD.arms["accuracy"],
-        "b": ArmRuns(("run-b",), "model-a", 5, True),
-        "d": ArmRuns(("run-d",), "model-d", 2, False, measure_latency=True, arm_schedule="sequential"),
-    }
+#: Four arms on one aspect: ``a`` and the control ``c`` differ only in their model; ``b`` moved a lever beyond its model;
+#: ``d`` ran at other repeats, latency and schedule.
+_FOUR = {
+    **_HELD.arms["accuracy"],
+    "b": ArmRuns(("run-b",), "model-a", 5, True),
+    "d": ArmRuns(("run-d",), "model-d", 2, False, measure_latency=True, arm_schedule="sequential"),
+}
+
+
+def test_a_contrast_s_step_launches_only_the_arms_the_control_s_new_cases_pair_with() -> None:
+    """One launch call takes one set of overlays for all its models, so an arm that moved a lever beyond its model, or
+    ran at other repeats, latency or schedule, would run in a call of its own, whose new cases the control never runs;
+    a contrast pairs only cases both sides ran. A step whose caveat reads a contrast launches only the arms in the
+    control's call, at the planned size, and names the others (``unpaired_arms``) rather than spend on calls that add
+    no pair. A confirmation, whose new campaign reads each arm's own figures too, still launches them and names them."""
     apart = next_step(
         "add_cases",
         arms=["a", "b", "c", "d"],
         readings=["accuracy/passed"],
         plan=Plan(4),
-        setup=_HELD._replace(arms={"accuracy": moved}),
+        setup=_HELD._replace(arms={"accuracy": _FOUR}),
+        contrast=True,
     )
-    assert [(call["models"], call["k_runs"]) for call in apart.calls] == [
+    assert [(call["models"], call["k_runs"]) for call in apart.calls] == [(["model-a", "model-c"], 5)]
+    assert apart.call_arms == [["a", "c"]], "only the arm the control's new cases pair with is launched"
+    assert (apart.limits, apart.unpaired_arms) == (["axis_may_not_generate", "unpaired_arms"], ["b", "d"])
+    assert (apart.planned_cases, apart.spends, apart.priced_by) == (4, True, "launch_estimate")
+    assert [part.action for part in apart.then] == ["campaign_runs_add"]
+    confirm = next_step(
+        "confirm_on_fresh_cases",
+        arms=["a", "b", "c", "d"],
+        readings=["accuracy/passed"],
+        plan=Plan(4),
+        setup=_HELD._replace(arms={"accuracy": _FOUR}),
+    )
+    launch = next(part for part in confirm.then if part.action == "run_launch")
+    assert launch.call_arms == [["a", "c"], ["b"], ["d"]] and confirm.unpaired_arms == ["b", "d"], (
+        "a confirmation launches every arm it confirms, and names the ones its contrasts cannot pair"
+    )
+
+
+def test_a_prompt_a_b_s_unsettled_step_makes_no_call_it_says_cannot_lift_it() -> None:
+    """The commonest A/B: one model, two prompts. The candidate ``b`` moved its prompt, so a launch would run it in a
+    call of its own, on new cases the control ``c`` never runs; the unsettled contrast pairs only the cases both ran, so
+    no call lifts it. The step makes none and prices none, states no size, and names ``b`` as the arm it cannot pair
+    (``lift_not_shown``), rather than spend on calls its own statement says add no pair."""
+    unsettled = CaveatEntry(
+        id="unsettled:accuracy", kind="unsettled", reach="report", arms=["b"], readings=["accuracy/passed"]
+    )
+    step = caveat_step(unsettled, plan=Plan(5, arms=("b", "c")), setup=_MOVED)
+    assert (step.remedy, step.action, step.calls, step.then, step.no_action) == (
+        "add_cases",
+        None,
+        [],
+        [],
+        "lift_not_shown",
+    )
+    assert (step.limits, step.unpaired_arms, step.arms) == (["unpaired_arms"], ["b"], ["b", "c"])
+    assert (step.planned_cases, step.unsized, step.declared_look) == (None, None, False), "no call, no size"
+    assert (step.spends, step.priced_by, step.call_arms, step.needs, step.as_launched) == (False, None, [], [], [])
+
+
+def test_a_gate_s_step_launches_every_arm_and_names_none_unpaired() -> None:
+    """A gate reads each arm's own usable cases, so an arm's new cases count toward it whichever call ran them:
+    pairing does not apply. The gate's step keeps every call, each at its arms' own settings, and names no arm as
+    unpaired."""
+    step = gate_step(Gate(rule="too_small", fewest_cases=3), _HELD._replace(arms={"accuracy": _FOUR}))
+    assert step.call_arms == [["a", "c"], ["b"], ["d"]]
+    assert [(call["models"], call["k_runs"]) for call in step.calls] == [
         (["model-a", "model-c"], 5),
         (["model-a"], 5),
         (["model-d"], 2),
     ]
-    assert apart.call_arms == [["a", "c"], ["b"], ["d"]]
-    assert "measure_latency" in apart.as_launched, "two of the arms' runs recorded no rig, so it is the taker's"
-    assert (apart.limits, apart.unpaired_arms) == (["axis_may_not_generate", "unpaired_arms"], ["b", "d"])
-    assert apart.planned_cases == 4
+    assert "measure_latency" in step.as_launched, "two of the arms' runs recorded no rig, so it is the taker's"
+    assert (step.limits, step.unpaired_arms) == (["axis_may_not_generate"], [])
+    assert step.planned_cases is not None and all(call["n_variations"] == step.planned_cases for call in step.calls)
+
+
+def test_a_balanced_re_run_runs_every_arm_beside_the_control_on_the_stored_cases() -> None:
+    """A re-run that balances a confound runs the confounded arm beside the control, each in the call its settings
+    take, on the template's stored cases: every call runs the same cases, so nothing is unpaired."""
     rerun = next_step(
         "rerun_balanced",
         arms=["b"],
         readings=["accuracy/passed"],
-        setup=_HELD._replace(arms={"accuracy": moved}),
+        setup=_HELD._replace(arms={"accuracy": _FOUR}),
         alike=["reviewer_pool"],
     )
     assert rerun.call_arms == [["b"], ["c"]] and rerun.limits == [] and rerun.unpaired_arms == [], (
@@ -878,8 +941,14 @@ def test_a_campaign_too_small_to_read_is_gated_with_the_fewest_cases_an_arm_hold
 @pytest.mark.parametrize("remedied", get_args(Remedy))
 def test_only_a_step_that_adds_cases_is_a_look_and_one_that_spends_is_priced(remedied: Remedy) -> None:
     for step in _steps_of(remedied):
-        assert step.declared_look == (remedied == "add_cases"), "only a step that re-reads its readings looks again"
-        assert (step.planned_cases is not None) == (remedied in ("add_cases", "confirm_on_fresh_cases"))
+        # A contrast's step whose every arm but the control is unpaired makes no call: it reads nothing again, states
+        # no size and spends nothing (test_a_prompt_a_b_s_unsettled_step_makes_no_call_it_says_cannot_lift_it).
+        stranded = step.no_action == "lift_not_shown" and bool(step.unpaired_arms)
+        assert stranded == (remedied == "add_cases" and step.action is None)
+        assert step.declared_look == (remedied == "add_cases" and not stranded), "only a step that re-reads looks again"
+        assert (step.planned_cases is not None) == (
+            remedied in ("add_cases", "confirm_on_fresh_cases") and not stranded
+        )
         assert (step.priced_by is not None) == step.spends
 
 

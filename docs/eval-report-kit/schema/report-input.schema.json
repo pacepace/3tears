@@ -3040,7 +3040,7 @@
      "title": "No Action"
     },
     "limits": {
-     "description": "What following the step as written cannot guarantee. unpaired_arms: an arm that differs from the control beyond its model is launched in a call of its own, whose new cases the control does not run; a contrast pairs only the cases both sides ran, so those runs add no pair and the planned size does not hold for it (unpaired_arms names each). axis_may_not_generate: n_variations writes unseen cases only on a template axis a model writes (llm); on an axis of stated values (enum, sample) a launch reuses stored cases with the same values and keeps fewer where they run out, and a kind that generates none refuses it. The reading holds no template's axes, so the cases are new only where the launch reports reused 0 and kept the planned count; for a confirmation, unseen cases on such an axis are authored first. this_report_stays_flagged: the caveat is read off this report's own results (a criterion set after them, a pick among them), which nothing added anywhere lifts; the confirmation is read in the campaign the step creates, and that reading is the one to trust. control_may_read_late: the control is named from a launched run, which exists only once the launch starts; named after the first result is scored, the created campaign reads its control as named late.",
+     "description": "What following the step as written cannot guarantee. unpaired_arms: an arm that differs from the control beyond its model would run in a launch call of its own, whose new cases the control does not run; a contrast pairs only the cases both sides ran, so such runs add no pair to it (unpaired_arms names each). A step whose caveat reads a contrast on this report launches no such arm, and makes no call where no arm it names is left beside the control (no_action lift_not_shown); a confirmation launches it, and the planned size does not hold for it. A gate or a figure reads each arm's own cases, so its step names none. axis_may_not_generate: n_variations writes unseen cases only on a template axis a model writes (llm); on an axis of stated values (enum, sample) a launch reuses stored cases with the same values and keeps fewer where they run out, and a kind that generates none refuses it. The reading holds no template's axes, so the cases are new only where the launch reports reused 0 and kept the planned count; for a confirmation, unseen cases on such an axis are authored first. this_report_stays_flagged: the caveat is read off this report's own results (a criterion set after them, a pick among them), which nothing added anywhere lifts; the confirmation is read in the campaign the step creates, and that reading is the one to trust. control_may_read_late: the control is named from a launched run, which exists only once the launch starts; named after the first result is scored, the created campaign reads its control as named late.",
      "items": {
       "enum": [
        "unpaired_arms",
@@ -3054,7 +3054,7 @@
      "type": "array"
     },
     "unpaired_arms": {
-     "description": "For limits unpaired_arms: the arms launched in a call of their own, by id.",
+     "description": "For limits unpaired_arms: the arms whose new cases no call of the control's runs, by id: launched in a call of their own on a confirmation, not launched on a step that reads this report's contrast.",
      "items": {
       "type": "string"
      },
