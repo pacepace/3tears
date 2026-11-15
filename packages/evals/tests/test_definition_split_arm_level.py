@@ -10,6 +10,8 @@ arm's counts over both definitions. Held here, through the doors a host reads:
 - the report input gives the arm no figure on that aspect and says why;
 - a one-arm campaign reads no pass rate pooled over both definitions;
 - two one-run arms read under different definitions, or under none recorded, share no test setup: no floor, no row;
+- the aspect's page gives a split arm no pass count, no verdict and no outcome bar, and says why; it never compares
+  two arms that share no setup, at any case count; the report input's scoreboard row for a split arm has no passes;
 - the same campaign read under one definition throughout reads as it always did, with nothing withheld.
 
 **Mutations these catch:** an arm-level reader asking only about the served model; a floor or rate between arms that
@@ -20,11 +22,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from threetears.evals.analysis import assemble_context_bundle, build_code_only_report, campaign_report_markdown
+from threetears.evals.analysis import (
+    assemble_context_bundle,
+    build_code_only_report,
+    campaign_report_markdown,
+    report_markdown,
+)
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
 from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.model import ChartBlock, Report
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, RateDrop
@@ -41,7 +49,7 @@ _CONTROL, _CANDIDATE = "pinned", "next"
 _BEFORE, _AFTER = {FIELD_ACCURACY: "a" * 64}, {FIELD_ACCURACY: "b" * 64}
 
 
-def _results(run: EvalRun, passing: int) -> list[EvalResult]:
+def _results(run: EvalRun, passing: int, cases: int = CASES) -> list[EvalResult]:
     """The run's trials, the first ``passing`` of them passing, each answered by one named model and each holding a
     value of the host measure."""
     usage = [RoleUsage(role="candidate", model=run.candidate_model, served_model="m-1", cost_usd=0.002, call_count=1)]
@@ -53,7 +61,7 @@ def _results(run: EvalRun, passing: int) -> list[EvalResult]:
             host_measures={FIELD_ACCURACY: 0.8},
             goal_state_outcomes=[{"expression": "reply.total == case.total", "passed": index < passing}],
         )
-        for index in range(CASES)
+        for index in range(cases)
     ]
 
 
@@ -92,13 +100,13 @@ def _campaign(runs: Sequence[EvalRun], arms: list[CampaignArm], name: str) -> Ev
 class _Read:
     """One campaign: each arm's runs, each run recording the definitions given (None: recorded none)."""
 
-    def __init__(self, definitions_by_arm: dict[str, Sequence[dict[str, str] | None]]) -> None:
+    def __init__(self, definitions_by_arm: dict[str, Sequence[dict[str, str] | None]], *, cases: int = CASES) -> None:
         trials: list[tuple[EvalRun, list[EvalResult]]] = []
         for arm, each in definitions_by_arm.items():
             for index, definitions in enumerate(each):
                 run = run_of(arm, measure_definitions=definitions).model_copy(update={"id": f"run-{arm}-{index}"})
                 # The candidate's second run passes everything, so a rate pooled over both definitions reads apart.
-                trials.append((run, _results(run, CASES if arm == _CANDIDATE and index else 1)))
+                trials.append((run, _results(run, cases if arm == _CANDIDATE and index else 1, cases)))
         runs = [run for run, _ in trials]
         self.arms = _arms(list(definitions_by_arm))
         self.campaign = _campaign(runs, self.arms, "definition-split")
@@ -119,6 +127,19 @@ class _Read:
         return campaign_report_markdown(
             build_campaign_report(self.campaign, self.readings, {ASPECT: aspect}, arms=self.arms)
         )
+
+    def aspect(self) -> Report:
+        return build_code_only_report(
+            self.bundle, assembled_at="2026-10-09T00:00:00+00:00", arm_labels=self.readings.arm_labels()
+        )
+
+    def aspect_first_screen(self) -> str:
+        """The aspect's own page, to its first section: the verdict line and the scoreboard."""
+        return report_markdown(self.aspect()).split("\n## ", 1)[0]
+
+    def bars(self) -> list[str]:
+        """The arms the aspect's outcome bar draws, as the page names them."""
+        return [bar.arm for block in self.aspect().blocks if isinstance(block, ChartBlock) for bar in block.bars]
 
 
 def test_an_arm_read_under_two_definitions_has_no_row_and_no_floor_and_the_split_names_its_coordinate() -> None:
@@ -208,3 +229,73 @@ def test_a_campaign_read_under_one_definition_throughout_reads_as_it_always_did(
     assert read.readings.answer_splits == []
     assert all(cell.split_on == [] for cell in read.bundle.cells)
     assert "definition of a host measure" not in read.page()
+
+
+def _scoreboard_row(first_screen: str, arm: str) -> list[str]:
+    """One arm's scoreboard row on an aspect's first screen, cell by cell."""
+    (row,) = [line for line in first_screen.splitlines() if line.startswith(("| " + arm + " |", "| ▸ " + arm + " |"))]
+    return [cell.strip() for cell in row.strip("|").split("|")]
+
+
+def test_the_aspect_page_gives_an_arm_read_under_two_definitions_no_count_no_verdict_and_no_bar() -> None:
+    read = _Read({_CONTROL: [_AFTER], _CANDIDATE: [_BEFORE, _AFTER]})
+    first = read.aspect_first_screen()
+
+    assert (
+        f"{_CANDIDATE} is not compared with {_CONTROL}: its trials were read under more than one definition of a host "
+        "measure, or under none recorded, so they are read per definition."
+    ) in first
+    assert "cannot tell" not in first and "more often" not in first, "a split arm is neither undecided nor ranked"
+    # Ran, usable, passed, failed by check, failed by judge, cost: what ran stays; what a definition decided does not.
+    assert _scoreboard_row(first, _CANDIDATE)[1:6] == ["12", "12", "— (read per definition)", "—", "—"]
+    assert _scoreboard_row(first, _CANDIDATE)[6] != "—", "a definition reads what a reply scored, never its cost"
+    assert _scoreboard_row(first, _CONTROL)[3] == "1", "the control, read under one definition, keeps its count"
+    assert read.bars() == [_CONTROL], "no share of the split arm's trials is drawn as the arm's"
+
+
+def test_the_aspect_page_of_a_one_arm_campaign_read_under_two_definitions_gives_no_pass_count() -> None:
+    read = _Read({_CANDIDATE: [_BEFORE, _AFTER]})
+    first = read.aspect_first_screen()
+
+    assert f"**{_CANDIDATE} has no one pass rate: its trials were read under more than one definition" in first
+    assert "passed 7 of 12" not in first and "Cases that failed a trial" not in first
+    assert _scoreboard_row(first, _CANDIDATE)[3] == "— (read per definition)"
+    assert read.bars() == []
+
+
+def test_the_aspect_page_never_compares_two_arms_that_share_no_setup_at_any_case_count() -> None:
+    said = (
+        f"{_CANDIDATE} is not compared with {_CONTROL}: the two were read under different definitions of a host "
+        "measure, or under none recorded, so they share no test setup."
+    )
+    for cases in (CASES, 3):  # 3 is under the case floor: the line that ranks arms by their passes
+        first = _Read({_CONTROL: [_BEFORE], _CANDIDATE: [_AFTER]}, cases=cases).aspect_first_screen()
+        assert said in first, first
+        for compared in ("cannot tell", "more often", "less often", "as often"):
+            assert compared not in first, (cases, first)
+        # Each arm's own row is its one cell's: nothing pooled, so nothing withheld.
+        assert "read per" not in first
+
+    unrecorded = _Read({_CONTROL: [None], _CANDIDATE: [None]}).aspect_first_screen()
+    assert said in unrecorded and "cannot tell" not in unrecorded
+
+
+def test_the_report_input_scoreboard_row_of_an_arm_read_under_two_definitions_has_no_passes() -> None:
+    built = report_input(_Read({_CONTROL: [_AFTER], _CANDIDATE: [_BEFORE, _AFTER]}).whole)
+
+    split, control = built.scoreboard[_CANDIDATE], built.scoreboard[_CONTROL]
+    assert (split.ran, split.usable, split.passed, split.failed) == (2 * CASES, 2 * CASES, None, {})
+    assert split.reply_cost_usd is not None, "a definition reads what a reply scored, never what it cost"
+    assert (control.passed, control.failed) == (1, {"check": CASES - 1})
+    (note,) = [line for line in built.caveats.unreported if _CANDIDATE in line]
+    assert "more than one definition of a host measure" in note
+
+
+def test_an_aspect_read_under_one_definition_throughout_withholds_nothing_on_its_page() -> None:
+    read = _Read({_CONTROL: [_AFTER], _CANDIDATE: [_AFTER, _AFTER]})
+    first = read.aspect_first_screen()
+
+    assert "not compared" not in first and "read per" not in first
+    assert _scoreboard_row(first, _CANDIDATE)[3] == str(1 + CASES)
+    assert read.bars() == [_CONTROL, _CANDIDATE]
+    assert report_input(read.whole).scoreboard[_CANDIDATE].passed == 1 + CASES

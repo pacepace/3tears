@@ -569,3 +569,49 @@ async def test_two_eras_of_one_descriptor_text_attested_under_their_revisions_ne
     unmarked = await attested([_digests_at(0), _digests_at(0)])
     (pooled,) = _arm(unmarked, control=False)
     assert pooled.split_on == [], "what following the text alone does: one digest, one cell, across a real change"
+
+
+async def test_a_run_recorded_at_revision_0_before_the_revision_was_raised_pools_with_the_earliest_era_once_stated() -> (
+    None
+):
+    """Why the host procedure re-measures such a run BEFORE any era is stated, never "leaves it apart" (#1187).
+
+    A build carrying #1160 stamped revision-0 digests on every run it launched before the host raised the revision
+    of a measure whose reading code had changed (procedure step 1), whatever code the run ran under. The earliest
+    era is then stated at revision 0. A record and a statement of one digest are one definition (an attestation is
+    read through, never told apart from a record), so the run joins the earliest era's cell: the cells pool on what
+    is recorded or stated, never on an assumption, and an old run nothing stated matches nothing, not even that
+    record. The record is what is wrong, and only a re-measure replaces it."""
+    by_run: dict[str, str] = {}
+
+    def made(
+        salt: str, definitions: dict[str, str] | None, model: str = _CANDIDATE
+    ) -> tuple[EvalRun, list[EvalResult]]:
+        batch, results = _named(model, salt, definitions)
+        by_run.update({result.id: salt for result in results})
+        return batch, results
+
+    control = made("control", _digests_at(1), _CONTROL)
+    old = made("unrecorded-earliest-era", None)
+    recorded_early = made("recorded-at-revision-0-under-todays-code", _digests_at(0))
+    today = made("recorded-after-step-1", _digests_at(1))
+    storage = _stored([control, old, recorded_early, today])
+
+    def runs_by_cell(bundle: AnalysisContextBundle) -> list[list[str]]:
+        return sorted(
+            sorted({by_run[result_id] for result_id in cell.observation_ids}) for cell in _arm(bundle, control=False)
+        )
+
+    assert runs_by_cell(_bundle(storage)) == [
+        ["recorded-after-step-1"],
+        ["recorded-at-revision-0-under-todays-code"],
+        ["unrecorded-earliest-era"],
+    ], "before any statement the unrecorded run matches nothing, and the revision-0 record matches nothing recorded"
+
+    host = toyhost_host(storage=storage)
+    await attest_measure_definitions(host, [old[0].id], TOYHOST_SCOPE, _digests_at(0), attested_by="job:upgrade")
+
+    assert runs_by_cell(_bundle(storage)) == [
+        ["recorded-after-step-1"],
+        ["recorded-at-revision-0-under-todays-code", "unrecorded-earliest-era"],
+    ], "stated at revision 0, the earliest era pools with the run that recorded revision 0: it is not left apart"

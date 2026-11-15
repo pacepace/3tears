@@ -9,6 +9,8 @@ pooled over both models. Held here, through the doors a host reads:
 - the campaign's page reads the aspect as not compared, with one line naming the models, and no verdict for the arm;
 - the report input gives the arm no figure on that aspect and says why, never that it ran under several rigs;
 - the per-model contrasts stay in the aspect's bundle;
+- the aspect's page gives the split arm no pass count, failure count, cost or outcome bar, and its verdict line says
+  it is not compared, and why; the report input's scoreboard row for it carries no passes, failures or cost;
 - the same campaign answered by one model throughout reads as it always did, with nothing withheld.
 
 **Mutations these catch:** an arm-level reader taking the first cell's contrast; the report input keeping the first
@@ -19,11 +21,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from threetears.evals.analysis import assemble_context_bundle, build_code_only_report, campaign_report_markdown
+from threetears.evals.analysis import (
+    assemble_context_bundle,
+    build_code_only_report,
+    campaign_report_markdown,
+    report_markdown,
+)
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
 from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.model import ChartBlock, Report
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, RateDrop
@@ -109,6 +117,25 @@ class _Read:
 
     def first_screen(self) -> str:
         return self.page().split("\n## ", 1)[0]
+
+    def aspect(self) -> Report:
+        return build_code_only_report(
+            self.bundle, assembled_at="2026-10-09T00:00:00+00:00", arm_labels=self.readings.arm_labels()
+        )
+
+    def aspect_first_screen(self) -> str:
+        """The aspect's own page, to its first section: the verdict line and the scoreboard."""
+        return report_markdown(self.aspect()).split("\n## ", 1)[0]
+
+    def bars(self) -> list[str]:
+        """The arms the aspect's outcome bar draws, as the page names them."""
+        return [bar.arm for block in self.aspect().blocks if isinstance(block, ChartBlock) for bar in block.bars]
+
+
+def _scoreboard_row(first_screen: str, arm: str) -> list[str]:
+    """One arm's scoreboard row on an aspect's first screen, cell by cell."""
+    (row,) = [line for line in first_screen.splitlines() if line.startswith(("| " + arm + " |", "| ▸ " + arm + " |"))]
+    return [cell.strip() for cell in row.strip("|").split("|")]
 
 
 def test_the_readings_hold_no_row_and_no_floor_for_an_arm_answered_by_two_models_and_name_the_split() -> None:
@@ -236,3 +263,59 @@ def test_a_one_arm_campaign_whose_arm_was_answered_by_two_models_reads_no_pooled
     assert (
         f"{_ALIAS}'s results on {ASPECT} were answered by 2 models ({_MARCH} and {_JUNE}), so they are read per model"
     ) in first
+    own = report_markdown(aspect).split("\n## ", 1)[0]
+    assert f"**{_ALIAS} has no one pass rate: its trials were answered by more than one model" in own
+    assert "passed 7 of 12" not in own and "Cases that failed a trial" not in own
+    assert _scoreboard_row(own, _ALIAS)[3] == "— (read per model)"
+    assert not [block for block in aspect.blocks if isinstance(block, ChartBlock) and block.chart == "outcome_bar"]
+
+
+def test_the_aspect_page_gives_an_arm_answered_by_two_models_no_count_no_cost_no_verdict_and_no_bar() -> None:
+    read = _Read([_MARCH, _JUNE])
+    first = read.aspect_first_screen()
+
+    assert (
+        f"{_ALIAS} is not compared with {_CONTROL}: its trials were answered by more than one model, or by one no "
+        "response named, so they are read per model."
+    ) in first
+    assert "cannot tell" not in first and "more often" not in first, "a split arm is neither undecided nor ranked"
+    # Ran, usable, passed, failed by check, failed by judge, cost: what ran stays; what two models answered does not.
+    assert _scoreboard_row(first, _ALIAS)[1:] == ["12", "12", "— (read per model)", "—", "—", "—"]
+    assert _scoreboard_row(first, _CONTROL)[3] == "5", "the control, answered by one model, keeps its count"
+    assert read.bars() == [_CONTROL]
+
+
+def test_the_aspect_page_says_no_candidate_is_compared_with_a_control_answered_by_two_models() -> None:
+    first = _Read([_MARCH], control_served=["pinned-1", "pinned-2"]).aspect_first_screen()
+
+    # (The candidate's label is the readings', which name no arm a split control leaves unread: issue draft.)
+    assert f" is not compared with {_CONTROL}: {_CONTROL}'s trials were answered by more than one model" in first
+    assert "cannot tell" not in first
+    assert _scoreboard_row(first, _CONTROL)[3] == "— (read per model)"
+
+
+def test_the_report_input_scoreboard_row_of_an_arm_answered_by_two_models_has_no_passes_and_no_cost() -> None:
+    built = report_input(_Read([_MARCH, _JUNE]).whole)
+
+    split, control = built.scoreboard[_ALIAS], built.scoreboard[_CONTROL]
+    assert (split.ran, split.usable, split.passed, split.failed, split.reply_cost_usd) == (
+        2 * CASES,
+        2 * CASES,
+        None,
+        {},
+        None,
+    )
+    assert split.test_cost_usd is not None, "what the arm's trials cost in all is spend, not a reading"
+    assert (control.passed, control.reply_cost_usd) == (5, 0.002)
+    (note,) = [line for line in built.caveats.unreported if _ALIAS in line]
+    assert "answered by more than one candidate model" in note
+
+
+def test_an_arm_answered_by_one_model_throughout_withholds_nothing_on_its_aspect_page() -> None:
+    read = _Read([_MARCH, _MARCH])
+    first = read.aspect_first_screen()
+
+    assert "not compared" not in first and "read per" not in first
+    assert _scoreboard_row(first, _ALIAS)[3] == str(1 + CASES)
+    assert read.bars() == [_CONTROL, _ALIAS]
+    assert report_input(read.whole).scoreboard[_ALIAS].passed == 1 + CASES

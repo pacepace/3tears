@@ -496,8 +496,9 @@ async def attest_served_model(
     response named is always told from one a host stated. A reading that pools by answering model (a campaign's
     cells, pass^k, a comparison set's badges) reads those results' silent rows THROUGH the statement
     (:func:`~threetears.evals.analysis.reporting.pooled_as`), and the bundle carries the fact that it did
-    (``ArmServedModel.n_attested``, ``RunSummary.attested_coordinates``). History and a pivot group by contestant and
-    read no served model at all.
+    (``ArmServedModel.n_attested``, ``RunSummary.attested_coordinates``). History, a pivot, the frontier's composite
+    and a two-run comparison read them through it the same way
+    (:func:`~threetears.evals.analysis.bundle.observations.split_coordinates`).
 
     Every run is checked before any is written. Stating again what an earlier attestation stated is no error: the
     run is named in ``already_attested``. Stating ANOTHER model over an attestation is refused, and so is a run none

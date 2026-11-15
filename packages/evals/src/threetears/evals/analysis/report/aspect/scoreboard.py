@@ -5,6 +5,7 @@ charts print in tight places.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from typing import Final, get_args
 
 from threetears.evals.analysis.arms import arm_levels, distinguishing_axes, elide_level
 from threetears.evals.analysis.bundle.schema import (
@@ -14,6 +15,7 @@ from threetears.evals.analysis.bundle.schema import (
     ArmScoreboard,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.cells import split_arms
 from threetears.evals.analysis.report.aspect.common import _at, _control_key, _cost_ruler, _per_reply
 from threetears.evals.analysis.report.figures import MeasureRuler, report_rulers
 from threetears.evals.analysis.report.forms import PageForms
@@ -34,6 +36,7 @@ from threetears.evals.analysis.report.words import campaign_arm_tags, label_case
 from threetears.evals.analysis.style import GLOSSARY, ArmName, arm_display_name, lever_reader_name
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
 from threetears.evals.kernel.surface import DecisionSurface, earlier_control_mark
+from threetears.evals.schema.reading_states import Coordinate
 
 
 def _short_names(
@@ -108,6 +111,20 @@ def _trimmed(model: str, base: str) -> str:
     return rest if shared >= 4 and rest else model
 
 
+#: The flag on a split arm's withheld counts, by the first coordinate it is split on: its trials are two cells', which
+#: the readings and contrasts below read apart, and the verdict line says why.
+_READ_APART: Final[dict[Coordinate, str]] = {
+    "served_model": "read per model",
+    "measure_definition": "read per definition",
+}
+
+
+def _read_apart(on: Mapping[Coordinate, int]) -> str:
+    """The flag on a split arm's withheld counts: the first coordinate it is split on, in the order
+    :data:`~threetears.evals.schema.reading_states.Coordinate` lists them."""
+    return _READ_APART[next(coordinate for coordinate in get_args(Coordinate) if coordinate in on)]
+
+
 def _scoreboard_blocks(
     bundle: AnalysisContextBundle,
     arm: Callable[[str], str],
@@ -120,6 +137,11 @@ def _scoreboard_blocks(
 
     The outcome bar tags each arm by ``given_tags``, a campaign's, where they tag every arm of the scoreboard, and
     else by this page's own order.
+
+    An arm split on a coordinate of its identity (:func:`~threetears.evals.analysis.cells.split_arms`: answered by
+    more than one model, or read under more than one definition of a host measure) has no one count of passes or
+    failures, and no bar: its row keeps what ran and was lost, its counts are withheld and flagged as read apart, and,
+    where the answering model splits it, its cost too. The verdict line says why.
 
     A fact that changes how the verdict should be read belongs on the first screen, and nothing else does: the case
     floor, then an arm whose every trial failed. Everything else that qualifies the table is a
@@ -147,25 +169,33 @@ def _scoreboard_blocks(
     cost = _cost_ruler(bundle)
     # The share of each arm's trials that passed, on the pass rate's ruler, as the scorecard states the rate.
     passing = report_rulers(bundle_decision_surface(bundle), bundle.measure_catalog).of(TRIAL_PASS_NAME, "trial")
+    split = split_arms(bundle.cells)
+    # Each arm's cost per reply as the row reads it: none for an arm the answering model splits, whose replies are
+    # two models' (a definition reads what a reply scored, never what it cost).
+    reply_cost = {
+        board.variant_key: None if "served_model" in split.get(board.variant_key, {}) else board.reply_cost_usd
+        for board in boards
+    }
     rows: list[dict[str, CellValue]] = []
     for board in boards:
+        apart = board.variant_key in split
         row: dict[str, CellValue] = {
             "arm": ("▸ " if board.variant_key == control else "")
             + arm(board.variant_key)
             + (f" ({earlier_control_mark(earlier)})" if earlier and board.variant_key == earlier.variant_key else ""),
             "ran": board.ran,
             "usable": board.usable,
-            "passed": board.passed,
-            "check": board.failed.get("check", 0),
-            "judged": board.failed.get("judged", 0),
+            "passed": None if apart else board.passed,
+            "check": None if apart else board.failed.get("check", 0),
+            "judged": None if apart else board.failed.get("judged", 0),
             # A number on the cost's ruler, not its text: the page right-aligns a column of numbers, and the cell
             # spells it with its currency sign (``$3.092``) the way every money cell does.
-            "cost": None if board.reply_cost_usd is None else board.reply_cost_usd * cost.factor,
+            "cost": None if (held := reply_cost[board.variant_key]) is None else held * cost.factor,
         }
         if lost_any:
             row["lost"] = sum(board.lost.values())
         if other_causes:
-            row["other"] = sum(board.failed.get(cause, 0) for cause in other_causes)
+            row["other"] = None if apart else sum(board.failed.get(cause, 0) for cause in other_causes)
         rows.append(row)
     columns = [
         # The ▸ marking the control is defined where the glossary defines the control.
@@ -192,16 +222,28 @@ def _scoreboard_blocks(
             # Money in the one form its ruler chose over every arm's cost, held as a figure of the cost the floors read.
             "cost": forms.of_measure(
                 _arm_cost_at(
-                    forms.ruled_level_cell(cost, board.reply_cost_usd, measure=FLOOR_COST_MEASURE, kind="measure"),
+                    forms.ruled_level_cell(
+                        cost, reply_cost[board.variant_key], measure=FLOOR_COST_MEASURE, kind="measure"
+                    ),
                     surface,
                     board.variant_key,
-                    board.reply_cost_usd,
+                    reply_cost[board.variant_key],
                 ),
                 measure=FLOOR_COST_MEASURE,
                 kind="measure",
             ),
+            **(
+                {"passed": forms.count_cell(None, flag=_read_apart(split[board.variant_key]))}
+                if board.variant_key in split
+                else {}
+            ),
         }
         for row, board in zip(rows, boards, strict=True)
+    ]
+    bars = [
+        _outcome_bar(board, arm, tags[board.variant_key], shorts.get(board.variant_key), forms, passing)
+        for board in boards
+        if board.variant_key not in split
     ]
     blocks: list[ReportBlock] = [
         TableBlock(
@@ -213,14 +255,17 @@ def _scoreboard_blocks(
             order="the control first, then the other arms by name",
             total_rows=len(rows),
         ),
-        ChartBlock(
-            section="scoreboard",
-            chart="outcome_bar",
-            title="Outcomes, share of each arm's trials",
-            bars=[
-                _outcome_bar(board, arm, tags[board.variant_key], shorts.get(board.variant_key), forms, passing)
-                for board in boards
-            ],
+        *(
+            [
+                ChartBlock(
+                    section="scoreboard",
+                    chart="outcome_bar",
+                    title="Outcomes, share of each arm's trials",
+                    bars=bars,
+                )
+            ]
+            if bars
+            else []
         ),
     ]
     blocks += [

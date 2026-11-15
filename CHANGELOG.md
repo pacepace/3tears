@@ -39,7 +39,12 @@ when empty) names the coordinates a cell's arm is split on, and every arm-level 
 and pairs, a measurement's rates, the report input's figures, a one-arm campaign) withholds such an arm. Two arms
 that share no setup, because their runs were read under different definitions or under none recorded, get no floor
 and no row. `AnswerSplit.coordinate` (new; left out when `served_model`) says which coordinate, and the page and the
-report input word it.
+report input word it. On an aspect's page, the verdict line gives such an arm no pass count and never says it passed
+more or less often than the control, or that the evidence cannot tell them apart: a sentence says it is not compared,
+and why; its scoreboard row keeps what ran and was lost, its passes and failures are withheld (flagged "read per
+model" or "read per definition"), its cost too where the answering model splits it, and it has no outcome bar. The
+report input's scoreboard row for a split arm carries no `passed` and no `failed`, and no `reply_cost_usd` where the
+answering model splits it.
 
 **Changed:** one action, `runs_attest` (`write`; `run_ids`, `coordinate`, `measure_definitions?`, `served_model?`,
 `attestation_note?`), states a coordinate of stored runs that they did not record, and answers in one shape whichever
@@ -59,13 +64,16 @@ changes nothing. A statement is evidence: it moves the fingerprint of every bund
 answered by two, `context_incomplete` where a run's responses named no model and nothing was stated, and
 `served_model_disclosure` says which runs.
 
-**Changed:** the lenses that read runs outside a campaign's cells keep apart what the cells keep apart, read through
-the cells themselves (`split_coordinates`): runs answered by different models, or read under different definitions of
-a host measure, or with either unrecorded, never pool. A history marks such a change between two runs as a boundary
+**Changed:** history, a pivot, the frontier's composite, cost and latency, a two-run comparison and a bisection read
+runs outside a campaign's cells and keep apart what the cells keep apart, read through the cells themselves
+(`split_coordinates`): runs answered by different models, or read under different definitions of a host measure, or
+with either unrecorded, never pool. A history marks such a change between two runs as a boundary
 (`SeriesPoint.split_on` and `state`, new, left out when empty): no regression verdict across it, a fresh baseline
 after it, and a run that is itself split has no value. A pivot cell where one arm's observations are apart is
-`withheld` (`PivotCell.split_on` and `state`), and no pooled column figure is read over it; `compute_pivot` takes the
-`runs` and `results` behind its rows. A frontier point's composite, cost, latency and cost per acceptable outcome read
+`withheld` (`PivotCell.split_on` and `state`), and so is a cell, or a pooled column, holding two arms read under
+different definitions or under none recorded; no pooled column figure is read over either; `compute_pivot` takes the
+`runs` and `results` behind its rows. A bisection (`runs_bisect`) names `measure_definitions` and
+`served_model:candidate` among what differs, agrees or is unknown (unknown where a side recorded nothing). A frontier point's composite, cost, latency and cost per acceptable outcome read
 its headline pass^k cell and the runs one cell with them on both coordinates: a run apart on either is named with its
 own pass^k and counted in none of them. A two-run comparison reads no delta where a side is itself split on either
 coordinate, or the two were read under different definitions or under none recorded (`composite_comparability` says
@@ -91,14 +99,15 @@ definitions stays unrecorded, and says so as it is taken up (a WARNING).
      digests: attesting them would pool every era across real changes.
   2. Deploy this evals build to every reader (an older build pools an attested run on the key its launch stamped).
   3. Map each stored run to the era of reading code it ran under, from the release the run records.
-  4. For each era, call `runs_attest` with `coordinate: "measure_definition"` and `measure_definitions` set to
+  4. Before any statement, re-measure each run a build carrying #1160 recorded before step 1 that did not run under
+     the earliest era's code (`run_remeasure`, with a `measure_rereader` that answers a measure whose code did not
+     change since as stored), so it records today's digests. Such a run recorded revision-0 digests, which step 5
+     states for the earliest era, and a statement never replaces a record: left as it is, it pools with the earliest
+     era's runs once they are stated, whatever code it ran under. One that ran under the earliest era's code is of
+     that era already and needs nothing.
+  5. For each era, call `runs_attest` with `coordinate: "measure_definition"` and `measure_definitions` set to
      `MeasureRegistry(descriptors at that era's revisions, measures removed since included).definition_digests()`;
      omit `measure_definitions` for runs made under today's code. It touches no result and may be run twice.
-  5. A run that already recorded definitions on a build carrying #1160 before step 1 recorded revision-0 digests,
-     and a statement never replaces a record. Where it ran under today's code, it now stands apart from runs
-     launched after step 1: re-measure it (`run_remeasure`, with a `measure_rereader` that answers a measure whose
-     code did not change since as stored) to record today's digests. Where it ran under older code, re-measure it the
-     same way or leave it apart.
   6. Call `runs_attest` with `coordinate: "served_model"` over the runs `model_identity_disclosure` names, where the
      host knows what answered.
   7. Regenerate stored reports over attested runs. Until a run is attested, a stored report over it reads as

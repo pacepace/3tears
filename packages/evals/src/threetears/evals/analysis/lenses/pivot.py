@@ -179,7 +179,8 @@ class PivotCell(EvalBaseModel):
     #: The coordinates of its identity one arm's valued observations here are apart on, as a campaign's cells keep
     #: them apart (:func:`~threetears.evals.analysis.bundle.observations.split_coordinates`): answered by more than
     #: one model, or read under more than one definition of a host measure, or with either unrecorded on more than
-    #: one run (an unrecorded coordinate matches nothing). Such a cell is ``withheld``: its mean would pool them.
+    #: one run (an unrecorded coordinate matches nothing); and, for a cell holding more than one arm, the arms read
+    #: under different definitions, or under none recorded. Such a cell is ``withheld``: its mean would pool them.
     #: Empty, and left out of a dump, otherwise.
     split_on: list[Coordinate] = Field(default_factory=list, exclude_if=lambda value: not value)
     #: The cell's state where ``split_on`` withholds it: ``withheld``, ``split``, on its first coordinate.
@@ -555,8 +556,9 @@ def _split_withheld(split_on: Sequence[Coordinate]) -> str:
     """Why a cell whose arm is apart on ``split_on`` is withheld, in one sentence."""
     apart = "; and ".join(_APART_ON.get(coordinate, coordinate.replace("_", " ")) for coordinate in split_on)
     return (
-        f"one arm's observations here differ on {apart}, so their mean would pool what a campaign's cells keep "
-        "apart; read each run alone, or pivot on served_model where it is the model"
+        f"the observations here differ on {apart}, within one arm or, on a host measure's definition, between two "
+        "arms, so their mean would pool what a campaign's cells keep apart; read each run alone, or pivot on "
+        "served_model where it is the model"
     )
 
 
@@ -667,7 +669,8 @@ def compute_pivot(
     cell names the role sets its dollars covered (``cost_compositions``) and the table flags when they
     differ (#625); a cost cell pooling replayed results with live ones is ``withheld`` with the reason,
     since a caveat does not stop a mean being read (#658); a cell where one arm's observations are apart on a
-    coordinate of its identity (the model that answered, a host measure's definition, or either unrecorded) is
+    coordinate of its identity (the model that answered, a host measure's definition, or either unrecorded), or
+    where two arms in it were read under different definitions or under none recorded, is
     ``withheld`` as a campaign's cells keep them apart (``split_on``); the table carries the comparison surfaces' cassette-mode
     sentence when its runs recorded different modes; and a cell grouped or filtered on an identity key that pools more
     than one version of its predicate names them (#672).
@@ -836,20 +839,24 @@ def compute_pivot(
     results_by_id = {result.id: result for result in results or ()}
 
     def split_at(members: Sequence[ScoreRecord]) -> list[Coordinate]:
-        """The coordinates one arm's results among ``members`` are apart on, as a campaign's cells keep them apart."""
+        """The coordinates ``members`` are apart on, as a campaign's cells keep them apart: one arm's results on
+        either coordinate, and any two arms' on the definitions of a host measure. Two arms answered by different
+        models are what a cell across arms reads (as a campaign compares a split cell with the control), but two
+        read under different definitions, or under none recorded, are two instruments, which no figure pools."""
+
+        def apart(held: Sequence[ResultView]) -> list[Coordinate]:
+            return split_coordinates(
+                [runs_by_id[run_id] for run_id in {r.eval_run_id for r in held} if run_id in runs_by_id], held
+            )
+
         by_arm: dict[tuple[str, int | None], dict[str, ResultView]] = {}
         for record in members:
             if (result := results_by_id.get(record.result_id)) is not None:
                 arm = (record.variant_key or record.model, record.variant_identity_version)
                 by_arm.setdefault(arm, {})[result.id] = result
-        found = {
-            coordinate
-            for held in by_arm.values()
-            for coordinate in split_coordinates(
-                [runs_by_id[run_id] for run_id in {r.eval_run_id for r in held.values()} if run_id in runs_by_id],
-                list(held.values()),
-            )
-        }
+        found = {coordinate for held in by_arm.values() for coordinate in apart(list(held.values()))}
+        if len(by_arm) > 1 and "measure_definition" in apart([r for held in by_arm.values() for r in held.values()]):
+            found.add("measure_definition")
         return [coordinate for coordinate in get_args(Coordinate) if coordinate in found]
 
     cells: list[PivotCell] = []

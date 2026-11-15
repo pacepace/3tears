@@ -7,9 +7,11 @@ coordinate matches nothing. Each lens is read through its front door, the read a
 * a comparison set badges runs that asked for one model and were answered by two, and a silence nobody stated;
 * a history marks a change of either coordinate between two runs as a boundary: no verdict across it, a fresh
   baseline after it, and the rest of the series still read;
-* a pivot withholds a cell where one arm's observations are apart on either, and reads it where they are not;
+* a pivot withholds a cell where one arm's observations are apart on either, and reads it where they are not; and a
+  cell holding two arms read under different definitions, though two models answering two arms is what it reads;
 * a frontier point's composite and cost read its headline pass^k cell, never every run of the variant;
-* a two-run comparison reads no delta between runs read under two definitions, or across a run itself split.
+* a two-run comparison reads no delta between runs read under two definitions, or across a run itself split;
+* a bisection names both coordinates among what differs, agrees or is unknown, an unrecorded side unknown.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.evals.analysis import compare_two_runs, comparison_sets, frontier, history, pivot
+from threetears.evals.analysis.reads import bisect_runs
 from threetears.evals.analysis.reporting import METRIC_COMPOSITE
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.identity import IDENTITY_VERSION
@@ -235,6 +238,70 @@ def test_a_pivot_withholds_a_cell_read_under_two_definitions_and_reads_one_read_
 
     (one,) = _table(_Scope([after, again], _results(after, _MARCH) + _results(again, _MARCH))).cells
     assert one.status == "measured" and one.split_on == [] and one.state is None
+
+
+def _two_arms(definitions: tuple[dict[str, str], dict[str, str]]) -> _Scope:
+    """Two arms of one subject and template, each one run answered by its own named model, read under ``definitions``."""
+    runs, results = [], []
+    for index, (model, recorded) in enumerate(zip((_MARCH, _JUNE), definitions, strict=True)):
+        run = _run(f"run-{index}", 3 + index, measure_definitions=recorded).model_copy(
+            update={"candidate_model": model}
+        )
+        runs.append(run)
+        results += [
+            result.model_copy(update={"model": model, "variant_key": f"{index:064x}"})
+            for result in _results(run, model, score=5 if index else 1)
+        ]
+    return _Scope(runs, results)
+
+
+def test_a_pivot_cell_holding_two_arms_read_under_two_definitions_is_withheld_and_two_models_are_not() -> None:
+    (apart,) = _table(_two_arms((_BEFORE, _AFTER)), row_factor="subject_id").cells
+    assert (apart.status, apart.value, apart.split_on) == ("withheld", None, ["measure_definition"])
+    assert apart.state == StateOf(state="withheld", reason="split", coordinate="measure_definition")
+    assert "on a host measure's definition, between two arms" in (apart.withheld or "")
+
+    (read,) = _table(_two_arms((_AFTER, _AFTER)), row_factor="subject_id").cells
+    assert (read.status, read.split_on) == ("measured", []), "two models answering two arms is what the cell reads"
+    assert read.value == 0.5
+
+
+# =============================================================================
+# Bisection
+# =============================================================================
+
+
+def _bisected(scope: _Scope, a: str, b: str) -> dict[str, Any]:
+    return bisect_runs(scope.storage, a, b, _SCOPE, profile=_PROFILE)
+
+
+def test_a_bisection_names_a_change_of_definition_and_of_served_model_and_an_unrecorded_side_as_unknown() -> None:
+    before = _run("run-before", 3, measure_definitions=_BEFORE)
+    after, again = _run("run-after", 6, measure_definitions=_AFTER), _run("run-again", 7, measure_definitions=_AFTER)
+    silent = _run("run-silent", 8, measure_definitions=_AFTER)
+    stated = _attested(_run("run-stated", 9, measure_definitions=_AFTER), _JUNE)
+    scope = _Scope(
+        [before, after, again, silent, stated],
+        _results(before, _MARCH)
+        + _results(after, _MARCH)
+        + _results(again, _JUNE)
+        + _results(silent, None)
+        + _results(stated, None),
+    )
+
+    changed = _bisected(scope, "run-before", "run-after")
+    assert "measure_definitions" in changed["differs"] and "served_model:candidate" in changed["same"]
+    assert changed["details"]["measure_definitions"] == {"a": _BEFORE, "b": _AFTER}
+
+    answered = _bisected(scope, "run-after", "run-again")
+    assert "served_model:candidate" in answered["differs"] and "measure_definitions" in answered["same"]
+    assert answered["details"]["served_model:candidate"] == {"a": [_MARCH], "b": [_JUNE]}
+
+    unknown = _bisected(scope, "run-again", "run-silent")
+    assert "served_model:candidate" in unknown["unknown"], "a silence matches nothing, not even agreement"
+    assert _bisected(scope, "run-again", "run-stated")["same"].count("served_model:candidate") == 1, (
+        "a stated silence is read through the statement"
+    )
 
 
 # =============================================================================

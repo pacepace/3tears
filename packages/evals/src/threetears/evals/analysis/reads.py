@@ -45,7 +45,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import ValidationError
 
@@ -53,6 +53,11 @@ from threetears.evals.analysis.revisions import revision_label
 from threetears.evals.analysis.contention import marked_latency_sentence, withheld_latency
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
+    SERVED_MODEL_UNRECORDED,
+    attested_served_models,
+    served_level,
+    served_reading,
+    through_attestation,
     model_identity_disclosure,
     request_settings_disclosure,
     request_settings_readings,
@@ -77,7 +82,9 @@ from threetears.evals.analysis.lenses.export import (
     export_format,
     export_projection,
 )
-from threetears.evals.analysis.bundle.observations import split_coordinates
+from threetears.evals.analysis.bundle.observations import measure_definition_levels, split_coordinates
+from threetears.evals.analysis.bundle.schema import CANDIDATE_SERVED_MODEL_CONFOUND
+from threetears.evals.analysis.cells import MEASURE_DEFINITIONS_DIMENSION
 from threetears.evals.analysis.significance import cross_subject_disclosure
 from threetears.evals.analysis.style import check_held
 from threetears.evals.analysis.completeness import completeness_disclosure
@@ -86,7 +93,7 @@ from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.kernel.host.bars import PassCriterion
 from threetears.evals.kernel.host.profile import HostProfile
-from threetears.evals.kernel.metrics import MATCH_MEASURE, MetricDescriptor
+from threetears.evals.kernel.metrics import MATCH_MEASURE, MetricDescriptor, holds_host_measure
 from threetears.evals.kernel.scoring import (
     capability_scores,
     compute_composite_summary,
@@ -2019,6 +2026,14 @@ def bisect_runs(
     Both subject fields are reported, and the pair is informative: same
     ``subject_id`` with a differing name is a rename, not a different subject.
 
+    The two coordinates of a run's identity the package records itself, which the confound scan reads beside the
+    host's set, are read too, by the one check a campaign's cells split on
+    (:func:`~threetears.evals.analysis.bundle.observations.split_coordinates`): ``measure_definitions``, the
+    definitions of the host's measures its values were read under, and ``served_model:candidate``, the model that
+    answered (a silence its host stated read through the statement). Apart where the cells would keep the two runs
+    apart; ``unknown`` where that is because a side recorded nothing (an unrecorded coordinate matches nothing, not
+    even another silence); left out where neither run has the coordinate (no host measure, no candidate call).
+
     :param storage: Where the runs and their results are read (:class:`LensStore`).
     :ptype storage: LensStore
     :param run_a_id: First run id (the baseline), in ``scope_id``.
@@ -2094,6 +2109,10 @@ def bisect_runs(
         else:
             differs.append(field_name)
 
+    for field_name, (verdict, value_a, value_b) in _identity_coordinates(run_a, results_a, run_b, results_b).items():
+        details[field_name] = {"a": value_a, "b": value_b}
+        {"differs": differs, "same": same, "unknown": unknown}[verdict].append(field_name)
+
     return {
         "run_a": run_a_id,
         "run_b": run_b_id,
@@ -2102,6 +2121,43 @@ def bisect_runs(
         "unknown": unknown,
         "details": details,
     }
+
+
+def _identity_coordinates(
+    run_a: EvalRun, results_a: Sequence[ResultView], run_b: EvalRun, results_b: Sequence[ResultView]
+) -> dict[str, tuple[Literal["differs", "same", "unknown"], Any, Any]]:
+    """How two runs compare on the coordinates of identity the package records itself (:func:`bisect_runs`): by
+    field name, the bucket and each run's value."""
+    apart = split_coordinates([run_a, run_b], [*results_a, *results_b])
+    found: dict[str, tuple[Literal["differs", "same", "unknown"], Any, Any]] = {}
+    held = any(holds_host_measure(result.host_measures) for result in (*results_a, *results_b))
+    if held or run_a.measure_definitions or run_b.measure_definitions:
+        levels = measure_definition_levels([run_a, run_b], {run_a.id: list(results_a), run_b.id: list(results_b)})
+        verdict: Literal["differs", "same", "unknown"] = (
+            "same" if "measure_definition" not in apart else "unknown" if None in levels.values() else "differs"
+        )
+        found[MEASURE_DEFINITIONS_DIMENSION] = (verdict, run_a.measure_definitions, run_b.measure_definitions)
+    attested = attested_served_models([run_a, run_b])
+
+    def answered(results: Sequence[ResultView]) -> list[str]:
+        levels = {
+            served_level(through_attestation(reading, attested.get(result.id)))
+            for result in results
+            if (reading := served_reading(result)) is not None
+        }
+        return sorted(level or SERVED_MODEL_UNRECORDED for level in levels)
+
+    served_a, served_b = answered(results_a), answered(results_b)
+    if served_a or served_b:
+        verdict = (
+            "same"
+            if "served_model" not in apart
+            else "unknown"
+            if SERVED_MODEL_UNRECORDED in (*served_a, *served_b)
+            else "differs"
+        )
+        found[CANDIDATE_SERVED_MODEL_CONFOUND] = (verdict, served_a, served_b)
+    return found
 
 
 def compare_two_runs(
