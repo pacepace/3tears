@@ -66,8 +66,10 @@ a host measure, or with either unrecorded, never pool. A history marks such a ch
 after it, and a run that is itself split has no value. A pivot cell where one arm's observations are apart is
 `withheld` (`PivotCell.split_on` and `state`), and no pooled column figure is read over it; `compute_pivot` takes the
 `runs` and `results` behind its rows. A frontier point's composite, cost, latency and cost per acceptable outcome read
-its headline pass^k cell, as its pass^k already did: a kept-out run is named with its own pass^k and counted in none
-of them.
+its headline pass^k cell and the runs one cell with them on both coordinates: a run apart on either is named with its
+own pass^k and counted in none of them. A two-run comparison reads no delta where a side is itself split on either
+coordinate, or the two were read under different definitions or under none recorded (`composite_comparability` says
+which); two runs answered by different models are still compared, as a split cell is compared with the control.
 
 **Changed:** a run launched now records every coordinate of its identity, or says it did not. A replayed completion
 or writer turn whose recorded reply named no model is answered by its recording. Where the host's own code answered

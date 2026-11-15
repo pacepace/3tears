@@ -77,6 +77,7 @@ from threetears.evals.analysis.lenses.export import (
     export_format,
     export_projection,
 )
+from threetears.evals.analysis.bundle.observations import split_coordinates
 from threetears.evals.analysis.significance import cross_subject_disclosure
 from threetears.evals.analysis.style import check_held
 from threetears.evals.analysis.completeness import completeness_disclosure
@@ -2140,6 +2141,11 @@ def compare_two_runs(
     REST and MCP cannot answer differently about the same run pair. The
     per-run composites stay, to be read separately.
 
+    **So are the deltas where the runs are apart on a coordinate of their identity**, as a campaign reads two arms:
+    a side itself split on the served model or a host measure's definition pools what the cells keep apart, and two
+    runs read under different definitions, or under none recorded, share no test setup. ``composite_comparability``
+    then says which, and the composite and pass^k deltas, the effect size, the p and the verdict are withheld.
+
     Pure composition over the two run loads + the query-time aggregators; no
     new storage method.
 
@@ -2218,6 +2224,13 @@ def compare_two_runs(
     # one. Decided once, here, so both surfaces inherit the same withholding
     # instead of each deciding for itself and drifting.
     comparability = cross_subject_disclosure(run_a.subject_snapshot.subject_id, run_b.subject_snapshot.subject_id)
+    # Read as a campaign reads two arms (`unread_arms`): no figure of a side is compared where that side is itself
+    # split on a coordinate of its identity (answered by two models, or read under two definitions), and none where
+    # the two were read under different definitions of a host measure, or under none recorded, so they share no test
+    # setup. A different served model between the two runs is the comparison itself, as a split cell is compared
+    # with the control.
+    identity = _identity_comparability(run_a, results_a, run_b, results_b)
+    comparability = comparability or identity
     composites_comparable = comparability is None
 
     # A run carries one arm, so the comparison is ONE row: A's arm against B's, whatever model
@@ -2317,7 +2330,7 @@ def compare_two_runs(
         "k": common_k,
         "pass_hat_k_a": pass_hat_k_a,
         "pass_hat_k_b": pass_hat_k_b,
-        "pass_hat_k_delta": _score_delta(pass_hat_k_a, pass_hat_k_b),
+        "pass_hat_k_delta": _score_delta(pass_hat_k_a, pass_hat_k_b) if identity is None else None,
         # The cases each pass^k was averaged over at that depth — its own denominator, not the composite's.
         "pass_hat_k_n_cases_a": pass_cases_a,
         "pass_hat_k_n_cases_b": pass_cases_b,
@@ -2385,6 +2398,41 @@ def compare_two_runs(
         "subject_detail_a": subject_detail(run_a),
         "subject_detail_b": subject_detail(run_b),
     }
+
+
+def _identity_comparability(
+    run_a: EvalRun, results_a: Sequence[EvalResult], run_b: EvalRun, results_b: Sequence[EvalResult]
+) -> str | None:
+    """Why two runs' figures are not compared on a coordinate of their identity, or ``None`` where they are.
+
+    :param run_a: Run A.
+    :ptype run_a: EvalRun
+    :param results_a: Its results.
+    :ptype results_a: Sequence[EvalResult]
+    :param run_b: Run B.
+    :ptype run_b: EvalRun
+    :param results_b: Its results.
+    :ptype results_b: Sequence[EvalResult]
+    :return: The sentence, or ``None``.
+    :rtype: str | None
+    """
+    split = [
+        f"run {run.id} is split on {' and '.join(coordinates).replace('_', ' ')}"
+        for run, results in ((run_a, results_a), (run_b, results_b))
+        if (coordinates := split_coordinates([run], results))
+    ]
+    if split:
+        return (
+            f"No delta is read: {'; '.join(split)}, so its figures pool answers a campaign's cells keep apart. "
+            "Read each run's cells in a campaign."
+        )
+    if "measure_definition" in split_coordinates([run_a, run_b], [*results_a, *results_b]):
+        return (
+            "No delta is read: the two runs were read under different definitions of a host measure, or under none "
+            "recorded, so they share no test setup. Re-measure one (run_remeasure) or state the definitions each ran "
+            "under (runs_attest)."
+        )
+    return None
 
 
 def _pass_criteria(results: Sequence[EvalResult]) -> list[PassCriterion]:

@@ -8,14 +8,15 @@ coordinate matches nothing. Each lens is read through its front door, the read a
 * a history marks a change of either coordinate between two runs as a boundary: no verdict across it, a fresh
   baseline after it, and the rest of the series still read;
 * a pivot withholds a cell where one arm's observations are apart on either, and reads it where they are not;
-* a frontier point's composite and cost read its headline pass^k cell, never every run of the variant.
+* a frontier point's composite and cost read its headline pass^k cell, never every run of the variant;
+* a two-run comparison reads no delta between runs read under two definitions, or across a run itself split.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from threetears.evals.analysis import comparison_sets, frontier, history, pivot
+from threetears.evals.analysis import compare_two_runs, comparison_sets, frontier, history, pivot
 from threetears.evals.analysis.reporting import METRIC_COMPOSITE
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.identity import IDENTITY_VERSION
@@ -23,7 +24,7 @@ from threetears.evals.schema import EvalResult, EvalRun, RoleUsage
 from threetears.evals.schema.models import RubricScore, ServedModelAttestation
 from threetears.evals.schema.reading_states import StateOf
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.factories import make_eval_result, make_eval_run
+from packages.evals.tests.factories import make_eval_result, make_eval_run, make_template
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 #: The alias every run asks for, and the two models a provider resolved it to months apart.
@@ -276,3 +277,52 @@ def test_a_frontier_point_reads_its_composite_off_one_definition_of_a_host_measu
     _headline, apart = point["pass_hat_k_cells"]
     assert apart["run_ids"] == ["run-c"] and apart["reason"] == "other_measure_definition"
     assert point["mean_composite"] == 1.0
+
+
+# =============================================================================
+# A two-run comparison
+# =============================================================================
+
+
+def _compared(scope: _Scope, a: str, b: str) -> dict[str, Any]:
+    return compare_two_runs(
+        scope.storage,
+        a,
+        b,
+        _SCOPE,
+        load_template=lambda template_id: make_template(id=template_id),
+        subject_detail=lambda run: {},
+    )
+
+
+def test_two_runs_read_under_two_definitions_get_no_delta_and_two_of_one_do() -> None:
+    before, after = _run("run-before", 3, measure_definitions=_BEFORE), _run("run-after", 6, measure_definitions=_AFTER)
+    again = _run("run-again", 7, measure_definitions=_AFTER)
+    scope = _Scope(
+        [before, after, again],
+        _results(before, _MARCH, score=5) + _results(after, _MARCH, score=1) + _results(again, _MARCH, score=3),
+    )
+
+    apart = _compared(scope, "run-before", "run-after")
+    assert "different definitions of a host measure" in apart["composite_comparability"]
+    assert (apart["comparison"]["arm"]["composite_delta"], apart["comparison"]["arm"]["pass_hat_k_delta"]) == (
+        None,
+        None,
+    )
+    assert apart["comparison"]["arm"]["composite_a"] == 1.0, "each side's own figure stays, read alone"
+
+    one = _compared(scope, "run-after", "run-again")
+    assert one["composite_comparability"] is None
+    assert one["comparison"]["arm"]["composite_delta"] == 0.5
+
+
+def test_two_runs_answered_by_different_models_are_compared_but_a_run_itself_split_is_not() -> None:
+    march, june, mixed = _run("run-march", 3), _run("run-june", 6), _run("run-mixed", 7)
+    halves = _results(mixed, _MARCH)
+    halves[0] = halves[0].model_copy(update={"usage": [RoleUsage(role="candidate", model=_ALIAS, served_model=_JUNE)]})
+    scope = _Scope([march, june, mixed], _results(march, _MARCH) + _results(june, _JUNE) + halves)
+
+    assert _compared(scope, "run-march", "run-june")["composite_comparability"] is None, "the comparison asked for"
+    split = _compared(scope, "run-march", "run-mixed")
+    assert "run-mixed is split on served model" in split["composite_comparability"]
+    assert split["comparison"]["arm"]["composite_delta"] is None

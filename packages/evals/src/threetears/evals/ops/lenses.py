@@ -348,7 +348,8 @@ class RunsCompared(EvalBaseModel):
     comparison: dict[str, Any] = Field(
         description=(
             "The two-run lens's answer: `comparison_basis` (whether the runs share a template, not the test's basis), "
-            "`composite_comparability` (why composites are withheld, across subjects), `comparison.arm` (each "
+            "`composite_comparability` (why the deltas are withheld: across subjects, a side split on a coordinate of "
+            "its identity, or the two read under different definitions), `comparison.arm` (each "
             "arm's model and the models its responses named as having answered it, pass^k at one shared depth and mean composite, their deltas, whether the samples were "
             "paired and over how many cases, Hedges' g, p and the verdict), `comparison.per_template` and each "
             "run's `subject_detail_{a,b}`."
