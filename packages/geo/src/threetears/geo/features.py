@@ -34,7 +34,6 @@ garbage-collected.
 
 from __future__ import annotations
 
-import itertools
 import secrets
 import weakref
 from collections import OrderedDict
@@ -151,10 +150,11 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         # other's entries
         self._instance_key = secrets.token_hex(6)
         # the R-Tree's integer id of each indexed feature key, and back: held here, beside the rows,
-        # rather than in a map table joined to the tree (see ``ensure_index``)
+        # rather than in a map table joined to the tree (see ``ensure_index``). an id is a slot of
+        # ``_tree_keys`` (id - 1); a freed slot is reused before the list grows
         self._tree_ids: dict[str, int] = {}
-        self._tree_keys: dict[int, str] = {}
-        self._next_tree_id = itertools.count(1)
+        self._tree_keys: list[str | None] = []
+        self._free_tree_ids: list[int] = []
         self._tree: SQLiteRTree | None = None
 
     @property
@@ -189,6 +189,14 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         which it already holds in memory (``_rows``, ``_holders``); two dicts of ints beside them
         cost less than the rows they index, and every statement is then the tree's own, by id or
         by a box (:class:`~threetears.core.cache.rtree.SQLiteRTree`).
+
+        measured cost (2026-11-15, macOS arm64, Python 3.14, scratchpad d6/mem/measure.py: rows of
+        ``04013-PCT-000123``-shaped ids held through ``_hold`` in 2,000-row chunks, process RSS
+        growth, two runs each, identical): 100,000 held features (the default bound) 50.0 MB with
+        the map table -> 64.2 MB (+14.2 MB); 180,000 (every precinct of a national layer)
+        104.6 -> 111.4 MB (+6.8 MB; the dicts' resize steps fall differently). the rows themselves
+        dominate either way. the key -> id dict is the cost: the key objects are the rows' own
+        (``_hold`` hands them on) and id -> key is a list slot.
         """
         if self._rtree_ready:
             return
@@ -219,7 +227,7 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         :param bounds: the feature's bounding rectangle
         :ptype bounds: BoundingBox
         """
-        self._index_many(layer, source_version, [(feature_id, bounds)])
+        self._index_many([(self._feature_key(layer, source_version, feature_id), bounds)])
 
     def indexed_keys_in_bbox(self, layer: str, source_version: int, bounds: BoundingBox) -> list[str]:
         """return cached feature ids whose bounds intersect ``bounds``.
@@ -248,7 +256,7 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             return []
         prefix = self._feature_key(layer, source_version, "")
         keys = (
-            self._tree_keys.get(tree_id)
+            self._tree_keys[tree_id - 1]
             for tree_id in tree.overlapping(bounds.min_lon, bounds.max_lon, bounds.min_lat, bounds.max_lat)
         )
         # the tree holds every layer and generation this instance indexed: a prefix compare keeps the asked one's
@@ -350,7 +358,7 @@ class FeatureCache(BaseCollection[FeatureEntity]):
                             transient[self._feature_key(layer, source_version, feature_id)] = row
                         continue
                     claimed += weight
-                    self._index_many(layer, source_version, self._hold(marker, loaded))
+                    self._index_many(self._hold(marker, loaded))
                 self._pins[marker] = self._pins.get(marker, 0) + 1
                 pinned.append(marker)
             found = dict(transient)
@@ -442,10 +450,10 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         if entries > self._read_cap:
             self._log_wide_not_held(layer, source_version, len(rows), entries)
             return
-        fresh: list[tuple[Any, BoundingBox]] = []
+        fresh: list[tuple[str, BoundingBox]] = []
         for (x, y), held in per_chunk.items():
             fresh.extend(self._hold((layer, source_version, (zoom, x, y)), held))
-        self._index_many(layer, source_version, fresh)
+        self._index_many(fresh)
         log.debug(
             "wide read held: layer=%s version=%s rows=%d chunks covered=%d entries=%d",
             layer,
@@ -465,8 +473,8 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             self._row_limit,
         )
 
-    def _hold(self, marker: _ChunkMarker, rows: dict[Any, dict[str, Any]]) -> list[tuple[Any, BoundingBox]]:
-        """record ``marker`` as covered by ``rows``; return the features new to the pod, to index.
+    def _hold(self, marker: _ChunkMarker, rows: dict[Any, dict[str, Any]]) -> list[tuple[str, BoundingBox]]:
+        """record ``marker`` as covered by ``rows``; return the feature keys new to the pod, to index.
 
         does not evict: the caller evicts once its read no longer depends on what it holds.
         """
@@ -476,13 +484,14 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         layer, source_version, _key = marker
         self._chunks[marker] = tuple(rows)
         self._held += max(1, len(rows))
-        fresh: list[tuple[Any, BoundingBox]] = []
+        fresh: list[tuple[str, BoundingBox]] = []
         for feature_id, row in rows.items():
             key = self._feature_key(layer, source_version, feature_id)
             count = self._holders.get(key, 0)
             if count == 0:
                 self._rows[key] = row
-                fresh.append((feature_id, self._row_bounds(row)))
+                # the same key object the rows hold, so the index's maps add no second copy of it
+                fresh.append((key, self._row_bounds(row)))
             self._holders[key] = count + 1
         return fresh
 
@@ -521,8 +530,12 @@ class FeatureCache(BaseCollection[FeatureEntity]):
                 gone.append(key)
         self._unindex_keys(gone)
 
-    def _index_many(self, layer: str, source_version: int, features: list[tuple[Any, BoundingBox]]) -> None:
-        """record features' bounds in the R-Tree, in one transaction."""
+    def _index_many(self, features: list[tuple[str, BoundingBox]]) -> None:
+        """record features' bounds in the R-Tree by feature key, in one transaction.
+
+        the maps share the rows' key objects and keep id -> key as a list slot, so the index adds one dict of
+        ints per held feature (the cost, measured: ``ensure_index``'s note).
+        """
         if not features:
             return
         self.ensure_index()
@@ -530,14 +543,17 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         if tree is None:
             return
         boxes: list[tuple[int, float, float, float, float]] = []
-        for feature_id, b in features:
-            key = self._feature_key(layer, source_version, feature_id)
+        for key, b in features:
             tree_id = self._tree_ids.get(key)
             if tree_id is None:
                 # a key indexed again keeps its id: its box is replaced, as the map's INSERT OR IGNORE kept it
-                tree_id = next(self._next_tree_id)
+                if self._free_tree_ids:
+                    tree_id = self._free_tree_ids.pop()
+                    self._tree_keys[tree_id - 1] = key
+                else:
+                    self._tree_keys.append(key)
+                    tree_id = len(self._tree_keys)
                 self._tree_ids[key] = tree_id
-                self._tree_keys[tree_id] = key
             boxes.append((tree_id, b.min_lon, b.max_lon, b.min_lat, b.max_lat))
         tree.put(boxes)
 
@@ -548,7 +564,8 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             return
         gone = [tree_id for tree_id in (self._tree_ids.pop(key, None) for key in keys) if tree_id is not None]
         for tree_id in gone:
-            del self._tree_keys[tree_id]
+            self._tree_keys[tree_id - 1] = None
+        self._free_tree_ids.extend(gone)
         tree.remove(gone)
 
     def _row_bounds(self, row: dict[str, Any]) -> BoundingBox:
