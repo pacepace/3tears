@@ -80,6 +80,8 @@ async def _count_active(conn: Any, agent_id: UUID, *, excluding: UUID | None = N
     where = [_UNPROTECTED]
     if excluding is not None:
         where.append(Fragment('t."schedule_id" != $1', (excluding,)))
+    # __SPANS_PARTITIONS__: an agent's schedules live in several conversations (its cap counts them all), read by
+    # idx_wake_schedules_agent_status
     (counted,) = await aggregate_keyed(
         conn,
         "agent_wake_schedules",
@@ -97,24 +99,110 @@ async def _count_active(conn: Any, agent_id: UUID, *, excluding: UUID | None = N
 _ADVISORY_XACT_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)"
 
 
-# Fires that ran for every wake and subscription of one agent, protected
-# wakes left out. The agent's wakes live in several conversations, so the
-# count joins the two source tables on the agent; a fire lives in its wake's
-# conversation, so each join is on the fire's primary key prefix too.
-COUNT_AGENT_FIRES_SQL = (
-    "SELECT "
-    "(SELECT COUNT(*) FROM wake_fires wf "
-    " JOIN agent_wake_schedules ws ON wf.conversation_id = ws.conversation_id AND wf.schedule_id = ws.schedule_id "
-    " WHERE ws.agent_id = $1 AND NOT ws.protected AND wf.actual_fired_at > $2 "
-    " AND wf.status IN ('fired', 'fired_silent') AND ($3 OR wf.fire_source <> 'manual')) "
-    "+ "
-    "(SELECT COUNT(*) FROM wake_fires wf "
-    " JOIN webhook_subscriptions ws"
-    " ON wf.conversation_id = ws.conversation_id AND wf.webhook_subscription_id = ws.subscription_id "
-    " WHERE ws.agent_id = $1 AND wf.actual_fired_at > $2 "
-    " AND wf.status IN ('fired', 'fired_silent')) "
-    "AS total"
+# The fires of a set of an agent's (or a user's) wakes and subscriptions, counted a source table at a time. wake_fires
+# carries no agent or user, so each count names its wakes by a keyed sub-select of the source table (the agent's or the
+# user's index) and reads their fires through the fire table's own wake index (idx_wake_fires_schedule_time,
+# idx_wake_fires_webhook_time) inside the window. A wake's fires are named by its schedule alone: v014's
+# wake_fires_schedule_conversation_fk ties a fire's (conversation_id, schedule_id) to its schedule's primary key, so the
+# conversation would select the same rows (see check_fire_limits). No such key ties a webhook fire to its
+# subscription's conversation, so each subscription fire is also checked to be in it (_IN_ITS_CONVERSATION).
+# Was one statement summing two joined counts (COUNT_AGENT_FIRES_SQL); the halves are now two keyed statements, so a
+# fire landing between them may be counted in one and not the other: a limit read under READ COMMITTED already sees a
+# moment, and the next fire reads the next one.
+_SCHEDULES_OF_AGENT = (
+    '"schedule_id" IN (SELECT s.schedule_id FROM agent_wake_schedules s WHERE s.agent_id = $1 AND NOT s.protected)'
 )
+_SUBSCRIPTIONS_OF_AGENT = (
+    '"webhook_subscription_id" IN (SELECT w.subscription_id FROM webhook_subscriptions w WHERE w.agent_id = $1)'
+)
+_SCHEDULES_OF_USER = '"schedule_id" IN (SELECT s.schedule_id FROM agent_wake_schedules s WHERE s.user_id = $1)'
+_SUBSCRIPTIONS_OF_USER = (
+    '"webhook_subscription_id" IN (SELECT w.subscription_id FROM webhook_subscriptions w WHERE w.user_id = $1)'
+)
+# a subscription's fire written in its subscription's conversation, as the joined count's ON named it: no key ties the
+# two, so each fire is checked by its subscription's UNIQUE key (the fire's FK names it, so it exists). Spelled as no
+# subscription row in ANOTHER conversation: as a conversation equality, PostgreSQL turned the probe into a join and read
+# the fires through the conversation's index, and YugabyteDB would read the conversation's every fire through the
+# hashed primary key prefix (see check_fire_limits); this way the subscription's own index serves the fires.
+_IN_ITS_CONVERSATION = Fragment(
+    "NOT EXISTS (SELECT 1 FROM webhook_subscriptions c"
+    ' WHERE c.subscription_id = t."webhook_subscription_id" AND c.conversation_id <> t."conversation_id")',
+    (),
+)
+
+
+async def _count_agent_fires(conn: Any, agent_id: UUID, since: datetime, *, count_manual: bool) -> int:
+    """The fires that ran, silent ones included, since ``since`` for every wake and subscription of one agent,
+    protected wakes left out; manual fires only when ``count_manual``.
+
+    :param conn: asyncpg-compatible pool or connection
+    :ptype conn: Any
+    :param agent_id: the agent
+    :ptype agent_id: UUID
+    :param since: the window's start, kept out
+    :ptype since: datetime
+    :param count_manual: whether fires run by hand are counted
+    :ptype count_manual: bool
+    :return: the count
+    :rtype: int
+    """
+    ran = {"status": AnyOf(("fired", "fired_silent"), cast=None)}
+    window = Fragment('"actual_fired_at" > $1', (since,))
+    # __SPANS_PARTITIONS__: an agent's (a user's) wakes and their fires live in several conversations; each count is
+    # bounded by the wakes its sub-select names, through each wake's own fire index
+    (wakes,) = await aggregate_keyed(
+        conn,
+        "wake_fires",
+        aggregates={"n": Count()},
+        by=ran,
+        where=[
+            Fragment(_SCHEDULES_OF_AGENT, (agent_id,)),
+            window,
+            Fragment("($1 OR \"fire_source\" <> 'manual')", (count_manual,)),
+        ],
+    )
+    # __SPANS_PARTITIONS__: as the wakes' count above, its subscriptions' fires
+    (hooks,) = await aggregate_keyed(
+        conn,
+        "wake_fires",
+        aggregates={"n": Count()},
+        by=ran,
+        where=[Fragment(_SUBSCRIPTIONS_OF_AGENT, (agent_id,)), _IN_ITS_CONVERSATION, window],
+    )
+    return int(wakes["n"]) + int(hooks["n"])
+
+
+async def _count_user_fires(conn: Any, user_id: UUID, since: datetime) -> int:
+    """The fires that ran (``status='fired'``) since ``since`` for every wake and subscription of one user.
+
+    :param conn: asyncpg-compatible pool or connection
+    :ptype conn: Any
+    :param user_id: the user
+    :ptype user_id: UUID
+    :param since: the window's start, kept out
+    :ptype since: datetime
+    :return: the count
+    :rtype: int
+    """
+    window = Fragment('"actual_fired_at" > $1', (since,))
+    # __SPANS_PARTITIONS__: an agent's (a user's) wakes and their fires live in several conversations; each count is
+    # bounded by the wakes its sub-select names, through each wake's own fire index
+    (wakes,) = await aggregate_keyed(
+        conn,
+        "wake_fires",
+        aggregates={"n": Count()},
+        by={"status": "fired"},
+        where=[Fragment(_SCHEDULES_OF_USER, (user_id,)), window],
+    )
+    # __SPANS_PARTITIONS__: as the wakes' count above, its subscriptions' fires
+    (hooks,) = await aggregate_keyed(
+        conn,
+        "wake_fires",
+        aggregates={"n": Count()},
+        by={"status": "fired"},
+        where=[Fragment(_SUBSCRIPTIONS_OF_USER, (user_id,)), _IN_ITS_CONVERSATION, window],
+    )
+    return int(wakes["n"]) + int(hooks["n"])
 
 
 # Which cap was hit. ``None`` means the fire may proceed.
@@ -213,30 +301,10 @@ async def check_rate_limit(
         )
         return "conv"
 
-    # Per-user count covers both schedule-source and webhook-source
-    # fires. The two subqueries union via ``+`` and each hits the
-    # corresponding source-table's PK->wake_fires index.
-    #
-    # cache-bypass: a summed pair of JOINed aggregates spanning three tables
-    # (wake_fires x agent_wake_schedules, wake_fires x webhook_subscriptions) is exactly the
-    # JOIN shape the Collection API cannot express -- user_id lives on the two source tables,
-    # not on wake_fires, so no per-table Collection call can produce this number without
-    # fanning the join out into the application and losing the single-statement read.
-    user_count = await pool.fetchval(
-        "SELECT "
-        "(SELECT COUNT(*) FROM wake_fires wf "
-        " JOIN agent_wake_schedules ws ON wf.conversation_id = ws.conversation_id AND wf.schedule_id = ws.schedule_id "
-        " WHERE ws.user_id = $1 AND wf.actual_fired_at > $2 AND wf.status = 'fired') "
-        "+ "
-        "(SELECT COUNT(*) FROM wake_fires wf "
-        " JOIN webhook_subscriptions ws"
-        " ON wf.conversation_id = ws.conversation_id AND wf.webhook_subscription_id = ws.subscription_id "
-        " WHERE ws.user_id = $1 AND wf.actual_fired_at > $2 AND wf.status = 'fired') "
-        "AS total",
-        trigger.user_id,
-        since,
-    )
-    user_count_int = int(user_count or 0)
+    # Per-user count covers both schedule-source and webhook-source fires (_count_user_fires), so a user can't
+    # dodge the cap by alternating subscription types.
+    # cache-bypass: a count over a rolling window must read committed state at fire time.
+    user_count_int = await _count_user_fires(pool, trigger.user_id, since)
     if user_count_int >= config.max_fires_per_user_per_day:
         log.info(
             "rate-limit: per-user cap exceeded",
@@ -335,9 +403,9 @@ async def check_fire_limits(
     if int(wake_count or 0) >= limits.per_wake:
         _log_limit_reached(trigger, "wake", int(wake_count or 0), limits.per_wake)
         return "wake"
-    agent_count = await pool.fetchval(COUNT_AGENT_FIRES_SQL, trigger.agent_id, since, count_manual)
-    if int(agent_count or 0) >= limits.per_agent:
-        _log_limit_reached(trigger, "agent", int(agent_count or 0), limits.per_agent)
+    agent_count = await _count_agent_fires(pool, trigger.agent_id, since, count_manual=count_manual)
+    if agent_count >= limits.per_agent:
+        _log_limit_reached(trigger, "agent", agent_count, limits.per_agent)
         return "agent"
     return None
 

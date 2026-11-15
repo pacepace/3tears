@@ -1,6 +1,6 @@
 """Integration: a wake run by hand, and a protected wake's grid, on real Postgres.
 
-- the manual-fire limit is one statement: of two callers at once exactly one
+- the manual-fire limit is one transaction: of two callers at once exactly one
   runs, a second run inside the gap is refused, one after the gap goes through
 - a manual fire is refused while a fire of the wake is dispatching
 - it is recorded as run by hand with who asked, and moves neither
@@ -123,7 +123,7 @@ class _Ran:
 
 
 class TestTheManualFireLimit:
-    """The limit is one statement, so it holds however many callers arrive together."""
+    """The limit is one transaction, so it holds however many callers arrive together."""
 
     async def test_a_manual_fire_is_recorded_as_run_by_hand_and_leaves_the_schedule_where_it_was(
         self, applied_schema: tuple[str, str]
@@ -194,6 +194,48 @@ class TestTheManualFireLimit:
             assert outcomes.count("claimed") == 1, outcomes
             assert set(outcomes) - {"claimed"} <= {"too_soon", "dispatching"}
             assert await pool.fetchval("SELECT count(*) FROM wake_fires WHERE schedule_id = $1", sid) == 1
+        finally:
+            await pool.close()
+
+    async def test_two_claimers_racing_leave_the_winner_s_stamp_and_its_one_fire(
+        self, applied_schema: tuple[str, str]
+    ) -> None:
+        """The claim is a keyed UPDATE then the INSERT, in one transaction: of two claimers racing on one wake, round
+        after round, exactly one wins, the wake carries the winner's stamp, and its one fire row is the winner's (no
+        orphan insert from the loser, no stamp left by it)."""
+        url, schema = applied_schema
+        pool = await _schema_pool(url, schema)
+        try:
+            schedules, _fires = _collections(pool)
+            for _round in range(10):
+                agent = _new_uuid()
+                _conv, sid = await _seed_schedule(pool, agent_id=agent)
+                entity = await schedules.find_for_agent(agent, sid)
+                assert entity is not None
+                start = datetime.now(UTC)
+
+                async def one(who: str, at: datetime) -> Any:
+                    try:
+                        return await claim_manual_fire(pool, entity, requested_by=who, min_gap=_GAP, now=at)
+                    except ManualFireRefused as refused:
+                        return refused
+
+                outcomes = await asyncio.gather(one("user:a", start), one("user:b", start + timedelta(seconds=1)))
+                (winner,) = [outcome for outcome in outcomes if not isinstance(outcome, ManualFireRefused)]
+                (loser,) = [outcome for outcome in outcomes if isinstance(outcome, ManualFireRefused)]
+                # refused inside the gap; worded "dispatching" when the winner's fire is still in flight as it is read
+                assert loser.reason in {"too_soon", "dispatching"}, loser.reason
+                assert (await _wake(pool, sid))["last_manual_fire_at"] == winner.claimed_at
+                fired = await pool.fetch(
+                    "SELECT fire_id, requested_by, actual_fired_at FROM wake_fires WHERE schedule_id = $1", sid
+                )
+                assert [dict(row) for row in fired] == [
+                    {
+                        "fire_id": winner.fire_id,
+                        "requested_by": winner.trigger.requested_by,
+                        "actual_fired_at": winner.claimed_at,
+                    }
+                ]
         finally:
             await pool.close()
 

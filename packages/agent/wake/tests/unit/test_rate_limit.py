@@ -1,7 +1,7 @@
 """Unit tests for :mod:`threetears.agent.wake.rate_limit`.
 
 The helper is intentionally pure-async over an asyncpg-compatible pool
-(``fetchval`` only). Tests substitute a minimal in-memory stub for the
+(keyed counts through ``fetch``). Tests substitute a minimal in-memory stub for the
 pool so the boundary contract is exercised without touching Postgres.
 
 Three scenarios drive the per-fire helper:
@@ -140,11 +140,16 @@ def _trigger(
 @pytest.mark.asyncio
 async def test_check_rate_limit_returns_none_when_both_counts_under_cap() -> None:
     """Both under cap -> ``None`` (the fire may proceed)."""
-    pool = _StubPool([5, 10])  # conv=5, user=10 against (24, 100)
+    pool = _StubPool([5, 6, 4])  # conv=5, user=6+4 (its wakes', its subscriptions') against (24, 100)
     config = _StubConfig()
     trigger = _trigger()
     assert await check_rate_limit(trigger, pool, config) is None
-    assert len(pool.calls) == 2  # both queries ran
+    assert len(pool.calls) == 3  # the conversation's count, then the user's two halves
+    schedules_sql, schedules_args = pool.calls[1]
+    hooks_sql, hooks_args = pool.calls[2]
+    assert "FROM agent_wake_schedules s WHERE s.user_id = $" in schedules_sql
+    assert "FROM webhook_subscriptions w WHERE w.user_id = $" in hooks_sql
+    assert trigger.user_id in schedules_args and trigger.user_id in hooks_args
 
 
 @pytest.mark.asyncio
@@ -158,11 +163,12 @@ async def test_check_rate_limit_returns_conv_scope_when_per_conv_at_cap() -> Non
 
 @pytest.mark.asyncio
 async def test_check_rate_limit_returns_user_scope_when_per_user_at_cap() -> None:
-    """Per-conv under cap + per-user at cap -> returns ``'user'`` after both queries."""
-    pool = _StubPool([0, DEFAULT_MAX_FIRES_PER_USER_PER_DAY])
+    """Per-conv under cap + per-user at cap -> returns ``'user'`` after every query; the user's count is the sum of
+    its wakes' fires and its subscriptions' fires."""
+    pool = _StubPool([0, DEFAULT_MAX_FIRES_PER_USER_PER_DAY - 1, 1])
     config = _StubConfig()
     assert await check_rate_limit(_trigger(), pool, config) == "user"
-    assert len(pool.calls) == 2  # both ran
+    assert len(pool.calls) == 3  # all ran
 
 
 @pytest.mark.asyncio
@@ -264,16 +270,19 @@ async def test_check_active_schedule_cap_count_func_at_cap_rejects() -> None:
 @pytest.mark.asyncio
 async def test_check_fire_limits_under_both_limits_returns_none() -> None:
     """Under both limits -> ``None``; the wake count runs first, then the agent's."""
-    pool = _StubPool([3, 40])
+    pool = _StubPool([3, 30, 10])
     trigger = _trigger()
     assert await check_fire_limits(trigger, pool, FireLimits(per_wake=48, per_agent=500)) is None
     wake_sql, wake_args = pool.calls[0]
-    agent_sql, agent_args = pool.calls[1]
+    schedules_sql, schedules_args = pool.calls[1]
+    hooks_sql, hooks_args = pool.calls[2]
     # the wake's own schedule, by schedule_id alone (unique; its conversation selects the same rows)
     assert "schedule_id = $1" in wake_sql and "conversation_id" not in wake_sql
     assert wake_args[0] == trigger.schedule_id
-    assert "ws.agent_id = $1" in agent_sql
-    assert agent_args[0] == trigger.agent_id
+    # the agent's count: its wakes' fires, then its subscriptions' fires
+    assert "FROM agent_wake_schedules s WHERE s.agent_id = $" in schedules_sql
+    assert "FROM webhook_subscriptions w WHERE w.agent_id = $" in hooks_sql
+    assert trigger.agent_id in schedules_args and trigger.agent_id in hooks_args
 
 
 @pytest.mark.asyncio
@@ -285,7 +294,7 @@ async def test_check_fire_limits_wake_at_limit_returns_wake_and_skips_the_agent_
 
 @pytest.mark.asyncio
 async def test_check_fire_limits_agent_at_limit_returns_agent() -> None:
-    pool = _StubPool([1, 500])
+    pool = _StubPool([1, 499, 1])  # the agent's wakes' fires and its subscriptions' fires, summed
     assert await check_fire_limits(_trigger(), pool, FireLimits(per_wake=48, per_agent=500)) == "agent"
 
 
@@ -295,7 +304,7 @@ async def test_check_fire_limits_counts_silent_fires() -> None:
     pool = _StubPool([0, 0])
     await check_fire_limits(_trigger(), pool, FireLimits(per_wake=48, per_agent=500))
     for sql, args in pool.calls:
-        # the keyed count binds the statuses (status = ANY($n)); the agent's hand-written count spells them
+        # every keyed count binds the statuses (status = ANY($n))
         assert "'fired', 'fired_silent'" in sql or ["fired", "fired_silent"] in [
             list(arg) for arg in args if isinstance(arg, list | tuple)
         ]
@@ -303,10 +312,10 @@ async def test_check_fire_limits_counts_silent_fires() -> None:
 
 @pytest.mark.asyncio
 async def test_check_fire_limits_leaves_protected_wakes_out_of_the_agent_count() -> None:
-    pool = _StubPool([0, 0])
+    pool = _StubPool([0, 0, 0])
     await check_fire_limits(_trigger(), pool, FireLimits(per_wake=48, per_agent=500))
-    agent_sql, _args = pool.calls[1]
-    assert "NOT ws.protected" in agent_sql
+    schedules_sql, _args = pool.calls[1]
+    assert "NOT s.protected" in schedules_sql
 
 
 @pytest.mark.asyncio

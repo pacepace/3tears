@@ -123,7 +123,7 @@ _CREATE_CONV_STATUS_INDEX_SQL = (
 
 # Lookup index for user-scoped admin views.
 _CREATE_USER_INDEX_SQL = (
-    "-- purpose: packages/agent/wake/src/threetears/agent/wake/rate_limit.py::check_rate_limit\n"
+    "-- purpose: packages/agent/wake/src/threetears/agent/wake/rate_limit.py::_count_user_fires\n"
     "-- plan_test: packages/agent/wake/tests/integration/test_index_plans.py::test_wake_schedules_user\n"
     "-- reason: agent_wake_schedules carries five indexes: the tick's due scan, the agent's and the user's reads\n"
     "CREATE INDEX IF NOT EXISTS idx_wake_schedules_user ON agent_wake_schedules (user_id)"

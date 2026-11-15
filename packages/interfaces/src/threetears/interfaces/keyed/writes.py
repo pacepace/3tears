@@ -34,6 +34,7 @@ from threetears.interfaces.keyed.filters import (
     quoted_table,
     renumbered,
 )
+from threetears.interfaces.keyed.keys import stated_literals
 from threetears.interfaces.keyed.rows import _TEXT_TYPES, DEFAULT_KEY_BATCH, KeyBatch, _text
 
 __all__ = [
@@ -165,7 +166,10 @@ def _guarded(
     if named is not None:
         conditions.append(named[0])
         params += named[1]
-    pinned, values = by_conditions(by, first=first + len(params), alias=alias)
+    # a text a declared partial index's predicate names is written as its literal, as a keyed read writes it
+    # (keys.stated_literals; coordinator ruling 2026-11-14): ``status = $3`` cannot prove the reaper's ``WHERE status =
+    # 'dispatching'`` under PostgreSQL's generic plan, which a write a timer runs reaches after five runs
+    pinned, values = by_conditions(by, first=first + len(params), alias=alias, stated=stated_literals(table))
     conditions += pinned
     params += values
     if prefix:

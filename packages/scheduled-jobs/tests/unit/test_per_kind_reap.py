@@ -371,10 +371,10 @@ class TestStoreSweepIsKindScoped:
 
         assert reaped == 1
         sql, args = pool.calls[-1]
-        assert "kind = ANY($3)" in sql
-        assert args[0] == REAPED_DISPATCH_ERROR
-        assert args[1] == now - timedelta(seconds=_DATASET_REAP_SECONDS)
-        assert args[2] == [_DATASET_KIND]
+        assert "j.kind = ANY($4::text[])" in sql
+        assert args[1] == REAPED_DISPATCH_ERROR
+        assert args[2] == now - timedelta(seconds=_DATASET_REAP_SECONDS)
+        assert args[3] == [_DATASET_KIND]
 
     async def test_empty_kind_group_sweeps_nothing(self) -> None:
         """An empty group must never widen to "every kind"."""

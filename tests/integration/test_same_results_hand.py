@@ -28,10 +28,19 @@ other engine).
   and ``enrich_workspace_identity`` (the namespace row by its whole primary key -> ``read_row``); wake
   ``rate_limit`` active-schedule cap (its two ``COUNT(*)`` statements -> ``aggregate_keyed``), through
   ``check_active_schedule_cap`` (create) and ``resume_schedule_serialized`` (resume, the wake left out).
+- wake ``rate_limit`` agent and user fire counts (one statement summing two joined counts -> two ``aggregate_keyed``
+  counts, each naming its wakes by a keyed sub-select of its source table), through ``check_fire_limits`` and
+  ``check_rate_limit``; wake ``manual.claim_manual_fire`` (one ``UPDATE ... RETURNING`` feeding the ``INSERT`` -> an
+  ``update_keyed`` guarded by the gap and "no fire in flight", then the insert, in one transaction), its table after
+  compared too.
+- scheduled-jobs ``JobFireCollection.latest_for_jobs`` (``DISTINCT ON`` over the listed jobs -> one ``keyset_page`` of
+  one row a job) and ``reap_stale_dispatching`` (a hand ``UPDATE`` with a kind ``EXISTS`` -> ``update_keyed`` with
+  the ``EXISTS`` as a guard), its table after compared too.
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -43,11 +52,12 @@ from typing import Any
 import pytest
 
 from threetears.agent.memory.collections import MemoryRefsCollection
-from threetears.agent.wake import rate_limit
+from threetears.agent.wake import manual, rate_limit
 from threetears.agent.workspace.collections import WorkspaceFileVersionCollection
 from threetears.agent.workspace.tools import helpers as workspace_helpers
 from threetears.agent.workspace.tools.helpers import next_journal_version
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.scheduled_jobs.collections import REAPED_DISPATCH_ERROR, JobFireCollection
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.keyed import Fragment, Sort, delete_keyed, keyset_page, keyset_rows, read_by, update_keyed
 from threetears.core.testing.rewrites import assert_rewrite_same
@@ -610,6 +620,9 @@ class _OnePool:
     async def acquire(self) -> AsyncIterator[Any]:
         yield self._conn
 
+    async def fetch(self, query: str, *args: Any) -> Any:
+        return await self._conn.fetch(query, *args)
+
 
 class _Resumed:
     """the schedule collection's resume, as resume_schedule_serialized calls it after the cap: nothing written."""
@@ -664,4 +677,404 @@ async def test_an_agent_s_active_count_is_its_unprotected_active_wakes(
         old_sql=old_sql if left_out is None else old_sql + " AND schedule_id != $2",
         params=[_AGENTS[0]] if left_out is None else [_AGENTS[0], left_out],
         helper=helper,
+    )
+
+
+#: each tenant's own conversation and user (the agent and the user are the boundary of the fire counts)
+_CONVERSATIONS = (uuid.uuid5(_NS, "conversation-0"), uuid.uuid5(_NS, "conversation-1"))
+_USERS = (uuid.uuid5(_NS, "user-0"), uuid.uuid5(_NS, "user-1"))
+
+
+def _wake(seed: Seeded) -> dict[str, Any]:
+    """a wake of its tenant's agent and user, in its tenant's conversation; every third one protected."""
+    return {
+        "conversation_id": _CONVERSATIONS[seed.tenant],
+        "schedule_id": uuid.uuid5(_NS, f"wake-{seed.index}"),
+        "user_id": _USERS[seed.tenant],
+        "agent_id": _AGENTS[seed.tenant],
+        "schedule_type": "cron",
+        "status": "active",
+        "protected": seed.index % 3 == 2,
+        "name": None if seed.null else f"wake {seed.index}",
+        "date_created": _T0 + timedelta(hours=seed.tie),
+        "date_updated": _T0,
+    }
+
+
+#: a fire's (status, hours ago, source) for each wake: inside the day fired, silent, run by hand, not run; and a
+#: fire of the day before
+_WAKE_FIRES = (
+    ("fired", 1, "scheduled_tick"),
+    ("fired_silent", 2, "scheduled_tick"),
+    ("fired", 3, "manual"),
+    ("skipped_busy", 1, "scheduled_tick"),
+    ("fired", 30, "scheduled_tick"),
+)
+#: and for each subscription
+_HOOK_FIRES = (("fired", 1, "webhook"), ("fired_silent", 2, "webhook"), ("fired", 30, "webhook"))
+
+
+async def _fires_beside(conn: Any, wakes: list[Mapping[str, Any]]) -> None:
+    """two subscriptions of each tenant's agent and user, and the fires of every wake and subscription; one fire of
+    tenant 0's first subscription written in tenant 1's conversation (no key ties a webhook fire's conversation to its
+    subscription's, so a count by the subscription alone would take it)."""
+    now = datetime.now(UTC)
+    fire = 0
+
+    async def fired(
+        conversation: Any, status: str, hours: int, source: str, *, schedule: Any = None, hook: Any = None
+    ) -> None:
+        nonlocal fire
+        fire += 1
+        await conn.execute(
+            "INSERT INTO wake_fires (conversation_id, fire_id, schedule_id, webhook_subscription_id, actual_fired_at,"
+            " status, fire_source, requested_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            conversation,
+            uuid.uuid5(_NS, f"fire-{fire}"),
+            schedule,
+            hook,
+            now - timedelta(hours=hours),
+            status,
+            source,
+            "user:x" if source == "manual" else None,
+        )
+
+    for tenant in (0, 1):
+        for k in (0, 1):
+            hook = uuid.uuid5(_NS, f"hook-{tenant}-{k}")
+            await conn.execute(
+                "INSERT INTO webhook_subscriptions (conversation_id, subscription_id, user_id, agent_id, name,"
+                " verification_scheme, secret_ciphertext) VALUES ($1, $2, $3, $4, $5, 'generic_hmac_sha256', 'x'::bytea)",
+                _CONVERSATIONS[tenant],
+                hook,
+                _USERS[tenant],
+                _AGENTS[tenant],
+                f"hook {tenant} {k}",
+            )
+            for status, hours, source in _HOOK_FIRES:
+                await fired(_CONVERSATIONS[tenant], status, hours, source, hook=hook)
+    await fired(_CONVERSATIONS[1], "fired", 1, "webhook", hook=uuid.uuid5(_NS, "hook-0-0"))
+    for wake in wakes:
+        for status, hours, source in _WAKE_FIRES:
+            await fired(wake["conversation_id"], status, hours, source, schedule=wake["schedule_id"])
+
+
+class _Kept:
+    """the keyed counts rate_limit sends, each one's answer kept (a spy on its ``aggregate_keyed``)."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.counted: list[int] = []
+        real = rate_limit.aggregate_keyed
+
+        async def spy(*args: Any, **kwargs: Any) -> Any:
+            rows = await real(*args, **kwargs)
+            self.counted.append(int(rows[0]["n"]))
+            return rows
+
+        monkeypatch.setattr(rate_limit, "aggregate_keyed", spy)
+
+
+@pytest.mark.parametrize("count_manual", [True, False], ids=["manual-counted", "manual-left-out"])
+async def test_an_agent_s_fire_count_is_its_wakes_and_subscriptions_fires(
+    db: Any, monkeypatch: pytest.MonkeyPatch, count_manual: bool
+) -> None:
+    """Flips if the agent's fire count (two keyed counts, its wakes' fires and its subscriptions' fires, each by a
+    sub-select of its source table) counts other fires than the one statement summing two joined counts did: another
+    agent's, a protected wake's, a fire not run, one of the day before, one run by hand when those are left out, or a
+    subscription's fire written in another conversation. Read through check_fire_limits, its counts kept by a spy."""
+    kept = _Kept(monkeypatch)
+
+    async def helper(conn: Any) -> list[dict[str, Any]]:
+        kept.counted.clear()
+        trigger = SimpleNamespace(
+            conversation_id=_CONVERSATIONS[0],
+            schedule_id=None,
+            webhook_subscription_id=uuid.uuid5(_NS, "no-such-hook"),
+            fire_source="webhook",
+            agent_id=_AGENTS[0],
+            user_id=_USERS[0],
+            protected=False,
+        )
+        limits = SimpleNamespace(manual_fires_count=count_manual, per_wake=10**6, per_agent=10**6)
+        assert await rate_limit.check_fire_limits(trigger, conn, limits) is None  # type: ignore[arg-type]
+        _wake, wakes, hooks = kept.counted
+        return [{"n": wakes + hooks}]
+
+    await assert_same_results(
+        db,
+        table="agent_wake_schedules",
+        row=_wake,
+        old_sql=(
+            "SELECT "
+            "(SELECT COUNT(*) FROM wake_fires wf "
+            " JOIN agent_wake_schedules ws ON wf.conversation_id = ws.conversation_id AND wf.schedule_id = ws.schedule_id "
+            " WHERE ws.agent_id = $1 AND NOT ws.protected AND wf.actual_fired_at > $2 "
+            " AND wf.status IN ('fired', 'fired_silent') AND ($3 OR wf.fire_source <> 'manual')) "
+            "+ "
+            "(SELECT COUNT(*) FROM wake_fires wf "
+            " JOIN webhook_subscriptions ws"
+            " ON wf.conversation_id = ws.conversation_id AND wf.webhook_subscription_id = ws.subscription_id "
+            " WHERE ws.agent_id = $1 AND wf.actual_fired_at > $2 "
+            " AND wf.status IN ('fired', 'fired_silent')) "
+            "AS n"
+        ),
+        params=[_AGENTS[0], datetime.now(UTC) - timedelta(hours=rate_limit.RATE_LIMIT_WINDOW_HOURS), count_manual],
+        helper=helper,
+        related=_fires_beside,
+    )
+
+
+async def test_a_user_s_fire_count_is_its_wakes_and_subscriptions_fires(
+    db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the user's fire count (two keyed counts by a sub-select of each source table) counts other fires than
+    the one statement summing two joined counts did: another user's, a silent one or one not run, one of the day
+    before, or a subscription's fire written in another conversation. Read through check_rate_limit."""
+    kept = _Kept(monkeypatch)
+
+    async def helper(conn: Any) -> list[dict[str, Any]]:
+        kept.counted.clear()
+        trigger = SimpleNamespace(
+            conversation_id=uuid.uuid5(_NS, "no-such-conversation"),
+            schedule_id=None,
+            fire_source="scheduled_tick",
+            user_id=_USERS[0],
+        )
+        config = SimpleNamespace(max_fires_per_conv_per_day=10**6, max_fires_per_user_per_day=10**6)
+        assert await rate_limit.check_rate_limit(trigger, conn, config) is None  # type: ignore[arg-type]
+        _conversation, wakes, hooks = kept.counted
+        return [{"n": wakes + hooks}]
+
+    await assert_same_results(
+        db,
+        table="agent_wake_schedules",
+        row=_wake,
+        old_sql=(
+            "SELECT "
+            "(SELECT COUNT(*) FROM wake_fires wf "
+            " JOIN agent_wake_schedules ws ON wf.conversation_id = ws.conversation_id AND wf.schedule_id = ws.schedule_id "
+            " WHERE ws.user_id = $1 AND wf.actual_fired_at > $2 AND wf.status = 'fired') "
+            "+ "
+            "(SELECT COUNT(*) FROM wake_fires wf "
+            " JOIN webhook_subscriptions ws"
+            " ON wf.conversation_id = ws.conversation_id AND wf.webhook_subscription_id = ws.subscription_id "
+            " WHERE ws.user_id = $1 AND wf.actual_fired_at > $2 AND wf.status = 'fired') "
+            "AS n"
+        ),
+        params=[_USERS[0], datetime.now(UTC) - timedelta(hours=rate_limit.RATE_LIMIT_WINDOW_HOURS)],
+        helper=helper,
+        related=_fires_beside,
+    )
+
+
+#: the manual fire's claim instant, its gap, and its fire's id (the claim's own is pinned to it: uuid7 is replaced)
+_CLAIMED_AT = _T0 + timedelta(days=1)
+_GAP = timedelta(minutes=10)
+_MANUAL_FIRE = uuid.uuid5(_NS, "manual-fire")
+
+
+def _manual_wake(seed: Seeded) -> dict[str, Any]:
+    """a wake last run by hand 0, 6, 10 (the gap's edge) or 12 minutes before the claim, or never (NULLs)."""
+    return {
+        **_wake(seed),
+        "protected": False,
+        "last_manual_fire_at": None if seed.null else _CLAIMED_AT - timedelta(minutes=(0, 6, 10, 12)[seed.index % 4]),
+    }
+
+
+async def _in_flight_beside(conn: Any, wakes: list[Mapping[str, Any]]) -> None:
+    """a fire in flight of every fifth wake from the second; a fire that ended of every other."""
+    for index, wake in enumerate(wakes):
+        await conn.execute(
+            "INSERT INTO wake_fires (conversation_id, fire_id, schedule_id, actual_fired_at, status, fire_source)"
+            " VALUES ($1, $2, $3, $4, $5, 'scheduled_tick')",
+            wake["conversation_id"],
+            uuid.uuid5(_NS, f"in-flight-{index}"),
+            wake["schedule_id"],
+            _CLAIMED_AT - timedelta(hours=1),
+            "dispatching" if index % 5 == 1 else "fired",
+        )
+
+
+@pytest.mark.parametrize(
+    "target", [0, 1, 2, 3, 6], ids=["too-soon", "in-flight", "gap-edge", "past-gap", "edge-in-flight"]
+)
+async def test_a_manual_claim_takes_the_limit_its_statement_took(
+    db: Any, monkeypatch: pytest.MonkeyPatch, target: int
+) -> None:
+    """Flips if the manual claim (a keyed UPDATE of the stamp, guarded by the gap and "no fire in flight", then the
+    insert, in one transaction) claims where the one UPDATE ... RETURNING feeding the INSERT did not, or the other way:
+    inside the gap, at its edge, past it, never run by hand, a fire in flight, the wake gone; or leaves the wake's
+    stamp or the fire row otherwise. The single-claimer path; the race is test_manual_fire_and_grid's."""
+    monkeypatch.setattr(manual, "uuid7", lambda: _MANUAL_FIRE)
+    wake_id = uuid.uuid5(_NS, f"wake-{target}")
+    tenant_conversation = _CONVERSATIONS[0]
+
+    async def helper(conn: Any) -> list[dict[str, Any]]:
+        # named by tenant 0's conversation, as the statement names it: a wake of tenant 1's is not found
+        wake = SimpleNamespace(
+            conversation_id=tenant_conversation,
+            schedule_id=wake_id,
+            user_id=_USERS[0],
+            agent_id=_AGENTS[0],
+            execution_mode="inline",
+            schedule_type="cron",
+            name="wake",
+            task_prompt="do it",
+            context_from_schedule_id=None,
+            skill_id=None,
+            include_conversation_history=False,
+            protected=False,
+        )
+        try:
+            claim = await manual.claim_manual_fire(
+                _OnePool(conn),
+                wake,
+                requested_by="user:x",
+                min_gap=_GAP,
+                now=_CLAIMED_AT,  # type: ignore[arg-type]
+            )
+        except manual.ManualFireRefused:
+            return []
+        return [{"fire_id": claim.fire_id}]
+
+    claimed_old = (
+        "WITH claim AS ("
+        " UPDATE agent_wake_schedules s SET last_manual_fire_at = $3::timestamptz"
+        " WHERE s.conversation_id = $1 AND s.schedule_id = $2"
+        " AND (s.last_manual_fire_at IS NULL"
+        " OR s.last_manual_fire_at <= $3::timestamptz - make_interval(secs => $4::double precision))"
+        " AND NOT EXISTS (SELECT 1 FROM wake_fires f WHERE f.conversation_id = s.conversation_id"
+        " AND f.schedule_id = s.schedule_id AND f.status = 'dispatching')"
+        " RETURNING s.conversation_id, s.schedule_id)"
+        " INSERT INTO wake_fires (conversation_id, fire_id, schedule_id, webhook_subscription_id, scheduled_fire_at,"
+        " actual_fired_at, status, display_suppressed, fire_source, requested_by)"
+        " SELECT c.conversation_id, $5::uuid, c.schedule_id, NULL, NULL, $3::timestamptz, 'dispatching', false,"
+        " 'manual', $6::text FROM claim c RETURNING fire_id"
+    )
+    await assert_same_results(
+        db,
+        table="agent_wake_schedules",
+        row=_manual_wake,
+        old_sql=claimed_old,
+        # the target's conversation: tenant 0's (each seed case places it there or seeds no such wake)
+        params=[tenant_conversation, wake_id, _CLAIMED_AT, _GAP.total_seconds(), _MANUAL_FIRE, "user:x"],
+        helper=helper,
+        related=_in_flight_beside,
+        state_sql=(
+            "SELECT s.schedule_id, s.last_manual_fire_at, f.fire_id, f.conversation_id, f.status, f.fire_source,"
+            " f.requested_by, f.actual_fired_at, f.scheduled_fire_at, f.display_suppressed"
+            " FROM agent_wake_schedules s LEFT JOIN wake_fires f ON f.schedule_id = s.schedule_id"
+        ),
+    )
+
+
+#: each tenant's partition of scheduled jobs; the sweep's instant and age
+_JOB_PARTITIONS = (uuid.uuid5(_NS, "jobs-0"), uuid.uuid5(_NS, "jobs-1"))
+_SWEPT_AT = _T0
+_STALE = timedelta(minutes=10)
+_FIRE_COLUMNS = ("partition_key", "fire_id", "job_id", "scheduled_fire_at", "actual_fired_at", "status", "error")
+
+
+def _job(seed: Seeded) -> dict[str, Any]:
+    """a scheduled job of its tenant's partition, of kind k0 or k1 in turn."""
+    return {
+        "partition_key": _JOB_PARTITIONS[seed.tenant],
+        "job_id": uuid.uuid5(_NS, f"job-{seed.index}"),
+        "kind": ("k0", "k1")[seed.index % 2],
+        "schedule_type": "interval",
+        "status": "active",
+        "name": None if seed.null else f"job {seed.index}",
+        "date_created": _T0 + timedelta(hours=seed.tie),
+        "date_updated": _T0,
+    }
+
+
+async def _job_fires_beside(conn: Any, jobs: list[Mapping[str, Any]]) -> None:
+    """0 to 3 fires of each job, in flight, done or failed in turn, at distinct instants: some in flight past the
+    sweep's age, some inside it."""
+    for index, job in enumerate(jobs):
+        for turn in range(index % 4):
+            await conn.execute(
+                "INSERT INTO job_fires (partition_key, fire_id, job_id, scheduled_fire_at, actual_fired_at, status)"
+                " VALUES ($1, $2, $3, $4, $4, $5)",
+                job["partition_key"],
+                uuid.uuid5(_NS, f"job-fire-{index}-{turn}"),
+                job["job_id"],
+                _SWEPT_AT - timedelta(minutes=7 * turn + index),
+                ("dispatching", "succeeded", "failed")[turn % 3],
+            )
+
+
+class _OneAtATime:
+    """the harness's one connection as a pool the collection may ask several reads of at once: they take it in turn
+    (a pool lends each its own connection; one asyncpg connection runs one statement at a time)."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+        self._turn = asyncio.Lock()
+
+    async def fetch(self, query: str, *args: Any) -> Any:
+        async with self._turn:
+            return await self._conn.fetch(query, *args)
+
+    async def execute(self, query: str, *args: Any) -> Any:
+        async with self._turn:
+            return await self._conn.execute(query, *args)
+
+
+def _job_fires(pool: Any) -> JobFireCollection:
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pool)
+    config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    return JobFireCollection(registry=registry, config=config, nats_client=None)
+
+
+async def test_the_listed_jobs_latest_fires_are_each_one_s_newest(db: Any) -> None:
+    """Flips if latest_for_jobs (one keyed page of one row a job) answers other fires than the DISTINCT ON over the
+    listed jobs did: not each job's newest, a job never fired present, an unlisted job's fire, another partition's
+    job left out."""
+    listed = [uuid.uuid5(_NS, f"job-{index}") for index in range(0, 26, 1)] + [uuid.uuid5(_NS, "no-such-job")]
+
+    async def helper(conn: Any) -> list[dict[str, Any]]:
+        found = await _job_fires(_OneAtATime(conn)).latest_for_jobs(listed[::2] + listed[-1:])
+        return [{column: getattr(fire, column) for column in _FIRE_COLUMNS} for fire in found.values()]
+
+    await assert_same_results(
+        db,
+        table="scheduled_jobs",
+        row=_job,
+        old_sql=(
+            f"SELECT DISTINCT ON (job_id) {', '.join(_FIRE_COLUMNS)} FROM job_fires WHERE job_id = ANY($1)"
+            " ORDER BY job_id, actual_fired_at DESC"
+        ),
+        params=[listed[::2] + listed[-1:]],
+        helper=helper,
+        ordered=False,
+        related=_job_fires_beside,
+    )
+
+
+async def test_the_stale_sweep_fails_the_kinds_old_in_flight_fires(db: Any) -> None:
+    """Flips if reap_stale_dispatching (a keyed write over the fires in flight, the job's kind as a keyed EXISTS)
+    fails other fires than its UPDATE did: one of another kind, one in flight inside the age, one that ended."""
+
+    async def helper(conn: Any) -> list[dict[str, Any]]:
+        reaped = await _job_fires(conn).reap_stale_dispatching(_SWEPT_AT, older_than=_STALE, kinds=["k0"])
+        return [{"n": reaped}]
+
+    await assert_same_results(
+        db,
+        table="scheduled_jobs",
+        row=_job,
+        old_sql=(
+            "WITH reaped AS (UPDATE job_fires SET status = 'failed', error = $1"
+            " WHERE status = 'dispatching' AND actual_fired_at < $2"
+            " AND EXISTS (SELECT 1 FROM scheduled_jobs j WHERE j.job_id = job_fires.job_id AND j.kind = ANY($3))"
+            " RETURNING partition_key, fire_id) SELECT count(*) AS n FROM reaped"
+        ),
+        params=[REAPED_DISPATCH_ERROR, _SWEPT_AT - _STALE, ["k0"]],
+        helper=helper,
+        related=_job_fires_beside,
+        state_sql="SELECT fire_id, status, error FROM job_fires",
     )

@@ -111,9 +111,11 @@ async def test_job_fires_job_time(conn: asyncpg.Connection) -> None:
     captured = CapturedL3()
     _, fires = _stores(captured)
     await fires.latest_for_jobs(jobs)
-    (sql, args), *_ = captured.asked
-    plan = await explain_statement(conn, sql, *args)
-    assert plan_uses_index(plan, "idx_job_fires_job_time_key"), plan.plan
+    # one keyed page of one row a job
+    assert len(captured.asked) == len(jobs), captured.asked
+    for sql, args in captured.asked:
+        plan = await explain_statement(conn, sql, *args)
+        assert plan_uses_index(plan, "idx_job_fires_job_time_key"), plan.plan
     # one job's history at a long-lived job's size (2,000 fires; at the seed's 4 PostgreSQL rightly ANDs two bitmaps
     # and sorts the 4), a page of 2
     job = await conn.fetchrow("SELECT partition_key, job_id FROM scheduled_jobs LIMIT 1")
@@ -134,6 +136,17 @@ async def test_job_fires_job_time(conn: asyncpg.Connection) -> None:
     assert not set(_node_types(page.plan)) & {"Sort", "Incremental Sort"}, page.plan
     # the page of 2 with keyset_page's one row past it
     assert page.rows_scanned <= 2 + 1, page
+    # the long-lived job's newest fire reads that fire and the one after it, never its 2,004 (the DISTINCT ON it
+    # replaced read every fire of every listed job to keep one each)
+    newest = CapturedL3(real=conn)
+    _, fires = _stores(newest)
+    latest = await fires.latest_for_jobs([job["job_id"]])
+    assert list(latest) == [job["job_id"]], latest
+    ((sql, args),) = [asked for asked in newest.asked if "job_fires" in asked[0]]
+    page = await explain_statement(conn, sql, *args)
+    assert plan_uses_index(page, "idx_job_fires_job_time_key"), page.plan
+    assert not set(_node_types(page.plan)) & {"Sort", "Incremental Sort"}, page.plan
+    assert page.rows_scanned <= 1 + 1, page
     # a job's delete reads the fires its ON DELETE CASCADE takes, by the job: the long-lived job's 2,004
     cascading = CapturedL3(real=conn)
     held, _ = _stores(cascading)
