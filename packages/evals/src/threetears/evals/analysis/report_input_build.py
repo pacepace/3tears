@@ -68,6 +68,7 @@ from threetears.evals.analysis.bundle.schema import (
 )
 from threetears.evals.analysis.campaign_bundle import KIND_MEANS, CampaignBundle
 from threetears.evals.analysis.cells import answer_split_variants
+from threetears.evals.analysis.checks import Check
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading, reading_name
 from threetears.evals.analysis.floors import floor_subject
 from threetears.evals.analysis.depth import REPEATS_FLOOR
@@ -75,6 +76,7 @@ from threetears.evals.analysis.depth import Precision as BundlePrecision
 from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.completeness import unfinished_opening
+from threetears.evals.analysis.caveats import evidence_of, gate_of, raise_caveats, screen
 from threetears.evals.analysis.report_input import (
     SHARE_UNIT,
     ANALYST_ASPECT_FIELDS,
@@ -83,6 +85,7 @@ from threetears.evals.analysis.report_input import (
     Arm,
     Aspect,
     BarRead,
+    CallRead,
     CaseOverlap,
     Caveats,
     Contrast,
@@ -189,8 +192,9 @@ def report_input(
     per_slice: int = 1,
     excerpt: ExcerptAt = "start",
     counted: bool = False,
+    call: CallRead | None = None,
 ) -> ReportInput:
-    """The report input for one campaign, read off its bundle.
+    """The report input for one campaign, read off its bundle, with its one caveat list and its first screen.
 
     :param bundle: The campaign's bundle.
     :ptype bundle: CampaignBundle
@@ -207,12 +211,22 @@ def report_input(
         module's Counted): each slice's failed trials, each example's case input, and which cases each two aspects
         share. An uncounted input carries none of them, so it digests as it did.
     :ptype counted: bool
+    :param call: The campaign's call as the first screen reads it; None reads the one the bundle was assembled with,
+        if any.
+    :ptype call: CallRead | None
     :return: The input.
     :rtype: ReportInput
     """
-    return _Builder(bundle).build(
+    built = _Builder(bundle).build(
         provenance=provenance, examples=examples, per_slice=per_slice, excerpt=excerpt, counted=counted
     )
+    if call is None and bundle.first_screen is not None:
+        call = bundle.first_screen.call
+    # The list is raised off the input the bundle built, and the first screen read off the list: both are copied
+    # onto the input, which the models check field by field already.
+    caveats = raise_caveats(built, bundle)
+    value = screen(built, caveats, gate=gate_of(bundle), call=call, evidence=evidence_of(bundle))
+    return built.model_copy(update={"caveat_list": caveats, "first_screen": value})
 
 
 class _Builder:
@@ -339,6 +353,16 @@ class _Builder:
                 settings.pop(CANDIDATE_MODEL_LEVER, None)
             # Only where declared, so a view dumping what was set carries no key for an arm naming none.
             declared_name: dict[str, Any] = {"short_name": declared[key]} if key in declared else {}
+            # Whether the arm is one thing, where the bundle's design read it: what raises a withheld reading.
+            identity = next(
+                (
+                    arm.identity
+                    for aspect in self.ordered
+                    for arm in aspect.design.contrasts
+                    if arm.variant_key == key and arm.identity is not None
+                ),
+                None,
+            )
             arms.append(
                 Arm(
                     id=label,
@@ -348,6 +372,7 @@ class _Builder:
                     variant_key=key,
                     settings={"model": model, **settings},
                     reasoning_ratio=ratios.get(label),
+                    identity=identity,
                     **declared_name,
                 )
             )
@@ -420,6 +445,7 @@ class _Builder:
             pass_k=pass_k or None,
             pairs=[self.pair(pair) for pair in self.bundle.readings.pairs if pair.aspect == label],
             scoreboard=None if aspect is self.lead else self.scoreboard(aspect),
+            looks=aspect.reading_scope.looks,
             **_analyst_only(ANALYST_ASPECT_FIELDS, counted, lambda: self.how_trials_pass(aspect, depth)),
         )
 
@@ -810,6 +836,12 @@ class _Builder:
                         mean=reading.mean, sem=reading.sem, n=reading.n, n_cases=reading.n_independent
                     )
                     evidence.setdefault(reading.dimension, reading.evidence_tier)
+        # Each judge's checks, as the bundle's judged measures hold them, each once: what raises a judge not checked.
+        checks: dict[str, list[Check]] = {}
+        for aspect in self.ordered:
+            for measure in aspect.judged_measures:
+                held = checks.setdefault(measure.name, [])
+                held.extend(check for check in measure.checks if check not in held)
         judged: dict[str, Judged] = {}
         for dimension, by_aspect in figures.items():
             tier = tiers.get(dimension)
@@ -821,6 +853,7 @@ class _Builder:
                 calibration_ratings=tier.calibration.n if tier is not None else None,
                 agreement=tier.calibration.agreement if tier is not None else None,
                 per_arm=by_aspect.get(self.lead.aspect, {}),
+                checks=checks.get(dimension, []),
                 by_aspect={label: arms for label, arms in by_aspect.items() if label != self.lead.aspect},
             )
         return judged
