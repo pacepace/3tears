@@ -76,6 +76,7 @@ from threetears.evals.schema.versioning import (
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.judge_attribution import JudgeAttributionSource, JudgeAttributionState, attribution_state
 from threetears.evals.schema.prose import ModelProse
+from threetears.evals.schema.reading_states import SampleKind
 from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.schema.job_lease import (
     CancelRequestReasonField,
@@ -6173,6 +6174,16 @@ class JudgeRepeat(EvalDocumentModel, CoreShapeModel):
         description=(
             "dim -> the versioned JudgeConfig that answered the repeat, or a ``builtin:`` id = the built-in prompt, by "
             "its wording, for every dim the repeat asked."
+        ),
+    )
+    sample: SampleKind | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "How the result was chosen for the repeat: ``random`` = asked of every result of the run, in an order the "
+            "engine drew, so the results repeated before any stop are a random draw from the run's; ``selected`` = "
+            "named by id. None = a repeat stored before this was recorded. Only a random draw stands for an arm's "
+            "results, so only it is read into the arm's re-score noise."
         ),
     )
 

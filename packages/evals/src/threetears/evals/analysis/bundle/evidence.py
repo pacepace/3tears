@@ -246,7 +246,12 @@ _REPEATED_SCORE: Final[Mapping[str, Any]] = {
     "repeat": _SCORE,
     "cannot_tell": _AS_STORED,
 }
-_REPEAT: Final[Mapping[str, Any]] = {"judge_config_ids": _AS_STORED, "scores": _Each(_REPEATED_SCORE)}
+_REPEAT: Final[Mapping[str, Any]] = {
+    "judge_config_ids": _AS_STORED,
+    "scores": _Each(_REPEATED_SCORE),
+    # Whether the repeat was a random draw decides whether an arm's re-score noise is read from it.
+    "sample": _AS_STORED,
+}
 _SECOND_SCORE: Final[Mapping[str, Any]] = {
     **{name: shape for name, shape in _REPEATED_SCORE.items() if name != "repeat"},
     "second": _SCORE,

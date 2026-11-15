@@ -49,6 +49,7 @@ from threetears.evals.analysis.agreement import (
     person_scores_by_result,
 )
 from threetears.evals.analysis.judge_drift import judge_drift
+from threetears.evals.analysis.judge_noise import with_rescore_noise
 from threetears.evals.analysis.revisions import refuse_pooled_revisions
 from threetears.evals.analysis.judge_profiles import judged_ratings, judges_tiers
 from threetears.evals.analysis.arms import arm_names
@@ -944,6 +945,11 @@ def assemble_context_bundle(
         # The overall pass rate is compared on each trial as the scoreboard below reads it, at the same threshold: in
         # the question's family when one is asked with a margin, and for the floors whatever the family holds.
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
+    )
+    # The judge checked against itself, in the judge's own table only: each judged arm's re-score noise and each
+    # paired judged contrast's share of it, filled last so no other section copies them.
+    bundle.judged_measures, bundle.multiple_comparisons = with_rescore_noise(
+        bundle.judged_measures, bundle.multiple_comparisons, results_by_cell, projection.records
     )
     bundle.reading_scope = reading_scope(
         declared, bundle.measure_catalog, bundle.judged_measures, first_result_at=first_result_at

@@ -182,6 +182,8 @@ the document, so extending one is a major. Each, and why:
   would be stated as neither.
 - ``OutOfRunOutcome`` — binary and complete.
 - ``SecondJudgeAskedBy`` — an unknown asker's pass would be pooled into the wrong agreement.
+- ``SampleKind`` — whether the items a measurement was read on stand for what they were drawn from; a figure is read
+  only from a random draw, so a new kind of sample changes what an older build may claim from it.
 - ``StopReason`` — the normalized provider contract, which already has a catch-all for output cut short by a
   cause it does not name (``truncated``), kept apart from a call that failed (``error``).
 - Every ``doc_type`` — a new type is a new model, never a new value.
@@ -467,7 +469,16 @@ CORE_SCHEMA_VERSION: int = 15
 #:   stored as before. In no identity, key or digest. An older build reads the run's rows as they were recorded and
 #:   pools none of them on the statement, which is what the rows say.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 21
+#: - **v15.22** — a judge repeat records how its result was chosen: ``JudgeRepeat.sample`` (default None), on
+#:   ``EvalResult.judge_repeats``: ``random`` where every result of the run was asked, in an order the engine drew
+#:   (``judge_repeat_work`` with no result named), so the results repeated before any stop are a random draw;
+#:   ``selected`` where results were named by id. An arm's re-score noise reads only a random draw's repeats; an
+#:   arm whose repeats are none of them one reads ``not available`` (``not_drawn_at_random``, or ``not_recorded``
+#:   for a repeat stored before this minor). Left out of the document when unset, so a repeat stored before is stored
+#:   byte for byte as before. Evidence in a bundle's fingerprint only where set. An older build reads such a repeat
+#:   without it, and reads its self-agreement as it did.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 22
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

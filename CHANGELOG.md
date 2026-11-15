@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a judge checked against itself: re-score noise in the judge's own table
+
+**Added:** a bundle fills two fields the shape move left unset, from the judge's repeats (`judge_repeat`). Each judged
+arm whose results were re-scored carries `rescore`: the re-score variance with its range (`variance_interval`, new;
+half the mean squared difference between a counted score and its repeat, read only for a repeat by the very judge that
+scored the arm), the repeated results and cases behind it, and, on a pass/fail dimension that counts toward a trial's
+pass, `e` (how often a repeat fails a result whose first reading passed, with its Wilson interval over cases) and the
+ceiling it puts on pass^k, `(1 - e)^(k - 1)`, as a range at the arm's `k` (new optional field on `Rescore`). Below 20
+repeated results from 10 cases its state is `not_available`, `too_few`, and no figure is given; where the ceiling is
+read and cannot be (no first reading passed), it alone is `not_available`, `too_few` (`ceiling_state`, new). Each
+paired judged contrast whose two arms have their figures carries `rescore_share`, the share of the contrast's
+variance that is the judge's re-score noise, low then high; it exists at one trial per case. The variance's and the
+share's ranges are one 95% interval each (Fay and Feuer's gamma interval on a weighted sum of counts), the share's on
+the sum of both arms' terms, not the share at each end of the arms' ranges; their coverage is held from both sides in
+`tests/test_simulated_judge_noise.py`. Both are named re-score noise, never judge error: a judge that repeats itself
+exactly reads none and may still be wrong. Nothing reads them: no interval, verdict, state, caveat or page line moves,
+and the report input carries neither. A bundle over results nobody re-scored is unchanged, byte for byte.
+
+**Changed:** a judge repeat asked of every result of a run (`judge_repeat_work` with no `result_ids`) now asks them in
+an order the engine draws at random, so the results repeated before a stop are a random draw, and each repeat records
+how its result was chosen (`JudgeRepeat.sample`: `random`, or `selected` where results were named by id; core minor
+15.22). Re-score noise reads only a random draw's repeats: an arm whose repeats are none of them one reads
+`not_available`, `not_drawn_at_random` (named by id) or `not_recorded` (stored before this release).
+
+**For hosts:** a repeat stored before this release supports no re-score figure. To read an arm's re-score noise,
+repeat its run with no results named.
+
 ### evals: a campaign cell holds one definition of each host measure and one answering model, and an unrecorded coordinate matches nothing (#1187)
 
 **Changed:** what a host measure counts is part of the test setup. In a campaign, runs that recorded different
