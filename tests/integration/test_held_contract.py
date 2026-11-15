@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 from threetears.agent.intention.migrations.v002_contract_last_surfaced_index_dropped import drop_last_surfaced_index
-from threetears.agent.skills.migrations.v007_contract_replaced_index_dropped import drop_replaced_conversation_index
-from threetears.agent.tools.migrations.v006_contract_lru_index_dropped import drop_lru_index
+from threetears.agent.skills.migrations.v008_contract_replaced_index_dropped import drop_replaced_conversation_index
+from threetears.agent.tools.migrations.v006_contract_unread_indexes_dropped import drop_unread_context_indexes
 from threetears.agent.wake.migrations.v015_contract_unread_indexes_dropped import (
     drop_unread_indexes_and_validate_fire_key,
 )
@@ -34,7 +34,7 @@ _DROPPED: dict[str, tuple[str, ...]] = {
     "webhook_subscriptions": ("idx_webhook_subs_conv",),
     "wake_fires": ("idx_wake_fires_started_conversation",),
     "conversations": ("idx_conv_customer", "idx_conv_parent"),
-    "context_items": ("ix_context_items_lru",),
+    "context_items": ("ix_context_items_lru", "ix_context_items_conv"),
     "intentions": ("idx_intentions_last_surfaced",),
     "mcp_tool_grants": ("idx_mcp_tool_grants_principal", "idx_mcp_tool_grants_tool"),
     "scrape_extractions": ("scrape_extractions_target_id", "scrape_extractions_retrieved_at"),
@@ -46,7 +46,7 @@ _STEPS: tuple[Callable[[Any], Awaitable[None]], ...] = (
     drop_replaced_conversation_index,
     drop_unread_indexes_and_validate_fire_key,
     drop_unread_conversation_indexes,
-    drop_lru_index,
+    drop_unread_context_indexes,
     drop_last_surfaced_index,
     drop_lookup_indexes,
     v015_contract_unread_indexes_dropped,

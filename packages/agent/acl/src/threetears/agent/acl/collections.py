@@ -91,11 +91,11 @@ from threetears.core.keyed import (
     counts_by,
     holds_any,
     keyset_page,
+    keyset_rows,
     read_by,
     read_row,
     update_keyed,
 )
-from threetears.core.keyset import keyset_pages
 from threetears.core.namespaces import NAMESPACE_NAME_SEPARATOR, namespace_contains
 from threetears.core.tenancy import no_tenant, tenant_column
 from threetears.interfaces.keyed.keys import TableKey, register_table_keys
@@ -124,30 +124,8 @@ LISTING_PAGE: Final[int] = 200
 _CASCADE_PAGE: Final[int] = 1000
 
 
-#: every namespace at or beneath a node: the node itself by ``idx_namespaces_name``, and the names under it as the
-#: byte range ``[node + ".", node + "/")`` by ``idx_namespaces_name_c`` (name COLLATE "C"). The range is byte-ordered
-#: on purpose: under a linguistic collation ``.`` and ``-`` sort as ignorable, so the range would neither hold every
-#: name under the node nor only them
-NAMESPACE_IDS_UNDER_NAME_SQL: Final[str] = (
-    "SELECT namespace_id, name FROM namespaces WHERE row_scope IN ('platform', 'customer')"
-    ' AND (name = $1 OR (name COLLATE "C" >= $2 AND name COLLATE "C" < $3))'
-)
-
 #: the character just past the separator: the exclusive end of the range of names beneath a node
 _PAST_SEPARATOR: Final[str] = chr(ord(NAMESPACE_NAME_SEPARATOR) + 1)
-
-#: the tool namespaces the default tool surface lists: ``idx_namespaces_tool_flags`` (namespace_type, flagged rows)
-TOOL_ELIGIBLE_NAMESPACES_SQL: Final[str] = (
-    "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer') AND namespace_type = 'tool'"
-    " AND tool_eligible = TRUE"
-)
-
-#: the tool namespaces the skills catalog lists: ``idx_namespaces_tool_flags`` (namespace_type, flagged rows)
-SKILL_ELIGIBLE_NAMESPACES_SQL: Final[str] = (
-    "SELECT * FROM namespaces WHERE row_scope IN ('platform', 'customer') AND namespace_type = 'tool'"
-    " AND skill_eligible = TRUE"
-)
-
 
 __all__ = [
     "LISTING_PAGE",
@@ -465,14 +443,14 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         if self.l3_pool is not None:
             # cache-bypass: the rows a cascade is about to remove, the group's own key range a page at a time
             # (group_members' key is (group_id, id)): every one is announced, so every one is read
-            async for page in keyset_pages(
+            members = await keyset_rows(
                 self.l3_pool,
-                "SELECT member_type, member_id, id FROM group_members",
-                ("id",),
-                where={"group_id": group_id},
-                page_size=_CASCADE_PAGE,
-            ):
-                members.extend(page)
+                "group_members",
+                columns=("member_type", "member_id", "id"),
+                by={"group_id": group_id},
+                order=[Sort("id", "uuid")],
+                page=_CASCADE_PAGE,
+            )
             # cache-bypass: the same cascade's assignments, by group across both partitions
             assignments = [
                 {"row_scope": row["row_scope"], "assignment_id": row["assignment_id"]}
@@ -3185,8 +3163,9 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         :meth:`list_ids_by_customer_and_type` so the caller composes one
         id set regardless of scope shape.
 
-        the read is keyed (:data:`NAMESPACE_IDS_UNDER_NAME_SQL`): the
-        node by name, and the names beneath it as a byte range, never a
+        the read is keyed: the node by name (``idx_namespaces_name``),
+        and the names beneath it as the byte range ``[node + ".", node + "/")``
+        (``idx_namespaces_name_c``, name COLLATE "C"), never a
         ``LIKE`` pattern (a name legally carries ``_``, a ``LIKE``
         wildcard). membership is still decided in python by
         :func:`threetears.core.namespaces.namespace_contains`, the one
@@ -3201,7 +3180,22 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         result: list[UUID] = []
         if node and self.l3_pool is not None:
             below = node + NAMESPACE_NAME_SEPARATOR
-            rows = await self.l3_pool.fetch(NAMESPACE_IDS_UNDER_NAME_SQL, node, below, node + _PAST_SEPARATOR)
+            # the range is byte-ordered on purpose: under a linguistic collation ``.`` and ``-`` sort as ignorable,
+            # so the range would neither hold every name under the node nor only them. One statement: the node and
+            # its range as one OR, each arm through its own index (a BitmapOr on PostgreSQL)
+            rows = await read_by(
+                self.l3_pool,
+                "namespaces",
+                by={"row_scope": AnyOf(_PAGED_SCOPES, cast=None)},
+                columns=("namespace_id", "name"),
+                where=[
+                    Fragment(
+                        't.name = $1 OR (t.name COLLATE "C" >= $2 AND t.name COLLATE "C" < $3)',
+                        (node, below, node + _PAST_SEPARATOR),
+                    )
+                ],
+                records=True,
+            )
             result = [
                 row["namespace_id"]
                 for row in rows
@@ -3425,11 +3419,26 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         result: list[NamespaceEntity] = []
         if self.l3_pool is None:
             return result
-        # one written-out statement per flag column, so each is judged against the index that serves it
+        # the flagged tool namespaces of both partitions: idx_namespaces_tool_flags (namespace_type, over the rows
+        # either flag holds). Each flag is a literal guard, one written-out read a flag: the planner proves it implies
+        # the index's predicate (``tool_eligible OR skill_eligible``) on a generic plan too, where a bound ``$n =
+        # TRUE`` proves nothing and the flagged-rows index is passed over
         if filter_column == "tool_eligible":
-            rows = await self.l3_pool.fetch(TOOL_ELIGIBLE_NAMESPACES_SQL)
+            rows = await read_by(
+                self.l3_pool,
+                "namespaces",
+                by={"row_scope": AnyOf(_PAGED_SCOPES, cast=None), "namespace_type": "tool"},
+                where=[Fragment("t.tool_eligible = TRUE")],
+                records=True,
+            )
         else:
-            rows = await self.l3_pool.fetch(SKILL_ELIGIBLE_NAMESPACES_SQL)
+            rows = await read_by(
+                self.l3_pool,
+                "namespaces",
+                by={"row_scope": AnyOf(_PAGED_SCOPES, cast=None), "namespace_type": "tool"},
+                where=[Fragment("t.skill_eligible = TRUE")],
+                records=True,
+            )
         candidates: list[NamespaceEntity] = [
             self.entity_class(
                 self._coerce_row(dict(row)),

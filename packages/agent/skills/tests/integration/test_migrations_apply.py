@@ -188,7 +188,7 @@ class TestSchemaShape:
             for index_name in (
                 "uq_skills_agent_user_name",
                 "idx_skills_agent_user_enabled",
-                "idx_skill_invocations_skill_time",
+                "idx_skill_invocations_skill_time_key",
                 "idx_skill_invocations_conv",
                 "idx_skill_invocations_conv_key",
             ):

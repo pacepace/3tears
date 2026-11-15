@@ -115,7 +115,7 @@ class TestListToolNamespacesForActor:
         sql = pool.fetch.await_args.args[0]
         assert "tool_eligible = TRUE" in sql
         assert "skill_eligible" not in sql
-        assert "namespace_type = 'tool'" in sql
+        assert 't."namespace_type" = $2' in sql and pool.fetch.await_args.args[2] == "tool"
 
     @pytest.mark.asyncio
     async def test_returns_only_acl_permitted_candidates(self) -> None:
@@ -194,7 +194,7 @@ class TestListSkillEligibleToolNamespaces:
         # filter columns are exclusive; only one column is referenced
         # in the WHERE clause per call.
         assert "tool_eligible = TRUE" not in sql
-        assert "namespace_type = 'tool'" in sql
+        assert 't."namespace_type" = $2' in sql and pool.fetch.await_args.args[2] == "tool"
 
     @pytest.mark.asyncio
     async def test_returns_only_acl_permitted_skill_tools(self) -> None:

@@ -503,7 +503,12 @@ class TestNamespaceListIdsUnderName:
         result = await coll.list_ids_under_name("tools.pentest")
         assert result == [node_id, child_id]
         # keyed: the node by name and the byte range of names beneath it, never every namespace
-        assert pool.fetch.await_args.args[1:] == ("tools.pentest", "tools.pentest.", "tools.pentest/")
+        assert pool.fetch.await_args.args[1:] == (
+            ["platform", "customer"],
+            "tools.pentest",
+            "tools.pentest.",
+            "tools.pentest/",
+        )
 
     @pytest.mark.asyncio
     async def test_an_empty_node_expands_to_nothing(self) -> None:

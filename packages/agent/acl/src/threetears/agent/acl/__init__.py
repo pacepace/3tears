@@ -227,7 +227,6 @@ from threetears.agent.acl.loaders import (
 )
 from threetears.agent.acl.query_visibility import (
     caller_visible_customer_clause,
-    caller_visible_customers_query,
     customer_scope_visibility_clause,
     three_scope_visibility_clause,
 )
@@ -362,7 +361,6 @@ __all__ = [
     "authorize_on_entity",
     "authorize_with_trail",
     "caller_visible_customer_clause",
-    "caller_visible_customers_query",
     "customer_scope_visibility_clause",
     "enforce_declared_permissions",
     "enforce_within_held_permissions",

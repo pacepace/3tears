@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -758,6 +759,23 @@ def test_a_text_ranked_read_is_judged_by_its_pins_under_its_rank_order(schema: S
     assert _judged(keyed.replace('by={"state": s}', 'by={"kind": s}'), schema) == [[("non-key-where", "results")]]
     ranked = 'read_nearest(c, "docs", by={"owner": o}, nearest=TextRank("search_vector", q), limit=k)'
     assert _judged(ranked, schema) == [[("non-key-where", "docs")]]
+
+
+def test_a_text_ranked_read_s_tie_order_is_in_the_statement_it_is_judged_as(schema: SchemaCatalog) -> None:
+    """Flips if a ``TextRank``'s ``then=`` terms are left out of the statement the walk judges: the read sends
+    ``ORDER BY <rank> DESC, <then>``, so it is judged under that order (its pins still key it or not), and a ``then``
+    the walk cannot read (a name bound elsewhere) leaves the rank order alone."""
+    keyed = (
+        'read_nearest(c, "results", by={"state": s}, nearest=TextRank("search_vector", q, '
+        'then=(Sort("geo", descending=True), Sort("kind"))), limit=k)'
+    )
+    assert _judged(keyed, schema) == [[]]
+    (statement,) = helper_statements(_call(keyed))
+    assert re.search(r"DESC, \S*geo\S* DESC, \S*kind\S* LIMIT", statement.sql), statement.sql
+    unread = keyed.replace('then=(Sort("geo", descending=True), Sort("kind"))', "then=ties")
+    (statement,) = helper_statements(_call(unread))
+    assert re.search(r"\) DESC LIMIT", statement.sql), statement.sql
+    assert _judged(keyed.replace('by={"state": s}', 'by={"kind": s}'), schema) == [[("non-key-where", "results")]]
 
 
 def test_a_ranked_read_with_joins_is_judged_as_its_read_and_each_joined_table_s_keyed_batch(

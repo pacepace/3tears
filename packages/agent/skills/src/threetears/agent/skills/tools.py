@@ -410,7 +410,10 @@ class SkillHistoryInput(BaseModel):
 
     skill_id: str = Field(description="The [skill:<id>] or name of the skill.")
     limit: int = Field(default=20, ge=1, le=100, description="Most uses to list, newest first.")
-    offset: int = Field(default=0, ge=0, description="Uses to skip, for the next page.")
+    cursor: str | None = Field(
+        default=None,
+        description="The cursor the last page gave, for the next page; leave it out for the newest uses.",
+    )
 
 
 class SkillReportOutcomeInput(BaseModel):
@@ -1323,7 +1326,6 @@ def load_skill_list_tool(
                     tag_filter=[tag_filter] if tag_filter else None,
                     query=query,
                     limit=prose_cap,
-                    offset=0,
                 )
             except Exception as exc:
                 contain(exc, log=log, what="skill_list: prose list failed")
@@ -2093,6 +2095,27 @@ def _render_use(use: AgentSkillInvocationEntity, zone: tzinfo | None) -> list[st
     return lines
 
 
+#: the most uses a skill's history counts for its total; past it the total is said as "N or more" (a bounded walk
+#: of the skill's index, never a count of a long history's every row; the rule validate_binding's count follows)
+_HISTORY_COUNT_CAP = 1000
+
+
+def _history_place(cursor: str | None) -> tuple[int, str | None] | None:
+    """the uses already shown and the page's keyset cursor, from a history cursor ``<shown>:<keyset cursor>``.
+
+    :param cursor: the cursor a history page gave, or ``None`` for the newest page
+    :ptype cursor: str | None
+    :return: ``(shown, keyset cursor)``, ``(0, None)`` for the newest page; ``None`` for a cursor no page gave
+    :rtype: tuple[int, str | None] | None
+    """
+    if not cursor:
+        return 0, None
+    shown, _, after = cursor.partition(":")
+    if not shown.isdigit() or not after:
+        return None
+    return int(shown), after
+
+
 def load_skill_history_tool(
     *,
     agent_id: UUID,
@@ -2127,7 +2150,7 @@ def load_skill_history_tool(
     zone = resolve_zone(tz)
 
     @tool("skill_history", args_schema=SkillHistoryInput)
-    async def skill_history(skill_id: str, limit: int = 20, offset: int = 0) -> str:
+    async def skill_history(skill_id: str, limit: int = 20, cursor: str | None = None) -> str:
         """List one skill's uses, newest first."""
         parsed = await _resolve_skill_ref(skills_collection, agent_id=agent_id, user_id=user_id, raw=skill_id)
         if parsed is None:
@@ -2140,21 +2163,30 @@ def load_skill_history_tool(
         )
         if entity is None:
             return _tool_error("skill_history", "skill not found")
-        total = await invocations_collection.count_for_skill(agent_id, entity.skill_id)
+        place = _history_place(cursor)
+        if place is None:
+            return _tool_error("skill_history", "that cursor is not one skill_history gave; leave it out to start")
+        shown, after = place
+        counted = await invocations_collection.count_for_skill_at_most(
+            agent_id, entity.skill_id, at_most=_HISTORY_COUNT_CAP
+        )
         tag = f"[skill:{entity.skill_id}] {entity.name}"
-        if total == 0:
+        if counted.count == 0:
             return f"{tag} has not been used yet."
-        uses = await invocations_collection.list_for_skill(agent_id, entity.skill_id, limit=limit, offset=offset)
+        total = f"{counted.count:,} or more" if counted.more else f"{counted.count:,}"
+        page = await invocations_collection.list_for_skill(agent_id, entity.skill_id, limit=limit, cursor=after)
+        uses = page.rows
         worked, failed = int(entity.success_count or 0), int(entity.failure_count or 0)
         head = f"{tag}: {total} use(s) in all; worked {worked}, failed {failed}."
         if not uses:
-            return f"{head} None past use {offset:,}; skill_history with offset=0 starts at the newest."
-        first, last = offset + 1, offset + len(uses)
+            return f"{head} None past use {shown:,}; skill_history with no cursor starts at the newest."
+        first, last = shown + 1, shown + len(uses)
         lines = [f"{head} Uses {first}-{last} of {total}, newest first:"]
         for use in uses:
             lines += _render_use(use, zone)
-        if last < total:
-            lines.append(f"skill_history with offset={last} shows the next {min(limit, total - last)}.")
+        if page.next_cursor is not None:
+            following = limit if counted.more else min(limit, counted.count - last)
+            lines.append(f"skill_history with cursor={last}:{page.next_cursor} shows the next {following}.")
         return "\n".join(lines)
 
     skill_history.description = (

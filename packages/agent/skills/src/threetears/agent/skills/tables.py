@@ -297,10 +297,11 @@ def agent_skill_invocations_table(metadata: MetaData) -> Table:
             name="agent_skill_invocations_outcome_check",
         ),
         Index(
-            "idx_skill_invocations_skill_time",
+            "idx_skill_invocations_skill_time_key",
             "agent_id",
             "skill_id",
             sa_text("invoked_at DESC"),
+            sa_text("invocation_id DESC"),
         ),
         Index(
             "idx_skill_invocations_conv_key",

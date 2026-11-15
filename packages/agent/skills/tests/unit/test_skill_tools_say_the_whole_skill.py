@@ -20,7 +20,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+import pytest
 from uuid_utils import uuid7
+
+from threetears.agent.skills import tools as skill_tools
 
 from threetears.agent.skills.tools import (
     BODY_MAX_BYTES,
@@ -307,9 +310,57 @@ class TestSkillHistory:
         assert lines[1] == f"- Oct 9, 2026 at 5:00 AM PDT, invoked: success -- found it [conversation:{CONV}]"
         assert lines[2] == "  why it was invoked: asked"
         assert lines[3].startswith("- Oct 9, 2026 at 4:00 AM PDT, invoked: no outcome reported")
-        assert lines[-1] == "skill_history with offset=2 shows the next 1."
-        last = await tool.ainvoke({"skill_id": str(skill_id), "limit": 2, "offset": 2})
-        assert "Uses 3-3 of 3" in last and "a wake ran it" in last and "offset=" not in last.splitlines()[-1]
+        # the next page is named by an opaque cursor carrying the uses already shown (2), never an offset
+        assert lines[-1].startswith("skill_history with cursor=2:") and lines[-1].endswith(" shows the next 1.")
+        cursor = lines[-1].removeprefix("skill_history with cursor=").removesuffix(" shows the next 1.")
+        last = await tool.ainvoke({"skill_id": str(skill_id), "limit": 2, "cursor": cursor})
+        assert "Uses 3-3 of 3" in last and "a wake ran it" in last and "cursor=" not in last.splitlines()[-1]
+
+    async def test_a_history_past_the_count_cap_says_or_more(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Flips if a history longer than the count's cap is numbered against a total said exactly: the count
+        stops past the cap, so the total is said as "N or more", and the next page offered is a whole one."""
+        monkeypatch.setattr(skill_tools, "_HISTORY_COUNT_CAP", 2)
+        coll = FakeSkillsCollection()
+        inv = FakeInvocationsCollection(coll)
+        skill_id = _seed(coll)
+        start = datetime(2026, 10, 9, 10, 0, tzinfo=UTC)
+        for n in range(4):
+            row_id = _id()
+            inv.rows[(AGENT, row_id)] = {
+                "agent_id": AGENT,
+                "invocation_id": row_id,
+                "skill_id": skill_id,
+                "user_id": PERSON,
+                "conversation_id": CONV,
+                "message_id": None,
+                "invocation_source": "invoke",
+                "invoked_at": start + timedelta(hours=n),
+                "outcome": None,
+                "outcome_source": None,
+                "notes": None,
+                "outcome_notes": None,
+            }
+        [tool] = load_skill_history_tool(
+            agent_id=AGENT,
+            user_id=PERSON,
+            skills_collection=coll,  # type: ignore[arg-type]
+            invocations_collection=inv,  # type: ignore[arg-type]
+        )
+        lines = (await tool.ainvoke({"skill_id": "tide-check", "limit": 1})).splitlines()
+        assert "2 or more use(s) in all" in lines[0] and "Uses 1-1 of 2 or more" in lines[0], lines[0]
+        assert lines[-1].endswith(" shows the next 1."), lines[-1]
+
+    async def test_a_cursor_no_page_gave_is_refused(self) -> None:
+        coll = FakeSkillsCollection()
+        _seed(coll)
+        [tool] = load_skill_history_tool(
+            agent_id=AGENT,
+            user_id=PERSON,
+            skills_collection=coll,  # type: ignore[arg-type]
+            invocations_collection=FakeInvocationsCollection(coll),  # type: ignore[arg-type]
+        )
+        out = await tool.ainvoke({"skill_id": "tide-check", "cursor": "two"})
+        assert "not one skill_history gave" in out
 
     async def test_a_skill_never_used(self) -> None:
         coll = FakeSkillsCollection()

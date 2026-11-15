@@ -545,7 +545,8 @@ def _read_nearest(call: ast.Call) -> list[str]:
     ordered by the distance from a bound vector under its ``LIMIT``, as an approximate-nearest-neighbour index on the
     column answers it. A ``nearest=`` the walk cannot read (not a literal ``Nearest(...)`` or ``TextRank(...)``) is
     judged by its pins alone, unordered, as the read pinning them. A ``TextRank(...)`` orders by the rank of a text
-    query, best first, which no index serves: the read is judged by its pins under that order. Its ``joins=``, each
+    query, best first, then by its ``then=`` terms, which no index serves: the read is judged by its pins under that
+    order. Its ``joins=``, each
     joined table's keyed batch, as :func:`_read_by_joined` judges them."""
     (statement, *own) = _read_by(call)
     joins = _joined_statements(call) if _argument(call, "joins", None) is not None else []
@@ -558,7 +559,10 @@ def _read_nearest(call: ast.Call) -> list[str]:
         config = _argument(node, "config", 3)
         language = config.value if isinstance(config, ast.Constant) and isinstance(config.value, str) else "english"
         rank = f"ts_rank_cd({_quoted(column)}, websearch_to_tsquery('{language}', ${place}))"
-        return [f"{statement} ORDER BY {rank} DESC LIMIT ${place + 1}", *own, *joins]
+        # ties on the rank in its ``then=`` order, as the helper sends them; one the walk cannot read is left out
+        ties = _written_order(_argument(node, "then", 4)).removeprefix(" ORDER BY ")
+        ties = f", {ties}" if ties else ""
+        return [f"{statement} ORDER BY {rank} DESC{ties} LIMIT ${place + 1}", *own, *joins]
     operator = _argument(node, "operator", 2)
     distance = operator.value if isinstance(operator, ast.Constant) and isinstance(operator.value, str) else "<=>"
     return [f"{statement} ORDER BY {_quoted(column)} {distance} ${place} LIMIT ${place + 1}", *own, *joins]

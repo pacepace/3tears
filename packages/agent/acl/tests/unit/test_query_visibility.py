@@ -13,20 +13,21 @@ widening or narrowing what rows a caller can see.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
-from uuid import uuid4
+from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 
 from threetears.agent.acl import (
     MAX_GROUP_MEMBERSHIP_DEPTH,
     caller_visible_customer_clause,
-    caller_visible_customers_query,
+    VisibleCustomers,
     customer_scope_visibility_clause,
     three_scope_visibility_clause,
+    visible_customers,
 )
 from threetears.agent.acl.types import (
     MAX_CONFIGURABLE_GROUP_NESTING_LEVELS,
@@ -281,64 +282,6 @@ def test_three_scope_columns_embedded_verbatim() -> None:
     assert "(ec.user_id IS NULL OR ec.user_id = $1)" in fragment
 
 
-# ---------------------------------------------------------------------------
-# caller_visible_customers_query: the concrete visible-customer set for the RLS GUC
-# ---------------------------------------------------------------------------
-
-
-def test_visible_customers_query_returns_sql_and_single_user_id_bind() -> None:
-    user_id = uuid4()
-    sql, params = caller_visible_customers_query(user_id=user_id)
-    assert params == [user_id]
-    assert "$1" in sql
-
-
-def test_visible_customers_query_mirrors_the_three_scope_arms() -> None:
-    # the SET resolver must read the SAME three scope arms as the per-row EXISTS clause, or the
-    # RLS GUC would admit a different set of rows than the app-layer visibility rule -- a leak or
-    # an over-restriction. pins each arm so an edit to one generator without the other fails loud.
-    sql, _ = caller_visible_customers_query(user_id=uuid4())
-    assert "FROM role_assignments ra" in sql
-    assert "WHERE ra.group_id = reached.group_id" in sql
-    assert "LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id" in sql
-    assert "gm.member_type = 'user'" in sql
-    # scope=all -> the is_all flag (becomes the GUC '*' wildcard)
-    assert "bool_or(ra.scope_type = 'all')" in sql
-    assert "AS is_all" in sql
-    # type_customer + namespace arms feed the concrete customer_ids array
-    assert "ra.scope_type = 'type_customer' THEN ra.scope_customer_id" in sql
-    assert "ra.scope_type = 'namespace' THEN ns.customer_id" in sql
-    assert "AS customer_ids" in sql
-
-
-def test_visible_customers_query_is_fail_closed_on_no_grants() -> None:
-    # a caller with no grants must yield a non-NULL (empty) array, not NULL -- so the GUC admits
-    # only platform (customer_id IS NULL) rows, never silently widening.
-    sql, _ = caller_visible_customers_query(user_id=uuid4())
-    assert "COALESCE(bool_or(ra.scope_type = 'all'), false)" in sql
-    assert "ARRAY[]::uuid[]" in sql
-    assert "array_remove(" in sql
-
-
-def test_visible_customers_query_of_one_type_differs_only_in_its_type_customer_arm() -> None:
-    """Flips if the typed set's SQL differs from the RLS GUC's anywhere but the type_customer arm's type, or binds
-    the type anywhere but right after the caller."""
-    user_id = uuid4()
-    untyped, untyped_params = caller_visible_customers_query(user_id=user_id, param_offset=3)
-    typed, typed_params = caller_visible_customers_query(user_id=user_id, param_offset=3, scope_namespace_type="tool")
-    arm = "WHEN ra.scope_type = 'type_customer' AND ra.scope_namespace_type = $4 THEN ra.scope_customer_id"
-    assert arm in typed
-    assert typed.replace(" AND ra.scope_namespace_type = $4", "", 1) == untyped
-    assert untyped_params == [user_id]
-    assert typed_params == [user_id, "tool"]
-
-
-def test_visible_customers_query_respects_param_offset() -> None:
-    sql, params = caller_visible_customers_query(user_id=uuid4(), param_offset=3)
-    assert "gm.member_id = $3" in sql
-    assert len(params) == 1
-
-
 def test_caller_clause_reaches_through_one_nesting_level() -> None:
     """the fragment carries the group-hop arm, and it binds the same caller.
 
@@ -358,14 +301,6 @@ def test_caller_clause_reaches_through_one_nesting_level() -> None:
     assert fragment.count("$1") >= 2
 
 
-def test_customers_query_reaches_through_one_nesting_level() -> None:
-    """the aggregate customers query carries the identical group-hop arm."""
-    sql, _ = caller_visible_customers_query(user_id=uuid4())
-    assert "gm.member_type = 'group'" in sql
-    assert "gm2.group_id = gm.member_id" in sql
-    assert "gm2.member_type = 'user'" in sql
-
-
 def test_the_clause_nests_one_hop_per_edge_up_to_the_cap() -> None:
     """``MAX_GROUP_MEMBERSHIP_DEPTH - 1`` nested hops, each keyed on the next alias, and none past it."""
     fragment, _ = caller_visible_customer_clause(
@@ -378,101 +313,162 @@ def test_the_clause_nests_one_hop_per_edge_up_to_the_cap() -> None:
     assert f"gm{MAX_GROUP_MEMBERSHIP_DEPTH + 1}" not in fragment
 
 
-def _reached_arm(edges: int, param_offset: int) -> str:
-    """one arm of the ``reached`` CTE: the groups ``edges`` group edges up from the caller's own memberships, each hop
-    keyed on the member side (the caller's rows by ``(member_type, member_id)``, then each group's rows naming it)."""
-    aliases = ["gm" if level == 1 else f"gm{level}" for level in range(edges + 1, 0, -1)]
-    lines = ["    SELECT gm.group_id", f"      FROM group_members {aliases[0]}"]
-    for below, alias in zip(aliases, aliases[1:]):
-        lines.append(
-            f"      JOIN group_members {alias} ON {below}.group_id = {alias}.member_id AND {alias}.member_type = 'group'"
-        )
-    lines.append(f"     WHERE {aliases[0]}.member_type = 'user' AND {aliases[0]}.member_id = ${param_offset}")
-    return "\n".join(lines)
+# ---------------------------------------------------------------------------
+# visible_customers: the concrete visible-customer set, read by key
+# ---------------------------------------------------------------------------
 
 
-def _generated_customers_query(depth: int, param_offset: int, typed: bool) -> str:
-    """the visible-customer set walked ``depth`` groups deep, as the reference generator builds it: what the
-    statement the query returns must be."""
-    of_type = f" AND ra.scope_namespace_type = ${param_offset + 1}" if typed else ""
-    arms = "\n     UNION\n".join(_reached_arm(edges, param_offset) for edges in range(depth))
-    return f"""WITH reached AS MATERIALIZED (
-{arms}
-)
-SELECT
-        COALESCE(bool_or(ra.scope_type = 'all'), false) AS is_all,
-        COALESCE(
-            array_remove(
-                array_agg(DISTINCT
-                    CASE
-                        WHEN ra.scope_type = 'type_customer'{of_type} THEN ra.scope_customer_id
-                        WHEN ra.scope_type = 'namespace' THEN ns.customer_id
-                    END
-                ),
-                NULL
-            ),
-            ARRAY[]::uuid[]
-        ) AS customer_ids
-      FROM reached
-      CROSS JOIN LATERAL (
-        SELECT ra.scope_type, ra.scope_customer_id, ra.scope_namespace_type, ra.scope_namespace_id
-          FROM role_assignments ra
-         WHERE ra.group_id = reached.group_id
-        OFFSET 0
-      ) ra
-      LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id"""
+class _Tables:
+    """a connection double holding group_members, role_assignments and namespaces rows, answering the keyed reads
+    :func:`visible_customers` sends (``read_by``: pins as ``= $n`` or ``= ANY($n)``, in the order the statement names
+    them)."""
+
+    def __init__(
+        self,
+        members: list[tuple[str, UUID, UUID]],
+        grants: list[dict[str, Any]],
+        namespaces: dict[UUID, UUID | None] | None = None,
+    ) -> None:
+        self.members = members  # (member_type, member_id, group_id)
+        self.grants = grants
+        self.namespaces = namespaces or {}
+        self.reads: list[str] = []
+
+    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        self.reads.append(sql)
+        if '"group_members"' in sql:
+            kind, wanted = params
+            ids = set(wanted) if isinstance(wanted, list) else {wanted}
+            return [{"group_id": g} for t, m, g in self.members if t == kind and m in ids]
+        if '"role_assignments"' in sql:
+            (groups,) = params
+            return [
+                {
+                    key: grant.get(key)
+                    for key in ("scope_type", "scope_customer_id", "scope_namespace_type", "scope_namespace_id")
+                }
+                for grant in self.grants
+                if grant["group_id"] in set(groups)
+            ]
+        if '"namespaces"' in sql:
+            _scopes, ids = params
+            return [{"customer_id": self.namespaces[i]} for i in ids if i in self.namespaces]
+        raise AssertionError(sql)
+
+
+def _grant(group: UUID, scope_type: str, **values: Any) -> dict[str, Any]:
+    return {"group_id": group, "scope_type": scope_type, **values}
+
+
+async def test_visible_customers_reads_the_three_scope_arms() -> None:
+    """Flips if the set stops reading any of the three scope arms the per-row clause admits by (the RLS GUC and the
+    clause must agree): ``all`` sets is_all, ``type_customer`` adds its customer, ``namespace`` its namespace's
+    customer; a ``subtree`` grant adds none."""
+    user, group, namespace = uuid4(), uuid4(), uuid4()
+    first, second = UUID(int=1), UUID(int=2)
+    tables = _Tables(
+        [("user", user, group)],
+        [
+            _grant(group, "type_customer", scope_customer_id=first, scope_namespace_type="tool"),
+            _grant(group, "namespace", scope_namespace_id=namespace, scope_namespace_type="tool"),
+            _grant(group, "subtree", scope_namespace_type="tool"),
+        ],
+        {namespace: second},
+    )
+    assert await visible_customers(tables, user_id=user, namespace_type=None) == VisibleCustomers(
+        is_all=False, customer_ids=(first, second)
+    )
+    tables.grants.append(_grant(group, "all"))
+    assert (await visible_customers(tables, user_id=user, namespace_type=None)).is_all
+
+
+async def test_visible_customers_is_fail_closed_on_no_grants() -> None:
+    """Flips if a caller with no group, or groups with no grant, gets anything but no customer and not every one:
+    the set admits only platform rows then, never silently widening."""
+    user, group = uuid4(), uuid4()
+    nobody = VisibleCustomers(is_all=False, customer_ids=())
+    assert await visible_customers(_Tables([], []), user_id=user, namespace_type="tool") == nobody
+    assert await visible_customers(_Tables([("user", user, group)], []), user_id=user, namespace_type="tool") == nobody
+
+
+async def test_the_typed_set_differs_only_in_its_type_customer_arm() -> None:
+    """Flips if naming a namespace type changes anything but which ``type_customer`` grants add their customer: a
+    grant on another type adds none, a namespace grant and ``all`` are untouched."""
+    user, group, namespace = uuid4(), uuid4(), uuid4()
+    on_type, on_other, by_namespace = UUID(int=1), UUID(int=2), UUID(int=3)
+    tables = _Tables(
+        [("user", user, group)],
+        [
+            _grant(group, "type_customer", scope_customer_id=on_type, scope_namespace_type="tool"),
+            _grant(group, "type_customer", scope_customer_id=on_other, scope_namespace_type="knowledge"),
+            _grant(group, "namespace", scope_namespace_id=namespace, scope_namespace_type="knowledge"),
+        ],
+        {namespace: by_namespace},
+    )
+    untyped = await visible_customers(tables, user_id=user, namespace_type=None)
+    typed = await visible_customers(tables, user_id=user, namespace_type="tool")
+    assert untyped.customer_ids == (on_type, on_other, by_namespace)
+    assert typed.customer_ids == (on_type, by_namespace)
+
+
+async def test_visible_customers_reaches_through_nesting_to_the_configured_depth_and_no_further() -> None:
+    """Flips if the set misses a grant a chain of up to MAX_GROUP_MEMBERSHIP_DEPTH groups reaches (the caller's
+    group nested group in group), or takes one a chain longer than that reaches; a cycle ends the walk."""
+    user = uuid4()
+    chain = [uuid4() for _ in range(MAX_GROUP_MEMBERSHIP_DEPTH + 1)]
+    members = [("user", user, chain[0])]
+    members += [("group", below, above) for below, above in zip(chain, chain[1:])]
+    members.append(("group", chain[1], chain[0]))  # a cycle back down the chain
+    grants = [
+        _grant(group, "type_customer", scope_customer_id=UUID(int=level + 1), scope_namespace_type="tool")
+        for level, group in enumerate(chain)
+    ]
+    visible = await visible_customers(_Tables(members, grants), user_id=user, namespace_type="tool")
+    assert visible.customer_ids == tuple(UUID(int=level + 1) for level in range(MAX_GROUP_MEMBERSHIP_DEPTH))
+
+
+async def test_visible_customers_reads_only_what_it_needs() -> None:
+    """Flips if a caller in a group nested in nothing costs more than its memberships, the empty level above them and
+    their grants (no namespace read without a namespace grant), or a caller in no group more than its memberships."""
+    user, group = uuid4(), uuid4()
+    tables = _Tables([("user", user, group)], [_grant(group, "all")])
+    await visible_customers(tables, user_id=user, namespace_type="tool")
+    assert [sql.split(" FROM ")[1].split(" ")[0] for sql in tables.reads] == [
+        '"group_members"',
+        '"group_members"',
+        '"role_assignments"',
+    ]
+    alone = _Tables([], [])
+    await visible_customers(alone, user_id=user, namespace_type="tool")
+    assert len(alone.reads) == 1
+
+
+_DEPTH_AT_A_NESTING = """
+from threetears.agent.acl import visible_customers
+from threetears.agent.acl.types import MAX_GROUP_MEMBERSHIP_DEPTH
+print(MAX_GROUP_MEMBERSHIP_DEPTH)
+"""
+
+
+def _queries_configured_for(levels: int) -> subprocess.CompletedProcess[str]:
+    """a process whose deployment configures ``levels`` nesting levels (its front door: the environment, read once
+    at import), importing the visible-customer set."""
+    environ = {**os.environ, MAX_GROUP_NESTING_LEVELS_ENV: str(levels)}
+    return subprocess.run(
+        [sys.executable, "-c", _DEPTH_AT_A_NESTING], env=environ, capture_output=True, text=True, check=False
+    )
 
 
 #: every chain a deployment may configure, in groups (levels less the person)
 _CONFIGURABLE_DEPTHS = range(MIN_CONFIGURABLE_GROUP_NESTING_LEVELS - 1, MAX_CONFIGURABLE_GROUP_NESTING_LEVELS)
 
 
-#: a process configured for a nesting, answering the customers query at each offset, typed and not, as JSON
-_QUERIES_AT_A_NESTING = """
-import json
-from uuid import uuid4
-from threetears.agent.acl import caller_visible_customers_query
-print(json.dumps({
-    f"{offset}/{typed}": caller_visible_customers_query(
-        user_id=uuid4(), param_offset=offset, scope_namespace_type="tool" if typed else None
-    )[0]
-    for offset in (1, 3)
-    for typed in (False, True)
-}))
-"""
-
-
-def _queries_configured_for(levels: int) -> subprocess.CompletedProcess[str]:
-    """the customers queries of a process whose deployment configures ``levels`` nesting levels (its front door: the
-    environment, read once at import)."""
-    environ = {**os.environ, MAX_GROUP_NESTING_LEVELS_ENV: str(levels)}
-    return subprocess.run(
-        [sys.executable, "-c", _QUERIES_AT_A_NESTING], env=environ, capture_output=True, text=True, check=False
-    )
-
-
 @pytest.mark.parametrize("depth", _CONFIGURABLE_DEPTHS)
-def test_the_written_out_customers_statements_are_the_generators(depth: int) -> None:
-    """Flips if CALLER_VISIBLE_CUSTOMERS_SQL or its typed form, cut to any nesting a deployment may configure, drifts
-    from the reference generator (an arm edited in one place, a hop missing, the statement not written out to the
-    deepest nesting): a deployment configured for each nesting answers the generator's statement, at every offset."""
+def test_every_configurable_nesting_is_walked(depth: int) -> None:
+    """Flips if a deployment configured for a nesting it may configure walks any other depth."""
     answered = _queries_configured_for(depth + 1)
     assert answered.returncode == 0, answered.stderr
-    queries = json.loads(answered.stdout)
-    for offset in (1, 3):
-        for typed in (False, True):
-            assert queries[f"{offset}/{typed}"] == _generated_customers_query(depth, offset, typed), (offset, typed)
-
-
-@pytest.mark.parametrize("param_offset", [1, 3])
-@pytest.mark.parametrize("typed", [False, True])
-def test_the_customers_query_walks_the_configured_nesting(param_offset: int, typed: bool) -> None:
-    """Flips if the query returns a statement walking any other depth than this deployment's nesting
-    (MAX_GROUP_MEMBERSHIP_DEPTH groups), at any offset."""
-    sql, _ = caller_visible_customers_query(
-        user_id=uuid4(), param_offset=param_offset, scope_namespace_type="tool" if typed else None
-    )
-    assert sql == _generated_customers_query(MAX_GROUP_MEMBERSHIP_DEPTH, param_offset, typed)
+    assert int(answered.stdout.strip()) == depth
 
 
 @pytest.mark.parametrize(

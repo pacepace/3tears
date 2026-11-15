@@ -270,6 +270,53 @@ async def test_a_text_ranked_read_orders_by_the_rank_best_first_under_its_limit(
     assert params == ("a", "u", "red apples", "red apples", 3)
 
 
+async def test_a_text_ranked_read_breaks_rank_ties_by_its_then_terms() -> None:
+    """Flips if a ``TextRank``'s ``then`` terms are not ordered after the rank, each in its own direction with its NULLs
+    where it says (a hand-written ``ORDER BY fts_rank DESC, last_used_at DESC NULLS LAST, date_created DESC, id``):
+    rows tied on the rank must come back in that order, never the engine's."""
+    conn = _Sent()
+    await read_nearest(
+        conn,
+        "agent_skills",
+        by={"agent_id": "a"},
+        nearest=TextRank(
+            "search_vector",
+            "red",
+            then=(
+                Sort("last_used_at", descending=True, nullable=True),
+                Sort("date_created", descending=True),
+                Sort("skill_id", descending=True),
+            ),
+        ),
+        limit=3,
+        columns=("skill_id",),
+    )
+    [(sql, params)] = conn.calls
+    rank = "ts_rank_cd(t.\"search_vector\", websearch_to_tsquery('english', $2))"
+    assert sql.endswith(
+        f'ORDER BY {rank} DESC, t."last_used_at" DESC NULLS FIRST, t."date_created" DESC, t."skill_id" DESC LIMIT $3'
+    ), sql
+    assert params == ("a", "red", 3)
+
+
+async def test_text_ranked_ties_come_back_in_the_then_order(db: duckdb.DuckDBPyConnection) -> None:
+    """Flips if rows tied on the rank are not answered in the ``then`` order on a real engine: every row of ``t`` ties
+    (a constant rank over a missing text column is not DuckDB's, so the tie is the order's own: ``v`` descending, NULLs
+    last, then the key ``b``)."""
+    db.execute("CREATE MACRO ts_rank_cd(a, b) AS 1")
+    db.execute("CREATE MACRO websearch_to_tsquery(c, q) AS q")
+    db.execute("ALTER TABLE t ADD COLUMN sv VARCHAR")
+    rows = await read_nearest(
+        ThreadedDuckDB(db),
+        "t",
+        by={"a": "k1"},
+        nearest=TextRank("sv", "x", then=(Sort("v", descending=True, nulls="last"), Sort("b", cast=None))),
+        limit=4,
+        columns=("b", "v"),
+    )
+    assert [(row["b"], row["v"]) for row in rows] == [(6, 6), (4, 4), (5, None), (7, None)]
+
+
 class _Answering:
     """answers each statement sent with the next of its scripted row lists, and keeps the statements."""
 

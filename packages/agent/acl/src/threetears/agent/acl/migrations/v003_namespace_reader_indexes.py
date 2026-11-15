@@ -57,7 +57,7 @@ _ACL_NAMESPACE_INDEXES_DDL: tuple[str, ...] = (
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_schema_name\n"
     "-- reason: whether any row of any type still names a schema, before it is dropped\n"
     "CREATE INDEX IF NOT EXISTS idx_namespaces_schema_name ON namespaces (schema_name)",
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_IDS_UNDER_NAME_SQL\n"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.list_ids_under_name\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_under_name\n"
     "-- reason: a subtree grant's namespaces, the byte range of names beneath its node\n"
     'CREATE INDEX IF NOT EXISTS idx_namespaces_name_c ON namespaces ((name COLLATE "C") ASC)',

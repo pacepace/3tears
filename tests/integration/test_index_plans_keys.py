@@ -15,6 +15,7 @@ from collections.abc import Iterator, Mapping
 from typing import Any
 
 import pytest
+from threetears.agent.tools.collections import ContextItemCollection
 from threetears.agent.workspace.collections import WorkspaceFileVersionCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -106,3 +107,56 @@ async def test_workspace_file_versions_path_history(db: Any) -> None:
     assert not set(_node_types(plan.plan)) & {"Sort", "Incremental Sort"}, plan.plan
     assert plan.rows_returned == _PAGE + 1, plan
     assert plan.rows_scanned <= 2 * (_PAGE + 1), plan
+
+
+#: the busy conversation's context rows, beside :data:`_OTHER_CONVERSATIONS` others of :data:`_OTHER_ITEMS` each
+_ITEMS = 300
+_OTHER_CONVERSATIONS = 200
+_OTHER_ITEMS = 20
+
+
+async def _busy_conversation(db: Any) -> uuid.UUID:
+    """seed the busy conversation's context rows and the others' (committed, as :func:`_busy_workspace`), then
+    ANALYZE."""
+    busy = uuid.uuid4()
+    conversations = [busy, *(uuid.uuid4() for _ in range(_OTHER_CONVERSATIONS))]
+    await db.execute(
+        "INSERT INTO conversations (agent_id, conversation_id, customer_id, user_id, channel_type, status,"
+        " date_created, date_updated, message_count)"
+        " SELECT gen_random_uuid(), c, gen_random_uuid(), gen_random_uuid(), 'web', 'active', now(), now(), 0"
+        " FROM unnest($1::uuid[]) c",
+        conversations,
+    )
+    insert = (
+        "INSERT INTO context_items (conversation_id, context_id, context_type, key, short_desc, content,"
+        " date_accessed, date_created, date_updated)"
+        " SELECT $1, gen_random_uuid(), 'tool_result', 'k' || g, 's', 'c', now(),"
+        " timestamptz '2026-11-01' + g * interval '1 s', now() FROM generate_series(1, $2) g"
+    )
+    await db.execute(insert, busy, _ITEMS)
+    for conversation in conversations[1:]:
+        await db.execute(insert, conversation, _OTHER_ITEMS)
+    await db.execute("ANALYZE context_items")
+    return busy
+
+
+async def test_find_by_conversation_reads_the_primary_key(db: Any) -> None:
+    """Flips if a conversation's context rows stop being read by an index leading with conversation_id: the held
+    contract step (tools v006) drops ix_context_items_conv, whose one column the primary key (and
+    ix_context_items_type) leads with, so the read must stay bounded to the one conversation's rows on both engines
+    without it."""
+    busy = await _busy_conversation(db)
+    sent = CapturedL3(real=db)
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=sent)
+    config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    rows = await ContextItemCollection(registry, config).find_by_conversation(busy)
+    assert len(rows) == _ITEMS
+    (sql, args), *_ = [asked for asked in sent.asked if "context_items" in asked[0]]
+    plan = await explain_statement(db, sql, *args)
+    # the primary key or ix_context_items_type, each led by conversation_id (the planner's pick between them)
+    assert plan_uses_index(plan, "context_items_pkey") or plan_uses_index(plan, "ix_context_items_type"), plan.plan
+    assert "Seq Scan" not in set(_node_types(plan.plan)), plan.plan
+    # the one conversation's rows, never the others' 4,000
+    assert plan.rows_returned == _ITEMS, plan
+    assert plan.rows_scanned <= 2 * _ITEMS, plan

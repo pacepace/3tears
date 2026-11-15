@@ -485,7 +485,7 @@ class TestInvocationRoundTrip:
                     ),
                 )
 
-            rows = await inv_coll.list_for_skill(agent_id, skill_id, limit=10)
+            rows = (await inv_coll.list_for_skill(agent_id, skill_id, limit=10)).rows
             assert [row.invocation_id for row in rows] == [third, second, first]
         finally:
             await pool.close()
@@ -559,7 +559,7 @@ class TestInvocationRoundTrip:
             # total_count must reflect the full set, not the page size:
             # request a page smaller than the total and confirm the count
             # is still the true total.
-            page = await inv_coll.list_for_skill(agent_id, skill_id, limit=2)
+            page = (await inv_coll.list_for_skill(agent_id, skill_id, limit=2)).rows
             assert len(page) == 2
             all_count = await inv_coll.count_for_skill(agent_id, skill_id)
             assert all_count == 7

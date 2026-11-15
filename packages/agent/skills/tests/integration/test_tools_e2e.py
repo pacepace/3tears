@@ -868,7 +868,7 @@ class TestAUseIsCountedOnce:
     ) -> None:
         """Both reports wait on a lock another transaction holds, then run: the second reads the first's outcome."""
         _, _, agent_id, skill_id, _, invocations = await _invoked(pool_with_schema)
-        [use] = await invocations.list_for_skill(agent_id, skill_id)
+        [use] = (await invocations.list_for_skill(agent_id, skill_id)).rows
         url, schema = applied_schema
         blocker = await asyncpg.connect(url, server_settings={"search_path": f"{schema}, public"})
         held = blocker.transaction()
@@ -895,7 +895,7 @@ class TestAUseIsCountedOnce:
     async def test_a_repeated_failure_moves_nothing(self, pool_with_schema: asyncpg.Pool) -> None:
         """The same failure reported again counts nothing and leaves when the skill last failed."""
         _, _, agent_id, skill_id, _, invocations = await _invoked(pool_with_schema)
-        [use] = await invocations.list_for_skill(agent_id, skill_id)
+        [use] = (await invocations.list_for_skill(agent_id, skill_id)).rows
 
         async def report() -> Any:
             return await invocations.record_outcome(
@@ -917,7 +917,7 @@ class TestAUseIsCountedOnce:
 
     async def test_a_use_of_another_skill_is_not_found_and_writes_nothing(self, pool_with_schema: asyncpg.Pool) -> None:
         _, _, agent_id, skill_id, _, invocations = await _invoked(pool_with_schema)
-        [use] = await invocations.list_for_skill(agent_id, skill_id)
+        [use] = (await invocations.list_for_skill(agent_id, skill_id)).rows
         result = await invocations.record_outcome(
             agent_id, use.invocation_id, skill_id=_new_uuid(), outcome="failure", source="agent_tool"
         )

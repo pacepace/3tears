@@ -1,6 +1,6 @@
 """the visible-customer set of one namespace type admits exactly what the per-row clause admits for that type.
 
-``caller_visible_customers_query(scope_namespace_type=...)`` resolves the caller's grants to one set a listing of
+``visible_customers(namespace_type=...)`` resolves the caller's grants to one set a listing of
 that type pages by; :func:`caller_visible_customer_clause` is the per-row rule every listing of the type applies.
 For each scope arm (all, type_customer on the type, type_customer on another type, namespace, no grant) the rows
 the set admits are the rows the clause admits, on a real database. The plan test holds the set's read to the
@@ -19,12 +19,12 @@ import pytest
 from threetears.agent.acl import (
     MAX_GROUP_MEMBERSHIP_DEPTH,
     caller_visible_customer_clause,
-    caller_visible_customers_query,
+    visible_customers,
 )
 from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.tools.platform_migrations import register as register_tools_platform
 from threetears.core.data.migrations import MigrationRunner
-from threetears.core.testing.plans import explain_statement, plan_uses_index
+from threetears.core.testing.plans import PlanRecorder, plan_uses_index
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
 pytestmark = pytest.mark.integration
@@ -116,11 +116,9 @@ async def _namespace(conn: asyncpg.Connection, customer: uuid.UUID) -> uuid.UUID
 
 async def _admitted(conn: asyncpg.Connection, user: uuid.UUID) -> tuple[set[uuid.UUID], set[uuid.UUID]]:
     """the customers whose rows the typed set admits, and those the per-row clause admits."""
-    sql, params = caller_visible_customers_query(user_id=user, scope_namespace_type=_TYPE)
-    row = await conn.fetchrow(sql, *params)
-    assert row is not None
+    visible = await visible_customers(conn, user_id=user, namespace_type=_TYPE)
     held = {r["customer_id"] for r in await conn.fetch("SELECT customer_id FROM listed_things")}
-    by_set = held if row["is_all"] else held & set(row["customer_ids"])
+    by_set = held if visible.is_all else held & set(visible.customer_ids)
     fragment, clause_params = caller_visible_customer_clause(
         user_id=user, customer_id_column="listed_things.customer_id", scope_namespace_type=_TYPE
     )
@@ -163,8 +161,9 @@ async def test_the_typed_set_admits_what_the_clause_admits(conn: asyncpg.Connect
 async def test_the_typed_set_reads_the_callers_memberships_then_their_groups_grants(
     conn: asyncpg.Connection,
 ) -> None:
-    """Flips if the typed set stops reading the caller's memberships through idx_group_members_reverse or their
-    groups' grants through idx_role_assignments_group_scope."""
+    """Flips if the typed set stops reading the caller's memberships (and the level above them) through
+    idx_group_members_reverse, or their groups' grants through idx_role_assignments_group_scope: each of its reads
+    planned as it sends it, among 500 groups of 4 members each."""
     await conn.execute(
         "INSERT INTO groups (row_scope, group_id, customer_id, name)"
         " SELECT 'platform', gen_random_uuid(), NULL, 'g' || g FROM generate_series(1, 500) g"
@@ -183,10 +182,15 @@ async def test_the_typed_set_reads_the_callers_memberships_then_their_groups_gra
     )
     for table in ("groups", "group_members", "role_assignments"):
         await conn.execute(f"ANALYZE {table}")
-    sql, params = caller_visible_customers_query(user_id=uuid.uuid4(), scope_namespace_type=_TYPE)
-    plan = await explain_statement(conn, sql, *params)
-    assert plan_uses_index(plan, "idx_group_members_reverse"), plan.plan
-    assert plan_uses_index(plan, "idx_role_assignments_group_scope"), plan.plan
+    caller = await conn.fetchval("SELECT member_id FROM group_members ORDER BY id LIMIT 1")
+    recorder = PlanRecorder(conn)
+    await visible_customers(recorder, user_id=caller, namespace_type=_TYPE)
+    memberships, above, grants = recorder.plans
+    for plan in (memberships, above):
+        assert plan_uses_index(plan, "idx_group_members_reverse"), plan.plan
+        assert plan.rows_scanned <= 10, plan
+    assert plan_uses_index(grants, "idx_role_assignments_group_scope"), grants.plan
+    assert grants.rows_scanned <= 10, grants
 
 
 #: the groups the equivalence seeds hang memberships on, each holding one grant (some a second)
@@ -312,14 +316,25 @@ async def test_the_keyed_set_gives_the_rows_the_joined_set_gave(conn: asyncpg.Co
             "customer_id": None if seed.null else uuid.UUID(int=seed.tie + 1),
         }
 
-    sql, params = caller_visible_customers_query(user_id=caller, scope_namespace_type=_TYPE if typed else None)
+    params: list[Any] = [caller, _TYPE] if typed else [caller]
+
+    async def keyed(c: Any) -> list[dict[str, Any]]:
+        visible = await visible_customers(c, user_id=caller, namespace_type=_TYPE if typed else None)
+        return [{"is_all": visible.is_all, "customer_ids": list(visible.customer_ids)}]
+
+    # the old set's customers in the order the keyed set gives them (by their text); the old array_agg's order was
+    # the engine's
+    old_sql = (
+        "SELECT o.is_all, ARRAY(SELECT c FROM unnest(o.customer_ids) AS c ORDER BY c::text) AS customer_ids"
+        f" FROM ({_old_customers_query(typed)}) AS o"
+    )
     await assert_same_results(
         conn,
         table="group_members",
         row=member,
-        old_sql=_old_customers_query(typed),
+        old_sql=old_sql,
         params=params,
-        helper=lambda c: c.fetch(sql, *params),
+        helper=keyed,
     )
 
 
@@ -351,7 +366,5 @@ async def test_the_set_reaches_a_grant_through_a_nested_group(conn: asyncpg.Conn
         customer,
         _TYPE,
     )
-    sql, params = caller_visible_customers_query(user_id=user, scope_namespace_type=_TYPE)
-    row = await conn.fetchrow(sql, *params)
-    assert row is not None
-    assert (row["is_all"], list(row["customer_ids"])) == (False, [customer])
+    visible = await visible_customers(conn, user_id=user, namespace_type=_TYPE)
+    assert (visible.is_all, list(visible.customer_ids)) == (False, [customer])

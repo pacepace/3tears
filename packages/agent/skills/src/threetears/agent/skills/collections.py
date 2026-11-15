@@ -29,7 +29,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 from uuid import UUID
 
 from threetears.agent.skills.entities import (
@@ -43,17 +43,22 @@ from threetears.agent.skills.types import (
 from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.backends.schema_sql import decode_jsonb, encode_jsonb
 from threetears.core.collections.base import BaseCollection
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.data.gin import gin_filter
 from threetears.core.keyed import (
     AnyOf,
+    BoundedCount,
     Count,
     Fragment,
     Increment,
+    Lock,
     Sort,
     aggregate_keyed,
+    count_at_most,
     delete_keyed,
+    TextRank,
     keyset_page,
-    narrowing,
+    read_nearest,
     read_row,
     update_keyed,
 )
@@ -167,7 +172,32 @@ _SKILL_UPDATE_COLUMNS: tuple[str, ...] = tuple(
 # columns every skill read selects: exactly the written ones, so a column
 # added to the insert list reaches every read with no second edit.
 # ``search_vector`` is server-side ranking state, never read into an entity.
-_SKILL_SELECT_LIST = ", ".join(_SKILL_INSERT_COLUMNS)
+
+#: the ``enabled`` pin of a listing that keeps disabled skills too: either value of the ``NOT NULL`` column
+_EITHER_ENABLED: Final = AnyOf((True, False), cast="boolean")
+
+#: a ranked list's ties, and an unranked list's order: the most recently used first (never used last), then the
+#: newest, then the key, so the order is total (the hand-written ``ORDER BY last_used_at DESC NULLS LAST,
+#: date_created DESC`` left full ties to the engine)
+_RECENT_FIRST: Final[tuple[Sort, ...]] = (
+    Sort("last_used_at", descending=True, nulls="last"),
+    Sort("date_created", descending=True),
+    Sort("skill_id", descending=True),
+)
+
+#: :data:`_RECENT_FIRST` as a keyset page sorts: a page steps past NULLs as the largest value, so never-used skills
+#: sort last descending as the earliest instant (``-infinity``), under a name of their own (the row's
+#: ``last_used_at`` is read as it is)
+_RECENT_FIRST_PAGE: Final[tuple[Sort, ...]] = (
+    Sort(
+        "last_used_or_never",
+        cast="timestamptz",
+        descending=True,
+        expression="COALESCE(t.\"last_used_at\", '-infinity'::timestamptz)",
+    ),
+    Sort("date_created", cast="timestamptz", descending=True),
+    Sort("skill_id", cast="uuid", descending=True),
+)
 
 
 _INVOCATION_INSERT_COLUMNS: tuple[str, ...] = (
@@ -199,7 +229,13 @@ _INVOCATION_UPDATE_COLUMNS: tuple[str, ...] = (
 
 # columns every invocation read selects: exactly the written ones, so a column
 # added to the insert list reaches every read with no second edit.
-_INVOCATION_SELECT_LIST = ", ".join(_INVOCATION_INSERT_COLUMNS)
+
+#: a skill's history, newest first, the key completing the order the way it runs:
+#: ``idx_skill_invocations_skill_time_key`` (v007) holds it
+_NEWEST_USE_FIRST: Final[tuple[Sort, ...]] = (
+    Sort("invoked_at", cast="timestamptz", descending=True),
+    Sort("invocation_id", cast="uuid", descending=True),
+)
 
 
 class SkillShapeError(ValueError):
@@ -576,16 +612,21 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         tag_filter: Sequence[str] | None = None,
         query: str | None = None,
         limit: int = 20,
-        offset: int = 0,
     ) -> list[AgentSkillEntity]:
-        """List skills for a user with optional FTS ranking.
+        """List a user's first ``limit`` skills, with optional FTS ranking.
 
         When ``query`` is set, the result is ranked by
         ``ts_rank_cd(search_vector, websearch_to_tsquery('english',
-        query))`` and filtered to rows matching the tsquery.
+        query))`` and filtered to rows matching the tsquery; rows tied
+        on the rank come in the recency order below.
         When ``query`` is not set, the result is sorted by
         ``last_used_at DESC NULLS LAST, date_created DESC`` -- recency
-        first, then creation order as a tiebreaker.
+        first, then creation order -- and the key (``skill_id``) last,
+        so the order is total.
+
+        The first page only: its one caller (``skill_list``) never asked
+        for another, so the ``OFFSET`` it never used is gone; a later page
+        would be a keyset cursor, never an offset.
 
         :param agent_id: partition column
         :ptype agent_id: UUID
@@ -601,41 +642,44 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         :ptype query: str | None
         :param limit: page size
         :ptype limit: int
-        :param offset: page offset
-        :ptype offset: int
         :return: ordered list of matching entities
         :rtype: list[AgentSkillEntity]
         """
         if self.l3_pool is None:
             return []
-        filters = _skill_filter_conditions(
-            agent_id, user_id, enabled_only=enabled_only, tag_filter=tag_filter, query=query
-        )
-        params = filters.params
-        param_idx = len(params) + 1
-        select_extra = ""
-        order_clause = "last_used_at DESC NULLS LAST, date_created DESC"
-        if filters.query_param is not None:
-            select_extra = (
-                f", ts_rank_cd(search_vector, websearch_to_tsquery('english', {filters.query_param})) AS fts_rank"
+        filters = _skill_filters(agent_id, user_id, enabled_only=enabled_only, tag_filter=tag_filter, query=query)
+        # cache-bypass: a ranked or recency-ordered page of the user's skills is not primary-key addressable; L1
+        # cannot serve it. The user's prefix pins it (idx_skills_agent_user_enabled with the enabled pin,
+        # uq_skills_agent_user_name without); the user's skills are capped (200 prose skills, SK-14), so the order
+        # sorts at most those
+        rows: list[Any]
+        if filters.query is not None:
+            rows = await read_nearest(
+                self.l3_pool,
+                "agent_skills",
+                by={"agent_id": agent_id, "user_id": user_id, "enabled": filters.enabled},
+                nearest=TextRank("search_vector", filters.query, then=_RECENT_FIRST),
+                limit=limit,
+                columns=_SKILL_INSERT_COLUMNS,
+                where=filters.narrowed,
+                records=True,
             )
-            order_clause = f"fts_rank DESC, {order_clause}"
-        where_clause = " AND ".join(filters.conditions)
-        limit_param = f"${param_idx}"
-        offset_param = f"${param_idx + 1}"
-        params.append(limit)
-        params.append(offset)
-        # cache-bypass: multi-row keyset / FTS-ranked scan is not
-        # primary-key addressable; L1 row cache cannot serve. method
-        # on the Collection preserves the single SQL entry point.
-        sql = (
-            f"SELECT {_SKILL_SELECT_LIST}{select_extra} "
-            f"FROM agent_skills WHERE {where_clause} "
-            f"ORDER BY {order_clause} "
-            f"LIMIT {limit_param} OFFSET {offset_param}"
-        )
-        rows = await self.l3_pool.fetch(sql, *params)
-        return [AgentSkillEntity(dict(row), is_new=False, collection=self) for row in rows]
+        else:
+            page = await keyset_page(
+                self.l3_pool,
+                "agent_skills",
+                columns=_SKILL_INSERT_COLUMNS,
+                by={"agent_id": agent_id, "user_id": user_id, "enabled": filters.enabled},
+                order=_RECENT_FIRST_PAGE,
+                limit=limit,
+                where=filters.narrowed,
+                records=True,
+            )
+            rows = page.rows
+        return [
+            AgentSkillEntity({column: row[column] for column in _SKILL_INSERT_COLUMNS}, is_new=False, collection=self)
+            for row in rows
+        ]
 
     async def count_for_user(
         self,
@@ -660,7 +704,7 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
 
         The ``tag_filter`` (``tags && filter`` overlap) and ``query``
         (``search_vector @@ websearch_to_tsquery``) predicates come from
-        the same :func:`_skill_filter_conditions` as :meth:`list_for_user`,
+        the same :func:`_skill_filters` as :meth:`list_for_user`,
         so the count never drifts from what the list actually returns.
 
         :param agent_id: partition column
@@ -680,17 +724,16 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         """
         if self.l3_pool is None:
             return 0
-        filters = _skill_filter_conditions(
-            agent_id, user_id, enabled_only=enabled_only, tag_filter=tag_filter, query=query
-        )
+        filters = _skill_filters(agent_id, user_id, enabled_only=enabled_only, tag_filter=tag_filter, query=query)
         # cache-bypass: aggregate COUNT(*) is not primary-key
         # addressable; L1 row cache cannot serve. Keyed by the user's
-        # prefix of uq_skills_agent_user_name; the filters narrow it.
+        # prefix (idx_skills_agent_user_enabled with the enabled pin,
+        # uq_skills_agent_user_name without); the filters narrow it.
         (counted,) = await aggregate_keyed(
             self.l3_pool,
             "agent_skills",
             aggregates={"skills": Count()},
-            by={"agent_id": agent_id, "user_id": user_id},
+            by={"agent_id": agent_id, "user_id": user_id, "enabled": filters.enabled},
             where=filters.narrowed,
         )
         return int(counted["skills"])
@@ -803,40 +846,16 @@ class OutcomeRecorded:
     counted: bool = False
 
 
-# One statement, so no second report can land between reading the use's outcome
-# and moving the counts: the row is locked as it is read, and a report waiting on
-# the lock reads the outcome the first one wrote. A use that already carries the
-# outcome moves no count; a use that carried the other one moves one count back.
-_RECORD_OUTCOME_SQL = """
-WITH prior AS (
-    SELECT outcome AS was, outcome_notes AS was_notes
-      FROM agent_skill_invocations
-     WHERE agent_id = $1 AND invocation_id = $2 AND skill_id = $3
-       FOR UPDATE
-), marked AS (
-    UPDATE agent_skill_invocations AS i
-       SET outcome = $4::text,
-           outcome_source = $5::text,
-           outcome_notes = COALESCE($6::text, prior.was_notes)
-      FROM prior
-     WHERE i.agent_id = $1 AND i.invocation_id = $2
-    RETURNING prior.was, prior.was_notes
-), counted AS (
-    UPDATE agent_skills AS s
-       SET success_count = s.success_count
-               + (CASE WHEN $4::text = 'success' THEN 1 ELSE 0 END)
-               - (CASE WHEN m.was = 'success' THEN 1 ELSE 0 END),
-           failure_count = s.failure_count
-               + (CASE WHEN $4::text = 'failure' THEN 1 ELSE 0 END)
-               - (CASE WHEN m.was = 'failure' THEN 1 ELSE 0 END),
-           last_failure_at = CASE WHEN $4::text = 'failure' THEN now() ELSE s.last_failure_at END,
-           date_updated = now()
-      FROM marked AS m
-     WHERE s.agent_id = $1 AND s.skill_id = $3 AND m.was IS DISTINCT FROM $4::text
-    RETURNING 1
-)
-SELECT m.was, m.was_notes, EXISTS (SELECT 1 FROM counted) AS counted FROM marked AS m
-"""
+@dataclass(frozen=True)
+class InvocationPage:
+    """One page of a skill's history (:meth:`AgentSkillInvocationCollection.list_for_skill`).
+
+    :ivar rows: the page's uses, newest first
+    :ivar next_cursor: the cursor of the page after it; ``None`` on the last page
+    """
+
+    rows: list[AgentSkillInvocationEntity]
+    next_cursor: str | None
 
 
 class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity]):
@@ -966,13 +985,15 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
         skill_id: UUID,
         *,
         limit: int = 20,
-        offset: int = 0,
+        cursor: str | None = None,
         outcome_filter: SkillOutcome | None = None,
-    ) -> list[AgentSkillInvocationEntity]:
-        """List invocation rows for a specific skill, newest first.
+    ) -> InvocationPage:
+        """One page of a skill's invocation rows, newest first.
 
-        Powers the future ``skill_history`` REST endpoint (deferred to
-        v1.1 per the planning set) and per-skill admin views.
+        Read through ``idx_skill_invocations_skill_time_key`` (``agent_id, skill_id, invoked_at DESC,
+        invocation_id DESC``): the page walks the index in its order from the cursor, never past it, and no
+        ``OFFSET`` skips rows read for nothing. ``invocation_id`` completes the order, so uses at one instant page
+        in one order on every engine.
 
         :param agent_id: partition column
         :ptype agent_id: UUID
@@ -980,39 +1001,57 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
         :ptype skill_id: UUID
         :param limit: page size
         :ptype limit: int
-        :param offset: page offset
-        :ptype offset: int
+        :param cursor: the previous page's ``next_cursor``; the newest page when ``None``
+        :ptype cursor: str | None
         :param outcome_filter: optional outcome filter; ``None`` returns
             all (success, failure, and un-classified rows)
         :ptype outcome_filter: SkillOutcome | None
-        :return: list of invocation entities ordered by ``invoked_at`` DESC
-        :rtype: list[AgentSkillInvocationEntity]
+        :return: the page: its invocation entities ordered by ``invoked_at`` DESC, and the next page's cursor
+        :rtype: InvocationPage
         """
         if self.l3_pool is None:
-            return []
-        conditions = ["agent_id = $1", "skill_id = $2"]
-        params: list[Any] = [agent_id, skill_id]
-        param_idx = 3
-        if outcome_filter is not None:
-            conditions.append(f"outcome = ${param_idx}")
-            params.append(outcome_filter)
-            param_idx += 1
-        limit_param = f"${param_idx}"
-        offset_param = f"${param_idx + 1}"
-        params.append(limit)
-        params.append(offset)
-        where_clause = " AND ".join(conditions)
-        # cache-bypass: per-skill history scan is not primary-key
-        # addressable; L1 row cache cannot serve. method on the
-        # Collection preserves the single SQL entry point.
-        sql = (
-            f"SELECT {_INVOCATION_SELECT_LIST} FROM agent_skill_invocations "
-            f"WHERE {where_clause} "
-            f"ORDER BY invoked_at DESC "
-            f"LIMIT {limit_param} OFFSET {offset_param}"
+            return InvocationPage(rows=[], next_cursor=None)
+        # cache-bypass: a skill's history page is not primary-key addressable; L1 row cache cannot serve it
+        page = await keyset_page(
+            self.l3_pool,
+            "agent_skill_invocations",
+            columns=_INVOCATION_INSERT_COLUMNS,
+            by={"agent_id": agent_id, "skill_id": skill_id},
+            order=_NEWEST_USE_FIRST,
+            limit=limit,
+            cursor=cursor,
+            where=[] if outcome_filter is None else [Fragment("t.outcome = $1", (outcome_filter,))],
         )
-        rows = await self.l3_pool.fetch(sql, *params)
-        return [AgentSkillInvocationEntity(dict(row), is_new=False, collection=self) for row in rows]
+        return InvocationPage(
+            rows=[AgentSkillInvocationEntity(dict(row), is_new=False, collection=self) for row in page.rows],
+            next_cursor=page.next_cursor,
+        )
+
+    async def count_for_skill_at_most(self, agent_id: UUID, skill_id: UUID, *, at_most: int) -> BoundedCount:
+        """How many times a skill was used, counting at most ``at_most + 1`` uses.
+
+        The total a history page is numbered against: a walk of ``idx_skill_invocations_skill_time_key`` that stops
+        past the bound, never a count of a long history's every row.
+
+        :param agent_id: partition column
+        :ptype agent_id: UUID
+        :param skill_id: the skill
+        :ptype skill_id: UUID
+        :param at_most: the bound
+        :ptype at_most: int
+        :return: the count, and whether more uses are held past the bound
+        :rtype: BoundedCount
+        """
+        if self.l3_pool is None:
+            return BoundedCount(count=0, more=False)
+        # cache-bypass: a bounded count is not primary-key addressable
+        return await count_at_most(
+            self.l3_pool,
+            "agent_skill_invocations",
+            at_most=at_most,
+            order=("agent_id", "skill_id", "invoked_at", "invocation_id"),
+            by={"agent_id": agent_id, "skill_id": skill_id},
+        )
 
     async def count_for_skill(
         self,
@@ -1052,12 +1091,13 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
             return 0
         # cache-bypass: aggregate COUNT(*) is not primary-key
         # addressable; L1 row cache cannot serve. Keyed by the skill's
-        # prefix of idx_skill_invocations_skill_time.
-        by: dict[str, Any] = {"agent_id": agent_id, "skill_id": skill_id}
-        if outcome_filter is not None:
-            by["outcome"] = outcome_filter
+        # prefix of idx_skill_invocations_skill_time_key.
         (counted,) = await aggregate_keyed(
-            self.l3_pool, "agent_skill_invocations", aggregates={"invocations": Count()}, by=by
+            self.l3_pool,
+            "agent_skill_invocations",
+            aggregates={"invocations": Count()},
+            by={"agent_id": agent_id, "skill_id": skill_id},
+            where=[] if outcome_filter is None else [Fragment("outcome = $1", (outcome_filter,))],
         )
         return int(counted["invocations"])
 
@@ -1202,7 +1242,7 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
         the same outcome moves no count; a report of the other outcome moves
         the count from one to the other. ``notes`` replaces the use's outcome
         notes when given and leaves them when ``None``. The use and the skill
-        are written in one statement (:data:`_RECORD_OUTCOME_SQL`), so two
+        are written in one transaction holding the use's row lock, so two
         reports of one use cannot both count.
 
         The skill row's cache entry is the skills collection's to drop; the
@@ -1228,26 +1268,47 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
             raise ValueError(f"record_outcome: outcome must be 'success' or 'failure'; got {outcome!r}")
         if self.l3_pool is None:
             return OutcomeRecorded(found=False)
-        # cache-bypass: a two-table write in one statement; the use's row is
-        # dropped from the cache below so the next read fetches through.
-        row = await self.l3_pool.fetchrow(
-            _RECORD_OUTCOME_SQL,
-            agent_id,
-            invocation_id,
-            skill_id,
-            outcome,
-            source,
-            notes,
-        )
-        if row is None:
-            return OutcomeRecorded(found=False)
+        # One transaction, so no second report can land between reading the use's outcome and moving the counts:
+        # the use's row is locked as it is read (FOR UPDATE), and a report waiting on the lock reads the outcome the
+        # first one wrote. A use that already carries the outcome moves no count; one that carried the other moves
+        # one count back. Each statement is one keyed row: the use by its key, the skill by its key.
+        # cache-bypass: the use's row is dropped from the cache below so the next read fetches through
+        async with self.required_l3_pool.acquire() as conn, CallerTransaction(conn):
+            prior = await read_row(
+                conn,
+                "agent_skill_invocations",
+                by={"agent_id": agent_id, "invocation_id": invocation_id, "skill_id": skill_id},
+                columns=("outcome", "outcome_notes"),
+                lock=Lock.UPDATE,
+            )
+            if prior is None:
+                return OutcomeRecorded(found=False)
+            was, was_notes = prior["outcome"], prior["outcome_notes"]
+            await update_keyed(
+                conn,
+                "agent_skill_invocations",
+                values={
+                    "outcome": outcome,
+                    "outcome_source": source,
+                    "outcome_notes": was_notes if notes is None else notes,
+                },
+                by={"agent_id": agent_id, "invocation_id": invocation_id},
+            )
+            counted = False
+            if was != outcome:
+                values: dict[str, Any] = {
+                    "success_count": Increment(int(outcome == "success") - int(was == "success")),
+                    "failure_count": Increment(int(outcome == "failure") - int(was == "failure")),
+                    "date_updated": Fragment("now()"),
+                }
+                if outcome == "failure":
+                    values["last_failure_at"] = Fragment("now()")
+                moved = await update_keyed(
+                    conn, "agent_skills", values=values, by={"agent_id": agent_id, "skill_id": skill_id}
+                )
+                counted = moved.count > 0
         await self.invalidate_cache((agent_id, invocation_id))
-        return OutcomeRecorded(
-            found=True,
-            previous=row["was"],
-            previous_notes=row["was_notes"],
-            counted=bool(row["counted"]),
-        )
+        return OutcomeRecorded(found=True, previous=was, previous_notes=was_notes, counted=counted)
 
 
 # --- helpers -----------------------------------------------------------
@@ -1255,26 +1316,23 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
 
 @dataclass(frozen=True)
 class _SkillFilters:
-    """WHERE conditions and positional parameters shared by the skill list and count.
+    """The pins and filters the skill list and count share.
 
-    :param conditions: SQL conditions, joined with ``AND`` by the caller
-    :ptype conditions: list[str]
-    :param params: positional parameters, ``$1`` first
-    :ptype params: list[Any]
-    :param query_param: placeholder carrying the FTS query text, or ``None`` when no query
-    :ptype query_param: str | None
-    :param narrowed: the filters after the user's pins (enabled, tags, the query), each a fragment of its own
-        parameters: the count's ``where=``
+    :param enabled: the ``enabled`` pin: ``TRUE`` when only enabled skills are asked, else either value (the column is
+        ``NOT NULL``), so the user's prefix is always ``idx_skills_agent_user_enabled``'s whole key
+    :ptype enabled: Any
+    :param narrowed: the filters past the pins (tags, the query's match), each a fragment of its own
     :ptype narrowed: list[Fragment]
+    :param query: the FTS query's text when one is asked, else ``None``
+    :ptype query: str | None
     """
 
-    conditions: list[str]
-    params: list[Any]
-    query_param: str | None
+    enabled: Any
     narrowed: list[Fragment]
+    query: str | None
 
 
-def _skill_filter_conditions(
+def _skill_filters(
     agent_id: UUID,
     user_id: UUID,
     *,
@@ -1282,12 +1340,13 @@ def _skill_filter_conditions(
     tag_filter: Sequence[str] | None,
     query: str | None,
 ) -> _SkillFilters:
-    """Build the filter predicates :meth:`AgentSkillCollection.list_for_user` and
+    """Build the pins and filters :meth:`AgentSkillCollection.list_for_user` and
     :meth:`AgentSkillCollection.count_for_user` share.
 
-    The tag overlap and the FTS match go through :func:`gin_filter`: a multi-tag
-    ``&&`` and a ``websearch_to_tsquery`` carrying OR or NOT are refused outright by
-    YugabyteDB's GIN index, so both filter the rows ``agent_id`` / ``user_id`` narrow to.
+    ``enabled`` is a pin, not a filter (either value when disabled skills are listed too): the user's prefix is then
+    ``idx_skills_agent_user_enabled``'s whole key. The
+    tag overlap and the FTS match go through :func:`gin_filter`: a multi-tag ``&&`` and a ``websearch_to_tsquery``
+    carrying OR or NOT are refused outright by YugabyteDB's GIN index, so both filter the rows the pins narrow to.
 
     :param agent_id: partition column
     :ptype agent_id: UUID
@@ -1299,26 +1358,16 @@ def _skill_filter_conditions(
     :ptype tag_filter: Sequence[str] | None
     :param query: optional FTS query; blank or ``None`` applies none
     :ptype query: str | None
-    :return: conditions, parameters, and the query's placeholder
+    :return: the enabled pin, the filters, and the query's text
     :rtype: _SkillFilters
     """
-    conditions = ["agent_id = $1", "user_id = $2"]
-    params: list[Any] = [agent_id, user_id]
-    query_param: str | None = None
     narrowed: list[Fragment] = []
-    if enabled_only:
-        narrowed.append(Fragment("enabled = true"))
     if tag_filter:
         narrowed.append(Fragment(gin_filter("tags && $1"), (list(tag_filter),)))
-    searched = query is not None and query.strip()
-    if searched:
-        narrowed.append(Fragment(gin_filter("search_vector @@ websearch_to_tsquery('english', $1)"), (query,)))
-    for fragment in narrowed:
-        conditions.append(narrowing(fragment, len(params)))
-        params += list(fragment.params)
-    if searched:
-        query_param = f"${len(params)}"
-    return _SkillFilters(conditions=conditions, params=params, query_param=query_param, narrowed=narrowed)
+    searched = query if query is not None and query.strip() else None
+    if searched is not None:
+        narrowed.append(Fragment(gin_filter("search_vector @@ websearch_to_tsquery('english', $1)"), (searched,)))
+    return _SkillFilters(enabled=True if enabled_only else _EITHER_ENABLED, narrowed=narrowed, query=searched)
 
 
 def _skill_insert_params(data: dict[str, Any]) -> list[Any]:

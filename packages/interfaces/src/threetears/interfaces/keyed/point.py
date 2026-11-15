@@ -330,12 +330,18 @@ class TextRank:
     :ptype rank: str
     :param config: the text search configuration, a TRUSTED identifier
     :ptype config: str
+    :param then: the sort rows tied on the rank come in, after it (``Sort("last_used_at", descending=True,
+        nullable=True)``, ...), ending in the key so the order is total: a hand-written ``ORDER BY fts_rank DESC,
+        <then>``. None (the engine's order among ties) when empty. A ranked read with ``joins=`` orders its joined
+        rows by the rank alone
+    :ptype then: tuple[Sort, ...]
     """
 
     column: str
     text: Any
     rank: str = "fts_rank"
     config: str = "english"
+    then: tuple[Sort, ...] = ()
 
     def distance(self, place: int) -> str:
         """the row ``t``'s rank against the query bound at ``$place``, the expression a ranked read orders by
@@ -398,10 +404,12 @@ def read_nearest_statement(
     )
     distance = nearest.distance(place)
     if isinstance(nearest, TextRank):
-        # the best match first, as the hand-written ``ORDER BY fts_rank DESC LIMIT $k`` read it
+        # the best match first, as the hand-written ``ORDER BY fts_rank DESC LIMIT $k`` read it; ties on the rank in
+        # the ``then`` order (a listing's recency, its key last), as ``ORDER BY fts_rank DESC, <then>`` read them
         also = f"{distance} AS {quote_identifier(nearest.rank)}"
         sql, params = _sql(table, by, columns, limit=False, where=where, also=also)
-        return f"{sql} ORDER BY {distance} DESC LIMIT ${place + 1}", [*params, nearest.text, limit]
+        ties = f", {order_by_terms(nearest.then)}" if nearest.then else ""
+        return f"{sql} ORDER BY {distance} DESC{ties} LIMIT ${place + 1}", [*params, nearest.text, limit]
     # WHY the read is wrapped (``SELECT ... FROM (<the read> LIMIT k) AS n ORDER BY distance``), measured 2026-11-14:
     # every vector reader pins an owner (agent_id + user_id). At a heavy owner the planner walks the HNSW index and then
     # filters it to the owner; pgvector's HNSW scan stops at ``hnsw.ef_search`` (40) candidates, so a small owner among a

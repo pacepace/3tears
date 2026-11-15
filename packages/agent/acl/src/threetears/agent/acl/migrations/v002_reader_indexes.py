@@ -26,7 +26,7 @@ log = get_logger(__name__)
 #: Every statement, in order. Each is safe to run twice.
 _ACL_READER_INDEXES_DDL: tuple[str, ...] = (
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::GroupMemberCollection._load_naming;"
-    " packages/agent/acl/src/threetears/agent/acl/query_visibility.py::CALLER_VISIBLE_CUSTOMERS_SQL; packages/agent/acl/src/threetears/agent/acl/query_visibility.py::CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL;"
+    " packages/agent/acl/src/threetears/agent/acl/visible_customers.py::visible_customers;"
     " src/aibots/hub/rbac/collections.py::HubGroupMemberCollection.remove_member_everywhere;"
     " src/aibots/hub/rbac/collections.py::HubGroupMemberCollection.repoint_member;"
     " src/aibots/hub/rbac/collections.py::HubGroupCollection.list_memberships_visible_to_user\n"
@@ -35,13 +35,13 @@ _ACL_READER_INDEXES_DDL: tuple[str, ...] = (
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::GroupCollection.read_cascade; packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.load_for_groups; packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.ensure_group_role_assignment;"
     " packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.grant_winner;"
     " packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.delete_by_group_and_scope;"
-    " packages/agent/acl/src/threetears/agent/acl/query_visibility.py::CALLER_VISIBLE_CUSTOMERS_SQL; packages/agent/acl/src/threetears/agent/acl/query_visibility.py::CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL;"
+    " packages/agent/acl/src/threetears/agent/acl/visible_customers.py::visible_customers;"
     " packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.list_by_group;"
     " packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.count_by_group\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_assignments_group_scope\n"
     "CREATE INDEX IF NOT EXISTS idx_role_assignments_group_scope ON role_assignments (group_id, scope_type)",
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.get_by_name;"
-    " packages/agent/acl/src/threetears/agent/acl/collections.py::NAMESPACE_IDS_UNDER_NAME_SQL\n"
+    " packages/agent/acl/src/threetears/agent/acl/collections.py::NamespaceCollection.list_ids_under_name\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_namespaces_name\n"
     "-- reason: a namespace by its name, every grant and tool lookup that names one\n"
     "CREATE INDEX IF NOT EXISTS idx_namespaces_name ON namespaces (name)",

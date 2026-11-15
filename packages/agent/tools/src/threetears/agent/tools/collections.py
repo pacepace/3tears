@@ -104,8 +104,10 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
     # mirror the v001 migration + the ``ix_context_items_var_key``
     # partial-unique that ``upsert_variable`` requires for its
     # ``ON CONFLICT (conversation_id, key) WHERE context_type =
-    # 'variable'`` clause (v003's ``ix_context_items_lru`` is dropped by
-    # the held contract step v006: no read uses it).
+    # 'variable'`` clause (v003's ``ix_context_items_lru`` and
+    # ``ix_context_items_conv`` are dropped by the held contract step
+    # v006: no read uses them; a conversation's rows are read by the
+    # primary key's lead).
     schema = TableSchema(
         name="context_items",
         primary_key=("conversation_id", "context_id"),
@@ -134,7 +136,6 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             ),
         ),
         indexes=(
-            SchemaIndex("ix_context_items_conv", "conversation_id"),
             SchemaIndex(
                 "ix_context_items_type",
                 "conversation_id",

@@ -1,6 +1,6 @@
 """unit tests for the caller's visible-customer set and the visible listing read on it.
 
-:func:`visible_customers` reads the set once (``caller_visible_customers_query`` for one namespace type);
+:func:`visible_customers` reads the set once (the caller's groups, then their grants, by key, for one namespace type);
 :func:`visible_rows` reads a whole listing a page a statement on that set. These pin what each statement binds and
 admits: a platform-wide grant adds no customer condition, a set of customers admits platform rows beside them, a
 user column keeps another user's rows out whatever the grant, and the pages run until one comes back short. The
@@ -20,13 +20,19 @@ from threetears.agent.acl import VisibleCustomers, visible_customers, visible_ro
 _ORDER = (Sort("date_created", cast="timestamptz"), Sort("id", cast="uuid"))
 
 
+#: the one group the double's caller is a member of
+_GROUP = UUID(int=99)
+
+
 class _Conn:
-    """a connection double: the grants row it is given, and pages of rows it hands out in turn."""
+    """a connection double: the caller in one group (nested in none) holding the grants it is given, and pages of
+    rows it hands out in turn."""
 
     def __init__(self, grants: dict[str, Any], pages: list[list[dict[str, Any]]]) -> None:
         """record what the reads answer.
 
-        :param grants: the grants read's one row
+        :param grants: what the group's grants cover: ``is_all``, and ``customer_ids`` (each a ``type_customer``
+            grant on the ``knowledge`` type)
         :ptype grants: dict[str, Any]
         :param pages: each page read's rows, in turn
         :ptype pages: list[list[dict[str, Any]]]
@@ -36,32 +42,45 @@ class _Conn:
         self.grant_reads: list[tuple[str, tuple[Any, ...]]] = []
         self.page_reads: list[tuple[str, tuple[Any, ...]]] = []
 
-    async def fetchrow(self, sql: str, *params: Any) -> dict[str, Any]:
-        """answer the grants read.
-
-        :param sql: the statement
-        :ptype sql: str
-        :param params: its parameters
-        :ptype params: Any
-        :return: the grants row
-        :rtype: dict[str, Any]
-        """
-        self.grant_reads.append((sql, params))
-        return self.grants
+    def _grant_rows(self) -> list[dict[str, Any]]:
+        rows = [
+            {
+                "scope_type": "type_customer",
+                "scope_customer_id": customer,
+                "scope_namespace_type": "knowledge",
+                "scope_namespace_id": None,
+            }
+            for customer in self.grants["customer_ids"]
+        ]
+        if self.grants["is_all"]:
+            rows.append(
+                {
+                    "scope_type": "all",
+                    "scope_customer_id": None,
+                    "scope_namespace_type": None,
+                    "scope_namespace_id": None,
+                }
+            )
+        return rows
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        """answer a page read with the next page.
+        """answer the grants' reads (the caller's group, none above it, the group's grants), else the next page.
 
         :param sql: the statement
         :ptype sql: str
         :param params: its parameters
         :ptype params: Any
-        :return: the page's rows
+        :return: the rows
         :rtype: list[dict[str, Any]]
         """
         if sql.startswith("SELECT version()"):
             # the pager asks once which database it pages, as a pool is asked: a PostgreSQL one
             return [{"v": "PostgreSQL 16.15"}]
+        if '"group_members"' in sql or '"role_assignments"' in sql:
+            self.grant_reads.append((sql, params))
+            if '"role_assignments"' in sql:
+                return self._grant_rows()
+            return [{"group_id": _GROUP}] if "user" in params else []
         self.page_reads.append((sql, params))
         return self.pages.pop(0) if self.pages else []
 
@@ -116,7 +135,9 @@ def test_the_fragment_is_total_every_row_no_row_or_the_set() -> None:
 
 
 async def test_the_set_is_read_once_for_the_namespace_type() -> None:
-    """the grants read binds the caller and the listing's namespace type, and its customers come back sorted."""
+    """the grants are read from the caller's memberships (bound by the caller), up the groups they nest in, then those
+    groups' grants; a type grant on the listing's namespace type adds its customer, and the customers come back
+    sorted."""
     caller = uuid4()
     first, second = UUID(int=2), UUID(int=1)
     conn = _Conn({"is_all": False, "customer_ids": [first, second]}, [])
@@ -124,7 +145,10 @@ async def test_the_set_is_read_once_for_the_namespace_type() -> None:
     visible = await visible_customers(conn, user_id=caller, namespace_type="knowledge")
 
     assert visible == VisibleCustomers(is_all=False, customer_ids=(second, first))
-    assert [params for _, params in conn.grant_reads] == [(caller, "knowledge")]
+    memberships, above, grants = conn.grant_reads
+    assert '"group_members"' in memberships[0] and caller in memberships[1] and "user" in memberships[1]
+    assert '"group_members"' in above[0] and "group" in above[1]
+    assert '"role_assignments"' in grants[0]
 
 
 async def test_a_platform_wide_grant_reads_every_customer_but_not_another_users_rows() -> None:

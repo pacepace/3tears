@@ -1,4 +1,4 @@
-"""agent-skills v007 (CONTRACT, held): v002's conversation index, which v006's replaced, is dropped.
+"""agent-skills v008 (CONTRACT, held): v002's conversation index, which v006's replaced, is dropped.
 
 The contract step of v006's expand / contract. :meth:`~threetears.agent.skills.collections.AgentSkillInvocationCollection.list_for_conversation`
 reads ``idx_skill_invocations_conv_key`` (v006: the conversation's page completed by the key); v002's
@@ -23,7 +23,7 @@ _DROP_CONVERSATION_INDEX_SQL = "DROP INDEX IF EXISTS idx_skill_invocations_conv"
 
 
 async def drop_replaced_conversation_index(store: DataStore) -> None:
-    """Drop ``idx_skill_invocations_conv`` (v007, contract).
+    """Drop ``idx_skill_invocations_conv`` (v008, contract).
 
     :param store: ``DataStore`` bound to the target agent schema via ``search_path``
     :ptype store: DataStore
@@ -31,4 +31,4 @@ async def drop_replaced_conversation_index(store: DataStore) -> None:
     :rtype: None
     """
     await store.execute(_DROP_CONVERSATION_INDEX_SQL)
-    log.info("agent_skill_invocations: v002's conversation index dropped, v006's serves its page (v007, contract)")
+    log.info("agent_skill_invocations: v002's conversation index dropped, v006's serves its page (v008, contract)")

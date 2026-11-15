@@ -29,6 +29,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.interfaces.keyed import AnyOf, Sort, delete_keyed_statements, read_by_statement
+from threetears.core.testing.captured import CapturedL3
 from threetears.core.testing.plans import (
     PlanRecorder,
     StatementPlan,
@@ -337,9 +338,19 @@ async def test_namespaces_tool_flags(conn: asyncpg.Connection) -> None:
         " g % 3 = 0, now(), now() FROM generate_series(1, 300) g"
     )
     await conn.execute("ANALYZE namespaces")
-    for statement in (acl.TOOL_ELIGIBLE_NAMESPACES_SQL, acl.SKILL_ELIGIBLE_NAMESPACES_SQL):
-        plan = await explain_statement(conn, statement)
-        assert plan_uses_index(plan, "idx_namespaces_tool_flags"), (statement, plan.plan)
+    # each flag's listing as the collection sends it, its first statement (the evaluator's decisions come after)
+    for flag in ("tool_eligible", "skill_eligible"):
+        plan = await _first_planned(
+            conn,
+            acl.NamespaceCollection,
+            lambda namespaces, flag=flag: getattr(
+                namespaces,
+                "list_tool_namespaces_for_actor" if flag == "tool_eligible" else "list_skill_eligible_tool_namespaces",
+            )(actor_user_id=uuid.uuid4(), actor_agent_id=uuid.uuid4(), cache=None),
+        )
+        assert plan_uses_index(plan, "idx_namespaces_tool_flags"), (flag, plan.plan)
+        # the flagged tools alone (100 or 150 of 300), never the 20,000 agents and workspaces
+        assert plan.rows_scanned <= 300, (flag, plan)
 
 
 async def test_namespaces_customer_type(conn: asyncpg.Connection) -> None:
@@ -389,7 +400,7 @@ async def test_namespaces_under_name(conn: asyncpg.Connection) -> None:
     """Flips if the namespaces at or beneath a node stop reading the node by idx_namespaces_name and the names beneath
     it by idx_namespaces_name_c."""
     await _seed_namespaces(conn)
-    plan = await explain_statement(conn, acl.NAMESPACE_IDS_UNDER_NAME_SQL, "tool.p17", "tool.p17.", "tool.p17/")
+    plan = await _planned(conn, acl.NamespaceCollection, lambda namespaces: namespaces.list_ids_under_name("tool.p17"))
     assert plan_uses_index(plan, "idx_namespaces_name"), plan.plan
     assert plan_uses_index(plan, "idx_namespaces_name_c"), plan.plan
 
@@ -407,7 +418,10 @@ async def test_the_names_beneath_a_node_are_its_subtree_whatever_the_collation(c
     ids = await namespaces.list_ids_under_name("a.b")
     found = {row["name"] for row in await conn.fetch("SELECT name FROM namespaces WHERE namespace_id = ANY($1)", ids)}
     assert found == {"a.b", "a.b.c", "a.b.c.d"}, found
-    rows = await conn.fetch(acl.NAMESPACE_IDS_UNDER_NAME_SQL, "a.b", "a.b.", "a.b/")
+    sent = CapturedL3(real=conn)
+    await _collection(acl.NamespaceCollection, sent).list_ids_under_name("a.b")
+    ((sql, args),) = sent.asked
+    rows = await conn.fetch(sql, *args)
     assert {row["name"] for row in rows} == {"a.b", "a.b.c", "a.b.c.d"}, "the range alone holds the subtree"
 
 

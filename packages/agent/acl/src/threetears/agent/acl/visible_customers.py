@@ -2,9 +2,9 @@
 
 A listing of one entity type used to admit each row through a correlated EXISTS over the caller's grants
 (:func:`threetears.agent.acl.caller_visible_customer_clause`), run for every row the page scanned. The customers the
-caller can see are resolved once instead, by the caller's memberships through the grants' own indexes
-(:func:`threetears.agent.acl.caller_visible_customers_query` for the listing's namespace type, the same set the
-per-row clause admits), and the page reads its rows by key with ``customer_id = ANY(<those customers>)`` and its
+caller can see are resolved once instead, by keyed reads of the caller's memberships, the groups they nest in and
+those groups' grants (:func:`visible_customers` for the listing's namespace type, the same set the per-row clause
+admits), and the page reads its rows by key with ``customer_id = ANY(<those customers>)`` and its
 ``LIMIT``. A platform-wide grant (``scope_type='all'``) narrows nothing (its fragment is ``TRUE``).
 """
 
@@ -15,10 +15,10 @@ from dataclasses import dataclass
 from typing import Any, Final
 from uuid import UUID
 
-from threetears.core.keyed import Fragment, Sort, keyset_rows
+from threetears.core.keyed import AnyOf, Fragment, Sort, keyset_rows, read_by
 from threetears.core.sql_fragments import quote_identifier
 
-from threetears.agent.acl.query_visibility import caller_visible_customers_query
+from threetears.agent.acl.types import MAX_GROUP_MEMBERSHIP_DEPTH
 
 __all__ = ["VISIBLE_LIST_PAGE", "VisibleCustomers", "visible_customers", "visible_rows"]
 
@@ -101,25 +101,99 @@ def _within(column: str, placeholder: str, *, platform_rows: bool) -> str:
     return f"({column} IS NULL OR {within})" if platform_rows else within
 
 
-async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str) -> VisibleCustomers:
-    """the customers ``user_id``'s grants cover for ``namespace_type``: one read of the caller's grants, by key.
+#: the partitions a namespace is written in: a namespace grant's namespace is read by its id in either
+_NAMESPACE_SCOPES: Final[tuple[str, ...]] = ("platform", "customer")
+
+
+async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | None) -> VisibleCustomers:
+    """the customers ``user_id``'s grants cover for ``namespace_type``: the caller's groups, then their grants, by key.
 
     The same set :func:`threetears.agent.acl.caller_visible_customer_clause` admits a row of for that type: a
-    platform-wide grant, a ``type_customer`` grant on the type, or a grant on a namespace of the customer.
+    platform-wide grant, a ``type_customer`` grant on the type, or a grant on a namespace of the customer. The groups
+    are the caller's own (its memberships, ``idx_group_members_reverse``) and those they nest in, a level a read, to
+    :data:`MAX_GROUP_MEMBERSHIP_DEPTH` groups from the caller (the evaluator's walk); then every reached group's grants
+    in one read (``idx_role_assignments_group_scope``), and a namespace grant's namespace by its id. Reads: one for the
+    caller's groups, one a further level that finds a group (none past the depth), one for the grants, one for the
+    namespaces when a namespace grant is among them.
 
-    :param pool: anything with an asyncpg-shaped ``fetchrow``
+    Why keyed reads, not the one statement it was: that statement (a MATERIALIZED ``reached`` CTE written out to the
+    deepest nesting, its grants by a LATERAL lookup) was raw SQL no helper wrote. Each read here is one index's keyed
+    lookup; the levels stop at the first that finds no new group, so a caller whose groups nest in nothing (most)
+    costs three reads where the statement was one.
+
+    :param pool: anything with an asyncpg-shaped ``fetch``
     :ptype pool: Any
     :param user_id: the caller
     :ptype user_id: UUID
-    :param namespace_type: the namespace type that governs the listed entity
-    :ptype namespace_type: str
+    :param namespace_type: the namespace type that governs the listed entity: a ``type_customer`` grant adds its
+        customer only on that type; None admits one on any type
+    :ptype namespace_type: str | None
     :return: the customers
     :rtype: VisibleCustomers
     """
-    sql, params = caller_visible_customers_query(user_id=user_id, scope_namespace_type=namespace_type)
-    # cache-bypass: the caller's grants, by the caller's memberships (the grants' own indexes); one row
-    row = await pool.fetchrow(sql, *params)
-    return VisibleCustomers(is_all=bool(row["is_all"]), customer_ids=tuple(sorted(row["customer_ids"] or (), key=str)))
+    # cache-bypass: the caller's memberships, by the member's key (idx_group_members_reverse)
+    level = {
+        row["group_id"]
+        for row in await read_by(
+            pool, "group_members", by={"member_type": "user", "member_id": user_id}, columns=("group_id",)
+        )
+    }
+    reached = set(level)
+    for _ in range(MAX_GROUP_MEMBERSHIP_DEPTH - 1):
+        if not level:
+            break
+        # cache-bypass: the groups this level's groups are members of, by the member's key; each group is walked
+        # once (its first, shortest reach), so a cycle ends and the set is the groups within the depth
+        parents = {
+            row["group_id"]
+            for row in await read_by(
+                pool,
+                "group_members",
+                by={"member_type": "group", "member_id": AnyOf(sorted(level, key=str), cast="uuid")},
+                columns=("group_id",),
+            )
+        }
+        level = parents - reached
+        reached |= level
+    is_all = False
+    customers: set[UUID] = set()
+    if reached:
+        # cache-bypass: every reached group's grants, by group (idx_role_assignments_group_scope), both partitions
+        grants = await read_by(
+            pool,
+            "role_assignments",
+            by={"group_id": AnyOf(sorted(reached, key=str), cast="uuid")},
+            columns=("scope_type", "scope_customer_id", "scope_namespace_type", "scope_namespace_id"),
+        )
+        is_all = any(grant["scope_type"] == "all" for grant in grants)
+        customers = {
+            grant["scope_customer_id"]
+            for grant in grants
+            if grant["scope_type"] == "type_customer"
+            and grant["scope_customer_id"] is not None
+            and (namespace_type is None or grant["scope_namespace_type"] == namespace_type)
+        }
+        granted = {
+            grant["scope_namespace_id"]
+            for grant in grants
+            if grant["scope_type"] == "namespace" and grant["scope_namespace_id"] is not None
+        }
+        if granted:
+            # cache-bypass: a namespace grant's namespace, by its id in either partition (namespaces_pkey)
+            customers |= {
+                row["customer_id"]
+                for row in await read_by(
+                    pool,
+                    "namespaces",
+                    by={
+                        "row_scope": AnyOf(_NAMESPACE_SCOPES, cast=None),
+                        "namespace_id": AnyOf(sorted(granted, key=str), cast="uuid"),
+                    },
+                    columns=("customer_id",),
+                )
+                if row["customer_id"] is not None
+            }
+    return VisibleCustomers(is_all=is_all, customer_ids=tuple(sorted(customers, key=str)))
 
 
 async def visible_rows(

@@ -54,7 +54,6 @@ def _reference_context_items_table(metadata: sa.MetaData) -> sa.Table:
             ["conversations.conversation_id"],
             ondelete="CASCADE",
         ),
-        SAIndex("ix_context_items_conv", "conversation_id"),
         SAIndex(
             "ix_context_items_type",
             "conversation_id",

@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### acl, skills: their raw reads move onto the keyed helpers; a ranked read's ties order by `TextRank(then=...)`
+
+**Removed:** `threetears.agent.acl.caller_visible_customers_query` (and its written-out `CALLER_VISIBLE_CUSTOMERS*_SQL`):
+no consumer called it; `visible_customers(pool, user_id=..., namespace_type=...)` reads the same set by keyed reads
+(the caller's memberships and the groups they nest in, a level a read to the configured depth, then their grants and a
+namespace grant's namespace). `namespace_type` may now be `None` (a `type_customer` grant on any type).
+**Removed:** acl's `NAMESPACE_IDS_UNDER_NAME_SQL`, `TOOL_ELIGIBLE_NAMESPACES_SQL`, `SKILL_ELIGIBLE_NAMESPACES_SQL`:
+their methods read through `read_by`.
+**Added:** `TextRank(..., then=(Sort(...), ...))`: rows tied on the rank come in that order (a listing's recency, its
+key last), as `ORDER BY <rank> DESC, <then>` read them; the no-whole-reads walk judges the read under that order.
+**Changed:** skills `AgentSkillCollection.list_for_user` reads the first `limit` skills (its `offset` is gone: its one
+caller never asked past the first page); `AgentSkillInvocationCollection.list_for_skill(..., cursor=None)` returns an
+`InvocationPage` (its rows and `next_cursor`) paged by key, not by `OFFSET`; `count_for_skill_at_most` bounds the
+history's count. The `skill_history` tool takes the `cursor=` its last page gave instead of `offset=`, and says a total
+past 1,000 uses as "1,000 or more". `record_outcome` is one transaction (the use's row locked as it is read) instead of
+one CTE statement.
+**Migrations:** skills v007 (expand) builds `idx_skill_invocations_skill_time_key` (`agent_id, skill_id, invoked_at
+DESC, invocation_id DESC`) and drops v002's `idx_skill_invocations_skill_time`, which it covers; the held contract step
+is now v008. tools' held contract v006 also drops `ix_context_items_conv` (the primary key leads with its column).
+
 ### epoch: `StandingRows` and follow-since -- a standing set read cold once, followed from its cold read
 
 **Added:** `threetears.epoch.StandingRows` / `Standing`: a table's standing rows held by key, read cold once through

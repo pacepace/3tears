@@ -372,9 +372,9 @@ def test_the_sqlalchemy_declared_tables_register_their_indexes_on_import() -> No
             [Sort("last_refused_at", descending=True)],
         ),
         ("agent_skills", "idx_skills_agent_user_enabled"): ({"agent_id": 1, "user_id": 2, "enabled": True}, []),
-        ("agent_skill_invocations", "idx_skill_invocations_skill_time"): (
+        ("agent_skill_invocations", "idx_skill_invocations_skill_time_key"): (
             {"agent_id": 1, "skill_id": 2},
-            [Sort("invoked_at", descending=True)],
+            [Sort("invoked_at", descending=True), Sort("invocation_id", cast="uuid", descending=True)],
         ),
         ("job_fires", "idx_job_fires_job_time_key"): (
             {"job_id": 1},

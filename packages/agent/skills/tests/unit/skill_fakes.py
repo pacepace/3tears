@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from threetears.agent.skills.collections import OutcomeRecorded
+from threetears.core.keyed import BoundedCount, KeyPage
 from threetears.agent.skills.entities import (
     AgentSkillEntity,
     AgentSkillInvocationEntity,
@@ -84,7 +85,6 @@ class FakeSkillsCollection:
         tag_filter: Any = None,
         query: str | None = None,
         limit: int = 20,
-        offset: int = 0,
     ) -> list[AgentSkillEntity]:
         results: list[AgentSkillEntity] = []
         needle = (query or "").lower().strip() if query else None
@@ -102,7 +102,7 @@ class FakeSkillsCollection:
                 if needle not in hay:
                     continue
             results.append(AgentSkillEntity(dict(row), is_new=False, collection=None))
-        return results[offset : offset + limit]
+        return results[:limit]
 
     async def count_for_user(
         self,
@@ -150,7 +150,7 @@ class FakeSkillsCollection:
 
 
 # parity-with: threetears.agent.skills.collections.AgentSkillInvocationCollection
-# parity-exempt: AgentSkillInvocationCollection subset for skill_invoke + skill_report_outcome + skill_history unit coverage; the tools call only create/save_entity/record/list_for_conversation/list_for_skill/count_for_skill/set_outcome/record_outcome so the cache/persistence methods on the production class are out of scope; record_outcome's one-statement SQL is covered on real Postgres in tests/integration/test_tools_e2e.py
+# parity-exempt: AgentSkillInvocationCollection subset for skill_invoke + skill_report_outcome + skill_history unit coverage; the tools call only create/save_entity/record/list_for_conversation/list_for_skill/count_for_skill/count_for_skill_at_most/set_outcome/record_outcome so the cache/persistence methods on the production class are out of scope; record_outcome's one-transaction write is covered on real Postgres in tests/integration/test_tools_e2e.py
 class FakeInvocationsCollection:
     """In-memory stand-in for :class:`AgentSkillInvocationCollection`."""
 
@@ -230,15 +230,7 @@ class FakeInvocationsCollection:
                 target["last_failure_at"] = datetime.now(UTC)
         return OutcomeRecorded(found=True, previous=was, previous_notes=was_notes, counted=counted)
 
-    async def list_for_skill(
-        self,
-        agent_id: UUID,
-        skill_id: UUID,
-        *,
-        limit: int = 20,
-        offset: int = 0,
-        outcome_filter: str | None = None,
-    ) -> list[AgentSkillInvocationEntity]:
+    def _uses(self, agent_id: UUID, skill_id: UUID, outcome_filter: str | None) -> list[AgentSkillInvocationEntity]:
         matches = [
             AgentSkillInvocationEntity(dict(row), is_new=False, collection=None)
             for row in self.rows.values()
@@ -246,11 +238,31 @@ class FakeInvocationsCollection:
             and row["skill_id"] == skill_id
             and (outcome_filter is None or row.get("outcome") == outcome_filter)
         ]
-        matches.sort(key=lambda e: e.invoked_at, reverse=True)
-        return matches[offset : offset + limit]
+        matches.sort(key=lambda e: (e.invoked_at, str(e.invocation_id)), reverse=True)
+        return matches
+
+    async def list_for_skill(
+        self,
+        agent_id: UUID,
+        skill_id: UUID,
+        *,
+        limit: int = 20,
+        cursor: str | None = None,
+        outcome_filter: str | None = None,
+    ) -> KeyPage:
+        # the cursor is the last row's key here: opaque to the tool, as the real one is
+        matches = self._uses(agent_id, skill_id, outcome_filter)
+        start = 0 if cursor is None else 1 + [str(e.invocation_id) for e in matches].index(cursor)
+        rows = matches[start : start + limit]
+        more = start + limit < len(matches)
+        return KeyPage(rows=rows, next_cursor=str(rows[-1].invocation_id) if more and rows else None)
 
     async def count_for_skill(self, agent_id: UUID, skill_id: UUID, *, outcome_filter: str | None = None) -> int:
-        return len(await self.list_for_skill(agent_id, skill_id, limit=10**6, outcome_filter=outcome_filter))
+        return len(self._uses(agent_id, skill_id, outcome_filter))
+
+    async def count_for_skill_at_most(self, agent_id: UUID, skill_id: UUID, *, at_most: int) -> BoundedCount:
+        held = len(self._uses(agent_id, skill_id, None))
+        return BoundedCount(count=min(held, at_most), more=held > at_most)
 
     def latest(self) -> dict[str, Any] | None:
         if not self.rows:
