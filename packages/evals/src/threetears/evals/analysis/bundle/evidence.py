@@ -645,6 +645,8 @@ def _fields_of(record: type) -> frozenset[str]:
     """The fields a stored record's type declares: a model's, or a slim reading's."""
     if issubclass(record, BaseModel):
         return frozenset(record.model_fields)
+    if not dataclasses.is_dataclass(record):
+        raise TypeError(f"{record.__name__} is neither a model nor a dataclass, so it declares no fields to decide")
     return frozenset(field.name for field in dataclasses.fields(record))
 
 
