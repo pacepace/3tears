@@ -871,3 +871,36 @@ def test_a_whole_delete_is_let_through_by_the_kinds_that_replace_a_copy_whole(
     assert (findings == []) is passes, findings
     if not passes:
         assert any("in emptied: whole-delete items" in finding for finding in findings), findings
+
+
+_RELOAD_ANALYZE = """
+    from threetears.core.declared import whole_read
+
+    async def analyze(conn, table):
+        await whole_read(
+            conn.execute(f"ANALYZE {table}"),
+            kind="RELOAD_KIND",
+            reason="a reload's table is analysed once after it is filled again, so its first reads plan by its index",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_analyze_entry",
+            speed="tests/test_backup.py::test_analyze_speed",
+        )
+
+    async def analyze_bare(conn, table):
+        await conn.execute(f"ANALYZE {table}")
+"""
+
+
+@pytest.mark.parametrize(("kind", "passes"), [("cold_start", True), ("drain", False)])
+def test_a_cold_start_admits_the_analyze_after_a_reload(tmp_path: Path, kind: str, passes: bool) -> None:
+    """Flips if a reload's ANALYZE (a table emptied or new, filled again: a cold start's refill, coordinator
+    2026-11-15) is still reported once declared cold_start, if another kind lets it through, or if an undeclared
+    ANALYZE passes."""
+    proofs = _PROOFS + textwrap.indent(
+        "\ndef test_analyze_entry():\n    assert analyze\n\ndef test_analyze_speed():\n    budget_problem(analyze)\n",
+        "    ",
+    )
+    findings = _findings(tmp_path, {"reload.py": _RELOAD_ANALYZE.replace("RELOAD_KIND", kind)}, proofs)
+    declared = [finding for finding in findings if "analyze_bare" not in finding]
+    assert (declared == []) is passes, findings
+    assert any("analyze_bare" in finding and "whole-maintenance" in finding for finding in findings), findings

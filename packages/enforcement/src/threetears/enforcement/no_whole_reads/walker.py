@@ -470,10 +470,13 @@ DECLARATION_CALL: Final[str] = "whole_read"
 DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
     # the one fill of an empty copy: its whole select or pager, and a call into a function declared the same; and
     # (coordinator 2026-11-14) the emptying of the in-process copy's table its complete rows then replace
-    # (DuckDBBackend.apply_staged under the kind that staged the change), as schema_change and rolling_upgrade
+    # (DuckDBBackend.apply_staged under the kind that staged the change), as schema_change and rolling_upgrade; and
+    # (Pace 2026-11-15: a reload's one ANALYZE is part of its cold start) the one ANALYZE of
+    # a table a reload emptied and filled again (SqlL3Backend.analyze, reached only from load_files(reload=True))
     "cold_start": frozenset(
         {
             "whole-delete",
+            "whole-maintenance",
             "whole-select",
             "unkeyed-pager",
             "unkeyed-sort",

@@ -1063,7 +1063,14 @@ class SqlL3Backend:
         """
         if getattr(type(self._pool), "accepts_scoped_reads", False):
             return
-        await self.execute(f"ANALYZE {_quote_ident(table)}")
+        await whole_read(
+            self.execute(f"ANALYZE {_quote_ident(table)}"),
+            kind="cold_start",
+            reason="a table a reload emptied and filled again is analysed once, so its first reads plan by its indexes",
+            ruling="Pace 2026-11-12: a true cold start's fill reads whole; Pace 2026-11-15: a reload's one ANALYZE is part of its cold start",
+            proof="packages/core/tests/unit/collections/test_load_files.py::test_the_store_s_analyze_is_reached_only_from_a_reload",
+            speed="packages/core/tests/integration/test_reload_analyzed_live.py::test_a_reload_s_analyze_speed_at_real_size",
+        )
 
     async def load_files(
         self,
