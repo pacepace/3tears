@@ -21,8 +21,17 @@ from __future__ import annotations
 import sys
 from collections.abc import Iterator
 
+import freezegun
 import freezegun.api
 import pytest
+
+# A freeze's walk reads every attribute of every loaded module. huggingface_hub serves names lazily (``cli`` among
+# them), and importing ``huggingface_hub.cli`` asks the Hub over the network which agent harness is running
+# (huggingface_hub 1.33 ``utils._detect_agent``): a test that froze the clock in a process an embedding test had
+# loaded huggingface_hub into made a connect to huggingface.co, which evals' offline guard failed (tests/burndown CI,
+# 2026-11-14, test_three_arms_each_candidate_stops_at_its_own_stop...). Its modules bind no clock a test here freezes,
+# so the walk leaves them alone. Proven by tests/enforcement/test_clock_isolation.py's huggingface test.
+freezegun.configure(extend_ignore_list=["huggingface_hub"])
 
 
 def resolve_lazy_names() -> None:
