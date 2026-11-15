@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Any
 
-from threetears.datasources.drivers.base import _build_coverage_by_dimension_sql
+from threetears.datasources.drivers.base import Driver
 
 _REPO = Path(__file__).resolve().parents[4]
 _BASE = "packages/datasources/src/threetears/datasources/drivers/base.py"
@@ -63,7 +64,25 @@ def test_coverage_is_read_only_by_a_driver_over_its_datasources_relation() -> No
         and node.func.value.id == "self"
     ]
     assert len(fetched) == 1
-    assert _build_coverage_by_dimension_sql("sales", "orders", "state", ["amount"]) == (
+
+
+class _Fetching:
+    """a driver's ``fetch``, recording the statement the coverage read sends."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def fetch(self, sql: str) -> list[dict[str, Any]]:
+        self.sent.append(sql)
+        return []
+
+
+async def test_the_coverage_read_names_the_relation_it_is_given() -> None:
+    """Flips if the per-dimension coverage reads anything but the datasource relation it is named, grouped by the
+    dimension."""
+    driver = _Fetching()
+    await Driver.column_value_coverage_by_dimension(driver, "sales", "orders", "state", ["amount"])  # type: ignore[arg-type]
+    assert driver.sent == [
         'SELECT "state" AS dim_value, COUNT(*) AS total_rows, COUNT(NULLIF("amount", 0)) AS nz_0 '
         'FROM "sales"."orders" GROUP BY "state"'
-    )
+    ]
