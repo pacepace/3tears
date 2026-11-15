@@ -99,7 +99,6 @@ from threetears.evals.analysis.bundle.schema import (
     JudgeIdentityLevel,
     BundleInspection,
     GoalCheckProofReading,
-    host_declarations_digest,
 )
 from threetears.evals.analysis.aspects import AspectDeclaration, AspectView, aspect_view, aspect_views
 from threetears.evals.analysis.campaign_bundle import ArmSpelling, CampaignBundle
@@ -426,9 +425,7 @@ from threetears.evals.analysis.style import (
     GOAL_CHECK,
     HumanizeKind,
     StyleViolation,
-    check_names,
     humanize,
-    lint_prose,
 )
 from threetears.evals.schema.models import DECLARED_NAME_CHARS
 from threetears.evals.analysis.summary import (
@@ -516,7 +513,6 @@ __all__ = [
     "HumanizeKind",
     "StyleViolation",
     "humanize",
-    "lint_prose",
     "frontier_text",
     "OutOfRunSpendReport",
     "OutOfRunSpendTotals",
@@ -832,8 +828,6 @@ __all__ = [
     "history",
     "insight_standing",
     "inspect_analysis_bundle",
-    "check_names",
-    "host_declarations_digest",
     "inspect_campaign_bundle",
     "judge_agreement",
     "judge_evidence_tiers",
