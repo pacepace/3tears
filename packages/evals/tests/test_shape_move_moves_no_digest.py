@@ -3,12 +3,14 @@
 The report input and the bundle gained every optional field the first-screen work fills later (a reading's state, the
 caveat list, the first-screen value, the shapes of a check), all unset. Contracts held here:
 
-- **Built fixtures digest as they did, but for the structure fields.** For each hot-path campaign whose bundle is the
-  same on every platform, the report input built from it (as a page reads it, and as an analyst's snapshot counts it)
-  is the document it was before the fields existed, by the digest of the whole document with its floats rounded as a
-  fingerprint rounds them (``fixtures/shape_move/input_digests.json``, written from the tree before the move), once
-  the keys the builder fills since (:data:`FILLED`) are set apart. What they hold is held by
-  ``test_structure_fields_filled.py``. The bundles' own fingerprints and every page are held by the hot-path oracle.
+- **Built fixtures digest as pinned, every field in.** For each hot-path campaign whose bundle is the same on every
+  platform, the report input built from it (as a page reads it, and as an analyst's snapshot counts it) is pinned by
+  the digest of its whole document, floats rounded as a fingerprint rounds them, and only ``first_screen`` left out, as
+  ``report_input_digest`` leaves it (``fixtures/shape_move/input_digests.json``). No key is set apart at any depth, so
+  every filled field is pinned. The pins moved once, when the structure fields were filled (S5a-3 with S5a-2), and the
+  move was reviewed: the pins written before it hold exactly when the fields filled since are taken out of today's
+  document, each at its own place. What the filled fields hold is held by ``test_structure_fields_filled.py``. The
+  bundles' own fingerprints and every page are held by the hot-path oracle.
 - **A document holds no new key but those filled.** No built input and no assembled bundle, on any hot-path
   campaign, dumps a key the move added, at any depth, but the structure fields the builder and the bundle fill.
 - **A stored document reads as before.** Every stored report input fixture validates, carries none of the new
@@ -16,7 +18,8 @@ caveat list, the first-screen value, the shapes of a check), all unset. Contract
 - **The first-screen value is outside the digest**, set or not.
 - **The builder is on the numbers side**: it imports nothing from ``analysis/report/``.
 
-``SHAPE_MOVE_PINS=1`` rewrites the pins, which is right only on a tree before the move.
+``SHAPE_MOVE_PINS=1`` rewrites the built pins. That is right only for a change meant to move a built input, with the
+diff reviewed and the reason stated, never to clear a red.
 """
 
 from __future__ import annotations
@@ -93,9 +96,11 @@ BUNDLE_KEYS = frozenset(
 )
 
 
-#: The keys of a built input the builder fills since the move, at any depth: each arm's spelling, a contrast's paired
+#: The keys the move added that a built input now fills, so may hold: each arm's spelling, a contrast's paired
 #: baseline, its family and why its delta is not the difference of the arms' figures, a figure's spread, its common
-#: value and the state of an interval it lacks, a reading's flip margin and whether an aspect's margin is informative.
+#: value and the state of an interval it lacks, a reading's flip margin, whether an aspect's margin is informative, and
+#: the caveat list. Read only by :func:`test_a_built_input_and_bundle_hold_no_key_the_move_added`; no digest sets
+#: them apart.
 FILLED = frozenset(
     {
         "spelling",
@@ -117,13 +122,6 @@ FILLED = frozenset(
 BUNDLE_FILLED = frozenset({"spread", "no_variation"})
 
 
-def _without(node: Any, keys: frozenset[str]) -> Any:
-    """A JSON document with every one of ``keys`` taken out, at any depth."""
-    if isinstance(node, dict):
-        return {key: _without(value, keys) for key, value in node.items() if key not in keys}
-    return [_without(value, keys) for value in node] if isinstance(node, list) else node
-
-
 def _campaign(name: str) -> CampaignBundle:
     read = subject(name)
     return assemble_campaign_bundle(read.host, read.campaign_id, read.scope_id)
@@ -140,7 +138,9 @@ def _rounded_digest(built: ReportInput) -> str:
     """The digest of an input's whole document as a bundle's fingerprint reads one: every float rounded to twelve
     significant figures first (``identity_json``), since the last bits of a computed float differ between the
     platforms the suite runs on, and the pins are one file."""
-    document = _without(built.model_dump(mode="json", by_alias=True), FILLED)
+    document = {
+        key: held for key, held in built.model_dump(mode="json", by_alias=True).items() if key != "first_screen"
+    }
     return hashlib.sha256(identity_json(document).encode("utf-8")).hexdigest()
 
 
@@ -161,12 +161,12 @@ def _objects_with(node: Any, key: str) -> list[dict[str, Any]]:
     return [found for value in node for found in _objects_with(value, key)] if isinstance(node, list) else []
 
 
-def test_each_built_fixture_s_input_digest_is_what_it_was_before_the_move() -> None:
+def test_each_built_fixture_s_input_digest_is_its_pinned_one() -> None:
     built = {name: _digests(name) for name in PINNED}
     if os.environ.get("SHAPE_MOVE_PINS") == "1":
         PINS.parent.mkdir(exist_ok=True)
         PINS.write_text(json.dumps({"built": built, "stored": _stored_digests()}, indent=1, sort_keys=True) + "\n")
-        pytest.fail("pins rewritten: review the diff, and never rewrite them on a tree after the move")
+        pytest.fail("pins rewritten: review the diff and state the reason, and never rewrite them to clear a red")
     assert PINNED, "no hot-path campaign is pinned"
     assert built == json.loads(PINS.read_text())["built"]
 

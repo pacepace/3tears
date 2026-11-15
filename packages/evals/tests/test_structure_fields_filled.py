@@ -13,6 +13,12 @@ What the code page states and the written page could not, because the input did 
   ``Aspect.margin_informative``, #1142 U6), from the one arithmetic in ``report_margins``.
 - **An arm's spelling** (``Arm.spelling``): the levers code spelled its name from, so a page reads a cut level by its
   lever with no text read back (#1141). ``test_host_surfaces_listing.py`` holds what a page prints from it.
+- **The figures the code page reads off the bundle itself**: each stratum's measure figures beside its judged ones
+  and a measure figure's standard error (``Stratum.per_arm``, ``Stat.sem``), a judged mean's interval
+  (``Judged.per_arm[...].ci``, by the one rule every page reads it with), each arm's pass^k and the cells kept out of
+  it (``PassK.per_arm``, ``at_common_depth``, ``cells``), each arm's figures across the aspects (``across_aspects``),
+  the arm's side of a contrast and the margin its delta was read against (``Contrast.arm_mean``, ``margin``, decided
+  on the numbers side by ``contrast_margin``), and the campaign's declared volume (``Meta.volume_per_month``).
 
 Every one is optional and left out where unset, so a stored input digests as it did
 (``test_shape_move_moves_no_digest.py``), and each frozen input still verifies its digest (the last test here).
@@ -31,10 +37,15 @@ from typing import Any
 
 import pytest
 
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import fixture_variant_key, make_campaign, make_eval_result, make_eval_run
 from packages.evals.tests.test_hot_path_oracle import WITH_BUNDLES, Goldens, subject
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
+from threetears.evals.analysis.bundle.comparisons import contrast_margin
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.cells import cell_ref
+from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report_input import Reading, ReportInput, report_input_document_digest
 from threetears.evals.analysis.report_input_build import arm_spellings, family_id, report_input
@@ -88,6 +99,8 @@ def test_every_contrast_carries_its_paired_baseline_and_the_family_it_was_correc
             and bundle.label_of(held.control.variant_key) == contrast.control
         ]
         assert contrast.aspect == aspect
+        assert contrast.margin == contrast_margin(bundle.aspect(aspect), comparison)
+        assert contrast.arm_mean == comparison.contrast.mean
         assert contrast.baseline == comparison.control.mean
         assert contrast.baseline_n_cases == (
             comparison.control.n_cases if comparison.control.mean is not None else None
@@ -113,23 +126,25 @@ def _stated(built: ReportInput, kind: str | None, measure: str, aspect: str | No
 
 
 @pytest.mark.parametrize("name", CONTRASTED)
-def test_a_delta_carries_a_note_exactly_where_it_is_not_the_difference_of_the_arms_stated_figures(name: str) -> None:
+def test_a_delta_carries_a_note_exactly_where_both_arms_state_a_figure_and_it_is_not_their_difference(
+    name: str,
+) -> None:
     _, built = _built(name)
+    unstated = 0
     for contrast in built.contrasts:
         if contrast.delta is None:
             assert contrast.delta_note is None
             continue
         sides = [
             (_stated(built, contrast.kind, contrast.measure, contrast.aspect, arm), mean)
-            for arm, mean in (
-                (contrast.control, contrast.baseline),
-                (contrast.arm, None if contrast.baseline is None else contrast.baseline + contrast.delta),
-            )
+            for arm, mean in ((contrast.control, contrast.baseline), (contrast.arm, contrast.arm_mean))
         ]
-        alike = all(
-            stated is not None and mean is not None and math.isclose(stated, mean, rel_tol=1e-9, abs_tol=1e-12)
-            for stated, mean in sides
-        )
+        if any(stated is None or mean is None for stated, mean in sides):
+            # No figure beside the delta to explain: an arm with no cell states none.
+            unstated += any(stated is None for stated, _ in sides)
+            assert contrast.delta_note is None, (contrast.arm, contrast.measure, sides)
+            continue
+        alike = all(math.isclose(stated, mean, rel_tol=1e-9, abs_tol=1e-12) for stated, mean in sides)  # type: ignore[arg-type]
         assert (contrast.delta_note is None) == alike, (contrast.arm, contrast.measure, sides, contrast.delta_note)
         assert contrast.delta_note in (None, "paired_cases")
 
@@ -155,6 +170,12 @@ _PROFILE = HostProfile(host_id="spread", host_sweepables=SHARED_CORE, measures=M
 
 def _summary(values: list[list[float]]) -> Any:
     """The one arm's summary of ``wait_seconds`` over cases holding ``values``, each case's observations in turn."""
+    (cell,) = _aspect(values).cell_measures
+    return next(summary for summary in cell.measures.measures if summary.name == "wait_seconds")
+
+
+def _aspect(values: list[list[float]]) -> AnalysisContextBundle:
+    """The one arm's aspect over cases holding ``values`` of ``wait_seconds``, each case's observations in turn."""
     storage = EvalStorage(InMemoryDocumentStore())
     cases = [f"case-{index:02d}" for index in range(len(values))]
     run = make_eval_run(
@@ -179,8 +200,7 @@ def _summary(values: list[list[float]]) -> Any:
     campaign = make_campaign(scope_id=_SCOPE, run_ids=[run.id])
     storage.save_campaign(campaign)
     bundle: AnalysisContextBundle = assemble_context_bundle(campaign, storage=storage, profile=_PROFILE)
-    (cell,) = bundle.cell_measures
-    return next(summary for summary in cell.measures.measures if summary.name == "wait_seconds")
+    return bundle
 
 
 def test_a_spread_is_over_the_cases_each_case_s_repeats_one_draw() -> None:
@@ -195,6 +215,18 @@ def test_cases_that_all_read_one_value_state_it_and_no_spread() -> None:
     summary = _summary([[2.0, 2.0], [2.0], [2.0], [2.0], [2.0], [2.0]])
 
     assert (summary.spread, summary.no_variation) == (0.0, 2.0)
+
+
+def test_an_interval_with_no_width_is_no_interval_its_figure_states_why() -> None:
+    """Cases that all read one value give an interval of no width where any is given: the figure reads not available,
+    no_variation, never counted (W-2)."""
+    aspect = _aspect([[2.0, 2.0], [2.0], [2.0], [2.0], [2.0], [2.0]])
+    built = report_input(campaign_bundle(aspect))
+    (stat,) = built.measures["wait_seconds"].per_arm.values()
+
+    assert stat.ci is None or stat.ci[0] == stat.ci[1], "the cases did not vary, so no interval has width"
+    assert stat.no_variation == 2.0
+    assert stat.state is not None and (stat.state.state, stat.state.reason) == ("not_available", "no_variation")
 
 
 def test_one_case_states_no_spread() -> None:
@@ -216,13 +248,106 @@ def test_a_figure_with_no_interval_says_why_and_one_with_an_interval_carries_no_
     stats = list(_stats(built))
     assert any(stat.spread is not None for _, _, stat in stats), f"{name} states no spread, so this checks little"
     for measure, arm, stat in stats:
-        if stat.mean is None or stat.ci is not None:
+        unvaried = stat.no_variation is not None or (stat.ci is not None and stat.ci[0] == stat.ci[1])
+        if stat.mean is None or (stat.ci is not None and not unvaried):
             assert stat.state is None, (measure, arm)
             continue
         assert stat.state is not None and stat.state.state == "not_available", (measure, arm)
-        assert stat.state.reason == ("no_variation" if stat.no_variation is not None else "too_few"), (measure, arm)
+        assert stat.state.reason == ("no_variation" if unvaried else "too_few"), (measure, arm)
         if stat.no_variation is not None:
             assert stat.spread == 0.0 and round_figures(stat.no_variation) == round_figures(stat.mean)
+
+
+# --- the figures the code page reads off the bundle ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", WITH_BUNDLES)
+def test_every_measure_figure_carries_its_standard_error_and_every_stratum_its_measures(name: str) -> None:
+    bundle, built = _built(name)
+    labels = {arm.variant_key: arm.id for arm in built.arms}
+    checked = 0
+    for aspect in bundle.aspects:
+        held = built.measures
+        for cell in aspect.cell_measures:
+            label = labels.get(cell.variant_key)
+            for summary in cell.measures.measures:
+                if summary.texts or summary.categories or label is None:
+                    continue
+                figures = held[summary.name].by_aspect.get(aspect.aspect) or held[summary.name].per_arm
+                if label in figures:
+                    assert figures[label].sem == summary.sem, (summary.name, label)
+                    checked += 1
+            strata = {stratum.id: stratum for stratum in built.strata if stratum.aspect == aspect.aspect}
+            for facts in cell.strata:
+                stratum = strata[facts.stratum if facts.stratum is not None else "unstratified"]
+                for summary in facts.measures.measures:
+                    if summary.texts or summary.categories or label not in stratum.per_arm:
+                        continue
+                    stat = stratum.per_arm[label][summary.name]
+                    point = summary.rate if summary.rate is not None else summary.mean
+                    assert (stat.mean, stat.sem, stat.n) == (point, summary.sem, summary.n), (summary.name, label)
+                    checked += 1
+    assert checked, f"{name} holds no measure figure, so this checks nothing"
+
+
+@pytest.mark.parametrize("name", WITH_BUNDLES)
+def test_a_judged_mean_carries_the_interval_every_page_reads_it_with(name: str) -> None:
+    bundle, built = _built(name)
+    labels = {arm.variant_key: arm.id for arm in built.arms}
+    checked = 0
+    for aspect in bundle.aspects:
+        surface = bundle_decision_surface(aspect)
+        for cell in aspect.cell_measures:
+            label = labels.get(cell.variant_key)
+            for reading in cell.judged:
+                judged = built.judged[reading.dimension]
+                figures = judged.by_aspect.get(aspect.aspect) or judged.per_arm
+                if label not in figures or reading.mean is None:
+                    continue
+                resolved = resolve_reading(
+                    surface, cell_ref(cell.variant_key, cell.apparatus_class_id), reading.dimension, "judged"
+                )
+                expected = None if resolved.ci_low is None else (resolved.ci_low, resolved.ci_high)
+                assert figures[label].ci == expected, (reading.dimension, label)
+                assert judged.level == ("95%" if expected is not None else judged.level)
+                checked += 1
+    if any(aspect.judged_measures for aspect in bundle.aspects):
+        assert checked, f"{name} judges, and no judged figure was checked"
+
+
+@pytest.mark.parametrize("name", WITH_BUNDLES)
+def test_each_arm_s_pass_k_and_its_figures_across_the_aspects_are_the_bundle_s(name: str) -> None:
+    bundle, built = _built(name)
+    for aspect, held in zip(bundle.aspects, built.aspects, strict=True):
+        subjects = [subject for subject in aspect.frontier.subjects if subject.points]
+        for pass_k in held.pass_k or []:
+            (subject,) = [subject for subject in subjects if subject.k == pass_k.k and pass_k.per_arm is not None]
+            assert pass_k.per_arm is not None
+            for point in subject.points:
+                stat = pass_k.per_arm[bundle.label_of(point.variant_key)]
+                assert (stat.mean, stat.n_cases) == (point.pass_hat_k, point.n_pass_cases)
+                assert (stat.state is None) == (point.pass_hat_k is not None)
+            kept = [cell for point in subject.points for cell in point.pass_hat_k_cells if cell.reason is not None]
+            assert len(pass_k.cells or []) == len(kept)
+            for cell, carried in zip(kept, pass_k.cells or [], strict=True):
+                assert (carried.runs, carried.headline, carried.pass_k.mean) == (
+                    cell.run_ids,
+                    cell.headline,
+                    cell.pass_hat_k,
+                )
+                assert carried.state.state == "withheld"
+    aggregate = bundle.readings.aggregate
+    if aggregate is None:
+        assert built.across_aspects is None
+        return
+    assert built.across_aspects is not None
+    assert list(built.across_aspects.per_arm) == [bundle.label_of(arm.arm) for arm in aggregate.arms]
+    for arm in aggregate.arms:
+        carried = built.across_aspects.per_arm[bundle.label_of(arm.arm)]
+        assert (carried.pass_rate.value, carried.pass_rate.interval) == (arm.pass_rate.value, arm.pass_rate.interval)
+        assert (carried.reply_cost_usd.value, carried.reply_cost_usd.missing) == (arm.cost.value, arm.cost.missing)
+        assert (carried.change is None) == (arm.change is None)
+    assert built.meta.volume_per_month == bundle.declaration.volume_per_month
 
 
 # --- a reading's flip margin and an aspect's margin ----------------------------------------------------------------

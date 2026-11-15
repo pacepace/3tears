@@ -110,6 +110,7 @@ from threetears.evals.analysis.report_input import (
     Meta,
     PairRead,
     PassK,
+    PassKCell,
     PassRule,
     Precision,
     Pricing,
@@ -127,6 +128,7 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.report_margins import flip_margin, margin_informative
 from threetears.evals.analysis.references import resolve_reading
+from threetears.evals.analysis.state_words import state_word
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import (
     check_held,
@@ -486,7 +488,7 @@ class _Builder:
                 **self.pass_k_figures(held),
             )
             for held, subject in zip(frontier, depth.subjects, strict=True)
-            if subject.compared and subject.common_depth is not None
+            if subject.compared
         ]
         margin = declared.margin if declared is not None else None
         readings = [self.reading(row) for row in self.bundle.readings.on_aspect(label)]
@@ -516,24 +518,43 @@ class _Builder:
             margin_informative=informative,
         )
 
-    def pass_k_figures(self, subject: SubjectFrontier) -> dict[str, dict[str, Stat]]:
+    def pass_k_figures(self, subject: SubjectFrontier) -> dict[str, Any]:
         """Each arm's pass^k on one frontier subject, copied off its points by label: at the subject's ``k`` over the
-        cases scored that often (not available, ``too_few``, where none was), and at the common depth over the cases
-        every arm ran, where the arms share one. A label two points carry (one variant placed at two identity
-        versions) states its first point's, as the frontier lists them."""
+        cases scored that often (:func:`_pass_k_stat`), at the common depth over the cases every arm ran where the arms
+        share one, and each cell that pools with nothing or is kept out of the arm's figure, with why in the shared
+        states (``UnpooledReason`` read through :func:`~threetears.evals.analysis.state_words.state_word`). A label two
+        points carry (one variant placed at two identity versions) states its first point's, as the frontier lists
+        them."""
         per_arm: dict[str, Stat] = {}
         common: dict[str, Stat] = {}
+        cells: list[PassKCell] = []
         for point in subject.points:
             label = self.arm(point.variant_key)
-            per_arm.setdefault(
-                label,
-                Stat(mean=point.pass_hat_k, n_cases=point.n_pass_cases)
-                if point.pass_hat_k is not None
-                else Stat(n_cases=point.n_pass_cases, state=StateOf(state="not_available", reason="too_few")),
-            )
+            if label in per_arm:
+                continue
+            per_arm[label] = _pass_k_stat(point.pass_hat_k, point.n_pass_cases)
             if point.common_pass_hat_k is not None:
-                common.setdefault(label, Stat(mean=point.common_pass_hat_k, n_cases=point.n_common_cases))
-        return {"per_arm": per_arm, **({"at_common_depth": common} if common else {})}
+                common[label] = Stat(mean=point.common_pass_hat_k, n_cases=point.n_common_cases)
+            for cell in point.pass_hat_k_cells:
+                if cell.reason is None:
+                    continue
+                word = state_word("UnpooledReason", cell.reason)
+                if word.state is None:
+                    raise RuntimeError(f"the pooling reason {cell.reason!r} maps to no reading state")
+                cells.append(
+                    PassKCell(
+                        arm=label,
+                        runs=list(cell.run_ids),
+                        headline=cell.headline,
+                        pass_k=_pass_k_stat(cell.pass_hat_k, cell.n_cases_at_k),
+                        state=StateOf(state=word.state, reason=word.reason, coordinate=word.coordinate),
+                    )
+                )
+        return {
+            "per_arm": per_arm,
+            **({"at_common_depth": common} if common else {}),
+            **({"cells": cells} if cells else {}),
+        }
 
     def across_aspects(self) -> AcrossAspects | None:
         """Each arm's figures across every aspect, each aspect weighed alike, copied off the campaign's readings
@@ -548,7 +569,7 @@ class _Builder:
                 self.arm(arm.arm): ArmAcross(
                     pass_rate=_across(arm.pass_rate),
                     change=None if arm.change is None else _across(arm.change),
-                    cost=_across(arm.cost),
+                    reply_cost_usd=_across(arm.cost),
                 )
                 for arm in aggregate.arms
             },
@@ -1312,6 +1333,13 @@ def _unit(facts: MetricDescriptor, grade: str | None) -> str | None:
     return SHARE_UNIT if grade is None and reads_as_share(facts) else facts.unit
 
 
+def _pass_k_stat(value: float | None, cases: int) -> Stat:
+    """A pass^k over the cases scored ``k`` times or more; not available, ``too_few``, where none was."""
+    if value is None:
+        return Stat(n_cases=cases, state=StateOf(state="not_available", reason="too_few"))
+    return Stat(mean=value, n_cases=cases)
+
+
 def _across(figure: AggregateFigure) -> AcrossFigure:
     """One figure across the aspects, copied."""
     return AcrossFigure(value=figure.value, interval=figure.interval, missing=list(figure.missing))
@@ -1334,9 +1362,7 @@ def _measure_stat(summary: MeasureSummary) -> Stat:
     )
 
 
-def _spread_and_state(
-    summary: MeasureSummary, point: float | None, ci: tuple[float, float] | None
-) -> dict[str, Any]:
+def _spread_and_state(summary: MeasureSummary, point: float | None, ci: tuple[float, float] | None) -> dict[str, Any]:
     """What a cell's figure carries past its mean and interval, copied off its summary: the spread of its cases and the
     one value they all took where they did not vary, and, for a figure with no interval to read, its state (not
     available) with why: ``no_variation`` where the cases did not vary or the interval has no width, whatever it

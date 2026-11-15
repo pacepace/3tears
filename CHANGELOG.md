@@ -17,14 +17,32 @@ in `contrast_families`) and, where its delta is not the difference of the two ar
 `flip_margin` and an aspect `margin_informative`; and an arm whose name code computed its `spelling`, the levers its
 name was spelled from, each with its level. A bundle's numeric measure summary carries `spread` and `no_variation`.
 
+**Added:** the figures the code page read off the bundle itself, now on the input, each optional and left out where
+unset: each stratum's measure figures beside its judged means (`Stratum.per_arm`) and every measure figure's standard
+error (`Stat.sem`); a judged mean's interval (`Judged.per_arm[...].ci`, with the family `level`), by the one rule every
+page reads it with; each arm's pass^k at k and at the common depth (`PassK.per_arm`, `at_common_depth`), the cells of
+an arm's runs that pool with nothing (`PassK.cells`, new `PassKCell`, why in the shared reading states), and a pass^k
+whose arms share no case (`common_depth` none); each arm's figures across the aspects, each aspect weighed alike
+(`ReportInput.across_aspects`, new `AcrossAspects`, `ArmAcross`, `AcrossFigure`); a contrast's arm side
+(`Contrast.arm_mean`) and the margin its delta was read against (`Contrast.margin`); and the declared volume
+(`Meta.volume_per_month`). A figure whose interval has no width reads not available, `no_variation`, never counted.
+
+**Changed:** the margin a contrast is read against is decided once on the numbers side
+(`analysis.bundle.comparisons.contrast_margin`) and the page prints it, where the page chose it. `delta_note` is left
+unset where an arm states no figure. The bundle's `FamilyComparison.baseline`, `baseline_n_cases`, `family` and
+`delta_note`, never filled, are removed: the first two are `control.mean` and `control.n_cases`, and the input carries
+the rest. A version 2 fingerprint leaves `spread` and `no_variation` out of measure summaries only, so a host measure
+of either name stays evidence.
+
 **Changed:** a page reads an arm's computed name from its spelling, lever by lever, and never from the name's text:
 `report.words.reader_arm_name` is removed, replaced by `spelled_arm_name`. An input frozen before arms carried their
 spelling prints each name as it was frozen. A name spelled from several levers whose empty text level is read as
 `no <lever>` no longer keeps the digest or number that told it from another arm; the page's tag tells such arms apart.
 
 **Added:** `tests/test_both_pages_state_one_figure.py`, the parity guard: every figure a campaign's code page issues,
-by measure, kind and role, resolves from the report input built from the same bundle, with an allowance naming each
-figure the input does not yet carry and why.
+by measure, kind, role and the scale its unit prints at, resolves from the report input built from the same bundle,
+and every figure a stored written page issues resolves from the input it was written from. The allowance names each
+figure by its value, with a reason the written page's renderer closes from fields the input holds.
 
 ### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
 

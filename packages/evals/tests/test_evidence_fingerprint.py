@@ -24,6 +24,8 @@ direction. What is held here:
 
 from __future__ import annotations
 
+import copy
+
 import dataclasses
 import json
 import math
@@ -645,6 +647,31 @@ def test_a_field_the_bundle_gains_after_version_2_is_no_part_of_a_version_2_fing
     assert evidence_digest(grown, like="v2:") == evidence_digest(document, like="v2:")
     assert evidence_digest(_stored_under_v2_document(document)) == evidence_digest(document, like="v2:")
     assert evidence_digest(grown) == evidence_digest(document)
+
+
+def test_a_version_2_fingerprint_leaves_a_new_summary_field_out_of_measure_summaries_only() -> None:
+    """``spread`` and ``no_variation`` joined the measure summaries after version 2, so its pre-image leaves them out of
+    each summary, and of nothing else: a key a host names ``spread`` anywhere else (a margin its runs declared, here)
+    is evidence, and moving its value moves the fingerprint."""
+    document = _aspect(*_corpus_host()).to_dict()
+    summaries = [
+        summary
+        for cell in document["cell_measures"]
+        for summary in cell["measures"]["measures"]
+        if "spread" in summary or "no_variation" in summary
+    ]
+    assert summaries, "the corpus holds no summary with a spread, so this checks nothing"
+
+    regrown = copy.deepcopy(document)
+    for summary in [
+        summary for cell in regrown["cell_measures"] for summary in cell["measures"]["measures"] if "spread" in summary
+    ]:
+        summary["spread"] = 1234.5
+    margin_a = {**document, "run_margins": {**document["run_margins"], "spread": 0.05}}
+    margin_b = {**document, "run_margins": {**document["run_margins"], "spread": 0.10}}
+
+    assert evidence_digest(regrown, like="v2:") == evidence_digest(document, like="v2:")
+    assert evidence_digest(margin_a, like="v2:") != evidence_digest(margin_b, like="v2:")
 
 
 def _stored_under_v2_document(document: dict[str, Any]) -> dict[str, Any]:

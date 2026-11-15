@@ -1157,7 +1157,10 @@
    "properties": {
     "where": {"type": "string", "description": "The aspect read."},
     "k": {"type": "integer", "description": "The k compared."},
-    "common_depth": {"type": "integer", "description": "The fewest runs any arm gave a shared case."},
+    "common_depth": {
+     "type": ["integer", "null"],
+     "description": "The fewest runs any arm gave a shared case; none where the arms share no case."
+    },
     "shares_no_case": {"type": "boolean", "description": "Whether the arms share no case at that depth."},
     "unmeasured_for": {
      "type": "array",
@@ -1178,10 +1181,28 @@
      "type": ["object", "null"],
      "additionalProperties": {"$ref": "#/$defs/Stat"},
      "description": "Each arm's pass^k at the common depth, 0 to 1, by arm, over the cases every arm ran (n_cases); none where the arms share no case."
+    },
+    "cells": {
+     "type": ["array", "null"],
+     "items": {"$ref": "#/$defs/PassKCell"},
+     "description": "Each pass^k cell that pools with nothing or is kept out of its arm's figure, each arm's in the frontier's order, the headline first; none where every arm's figure pools all its runs."
     }
    },
    "additionalProperties": false,
    "description": "Where pass^k is compared, and at what depth."
+  },
+  "PassKCell": {
+   "type": "object",
+   "required": ["arm", "runs", "headline", "pass_k", "state"],
+   "properties": {
+    "arm": {"type": "string", "description": "The arm's id."},
+    "runs": {"type": "array", "items": {"type": "string"}, "description": "The runs whose attempts pooled in the cell, by id."},
+    "headline": {"type": "boolean", "description": "Whether the cell is the one the arm's figure reads: then it rests on it alone."},
+    "pass_k": {"$ref": "#/$defs/Stat", "description": "The cell's own pass^k at k, 0 to 1, over its cases scored k times (n_cases); not available, too_few, where none was."},
+    "state": {"$ref": "#/$defs/StateOf", "description": "Why the cell pools with no other: withheld, split or identity_unrecorded on the coordinate its runs differ on or left unrecorded."}
+   },
+   "additionalProperties": false,
+   "description": "One cell of an arm's pass^k runs that pools with nothing, or is kept out of the arm's figure: its runs, its own pass^k at k, and why, in the shared states."
   },
   "Precision": {
    "type": "object",
@@ -1555,14 +1576,14 @@
   },
   "ArmAcross": {
    "type": "object",
-   "required": ["pass_rate", "cost"],
+   "required": ["pass_rate", "reply_cost_usd"],
    "properties": {
     "pass_rate": {"$ref": "#/$defs/AcrossFigure", "description": "Its pass rate, percent: each aspect's usable trials passed."},
     "change": {
      "anyOf": [{"$ref": "#/$defs/AcrossFigure"}, {"type": "null"}],
      "description": "A change's candidate: its change against the control, in points; none otherwise."
     },
-    "cost": {"$ref": "#/$defs/AcrossFigure", "description": "What a reply costs it, US dollars: each aspect's cost per reply."}
+    "reply_cost_usd": {"$ref": "#/$defs/AcrossFigure", "description": "What a reply costs it, US dollars: each aspect's cost per reply."}
    },
    "additionalProperties": false,
    "description": "One arm's figures across every aspect. Descriptive: none is tested, and none decides a reading."

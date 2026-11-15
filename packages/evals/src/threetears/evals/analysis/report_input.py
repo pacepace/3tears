@@ -223,7 +223,9 @@ class PassK(_Part):
 
     where: str = Field(description="The aspect read.")
     k: int = Field(description="The k compared.")
-    common_depth: int = Field(description="The fewest runs any arm gave a shared case.")
+    common_depth: int | None = Field(
+        description="The fewest runs any arm gave a shared case; none where the arms share no case."
+    )
     shares_no_case: bool = Field(description="Whether the arms share no case at that depth.")
     unmeasured_for: list[str] = Field(default_factory=list, description="Arms pass^k is not measured for.")
     said: list[str] = Field(default_factory=list, description="What the pipeline says about it.")
@@ -239,6 +241,29 @@ class PassK(_Part):
         exclude_if=lambda value: value is None,
         description="Each arm's pass^k at the common depth, 0 to 1, by arm, over the cases every arm ran (n_cases); "
         "none where the arms share no case.",
+    )
+    cells: list[PassKCell] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Each pass^k cell that pools with nothing or is kept out of its arm's figure, each arm's in the "
+        "frontier's order, the headline first; none where every arm's figure pools all its runs.",
+    )
+
+
+class PassKCell(_Part):
+    """One cell of an arm's pass^k runs that pools with nothing, or is kept out of the arm's figure: its runs, its own
+    pass^k at k, and why, in the shared states."""
+
+    arm: str = Field(description="The arm's id.")
+    runs: list[str] = Field(description="The runs whose attempts pooled in the cell, by id.")
+    headline: bool = Field(description="Whether the cell is the one the arm's figure reads: then it rests on it alone.")
+    pass_k: Stat = Field(
+        description="The cell's own pass^k at k, 0 to 1, over its cases scored k times (n_cases); not available, "
+        "too_few, where none was."
+    )
+    state: StateOf = Field(
+        description="Why the cell pools with no other: withheld, split or identity_unrecorded on the coordinate its "
+        "runs differ on or left unrecorded."
     )
 
 
@@ -742,7 +767,7 @@ class ArmAcross(_Part):
     change: AcrossFigure | None = Field(
         default=None, description="A change's candidate: its change against the control, in points; none otherwise."
     )
-    cost: AcrossFigure = Field(description="What a reply costs it, US dollars: each aspect's cost per reply.")
+    reply_cost_usd: AcrossFigure = Field(description="What a reply costs it, US dollars: each aspect's cost per reply.")
 
 
 class AcrossAspects(_Part):

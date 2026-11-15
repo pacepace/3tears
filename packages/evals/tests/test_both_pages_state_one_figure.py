@@ -30,13 +30,19 @@ input already holds (:data:`GAP_REASONS`): the input has a field for every figur
 
 **Nothing passes for having checked nothing**: each campaign's page must have been assembled in forms, and must have
 resolved at least the figures it resolves today (:data:`RESOLVED_AT_LEAST`).
+
+**The written page is held to its input too** (:data:`WRITTEN`): a campaign whose report was written and stored is
+read as a host reads it, replayed from its capture (no model is called), and every figure its forms
+(:meth:`~threetears.evals.analysis.report.forms.PageForms.of`) handed out must resolve, by the same rule and with no
+allowance, from the input those forms were built from. A stored page reads the input frozen with it, never a fresh
+build, so that is the input it is held to.
 """
 
 from __future__ import annotations
 
 import functools
 import math
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -264,17 +270,34 @@ class Gap:
 GAP_REASONS: dict[str, str] = {
     "outcome_share": (
         "the share of an arm's trials drawn on the scoreboard's outcome bar where some were lost: the row's passes "
-        "over every trial it ran (ScoreboardRow.passed over ran), which the renderer divides as it does passes over "
+        "over every trial it ran (ScoreboardRow.passed over ran), which the renderer divides as it divides passes over "
         "usable trials"
+    ),
+    "equal_weight_row": (
+        "the level the scorecard's across-aspects row states for each arm: the mean of the matrix's cells above it, "
+        "each held at the page's printed precision, so a figure of the page's own cells, which the renderer reads off "
+        "each aspect's pass rate the input holds (Aspect.readings, the scoreboards)"
     ),
 }
 
 #: Each figure the code page states that the input does not hold as printed, by campaign, measure, kind, role and
 #: value, with why (:data:`GAP_REASONS`).
-ALLOWANCE: dict[Gap, str] = {}
+ALLOWANCE: dict[Gap, str] = {
+    Gap("scaled", "passed", "trial", "share", 0.199760766): "outcome_share",
+    Gap("scaled", "passed", "trial", "share", 0.227631579): "outcome_share",
+    Gap("scaled", "passed", "trial", "share", 0.246052632): "outcome_share",
+    Gap("scaled_two_aspects", "passed", "trial", "level", 16.0): "equal_weight_row",
+    Gap("scaled_two_aspects", "passed", "trial", "level", 21.5): "equal_weight_row",
+    Gap("scaled_two_aspects", "passed", "trial", "level", 23.5): "equal_weight_row",
+    Gap("scaled_two_aspects", "passed", "trial", "level", 26.0): "equal_weight_row",
+    Gap("scaled_two_aspects", "passed", "trial", "share", 0.165789474): "outcome_share",
+    Gap("scaled_two_aspects", "passed", "trial", "share", 0.228947368): "outcome_share",
+    Gap("scaled_two_aspects", "passed", "trial", "share", 0.239473684): "outcome_share",
+    Gap("scaled_two_aspects", "passed", "trial", "share", 0.281578947): "outcome_share",
+}
 
 #: The fewest figures each campaign's code page resolves from its input: what it resolves today.
-RESOLVED_AT_LEAST: dict[str, int] = {}
+RESOLVED_AT_LEAST: dict[str, int] = {"scaled": 943, "scaled_two_aspects": 1801, "toyhost": 39, "courierhost": 7}
 
 
 @dataclass(frozen=True)
@@ -287,10 +310,9 @@ class Issued:
     value: float | tuple[float, float]
 
 
-@functools.cache
-def code_page(name: str) -> tuple[Issued, ...]:
-    """Every figure of a measure campaign ``name``'s code page stated, read as a host reads the page."""
-    built: dict[str, list[Any]] = {"of_campaign": [], "of_aspects": [], "of_bundle": []}
+def _read(name: str, constructors: tuple[str, ...]) -> dict[str, list[Any]]:
+    """Every page forms each of ``constructors`` built while campaign ``name``'s page was read as a host reads it."""
+    built: dict[str, list[Any]] = {constructor: [] for constructor in constructors}
     patch = pytest.MonkeyPatch()
     for constructor, made_by in built.items():
         original = getattr(PageForms, constructor).__func__
@@ -309,16 +331,44 @@ def code_page(name: str) -> tuple[Issued, ...]:
         report_read(read.host, read.campaign_id, read.scope_id, format="markdown")
     finally:
         patch.undo()
-    assert built["of_campaign"], f"{name}: the code page was assembled in no campaign forms, so nothing is checked"
-    forms: Iterator[PageForms] = (
-        one for made in sum(built.values(), []) for one in (made.values() if isinstance(made, Mapping) else [made])
-    )
+    return built
+
+
+def _issued(forms: Iterable[PageForms]) -> tuple[Issued, ...]:
+    """Every figure of a measure ``forms`` handed out."""
     return tuple(
         Issued(entry.measure, entry.kind or "measure", entry.role, entry.value)
         for one in forms
         for entry in one.ledger
         if entry.measure and entry.value is not None
     )
+
+
+@functools.cache
+def code_page(name: str) -> tuple[Issued, ...]:
+    """Every figure of a measure campaign ``name``'s code page stated, read as a host reads the page."""
+    built = _read(name, ("of_campaign", "of_aspects", "of_bundle"))
+    assert built["of_campaign"], f"{name}: the code page was assembled in no campaign forms, so nothing is checked"
+    return _issued(
+        one for made in sum(built.values(), []) for one in (made.values() if isinstance(made, Mapping) else [made])
+    )
+
+
+#: The campaigns read from a written and stored report, and the fewest figures each one's written page resolves from
+#: its input: what it resolves today.
+WRITTEN: dict[str, int] = {"toyhost_doc": 30}
+
+
+@functools.cache
+def written_page(name: str) -> tuple[tuple[Issued, ...], ReportInput]:
+    """Every figure of a measure campaign ``name``'s written page stated, read as a host reads the page, and the one
+    input its forms were built from."""
+    (made,) = _read(name, ("of",)).values()
+    assert made, f"{name}: the written page was assembled in no written forms, so nothing is checked"
+    inputs = {id(one.report_input): one.report_input for one in made}
+    assert len(inputs) == 1, f"{name}: the written page's forms read {len(inputs)} inputs, not one"
+    (page_input,) = inputs.values()
+    return _issued(made), page_input
 
 
 @functools.cache
@@ -331,14 +381,19 @@ def built_input(name: str) -> ReportInput:
 def gaps_of(name: str, plant: Callable[[ReportInput], ReportInput] = lambda built: built) -> tuple[set[Gap], int]:
     """Every figure campaign ``name``'s code page states that its report input (as ``plant`` leaves it) does not hold,
     and how many it does."""
-    held = held_by_measure(plant(built_input(name)))
+    return _gaps(name, code_page(name), plant(built_input(name)))
+
+
+def _gaps(name: str, issued: Iterable[Issued], built: ReportInput) -> tuple[set[Gap], int]:
+    """Each of ``issued`` that ``built`` does not hold, as a gap of campaign ``name``, and how many it does."""
+    held = held_by_measure(built)
     found: set[Gap] = set()
     resolved = 0
-    for issued in code_page(name):
-        if resolves(held.get((issued.measure, issued.kind)), issued.role, issued.value):
+    for one in issued:
+        if resolves(held.get((one.measure, one.kind)), one.role, one.value):
             resolved += 1
         else:
-            found.add(Gap(name, issued.measure, issued.kind, issued.role, _keyed(issued.value)))
+            found.add(Gap(name, one.measure, one.kind, one.role, _keyed(one.value)))
     return found, resolved
 
 
@@ -363,12 +418,30 @@ def test_every_figure_the_code_page_states_the_input_holds(name: str) -> None:
     assert resolved >= RESOLVED_AT_LEAST[name], f"{name}: {resolved} figures resolved, fewer than it resolves today"
 
 
+@pytest.mark.parametrize("name", WRITTEN)
+def test_every_figure_the_written_page_states_its_input_holds(name: str) -> None:
+    found, resolved = written_gaps(name)
+
+    assert not found, f"the written page states figures its input does not hold: {sorted(found, key=str)}"
+    assert resolved >= WRITTEN[name], f"{name}: {resolved} figures resolved, fewer than it resolves today"
+
+
+def written_gaps(name: str, plant: Callable[[ReportInput], ReportInput] = lambda built: built) -> tuple[set[Gap], int]:
+    """Every figure campaign ``name``'s written page states that its input (as ``plant`` leaves it) does not hold, and
+    how many it does."""
+    issued, page_input = written_page(name)
+    return _gaps(name, issued, plant(page_input))
+
+
 def _without_pass_k(built: ReportInput) -> ReportInput:
     """The input with every arm's pass^k taken off its aspects, as it was before the field was filled."""
     aspects = [
         aspect.model_copy(
             update={
-                "pass_k": [held.model_copy(update={"per_arm": None, "at_common_depth": None}) for held in aspect.pass_k]
+                "pass_k": [
+                    held.model_copy(update={"per_arm": None, "at_common_depth": None, "cells": None})
+                    for held in aspect.pass_k
+                ]
                 if aspect.pass_k
                 else aspect.pass_k
             }
@@ -384,3 +457,22 @@ def test_a_figure_taken_out_of_the_input_is_a_gap_the_guard_names() -> None:
     allowed = {gap for gap in ALLOWANCE if gap.campaign == "toyhost"}
 
     assert {(gap.measure, gap.kind, gap.role) for gap in found - allowed} >= {("passed", "trial", "pass_k")}
+
+
+def _without_measure_intervals(built: ReportInput) -> ReportInput:
+    """The input with every measure figure's interval taken out."""
+    measures = {
+        name: measure.model_copy(
+            update={"per_arm": {arm: stat.model_copy(update={"ci": None}) for arm, stat in measure.per_arm.items()}}
+        )
+        for name, measure in built.measures.items()
+    }
+    return built.model_copy(update={"measures": measures})
+
+
+def test_a_figure_taken_out_of_the_written_page_s_input_is_a_gap_the_guard_names() -> None:
+    """The written page's guard is no tautology either: the intervals its measures print, taken out of its input,
+    fail it, naming each."""
+    found, _ = written_gaps("toyhost_doc", _without_measure_intervals)
+
+    assert {(gap.measure, gap.kind, gap.role) for gap in found} >= {("total_ms", "measure", "interval")}
