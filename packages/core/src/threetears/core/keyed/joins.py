@@ -26,16 +26,13 @@ IO only: one statement for the read, one keyed batch a joined table.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
-from datetime import date, datetime
-from decimal import Decimal
 from typing import Any
-from uuid import UUID
 
 from threetears.core.keyed._filters import Fragment, Selected
+from threetears.core.keyed._joining import Joined, cast_of, check_joins, join_rows, joined_columns
 from threetears.core.keyed.page import keyset_page
 from threetears.core.keyed.point import read_by
-from threetears.core.keyed.rows import read_joined, read_keyed
+from threetears.core.keyed.rows import read_keyed
 from threetears.interfaces.keyed.page import Sort
 from threetears.interfaces.keyed.rows import KeyBatch
 
@@ -44,65 +41,6 @@ __all__ = [
     "read_by_joined",
     "read_reached",
 ]
-
-
-@dataclass(frozen=True)
-class Joined:
-    """one table a :func:`read_by_joined` read joins: ``JOIN <table> ON <table>.<col> = <row's column> ...``.
-
-    :param table: the joined table, a TRUSTED identifier
-    :ptype table: str
-    :param on: its columns -> the row's columns each equals (a column the read reads, or a name an earlier join adds),
-        a leading part of its key (or of an index declared for the caller's read)
-    :ptype on: Mapping[str, str]
-    :param columns: the name each of its columns lands under in the row -> that column, TRUSTED identifiers
-    :ptype columns: Mapping[str, str]
-    :param left: keep a row no joined row matches (``LEFT JOIN``), each joined column None
-    :ptype left: bool
-    :param by: its columns pinned beside the join (``ON n.row_scope = 'customer'``), each a value or an
-        :class:`~threetears.core.keyed.AnyOf`
-    :ptype by: Mapping[str, Any] | None
-    :param matched: the name a row says under whether a joined row matched it (``(n.id IS NOT NULL) AS live`` over a
-        ``LEFT JOIN`` on ``n.id``); none when None
-    :ptype matched: str | None
-    :param casts: each ``on`` column's SQL type; read from the row's value when absent (a ``UUID`` is ``uuid``, an
-        ``int`` ``bigint``, a ``str`` ``text``)
-    :ptype casts: Mapping[str, str]
-    :param counts: a counted join's: each name the row says a count under -> the joined column a matching row is
-        counted by when it is not NULL (``COUNT(dc.description)``), or None to count every matching row
-        (``COUNT(*)``); every read row is then kept once, with no joined column (``columns`` empty)
-    :ptype counts: Mapping[str, str | None]
-    """
-
-    table: str
-    on: Mapping[str, str]
-    columns: Mapping[str, str]
-    left: bool = False
-    by: Mapping[str, Any] | None = None
-    matched: str | None = None
-    casts: Mapping[str, str] = field(default_factory=dict)
-    counts: Mapping[str, str | None] = field(default_factory=dict)
-
-
-#: a Python value's SQL type, for an ``on`` column given no cast
-_CASTS: tuple[tuple[type, str], ...] = (
-    (bool, "boolean"),
-    (int, "bigint"),
-    (UUID, "uuid"),
-    (str, "text"),
-    (Decimal, "numeric"),
-    (datetime, "timestamptz"),
-    (date, "date"),
-)
-
-
-def _cast_of(values: Sequence[Any]) -> str:
-    held = next((value for value in values if value is not None), None)
-    return next((cast for kind, cast in _CASTS if isinstance(held, kind)), "text")
-
-
-def _names(columns: Sequence[str | Selected] | None) -> set[str] | None:
-    return None if columns is None else {column.alias if isinstance(column, Selected) else column for column in columns}
 
 
 async def read_by_joined(
@@ -147,75 +85,18 @@ async def read_by_joined(
     :raises ValueError: when nothing is joined, a join names nothing to join on, a counted join widens the row, or a
         page has no order or an inner join
     """
-    if not joins:
-        raise ValueError(f"a joined read of {table} joins at least one table (read_by reads one)")
-    for join in joins:
-        if not join.on:
-            raise ValueError(f"a join of {join.table} names how it joins the row")
-        if join.counts and (join.columns or join.left or join.matched):
-            raise ValueError(f"a join of {join.table} that counts keeps each row once: no columns, left or matched")
+    check_joins(table, joins)
     if limit is not None and not order:
         raise ValueError(f"a page of a joined read of {table} names its order")
     if limit is not None and any(not (join.left or join.counts) for join in joins):
         raise ValueError(f"a page of a joined read of {table} joins LEFT only (an inner join drops rows past the page)")
-    selected = _names(columns)
-    # the columns of the read a join needs and the read does not select: read, then dropped from the rows
-    added = [] if selected is None else sorted({column for join in joins for column in join.on.values()} - selected)
-    named: set[str] = set(selected or ()) | {
-        name for join in joins for name in (*join.columns, *join.counts, join.matched) if name
-    }
-    hidden = [column for column in added if column not in named]
-    read = None if columns is None else [*columns, *hidden]
+    read, hidden = joined_columns(columns, joins)
     rows: list[dict[str, Any]] = (
         await read_by(conn, table, by=by, columns=read, where=where, order=order)
         if limit is None
         else (await keyset_page(conn, table, columns=read, by=by, order=order, limit=limit, where=where)).rows
     )
-    for join in joins:
-        inner = list(join.on)
-        # the joined table's columns read under names of their own, so none overwrites the row's before it is placed
-        counted = [column for column in join.counts.values() if column is not None]
-        wanted = list(dict.fromkeys([*inner, *join.columns.values(), *counted]))
-        casts = {column: join.casts.get(column) or _cast_of([row[join.on[column]] for row in rows]) for column in inner}
-        matches = (
-            await read_joined(
-                conn, rows, join.table, on=dict(join.on), columns=wanted, casts=casts, by=join.by, batch=batch
-            )
-            if rows
-            else {}
-        )
-        joined: list[dict[str, Any]] = []
-        for row in rows:
-            value = tuple(row[join.on[column]] for column in inner)
-            found = matches.get(value) if all(part is not None for part in value) else None
-            if join.counts:
-                held = found or []
-                joined.append(
-                    {
-                        **row,
-                        **{
-                            name: sum(1 for other in held if column is None or other[column] is not None)
-                            for name, column in join.counts.items()
-                        },
-                    }
-                )
-            elif found:
-                for other in found:
-                    widened = {**row, **{name: other[column] for name, column in join.columns.items()}}
-                    if join.matched:
-                        widened[join.matched] = True
-                    joined.append(widened)
-            elif join.left:
-                widened = {**row, **dict.fromkeys(join.columns)}
-                if join.matched:
-                    widened[join.matched] = False
-                joined.append(widened)
-        rows = joined
-    if hidden:
-        for row in rows:
-            for column in hidden:
-                del row[column]
-    return rows
+    return await join_rows(conn, rows, joins, batch=batch, hidden=hidden)
 
 
 async def read_reached(
@@ -283,7 +164,7 @@ async def read_reached(
             nodes.append(node)
         if not nodes:
             break
-        cast = cast or _cast_of(nodes)
+        cast = cast or cast_of(nodes)
         level = await read_keyed(
             conn, table, keys=KeyBatch((on,), [(node,) for node in nodes], (cast,)), columns=read, by=by, batch=batch
         )

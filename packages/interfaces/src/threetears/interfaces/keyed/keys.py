@@ -422,20 +422,32 @@ def _leading_held(index: DeclaredIndex, pinned: set[str]) -> int:
 
 def _unordered_serving(relation: Relation, pinned: set[str], by: Mapping[Any, Any]) -> DeclaredIndex | None:
     """the declared index that serves an unordered read of ``relation`` pinning ``pinned``: a secondary index binding
-    more pinned leading columns than the primary key (the one binding most, then the narrower); else the primary key
-    where it binds any (always when it binds all its columns: a point read); else None.
+    more of the pins than the primary key (the one binding most, then the one binding more leading columns, then the
+    narrower); else the primary key where it binds any (always when it binds all its columns: a point read); else
+    None. A secondary index binds its pinned leading columns and, when it binds at least one, each column its partial
+    predicate names that the read pins to exactly the predicate's text.
 
     YugabyteDB plans such a read through the primary key's prefix and filters the rest (3tears #95: 100 rows scanned
-    for 20); the coordinator's ruling (#96) names the index that binds more of the pins."""
+    for 20); the coordinator's ruling (#96) names the index that binds more of the pins.
+
+    WHY a stated predicate column counts as bound (coordinator ruling, 3tears #100): ``idx_wake_schedules_conv_active``
+    ``(conversation_id) WHERE status = 'active'`` binds one leading column, as the primary key ``(conversation_id,
+    schedule_id)`` does, so it was never named; YugabyteDB counted a conversation's 10 active schedules through the
+    primary key, reading all 400 of its rows, on 6 of 6 fresh ANALYZEs (S/o99/probe/wakecount-yb.log). The index holds
+    only the rows its predicate admits, so a read pinning the predicate's exact text is narrowed by it as by a key
+    column. :func:`_states` has already refused an index whose text the read does not pin exactly (another text, a
+    set, none): naming it there would miss every other row. At equal binding the index binding more leading columns
+    wins (it narrows inside the index too; the earlier contract, test_keyed_index_hint's
+    ``o88_conv_agent_user_status``)."""
     indexes = [index for named, index in _INDEXES if named == relation and _states(index, by)]
     primary = next((index for index in indexes if index.primary), None)
     floor = _leading_held(primary, pinned) if primary is not None else 0
     if primary is not None and floor == len(primary.columns):
         return primary
     ranked = [
-        ((held, -len(index.columns)), index)
+        ((held + len(index.stated), held, -len(index.columns)), index)
         for index in indexes
-        if not index.primary and (held := _leading_held(index, pinned)) > floor
+        if not index.primary and (held := _leading_held(index, pinned)) > 0 and held + len(index.stated) > floor
     ]
     if ranked:
         return max(ranked, key=lambda pair: pair[0])[1]

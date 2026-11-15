@@ -91,6 +91,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
+from threetears.core.collections.schema_backed import register_sa_table_indexes
+
 __all__ = [
     "agent_wake_schedules_table",
     "wake_fires_table",
@@ -639,3 +641,12 @@ def webhook_refusals_table(metadata: MetaData) -> Table:
             },
         ),
     )
+
+
+# the indexes and partial predicates these tables declare, registered with the keyed helpers on import, as a
+# TableSchema registers its own: a keyed read of them names its serving index to YugabyteDB and writes a predicate's
+# text as its literal (register_sa_table_indexes; 3tears #100: unregistered, YugabyteDB counted a conversation's 10
+# active wakes through the primary key, 400 rows read, on 6 of 6 fresh ANALYZEs)
+_REGISTERED = MetaData()
+for _declare in (agent_wake_schedules_table, wake_fires_table, webhook_subscriptions_table, webhook_refusals_table):
+    register_sa_table_indexes(_declare(_REGISTERED))

@@ -346,10 +346,16 @@ async def test_wake_schedules_conv_created(conn: asyncpg.Connection) -> None:
 
 async def test_wake_schedules_conv_active(conn: asyncpg.Connection) -> None:
     """Flips if a conversation's active schedules, counted for its cap or listed, stop reading
-    idx_wake_schedules_conv_active (on YugabyteDB: if the count stops reading it, or the listing reads past the
-    conversation's own schedules)."""
+    idx_wake_schedules_conv_active (on YugabyteDB: if the count stops reading it on any of six fresh ANALYZEs, or the
+    listing reads past the conversation's own schedules).
+
+    The statements are spelled for this connection's database (``CapturedL3(real=conn)``, nothing run on it). Spelled
+    for PostgreSQL (a seek a value, ``unnest`` and ``LATERAL``) and explained on YugabyteDB, the count read the
+    conversation's 400 schedules through the primary key for its 10 active, 6 of 6 fresh ANALYZEs (3tears #100,
+    S/o99/probe/wakecount-yb.log): YugabyteDB is sent the ``= ANY`` form instead, which names the partial index to
+    it (keyed.counts._COUNTED)."""
     busy = await _busy_conversation(conn)
-    captured = CapturedL3()
+    captured = CapturedL3(real=conn, passes=lambda _sql: False)
     schedules = _collections(captured).schedules
     await schedules.list_active_for_conversation(busy.conversation)
     listed = _of(captured, "agent_wake_schedules")
@@ -361,9 +367,14 @@ async def test_wake_schedules_conv_active(conn: asyncpg.Connection) -> None:
             plan = await explain_statement(conn, sql, *args)
             assert plan_uses_index(plan, "idx_wake_schedules_conv_active"), (sql, plan.plan)
         return
-    for sql, args in counted:
-        plan = await explain_statement(conn, sql, *args)
-        assert plan_uses_index(plan, "idx_wake_schedules_conv_active"), (sql, plan.plan)
+    for sql, _args in counted:
+        assert sql.startswith("/*+ IndexOnlyScan(r idx_wake_schedules_conv_active) */ "), sql
+    # the probe as a test: each fresh sample of the statistics, the count reads the partial index
+    for sample in range(6):
+        await conn.execute("ANALYZE agent_wake_schedules")
+        for sql, args in counted:
+            plan = await explain_statement(conn, sql, *args)
+            assert plan_uses_index(plan, "idx_wake_schedules_conv_active"), (sample, sql, plan.plan)
     # YugabyteDB's cost model lists through the conversation's primary key prefix (40.17) over the partial index
     # (43.16, even index-only), and keys-then-rows measured ~2x slower on both engines (S/o39/waketime.log, coordinator
     # ruling 2026-11-12): the list must stay within this conversation's own rows, of the 5400 seeded

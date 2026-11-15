@@ -33,7 +33,7 @@ from threetears.interfaces.keyed.filters import (
 from threetears.interfaces.keyed.keys import stated_literals
 from threetears.interfaces.keyed.page import Sort, order_by_terms
 
-__all__ = ["Nearest", "read_by_statement", "read_nearest_statement", "read_row_statement"]
+__all__ = ["Nearest", "TextRank", "read_by_statement", "read_nearest_statement", "read_row_statement"]
 
 
 def _sql(
@@ -201,17 +201,52 @@ class Nearest:
         )
 
 
+@dataclass(frozen=True)
+class TextRank:
+    """the full-text rank a ranked read orders by, best first: ``ts_rank_cd(t."<column>", websearch_to_tsquery('<config>',
+    $n))``, the query's text bound once for the rank. The match itself (``@@``) is the caller's guard, written through
+    :func:`~threetears.core.data.gin.gin_filter` where YugabyteDB's GIN index refuses the tsquery: the rank orders the
+    rows the pins and guards leave, and names no index.
+
+    :param column: the ``tsvector`` column, a TRUSTED identifier
+    :ptype column: str
+    :param text: the query's text, as ``websearch_to_tsquery`` reads it
+    :ptype text: Any
+    :param rank: the name each row carries its rank under
+    :ptype rank: str
+    :param config: the text search configuration, a TRUSTED identifier
+    :ptype config: str
+    """
+
+    column: str
+    text: Any
+    rank: str = "fts_rank"
+    config: str = "english"
+
+    def distance(self, place: int) -> str:
+        """the row ``t``'s rank against the query bound at ``$place``, the expression a ranked read orders by
+        (descending: the best match first).
+
+        :param place: the query text's placeholder number
+        :ptype place: int
+        :return: the expression
+        :rtype: str
+        """
+        return f"ts_rank_cd(t.{quote_identifier(self.column)}, websearch_to_tsquery('{self.config}', ${place}))"
+
+
 def read_nearest_statement(
     table: str | Derived,
     *,
     by: Mapping[str, Any],
-    nearest: Nearest,
+    nearest: Nearest | TextRank,
     limit: int,
     columns: Sequence[str | Selected] | None = None,
     where: Sequence[Fragment] = (),
 ) -> tuple[str, list[Any]]:
     """the statement reading the ``limit`` rows of ``table`` the pinned columns name nearest to a vector, nearest
-    first, and its binds: what ``threetears.core.keyed.read_nearest`` sends::
+    first (or, given a :class:`TextRank`, best matched by a text query, best first), and its binds: what
+    ``threetears.core.keyed.read_nearest`` sends::
 
         SELECT t."id", 1 - (t."embedding" OPERATOR(public.<=>) $3::text::public.vector) AS "similarity"
         FROM "memories" AS t WHERE t."agent_id" = $1 AND t."user_id" = $2
@@ -224,8 +259,8 @@ def read_nearest_statement(
     :ptype table: str | Derived
     :param by: as :func:`read_by_statement` takes it; at least one column
     :ptype by: Mapping[str, Any]
-    :param nearest: the vector column, the vector, and the distance
-    :ptype nearest: Nearest
+    :param nearest: the vector column, the vector, and the distance; or the ``tsvector`` column and the query's text
+    :ptype nearest: Nearest | TextRank
     :param limit: how many rows, at most
     :ptype limit: int
     :param columns: as :func:`read_by_statement` takes them; the similarity, when named, after them
@@ -244,6 +279,11 @@ def read_nearest_statement(
         + sum(len(fragment.params) for fragment in where)
     )
     distance = nearest.distance(place)
+    if isinstance(nearest, TextRank):
+        # the best match first, as the hand-written ``ORDER BY fts_rank DESC LIMIT $k`` read it
+        also = f"{distance} AS {quote_identifier(nearest.rank)}"
+        sql, params = _sql(table, by, columns, limit=False, where=where, also=also)
+        return f"{sql} ORDER BY {distance} DESC LIMIT ${place + 1}", [*params, nearest.text, limit]
     also = "" if nearest.similarity is None else f"1 - ({distance}) AS {quote_identifier(nearest.similarity)}"
     sql, params = _sql(table, by, columns, limit=False, where=where, also=also)
     return f"{sql} ORDER BY {distance} LIMIT ${place + 1}", [*params, nearest.vector, limit]

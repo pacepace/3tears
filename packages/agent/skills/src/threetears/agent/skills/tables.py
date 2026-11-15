@@ -71,6 +71,8 @@ from threetears.agent.skills.migrations.v004_add_tool_call_columns import (
     PAYLOAD_CHECK,
 )
 
+from threetears.core.collections.schema_backed import register_sa_table_indexes
+
 __all__ = [
     "agent_skill_invocations_table",
     "agent_skills_table",
@@ -312,3 +314,12 @@ def agent_skill_invocations_table(metadata: MetaData) -> Table:
             },
         ),
     )
+
+
+# the indexes and partial predicates these tables declare, registered with the keyed helpers on import, as a
+# TableSchema registers its own: a keyed read of them names its serving index to YugabyteDB and writes a predicate's
+# text as its literal (register_sa_table_indexes; 3tears #100: unregistered, YugabyteDB counted a conversation's 10
+# active wakes through the primary key, 400 rows read, on 6 of 6 fresh ANALYZEs)
+_REGISTERED = MetaData()
+for _declare in (agent_skills_table, agent_skill_invocations_table):
+    register_sa_table_indexes(_declare(_REGISTERED))
