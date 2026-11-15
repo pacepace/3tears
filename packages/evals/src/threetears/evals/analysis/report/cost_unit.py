@@ -35,7 +35,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from threetears.evals.kernel.numbers import CENT, MoneyForm, format_number, group_thousands, money_form
-from threetears.evals.analysis.report_input import Measure, ReportInput
+from threetears.evals.analysis.costs import COUNT_SPELLINGS, REPLIES, per_noun
+from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import aspect_board
 
 __all__ = [
@@ -51,26 +52,11 @@ __all__ = [
     "priced_in_part",
 ]
 
-#: What money per one trial is per, as the package counts trials: one trial is one reply.
-REPLIES = "replies"
-
 #: What a count reads where the input does not say what a cost counts.
 _UNSTATED = "(unit not stated)"
 
 #: How a count of what a cost is per reads: ``per 1,000 conversations``.
 _PER_TEMPLATE = "per {count} {noun}"
-
-#: Each money unit's count, the one a figure in it is stated per.
-_UNIT_COUNTS: dict[str, int] = {"usd_per_1k": 1_000, "usd_per_1m": 1_000_000}
-
-#: How a label may write each count: as digits (with any thousands separator, or a ``k``/``m`` suffix) or as a word.
-_COUNT_SPELLINGS: dict[int, str] = {
-    1_000: r"1\s?k|1[,.   ]?000|thousand",
-    1_000_000: r"1\s?m|1(?:[,.   ]?000){2}|million",
-}
-
-#: The longest noun a label's count is read with, in words: a count's noun is a word or a short phrase.
-_MOST_WORDS = 4
 
 
 @dataclass(frozen=True)
@@ -88,26 +74,6 @@ class CostBasis:
     def stated(self) -> bool:
         """Whether the input says what its cost is per."""
         return bool(self.noun)
-
-
-def per_noun(measure: Measure) -> str:
-    """What one money measure is per, as a plural noun; empty where it is no money measure or does not say.
-
-    :param measure: The measure.
-    :ptype measure: Measure
-    :return: The noun (``replies`` for money per one thing; the label's noun for money per a count).
-    :rtype: str
-    """
-    if measure.unit == "usd":
-        return REPLIES
-    count = _UNIT_COUNTS.get(measure.unit or "")
-    if count is None or not measure.label:
-        return ""
-    found = re.search(rf"(?<!\w)(?:{_COUNT_SPELLINGS[count]})\s+(?P<noun>[^\d()\[\],;:]+)", measure.label, re.I)
-    if found is None:
-        return ""
-    noun = found.group("noun").strip()
-    return noun if 0 < len(noun.split()) <= _MOST_WORDS else ""
 
 
 #: How many of the calls an arm's cost counts were priced, said beside an amount priced over only part of them: a
@@ -208,7 +174,7 @@ class MoneyRuler:
             single = re.search(rf"(?<!\w){re.escape(per_one(noun))}(?!\w)", label, re.I)
             if single is not None:
                 return label[: single.start()] + self.words(noun) + label[single.end() :]
-        spellings = _COUNT_SPELLINGS.get(own)
+        spellings = COUNT_SPELLINGS.get(own)
         if spellings is not None:
             found = (
                 re.search(rf"(?<!\w)(?:per\s+)?(?:{spellings})\s+{re.escape(noun)}(?!\w)", label, re.I)

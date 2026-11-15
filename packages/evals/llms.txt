@@ -75,7 +75,8 @@ LATER TASKS, BY RUNG (https://github.com/pacepace/3tears/blob/<tag>/packages/eva
   Rung 4, an agent, graded on the world it leaves: World, quick.as_host,
     transports.fastmcp.mount_fastmcp
   Rung 5, evaluate the evaluator: harness.AnalystSkill, harness.Writer, harness.WriterEval
-  On no rung, in the reference: Answer, Log, quick.measure
+  Off the ladder, taught on a page: Answer
+    (https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/cost-and-budgets.md)
 
 EMBEDDING IT IN AN APP (https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/adopting-a-host.md)
   A product builds one kernel.host.EvalHost and hands it to every entrypoint. The 18 ports a host
@@ -86,6 +87,16 @@ EMBEDDING IT IN AN APP (https://github.com/pacepace/3tears/blob/<tag>/packages/e
     kernel.host.CompletionClients, run.CellExecutor, run.KindFactory, providers.Pricer.
   Every declared name, with one line each:
     https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/surface.md
+
+NEEDS A SHIPPED EXAMPLE (#1199): the only door to each; no shipped example uses it yet
+  kernel.failed_call_output: A host's own kind routes a failed call through it, so an account
+    refusal stops the run, a decline excludes the cell and an unserved model is never judged.
+  kernel.host.MemberActsOn: A host marks a map field of its kind's overlay with it, so each entry is
+    attributed to what it acts on.
+  kernel.host.Ordinal: A host marks a `Literal` or `Enum` knob of its kind's overlay with it, so the
+    knob's values are ranked.
+  ops.start_action_job: A host's own action runs work that is not one paid call as a job through it
+    (`start_paid_call` covers one paid call).
 
 ACTIONS: 87, called without writing Python
   actions.eval_catalogue() holds them; transports.fastmcp.mount_fastmcp serves them over MCP
@@ -112,3 +123,14 @@ ACTIONS: 87, called without writing Python
     settle_cases, price_tradeoff, levers_effects
   Investigate: blocks: block_catalog, block_render, report_check
   Investigate: gaps: capability_gap
+
+KINDS: every declared name is one;
+  https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/surface.md lists each under its
+  kind
+  typed: a newcomer writes it in an eval file.
+  bound: a host implements it or hands it to the engine.
+  action: the function behind an action of the catalogue, which an agent or operator invokes by
+    name.
+  invoked: a function a host's own code calls, to make the engine act or do one step its way.
+  received: a value someone is handed and reads.
+  tests: a kit, recorder or guard a host runs in its own tests.

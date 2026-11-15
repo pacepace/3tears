@@ -8,10 +8,9 @@
 #
 # Every public name has a stability tier, recorded in api/surface.json and declared in one place, HOST_CONTRACT and
 # STABLE in scripts/public_surface.py. The promise starts at 0.70.0, the first tagged release:
-#   host-contract  a name a host writes against. It moves only with a record here AND a deprecation cycle: the
-#                  release that moves it exports the new name beside the old one, which keeps working for that minor
-#                  release and is named in that section's `notes`; the next minor release drops the old name, and its
-#                  section records the removal in a [[release.change]] as any move is recorded.
+#   host-contract  a name a host writes against. It moves only with a record here whose `why` names what replaces
+#                  it ("Port: ..."), in a single cut-over (owner ruling, 2026-11-15): no shim is exported beside it,
+#                  and a host changes its imports once, against the release notes printed from this file.
 #   stable         the rest of the declared surface (docs/surface.md). Any release may move it, recorded here, and
 #                  there is no compatibility shim.
 #   provisional    every other name a root exports, most because a declared signature reaches it. Promised nothing:
@@ -167,6 +166,7 @@ notes = [
     "The report modules that print a page move under `threetears.evals.analysis.report`, unchanged in behaviour (none is a public root, so no name leaves one; the flat `report_input`, `report_margins` and `reporting` hold the report input, its margins and the read tier's projection, and never import the page): `threetears.evals.analysis.report_rows` is `threetears.evals.analysis.report.rows`, `threetears.evals.analysis.report_gates` is `threetears.evals.analysis.report.gates`, `threetears.evals.analysis.report_arms` is `threetears.evals.analysis.report.fact_arms`, `threetears.evals.analysis.report_decision` is `threetears.evals.analysis.report.call`, `threetears.evals.analysis.report_input_build` is `threetears.evals.analysis.report.input_build`, `threetears.evals.analysis.report_doc_prose` is `threetears.evals.analysis.report.doc_page.prose`, `threetears.evals.analysis.report_doc_checks` is `threetears.evals.analysis.report.doc_page.checks`, `threetears.evals.analysis.report_doc_facts` is `threetears.evals.analysis.report.doc_page.facts` and `threetears.evals.analysis.report_doc_store` is `threetears.evals.analysis.report.doc_page.store`. Port: import a moved module from its new path.",
     "The report input's builder is on the numbers side: `threetears.evals.analysis.report.input_build` is `threetears.evals.analysis.report_input_build`, unchanged in behaviour, and the names it read from the page moved down with it, each with one home and no forwarding import (none is a public root, so no name leaves one): `declared_arm_names`, `printed_arm_labels`, `trial_dimension` (`analysis.report.words`) and `measure_name_of` (`analysis.report.campaign.names`) are in `threetears.evals.analysis.style`; `bundle_stopped_short` (`analysis.report.verdict`) is in `threetears.evals.analysis.completeness`. Port: import a moved name from its new path.",
     "The shared reading states land as optional fields, all unset, and no stored document changes: a report input gains `state` on a reading, a contrast, a pair and an arm's figure (a state of `counted`, `set_aside`, `withheld` or `not_available` with a reason from one closed set, `threetears.evals.schema.reading_states`), `caveat_list`, `first_screen` (outside `report_input_digest`), `checks` on a judged dimension, `corrected`, `aa`, `baseline`, `baseline_n_cases`, `family` and `delta_note` on a contrast, `looks` and `margin_informative` on an aspect, `flip_margin` on a reading, `spread` and `no_variation` on a figure, `ordered` on a factor, `cost` on a scoreboard row, `arm_id`, `cell`, `spelling` and `identity` on an arm, and five optional fields on `human_pref`; a bundle gains `checks`, `state`, `baseline`, `baseline_n_cases`, `family`, `delta_note`, `corrected` and `rescore_share` on a comparison, `rescore` on a judged arm, `checks` on a judged measure, `looks` on its reading scope, `identity` on a design arm, and `spread` and `no_variation` on a measure summary. Each is left out of the document when unset, so a stored bundle or input reads, digests and fingerprints as it did, `schema` stays `report-input/1` and no schema version moves. Degraded reads: an input with no `caveat_list` reads as one built before the list (its `caveats` part is what it carries); a reading, contrast or figure with no `state` reads counted; a contrast's existing `reason` stays the pipeline's sentence. Port: nothing.",
+    "The one caveat list is filled and the first screen computed, and no page changes: a report input built from a bundle carries `caveat_list` (every qualification of the answer, typed with class, reach, state and reason) and `first_screen` (the gate, at most three ranked reasons with the count past them, the call, and `steps`: what would change each reason, as a remedy kind, the catalogue action with each call named and typed as its own parameters and the parameters left to the taker, for more evidence a planned size read from the figure it would settle against the rule that lifts its caveat, launched as that many new cases, or why none can be read and no call, a launch's set-up repeated from the arms' runs with the rest named in `as_launched` and the arms each call runs in `call_arms`, the calls that finish a launch in `then` (its runs joined, a re-run's replaced runs taken out, a confirmation's campaign created first) with `after` naming what only an earlier call returns, the dimensions a balanced re-run holds at one value in `alike`, what following the step cannot guarantee in `limits` (with `unpaired_arms`), a re-run no sequence is shown to lift as `no_action` `lift_not_shown`, and the action that prices a step that spends; nothing counts looks yet). A stored input with no list gets one on read from its `caveats` part, with the same ids; nothing is written back. Neither `caveat_list` nor `first_screen` is in `report_input_digest`: no stored or built digest, and no snapshot id, moves. The campaign bundle holds both in memory only (`CampaignBundle.caveat_list`, `first_screen`), never in its frame or fingerprint. The decision read moves to the numbers side, unchanged in behaviour: `threetears.evals.analysis.answer` (standing, survivors, dominance, materiality), `analysis.criteria` (a gate's status per arm), `analysis.costs` (the one cost rule) and `analysis.per_input` (was `analysis.report.per_input`); `analysis.report.call` keeps its names as reads of them. `ResultCondition.judging`'s `set_aside` is `not_asked` (a condition handed back under the old spelling reads as the new). Durable minor 17.2: `SweptAxis.ordered`, `AspectDesign.planned_looks`, `EvalCampaign.volume_per_month`, `CampaignCall.made_by`, `model`, `on_behalf_of` and `evidence_fingerprint`, each optional and written only when set; a call stored before reads as made by nobody recorded.",
     "The figure-key grammar's code moves out of `threetears.evals.analysis.report.figure_keys` into the package `threetears.evals.analysis.report.keys`, one module per part, unchanged in behaviour. `figure_keys` still exports every name its `__all__` lists. The public names it defined without listing them there are not part of its exports: import each from the module that defines it: `ARM_TEMPLATE`, `DIRECTION_WORDS`, `FigureKind`, `Filter` and `Scale` from `threetears.evals.analysis.report.keys.figure`; `cost_measure`, `held_means`, `held_stats` and `pass_rate_measure` from `threetears.evals.analysis.report.keys.reads`; `OVERLAP_WORDS` from `threetears.evals.analysis.report.keys.counts`; `GainAxis`, `GainBasis`, `MULTIPLE_UNIT`, `PoolWeights`, `PooledFigure` and `Unpriced` from `threetears.evals.analysis.report.keys.prices`; `ASSUMED_SHARE` from `threetears.evals.analysis.report.keys.settle`; `KeyForm`, `RUBRIC_SCALE` and `rubric_score` from `threetears.evals.analysis.report.keys.resolve`; and `GRAMMAR_HEADING` from `threetears.evals.analysis.report.keys.grammar`. Port: import one of those names from its new module.",
     "A page's number forms move out of `threetears.evals.analysis.report.forms` into the package `threetears.evals.analysis.report.number_forms`, one module per part, unchanged in behaviour; `PageForms` stays in `forms`, which still exports every name its `__all__` lists. The public names it defined without listing them there are not part of its exports: import each from the module that defines it: `policy_places`, `policy_bounded_places`, `policy_figure`, `policy_interval`, `policy_percent`, `policy_rate`, `policy_p`, `policy_effect` and `policy_declared` from `threetears.evals.analysis.report.number_forms.policy`; `interval_level` from `threetears.evals.analysis.report.number_forms.intervals`; and `campaign_set` and `MeasureSet` from `threetears.evals.analysis.report.number_forms.sets`. Port: import one of those names from its new module.",
     "An aspect's page moves out of `threetears.evals.analysis.report.build` into the package `threetears.evals.analysis.report.aspect`, one module per part, unchanged in behaviour; `build` keeps the entry points and still exports every name its `__all__` lists. `FLOORS_WARN_ONLY`, which it defined without listing it there, is not part of its exports: import it from `threetears.evals.analysis.report.aspect.question`. Port: import it from its new module.",
@@ -440,6 +440,80 @@ why = """
 They named the rows of the world conformance kit's obligations table for a package test, and the kit read neither:
 it derives each dimension's checks from its declared shape (obligations). Port: call obligations, or read the
 dimension's verdicts on WorldConformanceReport.for_dimension.
+"""
+
+[[release.change]]
+from = "threetears.evals.kernel"
+to = "removed"
+names = ["CassetteStore", "DefinitionStore", "RunRecordStore"]
+why = """
+Demoted by the 2026-11-15 owner ruling that a public name is admitted by criteria, not by a count: no declared
+operation takes or returns any of them, so no host is handed one or must implement one. The engine implements all
+three with its own storage and keeps using them inside. RunStore, ResultStore and JobStore hold no cassette or
+definition method, so none replaces CassetteStore or DefinitionStore. Port: type a CassetteStore or DefinitionStore
+parameter as threetears.evals.kernel.EvalStorage, which implements both; a RunRecordStore parameter as
+threetears.evals.kernel.EvalStorage too, or as RunStore where only runs are read and ResultStore where only results
+are
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["sent_settings_of"]
+why = """
+Demoted by the 2026-11-15 owner ruling: it is the engine's own reader of a completion's sent_settings, and no host
+calls it. A value of the wrong type is still refused when the engine reads it. Port: getattr(completion,
+"sent_settings", None)
+"""
+
+[[release.change]]
+from = "threetears.evals.kernel"
+to = "removed"
+names = ["production_replicating_cost"]
+why = """
+Demoted by admission criterion 2 (owner ruling, 2026-11-15): no production code calls it, only tests. Every cost
+surface still reads a cell's production cost through it. Port: read the production cost an arm's readings report
+(the bundle scoreboard's ArmScoreboard.reply_cost_usd, the mean of this per reply, None when every reply withheld it)
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["is_builtin_judge_config_id"]
+why = """
+Demoted by admission criterion 2 (owner ruling, 2026-11-15: production code or a shipped example uses a public name;
+a test alone does not count): no production code or shipped example calls it, and no host's tests import it. The
+engine keeps using it inside. Port: config_id is not None and config_id.startswith("builtin:")
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["judge_config_of"]
+why = """
+Demoted by admission criterion 2 (owner ruling, 2026-11-15: production code or a shipped example uses a public name;
+a test alone does not count): no production code or shipped example calls it, and no host's tests import it. The
+engine keeps using it inside. Port: the part of a recorded `<config id>@<sha12>` before the `@`; None for a built-in identity
+(`builtin:...`) or None
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["utc_now_iso"]
+why = """
+Demoted by admission criterion 2 (owner ruling, 2026-11-15: production code or a shipped example uses a public name;
+a test alone does not count): no production code or shipped example calls it, and no host's tests import it. The
+engine keeps using it inside. Port: datetime.now(UTC).isoformat()
+"""
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "removed"
+names = ["lint_prose"]
+why = """
+Demoted by the 2026-11-15 owner ruling: it holds the sentences the package's own code writes to the report style
+rules, and no host or page calls it. The rules still hold every rendered sentence.
 """
 
 [[release]]
