@@ -331,7 +331,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     arms: dict[str, Runner] = {}
     for build in built:
         try:
-            brain = ModelBrain(tier.model(recordings / f"{slug(build.name)}.jsonl"))
+            recording = recordings / f"{slug(build.name)}.jsonl"
+            brain = ModelBrain(lambda meter, recording=recording: tier.model(recording, transport=meter))
         except ValueError as unbuilt:  # a missing key, named
             print(f"onramp-agent: {unbuilt}", file=sys.stderr)
             return 2

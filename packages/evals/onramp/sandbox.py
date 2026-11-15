@@ -25,6 +25,8 @@ TWINS = HERE / "twins"
 
 #: Lines one read returns, from the line it starts at.
 READ_LINES = 200
+#: The largest file a read takes, in bytes: no more of a file than this is ever held in memory.
+READ_BYTES = 2 * 1024 * 1024
 #: Characters of a command's output the agent is shown: the head and the tail, the middle cut.
 SHOWN_CHARS = 6000
 #: How long one command may run, in seconds.
@@ -218,7 +220,12 @@ class Sandbox:
             return refused(f"{path} is outside the app's directory and the installed package")
         if not target.is_file():
             return Observation(ok=False, text=f"{path}: no such file", first_error=f"{path}: no such file")
-        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+        with target.open("rb") as handle:
+            data = handle.read(READ_BYTES + 1)
+        if len(data) > READ_BYTES:
+            why = f"{path} is larger than the {READ_BYTES // 2**20} MB a read takes"
+            return Observation(ok=False, text=f"refused: {why}", first_error=why)
+        lines = data.decode("utf-8", errors="replace").splitlines()
         first = max(start, 1)
         chunk = lines[first - 1 : first - 1 + READ_LINES]
         more = f"\n[lines {first}-{first + len(chunk) - 1} of {len(lines)}]" if len(lines) > len(chunk) else ""
@@ -268,11 +275,15 @@ class Sandbox:
         command, which alone may run ``rerun.py``.
         """
         ran = await self.runner.run(argv, cwd=cwd, timeout_s=min(timeout_s, COMMAND_TIMEOUT_S), grading=grading)
+        stdout = ran.stdout.replace(ran.cwd, ".")
+        stderr = ran.stderr.replace(ran.cwd, ".")
+        said = (f"\n{stdout}" if stdout else "") + (f"\n[stderr]\n{stderr}" if stderr.strip() else "")
+        if ran.refused:
+            # It ran, or could not, and its directory is as it was before it: a failed command, whatever it exited.
+            return Observation(ok=False, text=_shown(f"refused: {ran.refused}{said}"), first_error=ran.refused)
         if ran.exit_code is None:
             why = f"timed out after {min(timeout_s, COMMAND_TIMEOUT_S):.0f}s"
             return Observation(ok=False, text=why, first_error=why)
-        stdout = ran.stdout.replace(ran.cwd, ".")
-        stderr = ran.stderr.replace(ran.cwd, ".")
         code = ran.exit_code
         first_error = next((line for line in stderr.splitlines() if line.strip()), "")
         text = _shown(f"exit {code}\n{stdout}" + (f"\n[stderr]\n{stderr}" if stderr.strip() else ""))

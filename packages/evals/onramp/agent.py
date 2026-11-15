@@ -12,7 +12,9 @@ import asyncio
 import json
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -21,8 +23,9 @@ import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from threetears.evals import Model
-from threetears.evals.providers import ProviderError
 from threetears.evals.kernel import strict_response_format
+from threetears.evals.negotiation import MAX_RESENDS
+from threetears.evals.providers import ProviderError
 
 from .sandbox import READ_LINES, Observation, Sandbox, is_door
 
@@ -65,10 +68,80 @@ class Act(BaseModel):
 _BLANK: dict[str, Any] = {"path": "", "start": 1, "text": "", "command": ""}  # Any: a field's empty value
 
 
-#: How many times one call may be billed, at most: its send, and one resend after a send that broke before any
-#: response began (the package's client resends such a send once, on a key with no fallbacks). A call is sent only when
-#: the run's charge plus this many of its ceiling stays within the cap, so the cap bounds what the run can be billed.
-BILLED_SENDS_AT_MOST = 2
+#: How many sends of one call may be billed, at most. A call is up to ``MAX_RESENDS + 1`` requests: the negotiation
+#: sends a request again for each setting a provider refused, ``MAX_RESENDS`` times at most. The client sends a request
+#: again once when its first send broke before any response began, and that send may have been served. A refusal or a
+#: decline is not billed, so each refused request may have been billed once (its first send, broken), and the last
+#: twice (its first send, broken, and the send that was served or lost): ``MAX_RESENDS + 2``. A call is sent only when
+#: the run's charge plus this many of its ceiling stays within the cap, and :class:`SendMeter` refuses any send past it,
+#: so the cap bounds what the run can be billed.
+BILLED_SENDS_AT_MOST = MAX_RESENDS + 2
+#: The statuses of an answer the provider may have billed: a served call, and a gateway's timeout (the provider may
+#: still have served it). Every other status is a refusal or a decline, which is not billed.
+BILLED_STATUSES = frozenset({200, 504, 524})
+
+
+class SendsSpent(httpx.RequestError):
+    """A send refused before it went: the call it belongs to has made every send its reservation covers."""
+
+
+@dataclass
+class CallSends:
+    """One call's sends, as :class:`SendMeter` counts them: every send made, and those that may have been billed."""
+
+    made: int = 0
+    maybe_billed: int = 0
+
+
+#: The call the current task is making, whose sends the meter counts; ``None`` outside a call.
+_CALL: ContextVar[CallSends | None] = ContextVar("onramp_call", default=None)
+
+
+@contextmanager
+def metered_call() -> Iterator[CallSends]:
+    """One call: every send made inside it, in this task, is counted on the :class:`CallSends` it yields."""
+    sends = CallSends()
+    counting = _CALL.set(sends)
+    try:
+        yield sends
+    finally:
+        _CALL.reset(counting)
+
+
+class SendMeter(httpx.AsyncBaseTransport):
+    """The live model's transport: it counts each call's sends that may have been billed, here, as they go, and
+    refuses a send past :data:`BILLED_SENDS_AT_MOST` before it goes.
+
+    A send may have been billed when it brought an answer the provider may have billed (:data:`BILLED_STATUSES`) or
+    no answer at all (it broke, or was cut off). The count is the harness's own, never what a reply reports: what a run
+    is charged rests on it (:class:`ModelBrain`). A send outside a call (a catalogue read) passes uncounted.
+    """
+
+    def __init__(self, inner: httpx.AsyncBaseTransport | None = None) -> None:
+        self._inner = inner if inner is not None else httpx.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        call = _CALL.get()
+        if call is None or request.method != "POST":
+            return await self._inner.handle_async_request(request)
+        if call.maybe_billed >= BILLED_SENDS_AT_MOST:
+            raise SendsSpent(
+                f"the call has made {call.maybe_billed} sends that may have been billed, every one its reservation "
+                "covers; it is not sent again",
+                request=request,
+            )
+        call.made += 1
+        try:
+            response = await self._inner.handle_async_request(request)
+        except BaseException:
+            call.maybe_billed += 1  # sent, and no answer came: it may have been served
+            raise
+        if response.status_code in BILLED_STATUSES:
+            call.maybe_billed += 1
+        return response
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
 
 
 @dataclass(frozen=True)
@@ -76,8 +149,8 @@ class Usage:
     """What one turn spent. ``None`` is unreported, never zero.
 
     :ivar ceiling_usd: The most the call could cost, bounded before it was sent; ``None`` when no cap asked.
-    :ivar maybe_billed_sends: Sends of the call that broke before any response began and were sent again: each may
-        have been billed, and ``cost_usd`` holds none of them.
+    :ivar maybe_billed_sends: Sends of the call that may have been billed besides the one ``cost_usd`` prices: each
+        broke, or was cut off, before its answer came.
     """
 
     input_tokens: int | None
@@ -130,12 +203,23 @@ class Brain(Protocol):
 
 class ModelBrain:
     """A model picks each act. Every call goes through :class:`~threetears.evals.Model`, so the package prices it,
-    and inside the harness's runner its spend lands on the trial's own ledger."""
+    and inside the harness's runner its spend lands on the trial's own ledger.
 
-    def __init__(self, model: Model) -> None:
-        self._model = model
-        self.model = model.model_name
+    The model is built by ``model_on`` on the transport it must send through, a :class:`SendMeter` over ``inner``
+    (``httpx``'s own when ``None``; a test's mock): the meter counts each call's sends that may have been billed, which
+    is what the call is charged on, and refuses one past the reservation.
+    """
+
+    def __init__(
+        self, model_on: Callable[[SendMeter], Model], *, inner: httpx.AsyncBaseTransport | None = None
+    ) -> None:
+        self._model = model_on(SendMeter(inner))
+        self.model = self._model.model_name
         self._format = strict_response_format("Act", Act.model_json_schema())
+
+    async def aclose(self) -> None:
+        """Close the model, and with it the client it opened on the meter."""
+        await self._model.aclose()
 
     async def ceiling(self, system: str, user: str) -> float | None:
         # As the engine does before it prices a call: the read this task makes is the one the call is priced from.
@@ -143,13 +227,16 @@ class ModelBrain:
         return self._model.price_ceiling(system=system, user=user, response_format=self._format)
 
     async def next(self, system: str, user: str, steps: Sequence[Step]) -> Turn:
-        completion = await self._model.generate(system=system, user=user, response_format=self._format)
+        with metered_call() as sends:
+            completion = await self._model.generate(system=system, user=user, response_format=self._format)
+        # Every send the meter counted may have been billed; the one served is priced in cost_usd. A replayed call was
+        # never sent, and counts none.
+        priced = 1 if completion.cost_usd is not None and sends.maybe_billed else 0
         usage = Usage(
             completion.input_tokens,
             completion.output_tokens,
             completion.cost_usd,
-            # A replayed call was never sent, and its completion counts no resends.
-            maybe_billed_sends=getattr(completion, "maybe_billed_sends", 0),
+            maybe_billed_sends=sends.maybe_billed - priced,
         )
         if completion.stop_reason != "end_turn":
             return Turn(None, usage, f"the reply stopped short ({completion.stop_reason})")

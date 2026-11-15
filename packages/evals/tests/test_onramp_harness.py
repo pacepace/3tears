@@ -5,12 +5,16 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import io
 import json
 import math
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+import tarfile
+import threading
+import time
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -18,8 +22,9 @@ from typing import Any
 import httpx
 import pytest
 
-from threetears.evals.providers import Catalogue
-from threetears.evals.providers import ProviderError
+from threetears.evals import Model
+from threetears.evals.negotiation import MAX_RESENDS
+from threetears.evals.providers import Catalogue, DeclinedRetry, ProviderError
 from threetears.evals.run.runner import DEFAULT_CELL_TIMEOUT_S
 from packages.evals.onramp.agent import (
     BILLED_SENDS_AT_MOST,
@@ -27,11 +32,14 @@ from packages.evals.onramp.agent import (
     Caps,
     ModelBrain,
     ScriptedBrain,
+    SendMeter,
+    SendsSpent,
     Step,
     Turn,
     Usage,
     attempt,
     errors_hit,
+    metered_call,
     parse_report,
     stuck_point,
 )
@@ -47,8 +55,22 @@ from packages.evals.onramp.campaign import (
     main,
     quote,
 )
-from packages.evals.onramp.isolation import ENVIRONMENT, RERUN, WORK, Container, HostRunner, Ran, Runner
-from packages.evals.onramp.sandbox import APPS, TWINS, DocsBuild, Observation, Sandbox
+from packages.evals.onramp import isolation
+from packages.evals.onramp.isolation import (
+    COPY_STOP_S,
+    ENVIRONMENT,
+    RERUN,
+    WORK,
+    Container,
+    CopyRefused,
+    HostRunner,
+    Ran,
+    Runner,
+    pack,
+    stoppable,
+    unpack,
+)
+from packages.evals.onramp.sandbox import APPS, READ_BYTES, TWINS, DocsBuild, Observation, Sandbox
 
 FIXTURES = {
     "recipes": "tests/fixtures/scaling.jsonl",
@@ -240,17 +262,18 @@ class _Priced:
 
 
 async def test_a_run_stops_before_a_turn_that_could_take_it_past_its_cap(tmp_path: Path) -> None:
-    # A call may be billed twice (its send, and one resend after a drop), so it is sent only while the run's charge
-    # plus two of its ceilings stays within the cap: after 0.20, a third call could reach 0.40.
-    assert BILLED_SENDS_AT_MOST == 2
-    run = await attempt(_isolated(tmp_path), _Priced(0.10, 0.10), Caps(cost_usd=0.35))
+    # A call may be billed once per request the negotiation sends and once more for the last (MAX_RESENDS + 2), so it
+    # is sent only while the run's charge plus that many of its ceilings stays within the cap: after 0.20 is charged,
+    # a third call could reach 0.20 + 6 x 0.10, past 0.75.
+    assert BILLED_SENDS_AT_MOST == MAX_RESENDS + 2 == 6
+    run = await attempt(_isolated(tmp_path), _Priced(0.10, 0.10), Caps(cost_usd=0.75))
     assert run.stopped == "cap" and len(run.usages) == 2
     assert run.spent() == pytest.approx(0.20) and run.charged() == pytest.approx(0.20)
     assert run.tokens("input_tokens") == 200
 
 
-@pytest.mark.parametrize("resends", [0, 1])
-@pytest.mark.parametrize("cap", [0.05, 0.35, 0.50, 1.00])
+@pytest.mark.parametrize("resends", [0, 1, BILLED_SENDS_AT_MOST - 1])
+@pytest.mark.parametrize("cap", [0.05, 0.35, 0.50, 1.00, 2.00])
 async def test_what_a_run_can_be_billed_never_passes_its_cap_even_when_every_call_was_resent(
     tmp_path: Path, resends: int, cap: float
 ) -> None:
@@ -317,15 +340,19 @@ async def test_the_live_brain_is_priced_by_the_package_and_held_to_its_cap(tmp_p
         return httpx.Response(200, json=_act_reply(json.dumps(act)))
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
-    model = TIERS["cheap"].model(None, api_key="scripted", http=http, catalogue=Catalogue(http=http))
+    brain = ModelBrain(
+        lambda meter: TIERS["cheap"].model(None, api_key="scripted", transport=meter, catalogue=Catalogue(http=http)),
+        inner=httpx.MockTransport(respond),
+    )
     sandbox = _isolated(tmp_path)
     try:
-        run = await attempt(sandbox, ModelBrain(model), Caps(cost_usd=0.01))
+        run = await attempt(sandbox, brain, Caps(cost_usd=0.015))
     finally:
+        await brain.aclose()
         await http.aclose()
     assert run.stopped == "cap" and sent, "it ran turns, then stopped before one that could pass the cap"
     spent, charged = run.spent(), run.charged()
-    assert spent is not None and spent == pytest.approx(0.00014 * len(sent)) and spent <= 0.01
+    assert spent is not None and spent == pytest.approx(0.00014 * len(sent)) and spent <= 0.015
     assert charged == spent and all(usage.ceiling_usd for usage in run.usages), "each call was bounded before it went"
     assert run.tokens("input_tokens") == 1000 * len(sent)
     assert all("temperature" not in body for body in sent)
@@ -347,16 +374,144 @@ async def test_the_ceiling_tier_goes_direct_to_anthropic_with_no_temperature(tmp
         }
         return httpx.Response(200, json=reply)
 
-    http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
-    model = TIERS["ceiling"].model(None, api_key="scripted", http=http)
+    brain = ModelBrain(
+        lambda meter: TIERS["ceiling"].model(None, api_key="scripted", transport=meter),
+        inner=httpx.MockTransport(respond),
+    )
     sandbox = _isolated(tmp_path, "holds")
     try:
-        run = await attempt(sandbox, ModelBrain(model), Caps(cost_usd=1.50))
+        run = await attempt(sandbox, brain, Caps(cost_usd=1.50))
     finally:
-        await http.aclose()
+        await brain.aclose()
     assert run.stopped == "done" and hosts == ["api.anthropic.com"]
     assert "temperature" not in bodies[0]
     assert run.spent() == pytest.approx(2000 * 0.10 / 1e6 + 50 * 0.50 / 1e6), "Anthropic's published rates"
+
+
+class _Worst:
+    """A provider that does the most billing a call can meet: it drops the first send of every request with no
+    response (which may have been served and billed), refuses a setting the request carried while the negotiation
+    can answer one (``MAX_RESENDS`` times), and then serves the last request, or loses its resend too. It keeps the
+    most it can have billed: each dropped or lost send at the call's ceiling, and a served one at its cost."""
+
+    def __init__(self, ending: str) -> None:
+        self.ending, self.seen, self.refused = ending, set[bytes](), 0
+        self.calls: list[list[str]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [_REFUSABLE_ROW]})
+        body = json.loads(request.content)
+        if request.content not in self.seen:
+            self.seen.add(request.content)
+            if not self.calls or self.calls[-1][-1] in ("served", "lost"):
+                self.calls.append([])
+            self.calls[-1].append("dropped")
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.", request=request)
+        if self.refused < MAX_RESENDS and ("temperature" in body or "reasoning" in body):
+            self.refused += 1
+            param = "temperature" if "temperature" in body else "reasoning_effort"
+            self.calls[-1].append(f"refused {param}")
+            return _upstream_refusal(param, "unsupported_parameter" if param == "temperature" else "unsupported_value")
+        self.refused = 0
+        if self.ending == "lost":
+            self.calls[-1].append("lost")
+            raise httpx.ReadError("the connection reset", request=request)
+        self.calls[-1].append("served")
+        return httpx.Response(200, json=_act_reply(json.dumps(_LS)))
+
+    def most_billed(self, ceilings: Sequence[float | None]) -> float:
+        billed = 0.0
+        for sends, ceiling in zip(self.calls, ceilings, strict=True):
+            assert ceiling is not None
+            billed += sum(ceiling for send in sends if send in ("dropped", "lost"))
+            billed += 0.00014 * sends.count("served")
+        return billed
+
+
+#: A row whose model takes a temperature and reasoning, so a call carries settings the negotiation can be refused.
+_REFUSABLE_ROW: dict[str, Any] = {  # Any: JSON
+    **_CHEAP_ROW,
+    "supported_parameters": ["max_tokens", "temperature", "reasoning", "response_format", "structured_outputs"],
+}
+_LS = {"tool": "run", "path": "", "start": 1, "text": "", "command": "ls"}
+
+
+def _upstream_refusal(param: str, code: str) -> httpx.Response:
+    """OpenRouter relaying an upstream's 400 that refuses ``param``."""
+    raw = json.dumps({"error": {"message": f"{param} is not supported", "param": param, "code": code}})
+    error = {"code": 400, "message": "Provider returned error", "metadata": {"raw": raw, "provider_name": "x"}}
+    return httpx.Response(400, json={"error": error})
+
+
+async def _no_wait(seconds: float) -> None:
+    return None
+
+
+@pytest.mark.parametrize("ending", ["served", "lost"])
+async def test_the_most_a_call_can_be_billed_is_reserved_before_it_is_sent_and_never_passes_the_cap(
+    tmp_path: Path, ending: str
+) -> None:
+    """The worst case, scripted: every request's first send dropped, the negotiation refused ``MAX_RESENDS`` times,
+    and the last request served, or lost on its resend. A call then makes ``MAX_RESENDS + 2`` sends that may have been
+    billed, exactly what is reserved before it goes; the meter counts each, so the run is charged at least what the
+    provider can have billed, and that stays within the cap."""
+    provider = _Worst(ending)
+    catalogue = httpx.AsyncClient(transport=httpx.MockTransport(provider))
+    brain = ModelBrain(
+        lambda meter: Model(
+            _CHEAP_ROW["id"],
+            max_tokens=4096,
+            effort="max",
+            temperature=0.2,
+            api_key="scripted",
+            transport=meter,
+            catalogue=Catalogue(http=catalogue),
+            retry=DeclinedRetry(sleep=_no_wait),
+        ),  # fmt: skip
+        inner=httpx.MockTransport(provider),
+    )
+    cap = 0.10
+    try:
+        run = await attempt(_isolated(tmp_path), brain, Caps(cost_usd=cap))
+    finally:
+        await brain.aclose()
+        await catalogue.aclose()
+    first = provider.calls[0]
+    assert (
+        first.count("dropped") == MAX_RESENDS + 1 and len([s for s in first if s.startswith("refused")]) == MAX_RESENDS
+    )
+    assert len(first) - first.count("refused temperature") - first.count("refused reasoning_effort") == (
+        BILLED_SENDS_AT_MOST
+    ), first
+    charged = run.charged()
+    assert charged is not None and charged <= cap + 1e-12
+    assert provider.most_billed([usage.ceiling_usd for usage in run.usages]) <= charged + 1e-12
+    if ending == "served":
+        assert run.usages[0].maybe_billed_sends == BILLED_SENDS_AT_MOST - 1 and run.stopped == "cap"
+        assert len(run.usages) > 1, "the cap leaves room for more than one call"
+    else:
+        assert run.stopped == "error" and len(run.usages) == 1
+
+
+async def test_the_meter_refuses_a_send_past_what_the_call_reserved() -> None:
+    """However a client resends, a call makes no more sends that may be billed than its reservation covers."""
+    reached: list[int] = []
+
+    def served(request: httpx.Request) -> httpx.Response:
+        reached.append(1)
+        return httpx.Response(200, json={})
+
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    async with httpx.AsyncClient(transport=SendMeter(httpx.MockTransport(served))) as client:
+        with metered_call() as sends:
+            for _ in range(BILLED_SENDS_AT_MOST):
+                await client.post(url, json={})
+            with pytest.raises(SendsSpent):
+                await client.post(url, json={})
+        await client.post(url, json={})  # outside a call: not counted
+    assert (sends.made, sends.maybe_billed) == (BILLED_SENDS_AT_MOST, BILLED_SENDS_AT_MOST)
+    assert len(reached) == BILLED_SENDS_AT_MOST + 1
 
 
 def test_a_claude_model_is_refused_any_route_but_anthropic_direct() -> None:
@@ -380,7 +535,7 @@ def test_a_live_run_is_refused_without_its_switch_and_its_cap() -> None:
     assert live_refusal({"ONRAMP_LIVE": "1"}, None) is not None
     assert live_refusal({"ONRAMP_LIVE": "1"}, 0.0) is not None
     assert live_refusal({"ONRAMP_LIVE": "1"}, 4.5) is None
-    # A fallback key would let one call be resent on a second key, past the two sends the cap reserves.
+    # A fallback key would let one call be resent on a second key, past the sends the cap reserves.
     refused = live_refusal({"ONRAMP_LIVE": "1", "OPENROUTER_API_KEY_FALLBACKS": "X"}, 4.5)
     assert refused is not None and "OPENROUTER_API_KEY_FALLBACKS" in refused
 
@@ -472,18 +627,25 @@ async def test_a_recorded_agent_run_replays_offline_turn_for_turn_in_another_san
 
     recording = tmp_path / "agent.jsonl"
     http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
-    live = TIERS["cheap"].model(recording, api_key="scripted", http=http, catalogue=Catalogue(http=http))
+    live = ModelBrain(
+        lambda meter: TIERS["cheap"].model(
+            recording, api_key="scripted", transport=meter, catalogue=Catalogue(http=http)
+        ),
+        inner=httpx.MockTransport(respond),
+    )
     first = _isolated(tmp_path, "glossator", "first")
     try:
-        recorded = await attempt(first, ModelBrain(live), Caps(cost_usd=1.0, wall_s=600.0))
+        recorded = await attempt(first, live, Caps(cost_usd=1.0, wall_s=600.0))
     finally:
         await live.aclose()
         await http.aclose()
     assert recorded.stopped == "done" and recording.is_file()
 
-    replaying = TIERS["cheap"].model(recording)  # no key, no client: a replay serves every call
+    # No key, and no client: a replay serves every call, and the meter counts no send.
+    replaying = ModelBrain(lambda meter: TIERS["cheap"].model(recording, transport=meter))
     second = _isolated(tmp_path, "glossator", "second")
-    replayed = await attempt(second, ModelBrain(replaying), Caps(cost_usd=1.0, wall_s=600.0))
+    replayed = await attempt(second, replaying, Caps(cost_usd=1.0, wall_s=600.0))
+    assert replayed.maybe_billed_sends() == 0 and replayed.charged() == replayed.spent()
     assert replayed.stopped == "done" and replayed.report == recorded.report
     assert [(s.act, s.observation) for s in replayed.steps] == [(s.act, s.observation) for s in recorded.steps]
     assert replayed.steps[3].observation.text.splitlines()[1] == ".", "the container's path is shown as ."
@@ -528,7 +690,9 @@ async def test_a_run_whose_model_call_fails_keeps_its_record_and_charges_the_fai
     run = await attempt(_isolated(tmp_path), _Failing(), Caps(cost_usd=1.0), log=log)
     assert run.stopped == "error" and len(run.steps) == 2
     assert run.steps[-1].observation.first_error.startswith("the model call failed")
-    assert run.charged() == pytest.approx(0.005 + BILLED_SENDS_AT_MOST * 0.01), "the failed call at two ceilings"
+    assert run.charged() == pytest.approx(0.005 + BILLED_SENDS_AT_MOST * 0.01), (
+        "the failed call at every send's ceiling"
+    )
     rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert [row["turn"] for row in rows] == [1, 2, 2] and rows[-1]["stopped"] == "error"
     assert rows[0]["act"]["command"] == "ls" and rows[0]["usage"]["cost_usd"] == 0.005
@@ -544,7 +708,172 @@ async def test_the_wall_cap_cuts_off_a_call_in_flight_and_charges_it(tmp_path: P
 
 def test_a_run_and_its_regrade_fit_inside_the_engines_cell_budget() -> None:
     assert CELL_BUDGET_S == DEFAULT_CELL_TIMEOUT_S
-    assert Caps().wall_s + REGRADE_BUDGET_S < CELL_BUDGET_S
+    # Each is cut off at its own budget, and a copy under way when it is then takes at most COPY_STOP_S to stop.
+    assert Caps().wall_s + REGRADE_BUDGET_S + 2 * COPY_STOP_S < CELL_BUDGET_S
+
+
+def _tar(*members: tuple[tarfile.TarInfo, bytes]) -> bytes:
+    """A tar stream of ``members``, each a header and its data."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for info, data in members:
+            info.size = len(data) if info.isfile() else 0
+            archive.addfile(info, io.BytesIO(data) if info.isfile() else None)
+    return buffer.getvalue()
+
+
+def _member(name: str, kind: bytes = tarfile.REGTYPE, *, link: str = "") -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.type, info.linkname, info.mode = kind, link, 0o644
+    return info
+
+
+def _chunked(data: bytes, size: int = 4096) -> Iterator[bytes]:
+    return (data[at : at + size] for at in range(0, len(data), size))
+
+
+def _unpacked(chunks: Iterator[bytes] | bytes, dest: Path, stop: threading.Event | None = None) -> str:
+    """Why unpacking ``chunks`` into ``dest`` was refused; the test fails when it was not."""
+    stream = _chunked(chunks) if isinstance(chunks, bytes) else chunks
+    with pytest.raises(CopyRefused) as refused:
+        unpack(stream, dest, stop or threading.Event(), time.monotonic() + 60)
+    return str(refused.value)
+
+
+def test_a_copy_back_takes_regular_files_and_directories_and_nothing_else(tmp_path: Path) -> None:
+    good = _tar((_member("d", tarfile.DIRTYPE), b""), (_member("d/a.py"), b"print(1)\n"))
+    (tmp_path / "ok").mkdir()
+    unpack(_chunked(good), tmp_path / "ok", threading.Event(), time.monotonic() + 60)
+    assert (tmp_path / "ok" / "d" / "a.py").read_bytes() == b"print(1)\n"
+    refused = {
+        "a symlink": _member("s", tarfile.SYMTYPE, link="a.py"),
+        "a hard link": _member("h", tarfile.LNKTYPE, link="a.py"),
+        "a FIFO": _member("f", tarfile.FIFOTYPE),
+        "a device": _member("c", tarfile.CHRTYPE),
+        "a path leaving the directory": _member("../escaped.py"),
+    }
+    for what, member in refused.items():
+        dest = tmp_path / what.replace(" ", "-")
+        dest.mkdir()
+        assert _unpacked(_tar((_member("a.py"), b"x"), (member, b"y")), dest), what
+    assert not (tmp_path / "escaped.py").exists()
+    # An absolute path is read as relative to the directory: it lands inside it, never at the path it names.
+    (tmp_path / "absolute").mkdir()
+    unpack(_chunked(_tar((_member(f"/{tmp_path.name}-x.py"), b"y"))), tmp_path / "absolute", threading.Event(), 1e12)
+    assert (tmp_path / "absolute" / f"{tmp_path.name}-x.py").is_file() and not Path(f"/{tmp_path.name}-x.py").exists()
+
+
+def test_a_copy_back_is_held_to_its_bytes_as_they_stream_never_to_a_size_it_is_told(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A header claiming more than a whole copy (a sparse file's, which takes no room in the volume) is refused at
+    once. And three files each under the bound, together over it: the copy stops when the bytes streamed pass the
+    bound, having read no more than the bound and a chunk."""
+    sparse = _member("sparse")
+    sparse.size = 2 * 2**30
+    (tmp_path / "b").mkdir()
+    assert "larger than" in _unpacked(_chunked(sparse.tobuf(tarfile.GNU_FORMAT)), tmp_path / "b")
+    assert not any((tmp_path / "b").iterdir())
+
+    monkeypatch.setattr(isolation, "COPY_BYTES", 256 * 1024)
+    pulled: list[int] = []
+
+    def counted(data: bytes) -> Iterator[bytes]:
+        for chunk in _chunked(data):
+            pulled.append(len(chunk))
+            yield chunk
+
+    data = _tar(*((_member(f"f{n}"), bytes(100 * 1024)) for n in range(3)))
+    (tmp_path / "a").mkdir()
+    assert "larger than" in _unpacked(counted(data), tmp_path / "a")
+    assert sum(pulled) <= 256 * 1024 + 4096
+
+
+def test_a_copy_back_is_held_to_its_members_and_their_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(isolation, "COPY_MEMBERS", 5)
+    (tmp_path / "many").mkdir()
+    assert "more than 5" in _unpacked(_tar(*((_member(f"f{n}"), b"") for n in range(6))), tmp_path / "many")
+    (tmp_path / "long").mkdir()
+    assert "longer than" in _unpacked(_tar((_member("d/" * 520 + "x"), b"")), tmp_path / "long")
+
+
+def test_a_stopped_copy_stops_at_its_next_chunk(tmp_path: Path) -> None:
+    stop = threading.Event()
+    data = _tar((_member("a"), bytes(64 * 1024)))
+
+    def stopped_after_one() -> Iterator[bytes]:
+        for at, chunk in enumerate(_chunked(data)):
+            if at == 1:
+                stop.set()
+            yield chunk
+
+    (tmp_path / "x").mkdir()
+    assert "stopped" in _unpacked(stopped_after_one(), tmp_path / "x", stop)
+
+
+async def test_a_cancelled_copy_has_stopped_before_its_cancellation_ends() -> None:
+    """The wall cap cancels the run: the copy's thread is told, and the cancellation waits for it to end."""
+    ended = threading.Event()
+
+    def copy(stop: threading.Event) -> None:
+        try:
+            while not stop.wait(0.01):
+                pass
+            raise CopyRefused("the copy was stopped")
+        finally:
+            ended.set()
+
+    task = asyncio.create_task(stoppable(copy))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert ended.is_set()
+
+
+def test_a_copy_in_is_held_to_the_same_bounds_and_takes_no_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "a.py").write_text("x", encoding="utf-8")
+    (app / "link").symlink_to(app / "a.py")
+    with pytest.raises(CopyRefused, match="link"):
+        pack(app, io.BytesIO())
+    (app / "link").unlink()
+    monkeypatch.setattr(isolation, "COPY_BYTES", 64 * 1024)
+    (app / "big").write_bytes(bytes(100 * 1024))
+    with pytest.raises(CopyRefused, match="larger than"):
+        pack(app, io.BytesIO())
+    (app / "big").unlink()
+    out = io.BytesIO()
+    pack(app, out)
+    assert tarfile.open(fileobj=io.BytesIO(out.getvalue())).getnames() == ["a.py"]
+
+
+class _Refusing(_Answering):
+    """A runner whose every command ran and left more than may be copied back."""
+
+    async def run(self, argv: Sequence[str], *, cwd: Path, timeout_s: float, grading: bool = False) -> Ran:
+        return Ran(0, "made it\n", "", WORK, "what the command left could not be copied back: too large")
+
+
+async def test_a_command_whose_directory_cannot_come_back_fails_saying_why_and_is_never_replayed(
+    tmp_path: Path,
+) -> None:
+    sandbox = Sandbox.create(tmp_path / "app", "recipes", _build(tmp_path), _Refusing())
+    observation = await sandbox.run("python make.py")
+    assert not observation.ok and observation.exit_code is None
+    assert observation.first_error == "what the command left could not be copied back: too large"
+    assert observation.text.startswith("refused: what the command left") and "made it" in observation.text
+
+
+def test_a_read_never_holds_more_of_a_file_than_it_takes(tmp_path: Path) -> None:
+    sandbox = Sandbox.create(tmp_path / "app", "recipes", _build(tmp_path))
+    (sandbox.root / "big.txt").write_bytes(b"x\n" * (READ_BYTES // 2 + 1))
+    observation = sandbox.read("big.txt")
+    assert not observation.ok and "larger than" in observation.first_error
+    assert sandbox.read("kitchen.py").ok
 
 
 def test_the_field_an_answer_lacks_is_found_whatever_the_field_is_called() -> None:

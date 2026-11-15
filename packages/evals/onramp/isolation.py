@@ -9,10 +9,18 @@ started is :meth:`Container.settings`, the one place it is said:
 - user 10001, not root, with the environment :data:`ENVIRONMENT` and nothing of this process's (Docker adds
   ``HOSTNAME``, and the base image its ``PYTHON_VERSION`` and ``PYTHON_SHA256``);
 - ``/work``, the trial's directory, is an anonymous in-memory volume of :data:`WORK_MB` MB, removed with the
-  container: the directory is copied in as a tar stream before the command and back out after it (members that would
-  land outside it, links included, are dropped); the docs build is installed in the image, root-owned and read-only;
+  container: the directory is copied in as a tar stream before the command and back out after it; the docs build is
+  installed in the image, root-owned and read-only;
 - :data:`CPUS` CPU, :data:`MEMORY_MB` MB of memory and no swap, :data:`PIDS` processes, and a wall-clock limit per
   command, held inside the container (``timeout -s KILL``) and again outside it.
+
+Everything that crosses between a container and this machine is bounded here, while it streams, never by a size the
+container reports (a sparse file reports none of its size to the volume's limit and streams all of it): at most
+:data:`COPY_BYTES` streamed, :data:`COPY_MEMBERS` members, :data:`COPY_PATH_BYTES` bytes of a member's path, and
+:data:`COPY_S` seconds, each read or send waiting at most :data:`COPY_STALL_S`; only regular files and directories,
+none sparse, none landing outside the directory. Past a bound the copy stops, what it wrote is removed, the trial's
+directory is left as it was, and the command fails saying why (:attr:`Ran.refused`). A cancelled run (the wall cap)
+stops its copy at the next chunk and waits for it to have stopped.
 
 Docker is driven through its API (the ``docker`` package, as the repo's testcontainers drive it), never the CLI: the
 daemon may be on another machine (this dev container talks to its host's), so nothing is bind-mounted and every byte
@@ -31,11 +39,15 @@ import hashlib
 import logging
 import os
 import shutil
+import stat
 import tarfile
 import tempfile
+import threading
 import time
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import wait as wait_for_threads
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -83,6 +95,21 @@ ENVIRONMENT: Mapping[str, str] = {
     "PYTHONUTF8": "1",
     "PYTHONDONTWRITEBYTECODE": "1",
 }
+#: The most one copy, in or out, may stream: the volume's size and room for the archive's headers.
+COPY_BYTES = (WORK_MB + 16) * 1024 * 1024
+#: The most members (files and directories) one copy may carry.
+COPY_MEMBERS = 10_000
+#: The longest path, in bytes, a member may have.
+COPY_PATH_BYTES = 1024
+#: The longest one copy may take, in seconds.
+COPY_S = 60.0
+#: The longest one read or send of a copy may wait on the daemon before the copy fails, in seconds.
+COPY_STALL_S = 15.0
+#: The longest a copy takes to stop once its run is cancelled: a stalled read's wait, and a little.
+COPY_STOP_S = COPY_STALL_S + 5.0
+#: How much of a copy is read or sent at a time: the copy checks its bounds, and whether it was stopped, between.
+CHUNK_BYTES = 64 * 1024
+
 #: The anonymous in-memory volume ``/work`` (and ``/grading``) is.
 _IN_MEMORY = {"type": "tmpfs", "device": "tmpfs", "o": f"size={WORK_MB}m,uid=10001,gid=10001,mode=0700,nosuid,nodev"}
 
@@ -94,6 +121,11 @@ class IsolationUnavailable(RuntimeError):
     """The container a command must run in could not be had: no daemon, no image, or the daemon failed it."""
 
 
+class CopyRefused(Exception):
+    """A copy between a container and this machine past one of its bounds, or carrying a member a trial does not
+    take; it says which. The command whose directory it was fails with it."""
+
+
 @dataclass(frozen=True)
 class Ran:
     """What one command did.
@@ -102,12 +134,15 @@ class Ran:
     :ivar stdout: Its output, its head and tail when it was long.
     :ivar stderr: Its errors, the same.
     :ivar cwd: The directory it ran in, as it saw it: what the agent is shown as ``.``.
+    :ivar refused: Why the command failed though it ran, or could not run: its directory could not be copied in or
+        back out (:class:`CopyRefused`), which left it as it was. Empty when nothing was refused.
     """
 
     exit_code: int | None
     stdout: str
     stderr: str
     cwd: str
+    refused: str = ""
 
 
 class Runner(Protocol):
@@ -209,34 +244,101 @@ def copy_out_of_image(image: str, path: str, dest: Path) -> Path:
     try:
         container = client.containers.create(image, ["true"], network_mode="none", labels=dict(LABELS))
         try:
-            with tempfile.TemporaryFile() as archive:
-                chunks, _ = container.get_archive(f"{path}/.")
-                for chunk in chunks:
-                    archive.write(chunk)
-                archive.seek(0)
-                dest.mkdir(parents=True)
-                _extract(archive, dest)
+            dest.mkdir(parents=True)
+            _receive(client, container.id, f"{path}/.", dest, threading.Event())
         finally:
             container.remove(force=True)
     except DOCKER_FAILURES as failed:
         raise IsolationUnavailable(f"could not read {path} from the trial image {image}: {failed}") from failed
+    except (CopyRefused, tarfile.TarError) as refused:
+        raise IsolationUnavailable(f"could not read {path} from the trial image {image}: {refused}") from refused
     finally:
         client.close()
     return dest
 
 
-def _safe(member: tarfile.TarInfo, dest: str) -> tarfile.TarInfo | None:
-    """``member`` as the ``data`` filter passes it, or ``None`` (dropped) when it would land outside ``dest``."""
+def _check(stop: threading.Event, deadline: float) -> None:
+    """Raise :class:`CopyRefused` when the copy was stopped (its run was cancelled) or ran past its time."""
+    if stop.is_set():
+        raise CopyRefused("the copy was stopped: the run's time ran out")
+    if time.monotonic() > deadline:
+        raise CopyRefused(f"the copy took longer than {COPY_S:.0f}s")
+
+
+def _admit(member: tarfile.TarInfo, count: int) -> None:
+    """Refuse a member a trial does not take: past the member count, a path too long, a link, a device, a FIFO, a
+    sparse file, or one larger than a whole copy may be. Its size is believed only to refuse it early: the bytes are
+    counted as they stream."""
+    if count > COPY_MEMBERS:
+        raise CopyRefused(f"the trial directory holds more than {COPY_MEMBERS} files and directories")
+    if len(member.name.encode()) > COPY_PATH_BYTES:
+        raise CopyRefused(
+            f"a path in the trial directory is longer than {COPY_PATH_BYTES} bytes: {member.name[:80]}..."
+        )
+    if member.issparse() or not (member.isfile() or member.isdir()):
+        raise CopyRefused(f"{member.name} is a link, a device or a sparse file, which a trial directory may not hold")
+    if member.size > COPY_BYTES:
+        raise CopyRefused(f"{member.name} is larger than the {COPY_BYTES // 2**20} MB a copy may carry")
+
+
+class _Streamed:
+    """The read end of a tar stream, counting the bytes it is handed and holding them to :data:`COPY_BYTES`, the
+    copy's time, and its stop."""
+
+    def __init__(self, chunks: Iterable[bytes], stop: threading.Event, deadline: float) -> None:
+        self._chunks = iter(chunks)
+        self._buffer = bytearray()
+        self._stop, self._deadline = stop, deadline
+        self.streamed = 0
+
+    def read(self, size: int = -1) -> bytes:
+        while size < 0 or len(self._buffer) < size:
+            _check(self._stop, self._deadline)
+            chunk = next(self._chunks, None)
+            if chunk is None:
+                break
+            self.streamed += len(chunk)
+            if self.streamed > COPY_BYTES:
+                raise CopyRefused(f"the trial directory is larger than the {COPY_BYTES // 2**20} MB a copy may carry")
+            self._buffer += chunk
+        taken = bytes(self._buffer if size < 0 else self._buffer[:size])
+        del self._buffer[: len(taken)]
+        return taken
+
+
+def unpack(chunks: Iterable[bytes], dest: Path, stop: threading.Event, deadline: float) -> None:
+    """Unpack the tar stream ``chunks`` into ``dest`` as it streams, held to every bound of a copy.
+
+    :raises CopyRefused: A bound was passed, or a member is one a trial does not take; what was written stays in
+        ``dest`` for the caller to remove.
+    """
+    with tarfile.open(fileobj=_Streamed(chunks, stop, deadline), mode="r|") as archive:  # type: ignore[call-overload]
+        for count, member in enumerate(archive, start=1):
+            _admit(member, count)
+            try:
+                # A directory's own mode is left as made, so a read-only one still takes the files that follow it.
+                archive.extract(member, dest, set_attrs=not member.isdir(), filter="data")
+            except tarfile.FilterError as outside:
+                raise CopyRefused(f"{member.name} would land outside the trial directory: {outside}") from outside
+
+
+def _archive_url(client: docker.DockerClient, container: str) -> str:
+    """The daemon's endpoint for ``container``'s archive."""
+    return f"{client.api.base_url}/v{client.api.api_version}/containers/{container}/archive"
+
+
+def _receive(client: docker.DockerClient, container: str, path: str, dest: Path, stop: threading.Event) -> None:
+    """``path`` in ``container`` unpacked into ``dest`` as it streams, held to every bound of a copy; each read waits
+    at most :data:`COPY_STALL_S`.
+
+    :raises CopyRefused: A bound was passed, or a member is one a trial does not take.
+    """
+    response = client.api.get(_archive_url(client, container), params={"path": path}, stream=True, timeout=COPY_STALL_S)
     try:
-        return tarfile.data_filter(member, dest)
-    except tarfile.FilterError:
-        return None
-
-
-def _extract(stream: IO[bytes], dest: Path) -> None:
-    """Extract a tar stream into ``dest``, dropping every member that would land outside it (links included)."""
-    with tarfile.open(fileobj=stream, mode="r|") as archive:
-        archive.extractall(dest, filter=_safe)
+        response.raise_for_status()
+        unpack(response.iter_content(CHUNK_BYTES), dest, stop, time.monotonic() + COPY_S)
+    finally:
+        response.close()
 
 
 def _owned(info: tarfile.TarInfo) -> tarfile.TarInfo:
@@ -246,14 +348,82 @@ def _owned(info: tarfile.TarInfo) -> tarfile.TarInfo:
     return info
 
 
-def _tar_of(directory: Path) -> bytes:
-    """``directory``'s contents as a tar stream whose every member, directories included, belongs to the container's
-    user."""
-    buffer = BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as archive:
-        for path in sorted(directory.iterdir()):
-            archive.add(path, arcname=path.name, filter=_owned)
-    return buffer.getvalue()
+def pack(directory: Path, out: IO[bytes]) -> None:
+    """``directory``'s contents written to ``out`` as a tar stream whose every member, directories included, belongs
+    to the container's user, held to every bound of a copy.
+
+    :raises CopyRefused: A bound was passed, or the directory holds a link, a device or a FIFO.
+    """
+    count = 0
+    with tarfile.open(fileobj=out, mode="w") as archive:
+        for root, dirs, files in os.walk(directory):
+            dirs.sort()
+            for name in [*sorted(dirs), *sorted(files)]:
+                path = Path(root) / name
+                relative = path.relative_to(directory).as_posix()
+                count += 1
+                info = path.lstat()
+                if count > COPY_MEMBERS:
+                    raise CopyRefused(f"the trial directory holds more than {COPY_MEMBERS} files and directories")
+                if len(relative.encode()) > COPY_PATH_BYTES:
+                    raise CopyRefused(f"a path in the trial directory is longer than {COPY_PATH_BYTES} bytes")
+                if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                    raise CopyRefused(f"{relative} is a link, a device or a FIFO, which a trial directory may not hold")
+                if out.tell() + info.st_size > COPY_BYTES:
+                    raise CopyRefused(
+                        f"the trial directory is larger than the {COPY_BYTES // 2**20} MB a copy may carry"
+                    )
+                archive.add(path, arcname=relative, recursive=False, filter=_owned)
+                if out.tell() > COPY_BYTES:
+                    raise CopyRefused(
+                        f"the trial directory is larger than the {COPY_BYTES // 2**20} MB a copy may carry"
+                    )
+    if out.tell() > COPY_BYTES:  # the archive's closing blocks
+        raise CopyRefused(f"the trial directory is larger than the {COPY_BYTES // 2**20} MB a copy may carry")
+
+
+def _chunks_of(archive: IO[bytes], stop: threading.Event, deadline: float) -> Iterator[bytes]:
+    """``archive`` read a chunk at a time, held to the copy's time and its stop."""
+    while chunk := archive.read(CHUNK_BYTES):
+        _check(stop, deadline)
+        yield chunk
+
+
+def _send(client: docker.DockerClient, container: str, path: str, directory: Path, stop: threading.Event) -> None:
+    """``directory``'s contents unpacked at ``path`` in ``container``, streamed from a file, never held in memory, held
+    to every bound of a copy; each send or read waits at most :data:`COPY_STALL_S`.
+
+    :raises CopyRefused: A bound was passed, or the directory holds what a trial does not take.
+    """
+    with tempfile.TemporaryFile() as archive:
+        pack(directory, archive)
+        archive.seek(0)
+        chunks = _chunks_of(archive, stop, time.monotonic() + COPY_S)
+        response = client.api.put(
+            _archive_url(client, container), params={"path": path}, data=chunks, timeout=COPY_STALL_S
+        )
+        try:
+            response.raise_for_status()
+        finally:
+            response.close()
+
+
+#: The threads copies run in, so a cancelled run can wait for its copy to have stopped.
+_COPIES = ThreadPoolExecutor(max_workers=16, thread_name_prefix="onramp-copy")
+
+
+async def stoppable(copy: Callable[[threading.Event], None]) -> None:
+    """Run ``copy`` in a thread, handing it an event set when this is cancelled (the wall cap): the copy checks it
+    between chunks and stops, and the cancellation waits, at most :data:`COPY_STOP_S`, for it to have stopped, so
+    nothing it was writing outlives the cap."""
+    stop = threading.Event()
+    running = _COPIES.submit(copy, stop)
+    try:
+        await asyncio.wrap_future(running)
+    except asyncio.CancelledError:
+        stop.set()
+        await asyncio.to_thread(wait_for_threads, [running], COPY_STOP_S)
+        raise
 
 
 def _rerun_tar() -> bytes:
@@ -394,7 +564,10 @@ class Container:
         try:
             container = await asyncio.to_thread(client.containers.run, detach=True, **settings)
             try:
-                await asyncio.to_thread(container.put_archive, WORK, _tar_of(cwd))
+                try:
+                    await stoppable(lambda stop: _send(client, container.id, WORK, cwd, stop))
+                except CopyRefused as refused:
+                    return Ran(None, "", "", WORK, f"the trial directory could not be copied in: {refused}")
                 if grading:
                     await asyncio.to_thread(container.put_archive, GRADING, _rerun_tar())
                 limit = str(max(1, int(timeout_s)))
@@ -406,12 +579,20 @@ class Container:
                     )
                 except TimeoutError:
                     return Ran(None, "", "", WORK)
-                await asyncio.to_thread(self._copy_out, container, cwd)
+                try:
+                    await stoppable(lambda stop: self._copy_out(client, container.id, cwd, stop))
+                except CopyRefused as refused:
+                    said = (out.decode("utf-8", "replace"), err.decode("utf-8", "replace"))
+                    return Ran(code, *said, WORK, f"what the command left could not be copied back: {refused}")
             finally:
                 # Removing it ends a command still running, and the call waiting on it.
                 await asyncio.to_thread(self._remove, container)
         except DOCKER_FAILURES as failed:
             raise IsolationUnavailable(f"the trial container failed: {failed}") from failed
+        except tarfile.TarError as unreadable:
+            raise IsolationUnavailable(f"the trial container's directory came back unreadable: {unreadable}") from (
+                unreadable
+            )
         finally:
             client.close()
         if code == 137 and time.monotonic() - started >= timeout_s - 1:
@@ -427,16 +608,19 @@ class Container:
         return (code if code is not None else -1), out, err
 
     @staticmethod
-    def _copy_out(container: Any, cwd: Path) -> None:  # Any: the SDK's container
-        """What the command left in ``/work``, laid in place of ``cwd``; members that would land outside it dropped."""
+    def _copy_out(client: docker.DockerClient, container: str, cwd: Path, stop: threading.Event) -> None:
+        """What the command left in ``/work``, laid in place of ``cwd``, held to every bound of a copy.
+
+        :raises CopyRefused: A bound was passed, or a member is one a trial does not take: what was copied is removed,
+            and ``cwd`` is left as it was.
+        """
         fresh = cwd.parent / f".{cwd.name}.{uuid.uuid4().hex[:8]}"
-        with tempfile.TemporaryFile() as archive:
-            chunks, _ = container.get_archive(f"{WORK}/.")
-            for chunk in chunks:
-                archive.write(chunk)
-            archive.seek(0)
-            fresh.mkdir()
-            _extract(archive, fresh)
+        fresh.mkdir()
+        try:
+            _receive(client, container, f"{WORK}/.", fresh, stop)
+        except BaseException:
+            shutil.rmtree(fresh)
+            raise
         fresh.chmod(0o755)
         shutil.rmtree(cwd)
         fresh.rename(cwd)
