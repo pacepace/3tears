@@ -73,8 +73,9 @@ launch generates. Where no size can be read, the step says why and makes no
 call, so it is never taken open-ended; where no added case can close the caveat (a percentile's point estimate),
 the step says that instead of offering an act that cannot work. A criterion set or a pick made on these results is
 closed by no case added to this campaign, so its step is the confirmation in a new one.
-Taking a step that adds cases is one more look at the readings it names, and says so; nothing counts looks yet, so a
-reading after it is read at its full level as if it were the first.
+Taking a step that adds cases is one more look at the readings it names, and says so; the looks are counted
+(:func:`~threetears.evals.analysis.significance.looks_taken`), and a reading past its plan carries a caveat on looks
+that states the false-separation rate measured for that many looks.
 
 Nothing here reads an eval's kind, a campaign's shape or a measure's name.
 """
@@ -110,6 +111,7 @@ from threetears.evals.analysis.report_input import (
     CallRead,
     CaveatEntry,
     Criterion,
+    FalseSeparation,
     FirstScreen,
     Gate,
     GateRun,
@@ -137,6 +139,7 @@ from threetears.evals.analysis.separation import (
     level_share,
     stat_spread,
 )
+from threetears.evals.analysis.significance import looks_false_separation
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.kernel.declaration import CampaignCall
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
@@ -892,15 +895,80 @@ def _checks(report_input: ReportInput) -> Iterator[CaveatEntry]:
             )
 
 
+#: The verdicts that claim something of a reading (a gain, a drop, a change within the margin, an equivalence): what a
+#: look past the plan loosens. Not separated, unclear and untested claim nothing.
+_CLAIMS: Final = frozenset({"better", "worse", "improved", "regressed", "within_margin", "equivalent"})
+
+
+def _aspect_claims(report_input: ReportInput, aspect: Aspect) -> list[str]:
+    """Every claim the aspect's tests make, by reading: a row's change, a contrast's verdict, a floor or guardrail read
+    held. A claim of no worse or of safety is read at every look as a gain is, so a look past the plan loosens it too."""
+    found: list[str] = []
+    for reading in (
+        *(f"{aspect.id}/{_PASSED}" for row in aspect.readings if row.reading in _CLAIMS),
+        *(
+            f"{aspect.id}/{contrast.measure}"
+            for contrast in report_input.contrasts
+            if contrast.aspect == aspect.id and contrast.verdict in _CLAIMS
+        ),
+        *(
+            f"{aspect.id}/{_PASSED}"
+            for floor in report_input.floors
+            if floor.aspect == aspect.id and floor.status == "held"
+        ),
+        *(
+            f"{aspect.id}/{check.get('name')}"
+            for check in report_input.guardrails
+            if check.get("aspect") == aspect.id and check.get("decision") == "held"
+        ),
+    ):
+        if reading not in found:
+            found.append(reading)
+    return found
+
+
 def _looks(report_input: ReportInput) -> Iterator[CaveatEntry]:
-    """A caveat per aspect whose test was looked at more often than it planned: more than once with no plan, or more
-    often than the plan said. Looks within the plan qualify nothing and raise none."""
+    """A caveat per aspect whose test was looked at more often than its plan allows, or whose plan's keeping the count
+    cannot show.
+
+    Raised where more looks were taken than planned (more than one with no plan in force; a plan declared after the
+    first look is none, ``Looks.late_plan``), or where a plan is in force and the count is a lower bound, so the looks
+    past it cannot be ruled out. With no plan and one look counted, a count that is a lower bound raises nothing: every
+    campaign stored before membership was recorded reads so, and its looks say it in ``Looks.lower_bound``. Looks within
+    the plan raise none: the simulation measures every declared row, fixed or sized by the planner, at most α within
+    its plan (``tests/test_simulated_looks.py``).
+
+    It names every claim of the aspect (:func:`_aspect_claims`) and carries the looks and the false-separation rate
+    measured for that many looks under that plan (:func:`~threetears.evals.analysis.significance.looks_false_separation`).
+    Its reach is the report's (scoped for an unasked aspect beside asked ones), and the method's where the aspect makes
+    no claim, or where the campaign was created before looks were counted (``Looks.plannable`` false): its looks could
+    not have been planned and none of its stored verdicts moves.
+    """
+    asked = asked_aspects(report_input)
     for aspect in report_input.aspects:
         looks = aspect.looks
-        if looks is None or looks.taken <= (looks.planned or 1):
+        if looks is None:
             continue
-        reach: CaveatReach = "report" if aspect.asked or not asked_aspects(report_input) else "scoped"
-        yield _entry(report_input, f"looks:{aspect.id}", "looks", reach, readings=[f"{aspect.id}/{_PASSED}"])
+        past = looks.taken > (looks.planned or 1)
+        unshown = looks.lower_bound and looks.planned is not None
+        if not (past or unshown):
+            continue
+        claims = _aspect_claims(report_input, aspect)
+        reach: CaveatReach
+        if not claims or not looks.plannable:
+            reach = "method"
+        else:
+            reach = "report" if aspect.asked or not asked else "scoped"
+        measured = looks_false_separation(looks.planned, looks.taken)
+        yield _entry(
+            report_input,
+            f"looks:{aspect.id}",
+            "looks",
+            reach,
+            readings=claims or [f"{aspect.id}/{_PASSED}"],
+            looks=looks,
+            false_separation=FalseSeparation(rate=measured.rate, bound=measured.bound),
+        )
 
 
 def from_states(report_input: ReportInput, bundle: CampaignBundle | None = None) -> list[CaveatEntry]:

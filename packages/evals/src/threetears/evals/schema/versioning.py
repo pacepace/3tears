@@ -908,9 +908,11 @@ DURABLE_SCHEMA_VERSION: int = 17
 #: - **v17.3** — a campaign created once each contrast's looks were counted says so: ``EvalCampaign.looks_rule``
 #:   (``1``, default None), stamped by the engine at creation and never taken from a caller. Written only when set, so a
 #:   campaign created before is stored exactly as v17.2 stored it, and reads as created before looks were counted: its
-#:   looks qualify the method only and none of its stored verdicts moves. In no variant key, measurement context,
-#:   declaration snapshot or fingerprint. An older build reading a campaign at this minor keeps the field opaquely and
-#:   writes it back.
+#:   looks qualify the method only and none of its stored verdicts moves. Each aspect records its runs joining and
+#:   leaving, append-only: ``Aspect.membership`` (a list of ``MembershipChange``, default empty, left out while empty),
+#:   so a look a run's evidence made is never erased by removing it; an aspect stored before reads its looks as a lower
+#:   bound. Neither is in a variant key, measurement context, declaration snapshot or fingerprint. An older build
+#:   reading a campaign at this minor keeps both opaquely and writes them back.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 DURABLE_SCHEMA_MINOR: int = 3
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""

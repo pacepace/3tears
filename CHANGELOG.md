@@ -6,6 +6,34 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: looks are counted from stored facts, a plan of looks tightens every claim, and a reading past it says how often that errs (judges D1)
+
+**Added:** a look is an occasion on which a contrast's test could have been read again on more or different evidence.
+An aspect's reading scope carries `looks` (`planned`, `taken`; `plannable`, `lower_bound` and `late_plan` where they
+say more), the most any contrast there has had, counted from stored facts at read time: the first once both arms hold
+a result; then each launch whose results changed what the test reads (more cases run on one arm and then the other are
+one look), each membership write (a run joined after its results were scored is a look when it joins; a run removed
+or deleted keeps the look it made, and its leaving is another), each re-measure and each re-judge. Judge repeats, a
+second judge's pass and a measure attestation change no value the test reads and are not counted. Where a fact the
+count needs is not stored (a campaign recorded before membership was, a deleted run, an archived member, an untimed
+result, re-judges stored per result), the count is a lower bound and says so. Each aspect records its runs joining and
+leaving, append-only (`Aspect.membership`), and a new campaign is stamped `EvalCampaign.looks_rule`.
+
+**Changed:** under `AspectDesign.planned_looks` = L, declared before the first look, each look of the aspect's family
+reads at α/L (`ComparisonFamily.look_alpha`), and a floor's and a guardrail's `held`, a campaign row's
+`within_margin` and the cases an unclear row projects are read at 1 − (1 − level)/L. `ComparisonFamily.alpha` and
+`CampaignReadings.alpha` are the level the plan guarantees over its looks, which pages print; the per-look level is
+`look_alpha`. A plan declared after the first look is no plan (`late_plan`). With no plan nothing moves. Past its plan
+(past the first look with none), or under a plan a lower-bound count cannot show was kept, the caveat list carries
+one `looks` entry per aspect, class D, naming every claim of the aspect and carrying the looks and the false-separation
+rate the seeded simulation measured for that many looks (`significance.FALSE_SEPARATION`, batches fixed in advance or
+sized by the planner from the reading before; `CaveatEntry.looks`, `false_separation`); at method reach where the
+aspect claims nothing or the campaign was created before looks were counted. An aspect's `looks` is outside the report
+input's digest: a look taken re-keys no input and no snapshot.
+
+**For hosts:** nothing to do. A campaign whose author will add cases and read again can declare how many looks it plans
+on the aspect's design before its first result.
+
 ### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
 
 **Changed:** a declared name of `3tears-evals` is public only when it is admitted (owner ruling, 2026-11-15): someone

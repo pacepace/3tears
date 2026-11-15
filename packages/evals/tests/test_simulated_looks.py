@@ -1,51 +1,73 @@
 """Looks, checked against data with no true difference: reading again after every batch errs past α, a plan holds it.
 
-A look is one more reading of a contrast after its data changed (judges design §6). Each row below draws two arms with
-no true difference (or, for the floor, a true drop of exactly the margin), reads the contrast at every look and stops
-at the first separation (or the first ``held``), and counts how often that happens. Every row is seeded and runs 4,000
-replicates; each bound is the nominal rate plus four Monte-Carlo standard errors (:func:`at_most`).
+A look is an occasion on which a contrast's test could have been read again on more or different evidence (judges
+design §6). Each row below draws two arms with no true difference (or, for a floor, a true drop of exactly its margin),
+reads the contrast at every look and stops at the first separation (or the first ``held``), and counts how often that
+happens. Every row is seeded; each bound is the nominal rate plus four Monte-Carlo standard errors (:func:`at_most`),
+and each measured rate is pinned within four of its own (:func:`within`), so a wrong correction moves it off its pin.
 
-| Set-up | Undeclared (α at every look) | Declared (α/L) |
-|---|---|---|
-| Cases grow 20 to 60 over 1, 2, 3, 4, 5 looks, mean on t | 5.3%, 9.7%, 11.2%, 12.5%, 12.9% | 5.0%, 3.9%, 2.9% (1, 3, 5 looks): at most 5% |
-| Repeats grow on 20 fixed cases, 3 looks | 11.1% | 4.0%: at most 5% |
-| A pass rate on the bounded interval, 3 looks | 1.9% | 0.4%: at most 5% |
-| Unequal batches (20, +5, +35) | 11.4% | 3.6%: at most 5% |
-| A floor read ``held`` at any look, true drop equal to the margin, 3 looks | 1.8% | 0.45%: at most 2.5% |
-| Looks run to 2L (planned 3, taken 6) | n/a | 6.1%, against 4.2% within the plan: the guarantee is gone |
+**Batches fixed in advance** (4,000 replicates a row):
 
-The bounded interval a rate and a floor read is conservative at these counts, so even read at every look they stay
-under their nominal rate here; the plan still holds them, and the mean on t, which is exact, shows what looking costs.
+| Set-up | Undeclared (α at every look) | Declared (α/L) | Bar |
+|---|---|---|---|
+| Cases grow 20 to 60 over 1, 2, 3, 4, 5 looks, mean on t | 5.3, 9.7, 11.2, 12.5, 12.9% | 5.0, 3.9, 2.9% (1, 3, 5 looks) | 5% |
+| Repeats grow on 20 fixed cases, 3 looks | 11.1% | 4.0% | 5% |
+| Unequal batches (20, +5, +35) | 11.4% | 3.6% | 5% |
+| A pass rate on the bounded interval, 3 looks | 1.9% | 0.4% | 5% (pinned, see below) |
+| A rate floor read held, true drop at the margin, 3 looks | 1.8% | 0.45% | 2.5% (pinned, see below) |
+| A cost floor read held, equal true cost, 3 looks, t interval | :data:`_COST_FIXED` | | 2.5% |
+| Looks run past the plan: planned 2 or 3, cases 20 to 120 over 6 looks | | :data:`_PAST_PLAN` | |
+
+The bounded interval a rate and a rate floor read is conservative at these counts: read at the nominal level at every
+look, they stay under their bars, so those two rows cannot fail on their bars for a missing correction. Each is held
+by its pins instead (the uncorrected rate and the corrected one each within four standard errors of what was measured,
+four standard errors apart), and the cost floor, on the exact t interval, is the row whose bar the uncorrected reading
+fails and the plan holds.
+
+**Batches sized by the planner from the reading before** (10,000 replicates a row; :data:`_PLANNER_EXTENDS`): a
+per-case pass rate of three trials at 0.8 or 0.5, paired, launched at 20 or 40 cases. At each look the campaign row's
+rule reads the change (one aspect, so its step-down is the bounded interval at ``1 − level`` clear of zero); where it
+does not separate, the planner (a parameter: today's, :func:`todays_planner`) sizes the cases to add, and they are
+added (at most :data:`EXTEND_CAP` a step: a host's corpus is finite); where it sizes none, the campaign stops. One,
+two and three extends; undeclared (α at every look) and declared L = 2 and 3 (α/L). The same for a cost floor read
+``held`` with equal true cost (:data:`_COST_PLANNER`). The rates the caveat quotes, the largest over these settings,
+are :data:`~threetears.evals.analysis.significance.FALSE_SEPARATION`, and :func:`test_the_table_the_caveat_quotes_is_the_measured_one`
+holds them to the rows here.
 
 The rule each row reads is the engine's: a mean's verdict is the family rule
 (:func:`~packages.evals.tests.simulation_support.family_verdicts`, which ``test_simulated_multiple_comparisons.py`` pins
 to the bundle) at the level :func:`~threetears.evals.analysis.significance.looks_alpha` gives; a rate's separation
 needs its adjusted p under that level and its bounded interval at ``1 − level`` clear of zero, the bundle's rule for a
-rate; a floor's ``held`` is :func:`~threetears.evals.analysis.floors.read_floor` over a rate carrying the plan. That
-the bundle reads its family at α/L, and its floors under the plan, is held in ``test_looks.py``. The undeclared rows
-pin the measured rate (:data:`UNPLANNED_FALSE_SEPARATION`), and the reading the plan replaced is shown to fail its bar.
+rate; a floor's ``held`` is :func:`~threetears.evals.analysis.floors.read_floor` over a rate carrying the plan, or over
+cost intervals built as :func:`~threetears.evals.analysis.floors.floor_readings` builds them. That the bundle reads
+its family at α/L, and its floors under the plan, is held in ``test_looks.py``.
 """
 
 from __future__ import annotations
 
 import random
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from statistics import fmean, stdev
 
 import pytest
 
 from threetears.evals.analysis.floors import FloorReadings, RateReading, read_floor
-from threetears.evals.analysis.significance import looks_alpha
+from threetears.evals.analysis.separation import POWER, NoSpread, cases_to_separate
+from threetears.evals.analysis.significance import FALSE_SEPARATION, looks_alpha, looks_confidence
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
     SIGNIFICANCE_ALPHA,
     bounded_difference_interval,
+    difference_interval,
     interval_permits_separation,
     separation_p,
 )
-from threetears.evals.kernel.declaration import Floor, RateDrop
+from threetears.evals.kernel.declaration import CostLower, Floor, RateDrop
 from packages.evals.tests.simulation_support import at_most, family_verdicts, within
 
 REPLICATES = 4000
+#: Replicates of a planner-sized row: the rate the caveat quotes is read off these.
+EXTEND_REPLICATES = 10_000
 
 #: How often a test with no true difference separates at some look, read at α at every look and stopped at the first
 #: separation, by the looks taken: the mean of 20 to 60 cases on the t test, the cases added in equal batches, measured
@@ -53,11 +75,33 @@ REPLICATES = 4000
 UNPLANNED_FALSE_SEPARATION = {1: 0.05, 2: 0.097, 3: 0.112, 4: 0.125, 5: 0.129}
 #: A floor's one tail at the nominal level: how often a floor at its margin may be read held, at most.
 ONE_TAIL = (1 - INTERVAL_LEVEL) / 2
+#: The most cases one extend adds: a host's corpus is finite, and the planner's size with no true difference is often
+#: thousands (the estimate it sizes from sits near zero).
+EXTEND_CAP = 100
 
 #: A batch: each arm's per-case values at one look, keyed by case.
 Look = tuple[dict[str, float], dict[str, float]]
 #: Draws the looks of one replicate.
 Draw = Callable[[random.Random], list[Look]]
+#: Sizes the cases an unclear look adds: from the paired per-case differences read so far and the two-sided level the
+#: next look reads at, the cases to add; None where it can size none (the campaign then stops).
+Planner = Callable[[Sequence[float], float], int | None]
+
+
+def todays_planner(differences: Sequence[float], confidence: float) -> int | None:
+    """The planner on this base: the caveat step's sizing (``caveats._settling``), the cases for a two-sided interval at
+    ``confidence`` centred on today's estimate to clear zero four times in five
+    (:func:`~threetears.evals.analysis.separation.cases_to_separate`, ``sided=2``, at
+    :data:`~threetears.evals.analysis.separation.POWER`), less the cases held, at least one. Its spread is the paired
+    differences' own; the step reads a rate's spread off its bounded interval, wider at small counts, so it asks for
+    more cases than this, which a cap reaches sooner. Chunk M0's exact-sizing planner replaces it here once built."""
+    if len(differences) < 2:
+        return None
+    try:
+        needed = cases_to_separate(stdev(differences), fmean(differences), confidence, sided=2, power=POWER)
+    except NoSpread:
+        return None
+    return max(needed - len(differences), 1)
 
 
 def _sizes(looks: int, first: int = 20, last: int = 60) -> list[int]:
@@ -167,10 +211,18 @@ def test_repeats_growing_on_fixed_cases_under_a_plan_hold_alpha() -> None:
     declared = _first_separation_rate(_growing_repeats(), _mean_separates, looks_alpha(3), seed="repeats")
     undeclared = _first_separation_rate(_growing_repeats(), _mean_separates, SIGNIFICANCE_ALPHA, seed="repeats")
     assert declared <= at_most(SIGNIFICANCE_ALPHA, REPLICATES)
-    assert undeclared > declared
+    assert undeclared > at_most(SIGNIFICANCE_ALPHA, REPLICATES)
 
 
-def test_a_pass_rate_on_its_bounded_interval_under_a_plan_holds_alpha() -> None:
+#: The pass-rate row's measured rates, undeclared then declared at three looks: four standard errors apart at least,
+#: so a correction that does nothing reads the undeclared rate where the declared one is pinned.
+_RATE_ROW = (0.019, 0.004)
+
+
+def test_a_pass_rate_on_its_bounded_interval_under_a_plan_holds_alpha_and_is_moved_by_it() -> None:
+    """The bounded interval is conservative at 20 to 60 cases, so even read at α at every look this row stays under
+    5%: it is held by its pins, each side within four standard errors of what was measured."""
+
     def draw(rng: random.Random) -> list[Look]:
         control, candidate = _rate_shares(rng, 60), _rate_shares(rng, 60)
         return [({f"c{i}": control[i] for i in range(n)}, {f"c{i}": candidate[i] for i in range(n)}) for n in _sizes(3)]
@@ -178,22 +230,53 @@ def test_a_pass_rate_on_its_bounded_interval_under_a_plan_holds_alpha() -> None:
     declared = _first_separation_rate(draw, _rate_separates, looks_alpha(3), seed="rate")
     undeclared = _first_separation_rate(draw, _rate_separates, SIGNIFICANCE_ALPHA, seed="rate")
     assert declared <= at_most(SIGNIFICANCE_ALPHA, REPLICATES)
-    assert undeclared > declared
+    assert within(undeclared, _RATE_ROW[0], REPLICATES), undeclared
+    assert within(declared, _RATE_ROW[1], REPLICATES), declared
+    assert not within(_RATE_ROW[0], _RATE_ROW[1], REPLICATES), "the pins cannot tell a no-op correction apart"
 
 
-def test_looks_run_past_the_plan_lose_its_guarantee() -> None:
-    """Planned three, taken six: each still read at α/3, and the error is past what the plan stated."""
+#: Looks run past the plan, cases 20 to 120 in batches of 20, each read at α/L: how often a replicate has separated by
+#: each look, by the looks planned. Within the plan at most α; past it the guarantee is gone.
+_PAST_PLAN: Mapping[int, Mapping[int, float]] = {}
+
+
+def _cumulative(
+    draw: Draw, separates: Callable[[Look, float], bool], alpha: float, seed: str, looks: int
+) -> list[float]:
+    """How often a replicate has separated by each look, read at ``alpha`` at every one."""
+    rng = random.Random(seed)
+    hits = [0] * looks
+    for _ in range(REPLICATES):
+        for index, look in enumerate(draw(rng)):
+            if separates(look, alpha):
+                for later in range(index, looks):
+                    hits[later] += 1
+                break
+    return [count / REPLICATES for count in hits]
+
+
+@pytest.mark.parametrize("planned", [2, 3])
+def test_looks_run_past_the_plan_lose_its_guarantee(planned: int) -> None:
+    """Within the plan the error holds at α; past it, it grows, read at each count."""
     sizes = [20, 40, 60, 80, 100, 120]
-    rate = _first_separation_rate(_growing_cases(sizes), _mean_separates, looks_alpha(3), seed="past-plan")
-    within_plan = _first_separation_rate(_growing_cases(sizes[:3]), _mean_separates, looks_alpha(3), seed="past-plan")
-    assert rate > within_plan
+    rates = _cumulative(
+        _growing_cases(sizes), _mean_separates, looks_alpha(planned), seed=f"past-plan-{planned}", looks=len(sizes)
+    )
+    assert rates[planned - 1] <= at_most(SIGNIFICANCE_ALPHA, REPLICATES), rates
+    assert rates[-1] > rates[planned - 1], rates
+    measured = _PAST_PLAN.get(planned, {})
+    assert [round(rate, 4) for rate in rates] == pytest.approx(
+        [measured.get(taken, -1.0) for taken in range(1, len(sizes) + 1)], abs=4e-3
+    ), ("measured", planned, rates)
 
 
-# --- a floor read held, its true drop at the margin ------------------------------------------------------------------
+# --- floors read held, the true drop at the margin -------------------------------------------------------------------
 
 #: The floor: no pass rate drops by more than 9.5 points. The candidate breaks one case in ten outright and passes the
 #: rest as the control does (each trial at 0.95), so its true rate is 9.5 points below the control's.
 _FLOOR = Floor(aspect="b", clause=RateDrop(max_points=9.5))
+#: The rate floor row's measured rates, undeclared then declared at three looks.
+_FLOOR_ROW = (0.018, 0.0045)
 
 
 def _held_rate(looks: int | None, seed: str) -> float:
@@ -226,11 +309,193 @@ def _held_rate(looks: int | None, seed: str) -> float:
     return held / REPLICATES
 
 
-def test_a_floor_at_its_margin_under_a_plan_is_read_held_no_more_often_than_its_tail() -> None:
-    assert _held_rate(3, seed="floor") <= at_most(ONE_TAIL, REPLICATES)
+def test_a_rate_floor_at_its_margin_under_a_plan_is_read_held_no_more_often_than_its_tail_and_is_moved_by_it() -> None:
+    """The bounded interval keeps even the uncorrected reading under the 2.5% tail here, so the row is held by its
+    pins: uncorrected and corrected each within four standard errors of what was measured."""
+    declared = _held_rate(3, seed="floor")
+    undeclared = _held_rate(None, seed="floor")
+    assert declared <= at_most(ONE_TAIL, REPLICATES)
+    assert within(undeclared, _FLOOR_ROW[0], REPLICATES), undeclared
+    assert within(declared, _FLOOR_ROW[1], REPLICATES), declared
+    assert not within(_FLOOR_ROW[0], _FLOOR_ROW[1], REPLICATES), "the pins cannot tell a no-op correction apart"
 
 
-def test_a_floor_read_held_at_every_look_with_no_plan_is_held_more_often_than_under_one() -> None:
-    """The reading the plan tightens: read at the nominal level at every look, held more often than under the plan
-    (1.8% against 0.45% at this seed; the bounded interval's conservatism keeps both under the 2.5% tail here)."""
-    assert _held_rate(None, seed="floor") > _held_rate(3, seed="floor")
+#: A cost floor (cheaper than the control), the two arms' true cost equal: per-case costs share a case level, each
+#: reply's cost around it. ``held`` at a look is a false claim of cheaper.
+_COST_FLOOR = Floor(aspect="b", clause=CostLower())
+
+
+def _costs(rng: random.Random, levels: Sequence[float]) -> list[float]:
+    return [level + rng.gauss(0.0, 0.002) for level in levels]
+
+
+def _cost_held(control: Sequence[float], candidate: Sequence[float], planned: int | None) -> bool:
+    """Whether the cost floor reads ``held`` on these per-case costs, its intervals built as ``floor_readings``
+    builds them: the t interval at the nominal level, and under a plan of more than one look the held one at
+    :func:`~threetears.evals.analysis.significance.looks_confidence`."""
+    a, b = list(control), list(candidate)
+    readings = FloorReadings(
+        rates=(),
+        control_cost=fmean(a),
+        candidate_cost=fmean(b),
+        control_cases=len(a),
+        candidate_cases=len(b),
+        cost_interval=difference_interval(a, b, paired=True, confidence=INTERVAL_LEVEL),
+        cost_compared=True,
+        cost_held_interval=(
+            None
+            if planned is None or planned <= 1
+            else difference_interval(a, b, paired=True, confidence=looks_confidence(INTERVAL_LEVEL, planned))
+        ),
+    )
+    return read_floor(_COST_FLOOR, readings, control="control", candidate="candidate").outcome == "held"
+
+
+#: The fixed-batch cost row, 20, 40 and 60 cases: read held at some look, undeclared then declared at three looks.
+_COST_FIXED = (0.0, 0.0)
+
+
+def _cost_fixed_rate(planned: int | None, seed: str) -> float:
+    rng = random.Random(seed)
+    held = 0
+    for _ in range(REPLICATES):
+        levels = [0.01 + rng.gauss(0.0, 0.003) for _ in range(60)]
+        control, candidate = _costs(rng, levels), _costs(rng, levels)
+        if any(_cost_held(control[:n], candidate[:n], planned) for n in _sizes(3)):
+            held += 1
+    return held / REPLICATES
+
+
+def test_a_cost_floor_read_held_at_every_look_with_no_plan_fails_its_tail_and_a_plan_holds_it() -> None:
+    """The row whose bar the missing correction fails: on the exact t interval, three looks at the nominal level read
+    a cost no lower as cheaper past the 2.5% tail; the plan holds it there."""
+    undeclared = _cost_fixed_rate(None, seed="cost-fixed")
+    declared = _cost_fixed_rate(3, seed="cost-fixed")
+    assert undeclared > at_most(ONE_TAIL, REPLICATES), undeclared
+    assert declared <= at_most(ONE_TAIL, REPLICATES), declared
+    assert (round(undeclared, 4), round(declared, 4)) == pytest.approx(_COST_FIXED, abs=4e-3), (undeclared, declared)
+
+
+# --- batches sized by the planner from the reading before ----------------------------------------------------------
+
+#: The extends measured: one, two, three.
+EXTENDS = (1, 2, 3)
+
+
+def _rate_row_separates(control: Sequence[float], candidate: Sequence[float], level: float) -> bool:
+    """The campaign row's rule on one aspect: the bounded interval on the change at ``1 − level`` clear of zero."""
+    interval = bounded_difference_interval(
+        control, candidate, paired=True, value_range=(0.0, 1.0), confidence=1.0 - level
+    )
+    return interval is not None and (interval[0] > 0 or interval[1] < 0)
+
+
+def planner_extend_rates(
+    p: float, launched: int, planned: int | None, *, seed: str, planner: Planner = todays_planner
+) -> list[float]:
+    """How often a pass rate with no true difference has separated after zero, one, two and three planner-sized
+    extends: read at :func:`~threetears.evals.analysis.significance.looks_alpha` of ``planned`` at every look, and
+    stopped at the first separation."""
+    rng = random.Random(seed)
+    level = looks_alpha(planned)
+    hits = [0] * (len(EXTENDS) + 1)
+    for _ in range(EXTEND_REPLICATES):
+        control, candidate = _rate_shares(rng, launched, p=p), _rate_shares(rng, launched, p=p)
+        for look in range(len(EXTENDS) + 1):
+            if _rate_row_separates(control, candidate, level):
+                for later in range(look, len(hits)):
+                    hits[later] += 1
+                break
+            if look == len(EXTENDS):
+                break
+            added = planner([b - a for a, b in zip(control, candidate, strict=True)], 1.0 - level)
+            if added is None:
+                break
+            added = min(added, EXTEND_CAP)
+            control += _rate_shares(rng, added, p=p)
+            candidate += _rate_shares(rng, added, p=p)
+    return [count / EXTEND_REPLICATES for count in hits]
+
+
+#: The planner-sized rows, by (per-trial pass rate, cases launched, looks planned): how often a replicate has separated
+#: after 0, 1, 2 and 3 extends, measured at each row's seed.
+_PLANNER_EXTENDS: Mapping[tuple[float, int, int | None], tuple[float, float, float, float]] = {}
+
+
+@pytest.mark.parametrize("planned", [None, 2, 3])
+@pytest.mark.parametrize(("p", "launched"), [(0.8, 20), (0.8, 40), (0.5, 20), (0.5, 40)])
+def test_planner_sized_extends_err_at_the_rate_the_table_states(p: float, launched: int, planned: int | None) -> None:
+    """Each row pinned within four standard errors of what was measured; a declared row within its plan at most α
+    (where one is not, the caveat must say so for looks within the plan)."""
+    rates = planner_extend_rates(p, launched, planned, seed=f"extend-{p}-{launched}-{planned}")
+    measured = _PLANNER_EXTENDS.get((p, launched, planned))
+    assert measured is not None and all(
+        within(rate, pinned, EXTEND_REPLICATES) for rate, pinned in zip(rates, measured, strict=True)
+    ), ("measured", p, launched, planned, rates)
+    assert rates[0] <= at_most(SIGNIFICANCE_ALPHA if planned is None else looks_alpha(planned), EXTEND_REPLICATES)
+    if planned is not None:
+        within_plan = rates[planned - 1]
+        assert within_plan <= at_most(SIGNIFICANCE_ALPHA, EXTEND_REPLICATES), ("past alpha within the plan", rates)
+
+
+def cost_planner_rates(
+    planned: int | None, *, seed: str, launched: int = 20, planner: Planner = todays_planner
+) -> list[float]:
+    """How often a cost floor with equal true cost reads held after zero, one, two and three planner-sized extends,
+    each sized to show the candidate cheaper at the level ``held`` is read at."""
+    rng = random.Random(seed)
+    confidence = looks_confidence(INTERVAL_LEVEL, planned)
+    hits = [0] * (len(EXTENDS) + 1)
+    for _ in range(EXTEND_REPLICATES):
+        levels = [0.01 + rng.gauss(0.0, 0.003) for _ in range(launched)]
+        control, candidate = _costs(rng, levels), _costs(rng, levels)
+        for look in range(len(EXTENDS) + 1):
+            if _cost_held(control, candidate, planned):
+                for later in range(look, len(hits)):
+                    hits[later] += 1
+                break
+            if look == len(EXTENDS):
+                break
+            added = planner([b - a for a, b in zip(control, candidate, strict=True)], confidence)
+            if added is None:
+                break
+            more = [0.01 + rng.gauss(0.0, 0.003) for _ in range(min(added, EXTEND_CAP))]
+            control += _costs(rng, more)
+            candidate += _costs(rng, more)
+    return [count / EXTEND_REPLICATES for count in hits]
+
+
+#: The planner-sized cost floor row, by the looks planned: how often it has read held after 0 to 3 extends.
+_COST_PLANNER: Mapping[int | None, tuple[float, float, float, float]] = {}
+
+
+@pytest.mark.parametrize("planned", [None, 2, 3])
+def test_a_cost_floor_at_its_margin_under_planner_sized_extends(planned: int | None) -> None:
+    rates = cost_planner_rates(planned, seed=f"cost-extend-{planned}")
+    measured = _COST_PLANNER.get(planned)
+    assert measured is not None and all(
+        within(rate, pinned, EXTEND_REPLICATES) for rate, pinned in zip(rates, measured, strict=True)
+    ), ("measured", planned, rates)
+    if planned is not None:
+        assert rates[planned - 1] <= at_most(ONE_TAIL, EXTEND_REPLICATES), ("past the tail within the plan", rates)
+    else:
+        assert rates[-1] > at_most(ONE_TAIL, EXTEND_REPLICATES), ("the uncorrected reading should fail its tail", rates)
+
+
+# --- the table the caveat quotes -------------------------------------------------------------------------------------
+
+
+def test_the_table_the_caveat_quotes_is_the_measured_one() -> None:
+    """``FALSE_SEPARATION`` states, for each procedure, plan and count, the largest rate measured here: the fixed
+    batches' undeclared rates, the past-plan rows, and the planner-sized rows over every setting."""
+    fixed = FALSE_SEPARATION["fixed_batches"]
+    assert {(None, looks): rate for looks, rate in UNPLANNED_FALSE_SEPARATION.items()} | {
+        (planned, taken): rate for planned, row in _PAST_PLAN.items() for taken, rate in row.items()
+    } == dict(fixed)
+    extended = FALSE_SEPARATION["planner_extends"]
+    expected: dict[tuple[int | None, int], float] = {}
+    for (_, _, planned), rates in _PLANNER_EXTENDS.items():
+        for extends, rate in enumerate(rates):
+            key = (planned, extends + 1)
+            expected[key] = max(expected.get(key, 0.0), rate)
+    assert expected == dict(extended)

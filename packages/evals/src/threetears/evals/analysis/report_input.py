@@ -997,6 +997,20 @@ class HumanPreference(_Part):
 _CHANGES_THE_ANSWER = frozenset({"set_aside", "withheld"})
 
 
+class FalseSeparation(_Part):
+    """How often a test with no true difference separates at some look, measured for a contrast looked at so many
+    times under its plan (:func:`~threetears.evals.analysis.significance.looks_false_separation`): what a caveat on
+    looks states the loosened level to be."""
+
+    rate: Number = Field(description="The rate, as a share.")
+    bound: Literal["measured", "at_least", "at_most"] = Field(
+        description=(
+            "measured where the simulation states it; at_least past the last count it measured (the rate only grows "
+            "with looks); at_most for a plan it measured no row for, read as no plan."
+        )
+    )
+
+
 class CaveatEntry(_Part):
     """One row of the one caveat list: a qualification of the answer, typed so code ranks it without reading a word.
 
@@ -1054,6 +1068,20 @@ class CaveatEntry(_Part):
     runs: list[str] = Field(default_factory=list, description="The runs it is about, by id; empty for none named.")
     cases: int | None = Field(
         default=None, description="The cases the readings it names rest on, where one count says it."
+    )
+    # The two below are left out when unset, so an entry of every other kind dumps as it did.
+    looks: Looks | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="For a caveat on looks: the aspect's looks, planned and taken (`Aspect.looks`).",
+    )
+    false_separation: FalseSeparation | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "For a caveat on looks: how often a test with no true difference separates at some look, measured for "
+            "that many looks under that plan: the level the readings it names now hold, in place of the one stated."
+        ),
     )
 
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
@@ -1246,8 +1274,8 @@ class RemedyStep(_Part):
     declared_look: bool = Field(
         default=False,
         description="Whether taking it reads the same readings again with the cases it adds: one more look at them, "
-        "stated before it is taken. Nothing counts looks yet: the reading after it is read at its full level as if it "
-        "were the first, so adding cases and reading again even once errs more often than that level says.",
+        "stated before it is taken. The looks are counted: past the aspect's plan (past the first with none) the "
+        "reading after it carries a caveat on looks, which states how often that many looks err.",
     )
     results_needed: int | None = Field(
         default=None, ge=1, description="For a check: how many more results it needs before it can decide."

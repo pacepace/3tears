@@ -16,7 +16,7 @@ errs is at most the sum of their chances, whatever the dependence among them, PR
 For looks at sizes fixed before the data, each reading is a fixed-size test and does. Where the next batch is sized
 from the readings so far (a step that adds the cases an unclear reading would need), the reading at the data-chosen
 size is no fixed-size test, and nothing in the bound says it still errs at most α/L: what holds there is what the
-simulation of that procedure measures (``PLANNER_EXTEND_FALSE_SEPARATION`` in ``test_simulated_looks.py``), and an
+simulation of that procedure measures (:data:`FALSE_SEPARATION`, ``planner_extends``), and an
 extend is one of the ``L`` looks only because it is counted as one. Past ``L`` looks the bound says nothing. The union
 bound is conservative (for three looks, about a third more cases at the last than Pocock's boundaries, and more than
 O'Brien–Fleming's); it is chosen because looks here are irregular and their sizes not fixed in advance, which group
@@ -29,8 +29,10 @@ does not is said there.
 
 from __future__ import annotations
 
-from collections.abc import Hashable, Iterable
+from collections.abc import Hashable, Iterable, Mapping
 from datetime import datetime
+from types import MappingProxyType
+from typing import Final, Literal, NamedTuple
 
 from threetears.evals.analysis.stats import PAIRED_TEST_NAME, SIGNIFICANCE_ALPHA, UNPAIRED_TEST_NAME
 from threetears.evals.kernel.numbers import format_number
@@ -266,6 +268,65 @@ def looks_confidence(confidence: float, planned: int | None) -> float:
     return 1.0 - (1.0 - confidence) / planned if planned and planned > 1 else confidence
 
 
+#: How a contrast's looks were added: in batches whose sizes were fixed before the data (``fixed_batches``), or each
+#: after the first sized by a planner from the reading before it (``planner_extends``: a step that adds the cases an
+#: unclear reading would need, which is optional stopping on the data).
+LooksProcedure = Literal["fixed_batches", "planner_extends"]
+
+#: How often a test with no true difference separates at some look, stopped at the first separation, as the seeded
+#: simulation in ``tests/test_simulated_looks.py`` measures it (which holds this table to its rows): by procedure, then
+#: by the looks planned (None: every look read at α) and the looks taken. ``fixed_batches``: the mean of 20 to 60 cases
+#: on the t test in equal batches with no plan, and under a plan of 2 or 3 the mean of 20 to 120 cases in batches of 20
+#: run past it. ``planner_extends``: a per-case pass rate of three trials, launched at 20 or 40 cases, each extend the
+#: cases the caveat step's planner sizes (at most 100), the largest rate over the settings measured. Past a row's last
+#: count the rate only grows.
+FALSE_SEPARATION: Final[Mapping[LooksProcedure, Mapping[tuple[int | None, int], float]]] = MappingProxyType(
+    {
+        "fixed_batches": MappingProxyType({}),
+        "planner_extends": MappingProxyType({}),
+    }
+)
+
+
+class MeasuredRate(NamedTuple):
+    """The false-separation rate a caveat on looks quotes (:func:`looks_false_separation`).
+
+    :ivar rate: The rate, as a share.
+    :ivar bound: ``measured`` where a row states it; ``at_least`` past the last count measured (the rate only grows
+        with looks); ``at_most`` for a plan no row measured, read as no plan (a plan only lowers it).
+    """
+
+    rate: float
+    bound: Literal["measured", "at_least", "at_most"]
+
+
+def looks_false_separation(planned: int | None, taken: int) -> MeasuredRate:
+    """The false-separation rate measured for a contrast looked at ``taken`` times under a plan of ``planned``: the
+    larger of the two procedures' (:data:`FALSE_SEPARATION`), since which one added the looks is not stored.
+
+    :param planned: The looks the plan in force allows; None where none is.
+    :ptype planned: int | None
+    :param taken: The looks taken, at least one.
+    :ptype taken: int
+    :return: The rate, and whether it is measured, a floor or a ceiling.
+    :rtype: MeasuredRate
+    """
+    bound: Literal["measured", "at_least", "at_most"] = "measured"
+    rows = [table for table in FALSE_SEPARATION.values() if any(key[0] == planned for key in table)]
+    if not rows:
+        # A plan no row measured: reading at α/L only lowers each look's chance, so the unplanned rate is a ceiling.
+        planned, bound = None, "at_most"
+        rows = [table for table in FALSE_SEPARATION.values() if any(key[0] is None for key in table)]
+    found: list[float] = []
+    for table in rows:
+        counts = [key[1] for key in table if key[0] == planned]
+        last = max(counts)
+        if taken > last and bound == "measured":
+            bound = "at_least"
+        found.append(table[(planned, min(taken, last))])
+    return MeasuredRate(max(found), bound)
+
+
 def looks_taken(
     deliveries: Iterable[tuple[datetime, str, str, Hashable]],
     *,
@@ -337,6 +398,10 @@ def looks_taken(
 
 __all__ = [
     "cross_subject_disclosure",
+    "FALSE_SEPARATION",
+    "LooksProcedure",
+    "MeasuredRate",
+    "looks_false_separation",
     "format_significance",
     "looks_alpha",
     "looks_confidence",

@@ -17,7 +17,9 @@ chance for a test with no true difference behind it to separate (judges design �
   ``held`` (rate and cost), a guardrail's ``held`` and a campaign row's ``within_margin`` read on the interval at
   ``1 − (1 − level)/L``, and the cases an unclear row projects are sized at that level. With no plan nothing moves.
 - **What a reader of a campaign that took an undeclared second look is told**, as typed values: the aspect's looks
-  ``{planned: None, taken: 2}`` and one caveat of kind ``looks``, class D, on the aspect.
+  ``{planned: None, taken: 2}`` and one caveat of kind ``looks``, class D, naming the aspect's claims and carrying the
+  looks and the false-separation rate measured for them; at method reach where the aspect claims nothing or the
+  campaign was created before looks were counted; raised under a plan whose keeping a lower-bound count cannot show.
 - **The engine records membership** on create, add, remove and delete, and stamps a campaign it creates.
 
 What the plan buys, and what looking without one costs, is measured in ``test_simulated_looks.py``.
@@ -40,7 +42,13 @@ from threetears.evals.analysis.checks import Looks
 from threetears.evals.analysis.floors import floor_readings
 from threetears.evals.analysis.report_input import report_input_digest
 from threetears.evals.analysis.report_input_build import report_input
-from threetears.evals.analysis.significance import looks_alpha, looks_confidence, looks_taken
+from threetears.evals.analysis.significance import (
+    FALSE_SEPARATION,
+    looks_alpha,
+    looks_confidence,
+    looks_false_separation,
+    looks_taken,
+)
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SIGNIFICANCE_ALPHA, bounded_difference_interval
 from threetears.evals.kernel import CampaignArm
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -257,7 +265,16 @@ def _bundle(
                         judge_repeats=[
                             JudgeRepeat(
                                 judge_model="judge",
-                                scores=[RepeatedScore(dim="extract.d", scale="ordinal", first_score=3)],
+                                scores=[
+                                    RepeatedScore(
+                                        dim="extract.d",
+                                        scale="ordinal",
+                                        first_score=3,
+                                        first_served_model="judge",
+                                        first_judge_config_id="judge-config",
+                                        error="cut off",
+                                    )
+                                ],
                                 repeated_at=_stamp(start + 700 + 60 * each),
                             )
                             for each in range(repeats if case_index == cases[0] else 0)
@@ -336,10 +353,10 @@ def test_judge_repeats_change_no_value_the_test_reads_and_are_no_look() -> None:
 
 
 def test_an_old_run_joined_after_the_first_look_is_a_look_when_it_joins() -> None:
-    """Control at 0, candidate at 20, read; then a control run scored at 12 joins at 300: one more look, though its
-    results were scored before both arms first held one."""
+    """Control at 0, candidate at 20, read; then a control run scored at 12, on the cases both arms hold, joins at 300:
+    one more look, though its results were scored before both arms first held one."""
     bundle, _, _ = _bundle(
-        [("a", 0, range(20), "control"), ("b", 20, range(20), "candidate"), ("d", 12, range(20, 40), "control")],
+        [("a", 0, range(20), "control"), ("b", 20, range(20), "candidate"), ("d", 12, range(20), "control")],
         joined={2: 300},
     )
     assert bundle.reading_scope.looks == Looks(planned=None, taken=2)
@@ -391,9 +408,7 @@ def test_the_engine_stamps_a_campaign_it_creates_and_records_each_run_joining_an
     storage, _ = memory_storage()
     for run_id in ("run-1", "run-2", "run-3"):
         storage.save_eval_run(make_eval_run(id=run_id, scope_id="scope-a", launch_group_id="g"))
-    storage.save_eval_result(
-        make_eval_result(id="r-2", eval_run_id="run-2", scope_id="scope-a", scored_at=_stamp(-30))
-    )
+    storage.save_eval_result(make_eval_result(id="r-2", eval_run_id="run-2", scope_id="scope-a", scored_at=_stamp(-30)))
     definition = {
         "name": "c",
         "subject_id": "subject-1",
@@ -490,9 +505,10 @@ def _readings(bundle: AnalysisContextBundle, campaign: EvalCampaign) -> Campaign
 _DROP = dict(seed="floor-held-0", pass_rates=(0.97, 0.93))
 
 
-def _between_margin() -> float:
-    """A margin between the largest drop the pass rate's interval allows at the nominal level and the largest it allows
-    at the level a plan of three looks reads ``held`` at, read off the bundle itself."""
+def _margins() -> tuple[float, float]:
+    """Two margins on the pass rate's drop, read off the bundle itself: one between the largest drop its interval allows
+    at the nominal level and the largest it allows at the level a plan of three looks reads ``held`` at (held with no
+    plan, unclear under one); and one between the drop observed and the nominal largest (unclear either way)."""
     bundle, _, _ = _bundle([("g1", 0, range(60))], **_DROP)  # type: ignore[arg-type]
     (rate, *_) = floor_readings(bundle, fixture_variant_key(_CONTROL), fixture_variant_key(_CANDIDATE)).rates
     assert rate.samples is not None
@@ -502,19 +518,28 @@ def _between_margin() -> float:
     )
     assert nominal is not None and tight is not None
     planned = -100 * tight[0]
-    assert rate.drop_bounds()[1] < nominal < planned < 30, (nominal, planned)
-    return round((nominal + planned) / 2, 3)
+    observed = 100 * (rate.control_passed / rate.control_n - rate.candidate_passed / rate.candidate_n)
+    assert 0 < observed < nominal < planned < 30, (observed, nominal, planned)
+    return round((nominal + planned) / 2, 3), round((observed + nominal) / 2, 3)
+
+
+def _between_margin() -> float:
+    """The margin held with no plan and unclear under a plan of three looks (:func:`_margins`)."""
+    return _margins()[0]
 
 
 @pytest.mark.parametrize("planned", [None, _PLAN])
 def test_a_rate_floor_and_a_row_within_the_margin_read_held_with_no_plan_and_unclear_under_one(
     planned: int | None,
 ) -> None:
-    """Through the bundle: the plan reaches the floor's held and the row's within_margin, and the cases an unclear row
-    projects are sized at the level its held is read at."""
+    """Through the bundle: the plan reaches the floor's held and the row's within_margin."""
     margin = _between_margin()
     bundle, campaign, _ = _bundle(
-        [("g1", 0, range(60))], planned=planned, margin=margin, floors=[RateDrop(max_points=margin)], **_DROP  # type: ignore[arg-type]
+        [("g1", 0, range(60))],
+        planned=planned,
+        margin=margin,
+        floors=[RateDrop(max_points=margin)],
+        **_DROP,  # type: ignore[arg-type]
     )
     readings = _readings(bundle, campaign)
     (row,) = readings.readings
@@ -526,14 +551,27 @@ def test_a_rate_floor_and_a_row_within_the_margin_read_held_with_no_plan_and_unc
     assert statuses == {"unclear"} and row.reading == "unclear"
     assert readings.alpha == SIGNIFICANCE_ALPHA and readings.look_alpha == pytest.approx(SIGNIFICANCE_ALPHA / _PLAN)
     assert row.within_interval is not None and -row.within_interval[0] > margin, "the interval held is read on"
-    assert row.projection is not None and row.projection.if_none.cases is not None
-    nominal_bundle, nominal_campaign, _ = _bundle(
-        [("g1", 0, range(60))], margin=margin - 1.0, floors=[RateDrop(max_points=margin - 1.0)], **_DROP  # type: ignore[arg-type]
-    )
-    (nominal_row,) = _readings(nominal_bundle, nominal_campaign).readings
-    assert nominal_row.reading == "unclear" and nominal_row.projection is not None
-    assert nominal_row.projection.if_none.cases is not None
-    assert row.projection.if_none.cases > nominal_row.projection.if_none.cases, "sized at the tighter level"
+
+
+def test_the_cases_an_unclear_row_projects_are_sized_at_the_level_its_held_is_read_at() -> None:
+    """At one margin both rows are unclear; under a plan of three looks the row's held is read on a wider interval, so
+    the cases that would lift it are more."""
+    low = _margins()[1]
+
+    def projected(planned: int | None) -> int:
+        bundle, campaign, _ = _bundle(
+            [("g1", 0, range(60))],
+            planned=planned,
+            margin=low,
+            floors=[RateDrop(max_points=low)],
+            **_DROP,  # type: ignore[arg-type]
+        )
+        (row,) = _readings(bundle, campaign).readings
+        assert row.reading == "unclear" and row.projection is not None
+        assert row.projection.if_none.cases is not None
+        return row.projection.if_none.cases
+
+    assert projected(_PLAN) > projected(None), "sized at the tighter level"
 
 
 #: Forty cases, the candidate cheaper by a little against noisy costs: cheaper shown at the nominal level, not at the
@@ -609,20 +647,71 @@ def _built(bundle: AnalysisContextBundle, campaign: EvalCampaign):  # type: igno
     return report_input(build_campaign_bundle(campaign, [bundle], arms=arms, readings=readings))
 
 
+def _looks_caveats(built):  # type: ignore[no-untyped-def]  # the input's caveats on looks
+    return [entry for entry in built.caveat_list or [] if entry.kind == "looks"]
+
+
+#: Two launches and a candidate clearly ahead on accuracy: the aspect claims a gain.
+_TWO_LOOKS_AND_A_GAIN = dict(shift=0.08, seed="gain-0")
+
+
 def test_a_reader_of_a_campaign_that_took_an_undeclared_second_look_is_told_two_looks_none_planned_and_one_caveat() -> (
     None
 ):
-    built = _built(*_bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))])[:2])
+    built = _built(*_bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], **_TWO_LOOKS_AND_A_GAIN)[:2])  # type: ignore[arg-type]
     (aspect,) = built.aspects
     assert aspect.looks == Looks(planned=None, taken=2)
-    looks = [entry for entry in built.caveat_list or [] if entry.kind == "looks"]
-    assert [(entry.id, entry.cls, entry.reach) for entry in looks] == [(f"looks:{_ASPECT}", "D", "report")]
+    (looks,) = _looks_caveats(built)
+    assert (looks.id, looks.cls, looks.reach) == (f"looks:{_ASPECT}", "D", "report")
+    assert f"{_ASPECT}/field_accuracy" in looks.readings, "it names the claim the second look loosened"
+    assert looks.looks == Looks(planned=None, taken=2)
+    measured = looks_false_separation(None, 2)
+    assert looks.false_separation is not None
+    assert (looks.false_separation.rate, looks.false_separation.bound) == (measured.rate, "measured")
+    assert measured.rate == max(table[(None, 2)] for table in FALSE_SEPARATION.values()), "the larger procedure's"
+
+
+def test_a_second_look_at_an_aspect_that_claims_nothing_qualifies_the_method_only() -> None:
+    built = _built(*_bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))])[:2])
+    (looks,) = _looks_caveats(built)
+    assert looks.reach == "method"
+
+
+def test_a_second_look_at_a_campaign_created_before_looks_were_counted_qualifies_the_method_only() -> None:
+    built = _built(
+        *_bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], stamped=False, **_TWO_LOOKS_AND_A_GAIN)[:2]  # type: ignore[arg-type]
+    )
+    (looks,) = _looks_caveats(built)
+    assert looks.reach == "method" and looks.looks is not None and looks.looks.plannable is False
+
+
+def test_a_plan_whose_keeping_the_count_cannot_show_raises_the_caveat() -> None:
+    """A run deleted after its look: the count is a lower bound, so looks past the plan cannot be ruled out."""
+    gone = MembershipChange(run_id="gone", change="left", at=_stamp(300))
+    built = _built(*_bundle([("g1", 0, range(20))], planned=2, left=[gone], **_TWO_LOOKS_AND_A_GAIN)[:2])  # type: ignore[arg-type]
+    assert built.aspects[0].looks == Looks(planned=2, taken=2, lower_bound=True)
+    (looks,) = _looks_caveats(built)
+    assert looks.reach == "report"
+
+
+def test_one_look_counted_as_a_lower_bound_with_no_plan_raises_nothing() -> None:
+    built = _built(*_bundle([("g1", 0, range(20))], recorded=False, **_TWO_LOOKS_AND_A_GAIN)[:2])  # type: ignore[arg-type]
+    assert built.aspects[0].looks == Looks(planned=None, taken=1, lower_bound=True)
+    assert not _looks_caveats(built)
+
+
+def test_the_rate_quoted_past_the_last_count_measured_is_a_floor_and_for_an_unmeasured_plan_a_ceiling() -> None:
+    last = max(taken for table in FALSE_SEPARATION.values() for planned, taken in table if planned is None)
+    assert looks_false_separation(None, last + 3).bound == "at_least"
+    assert looks_false_separation(None, last + 3).rate == looks_false_separation(None, last).rate
+    unmeasured = looks_false_separation(7, 9)
+    assert unmeasured.bound == "at_most" and unmeasured.rate == looks_false_separation(None, 9).rate
 
 
 def test_a_reader_of_looks_within_the_plan_is_told_the_looks_and_no_caveat() -> None:
     built = _built(*_bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], planned=2)[:2])
     assert built.aspects[0].looks == Looks(planned=2, taken=2)
-    assert not [entry for entry in built.caveat_list or [] if entry.kind == "looks"]
+    assert not _looks_caveats(built)
 
 
 def test_an_aspect_s_looks_are_outside_the_input_s_digest() -> None:
@@ -633,5 +722,7 @@ def test_an_aspect_s_looks_are_outside_the_input_s_digest() -> None:
     recounted = built.model_copy(
         update={"aspects": [aspect.model_copy(update={"looks": other}) for aspect in built.aspects]}
     )
-    unset = built.model_copy(update={"aspects": [aspect.model_copy(update={"looks": None}) for aspect in built.aspects]})
+    unset = built.model_copy(
+        update={"aspects": [aspect.model_copy(update={"looks": None}) for aspect in built.aspects]}
+    )
     assert report_input_digest(built) == report_input_digest(recounted) == report_input_digest(unset)

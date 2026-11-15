@@ -2031,6 +2031,30 @@
      "default": null,
      "description": "The cases the readings it names rest on, where one count says it.",
      "title": "Cases"
+    },
+    "looks": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Looks"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For a caveat on looks: the aspect's looks, planned and taken (`Aspect.looks`)."
+    },
+    "false_separation": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/FalseSeparation"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For a caveat on looks: how often a test with no true difference separates at some look, measured for that many looks under that plan: the level the readings it names now hold, in place of the one stated."
     }
    },
    "required": [
@@ -2039,6 +2063,30 @@
     "reach"
    ],
    "title": "CaveatEntry",
+   "type": "object"
+  },
+  "FalseSeparation": {
+   "additionalProperties": false,
+   "description": "How often a test with no true difference separates at some look, measured for a contrast looked at so many times under its plan: what a caveat on looks states the loosened level to be.",
+   "properties": {
+    "rate": {
+     "description": "The rate, as a share.",
+     "type": "number"
+    },
+    "bound": {
+     "description": "measured where the simulation states it; at_least past the last count it measured (the rate only grows with looks); at_most for a plan it measured no row for, read as no plan.",
+     "enum": [
+      "measured",
+      "at_least",
+      "at_most"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "rate",
+    "bound"
+   ],
    "type": "object"
   },
   "Check": {
@@ -2711,7 +2759,7 @@
        "type": "null"
       }
      ],
-     "description": "The looks declared; none where none were."
+     "description": "The looks the design plans, where the plan was declared before the first look; None where none was, or where it was declared after (``late_plan``)."
     },
     "taken": {
      "description": "The looks taken.",
@@ -2722,6 +2770,23 @@
      "default": true,
      "description": "Whether the campaign was created once looks were counted, so its design could have declared them. False for an earlier campaign: its stored verdicts do not move, and its looks qualify the method only.",
      "type": "boolean"
+    },
+    "lower_bound": {
+     "default": false,
+     "description": "Whether ``taken`` is a lower bound: a fact a look is counted by is not stored, so more were taken.",
+     "type": "boolean"
+    },
+    "late_plan": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The looks a plan declared after the first look named (or over runs that held results before it was declared): read as no plan, since the looks it would count were already taken. None where no plan was declared late."
     }
    },
    "required": [

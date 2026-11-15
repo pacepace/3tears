@@ -111,7 +111,9 @@ def _digests(name: str) -> dict[str, str]:
 FILLED = frozenset({"caveat_list", "first_screen"})
 
 #: What a chunk after the move fills where the move put it: each aspect's looks (judges D1), on the input's aspect and
-#: on the bundle's reading scope. Set apart as the list is; what it holds is held by ``test_looks.py``.
+#: on the bundle's reading scope. Set apart as the list is, and for the same reason: it is derived from stored facts
+#: about the campaign, so it is outside ``report_input_digest`` (no input's digest or snapshot id moves with it) and,
+#: on the bundle, outside the v2 fingerprint; ``test_looks.py`` holds both and what it holds.
 FILLED_LOOKS = "looks"
 
 
