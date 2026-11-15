@@ -107,16 +107,16 @@ class _UndeclaredError(LookupError):
 _DECLARED: dict[Tier, Mapping[str, Declared]] = {}
 
 
-def declare(tier: Tier, kinds: type[enum.Enum], policies: Mapping[enum.Enum, Declared]) -> Mapping[str, Declared]:
+def declare[K: enum.Enum](tier: Tier, kinds: type[K], policies: Mapping[K, Declared]) -> Mapping[str, Declared]:
     """declare a tier's kinds of entry and their policies, refusing a kind with none: called once per kind set, as
     the tier's module is imported, so an undeclared kind fails the import, never a write at night.
 
     :param tier: the tier
     :ptype tier: Tier
     :param kinds: every kind the tier holds (an enum: its members are the kinds)
-    :ptype kinds: type[enum.Enum]
+    :ptype kinds: type[K]
     :param policies: each kind's policy
-    :ptype policies: Mapping[enum.Enum, Declared]
+    :ptype policies: Mapping[K, Declared]
     :return: the tier's declarations now, by kind name (``kind.value``)
     :rtype: Mapping[str, Declared]
     :raises LookupError: when a kind has no policy
