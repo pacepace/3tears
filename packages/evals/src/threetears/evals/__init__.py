@@ -20,7 +20,7 @@ there is no scheduled-run surface.
 under test (a function, or a mapping of them whose first key is the control) and what counts as right (functions,
 field names, a :class:`Judge`) — and ``await ev.run()`` runs it, returning a :class:`Result` that prints quietly and
 writes its report. ``python -m threetears.evals FILE`` runs every eval a ``.py`` or ``.toml`` file declares. The
-names that take it further are this module's own: :class:`World` and :class:`Log` (two more shapes of runner),
+names that take it further are this module's own: :class:`World` (another shape of runner),
 :func:`grader` (what a reading declares beside its grade), :class:`Example`, :class:`Model` and :class:`Answer`. Each
 is loaded on first use, so importing this package loads none of the engine.
 
