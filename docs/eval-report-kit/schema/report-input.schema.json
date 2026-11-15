@@ -2772,7 +2772,7 @@
   },
   "RemedyStep": {
    "additionalProperties": false,
-   "description": "What would change one first-screen reason, or what stops a campaign being read: the one act that closes it, as\na value a person reads and an agent can take.\n\nWhere an action of the engine's catalogue takes the step, ``action`` names it, ``calls`` holds each call of it the\nstep makes, every argument named and typed as the action's own parameters (a step that adds cases passes its\nplanned size as the count of new cases), and ``needs`` names the parameters the step cannot fill from what the\ncaveat holds, which the taker supplies to every call. A launch repeats the set-up of the arms it runs: what the\nreading holds of it is filled, and ``as_launched`` names the rest, each set as the arms' runs were launched.\nWhere one action's calls do not finish the act, ``then`` holds the calls that do, in order, each of the same\nshape: a launch's runs joined to the campaign it reads, the runs a re-run replaces taken out of it, and for a\nconfirmation the campaign created first; ``after`` names each argument that only an earlier call's result holds.\nWhere the step is more evidence, ``planned_cases`` is its size, read from the figure it would settle and stated\nbefore it runs, never \"until it separates\"; where no size can be read, ``unsized`` says why and the step makes no\ncall, so it is never taken open-ended. Where no action takes it, ``no_action`` says why. A step that spends names\nthe action that prices it first; code never takes a step.",
+   "description": "What would change one first-screen reason, or what stops a campaign being read: the one act that closes it, as\na value a person reads and an agent can take.\n\nWhere an action of the engine's catalogue takes the step, ``action`` names it, ``calls`` holds each call of it the\nstep makes, every argument named and typed as the action's own parameters (a step that adds cases passes its\nplanned size as the count of new cases), and ``needs`` names the parameters the step cannot fill from what the\ncaveat holds, which the taker supplies to every call. A launch repeats the set-up of the arms it runs: what the\nreading holds of it is filled, and ``as_launched`` names the rest, each set as the arms' runs were launched, except\nthe dimensions ``alike`` names, held at one value on every call; ``call_arms`` says which arms each call runs.\nWhere one action's calls do not finish the act, ``then`` holds the calls that do, in order, each of the same\nshape: a launch's runs joined to the campaign it reads, the runs a re-run replaces taken out of it, and for a\nconfirmation the campaign created first; ``after`` names each argument that only an earlier call's result holds.\nA step ships a sequence only where following it, through the real actions on a fixture campaign, has been shown\nto do what it says; ``limits`` states, typed, what following it cannot guarantee, and a re-run no sequence has\nbeen shown to lift makes no call and says so (``no_action`` ``lift_not_shown``).\nWhere the step is more evidence, ``planned_cases`` is its size, read from the figure it would settle and stated\nbefore it runs, never \"until it separates\"; where no size can be read, ``unsized`` says why and the step makes no\ncall, so it is never taken open-ended. Where no action takes it, ``no_action`` says why. A step that spends names\nthe action that prices it first; code never takes a step.",
    "properties": {
     "remedy": {
      "description": "What would close it.",
@@ -2810,7 +2810,7 @@
       }
      ],
      "default": null,
-     "description": "The caveat it closes, by id; none for the gate's.",
+     "description": "The caveat it answers, by id; none for the gate's. A step whose first call is campaign_create closes nothing on this report: the caveat stays raised here, and the confirmation is read in the campaign it creates (limits: this_report_stays_flagged).",
      "title": "Closes"
     },
     "action": {
@@ -2862,11 +2862,30 @@
      "type": "array"
     },
     "as_launched": {
-     "description": "For a launch: the parameters that set an arm up which the reading holds no value for, by the action's own names; the taker sets each as the runs of the arms it launches were launched, never to its default, or the new runs are not more of those arms.",
+     "description": "For a launch: the parameters that set an arm up which the reading holds no value for, by the action's own names; the taker sets each as the runs of the arms it launches were launched, never to its default, or the new runs are not more of those arms. The one exception is a dimension alike names, which the taker sets to one value on every call.",
      "items": {
       "type": "string"
      },
      "title": "As Launched",
+     "type": "array"
+    },
+    "alike": {
+     "description": "For a re-run that balances a confound: each apparatus dimension the confound is in, by its apparatus_settings key, which the taker sets to one value on every call of the launch, never as each arm was launched: the arms then differ only in what is compared.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Alike",
+     "type": "array"
+    },
+    "call_arms": {
+     "description": "For a launch: the arms each call runs, by id, in the calls' order; empty where the reading does not hold the arms' runs.",
+     "items": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "title": "Call Arms",
      "type": "array"
     },
     "after": {
@@ -2878,7 +2897,7 @@
       ],
       "type": "string"
      },
-     "description": "For a call that follows another of the step: each parameter only an earlier call's result holds, and which: launched_runs, the run ids job_poll names on the step's launch job (run_ids); launched_control_run, the one of them the control arm's model ran; created_campaign, the id the step's campaign_create returned.",
+     "description": "For a call that follows another of the step: each parameter only an earlier call's result holds, and which: launched_runs, the run ids job_poll names on the step's launch job once its runs start (run_ids); launched_control_run, the one of them the control arm's model ran, named as soon as job_poll names it and before any result is scored, or the campaign reads its control as named late; created_campaign, the id the step's campaign_create returned.",
      "title": "After",
      "type": "object"
     },
@@ -2917,7 +2936,7 @@
       }
      ],
      "default": null,
-     "description": "For more evidence: the new cases to add per arm named (on fresh cases, the cases to run), read from the figure it would settle, planned before it runs, so that once the runs it launches are in the campaign that reads it, a design of that size clears the line the caveat is lifted by, on the interval it is lifted by, at least four times in five if the truth is today's estimate.",
+     "description": "For more evidence: the cases to add per arm named (on fresh cases, the cases to run), read from the figure it would settle, planned before it runs, so that once the runs it launches are in the campaign that reads it, a design of that size clears the line the caveat is lifted by, on the interval it is lifted by, at least four times in five if the truth is today's estimate. It counts cases the launch keeps and did not reuse (limits: axis_may_not_generate), and holds only for arms launched in one call with the control (limits: unpaired_arms). For a step whose first call is campaign_create, the line is the one the created campaign reads, never this report's.",
      "title": "Planned Cases"
     },
     "unsized": {
@@ -3007,7 +3026,8 @@
        "enum": [
         "unclassed_kind",
         "method_only",
-        "no_interval_to_gain"
+        "no_interval_to_gain",
+        "lift_not_shown"
        ],
        "type": "string"
       },
@@ -3016,8 +3036,30 @@
       }
      ],
      "default": null,
-     "description": "Why no catalogue action takes it: for no_action, why no act closes it; for an act no one action takes, why not.",
+     "description": "Why no catalogue action takes it: for no_action, why no act closes it; for an act no one action takes, or no sequence has been shown to finish, why not.",
      "title": "No Action"
+    },
+    "limits": {
+     "description": "What following the step as written cannot guarantee. unpaired_arms: an arm that differs from the control beyond its model is launched in a call of its own, whose new cases the control does not run; a contrast pairs only the cases both sides ran, so those runs add no pair and the planned size does not hold for it (unpaired_arms names each). axis_may_not_generate: n_variations writes unseen cases only on a template axis a model writes (llm); on an axis of stated values (enum, sample) a launch reuses stored cases with the same values and keeps fewer where they run out, and a kind that generates none refuses it. The reading holds no template's axes, so the cases are new only where the launch reports reused 0 and kept the planned count; for a confirmation, unseen cases on such an axis are authored first. this_report_stays_flagged: the caveat is read off this report's own results (a criterion set after them, a pick among them), which nothing added anywhere lifts; the confirmation is read in the campaign the step creates, and that reading is the one to trust. control_may_read_late: the control is named from a launched run, which exists only once the launch starts; named after the first result is scored, the created campaign reads its control as named late.",
+     "items": {
+      "enum": [
+       "unpaired_arms",
+       "axis_may_not_generate",
+       "this_report_stays_flagged",
+       "control_may_read_late"
+      ],
+      "type": "string"
+     },
+     "title": "Limits",
+     "type": "array"
+    },
+    "unpaired_arms": {
+     "description": "For limits unpaired_arms: the arms launched in a call of their own, by id.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Unpaired Arms",
+     "type": "array"
     }
    },
    "required": [

@@ -1131,8 +1131,11 @@ UnsizedReason = Literal["no_interval", "no_spread", "on_the_line", "no_count", "
 #: Why no catalogue action takes a step: ``unclassed_kind``, an analyst's own kind, outside the package's classes;
 #: ``method_only``, a kind that only ever lands in the method section and qualifies no answer;
 #: ``no_interval_to_gain``, a figure the engine states no interval for at any size (a percentile, or a mean read from
-#: enough cases that still states none), so no added case gives it one.
-NoActionReason = Literal["unclassed_kind", "method_only", "no_interval_to_gain"]
+#: enough cases that still states none), so no added case gives it one; ``lift_not_shown``, a re-run no sequence of
+#: the catalogue's actions has been shown, followed as written, to lift: what went wrong (an answering model split by
+#: the provider, a rig, recording, a replay, cases run at once, a confound no launch setting holds alike) is not a
+#: parameter a launch sets, so the step names its remedy and makes no call.
+NoActionReason = Literal["unclassed_kind", "method_only", "no_interval_to_gain", "lift_not_shown"]
 
 #: A value one argument of a catalogue action's call takes.
 StepArgument = str | bool | int | list[str]
@@ -1146,10 +1149,14 @@ class RemedyStep(_Part):
     step makes, every argument named and typed as the action's own parameters (a step that adds cases passes its
     planned size as the count of new cases), and ``needs`` names the parameters the step cannot fill from what the
     caveat holds, which the taker supplies to every call. A launch repeats the set-up of the arms it runs: what the
-    reading holds of it is filled, and ``as_launched`` names the rest, each set as the arms' runs were launched.
+    reading holds of it is filled, and ``as_launched`` names the rest, each set as the arms' runs were launched, except
+    the dimensions ``alike`` names, held at one value on every call; ``call_arms`` says which arms each call runs.
     Where one action's calls do not finish the act, ``then`` holds the calls that do, in order, each of the same
     shape: a launch's runs joined to the campaign it reads, the runs a re-run replaces taken out of it, and for a
     confirmation the campaign created first; ``after`` names each argument that only an earlier call's result holds.
+    A step ships a sequence only where following it, through the real actions on a fixture campaign, has been shown
+    to do what it says; ``limits`` states, typed, what following it cannot guarantee, and a re-run no sequence has
+    been shown to lift makes no call and says so (``no_action`` ``lift_not_shown``).
     Where the step is more evidence, ``planned_cases`` is its size, read from the figure it would settle and stated
     before it runs, never "until it separates"; where no size can be read, ``unsized`` says why and the step makes no
     call, so it is never taken open-ended. Where no action takes it, ``no_action`` says why. A step that spends names
@@ -1157,7 +1164,12 @@ class RemedyStep(_Part):
     """
 
     remedy: Remedy = Field(description="What would close it.")
-    closes: str | None = Field(default=None, description="The caveat it closes, by id; none for the gate's.")
+    closes: str | None = Field(
+        default=None,
+        description="The caveat it answers, by id; none for the gate's. A step whose first call is campaign_create "
+        "closes nothing on this report: the caveat stays raised here, and the confirmation is read in the campaign it "
+        "creates (limits: this_report_stays_flagged).",
+    )
     action: str | None = Field(
         default=None, description="The catalogue action that takes it; none where a host or a person acts."
     )
@@ -1174,14 +1186,27 @@ class RemedyStep(_Part):
         default_factory=list,
         description="For a launch: the parameters that set an arm up which the reading holds no value for, by the "
         "action's own names; the taker sets each as the runs of the arms it launches were launched, never to its "
-        "default, or the new runs are not more of those arms.",
+        "default, or the new runs are not more of those arms. The one exception is a dimension alike names, which "
+        "the taker sets to one value on every call.",
+    )
+    alike: list[str] = Field(
+        default_factory=list,
+        description="For a re-run that balances a confound: each apparatus dimension the confound is in, by its "
+        "apparatus_settings key, which the taker sets to one value on every call of the launch, never as each arm "
+        "was launched: the arms then differ only in what is compared.",
+    )
+    call_arms: list[list[str]] = Field(
+        default_factory=list,
+        description="For a launch: the arms each call runs, by id, in the calls' order; empty where the reading does "
+        "not hold the arms' runs.",
     )
     after: dict[str, Literal["launched_runs", "launched_control_run", "created_campaign"]] = Field(
         default_factory=dict,
         description="For a call that follows another of the step: each parameter only an earlier call's result holds, "
-        "and which: launched_runs, the run ids job_poll names on the step's launch job (run_ids); "
-        "launched_control_run, the one of them the control arm's model ran; created_campaign, the id the step's "
-        "campaign_create returned.",
+        "and which: launched_runs, the run ids job_poll names on the step's launch job once its runs start (run_ids); "
+        "launched_control_run, the one of them the control arm's model ran, named as soon as job_poll names it and "
+        "before any result is scored, or the campaign reads its control as named late; created_campaign, the id the "
+        "step's campaign_create returned.",
     )
     then: list[RemedyStep] = Field(
         default_factory=list,
@@ -1195,10 +1220,13 @@ class RemedyStep(_Part):
     planned_cases: int | None = Field(
         default=None,
         ge=1,
-        description="For more evidence: the new cases to add per arm named (on fresh cases, the cases to run), read "
-        "from the figure it would settle, planned before it runs, so that once the runs it launches are in the "
-        "campaign that reads it, a design of that size clears the line the caveat is lifted by, on the interval it is "
-        "lifted by, at least four times in five if the truth is today's estimate.",
+        description="For more evidence: the cases to add per arm named (on fresh cases, the cases to run), read from "
+        "the figure it would settle, planned before it runs, so that once the runs it launches are in the campaign "
+        "that reads it, a design of that size clears the line the caveat is lifted by, on the interval it is lifted "
+        "by, at least four times in five if the truth is today's estimate. It counts cases the launch keeps and did "
+        "not reuse (limits: axis_may_not_generate), and holds only for arms launched in one call with the control "
+        "(limits: unpaired_arms). For a step whose first call is campaign_create, the line is the one the created "
+        "campaign reads, never this report's.",
     )
     unsized: UnsizedReason | None = Field(
         default=None, description="For more evidence no size can be read for: why. Such a step makes no call."
@@ -1228,7 +1256,28 @@ class RemedyStep(_Part):
     no_action: NoActionReason | None = Field(
         default=None,
         description="Why no catalogue action takes it: for no_action, why no act closes it; for an act no one action "
-        "takes, why not.",
+        "takes, or no sequence has been shown to finish, why not.",
+    )
+    limits: list[
+        Literal["unpaired_arms", "axis_may_not_generate", "this_report_stays_flagged", "control_may_read_late"]
+    ] = Field(
+        default_factory=list,
+        description="What following the step as written cannot guarantee. unpaired_arms: an arm that differs from the "
+        "control beyond its model is launched in a call of its own, whose new cases the control does not run; a "
+        "contrast pairs only the cases both sides ran, so those runs add no pair and the planned size does not hold "
+        "for it (unpaired_arms names each). axis_may_not_generate: n_variations writes unseen cases only on a template "
+        "axis a model writes (llm); on an axis of stated values (enum, sample) a launch reuses stored cases with the "
+        "same values and keeps fewer where they run out, and a kind that generates none refuses it. The reading holds "
+        "no template's axes, so the cases are new only where the launch reports reused 0 and kept the planned count; "
+        "for a confirmation, unseen cases on such an axis are authored first. this_report_stays_flagged: the caveat "
+        "is read off this report's own results (a criterion set after them, a pick among them), which nothing added "
+        "anywhere lifts; the confirmation is read in the campaign the step creates, and that reading is the one to "
+        "trust. control_may_read_late: the control is named from a launched run, which exists only once the launch "
+        "starts; named after the first result is scored, the created campaign reads its control as named late.",
+    )
+    unpaired_arms: list[str] = Field(
+        default_factory=list,
+        description="For limits unpaired_arms: the arms launched in a call of their own, by id.",
     )
 
     @model_validator(mode="after")
@@ -1256,6 +1305,12 @@ class RemedyStep(_Part):
             raise ValueError("each parameter is filled by a call, left to the taker, or read off an earlier call: once")
         if any(step.then for step in self.then):
             raise ValueError("a call that follows another holds no calls of its own to follow it")
+        if bool(self.unpaired_arms) != ("unpaired_arms" in self.limits):
+            raise ValueError("a step names the arms it cannot pair exactly where it states that it cannot")
+        if self.call_arms and len(self.call_arms) != len(self.calls):
+            raise ValueError("a step that says which arms its calls run says it for every call")
+        if self.alike and "apparatus_settings" not in self.as_launched:
+            raise ValueError("a dimension held alike is one the taker sets in apparatus_settings")
         return self
 
 

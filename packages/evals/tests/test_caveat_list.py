@@ -334,13 +334,11 @@ def test_the_messy_campaign_resumed_shows_exactly_three_reasons_in_class_order_w
     assert value.remainder == 0 and value.open_report_caveats == 3
     assert [step.remedy for step in value.steps] == ["rerun_on_one_cell", "check_against_people", "declare_looks"]
     rerun = value.steps[0]
-    (lead,) = bundle.aspects
-    split_runs = next(arm.run_ids for arm in lead.design.contrasts if bundle.label_of(arm.variant_key) == _SPLIT)
-    assert rerun.arms == [_SPLIT] and rerun.action == "run_launch" and rerun.needs == []
-    assert [(part.action, part.calls, part.needs, part.after) for part in rerun.then] == [
-        ("campaign_runs_add", [{"aspect": lead.aspect}], ["campaign_id"], {"run_ids": "launched_runs"}),
-        ("campaign_runs_remove", [{"run_ids": split_runs}], ["campaign_id"], {}),
-    ], "the re-run's runs join the campaign whose reading raised it, and the split runs it replaces leave"
+    assert rerun.arms == [_SPLIT]
+    assert (rerun.action, rerun.calls, rerun.then, rerun.no_action) == (None, [], [], "lift_not_shown"), (
+        "the provider split the answering model: no launch parameter holds it to one, so no re-run is shown to lift it "
+        "and the step makes no call"
+    )
 
 
 def test_the_list_and_the_first_screen_are_outside_the_input_s_digest() -> None:
@@ -462,22 +460,33 @@ _HELD = Setup(
 )
 
 #: Every launch parameter that sets an arm up beyond its template, subject and model: each is filled or named.
-_ARM_SETUP = {"k_runs", "judge_model", "simulator_model", "overlays", "apparatus_settings", "cell_timeout_s"}
+_ARM_SETUP = {
+    "k_runs",
+    "measure_latency",
+    "arm_schedule",
+    "judge_model",
+    "simulator_model",
+    "overlays",
+    "apparatus_settings",
+    "cell_timeout_s",
+}
 
 
 def _steps_of(remedied: Remedy) -> Iterator[RemedyStep]:
     for setup, arms in ((Setup(), ["a"]), (_HELD, ["a", "c"]), (_HELD, [])):
         for runs in ((), ("run-1", "run-2")):
             for coordinate in (None, "served_model", "measure_definition"):
-                yield next_step(
-                    remedied,
-                    arms=arms,
-                    runs=runs,
-                    readings=["accuracy/passed"],
-                    coordinate=coordinate,
-                    plan=Plan(3),
-                    setup=setup,
-                )
+                for alike in ((), ("reviewer_pool",)):
+                    yield next_step(
+                        remedied,
+                        arms=arms,
+                        runs=runs,
+                        readings=["accuracy/passed"],
+                        coordinate=coordinate,
+                        plan=Plan(3),
+                        setup=setup,
+                        alike=alike,
+                    )
 
 
 def _parts(step: RemedyStep) -> Iterator[RemedyStep]:
@@ -498,6 +507,7 @@ def test_every_call_a_step_makes_is_one_its_catalogue_action_accepts(remedied: R
     for step in _steps_of(remedied):
         if step.action is None:
             assert step.calls == [] and step.needs == [] and step.then == []
+            assert not step.limits and not step.alike
             continue
         for part in _parts(step):
             action = _CATALOGUE[part.action or ""]
@@ -518,12 +528,23 @@ def test_every_call_a_step_makes_is_one_its_catalogue_action_accepts(remedied: R
             launch = next(part for part in _parts(step) if part.action == "run_launch")
             for call in launch.calls:
                 assert _ARM_SETUP <= set(call) | set(launch.as_launched), "a launch left at a default is another arm"
+                if call.get("n_variations"):
+                    assert "variation_model" in launch.as_launched, "a generating arm's writer is named"
+                if rule.replaces:
+                    assert {"case_set_name", "case_set_version"} <= set(launch.as_launched), "a re-run's case set"
+            assert not launch.call_arms or len(launch.call_arms) == len(launch.calls)
+            if rule.balances:
+                assert step.alike == ["reviewer_pool"] and "apparatus_settings" in launch.as_launched
+            if rule.adds_evidence:
+                assert "axis_may_not_generate" in step.limits, "the reading holds no template's axes"
             after = actions[actions.index("run_launch") + 1 :]
             assert "campaign_runs_add" in after, "a launched run joins no campaign until a call joins it"
             join = next(part for part in step.then if part.action == "campaign_runs_add")
             assert join.after["run_ids"] == "launched_runs"
             if rule.new_campaign:
                 assert actions[0] == "campaign_create" and join.after["campaign_id"] == "created_campaign"
+                assert "floors" in step.needs, "a floor a late criterion names is declared in the new campaign"
+                assert {"this_report_stays_flagged", "control_may_read_late"} <= set(step.limits)
             else:
                 assert "campaign_id" in join.needs, "the report holds its campaign by name"
             if rule.replaces:
@@ -575,17 +596,72 @@ def test_a_launch_repeats_the_arms_set_up_as_their_runs_were_launched() -> None:
     assert {summary.k_runs for arm in step.arms for summary in ran[arm]} == {call["k_runs"]}
     assert call["k_runs"] != _CATALOGUE["run_launch"].params.model_fields["k_runs"].default, "set up off the default"
     assert launch.needs == []
-    assert launch.as_launched == ["judge_model", "simulator_model", "overlays", "apparatus_settings", "cell_timeout_s"]
+    rigs = [summary.apparatus for arm in step.arms for summary in ran[arm]]
+    for name in ("measure_latency", "arm_schedule"):
+        values = {getattr(rig, name) for rig in rigs if rig is not None}
+        if None not in rigs and len(values) == 1 and None not in values:
+            assert call[name] == values.pop(), f"{name} is filled from what the runs recorded"
+        else:
+            assert name in launch.as_launched, f"{name} is named where the runs did not record one value"
+    order = (
+        "measure_latency",
+        "arm_schedule",
+        "judge_model",
+        "simulator_model",
+        "overlays",
+        "apparatus_settings",
+        "cell_timeout_s",
+        "variation_model",
+    )
+    assert launch.as_launched == [name for name in order if name not in call], (
+        "every setting of an arm the reading holds no value for is named, and the writer of a generating launch too"
+    )
+    assert launch.call_arms == [list(step.arms)]
 
-    moved = {**_HELD.arms["accuracy"], "b": ArmRuns(("run-b",), "model-a", 5, True)}
+
+def test_an_arm_that_moved_beyond_its_model_is_launched_alone_and_the_step_says_it_pairs_with_no_new_case() -> None:
+    """One launch call takes one set of overlays for all its models, so an arm that moved a lever beyond its model is
+    launched in a call of its own; that call's new cases are its own, which the control never runs, and a contrast pairs
+    only cases both sides ran. The step states it (``unpaired_arms``) rather than promise a size that pairs: the case-set
+    sequence that would share the cases has not been driven end to end. Each call says which arms it runs, and an arm
+    whose runs differ from the others in repeats, latency or schedule takes its own call at its own values."""
+    moved = {
+        **_HELD.arms["accuracy"],
+        "b": ArmRuns(("run-b",), "model-a", 5, True),
+        "d": ArmRuns(("run-d",), "model-d", 2, False, measure_latency=True, arm_schedule="sequential"),
+    }
     apart = next_step(
         "add_cases",
-        arms=["a", "b", "c"],
+        arms=["a", "b", "c", "d"],
         readings=["accuracy/passed"],
         plan=Plan(4),
         setup=_HELD._replace(arms={"accuracy": moved}),
     )
-    assert [(call["models"], call["k_runs"]) for call in apart.calls] == [(["model-a", "model-c"], 5), (["model-a"], 5)]
+    assert [(call["models"], call["k_runs"]) for call in apart.calls] == [
+        (["model-a", "model-c"], 5),
+        (["model-a"], 5),
+        (["model-d"], 2),
+    ]
+    assert apart.call_arms == [["a", "c"], ["b"], ["d"]]
+    assert "measure_latency" in apart.as_launched, "two of the arms' runs recorded no rig, so it is the taker's"
+    assert (apart.limits, apart.unpaired_arms) == (["axis_may_not_generate", "unpaired_arms"], ["b", "d"])
+    assert apart.planned_cases == 4
+    rerun = next_step(
+        "rerun_balanced",
+        arms=["b"],
+        readings=["accuracy/passed"],
+        setup=_HELD._replace(arms={"accuracy": moved}),
+        alike=["reviewer_pool"],
+    )
+    assert rerun.call_arms == [["b"], ["c"]] and rerun.limits == [] and rerun.unpaired_arms == [], (
+        "a re-run runs the template's stored cases in every call, so its calls pair; the control is run beside it"
+    )
+    assert rerun.alike == ["reviewer_pool"] and "apparatus_settings" in rerun.as_launched
+    every = {"run-b", "run-c1", "run-c2"}
+    remove = next(part for part in rerun.then if part.action == "campaign_runs_remove")
+    assert set(remove.calls[0]["run_ids"]) == every, "every run the re-run replaces leaves, the control's too"
+    unheld = next_step("rerun_balanced", arms=["b"], readings=["accuracy/passed"], setup=_HELD)
+    assert (unheld.action, unheld.no_action) == (None, "lift_not_shown"), "no dimension held alike, no call"
 
 
 def test_a_resume_is_one_call_per_run_and_a_remeasure_stores_each_run_read_again() -> None:
@@ -624,6 +700,10 @@ def test_no_step_reads_until_it_separates_and_none_is_taken_by_code() -> None:
         "as_launched",
         "after",
         "then",
+        "alike",
+        "call_arms",
+        "limits",
+        "unpaired_arms",
     }
     with pytest.raises(ValueError, match="planned size"):
         RemedyStep(remedy="add_cases", declared_look=True)
@@ -654,6 +734,14 @@ def test_no_step_reads_until_it_separates_and_none_is_taken_by_code() -> None:
         RemedyStep(
             remedy="add_cases", action="run_launch", calls=[{}], then=[joined.model_copy(update={"then": [joined]})]
         )
+    with pytest.raises(ValueError, match="cannot pair"):
+        RemedyStep(remedy="add_cases", action="run_launch", calls=[{}], limits=["unpaired_arms"])
+    with pytest.raises(ValueError, match="cannot pair"):
+        RemedyStep(remedy="add_cases", action="run_launch", calls=[{}], unpaired_arms=["b"])
+    with pytest.raises(ValueError, match="every call"):
+        RemedyStep(remedy="add_cases", action="run_launch", calls=[{}, {}], call_arms=[["a"]])
+    with pytest.raises(ValueError, match="apparatus_settings"):
+        RemedyStep(remedy="rerun_balanced", action="run_launch", calls=[{}], alike=["reviewer_pool"])
     source = Path(caveats.__file__).resolve().parents[1]
     readers = sorted(
         str(path.relative_to(source))
@@ -712,7 +800,12 @@ def test_a_confirmation_creates_its_campaign_before_any_result_then_launches_its
         "behavior",
         "question",
         "aspects",
+        "floors",
     ]
+    assert planned.limits == ["this_report_stays_flagged", "control_may_read_late", "axis_may_not_generate"], (
+        "the caveat is read off this report's results, which nothing lifts; the control is named from a run that "
+        "exists only once the launch starts; and the reading holds no template's axes"
+    )
     launch, join, control = planned.then
     assert (launch.action, launch.calls) == (
         "run_launch",

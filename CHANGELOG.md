@@ -27,12 +27,25 @@ report input built from a bundle now carries `caveat_list` and `first_screen`.
   that prices a step that spends. A step that launches runs is the whole act, in order (`then`): the launch, its runs
   joined to the campaign that reads them (`campaign_runs_add`, since a launched run joins none), and for a re-run the
   runs it replaces taken out (`campaign_runs_remove`); what only an earlier call returns is named, not filled
-  (`after`: the launch's run ids, the created campaign). The launch repeats the arms' set-up: the template, subject,
-  models and repeats their runs were launched with are filled from the bundle, and every other setting that defines
-  an arm is named to be set as those runs were launched (`as_launched`). A late criterion or a pick among many is
-  confirmed on unseen cases in a new campaign, as a sequence: `campaign_create` first, declared before any result,
-  then the launch of that many new cases, its runs joined to it and its control named from them (the size is stated,
-  and a pick's marked too small, `size_bias`). A step that adds cases says it is one more look at its readings
+  (`after`: the run ids job_poll names once the launch starts, the control's among them, the created campaign). The
+  launch repeats the arms' set-up: the template, subject, models, repeats, latency declaration and schedule their
+  runs were launched with are filled from the bundle where it holds one value, every other setting that defines an
+  arm is named to be set as those runs were launched (`as_launched`, with the case set for a re-run and the case
+  writer for a generating launch), and each call says which arms it runs (`call_arms`). A step ships a sequence only
+  where following it through the real actions on a fixture campaign does what it says
+  (`test_caveat_steps_driven.py`): more cases on arms that differ only in their model, a re-run that holds an
+  apparatus confound's dimension at one value on every call (`alike`) with the control re-run beside it, and a
+  confirmation. A re-run whose fault no launch parameter sets (an answering model the provider split, a rig,
+  recording, a replay, cases run at once, a confound no setting holds alike) has no sequence shown to lift it, and
+  makes no call (`no_action`: `lift_not_shown`). What following a step cannot guarantee is stated, typed
+  (`limits`): an arm that moved beyond its model is launched in a call of its own whose new cases the control does
+  not run, so it gains no pair (`unpaired_arms`, naming each); the reading holds no template's axes, so new cases are
+  new only on an axis a model writes (`axis_may_not_generate`); a confirmation leaves this report's caveat raised
+  (`this_report_stays_flagged`). A late criterion or a pick among many is confirmed on unseen cases in a new
+  campaign: `campaign_create` first with its criteria and floors, then the launch of that many new cases, its runs
+  joined to it and its control named from them as soon as they start, before any result is scored, or the new
+  campaign reads its control late (`control_may_read_late`); the size is stated, and a pick's marked too small
+  (`size_bias`). A step that adds cases says it is one more look at its readings
   (`declared_look`); nothing counts looks yet, so a reading taken after it is read at its full level, and adding cases
   and reading again even once errs more often than that level says. Every one of the sixteen reasons, and every kind
   the first screen can show, has the act that addresses it (a judge below its bar is replaced, raters who disagree
