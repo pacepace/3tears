@@ -208,8 +208,8 @@ class SelectiveRestore:
         """
         scratch = await self._connect(self._scratch_dsn)
         try:
-            key = await self._pk_key(scratch, selection.schema, selection.table)
-            pk_columns = tuple(sort.column for sort in key)
+            order = await self._pk_key(scratch, selection.schema, selection.table)
+            pk_columns = tuple(sort.column for sort in order)
             columns = await self._columns(scratch, selection.schema, selection.table)
             where, params = self._predicate(selection, pk_columns)
             # the names refused unless safe (_quote), then named as the keyed helper quotes them, a segment at a time
@@ -222,7 +222,7 @@ class SelectiveRestore:
                     qualified,
                     columns=None,
                     by={},
-                    order=key,
+                    order=order,
                     limit=min(_SELECTION_PAGE, self._max_rows + 1 - len(rows)),
                     cursor=cursor,
                     where=[Fragment(where, tuple(params))],
