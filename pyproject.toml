@@ -644,6 +644,7 @@ module = [
     "threetears.core.shared_arrow",
     # and a restore's keyed notes folded in a worker process (Arrow's CSV reader and compute)
     "threetears.core.change_note_fold",
+    "threetears.core.change_note_fold_job",
     "threetears.agent.tools.document",
     "threetears.agent.tools.builtin.calculator",
     # redshift_connector ships no py.typed/stubs; suppress its import-untyped
