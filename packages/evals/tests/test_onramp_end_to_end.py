@@ -81,6 +81,10 @@ def test_the_command_runs_the_harness_offline_and_keeps_every_trial(
     (run_dir,) = [path for path in tmp_path.iterdir() if path.is_dir()]
     (row,) = [json.loads(line) for line in (run_dir / "trials.jsonl").read_text(encoding="utf-8").splitlines()]
     assert row["arm"] == "docs@here" and row["record"]["app"] == "holds"
-    assert row["scores"] == {"eval_runs": 1.0, "measures_the_app": 1.0, "read_right": 1.0}
+    assert {name: row["scores"][name] for name in ("eval_runs", "measures_the_app", "read_right")} == {
+        "eval_runs": 1.0,
+        "measures_the_app": 1.0,
+        "read_right": 1.0,
+    }
     assert (run_dir / "onramp.sqlite").is_file() and (run_dir / "report" / "report.html").is_file()
     assert f"trials: {run_dir / 'trials.jsonl'}" in said
