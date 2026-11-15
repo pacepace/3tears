@@ -27,7 +27,7 @@ fails at the miss, as since #1162.
 
 **For hosts:** nothing to do. A recording made before format 4 still replays: a call naming its inputs that no line
 holds under them is served by its prompt, as before. Your own kinds' evidence names no inputs unless you set
-`JudgeEvidence.inputs` (new, optional, core v15.20, left out of the stored document while unset), and their calls are
+`JudgeEvidence.inputs` (new, optional, core v15.20 and durable v17.1, left out of the stored document while unset), and their calls are
 keyed by their prompts as they were. No fingerprint or label key moves: `fingerprint_judged_output` hashes the
 evidence's three strings alone.
 

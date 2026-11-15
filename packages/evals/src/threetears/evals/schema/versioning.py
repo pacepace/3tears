@@ -884,7 +884,14 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   deploy stores the case again beside its carried copy.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 #: - **v17.0** — the lever's reader name (above): every other durable shape exactly as v16.9 stored it.
-DURABLE_SCHEMA_MINOR: int = 0
+#: - **v17.1** — the judge evidence a calibration rating holds (``CalibrationRating.rated.evidence``) can name what
+#:   its text was rendered from: ``JudgeEvidence.inputs`` (default None), the core field of v15.20. Left out of the
+#:   document when unset, so every rating that names none is stored byte for byte as before. In no digest pre-image:
+#:   a rating's label key is proven against ``fingerprint_judged_output``, which hashes the evidence's three strings
+#:   alone, so every stored rating still proves. An older build (v17.0) reading a rating that holds it keeps it
+#:   opaquely and writes it back.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 1
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 
