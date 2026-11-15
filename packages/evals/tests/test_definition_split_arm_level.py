@@ -12,7 +12,10 @@ arm's counts over both definitions. Held here, through the doors a host reads:
 - two one-run arms read under different definitions, or under none recorded, share no test setup: no floor, no row;
 - the aspect's page gives a split arm no pass count, no verdict and no outcome bar, and says why; it never compares
   two arms that share no setup, at any case count; the report input's scoreboard row for a split arm has no passes;
-- the same campaign read under one definition throughout reads as it always did, with nothing withheld.
+- the same campaign read under one definition throughout reads as it always did, with nothing withheld;
+- a frontier whose contestants were each read under one definition, but not the same one, says once, in its text and
+  on the aspect page's method, that dominance and the cheapest pick are still tested between them, with no kept-out
+  cell to bring the sentence; one read under one definition throughout does not.
 
 **Mutations these catch:** an arm-level reader asking only about the served model; a floor or rate between arms that
 share no rig; the report input keeping one cell's figures under the arm's name.
@@ -28,11 +31,13 @@ from threetears.evals.analysis import (
     assemble_context_bundle,
     build_code_only_report,
     campaign_report_markdown,
+    frontier_text,
     report_markdown,
 )
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
+from threetears.evals.analysis.analyst.snapshot import analyst_input
 from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.report.figure_keys import resolve
@@ -235,6 +240,45 @@ def test_a_campaign_read_under_one_definition_throughout_reads_as_it_always_did(
     assert "definition of a host measure" not in read.page()
 
 
+#: The sentence a frontier says where its contestants' definitions differ (copied, not bound: the frontier's own words).
+_DOMINANCE_POOLS = (
+    "Dominance and the cheapest pick are still tested between contestants' headline cells whichever definitions of "
+    "the host's measures read them."
+)
+
+
+@pytest.mark.parametrize(
+    "definitions",
+    [{_CONTROL: [_BEFORE], _CANDIDATE: [_AFTER]}, {_CONTROL: [None], _CANDIDATE: [None]}],
+    ids=["two-definitions", "none-recorded"],
+)
+def test_a_frontier_whose_contestants_were_read_under_different_definitions_says_dominance_still_reads_across_them(
+    definitions: dict[str, list[dict[str, str] | None]],
+) -> None:
+    read = _Read(definitions)
+    frontier = read.bundle.frontier
+
+    (subject,) = frontier.subjects
+    assert len(subject.points) == 2, "two contestants, or there is nothing to dominate"
+    assert all(len(point.pass_hat_k_cells) == 1 for point in subject.points), "no kept-out cell brings the sentence"
+    text = frontier_text(frontier)
+    assert text.count(_DOMINANCE_POOLS) == 1, text
+    assert report_markdown(read.aspect()).count(_DOMINANCE_POOLS) == 1, "the aspect page's method says it too"
+
+
+def test_a_frontier_read_under_one_definition_throughout_says_nothing_of_definitions() -> None:
+    read = _Read({_CONTROL: [_AFTER], _CANDIDATE: [_AFTER, _AFTER]})
+    frontier = read.bundle.frontier
+
+    assert frontier.definitions_pooled_disclosure is None
+    assert "definitions_pooled_disclosure" not in frontier.model_dump(), "it serializes, and digests, as it did"
+    # Its candidate's two runs recorded no measurement context, so the cell sentence (which ends with the dominance
+    # sentence) is said as it always was; what a frontier says of differing definitions is not.
+    said = "Contestants here were read under different definitions of the host's measures"
+    assert said not in frontier_text(frontier)
+    assert said not in report_markdown(read.aspect())
+
+
 def _scoreboard_row(first_screen: str, arm: str) -> list[str]:
     """One arm's scoreboard row on an aspect's first screen, cell by cell."""
     (row,) = [line for line in first_screen.splitlines() if line.startswith(("| " + arm + " |", "| ▸ " + arm + " |"))]
@@ -314,6 +358,25 @@ def test_a_written_page_cites_no_failure_count_for_the_split_arm_and_the_control
             resolve(key, built)
     for key in (f"scoreboard.{_CONTROL}.failed", f"aspects.{ASPECT}.scoreboard.{_CONTROL}.failed"):
         assert resolve(key, built).value == CASES - 1
+
+
+def test_the_failures_key_refuses_the_split_arm_on_its_aspect_and_the_campaign_total_still_resolves() -> None:
+    """`count.failures.<aspect>.<arm>` would read the input's failed trials for the split arm, which pool its cells:
+    refused as `scoreboard.<arm>.failed` is; the control's resolves, and so does the campaign's total."""
+    built = analyst_input(
+        _Read({_CONTROL: [_AFTER], _CANDIDATE: [_BEFORE, _AFTER]}).whole
+    )  # what a snapshot freezes for a writer's page
+
+    assert built.failed_trials is not None
+    pooled = [row for row in built.failed_trials if (row.aspect, row.arm) == (ASPECT, _CANDIDATE)]
+    assert sum(row.failed for row in pooled) > 0, "a pooled count is held, so its refusal asserts something"
+    for key in [f"count.failures.{ASPECT}.{_CANDIDATE}"] + [
+        f"count.failures.{ASPECT}.{_CANDIDATE}.{row.stratum}" for row in pooled if row.stratum is not None
+    ]:
+        with pytest.raises(UnstatedFigure):
+            resolve(key, built)
+    assert resolve(f"count.failures.{ASPECT}.{_CONTROL}", built).value == CASES - 1
+    assert resolve("count.failures", built).value == sum(row.failed for row in built.failed_trials)
 
 
 _TONE = "tone"

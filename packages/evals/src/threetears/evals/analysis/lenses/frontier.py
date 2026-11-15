@@ -79,7 +79,7 @@ from threetears.evals.analysis.depth import (
     model_pass_hat_k,
     pass_hat_k_over,
 )
-from threetears.evals.analysis.bundle.observations import split_coordinates
+from threetears.evals.analysis.bundle.observations import measure_definition_levels, split_coordinates
 from threetears.evals.analysis.reporting import (
     place_results,
     attested_served_models,
@@ -393,12 +393,19 @@ class PassHatKCellReading(EvalBaseModel):
     n_cases_at_k: int = 0
 
 
+#: What the frontier's dominance and cost-tie tests do not keep apart yet: they read contestants' headline cells
+#: whatever definitions of the host's measures read each (issue draft 6 of #1187).
+_DOMINANCE_READS_EVERY_DEFINITION = (
+    "Dominance and the cheapest pick are still tested between contestants' headline cells whichever "
+    "definitions of the host's measures read them."
+)
+
 #: What "kept out" covers, said once before a contestant's cell lines wherever they are shown (the frontier's text,
 #: the report page's run disclosures): the frontier's pass^k, its interval, its bar and its verdict leave a kept-out
 #: run out, its composite, cost and latency leave it out where it is apart on the served model or a host measure's
 #: definition, and a campaign's cells keep apart what they split on (the served model, and the rig, which holds each
-#: host measure's definition). Its last sentence says what is not kept apart yet: the dominance and cost-tie tests read
-#: contestants' headline cells whatever definitions read them.
+#: host measure's definition). Its last sentence (:data:`_DOMINANCE_READS_EVERY_DEFINITION`) says what is not kept
+#: apart yet: the dominance and cost-tie tests read contestants' headline cells whatever definitions read them.
 PASS_HAT_K_CELL_READING = (
     "An arm's frontier pass^k, with its interval, bar and verdict, reads its headline pass^k cell alone: one "
     "measurement context, template revision, definition of each host measure, apparatus provenance and served model, "
@@ -409,8 +416,14 @@ PASS_HAT_K_CELL_READING = (
     "and the tables and contrasts read from them, each hold one served model and one definition of each host "
     "measure: there a run answered by another model, or by one no response named, is read in a cell of its own, and "
     "a run read under another definition, or under none recorded, is under a test setup of its own and is compared "
-    "with nothing. Dominance and the cheapest pick are still tested between contestants' headline cells whichever "
-    "definitions of the host's measures read them."
+    "with nothing. " + _DOMINANCE_READS_EVERY_DEFINITION
+)
+
+#: What a frontier says, once, where its contestants were not all read under one definition of the host's measures
+#: and no cell line already said :data:`PASS_HAT_K_CELL_READING` (:attr:`FrontierResult.definitions_pooled_disclosure`).
+_DEFINITIONS_POOLED = (
+    "Contestants here were read under different definitions of the host's measures, or under none recorded. "
+    + _DOMINANCE_READS_EVERY_DEFINITION
 )
 
 #: Each reason a pass^k cell stands apart, as a reader is told it.
@@ -885,6 +898,12 @@ class FrontierResult(EvalDocumentModel):
     #: subjects' results in each judge's evidence tier). ``None`` on a whole-scope read, and then left out of a dump,
     #: so an answer read whole serializes, and digests, as it did before the field existed.
     narrowed_read_disclosure: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: Set where, in some subject, two or more contestants' headline cells were not all read under one definition of
+    #: the host's measures, or one recorded none (as the cells read a rig): the sentence saying dominance and the
+    #: cheapest pick are still tested between them. ``None`` where every
+    #: subject's contestants share one definition, and then left out of a dump, so a frontier read under one
+    #: definition serializes, and digests, as it did before the field existed.
+    definitions_pooled_disclosure: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 def _frontier_point(
@@ -2162,6 +2181,7 @@ def compute_frontier(
     )
 
     subjects: list[SubjectFrontier] = []
+    definitions_pooled = False
     for resolved in sorted(by_subject):
         groups = by_subject[resolved]
         subject_k = k_by_subject[resolved]
@@ -2195,6 +2215,7 @@ def compute_frontier(
                 if point.variant_key == earlier_control.variant_key:
                     point.earlier_control = earlier_control_mark(earlier_control)
         _decide_dominance(points, point_cases)
+        definitions_pooled = definitions_pooled or _definitions_apart(built, placed_runs)
         common = _place_common_depth(points, point_cases)
         if profile is not None and profile.model_pass_hat_k:
             # Opt-in, and after dominance: nothing ranked reads it.
@@ -2330,7 +2351,26 @@ def compute_frontier(
         contended_latency_disclosure=contended_latency_sentence(
             sum(1 for result in considered if result.id in contended), len(considered)
         ),
+        definitions_pooled_disclosure=_DEFINITIONS_POOLED if definitions_pooled else None,
     )
+
+
+def _definitions_apart(
+    built: Sequence[tuple[FrontierPoint, _ContestantCases, Sequence[ResultView]]], runs_by_id: Mapping[str, EvalRun]
+) -> bool:
+    """Whether a subject's contestants (two or more) were not all read under one definition of the host's measures, or
+    one recorded none: read off each contestant's headline cell, the runs dominance and the cost ties test, as the
+    cells read a rig (:func:`~threetears.evals.analysis.bundle.observations.measure_definition_levels`)."""
+    contestants = [(point, members) for point, _, members in built if point.earlier_control is None]
+    if len(contestants) < 2:
+        return False
+    results_by_run: dict[str, list[ResultView]] = {}
+    for point, members in contestants:
+        headline = set(_headline_cell(point.pass_hat_k_cells).run_ids)
+        for result in members:
+            if result.eval_run_id in headline:
+                results_by_run.setdefault(result.eval_run_id, []).append(result)
+    return bool(measure_definition_levels([runs_by_id[run_id] for run_id in results_by_run], results_by_run))
 
 
 def _judged_pass_tier(members: Sequence[ResultView], tiers: Sequence[JudgeEvidenceTier]) -> JudgedEvidenceTier | None:

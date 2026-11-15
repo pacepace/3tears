@@ -490,6 +490,9 @@ def _run_disclosures(
     if cell_lines:
         # What "kept out" covers, once, before the first: the arm's tables above still count those runs.
         say("runs", PASS_HAT_K_CELL_READING)
+    else:
+        # Where the contestants' definitions differ: the reading's last sentence, which no cell line brought.
+        say("runs", bundle.frontier.definitions_pooled_disclosure)
     for line in cell_lines:
         say("runs", line)
 

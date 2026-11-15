@@ -32,6 +32,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
+from threetears.evals.analysis.analyst.snapshot import analyst_input
 from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.report.figure_keys import resolve
@@ -374,6 +375,23 @@ def test_a_written_page_cites_no_failure_count_for_the_split_arm_and_the_control
             resolve(key, built)
     for key in (f"scoreboard.{_CONTROL}.failed", f"aspects.{ASPECT}.scoreboard.{_CONTROL}.failed"):
         assert resolve(key, built).value == CASES - 5
+
+
+def test_the_failures_key_refuses_the_split_arm_on_its_aspect_and_the_campaign_total_still_resolves() -> None:
+    """`count.failures.<aspect>.<arm>` would read the input's failed trials for the split arm, which pool its cells:
+    refused as `scoreboard.<arm>.failed` is; the control's resolves, and so does the campaign's total."""
+    built = analyst_input(_Read([_MARCH, _JUNE]).whole)  # what a snapshot freezes for a writer's page
+
+    assert built.failed_trials is not None
+    pooled = [row for row in built.failed_trials if (row.aspect, row.arm) == (ASPECT, _ALIAS)]
+    assert sum(row.failed for row in pooled) > 0, "a pooled count is held, so its refusal asserts something"
+    for key in [f"count.failures.{ASPECT}.{_ALIAS}"] + [
+        f"count.failures.{ASPECT}.{_ALIAS}.{row.stratum}" for row in pooled if row.stratum is not None
+    ]:
+        with pytest.raises(UnstatedFigure):
+            resolve(key, built)
+    assert resolve(f"count.failures.{ASPECT}.{_CONTROL}", built).value == CASES - 5
+    assert resolve("count.failures", built).value == sum(row.failed for row in built.failed_trials)
 
 
 _TONE = "tone"

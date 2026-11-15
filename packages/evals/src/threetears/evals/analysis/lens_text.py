@@ -124,12 +124,20 @@ def frontier_text(result: FrontierResult) -> str:
         f"frontier, {bar}: {len(result.subjects)} subject(s) over {result.n_results} result(s), "
         f"{result.n_filtered_out} filtered out",
     ]
+    # Said once where the contestants' definitions differ, unless a cell line's reading (which ends with it) will be.
+    cell_lines_shown = any(
+        pass_hat_k_cell_lines(cell)
+        for subject in result.subjects
+        for point in subject.points
+        for cell in point.pass_hat_k_cells
+    )
     lines += [
         text
         for text in (
             result.narrowed_read_disclosure,
             result.identity_span_disclosure,
             result.contended_latency_disclosure,
+            None if cell_lines_shown else result.definitions_pooled_disclosure,
         )
         if text
     ]

@@ -45,7 +45,8 @@ more or less often than the control, or that the evidence cannot tell them apart
 and why; its scoreboard row keeps what ran and was lost, its passes and failures are withheld (flagged "read per
 model" or "read per definition"), its cost too where the answering model splits it, and it has no outcome bar. The
 report input's scoreboard row for a split arm carries no `passed` and no `failed`, and no `reply_cost_usd` where the
-answering model splits it, and a written page's `scoreboard.<arm>.failed` key is refused for it. Across aspects
+answering model splits it, and a written page's `scoreboard.<arm>.failed` and `count.failures.<aspect>.<arm>` keys
+are refused for it on that aspect (the campaign's `count.failures` still counts every failed trial). Across aspects
 (`CampaignAggregate`, the scorecard's equal-weight row), such an arm's pass rate is withheld, naming the aspect, and
 `cheaper_on` and `dearer_on` never name an aspect where either arm was answered by more than one model. A contrast's
 figures sentence gives a split arm's side no pass count, only its mean.
@@ -125,9 +126,12 @@ definitions stays unrecorded, and says so as it is taken up (a WARNING).
   calls `runs_attest` with `coordinate: "measure_definition"`.
 
 **Not yet:** two readers still pool across definitions of a host measure, and each says so where it is read. The
-frontier's dominance and cheapest-pick tests read contestants' headline cells whatever definition read each: the
-frontier's cell sentence (`PASS_HAT_K_CELL_READING`, printed with every frontier and on an aspect page's method)
-ends saying so. A launch estimate's `detectable_effect` plans from variance pooled over every earlier run of the
+frontier's dominance and cheapest-pick tests read contestants' headline cells whatever definition read each. A
+frontier says so, once, in its text and on an aspect page's method, wherever a subject's contestants were not all read
+under one definition (or one recorded none), in `FrontierResult.definitions_pooled_disclosure` (new, left out when
+unset), and wherever a contestant's run is kept out of its headline cell, as the last sentence of the cell sentence
+(`PASS_HAT_K_CELL_READING`). A frontier read under one definition throughout, with no run kept out, says nothing of
+definitions. A launch estimate's `detectable_effect` plans from variance pooled over every earlier run of the
 template: where those runs were not all read under one definition, or some recorded none, its `assumptions` end
 saying so.
 

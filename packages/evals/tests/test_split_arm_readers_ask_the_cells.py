@@ -37,7 +37,8 @@ _LOADERS: Final = frozenset({"iter_result_readings", "query_eval_results_by_runs
 _LISTED: Final[dict[str, str]] = {
     "analysis/bundle/assemble.py::assemble_context_bundle": "builds the cells, where a split is decided; reads no count",
     "analysis/campaign_readings.py::_cost_on": "takes exactly one cell's cost error, so an arm of two cells has none",
-    "analysis/reads.py::_readings_of": "the read pivot, frontier, history and comparison sets fold; each asks the check",
+    "analysis/reads.py::_readings_of": "the read pivot, frontier, history and comparison sets fold; each asks the "
+    "check, save frontier dominance and the cheapest pick, which say they pool definitions: issue draft 6",
     "analysis/report/aspect/common.py::_cost_ruler": "chooses the scale every cost prints on; prints no arm's figure",
     "analysis/report/aspect/trials.py::_census_line": "the census of every trial the aspect ran; no arm's figure",
     "analysis/report/campaign/provenance.py::priced_aspects": "whether any arm on an aspect was priced; no figure",
