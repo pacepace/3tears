@@ -33,10 +33,13 @@ packages (bumped in lock-step).
 - Measured and recorded (`docs/open-problems.md`): two results of one case whose judge errors coincide award the
   tier to a judge at the bar up to 7% of the time against the 5% its bound claims. Every agreement line states its
   cases beside its results.
-- No public name is added. `Result` gains three plain fields: `blind_read_files` (the two files' text, by file
-  name), `judge_read` (the judge lines the print says) and `reviews_kept` (where a model's answers are kept). The
-  blind read's own shapes stay the engine's. `judge_agreement` and `person_scores_by_result` take `rated_by=`
-  (people by default).
+- No name a user types is added beyond `Judge(reviewer=)` and `Result.reviewed_by`. `Result.blind_read` is what
+  the read found, as typed data (`BlindReadReport`, with the six shapes it holds, provisional on
+  `threetears.evals.schema`): the cases read and how they were sampled, agreement per criterion, the preference with
+  its test, and what a model's reading cost. `Result.blind_read_files` is the two files' text by file name,
+  `Result.judge_read` the judge lines the print says, and `Result.reviews_kept` where a model's answers are kept. The
+  read's working records (the draw, the items, the answers, the sheet) stay the engine's. `judge_agreement` and
+  `person_scores_by_result` take `rated_by=` (people by default).
 - Removed: `Result.to_label`. A `to_label.csv` filled in under an earlier version still reads as a labels file, and
   counts as not drawn at random.
 

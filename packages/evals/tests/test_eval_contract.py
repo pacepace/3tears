@@ -710,6 +710,22 @@ async def test_a_model_answers_the_blind_read_and_is_read_as_a_model_never_as_a_
     assert reviewer.calls == 8, "one call per case"
     assert result.calibrations == (), "agreement with a model is never agreement with people"
     assert sorted(result.blind_read_files) == ["blind_read.csv", "blind_read.html"]
+    # What the read found is typed data on the result, for a script to read: how much was read and how it was
+    # sampled, the agreement, the preference with its test, and what the model's reading cost.
+    found = result.blind_read
+    assert found is not None and found.cases == 8
+    assert [(s.rater, s.rater_kind, s.sample, s.answered) for s in found.samples] == [
+        ("scripted/reviewer", "reference", "random", 8)
+    ]
+    assert [(a.dim, a.anchor, a.anchor_names, a.pairs, a.cases) for a in found.agreement] == [
+        ("answer.billing", "reference", ["scripted/reviewer"], 16, 8)
+    ]
+    assert [(p.anchor, p.verdict, p.test, p.prefer_candidate) for p in found.preferences] == [
+        ("reference", "not_separated", "exact_sign", 4)
+    ]
+    assert [(r.reviewer, r.calls, r.reused, r.cost_usd) for r in found.reviews] == [
+        ("scripted/reviewer", 8, 0, pytest.approx(0.0008))
+    ]
     lines = result.calibration_lines()
     assert lines[0] == (
         "judge: 8 of 8 cases read blind by a model (scripted/reviewer), in the drawn order (a random sample)"
@@ -736,6 +752,8 @@ async def test_a_model_answers_the_blind_read_and_is_read_as_a_model_never_as_a_
     same = Judge(FakeJudge(), _rubric(), reviewer=FakeReviewer("scripted/judge"))
     refused = await Eval(PAIRED, {"terse": terse, "wordy": wordy}, [same], k=1, name="tickets").run(store=":memory:")
     assert not any(line.startswith("  checked against") for line in refused.calibration_lines())
+    assert refused.blind_read is not None and refused.blind_read.agreement == []
+    assert list(refused.blind_read.not_checked) == ["scripted/judge"]
     assert (
         "  not checked against a model (scripted/judge): the reviewer is the judge's own model, so its answers repeat "
         "the judge and are not read as a check of it"

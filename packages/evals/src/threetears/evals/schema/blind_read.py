@@ -165,8 +165,8 @@ class BlindSample(EvalDocumentModel):
     """Whether one rater's answered items are a random sample: a structural fact, read off the order."""
 
     rater: str = Field(min_length=1)
-    rater_kind: BlindRaterKind
-    sample: BlindSampleKind = Field(
+    rater_kind: Literal["person", "reference"]
+    sample: Literal["random", "selected", "none"] = Field(
         description="`random`: the first `answered` items of the order. `selected`: any other set. `none`: nothing."
     )
     answered: int = Field(ge=0, description="The items answered, skipped and partly answered ones included.")
@@ -211,7 +211,9 @@ class BlindAgreement(EvalDocumentModel):
     dim: DimName = Field(description="The criterion.")
     scale: RubricScale
     judge_model: str | None = Field(description="The model that served the judge's scores; None where unnamed.")
-    anchor: BlindRaterKind = Field(description="Whose answers the judge is read against: people's, or a reference's.")
+    anchor: Literal["person", "reference"] = Field(
+        description="Whose answers the judge is read against: people's, or a model's (reference)."
+    )
     anchor_names: list[str] = Field(
         min_length=1, description="The people, sorted; or the one reference reviewer's model id."
     )
@@ -263,18 +265,10 @@ class BlindReviewerCheck(EvalDocumentModel):
     kappa: float | None = Field(description="Kappa on pass/fail, quadratic-weighted on 1-5; None where undefined.")
 
 
-class BlindCheckRefused(EvalDocumentModel):
-    """A reference reviewer whose answers are not read as calibration, and why."""
-
-    reviewer: str = Field(min_length=1)
-    dim: DimName
-    reason: str = Field(min_length=1)
-
-
 class BlindPreference(EvalDocumentModel):
     """Which of a pair one kind of rater preferred, per case, and whether that separates the arms."""
 
-    anchor: BlindRaterKind
+    anchor: Literal["person", "reference"]
     anchor_names: list[str] = Field(min_length=1)
     random: bool = Field(description="Whether every rater behind it answered a random sample.")
     control: str = Field(min_length=1, description="The control arm (BlindArm.key).")
@@ -290,9 +284,9 @@ class BlindPreference(EvalDocumentModel):
     prefer_candidate: int = Field(ge=0, description="Items where the candidate's share is above a half.")
     prefer_control: int = Field(ge=0, description="Items where it is below a half.")
     ties: int = Field(ge=0, description="Items at exactly a half: counted, never split.")
-    test: BlindPreferenceTest
+    test: Literal["exact_sign", "bounded_share"]
     p: float | None = Field(description="The two-sided p; None where too few items carry a preference to test.")
-    verdict: BlindPreferenceVerdict
+    verdict: Literal["improved", "regressed", "not_separated", "too_few", "withheld"]
     slot_a_share: float | None = Field(
         description="The share of non-tie preferences given to slot A, which a rater with no lean gives a half."
     )
@@ -318,22 +312,6 @@ class BlindPreference(EvalDocumentModel):
         return self
 
 
-class BlindReadReport(EvalDocumentModel):
-    """What a blind read found, as its close computed it."""
-
-    samples: list[BlindSample] = Field(default_factory=list)
-    agreement: list[BlindAgreement] = Field(default_factory=list)
-    reviewer_checks: list[BlindReviewerCheck] = Field(default_factory=list)
-    refused_checks: list[BlindCheckRefused] = Field(default_factory=list)
-    preferences: list[BlindPreference] = Field(default_factory=list)
-    other_ratings: int = Field(
-        default=0, ge=0, description="Ratings read beside the read's own answers, which count as selected."
-    )
-    unread: list[str] = Field(
-        default_factory=list, description="Answers offered that could not be read against the read, each with why."
-    )
-
-
 class BlindReview(EvalDocumentModel):
     """One model's reading of a blind read's sheet: the calls made for it, what they cost, and what went unanswered.
 
@@ -356,6 +334,34 @@ class BlindReview(EvalDocumentModel):
     )
     stopped: str | None = Field(
         default=None, description="Why the reading stopped before every item was asked; None where nothing stopped it."
+    )
+
+
+class BlindReadReport(EvalDocumentModel):
+    """What a blind read found, as its close computed it: how much was read and how it was sampled, how the judge
+    agrees with whoever read, what was preferred, and what a model's reading cost."""
+
+    cases: int = Field(default=0, ge=0, description="The cases in the read's drawn order.")
+    reviews: list[BlindReview] = Field(
+        default_factory=list,
+        description="Each model's reading of the sheet: its calls, their cost, what went unanswered.",
+    )
+    samples: list[BlindSample] = Field(default_factory=list)
+    agreement: list[BlindAgreement] = Field(default_factory=list)
+    reviewer_checks: list[BlindReviewerCheck] = Field(default_factory=list)
+    not_checked: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Each model whose answers are not read as a check of the judge, by its id, with why: it is the judge's "
+            "own model, or which model served either side was not recorded."
+        ),
+    )
+    preferences: list[BlindPreference] = Field(default_factory=list)
+    other_ratings: int = Field(
+        default=0, ge=0, description="Ratings read beside the read's own answers, which count as selected."
+    )
+    unread: list[str] = Field(
+        default_factory=list, description="Answers offered that could not be read against the read, each with why."
     )
 
 
@@ -465,7 +471,6 @@ __all__ = [
     "BlindRead",
     "BlindReadReport",
     "BlindReview",
-    "BlindCheckRefused",
     "BlindSampleKind",
     "BlindSheet",
     "BlindSlot",

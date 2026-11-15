@@ -69,7 +69,6 @@ from threetears.evals.schema.blind_read import (
     BlindRaterKind,
     BlindRead,
     BlindReadReport,
-    BlindCheckRefused,
     BlindSampleKind,
     BlindSheet,
     BlindSlot,
@@ -862,7 +861,7 @@ def close_blind_read(
         if answer.rater_kind == "reference":
             reviewed[answer.rater].append(rating)
     asked = set(judge_models)
-    refused: list[BlindCheckRefused] = []
+    refused: dict[str, list[str]] = {}
     for reviewer in sorted(reviewed):
         for entry, reading in _agreements(
             reviewed[reviewer],
@@ -882,7 +881,8 @@ def close_blind_read(
             elif reviewer in unrecorded:
                 reason = REFUSED_UNRECORDED.format(side="the reviewer's answers")
             if reason is not None:
-                refused.append(BlindCheckRefused(reviewer=reviewer, dim=entry.rubric_dim, reason=reason))
+                if reason not in refused.setdefault(reviewer, []):
+                    refused[reviewer].append(reason)
                 continue
             agreement.append(reading)
     agreement = _with_the_deciding_anchor(agreement)
@@ -893,10 +893,12 @@ def close_blind_read(
                 if group:
                     preferences.append(_preference(read, group, samples))
     report = BlindReadReport(
+        cases=len(read.items),
+        reviews=list(read.reviews),
         samples=list(samples.values()),
         agreement=agreement,
         reviewer_checks=_reviewer_checks(people, reviewed, read.criteria),
-        refused_checks=refused,
+        not_checked=refused,
         preferences=preferences,
         other_ratings=len(other_ratings),
         unread=list(unread),

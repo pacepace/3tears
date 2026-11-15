@@ -71,7 +71,7 @@ from threetears.evals.kernel import (
     confusion_of,
 )
 from threetears.evals.analysis.blind_read import BlindClose, blind_sheet, close_blind_read, draw_blind_read
-from threetears.evals.schema import CalibrationRating, CompletionClient, EvalResult
+from threetears.evals.schema import BlindReadReport, CalibrationRating, CompletionClient, EvalResult
 from threetears.evals.schema.blind_read import BlindAnswer, BlindArm, BlindRead
 from threetears.evals.schema.models import DECLARED_NAME_CHARS
 from threetears.evals.schema.aspect_label import aspect_label_for
@@ -245,6 +245,9 @@ class Result:
     :ivar judge_examples: How the judge graded its examples (``Judge(examples=...)``) in the run, each on every
         repeat, beside its agreement with the labels and never pooled into it; ``None`` with no judge, or a judge
         with no examples.
+    :ivar blind_read: What the run's blind read found, as typed data: how many cases were read and whether as a random
+        sample, the judge's agreement per criterion with people and with a model, the preference with its test, and
+        what a model's reading cost. ``None`` with no judge, or no judged answer to show.
     :ivar blind_read_files: What a judged result writes for a blind read, by file name: ``blind_read.html`` (the
         run's judged answers in one seeded random order, with no arm, run or judge score on the page) and
         ``blind_read.csv`` (the same order as rows). Empty with no judge, or no judged answer to show.
@@ -277,6 +280,7 @@ class Result:
     disclosures: tuple[str, ...] = ()
     calibrations: tuple[JudgeCalibration, ...] = ()
     judge_examples: JudgeExamples | None = None
+    blind_read: BlindReadReport | None = field(default=None, repr=False, compare=False)
     blind_read_files: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
     judge_read: tuple[str, ...] = field(default=(), repr=False, compare=False)
     reviews_kept: Path | None = field(default=None, repr=False, compare=False)
@@ -1100,6 +1104,7 @@ class Result:
                     judge=self.judge,
                     disclosures=self.disclosures,
                     calibrations=self.calibrations,
+                    blind_read=self.blind_read,
                     blind_read_files=self.blind_read_files,
                     judge_read=self.judge_read,
                     reviews_kept=self.reviews_kept,
@@ -1406,11 +1411,11 @@ def blind_reading(
     :ptype arms: Mapping[str, EvalSummary]
     :param kept: The file a model reviewer's answers are kept in, or ``None``.
     :ptype kept: Path | None
-    :return: The result's ``blind_read_files``, ``judge_read`` and ``calibrations``.
+    :return: The result's ``blind_read``, ``blind_read_files``, ``judge_read`` and ``calibrations``.
     :rtype: dict[str, Any]
     """
     if judge is None:
-        return {"blind_read_files": {}, "judge_read": (), "calibrations": ()}
+        return {"blind_read": None, "blind_read_files": {}, "judge_read": (), "calibrations": ()}
     report = read.report if read is not None else None
     lines = judge_lines(
         read,
@@ -1427,7 +1432,12 @@ def blind_reading(
         if read is None
         else {BLIND_READ_HTML: blind_read_html(blind_sheet(read)), BLIND_READ_CSV: blind_read_csv(read)}
     )
-    return {"blind_read_files": files, "judge_read": tuple(lines), "calibrations": calibrations_of(read)}
+    return {
+        "blind_read": report,
+        "blind_read_files": files,
+        "judge_read": tuple(lines),
+        "calibrations": calibrations_of(read),
+    }
 
 
 def calibrations_of(read: BlindRead | None) -> tuple[JudgeCalibration, ...]:

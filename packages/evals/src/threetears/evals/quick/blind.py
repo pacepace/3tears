@@ -1049,7 +1049,7 @@ def judge_lines(
         for check in checked:
             kappa = "kappa undefined" if check.kappa is None else f"kappa {_figure(check.kappa)}"
             lines += under(f"{reviewer} against people on {check.dim}: {check.outputs} outputs, {kappa}", "    ")
-    for reviewer, reason in dict.fromkeys((refused.reviewer, refused.reason) for refused in report.refused_checks):
+    for reviewer, reason in ((reviewer, reason) for reviewer, why in report.not_checked.items() for reason in why):
         lines += under(f"not checked against {_who('reference', reviewer)}: {reason}", "  ")
     lines += reviews
     lines += [_preference_line(preference, shown or {}) for preference in report.preferences]

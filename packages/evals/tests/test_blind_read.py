@@ -622,7 +622,7 @@ def test_a_reference_reviewer_is_read_apart_and_its_ratings_are_never_a_person_s
         True,
         "calibrated",
     )
-    assert not reading.shares_family and report.reviewer_checks == [] and report.refused_checks == []
+    assert not reading.shares_family and report.reviewer_checks == [] and report.not_checked == {}
     (preference,) = report.preferences
     assert (preference.anchor, preference.anchor_names) == ("reference", [reviewer])
     lines = judge_lines(closed.read, labels_name=None, labels_there=False, shown={})
@@ -642,8 +642,7 @@ def test_a_model_that_is_the_judge_s_own_is_refused_and_one_of_its_family_is_sai
     read = _draw(results, evidence)
     own = close_blind_read(_with(read, [_reference(read, n, JUDGE_MODEL) for n in range(24)]), results).read
     assert own.report is not None and own.report.agreement == []
-    (refused,) = own.report.refused_checks
-    assert (refused.reviewer, refused.dim, refused.reason) == (JUDGE_MODEL, GROUNDED.name, core.REFUSED_SAME_MODEL)
+    assert own.report.not_checked == {JUDGE_MODEL: [core.REFUSED_SAME_MODEL]}
     assert (
         f"  not checked against a model ({JUDGE_MODEL}): the reviewer is the judge's own model, so its answers repeat "
         "the judge and are not read as a check of it"
@@ -655,12 +654,12 @@ def test_a_model_that_is_the_judge_s_own_is_refused_and_one_of_its_family_is_sai
     ]
     aliased = close_blind_read(_with(read, served), results).read.report
     assert aliased is not None and aliased.agreement == []
-    assert [refused.reason for refused in aliased.refused_checks] == [core.REFUSED_SAME_MODEL]
+    assert aliased.not_checked == {"alias/reviewer": [core.REFUSED_SAME_MODEL]}
     # Named as the id the judge was ASKED as, which its scores' served model does not spell.
     asked = close_blind_read(
         _with(read, [_reference(read, n, "judge-alias") for n in range(24)]), results, judge_models=["judge-alias"]
     ).read.report
-    assert asked is not None and [refused.reason for refused in asked.refused_checks] == [core.REFUSED_SAME_MODEL]
+    assert asked is not None and asked.not_checked == {"judge-alias": [core.REFUSED_SAME_MODEL]}
     family = close_blind_read(_with(read, [_reference(read, n, "acme/reviewer-2") for n in range(24)]), results).read
     assert family.report is not None and family.report.agreement[0].shares_family
     assert any("one provider's models" in line for line in judge_lines(family, labels_name=None, labels_there=False))
@@ -676,8 +675,9 @@ def test_a_model_whose_served_model_is_not_recorded_on_every_answer_is_not_a_che
     ]
     closed = close_blind_read(_with(read, partly), results).read
     assert closed.report is not None and closed.report.agreement == []
-    (refused,) = closed.report.refused_checks
-    assert refused.reason == core.REFUSED_UNRECORDED.format(side="the reviewer's answers")
+    assert closed.report.not_checked == {
+        "other/reviewer-9": [core.REFUSED_UNRECORDED.format(side="the reviewer's answers")]
+    }
     lines = judge_lines(closed, labels_name=None, labels_there=False)
     assert (
         "  not checked against a model (other/reviewer-9): which model served the reviewer's answers was not "
@@ -697,9 +697,7 @@ def test_a_model_whose_served_model_is_not_recorded_on_every_answer_is_not_a_che
         _with(read, [_reference(read, n, "other/reviewer-9") for n in range(24)]), unnamed
     ).read.report
     assert blank is not None and blank.agreement == []
-    assert {refused.reason for refused in blank.refused_checks} == {
-        core.REFUSED_UNRECORDED.format(side="the judge's scores")
-    }
+    assert blank.not_checked == {"other/reviewer-9": [core.REFUSED_UNRECORDED.format(side="the judge's scores")]}
 
 
 def test_a_person_s_reading_decides_once_it_is_decided_and_the_anchor_is_measured_against_people() -> None:
