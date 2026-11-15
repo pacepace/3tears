@@ -61,7 +61,7 @@ from threetears.interfaces.keyed.keys import (
     register_partial_predicates,
     register_table_indexes,
     register_table_keys,
-    stated_predicate,
+    partial_predicate,
 )
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core.backends.protocol import (
@@ -925,9 +925,11 @@ def _servable_index(
     name: str, columns: Sequence[tuple[str, bool]], *, plain: bool, where: str | None
 ) -> DeclaredIndex | None:
     """a declared index as a keyed read's pins and order can be served by it, or None when none can be: one with an
-    operator class, collation or other access method (``plain`` False: it orders by something else), or a predicate of
-    anything but ``column = 'text'`` conjuncts (serving only a read that pins each column to that text,
-    :func:`~threetears.interfaces.keyed.keys.stated_predicate`; a read cannot be judged to state any other). One rule
+    operator class or other access method (``plain`` False: it orders by something else), or a predicate of anything
+    but ``column = 'text'`` and ``column IS NOT NULL`` conjuncts (serving only a read that pins each column to that
+    text and states each guard, :func:`~threetears.interfaces.keyed.keys.partial_predicate`; a read cannot be judged to
+    state any other). A collated column ends the columns a caller passes (:meth:`TableSchema._declared_indexes`: WHY
+    there). One rule
     for a :class:`TableSchema`'s indexes and a SQLAlchemy ``Table``'s (:func:`register_sa_table_indexes`).
 
     :param name: the index's name
@@ -943,14 +945,16 @@ def _servable_index(
     """
     if not plain:
         return None
-    stated = frozenset() if where is None else stated_predicate(where)
-    if stated is None:
+    predicate = (frozenset(), frozenset()) if where is None else partial_predicate(where)
+    if predicate is None:
         return None
+    stated, guarded = predicate
     return DeclaredIndex(
         name,
         tuple(column for column, _ in columns),
         frozenset(column for column, descending in columns if descending),
         stated=stated,
+        guarded=guarded,
     )
 
 
@@ -1291,11 +1295,24 @@ class TableSchema:
         """
         indexes = [DeclaredIndex("primary_key", pk_cols, primary=True)] if pk_cols else []
         for index in self.indexes:
-            served = _servable_index(
-                index.name,
-                tuple((column, column in index.desc) for column in index.columns),
-                plain=index.using is None and not index.ops and not index.collate,
-                where=index.where,
+            # a column held in an explicit collation (``conversation_ref COLLATE "C"``) serves only comparisons made in
+            # that collation, which no pin of a keyed read is: the index serves a read by the plain columns before it.
+            # WHY: skipped whole, a collated index was never named to YugabyteDB, so a read pinning its leading columns
+            # was hinted to a wider index of the same lead (find_by_ref_prefix to idx_conv_agent_ref_created, every ref
+            # of the channel read and filtered, D7 2026-11-15)
+            collated = {column for column, _ in index.collate}
+            columns = tuple(index.columns)
+            if collated:
+                columns = columns[: next(at for at, column in enumerate(columns) if column in collated)]
+            served = (
+                _servable_index(
+                    index.name,
+                    tuple((column, column in index.desc) for column in columns),
+                    plain=index.using is None and not index.ops,
+                    where=index.where,
+                )
+                if columns
+                else None
             )
             if served is not None:
                 indexes.append(served)

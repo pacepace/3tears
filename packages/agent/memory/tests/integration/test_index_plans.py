@@ -9,6 +9,7 @@ plan whether it found its rows through the index (:func:`threetears.core.testing
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import AsyncIterator, Iterator, Mapping
 from typing import Any, TypedDict
@@ -304,6 +305,10 @@ async def _plans_reading(world: _World, captured: CapturedL3, table: str) -> lis
     return plans
 
 
+#: a pg_hint_plan hint opening a statement
+_HINT = re.compile(r"^\s*/\*\+.*?\*/")
+
+
 async def _collision_plans(world: _World) -> list[tuple[str, StatementPlan]]:
     """each statement a user merge's alias-collision step sends, with its plan: a source user of the world's agent
     whose every named memory the master names too, so the lock finds them all and each child is read by their keys.
@@ -331,7 +336,10 @@ async def _collision_plans(world: _World) -> list[tuple[str, StatementPlan]]:
             source,
             master,
         )
-        captured = CapturedL3(real=world.conn, passes=lambda sql: sql.lstrip().upper().startswith("SELECT"))
+        # the reads run, a YugabyteDB index hint before one's SELECT among them
+        captured = CapturedL3(
+            real=world.conn, passes=lambda sql: _HINT.sub("", sql).lstrip().upper().startswith("SELECT")
+        )
         await repoint_user(captured, from_user_id=source, to_user_id=master, agent_id=world.agent)
         planned: list[tuple[str, StatementPlan]] = []
         for sql, args in captured.asked:

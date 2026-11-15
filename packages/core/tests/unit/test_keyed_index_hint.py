@@ -26,6 +26,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.keyed import (
     AnyOf,
+    Fragment,
     DeclaredIndex,
     counts_by,
     Sort,
@@ -75,6 +76,46 @@ TableSchema(
         Column("status", STRING_TYPE),
     ],
     indexes=(Index("a100_sched_conv_active", "conversation_id", where="status = 'active'"),),
+)
+
+#: one agent's conversations by ref, as conversations declares them (v013, v015): a wide index of the ref in the
+#: database's collation, and a narrower one holding it in code-point order for a prefix range
+_REFS = "d7_hint_refs"
+
+TableSchema(
+    name=_REFS,
+    primary_key=("agent_id", "conversation_id"),
+    columns=[
+        Column("agent_id", UUID_TYPE),
+        Column("conversation_id", UUID_TYPE),
+        Column("channel_type", STRING_TYPE),
+        Column("conversation_ref", STRING_TYPE),
+        Column("date_created", STRING_TYPE),
+    ],
+    indexes=(
+        Index("d7_refs_created", "agent_id", "channel_type", "conversation_ref", "date_created", "conversation_id"),
+        Index("d7_refs_c", "agent_id", "channel_type", "conversation_ref", collate=(("conversation_ref", "C"),)),
+    ),
+)
+
+#: one user's memories, as agent-memory declares them: by date, and the named ones (alias IS NOT NULL), each led by
+#: the agent and the user
+_ALIASES = "d7_hint_memories"
+
+TableSchema(
+    name=_ALIASES,
+    primary_key=("agent_id", "memory_id"),
+    columns=[
+        Column("agent_id", UUID_TYPE),
+        Column("memory_id", UUID_TYPE),
+        Column("user_id", UUID_TYPE),
+        Column("alias", STRING_TYPE, nullable=True),
+        Column("date_created", STRING_TYPE),
+    ],
+    indexes=(
+        Index("d7_mem_date", "agent_id", "user_id", "date_created"),
+        Index("d7_mem_alias", "agent_id", "user_id", "alias", where="alias IS NOT NULL"),
+    ),
 )
 
 _BY_STATUS = [Sort("status", descending=True), Sort("conversation_id", cast="uuid", descending=True)]
@@ -350,3 +391,46 @@ class TestARecorderAnswersForItsConnection:
         )
         ((page, _),) = alone.asked
         assert "/*+" not in page, page
+
+
+class TestACollatedOrGuardedIndexServesWhatItCan:
+    def test_a_collated_index_serves_a_read_by_the_plain_columns_before_its_collated_one(self) -> None:
+        """Flips if an index holding a column in another collation is skipped whole: an unordered read pinning the
+        columns before that one is then handed a wider index of the same lead (YugabyteDB read every ref of a channel
+        for a prefix, D7 2026-11-15); or if the collated column, or an order on it, is ever served by it."""
+        served = serving_index(_REFS, {"agent_id": 1, "channel_type": "web"}, [])
+        assert served is not None and served.name == "d7_refs_c", served
+        assert served.columns == ("agent_id", "channel_type")
+        # a ref pinned in the database's collation, newest first: the wide index, never the collated one
+        ordered = serving_index(
+            _REFS,
+            {"agent_id": 1, "channel_type": "web", "conversation_ref": "r"},
+            [Sort("date_created", descending=True)],
+        )
+        assert ordered is not None and ordered.name == "d7_refs_created", ordered
+        assert serving_index(_REFS, {"agent_id": 1, "channel_type": "web"}, [Sort("conversation_ref")]) is None or (
+            serving_index(_REFS, {"agent_id": 1, "channel_type": "web"}, [Sort("conversation_ref")]).name
+            == "d7_refs_created"
+        )
+
+    def test_a_not_null_partial_index_serves_only_a_read_stating_that_guard(self) -> None:
+        """Flips if a partial index whose predicate is ``alias IS NOT NULL`` is not served to an unordered read that
+        states exactly that guard (a user merge's alias collisions, hinted on YugabyteDB to the user's every memory by
+        date, D7 2026-11-15), or is served to one stating no guard, or a guard on another column."""
+        by = {"agent_id": 1, "user_id": 2}
+        guarded = serving_index(_ALIASES, by, [], guarded=frozenset({"alias"}))
+        assert guarded is not None and guarded.name == "d7_mem_alias", guarded
+        for guards in (frozenset(), frozenset({"date_created"})):
+            served = serving_index(_ALIASES, by, [], guarded=guards)
+            assert served is not None and served.name == "d7_mem_date", (guards, served)
+
+    async def test_read_by_states_its_not_null_guard_to_the_hint(self) -> None:
+        """Flips if read_by's ``where=`` guard ``t.alias IS NOT NULL`` does not name the partial index on YugabyteDB,
+        or names it without that guard, or any hint is sent on PostgreSQL."""
+        for reader, hinted in ((_yugabyte(), True), (_postgres(), False)):
+            await read_by(reader, _ALIASES, by={"agent_id": 1, "user_id": 2}, where=[Fragment("t.alias IS NOT NULL")])
+            await read_by(reader, _ALIASES, by={"agent_id": 1, "user_id": 2}, where=[Fragment("t.alias = $1", ("a",))])
+            named, other = [sql for sql in reader.asked if not sql.startswith("SELECT version()")]
+            assert named.startswith("/*+ IndexOnlyScan(t d7_mem_alias) */ ") is hinted, named
+            assert "d7_mem_alias" not in other, other
+            assert ("/*+" in other) is hinted, other
