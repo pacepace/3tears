@@ -3,8 +3,7 @@
 Run by the docs build's own interpreter in a grading copy of the app, so it imports only what that build ships, and
 only from the package's public root. The file is loaded as the eval door loads it (its directory first on
 ``sys.path``, its relative paths read beside it), and its first ``Eval`` is run into memory. With ``--nothing`` the
-same eval is run again with every arm swapped for a runner that returns ``None``: how far the eval passes doing
-nothing.
+same eval is run again with every arm swapped for a runner that returns ``None``: the share of cases it then fails.
 
 Prints ``{"refused": why}`` and exits 2 when the file does not load or the eval refuses to run.
 """
@@ -29,12 +28,16 @@ def nothing(case: dict[str, Any]) -> None:
 
 
 def unpassed(result: Result) -> float:
-    """The share of the control arm's cases with no passing repeat, as the first line counts a case passed."""
-    states: dict[str, list[str]] = defaultdict(list)
+    """The share of the control arm's cases that some repeat failed: lost, or graded false or zero by a grader.
+
+    Read off each trial's grades rather than its state, since a trial's state counts only checks, and a function
+    grader that returns False is a measure, not a check: the first line counts its case passed.
+    """
+    readings = ["match" if name == "accuracy" else name for name in result.grader_readings]
+    failed: dict[str, bool] = defaultdict(bool)
     for trial in result.results(result.control):
-        states[trial.case].append(trial.state)
-    passed = sum(1 for repeats in states.values() if "failed" not in repeats and "passed" in repeats)
-    return 1 - passed / len(states) if states else 1.0
+        failed[trial.case] |= trial.state == "lost" or not all(trial.scores.get(name) for name in readings)
+    return sum(failed.values()) / len(failed) if failed else 1.0
 
 
 def read(result: Result) -> dict[str, Any]:
@@ -48,7 +51,6 @@ def read(result: Result) -> dict[str, Any]:
         "readings": list(result.grader_readings),
         "finished": all(summary.status == "completed" for summary in result.arms.values()),
         "means": {name: means.get(name) for name in result.grader_readings},
-        "unpassed": unpassed(result),
     }
 
 

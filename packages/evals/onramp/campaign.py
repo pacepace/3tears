@@ -226,9 +226,13 @@ def trials(result: Result) -> list[dict[str, Any]]:  # Any: each trial's stored 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="onramp-agent", description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--arm", action="append", default=[], metavar="NAME=WHEEL", help="a docs build; first is control"
+        "--arm", action="append", default=[], metavar="NAME=WHEEL", help="a docs build; the first is the control"
     )
-    parser.add_argument("--scripted", action="append", default=[], choices=("succeeds", "stuck"), help="offline arms")
+    parser.add_argument(
+        "--scripted",
+        choices=("succeeds", "stuck"),
+        help="follow the fixed transcripts instead of asking a model: offline, and free",
+    )
     parser.add_argument("--tier", choices=sorted(TIERS), default="cheap")
     parser.add_argument("--k", type=int, default=3)
     parser.add_argument("--cap", type=float, default=None, metavar="DOLLARS", help="the most a live run may spend")
@@ -239,44 +243,46 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """The agent test's command line; the exit code is the eval door's, and 2 for a run refused before it began."""
     args = _parser().parse_args(argv)
     apps = [app for app in args.apps.split(",") if app]
     cases = len(apps) if apps else sum(1 for line in CASES.read_text(encoding="utf-8").splitlines() if line.strip())
     run_dir = args.workdir / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    if args.scripted:
-        arms = {
-            f"scripted@{kind}": adopter(
-                DocsBuild.here(f"scripted@{kind}"),
-                scripted(None if kind == "succeeds" else "stuck"),
-                workdir=run_dir,
-                caps=Caps(),
-            )
-            for kind in args.scripted
-        }
-        return _finish(onramp_eval(arms, k=args.k, max_cost_usd=None, apps=apps), run_dir)
     wheels = dict(arm.split("=", 1) for arm in args.arm)
+    print("\n".join(f"arm {name}: {wheel}" for name, wheel in wheels.items()) or "arm docs@here: this interpreter")
+    if args.scripted:
+        if args.dry_run:
+            return 0
+        brains = scripted(None if args.scripted == "succeeds" else "stuck")
+        builds = _builds(wheels, args.workdir) or [DocsBuild.here("docs@here")]
+        arms = {build.name: adopter(build, brains, workdir=run_dir, caps=Caps()) for build in builds}
+        return _finish(onramp_eval(arms, k=args.k, max_cost_usd=None, apps=apps), run_dir)
     if not wheels:
-        print("onramp-agent: name a docs build (--arm NAME=WHEEL) or run --scripted", file=sys.stderr)
+        print("onramp-agent: name a docs build (--arm NAME=WHEEL), or run --scripted", file=sys.stderr)
         return 2
     tier = TIERS[args.tier]
     priced = quote(tier, runs=len(wheels) * cases * args.k, cap_usd=args.cap)
-    print("\n".join([*(f"arm {name}: {wheel}" for name, wheel in wheels.items()), *priced.lines()]))
+    print("\n".join(priced.lines()))
     if args.dry_run:
         return 0
     if (refusal := live_refusal(os.environ, args.cap)) is not None:
         print(f"onramp-agent: {refusal}", file=sys.stderr)
         return 2
     arms: dict[str, Runner] = {}
-    for name, wheel in wheels.items():
-        build = DocsBuild.from_wheel(name, Path(wheel), args.workdir / "venvs")
+    for build in _builds(wheels, args.workdir):
         try:
-            brain = ModelBrain(tier.model(run_dir / "recordings" / f"{slug(name)}.jsonl"))
+            brain = ModelBrain(tier.model(run_dir / "recordings" / f"{slug(build.name)}.jsonl"))
         except ValueError as unbuilt:  # a missing key, named
             print(f"onramp-agent: {unbuilt}", file=sys.stderr)
             return 2
         caps = Caps(cost_usd=priced.per_run_usd)
-        arms[name] = adopter(build, lambda _sandbox, brain=brain: brain, workdir=run_dir, caps=caps)
+        arms[build.name] = adopter(build, lambda _sandbox, brain=brain: brain, workdir=run_dir, caps=caps)
     return _finish(onramp_eval(arms, k=args.k, max_cost_usd=args.cap, apps=apps), run_dir)
+
+
+def _builds(wheels: Mapping[str, str], workdir: Path) -> list[DocsBuild]:
+    """Each wheel installed in an environment of its own under ``workdir``, as the arm it names."""
+    return [DocsBuild.from_wheel(name, Path(wheel), workdir / "venvs") for name, wheel in wheels.items()]
 
 
 def _finish(ev: Eval, run_dir: Path) -> int:

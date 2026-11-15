@@ -8,13 +8,14 @@ except that no model is asked and nothing is spent.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from packages.evals.onramp.agent import Caps
-from packages.evals.onramp.campaign import adopter, onramp_eval, scripted, trials
+from packages.evals.onramp.campaign import adopter, main, onramp_eval, scripted, trials
 from packages.evals.onramp.sandbox import DocsBuild
 
 #: Every field a trial's record carries.
@@ -69,3 +70,17 @@ async def test_a_scripted_agent_runs_the_whole_harness_and_every_field_is_record
             assert checks["door_exit"] == 2
     assert result.render().strip()
     assert set(result.write(tmp_path / "report")) >= {"html", "json"}
+
+
+@pytest.mark.timeout(900)
+def test_the_command_runs_the_harness_offline_and_keeps_every_trial(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--scripted", "succeeds", "--k", "1", "--apps", "holds", "--workdir", str(tmp_path)]) == 0
+    said = capsys.readouterr().out
+    (run_dir,) = [path for path in tmp_path.iterdir() if path.is_dir()]
+    (row,) = [json.loads(line) for line in (run_dir / "trials.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert row["arm"] == "docs@here" and row["record"]["app"] == "holds"
+    assert row["scores"] == {"eval_runs": 1.0, "measures_the_app": 1.0, "read_right": 1.0}
+    assert (run_dir / "onramp.sqlite").is_file() and (run_dir / "report" / "report.html").is_file()
+    assert f"trials: {run_dir / 'trials.jsonl'}" in said

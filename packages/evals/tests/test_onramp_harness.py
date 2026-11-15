@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import shutil
+import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -29,6 +30,7 @@ from packages.evals.onramp.agent import (
     parse_report,
     stuck_point,
 )
+from packages.evals.onramp.checks import RERUN
 from packages.evals.onramp.campaign import CONTROL_REF, TIERS, Tier, live_refusal, main, quote
 from packages.evals.onramp.sandbox import APPS, TWINS, DocsBuild, Observation, Sandbox
 
@@ -248,7 +250,7 @@ async def test_the_ceiling_tier_goes_direct_to_anthropic_with_no_temperature(tmp
         bodies.append(json.loads(request.content))
         text = json.dumps({"tool": "done", "path": "", "start": 1, "text": "{}", "command": ""})
         reply = {
-            "model": "claude-haiku-5-5",
+            "model": TIERS["ceiling"].model_id,
             "content": [{"type": "text", "text": text}],
             "stop_reason": "end_turn",
             "usage": {"input_tokens": 2000, "output_tokens": 50},
@@ -269,9 +271,9 @@ async def test_the_ceiling_tier_goes_direct_to_anthropic_with_no_temperature(tmp
 
 def test_a_claude_model_is_refused_any_route_but_anthropic_direct() -> None:
     with pytest.raises(ValueError, match="direct to Anthropic"):
-        Tier("x", "anthropic/claude-haiku-5-5", None, 1.0, 0.1, 0.5, "")
+        Tier("x", f"anthropic/{TIERS['ceiling'].model_id}", None, 1.0, 0.1, 0.5, "")
     with pytest.raises(ValueError, match="direct to Anthropic"):
-        Tier("x", "claude-haiku-5-5", None, 1.0, 0.1, 0.5, "")
+        Tier("x", TIERS["ceiling"].model_id, None, 1.0, 0.1, 0.5, "")
     assert TIERS["ceiling"].provider == "anthropic" and TIERS["cheap"].provider is None
 
 
@@ -305,3 +307,26 @@ def test_the_command_quotes_first_and_refuses_to_spend_unless_told(
     assert "--cap" in capsys.readouterr().err
     assert not (tmp_path / "venvs").exists(), "nothing was built: every refusal came first"
     assert len(CONTROL_REF) >= 7
+
+
+def test_doing_nothing_is_counted_failed_on_a_grader_returning_false_not_only_on_one_that_raises(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "cases.jsonl").write_text('{"x": 1}\n{"x": 2}\n{"x": 3}\n', encoding="utf-8")
+    (tmp_path / "evals.py").write_text(
+        "from threetears.evals import Eval\n\n\n"
+        "def echo(case):\n"
+        '    """Echo the number."""\n'
+        '    return case["x"]\n\n\n'
+        "def odd(case, out):\n"
+        '    """The answer is odd."""\n'
+        "    return out is not None and out % 2 == 1\n\n\n"
+        'numbers = Eval("cases.jsonl", runner=echo, grader=[odd], k=1)\n',
+        encoding="utf-8",
+    )
+    done = subprocess.run(
+        [sys.executable, str(RERUN), "evals.py", "--nothing"], cwd=tmp_path, capture_output=True, text=True, check=True
+    )
+    reading = json.loads(done.stdout.splitlines()[-1])
+    assert reading["means"] == {"odd": pytest.approx(2 / 3)} and reading["finished"] is True
+    assert reading["nothing_unpassed"] == 1.0, "a None answer graded False fails its case, though no check failed"
