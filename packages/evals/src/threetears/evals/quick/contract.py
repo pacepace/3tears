@@ -185,6 +185,16 @@ def _runner_name(runner: Any) -> str | None:
     return name if isinstance(name, str) and name.isidentifier() else None
 
 
+def _bare(signature: inspect.Signature) -> inspect.Signature:
+    """A signature as its parameters' names and defaults, the annotations left out: what the author wrote to call it."""
+    return signature.replace(
+        parameters=[
+            parameter.replace(annotation=inspect.Parameter.empty) for parameter in signature.parameters.values()
+        ],
+        return_annotation=inspect.Signature.empty,
+    )
+
+
 def _refuse_an_unusable_runner(runner: Any, arm: str | None) -> None:
     said = "the runner" if arm is None else f"the arm {arm!r}"
     if not isinstance(runner, WorldRunner | Log) and not callable(runner):
@@ -207,7 +217,7 @@ def _refuse_an_unusable_runner(runner: Any, arm: str | None) -> None:
     except TypeError:
         name = getattr(called, "__name__", None) or type(called).__name__
         raise ValueError(
-            f"{said} {name}{signature} cannot be called as {name}({handed}), which is how each case is handed to it; "
+            f"{said} {name}{_bare(signature)} cannot be called as {name}({handed}), which is how each case is handed to it; "
             f"declare it to take exactly that: {written} {name}({handed}): ..."
         ) from None
 

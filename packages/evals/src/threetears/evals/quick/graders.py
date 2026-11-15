@@ -282,6 +282,16 @@ class GraderPlan:
         return None if self.classifier_margin is None else {ACCURACY_MEASURE: self.classifier_margin}
 
 
+def _bare(signature: inspect.Signature) -> inspect.Signature:
+    """A signature as its parameters' names and defaults, the annotations left out: what the author wrote to call it."""
+    return signature.replace(
+        parameters=[
+            parameter.replace(annotation=inspect.Parameter.empty) for parameter in signature.parameters.values()
+        ],
+        return_annotation=inspect.Signature.empty,
+    )
+
+
 def _refuse_a_grader_that_cannot_take_its_arguments(target: Callable[..., Any], name: str) -> None:
     """Refuse a function grader that cannot be called as ``name(case, out)``: it would raise on every answer, after the
     runner had answered (and spent on) every case.
@@ -296,7 +306,7 @@ def _refuse_a_grader_that_cannot_take_its_arguments(target: Callable[..., Any], 
         signature.bind("case", "out")
     except TypeError:
         raise ValueError(
-            f"the grader {name}{signature} cannot be called as {name}(case, out), which is how each answer is handed to "
+            f"the grader {name}{_bare(signature)} cannot be called as {name}(case, out), which is how each answer is handed to "
             f"it; declare it to take exactly that: def {name}(case, out): ..."
         ) from None
 
