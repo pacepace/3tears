@@ -4612,10 +4612,31 @@ class _ModuleWalk(ast.NodeVisitor):
         :return: the argument as judged
         :rtype: ast.expr
         """
-        if isinstance(columns, ast.Constant | ast.Tuple | ast.List):
+        if isinstance(columns, ast.Constant | ast.Tuple | ast.List) or self._passed_a_string(columns):
             return columns
         return ast.Name(
             id="pk" if self._key_sourced(columns) and self._keeps_lead(columns) else "unsourced", ctx=ast.Load()
+        )
+
+    def _passed_a_string(self, node: ast.expr) -> bool:
+        """whether ``node`` is a parameter of the enclosing function, never rebound in it, that every call site passes
+        a string (a literal, a constant, one construction's field, :func:`_per_construction`): the column it names is
+        read site by site as that string (:meth:`_parameter_calls`), so it is judged as the column, never as a run-time
+        name.
+
+        :param node: the column expression
+        :ptype node: ast.expr
+        :return: whether it is
+        :rtype: bool
+        """
+        function = self._function_node
+        if not isinstance(node, ast.Name) or function is None:
+            return False
+        if node.id not in _function_bindings(function, {}).parameters:
+            return False
+        sites = self._parameter_sites.get(function.name, [])
+        return bool(sites) and all(
+            (passed := site.values.get(node.id)) and all(isinstance(value, str) for value in passed) for site in sites
         )
 
     def _key_order(self, order: ast.expr) -> ast.expr:
@@ -7121,9 +7142,12 @@ def _function_bindings(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
     tuples: dict[str, list[Passed]],
     declared: Mapping[str, tuple[list[Passed], str]] | None = None,
+    classes: Mapping[str, list[Passed]] | None = None,
 ) -> _Bindings:
     """the parameters and loop names of ``function`` whose values the walk can follow: a declared parameter
-    (``declared_parameters``) holds each of its values when it is a string, and a loop over it binds each of them.
+    (``declared_parameters``) holds each of its values when it is a string, and a loop over it binds each of them; a
+    local bound once, annotated ``tuple[<class>, ...]`` of a class every construction of which is literal
+    (``cascades: tuple[DeleteCascade, ...] = getattr(...)``), holds each of those constructions.
 
     :param function: the function
     :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
@@ -7132,6 +7156,8 @@ def _function_bindings(
     :param declared: its declared names onto their values, and how each holds them: ``one`` (a string parameter),
         ``many`` (a collection parameter a loop over binds each), ``loop`` (a loop target, each value in turn)
     :ptype declared: Mapping[str, tuple[list[Passed], str]] | None
+    :param classes: the classes every construction of which is literal, onto those (:func:`_literal_constructions`)
+    :ptype classes: Mapping[str, list[Passed]] | None
     :return: its bindings
     :rtype: _Bindings
     """
@@ -7141,6 +7167,11 @@ def _function_bindings(
     for node in _own_nodes(function.body):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             stores[node.id] = stores.get(node.id, 0) + 1
+    for node in _own_nodes(function.body):
+        held = _annotated_elements(node, classes or {})
+        if held is not None and isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if stores.get(node.target.id) == 1:
+                tuples[node.target.id] = held
     # a name every binding of which is a loop over known elements (``for table in tables`` twice): each of them
     looped_over: dict[str, list[list[Passed] | None]] = {}
     for node in _own_nodes(function.body):
@@ -7166,6 +7197,30 @@ def _function_bindings(
         loops=loops,
         tuples=tuples,
     )
+
+
+def _annotated_elements(node: ast.AST, classes: Mapping[str, list[Passed]]) -> list[Passed] | None:
+    """the constructions a local annotated ``tuple[<class>, ...]`` holds, when ``<class>`` is one of ``classes``;
+    None for any other statement.
+
+    :param node: a statement of the function
+    :ptype node: ast.AST
+    :param classes: the classes every construction of which is literal, onto those
+    :ptype classes: Mapping[str, list[Passed]]
+    :return: the constructions, or None
+    :rtype: list[Passed] | None
+    """
+    if not isinstance(node, ast.AnnAssign) or node.value is None or not isinstance(node.annotation, ast.Subscript):
+        return None
+    container = (dotted(node.annotation.value) or "").rsplit(".", 1)[-1]
+    held = node.annotation.slice
+    if container not in {"tuple", "Tuple"} or not isinstance(held, ast.Tuple) or len(held.elts) != 2:
+        return None
+    element, rest = held.elts
+    if not (isinstance(rest, ast.Constant) and rest.value is Ellipsis):
+        return None
+    name = (dotted(element) or "").rsplit(".", 1)[-1]
+    return list(classes[name]) if name in classes else None
 
 
 def _iterated(over: ast.expr, tuples: dict[str, list[Passed]]) -> list[Passed] | None:
@@ -7465,6 +7520,7 @@ def _parameter_values(
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not _stub(node):
                 definitions.setdefault(node.name, []).append(node)
     constructors = _constructors(modules)
+    classes = _literal_constructions(modules, strings)
     contexts: list[tuple[dict[str, str], tuple[str, _Bindings] | None, list[ast.Call], tuple[str, str]]] = []
     for relative, tree in modules:
         known = {**_imported_strings(tree, strings), **strings.get(relative, {})}
@@ -7488,7 +7544,9 @@ def _parameter_values(
                 if function is None
                 else (
                     function.name,
-                    _function_bindings(function, module_tuples, _declared_of(function, where[1], declared or {})),
+                    _function_bindings(
+                        function, module_tuples, _declared_of(function, where[1], declared or {}), classes
+                    ),
                 )
             )
             # a call on an imported module (``keyed.holds_any``) is that module's, not a method of the same name
@@ -7603,16 +7661,57 @@ def _record_site(
         zip([a.arg for a in positional], call.args if star is None else call.args[:star], strict=False)
     )
     passed.update({keyword.arg: keyword.value for keyword in call.keywords if keyword.arg})
-    site: dict[str, list[Passed]] = {}
-    for place, argument in enumerate([*positional, *function.args.kwonlyargs]):
-        value = passed.get(argument.arg)
-        unknown = value is None and ((star is not None and place >= star) or spread)
-        value = value if value is not None else defaults.get(argument.arg)
-        values: list[Passed] = [None] if unknown or value is None else _site_values(value, known, caller, found)
-        followed.setdefault((name or function.name, argument.arg), []).extend(values)
-        site[argument.arg] = values
-    if sites is not None:
-        sites.setdefault(name or function.name, []).append(Site(where[0], call.lineno, where[1], site))
+    for each, at in _per_construction(passed, caller):
+        site: dict[str, list[Passed]] = {}
+        for place, argument in enumerate([*positional, *function.args.kwonlyargs]):
+            value = passed.get(argument.arg)
+            unknown = value is None and ((star is not None and place >= star) or spread)
+            value = value if value is not None else defaults.get(argument.arg)
+            values: list[Passed] = [None] if unknown or value is None else _site_values(value, known, each, found)
+            followed.setdefault((name or function.name, argument.arg), []).extend(values)
+            site[argument.arg] = values
+        if sites is not None:
+            path, line = at if at is not None else (where[0], call.lineno)
+            sites.setdefault(name or function.name, []).append(Site(path, line, where[1], site))
+
+
+def _per_construction(
+    passed: Mapping[str, ast.expr], caller: tuple[str, _Bindings] | None
+) -> list[tuple[tuple[str, _Bindings] | None, tuple[str, int] | None]]:
+    """the caller's bindings once per literal construction a call's arguments read fields of (``cascade.child_table``,
+    ``cascade.child_column`` with ``cascade`` a loop over :func:`_literal_constructions`), each loop bound to that one
+    construction, with its place: the fields one construction pairs are judged together, never one construction's
+    table with another's column. The bindings as they are, and no place, when no argument reads one.
+
+    :param passed: each parameter onto the argument passed it
+    :ptype passed: Mapping[str, ast.expr]
+    :param caller: the calling function's name and bindings, None at a top level
+    :ptype caller: tuple[str, _Bindings] | None
+    :return: each binding with the construction's ``(path, line)``, or None
+    :rtype: list[tuple[tuple[str, _Bindings] | None, tuple[str, int] | None]]
+    """
+    if caller is None:
+        return [(caller, None)]
+    loops = caller[1].loops
+    read = {
+        bound[0]
+        for value in passed.values()
+        if (bound := _bound_name(value)) is not None
+        and bound[1] is not None
+        and bound[0] in loops
+        and loops[bound[0]]
+        and all(isinstance(element, tuple) and _BUILT_AT in dict(element) for element in loops[bound[0]])
+    }
+    if not read:
+        return [(caller, None)]
+    names = sorted(read)
+    split: list[tuple[tuple[str, _Bindings] | None, tuple[str, int] | None]] = []
+    for chosen in itertools.product(*(loops[name] for name in names)):
+        bound_loops = {**loops, **{name: [element] for name, element in zip(names, chosen, strict=True)}}
+        built = dict(chosen[0]) if isinstance(chosen[0], tuple) else {}
+        path, _, line = built[_BUILT_AT].rpartition(":")
+        split.append(((caller[0], replace(caller[1], loops=bound_loops)), (path, int(line))))
+    return split
 
 
 #: a value a forwarder reads off its ``self`` (``self._keys[table]``), as its caller's judgement of the write names it
@@ -7708,15 +7807,39 @@ def _passed_arguments(call: ast.Call, callee: Callee) -> dict[str, ast.expr] | N
 
 
 def _constructors(modules: list[tuple[str, ast.Module]]) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
-    """each repo class whose every construction the walk can see, onto its ``__init__``: defined once in the repo,
-    with an ``__init__`` of its own, no repo class built on it (a subclass's construction passes the same
-    ``__init__`` under another name), never built through ``cls(...)`` / ``type(self)(...)`` inside it, and its name
-    never used as a value (handed to a factory, a ``partial``) outside a call, an annotation or a base list.
+    """each repo class whose every construction the walk can see (:func:`_seen_classes`), onto its ``__init__``: one
+    with an ``__init__`` of its own.
 
     :param modules: each module's path and parse
     :ptype modules: list[tuple[str, ast.Module]]
     :return: class name onto its constructor
     :rtype: dict[str, ast.FunctionDef | ast.AsyncFunctionDef]
+    """
+    found: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for name, owner in _seen_classes(modules).items():
+        init = next(
+            (
+                statement
+                for statement in owner.body
+                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef) and statement.name == "__init__"
+            ),
+            None,
+        )
+        if init is not None:
+            found[name] = init
+    return found
+
+
+def _seen_classes(modules: list[tuple[str, ast.Module]]) -> dict[str, ast.ClassDef]:
+    """each repo class whose every construction the walk can see: defined once in the repo, no repo class built on it
+    (a subclass's construction passes the same arguments under another name), never built through ``cls(...)`` /
+    ``type(self)(...)`` inside it, and its name never used as a value (handed to a factory, a ``partial``) outside a
+    call, an annotation or a base list.
+
+    :param modules: each module's path and parse
+    :ptype modules: list[tuple[str, ast.Module]]
+    :return: class name onto its definition
+    :rtype: dict[str, ast.ClassDef]
     """
     classes: dict[str, list[ast.ClassDef]] = {}
     based: set[str] = set()
@@ -7748,7 +7871,7 @@ def _constructors(modules: list[tuple[str, ast.Module]]) -> dict[str, ast.Functi
                 and id(node) not in local
             ):
                 loose.add(node.id if isinstance(node, ast.Name) else node.attr)
-    found: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    found: dict[str, ast.ClassDef] = {}
     for name, defined in classes.items():
         if len(defined) != 1 or name in based or name in loose:
             continue
@@ -7766,17 +7889,103 @@ def _constructors(modules: list[tuple[str, ast.Module]]) -> dict[str, ast.Functi
             for node in ast.walk(owner)
         ):
             continue
-        init = next(
-            (
-                statement
-                for statement in owner.body
-                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef) and statement.name == "__init__"
-            ),
-            None,
-        )
-        if init is not None:
-            found[name] = init
+        found[name] = owner
     return found
+
+
+#: the pseudo-field a literal construction (:func:`_literal_constructions`) carries its own place in, ``path:line``:
+#: a call judged once per construction (:func:`_record_site`) is that construction's, named where it is written
+_BUILT_AT: Final[str] = "__built_at__"
+
+
+def _dataclass_fields(owner: ast.ClassDef) -> list[tuple[str, ast.expr | None]] | None:
+    """a dataclass's fields in order, each with its default (None for none); None when the class is no dataclass
+    the walk can read (not decorated ``@dataclass``, an ``__init__`` of its own, or a field spelled any other way).
+
+    :param owner: the class
+    :ptype owner: ast.ClassDef
+    :return: its fields, or None
+    :rtype: list[tuple[str, ast.expr | None]] | None
+    """
+    decorated = any(
+        (dotted(decorator.func if isinstance(decorator, ast.Call) else decorator) or "").rsplit(".", 1)[-1]
+        == "dataclass"
+        for decorator in owner.decorator_list
+    )
+    if not decorated:
+        return None
+    fields: list[tuple[str, ast.expr | None]] = []
+    for statement in owner.body:
+        if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef) and statement.name == "__init__":
+            return None
+        if not isinstance(statement, ast.AnnAssign):
+            continue
+        if not isinstance(statement.target, ast.Name):
+            return None
+        annotated = {
+            (dotted(node) or "").rsplit(".", 1)[-1]
+            for node in ast.walk(statement.annotation)
+            if isinstance(node, ast.Name | ast.Attribute)
+        }
+        if "ClassVar" in annotated:
+            continue
+        fields.append((statement.target.id, statement.value))
+    return fields
+
+
+def _literal_constructions(
+    modules: list[tuple[str, ast.Module]], strings: dict[str, dict[str, str]]
+) -> dict[str, list[Passed]]:
+    """each repo dataclass every construction of which the walk sees (:func:`_seen_classes`) and every one of which
+    spells each field as a literal or a constant (``DeleteCascade("job_fires", "job_id", "CASCADE")``), onto those
+    constructions: each a declared object of its fields (:data:`Declared`), with :data:`_BUILT_AT` its place. A loop
+    over a value annotated ``tuple[<class>, ...]`` binds each one (:func:`_function_bindings`), whatever expression
+    hands it the value: no object of the class can hold anything else. One construction the walk cannot read (a
+    field named at run time, ``*args``, ``**kwargs``) or a ``replace(...)`` of a field leaves the class out.
+
+    :param modules: each module's path and parse
+    :ptype modules: list[tuple[str, ast.Module]]
+    :param strings: every walked module's path onto its once-bound strings (:func:`_module_strings`)
+    :ptype strings: dict[str, dict[str, str]]
+    :return: class name onto its constructions
+    :rtype: dict[str, list[Passed]]
+    """
+    fields = {
+        name: read for name, owner in _seen_classes(modules).items() if (read := _dataclass_fields(owner)) is not None
+    }
+    built: dict[str, list[Passed]] = {name: [] for name in fields}
+    unread: set[str] = set()
+    for relative, tree in modules:
+        known = {**_imported_strings(tree, strings), **strings.get(relative, {})}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = _final(node) or ""
+            if name == "replace":
+                # a copy with a field changed is a construction the walk never sees spelled
+                unread.update(owner for owner, held in fields.items() for k in node.keywords if k.arg in dict(held))
+                continue
+            if name not in fields or not isinstance(node.func, ast.Name | ast.Attribute):
+                continue
+            declared = fields[name]
+            given: dict[str, ast.expr | None] = dict(declared)
+            starred = any(isinstance(a, ast.Starred) for a in node.args) or any(k.arg is None for k in node.keywords)
+            if starred or len(node.args) > len(declared):
+                unread.add(name)
+                continue
+            given.update({field_name: value for (field_name, _), value in zip(declared, node.args, strict=False)})
+            given.update({k.arg: k.value for k in node.keywords if k.arg is not None})
+            texts = {
+                field_name: None if value is None else _constant_text(value, known)
+                for field_name, value in given.items()
+            }
+            if any(text is None for text in texts.values()) or set(given) != {f for f, _ in declared}:
+                unread.add(name)
+                continue
+            element = {field_name: text for field_name, text in texts.items() if text is not None}
+            element[_BUILT_AT] = f"{relative}:{node.lineno}"
+            built[name].append(tuple(sorted(element.items())))
+    return {name: elements for name, elements in built.items() if elements and name not in unread}
 
 
 def _stub(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
