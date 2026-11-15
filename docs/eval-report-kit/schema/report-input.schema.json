@@ -136,6 +136,20 @@
     }
    ],
    "description": "The first screen's slots, as shown when the input was frozen; never part of the input's digest."
+  },
+  "per_case": {
+   "anyOf": [
+    {
+     "type": "object",
+     "additionalProperties": {
+      "$ref": "#/$defs/CaseSamples"
+     }
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "description": "The per-case values each reading a step sizes on more cases was read from, keyed <aspect>/<measure>/<arm>; none where no step does, or on an input built before it. Derived, so never part of the input's digest."
   }
  },
  "additionalProperties": false,
@@ -3145,6 +3159,31 @@
     "state"
    ],
    "type": "object"
+  },
+  "CaseSamples": {
+   "type": "object",
+   "required": [
+    "control",
+    "contrast",
+    "paired",
+    "only_control",
+    "only_contrast",
+    "value_range",
+    "confidence",
+    "scale"
+   ],
+   "properties": {
+    "control": {"type": "array", "items": {"type": "number"}, "description": "The control's per-case values the reading read, higher better, aligned with contrast when paired."},
+    "contrast": {"type": "array", "items": {"type": "number"}, "description": "The arm's per-case values the reading read, higher better."},
+    "paired": {"type": "boolean", "description": "Whether the two are one-to-one on the cases both sides ran."},
+    "only_control": {"type": "integer", "minimum": 0, "description": "Cases the control ran that the arm did not: outside the values when paired, and every case the control read when not (the two then share at most one). A cross-fill runs them on the arm."},
+    "only_contrast": {"type": "integer", "minimum": 0, "description": "Cases the arm ran that the control did not, read as only_control is. A cross-fill runs them on the control."},
+    "value_range": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}], "minItems": 2, "maxItems": 2, "description": "The values' declared inclusive bounds."},
+    "confidence": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1, "description": "The two-sided level the reading's interval was read at."},
+    "scale": {"type": "number", "exclusiveMinimum": 0, "description": "The reading's units per unit of a value: 100 for a pass rate read in points of shares."}
+   },
+   "additionalProperties": false,
+   "description": "The per-case values one contrast was read from, kept so a step that adds cases is sized on them; derived from the bundle, never part of the input's digest."
   }
  }
 }

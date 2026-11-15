@@ -992,7 +992,9 @@ def test_a_first_screen_showing_a_percentile_s_point_estimate_offers_no_act_that
 def test_a_gate_cleared_exactly_on_its_line_reads_no_size() -> None:
     held = _inputs()["stored:report_inputs/r1/input.json"]
     borderline = next(caveat for caveat in caveat_list(held) if caveat.kind == "borderline")
-    assert plan_of(held, borderline) == Plan(unsized="on_the_line"), "an arm reads 90 against a gate at 90"
+    assert plan_of(held, borderline) == Plan(
+        unsized="on_the_line", state=StateOf(state="not_available", reason="too_few")
+    ), "an arm reads 90 against a gate at 90: no finite count lifts it, typed"
 
 
 def test_a_figure_with_too_few_cases_is_sized_to_the_floor_and_one_where_every_case_read_alike_is_not() -> None:
@@ -1065,19 +1067,20 @@ def _gate_lifted(values: list[float]) -> bool:
 
 def test_a_borderline_gate_s_planned_cases_lift_it_four_times_in_five_at_today_s_estimate() -> None:
     """Seeded simulation through the real path, 2,000 designs. Today: 180 cases with a mean of 93 and a per-case spread
-    of 25 against a gate at 90, its 95% interval reaching below the line: borderline. Drawing the planned new cases
-    from today's estimate, pooling them with today's and reading the figure with the pipeline's own mean interval, the
-    list raises no borderline and the gate passes in 84.7% of designs (held: at least 77.5%); a fresh design of the
-    whole planned size lifts it in 80.5% (held within 2.5 points of 80%). Sized one-sided as before (z = 1.645 +
-    0.842, 256 cases to add, not 373), the fresh design lifted it in 69.1% and the pooled one in 77.4%, which both
-    bounds refuse."""
+    of 25 against a gate at 90, its 95% interval reaching below the line: borderline. The plan holds today's cases
+    fixed and sizes the new ones to lift four times in five if the truth is today's estimate
+    (:func:`~threetears.evals.analysis.separation.figure_cases_to_lift`). Drawing the planned new cases from today's
+    estimate, pooling them with today's and reading the figure with the pipeline's own mean interval, the list raises
+    no borderline and the gate passes in MEASURED_GATE of designs (held within 2.5 points of 80%). The size before it
+    (the whole design sized to clear four in five, less the cases held) lifted it in 84.7%, which this refuses; the
+    rows at other counts are in ``test_simulated_remedy_sizing.py``."""
     rng = random.Random(_SEED)
     today = _standardized(rng, 180, 93.0, 25.0)
     held = _gate_input(today)
     caveat = next(entry for entry in implied(held) if entry.id == f"borderline:{_GATE}")
     assert caveat.arms == [_GATED]
     plan = plan_of(held, caveat)
-    assert plan is not None and plan.cases is not None and plan.unsized is None
+    assert plan is not None and plan.cases is not None and plan.unsized is None and plan.state is None
     step = caveat_step(caveat, plan=plan)
     assert (step.remedy, step.action, step.calls, step.declared_look) == (
         "add_cases",
@@ -1088,9 +1091,8 @@ def test_a_borderline_gate_s_planned_cases_lift_it_four_times_in_five_at_today_s
 
     designs = 2000
     pooled = sum(_gate_lifted(today + [rng.gauss(93.0, 25.0) for _ in range(plan.cases)]) for _ in range(designs))
-    fresh = sum(_gate_lifted([rng.gauss(93.0, 25.0) for _ in range(180 + plan.cases)]) for _ in range(designs))
-    assert pooled / designs >= 0.80 - _TOLERANCE, pooled / designs
-    assert abs(fresh / designs - 0.80) <= _TOLERANCE, fresh / designs
+    print(f"measured caveat-list gate pooled: {pooled / designs:.4f} at {plan.cases} cases")
+    assert abs(pooled / designs - 0.80) <= _TOLERANCE, pooled / designs
 
 
 #: The paired outcomes of one case, control then candidate, and how often each comes up: a 4-point drop with a

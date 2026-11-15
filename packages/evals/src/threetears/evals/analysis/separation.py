@@ -73,6 +73,15 @@ agreeing), and the snapshot holds no per-case outcomes to say where, so the spre
 as independent, the interval would be the root of the repeats narrower and the size that many times fewer cases)*.
 Where the figure states no distinct cases the size counts what its count counts, and a caller says which.
 
+**The cases that lift a reading** (:func:`cases_to_lift`, :func:`figure_cases_to_lift`). A step that adds cases to a
+reading keeps the cases it holds, so the chance it lifts is the chance the new cases carry: the size above, less the
+cases held, lifts about ``Phi(z(power) * sqrt(N / m))`` of the time (nine in ten where half the design is new). The
+plan instead holds the cases fixed, takes the truth as today's estimate and draws the new cases like the held ones,
+and finds the fewest that clear with chance :data:`POWER`: a contrast on its per-case values, read by the bounded
+interval it is read by (through :func:`~threetears.evals.analysis.stats.bounded_cases_to_clear`); a figure on its
+stated spread, read by its t interval. Where none can be read the answer is a state, ``not_available`` with its
+reason, never a number.
+
 **A stated difference** (:func:`difference_spread`): a candidate's reading against the control states its change and
 an interval at its own level, from paired cases; its standard error is the interval's half-width over the two-sided
 quantile at that level, and one case's spread that times the root of the harmonic mean of the arms' cases, so a size
@@ -571,6 +580,32 @@ def _reach_noise(
     return math.sqrt(math.fsum(value**2 for value in residuals) / (_DRAWS - 2))
 
 
+def _crossed_spread(control: Sequence[float], contrast: Sequence[float], total: int) -> float:
+    """The spread of an unpaired contrast's estimate once read paired over ``total`` pairs, the held cases cross-filled
+    first (:func:`cases_to_lift`).
+
+    Of the first ``c = min(total, held)`` pairs, each side's share of the held cases is cross-filled (in expectation,
+    ``c`` in proportion to each side's held count): a cross-filled pair keeps its held value and draws the other
+    side's, so it carries the other side's spread; and where fewer than every held case of a side is run, which ones
+    are is a draw without replacement from them, which carries that side's spread times the share left out. The
+    ``total - c`` pairs past them draw both halves.
+
+    :return: The standard deviation of the estimate at ``total`` pairs, in the values' units.
+    """
+    count_a, count_b = len(control), len(contrast)
+    var_a, var_b = _spread_of(control) ** 2, _spread_of(contrast) ** 2
+    crossed = min(total, count_a + count_b)
+    of_a, of_b = crossed * count_a / (count_a + count_b), crossed * count_b / (count_a + count_b)
+    variance = (
+        of_a * var_b
+        + of_b * var_a
+        + of_a * var_a * (count_a - of_a) / (count_a - 1)
+        + of_b * var_b * (count_b - of_b) / (count_b - 1)
+        + (total - crossed) * (var_a + var_b)
+    )
+    return math.sqrt(max(variance, 0.0)) / total
+
+
 def cases_to_lift(
     control: Sequence[float],
     contrast: Sequence[float],
@@ -587,12 +622,14 @@ def cases_to_lift(
     they are.
 
     **What is fixed.** The pairs held are kept, and new pairs are drawn like them, so their truth is today's estimate.
-    With ``s`` the spread of one pair's difference and ``m`` new pairs, the new pairs' mean difference falls below
-    ``d - z(power) * s / sqrt(m)`` (``d`` today's) one time in ``1 - power``: that is the **critical draw**, and the
-    reading at ``N = n0 + m`` pairs (``n0`` held) lifts with chance ``power`` where it lifts on the critical draw. The
-    critical draw is ``m`` pairs read evenly off the distribution of the held pairs tilted to that mean
-    (:func:`_tilted`, :func:`_drawn`), so the spread a draw with that mean has is in it: on bounded values a draw
-    nearer the line reads a narrower interval, which a reach read at today's estimate misses. The held pairs and the
+    At ``N = n0 + m`` pairs (``n0`` held, ``m`` new) two things vary: the estimate, with spread ``s * sqrt(m) / N``
+    (``s`` one drawn pair's), and the interval's reach beyond what goes with the estimate (:func:`_reach_noise`: the
+    order the reading bets in, and on a few distinct values how many rare ones are drawn). The reading lifts with
+    chance ``power`` where it lifts at the **critical outcome**: the shortfall ``z(power)`` times their joint spread,
+    split between them by their spreads. The estimate's part is a **critical draw**: ``m`` pairs read evenly off the
+    distribution of the held pairs tilted to that mean (:func:`_tilted`, :func:`_drawn`), so the spread a draw with
+    that mean has is in it (on bounded values a draw nearer the line reads a narrower interval, which a reach read at
+    today's estimate misses); the reach's part is added to it. The held pairs and the
     critical draw are read by the bounded interval itself, at ``N``
     (:func:`~threetears.evals.analysis.stats.bounded_cases_to_clear`, the room the critical draw's estimate less the
     line, its cap ``N``). The fewest such ``N`` is found as :func:`_fewest` says. Sizing the whole design to clear at
@@ -600,9 +637,11 @@ def cases_to_lift(
     ``Phi(z(power) * sqrt(N / m))`` of the time, 88% at ``m = N / 2``.
 
     **An unpaired contrast** (each side's own cases, sharing fewer than two) is read paired once each side runs the
-    cases only the other ran: no pair is held whole, so ``n0`` is 0 and every pair is drawn new, each side's value
-    from its own cases, at no correlation between the arms, which is the most a cross-filled pair can vary; arms that
-    agree case by case lift more often.
+    cases only the other ran: no pair is held whole, so ``n0`` is 0. A cross-filled pair keeps its held half and draws
+    the other like that side's cases; past the cases held, a pair draws both halves. So the estimate's spread at ``N``
+    counts the cross-filled pairs' new halves, which held cases among them are run where the plan runs fewer than
+    every one, and the fully new pairs' two halves (:func:`_crossed_spread`), at no correlation between the arms, which
+    is the most a cross-filled pair can vary; arms that agree case by case lift more often.
 
     **Today's side.** An estimate below its line lifts by its interval's high end clearing below it: the sides are read
     swapped, which mirrors the interval.
@@ -642,7 +681,7 @@ def cases_to_lift(
     held = list(zip(a, b, strict=True)) if paired else []
     like, base = _like(held if paired else ((x, y) for x in a for y in b))
     differences = [y - x for x, y in like]
-    spread = _spread_of([y - x for x, y in held]) if paired else math.hypot(_spread_of(a), _spread_of(b))
+    spread = _spread_of([y - x for x, y in held]) if paired else 0.0
     z = _z_one_sided(power)
     fixed = len(held)
 
@@ -652,7 +691,7 @@ def cases_to_lift(
             return False
         # The estimate at ``total`` and the interval's reach both vary, the one with the new pairs drawn, the other
         # with the order the reading bets in; the critical outcome splits the shortfall between them by their spreads.
-        estimate_spread = spread * math.sqrt(new) / total
+        estimate_spread = spread * math.sqrt(new) / total if paired else _crossed_spread(a, b, total)
         order_spread = _reach_noise(held, like, base, new, value_range, confidence)
         both = math.hypot(estimate_spread, order_spread)
         shift = z * estimate_spread**2 / both if both > 0 else 0.0
