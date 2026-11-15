@@ -362,11 +362,11 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
     yield "A name is public when it meets the admission criteria, not to meet a number: these counts are reported each"
     yield "wave as a trend. The goals are the adopter's, a first eval's names and rung 3's."
     yield ""
-    yield "| Kind | Who meets it | Names |"
+    yield "| Kind | Names | Who meets it |"
     yield "|---|---|---|"
     for kind in KINDS:
-        yield f"| `{kind}` | {KIND_MEANINGS[kind]} | {total[kind]} |"
-    yield f"| all | | {sum(total.values())} |"
+        yield f"| `{kind}` | {total[kind]} | {KIND_MEANINGS[kind]} |"
+    yield f"| all | {sum(total.values())} | |"
     yield ""
     yield "| Typed names | Names | Goal |"
     yield "|---|---|---|"
@@ -530,7 +530,8 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
             yield from _wrapped(f"Rung {rung}, {surface.rungs[rung]}: {_names(names) or 'no new name'}", "  ")
     off_ladder = [name for name in surface.entries if name in TYPED_IN_DOCS]
     yield from _wrapped(
-        f"Off the ladder, taught on a page: {'; '.join(f'{short(n)} ({TYPED_IN_DOCS[n]})' for n in off_ladder)}", "  "
+        f"Off the ladder, taught on a page: {'; '.join(f'{short(n)} ({at_tag(TYPED_IN_DOCS[n])})' for n in off_ladder)}",
+        "  ",
     )
     yield ""
     ports = [name for name in surface.of_kind("bound") if protocol_sides().get(name) == HOST_IMPLEMENTS]

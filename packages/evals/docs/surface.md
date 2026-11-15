@@ -762,14 +762,14 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 A name is public when it meets the admission criteria, not to meet a number: these counts are reported each
 wave as a trend. The goals are the adopter's, a first eval's names and rung 3's.
 
-| Kind | Who meets it | Names |
+| Kind | Names | Who meets it |
 |---|---|---|
-| `typed` | a newcomer writes it in an eval file | 13 |
-| `bound` | a host implements it or hands it to the engine | 94 |
-| `invoked` | an operation called by name to make the engine do something, from host code or as an action | 115 |
-| `received` | a value someone is handed and reads | 259 |
-| `tests` | a kit, recorder or guard a host runs in its own tests | 17 |
-| all | | 498 |
+| `typed` | 13 | a newcomer writes it in an eval file |
+| `bound` | 94 | a host implements it or hands it to the engine |
+| `invoked` | 115 | an operation called by name to make the engine do something, from host code or as an action |
+| `received` | 259 | a value someone is handed and reads |
+| `tests` | 17 | a kit, recorder or guard a host runs in its own tests |
+| all | 498 | |
 
 | Typed names | Names | Goal |
 |---|---|---|

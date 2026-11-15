@@ -54,8 +54,10 @@ def test_the_page_opens_with_the_first_eval_and_ends_with_the_counts() -> None:
     assert first < 10
     assert page[first + 2].startswith("- `Eval`: ")
     assert page.index("## The counts") > page.index("## Near-duplicate shapes: 2, each saying why both exist")
-    # The totals are reported as a trend, never held to a number: no budget or ceiling column anywhere.
-    assert not any("Ceiling" in line or "Budget" in line for line in page)
+    # The totals are reported as a trend, never held to a number: the counts' tables have no budget or ceiling column.
+    headers = [line for line in page[page.index("## The counts") :] if line.startswith("| ") and "Names" in line]
+    assert headers[:2] == ["| Kind | Names | Who meets it |", "| Typed names | Names | Goal |"]
+    assert not [header for header in headers if "Budget" in header or "Ceiling" in header]
 
 
 def test_the_agent_file_is_short_true_and_sufficient() -> None:
