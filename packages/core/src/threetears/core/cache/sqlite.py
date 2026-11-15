@@ -49,6 +49,7 @@ from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
 from threetears.core.cache import l1_file
+from threetears.core.cache.l1_pages import measure as measure_pages
 from threetears.core.cache.l1_lru import (
     L1_EVICTION_INFO,
     POLICY_EPOCH,
@@ -808,24 +809,16 @@ class SQLiteBackend:
         return self._table_keys.get(table, ())
 
     def table_bytes(self) -> Mapping[str, int]:
-        """each table's real bytes in the file (its pages and its indexes', from ``dbstat``); blocking, a walk of
-        the file's pages, so the ledger's thread runs it.
+        """each table's real bytes in the file, its indexes' included (:func:`~threetears.core.cache.l1_pages.measure`,
+        the one ``dbstat`` walk the size gauges read too); blocking, a walk of the file's pages, so the ledger's
+        thread runs it.
 
-        :return: table -> bytes; an index's bytes count to its table
+        :return: table -> bytes
         :rtype: Mapping[str, int]
         """
         if self._path is None:
             return {}
-        conn = self.get_connection()
-        conn.row_factory = None
-        rows = conn.execute(
-            "SELECT s.name, coalesce(m.tbl_name, s.name), s.pgsize FROM dbstat AS s "
-            "LEFT JOIN sqlite_schema AS m ON m.name = s.name WHERE s.aggregate = TRUE"
-        ).fetchall()
-        sizes: dict[str, int] = {}
-        for _name, table, size in rows:
-            sizes[table] = sizes.get(table, 0) + int(size)
-        return sizes
+        return {table: size.bytes for table, size in measure_pages(self.get_connection()).items()}
 
     def side_bytes(self) -> int:
         """the bytes of SQLite's files beside the database (the WAL and its index).
