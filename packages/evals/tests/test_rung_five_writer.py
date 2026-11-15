@@ -1,7 +1,7 @@
 """Rung 5, ``examples/5-writer/``: the report writer evaluated as the thing under test, replayed with no key.
 
 The rung's recordings (14 reports on ``claude-sonnet-5-5`` recorded 2026-11-03, and the flash judge and its pairwise
-pass recorded again 2026-11-14 over the pages as the package now prints them) ship beside it. What is held: the eleven case files read back and split 7 held-out to 4 dev;
+pass recorded again 2026-11-14, then re-keyed by each page's inputs for $0 with no call re-made) ship beside it. What is held: the eleven case files read back and split 7 held-out to 4 dev;
 ``writer.py`` stays short and reaches the engine through public roots; ``python -m threetears.evals writer.py``
 replays the shipped recordings with no key, every turn and judge call served from them and none left unasked, and
 prints the judge's preference and the promotion read. In a copy with its recordings stripped, the door refuses,
@@ -14,6 +14,7 @@ connect fails.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import shutil
@@ -161,6 +162,35 @@ def test_the_recordings_readme_names_the_one_command_that_records_and_its_keys()
     assert "Not recorded" not in readme
 
 
+#: The sha256 of every judge line's recorded members but its key and format, in file order, as recorded on
+#: 2026-11-14: re-keying the file by each call's inputs (format 3 to 4, 2026-11-15) moved its keys and nothing a
+#: replay serves. A response changed by hand, or a line added, dropped or reordered, moves it.
+JUDGE_RESPONSES: Final = "d7bde81356ee3a83a46bbb0d0377073cbdd4d9e5694a43fb4def902ba3b96065"
+
+
+def test_the_judge_recording_is_keyed_by_each_call_s_inputs_and_serves_what_was_recorded() -> None:
+    lines = [
+        json.loads(line) for line in (RUNG / "recordings" / "judge.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(lines) == 112 and {line["recorder_version"] for line in lines} == {4}
+    assert all(line["inputs"] is not None for line in lines), "every judge call over a page is keyed by its inputs"
+    assert len({line["key"] for line in lines}) == 112
+    # Each keeps the key its prompt had, so a replay can count a call served over a page rendered otherwise since.
+    assert all(re.fullmatch(r"[0-9a-f]{64}", line["prompt_key"]) for line in lines)
+    assert len({line["prompt_key"] for line in lines} | {line["key"] for line in lines}) == 224
+    pairs = [line for line in lines if "pair" in line["inputs"]["evidence"]]
+    assert len(pairs) == 14 and all(len(line["inputs"]["evidence"]["pair"]) == 2 for line in pairs)
+    served = [
+        {
+            name: line[name]
+            for name in ("index", "cell", "settings", "sent_settings", "result", "extra", "recorded_at", "user_head")
+        }
+        for line in lines
+    ]
+    digest = hashlib.sha256(json.dumps(served, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    assert digest == JUDGE_RESPONSES
+
+
 def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_the_promotion_read(
     writer_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -233,16 +263,19 @@ def _endings(directory: Path) -> dict[tuple[str, str], str]:
     }
 
 
-def test_a_page_whose_text_moved_under_the_judge_s_recording_fails_the_pass_naming_the_missed_call(
+def test_a_pair_whose_inputs_moved_under_the_judge_s_recording_fails_the_pass_naming_the_input_that_differs(
     writer_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """One word more on each page the pairwise judge reads moves every pass call's key off its recording. The pass
-    fails at its first call, naming it, and reads no share; it once dropped each missed call and read 54/46 off fewer."""
+    """The pairwise judge's calls are keyed by the two pages' inputs (each page's stored document, its snapshot and
+    its findings) and their order, so a pair naming another document for its first page moves every pass call's key
+    off its recording. The pass fails at its first call, naming the input that differs, and reads no share: a missed
+    call once was dropped, and 54/46 was read off fewer (#1162). A page whose words alone moved replays whole
+    (``test_wording_moves_no_identity.py``)."""
     shipped = writer_pairwise.pair_evidence
 
     def moved(a: JudgeEvidence, b: JudgeEvidence) -> JudgeEvidence:
-        paired = shipped(a, b)
-        return paired.model_copy(update={"artifact": paired.artifact + "\nprovider not recorded"})
+        assert a.inputs is not None
+        return shipped(a.model_copy(update={"inputs": {**a.inputs, "document": "0" * 64}}), b)
 
     monkeypatch.setattr(writer_pairwise, "pair_evidence", moved)
 
@@ -251,11 +284,14 @@ def test_a_page_whose_text_moved_under_the_judge_s_recording_fails_the_pass_nami
     # The print leads with the failure, naming the call, before any reading.
     lead = printed.splitlines()[0]
     assert lead.startswith("writer: the pairwise pass of lead-first did not complete: ended failed: RecordingRefused: ")
-    assert "recordings/judge.jsonl" in lead and "no call is recorded for the prompt" in lead, lead
+    assert "recordings/judge.jsonl" in lead and "no call is recorded for the inputs" in lead, lead
     (failed,) = [line for line in printed.splitlines() if line.startswith("pairwise pass of lead-first: ")]
     assert "ended failed: RecordingRefused: recording " in failed and "recordings/judge.jsonl" in failed
-    assert re.search(r"no call is recorded for the prompt .+ \(call 0, key [0-9a-f]{12}\)", failed), failed
-    assert "recorded key(s) open on the same 80 characters" in failed
+    assert re.search(r"no call is recorded for the inputs \{.+\} \(call 0, key [0-9a-f]{12}, prompt ", failed), failed
+    assert re.search(
+        r"the inputs differ at evidence\.pair\[0\]\.document \(asked sha256:[0-9a-f]{12}, recorded ", failed
+    )
+    assert "and agree on goals, intent, judge_prompt, variation" in failed, failed
     assert "| lead-first | every pair |" not in printed, "no share is read off the calls the replay still found"
     # The scoring judge read each page alone, which did not move: every result scored, none excluded.
     assert printed.count("7 result(s): 7 scored, 0 excluded") == 2

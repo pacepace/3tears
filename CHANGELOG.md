@@ -6,6 +6,39 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a recorded judge call over a report page is keyed by what the page was rendered from, not by its words
+
+**Changed:** a word the package prints differently on a report writer's page, or in its computed facts, no longer
+moves any recorded judge call. A judge call over evidence that names its inputs is keyed by them in place of its
+prompt (recording format 4): the page's stored document digest, the snapshot it was written over and its open
+findings' digest, for a pair both pages in the order shown, beside the criterion asked (its system prompt's digest),
+the template's intent, the case's variation, the goal outcomes shown, the reply format, model, temperature and
+settings. The components and why each moves only when what is asked moves are a table in
+`testing/recorded_completions.py`. A replay of such a call checks the plumbing and the arithmetic; judging today's
+page is the paid lane's job.
+
+**Changed:** a replay miss of such a call names its inputs and each one that differs from the nearest recorded call,
+by its path (`the inputs differ at evidence.pair[0].document (asked sha256:..., recorded sha256:...)`), and the run
+fails at the miss, as since #1162.
+
+**Changed:** rung 5's `judge.jsonl` is re-keyed in place, for $0 and with no call made again
+(`packages/evals/scripts/rekey_judge_recording.py`): 112 lines before and after, each changing only its `key`, its
+`recorder_version` (3 to 4) and the `inputs` and `prompt_key` (its old key) it gains. Every replayed response, share
+and score is as it was.
+
+**Added:** a format-4 line keyed by its inputs keeps `prompt_key`, the key its prompt had. A replay serves such a call
+whatever its prompt says now, and counts each one served over a prompt that has changed since
+(`RecordedCompletions.served_over_changed_prompts`, `Model.served_over_changed_prompts`). A writer eval says the count
+among its disclosures: `judge: N call(s) replayed over a page rendered otherwise since it was recorded`.
+
+**For hosts:** nothing to do. A recording made before format 4 still replays: a call naming its inputs that no line
+holds under them is served by its prompt, as before. Your own kinds' evidence names no inputs unless you set
+`JudgeEvidence.inputs` (new, optional, core v15.20 and durable v17.1, left out of the stored document while unset), and their calls are
+keyed by their prompts as they were. Setting it adds no fingerprint input: `fingerprint_judged_output` hashes the
+evidence's three strings alone. Recording keys are over inputs (what was asked) and label keys over what was read, so
+a label does not carry across a re-render. Set `inputs` so that, with the package's rendering code, they determine all
+three strings; anything else that can change them belongs in `inputs`.
+
 ### evals: one closed set of reading states, one caveat entry and one first-screen value, all unset
 
 **Added:** the shape every later first-screen change fills, with nothing filled yet. Nothing a report, a page, a

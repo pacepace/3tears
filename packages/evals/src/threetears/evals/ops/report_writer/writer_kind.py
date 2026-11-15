@@ -32,7 +32,7 @@ retired, and the package ships no kind for a stored reporter template, so its la
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final, Literal
@@ -57,7 +57,7 @@ from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.inner_ceilings import judge_phase_ceiling_s, writer_ceiling_s
 from threetears.evals.kernel.failed_call import failed_call_output
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure
-from threetears.evals.kernel.report_doc import ReportDoc
+from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
 from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.ops.analyst import report_snapshot_restore, snapshot_input
@@ -84,6 +84,7 @@ from threetears.evals.ops.report_writer.writer_contract import (
     WriterOverlays,
 )
 from threetears.evals.schema.completion import RequestCeiling
+from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import EvalTestCase, JudgedArtifact, JudgeEvidence
 from threetears.evals.schema.values import SweepableValue
@@ -539,7 +540,7 @@ class ReportWriterKind:
                     limits=instance.limits,
                     editor_model=instance.editor_model,
                 )
-        return self._output(outcome, tally, instance, report_input, analyst_skill, editor_skill)
+        return self._output(outcome, tally, instance, snapshot_id, report_input, analyst_skill, editor_skill)
 
     async def _case_input(
         self, instance: PreparedWriter, test_case: EvalTestCase
@@ -578,11 +579,15 @@ class ReportWriterKind:
         outcome: WritingOutcome,
         tally: Tally,
         instance: PreparedWriter,
+        snapshot_id: str,
         report_input: ReportInput,
         analyst_skill: SkillText,
         editor_skill: SkillText,
     ) -> CandidateOutput:
-        """The cell's output for how the loop ended: the page and its evidence when a document was stored."""
+        """The cell's output for how the loop ended: the page and its evidence when a document was stored.
+
+        The evidence names what its page and facts were rendered from (:func:`_page_inputs`), so a judge's recorded
+        call over the page is keyed by those and a word the package prints differently moves no recording."""
         telemetry = _telemetry(tally, instance.model.model_name)
         measures = _measures(outcome, tally)
         payload: dict[str, JsonValue] = {
@@ -595,12 +600,14 @@ class ReportWriterKind:
         }
         if outcome.doc is not None:
             page = doc_page_text(build(outcome.doc, report_input, strict=True, findings=outcome.findings, made=""))
+            stored = outcome.doc.model_dump(mode="json", by_alias=True)
             return CandidateOutput(
-                output=[outcome.doc.model_dump(mode="json", by_alias=True)],
+                output=[stored],
                 judge_evidence=JudgeEvidence(
                     case_material="Computed facts, from the snapshot the report was written over. Code computed each; "
                     "none is a verdict:\n" + computed_facts(outcome.doc, report_input),
                     artifact=page,
+                    inputs=_page_inputs(stored, snapshot_id, outcome.findings),
                 ),
                 telemetry=telemetry,
                 host_measures=measures,
@@ -638,6 +645,31 @@ class ReportWriterKind:
             host_measures=measures,
             kind_payload=payload,
         )
+
+
+def _page_inputs(document: Mapping[str, Any], snapshot_id: str, findings: Sequence[ReportFinding]) -> dict[str, Any]:
+    """What a writer's page and its computed facts are rendered from, as a judge's recorded call is keyed by them.
+
+    The page is ``build`` over the stored document, the snapshot's report input and the editor's open findings, and
+    the facts are computed from the first two; the package's words for any of it are not among them. So each is named
+    by content: the document as stored (keys and prose as the writer submitted them, before any figure is rendered),
+    the snapshot by its id (derived from its evidence, so the same id is the same snapshot), and the findings as
+    stored.
+
+    :param document: The stored report document (the cell's output).
+    :ptype document: Mapping[str, Any]
+    :param snapshot_id: The snapshot it was written over.
+    :ptype snapshot_id: str
+    :param findings: The editor's findings left open, which the page prints.
+    :ptype findings: Sequence[ReportFinding]
+    :return: The evidence's inputs.
+    :rtype: dict[str, Any]
+    """
+    return {
+        "document": canonical_digest({"report_document": dict(document)}),
+        "snapshot": snapshot_id,
+        "findings": canonical_digest({"open_findings": [finding.model_dump(mode="json") for finding in findings]}),
+    }
 
 
 def _telemetry(tally: Tally, model: str) -> CandidateTelemetry:

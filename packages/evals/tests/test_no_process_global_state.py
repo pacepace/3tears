@@ -156,6 +156,11 @@ ALLOWED: dict[tuple[str, str], str] = {
         "on leaving; it holds that cell's identity, never a host, and a second host in the same process cannot "
         "observe another task's value"
     ),
+    ("threetears/evals/schema/call_inputs.py", "_CURRENT_INPUTS"): (
+        "a ContextVar, so its value is per task, never per process: the judge service sets it around one call, in "
+        "that call's own task, and resets it on leaving; it holds what that call is asked about, never a host, and a "
+        "second host in the same process cannot observe another task's value"
+    ),
     ("threetears/evals/kernel/runner_spend.py", "_SPEND"): (
         "a ContextVar, so its value is per task, never per process: the callable kind sets it around one runner "
         "call, in that cell's own task, and resets it on leaving; it holds that call's spend ledger, never a host"

@@ -260,7 +260,7 @@ reasoning_effort='high'`), so moving your judge's reasoning effort or output cap
 replaying answers the new configuration never asked for. Each line also keeps what the call's request was actually
 SENT with, when your completion reports it (`sent_settings`, below), and a replayed completion reports the same, so
 a replay records what the recorded call was sent with, never the settings it was asked under. A recording made by a
-build before `.25` (recording format 1; `RecordedCompletions.FORMAT_VERSION` is 3) kept none, and is refused by name:
+build before `.25` (recording format 1; `RecordedCompletions.FORMAT_VERSION` is 4) kept none, and is refused by name:
 re-record it.
 
 A call is matched on its prompt (`system`, `user`, `response_format`), the model and temperature its completion
@@ -268,7 +268,14 @@ reported, the settings the client was built with, and how many times that prompt
 replay as the `k` answers they were. Inside an eval's cell, each call is also recorded with the cell it was made for
 (the arm, the case, the repeat), and a replay serves each cell the call recorded for it, so two arms sending a judge
 one prompt get back what each got, whatever order the cells run in. A recording made before format 3 noted no cell
-and is still read: repeat `i` is served the call of index `i`, and otherwise the first call left. A prompt the recording does not hold, or one asked once more than it was, is
+and is still read: repeat `i` is served the call of index `i`, and otherwise the first call left.
+
+A judge call over evidence whose kind names what its text was rendered from (`JudgeEvidence.inputs`: the report
+writer's page names its stored document, its snapshot and its open findings) is matched on those inputs and the
+criterion asked, in place of its prompt (format 4): a word the package prints differently on the page replays every
+call as recorded, and a miss names each input that differs from the nearest recorded call. A recording made before
+format 4 keyed such a call by its prompt, and still replays it that way. Your own kind's evidence names no inputs
+unless it sets them, and its calls are matched on their prompts as before. A prompt the recording does not hold, or one asked once more than it was, is
 refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
 a `ReplayMiss` ([rig failures](#rig-failures-a-broken-rig-costs-one-cell-a-recording-that-cannot-serve-costs-the-run)),
 so a candidate that meets one never has its cell scored: the cell is recorded `apparatus_failed`, naming the call, and

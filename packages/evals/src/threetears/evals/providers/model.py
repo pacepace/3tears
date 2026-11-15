@@ -1575,6 +1575,20 @@ class Model:
         return self._live.ceiling_is_estimate() if self._live is not None else False
 
     @property
+    def served_over_changed_prompts(self) -> int:
+        """How many calls this model's replay served by their inputs over a prompt that has changed since they were
+        recorded (:attr:`RecordedCompletions.served_over_changed_prompts
+        <threetears.evals.testing.RecordedCompletions.served_over_changed_prompts>`): answers about a page as it was
+        then. ``0`` for a model that sends live or records.
+
+        :return: The count so far.
+        :rtype: int
+        """
+        if isinstance(self._client, RecordedCompletions):
+            return self._client.served_over_changed_prompts
+        return 0
+
+    @property
     def last_price_refresh(self) -> PriceRefresh | None:
         """What the last :meth:`refresh_prices` found, or ``None`` before the first; a call's own read leaves it."""
         return self._last_price_refresh
