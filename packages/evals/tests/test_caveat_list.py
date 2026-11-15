@@ -1076,9 +1076,9 @@ def test_a_borderline_gate_s_planned_cases_lift_it_four_times_in_five_at_today_s
     fixed and sizes the new ones to lift four times in five if the truth is today's estimate
     (:func:`~threetears.evals.analysis.separation.figure_cases_to_lift`). Drawing the planned new cases from today's
     estimate, pooling them with today's and reading the figure with the pipeline's own mean interval, the list raises
-    no borderline and the gate passes in MEASURED_GATE of designs (held within 2.5 points of 80%). The size before it
-    (the whole design sized to clear four in five, less the cases held) lifted it in 84.7%, which this refuses; the
-    rows at other counts are in ``test_simulated_remedy_sizing.py``."""
+    no borderline and the gate passes in 79.7% of designs, at 300 cases to add (held within 2.5 points of 80%). The
+    size before it (the whole design sized to clear four in five, less the cases held) lifted it in 84.7% here; the
+    rows that refuse it, and the rows at other counts, are in ``test_simulated_remedy_sizing.py``."""
     rng = random.Random(_SEED)
     today = _standardized(rng, 180, 93.0, 25.0)
     held = _gate_input(today)

@@ -10,26 +10,40 @@ a 10-point margin (a gate: borderline) and its per-case values vary. Its plan is
 (:func:`~threetears.evals.analysis.caveats.plan_of` on the input with its per-case part). Then, for each design, that
 many cases are added, drawn like the held ones (truth = today's estimate, held sample fixed), at case ids that fall
 among the held ones at random, and the reading is read again by its own rule: the bounded interval at the reading's
-level and :func:`~threetears.evals.analysis.answer.unsettled_arms` for a contrast; the figure's mean interval, the gate's
-status and the implied raiser for a gate. A row's rate is the share of designs that lift, over every held sample of
+level against the margin's line, as :func:`~threetears.evals.analysis.answer.unsettled_arms` reads it, for a contrast;
+the figure's mean interval against the gate's line for a gate. Each design is read off the interval directly, and the
+first designs of every held sample are also read through the report's own raiser (``unsettled_arms``; the gate's status
+and the implied raiser), which must agree. A row's rate is the share of designs that lift, over every held sample of
 the row. On an unpaired held contrast (each arm's own generated cases) the extend first cross-fills (each arm runs the
 held cases only the other ran, in a seeded order, up to the pairs planned) and draws the rest as new shared cases; the
 cross-filled half is drawn independently of the held half (no correlation between the arms).
 
-**Measured** (seed 20261115; the rate each row holds in [0.78, 0.84]):
+**Measured** (seed 20261115; every row is held in [0.78, 0.84]):
 
-=========================  ======  ======  ======  ======  ======
-row                        n0=3    n0=5    n0=10   n0=30   n0=100
-=========================  ======  ======  ======  ======  ======
-see ``_MEASURED``
-=========================  ======  ======  ======  ======  ======
+=======================  ======  ======  ======  ======  ======
+row                      n0=3    n0=5    n0=10   n0=30   n0=100
+=======================  ======  ======  ======  ======  ======
+paired, pass/fail k = 1  0.789   0.810   0.815   0.800   0.810
+paired, pass/fail k = 3  0.840   0.831   0.819   0.820   0.833
+paired, bounded mean     0.817   0.804   0.833   0.818   0.828
+cross-filled, k = 1      0.825   0.820   0.827   0.827   0.838
+cross-filled, mean       0.825   0.840   0.829   0.823   0.819
+gate figure              --      0.812   0.798   0.803   0.809
+=======================  ======  ======  ======  ======  ======
 
 A gate's figure under five cases states no interval (``SMALL_N_BAND_FLOOR``), so it is a point estimate sized to the
 floor and never borderline: the gate rows start at five.
 
+**Recorded, not held.** Arms that agree case by case lift a cross-filled plan more often (``rho`` 0, 0.3, 0.6: k = 1
+at thirty cases 0.815, 0.918, 0.980; a bounded mean 0.803, 0.925, 0.978). Across campaigns (the truth fixed, a fresh
+held sample each time, the new cases drawn from the truth) a plan lifts 0.469 of the time on pass/fail pairs at thirty
+cases and 0.812 on a bounded mean: a plan states its chance for the campaign it was read on, not for every campaign.
+
 **What it refuses.** The size before this one (the whole design sized to clear four in five, less the cases held,
-read off the reading's interval by a normal approximation) lifts these rows far more often than it says; and a size
-read at the one-sided level lifts them less. Each is run through the same simulation and must fall outside the band.
+read off the reading's interval by a normal approximation) lifts these rows far more often than it says (k = 1 at
+thirty cases 0.923, a bounded mean 0.998; a gate whose held cases are half the design, 0.883 at thirty and a hundred);
+and a size read at the one-sided level lifts them less (0.708, 0.583; a gate 0.566 and 0.570). Each is run through the
+same simulation and must fall outside the band.
 """
 
 from __future__ import annotations

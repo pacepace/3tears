@@ -78,8 +78,8 @@ reading keeps the cases it holds, so the chance it lifts is the chance the new c
 cases held, lifts about ``Phi(z(power) * sqrt(N / m))`` of the time (nine in ten where half the design is new). The
 plan instead holds the cases fixed, takes the truth as today's estimate and draws the new cases like the held ones,
 and finds the fewest that clear with chance :data:`POWER`: a contrast on its per-case values, read by the bounded
-interval it is read by (through :func:`~threetears.evals.analysis.stats.bounded_cases_to_clear`); a figure on its
-stated spread, read by its t interval. Where none can be read the answer is a state, ``not_available`` with its
+interval it is read by (through :func:`~threetears.evals.analysis.stats.bounded_cases_to_clear`, or, on a few dozen
+pairs, by seeded extends read directly); a figure on its stated spread, read by its t interval. Where none can be read the answer is a state, ``not_available`` with its
 reason, never a number.
 
 **A stated difference** (:func:`difference_spread`): a candidate's reading against the control states its change and
@@ -437,6 +437,12 @@ _DRAWS: Final = 16
 #: The seeded relabellings a critical draw is read under (:func:`cases_to_lift`): odd, so most of them is a majority.
 _RELABELLINGS: Final = 3
 
+#: Up to how many pairs in all a paired plan reads its chance of lifting by seeded extends rather than by the critical
+#: draw (:func:`_simulated_lift`), and over how many: on a few dozen pairs a reading's interval moves in steps with
+#: each pair and with the order it bets in, which no one critical draw stands for, and each reading there is cheap.
+_SIMULATED_UP_TO: Final = 64
+_SIMULATED_EXTENDS: Final = 400
+
 #: Too few cases to read: fewer than two a side, no count, or no count up to the search's cap (an estimate on its
 #: line, or so near it) at which the reading clears.
 _TOO_FEW: Final = StateOf(state="not_available", reason="too_few")
@@ -556,6 +562,46 @@ def _relabelled(
     return moved
 
 
+def _simulated_lift(
+    held: Sequence[tuple[float, float]],
+    like: Sequence[tuple[float, float]],
+    base: Sequence[float],
+    new: int,
+    value_range: tuple[float, float],
+    confidence: float,
+    line: float,
+) -> float:
+    """The share of :data:`_SIMULATED_EXTENDS` seeded extends that lift a paired reading: the held pairs kept, ``new``
+    drawn like them, whose ids fall among the held ones at seeded places, read by the bounded interval at
+    ``confidence``; an extend lifts where the interval's low end clears ``line``.
+
+    :return: The share, from 0 to 1.
+    """
+    total = len(held) + new
+    cumulative = list(accumulate(base))
+    lifted = 0
+    for seed in range(_SIMULATED_EXTENDS):
+        drawn = random.Random(f"lift-extend-{seed}-{total}")
+        fresh = [like[min(bisect_right(cumulative, drawn.random()), len(like) - 1)] for _ in range(new)]
+        design = _interleaved(held, fresh, drawn)
+        interval = bounded_difference_interval(
+            [x for x, _ in design], [y for _, y in design], paired=True, value_range=value_range, confidence=confidence
+        )
+        lifted += interval is not None and interval[0] > line
+    return lifted / _SIMULATED_EXTENDS
+
+
+def _interleaved(
+    held: Sequence[tuple[float, float]], new: Sequence[tuple[float, float]], drawn: random.Random
+) -> list[tuple[float, float]]:
+    """``held`` and ``new`` in case-id order: the held keep their order, and the new ones' ids fall among them at
+    places ``drawn`` picks."""
+    total = len(held) + len(new)
+    slots = set(drawn.sample(range(total), len(new)))
+    fresh, kept = iter(new), iter(held)
+    return [next(fresh) if place in slots else next(kept) for place in range(total)]
+
+
 def _reach_noise(
     held: Sequence[tuple[float, float]],
     like: Sequence[tuple[float, float]],
@@ -656,6 +702,11 @@ def cases_to_lift(
     ``power`` and subtracting the held cases over-asks: the held half carries no chance, so such a plan lifts about
     ``Phi(z(power) * sqrt(N / m))`` of the time, 88% at ``m = N / 2``.
 
+    **A few dozen pairs** (up to :data:`_SIMULATED_UP_TO` in all, paired): the reading moves in steps there, with each
+    pair drawn and with the order it bets in, so the chance of lifting is read directly, as the share of
+    :data:`_SIMULATED_EXTENDS` seeded extends (the held pairs kept, the new ones drawn like them at seeded places among
+    them) whose bounded interval clears the line (:func:`_simulated_lift`).
+
     **An unpaired contrast** (each side's own cases, sharing fewer than two) is read paired once each side runs the
     cases only the other ran: no pair is held whole, so ``n0`` is 0. A cross-filled pair keeps its held half and draws
     the other like that side's cases; past the cases held, a pair draws both halves. So the estimate's spread at ``N``
@@ -709,6 +760,8 @@ def cases_to_lift(
         new = total - fixed
         if total < 2 or new < 1:
             return False
+        if paired and total <= _SIMULATED_UP_TO:
+            return _simulated_lift(held, like, base, new, value_range, confidence, estimate - distance) >= power
         # The estimate at ``total`` and the interval's reach both vary, the one with the new pairs drawn, the other
         # with the order the reading bets in; the critical outcome splits the shortfall between them by their spreads.
         estimate_spread = spread * math.sqrt(new) / total if paired else _crossed_spread(a, b, total)
