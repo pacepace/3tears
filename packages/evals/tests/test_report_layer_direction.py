@@ -232,6 +232,7 @@ _NUMBERS_MODULES = frozenset(
         "latency_partition",
         "measurement_windows",
         "out_of_run_spend",
+        "people_corrected",
         "quantities",
         "reads",
         "references",

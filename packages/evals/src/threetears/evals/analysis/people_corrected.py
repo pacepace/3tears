@@ -50,18 +50,8 @@ from threetears.evals.schema.blind_read import BlindAnswer, BlindRaterKind, Blin
 from threetears.evals.schema.models import SCALES
 from threetears.evals.schema.reading_states import NotAvailableReason, Reason, SampleKind, StateOf
 
-__all__ = [
-    "PPI_DECISION_MIN_LABELLED_CASES",
-    "PPI_REPORT_MIN_LABELLED_CASES",
-    "SKIPPED_LIMIT",
-    "PairLabels",
-    "PeopleCorrectedDifference",
-    "corrected_reading",
-    "counted_label",
-    "decides",
-    "pair_labels",
-    "prediction_powered_difference",
-]
+#: What production calls: the bundle's judged-contrast filler and the cell reads.
+__all__ = ["corrected_reading", "counted_label", "pair_labels"]
 
 #: The fewest labelled cases a ``corrected`` check states figures from. Below it the field is ``not_available``,
 #: ``too_few``: the rectifier's spread is too uncertain to put an interval on.
