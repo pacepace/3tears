@@ -306,8 +306,8 @@ _STATED: list[tuple[Relation, str, str]] = []
 _STATED_EQUALITY: Final[re.Pattern[str]] = re.compile(r"\s*\(?\s*\"?(\w+)\"?\s*=\s*'((?:[^']|'')*)'\s*\)?\s*")
 
 
-#: a ``column IS NOT NULL`` conjunct of a partial index's predicate, or a read's guard: the column captured
-_NOT_NULL: Final[re.Pattern[str]] = re.compile(
+#: a read's guard that one column (of its alias, or bare) is not NULL: the column captured
+_NOT_NULL_GUARD: Final[re.Pattern[str]] = re.compile(
     r"\s*\(?\s*(?:\w+\.)?\"?(\w+)\"?\s+IS\s+NOT\s+NULL\s*\)?\s*", re.IGNORECASE
 )
 
@@ -351,7 +351,9 @@ def not_null_guards(guards: Iterable[str]) -> frozenset[str]:
     :return: the columns
     :rtype: frozenset[str]
     """
-    return frozenset(found.group(1).lower() for guard in guards if (found := _NOT_NULL.fullmatch(guard)) is not None)
+    return frozenset(
+        found.group(1).lower() for guard in guards if (found := _NOT_NULL_GUARD.fullmatch(guard)) is not None
+    )
 
 
 def register_partial_predicates(table: str, predicates: Iterable[str]) -> None:
