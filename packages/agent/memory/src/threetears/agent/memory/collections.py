@@ -18,6 +18,7 @@ benefit from L1 row caching.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import math
 from collections.abc import Awaitable, Callable, Iterable, Sequence
@@ -395,16 +396,25 @@ def _file_window_guards(after: datetime | None, before: datetime | None) -> tupl
     )
 
 
+#: a scope's every-tag test (:attr:`RetrievalScope.tags_all`), the containment ``idx_memories_tags`` serves: each
+#: search spreads it into its read itself (``*((Fragment(_EVERY_TAG, ...),) if ... else ())``), so the no-whole-reads
+#: walk sees the read the index's purpose names; :func:`_scope_guards` leaves it out. The tags go as the RAW list: the
+#: family's jsonb codec dumps it (see :func:`build_scope_conditions`)
+_EVERY_TAG = "t.tags @> $1::jsonb"
+
+
 def _scope_guards(scope: RetrievalScope | None) -> tuple[Fragment, ...]:
     """a :class:`RetrievalScope` as a keyed helper's ``where=`` guard (:func:`build_scope_conditions`, numbered from
-    ``$1``); none for no scope. callers check :func:`scope_matches_nothing` first.
+    ``$1``), all but its every-tag test (:data:`_EVERY_TAG`, which each search writes itself); none for no scope.
+    callers check :func:`scope_matches_nothing` first.
 
     :param scope: the scope, possibly ``None``
     :ptype scope: RetrievalScope | None
     :return: the guard, or none
     :rtype: tuple[Fragment, ...]
     """
-    conditions, params, _next = build_scope_conditions(scope, next_param=1)
+    rest = None if scope is None else dataclasses.replace(scope, tags_all=None)
+    conditions, params, _next = build_scope_conditions(rest, next_param=1)
     return (Fragment(" AND ".join(conditions), tuple(params)),) if conditions else ()
 
 
@@ -1091,20 +1101,66 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             # parameters mirror prod (upstream alembic). these are
             # strings to match the textual ``WITH (key = value)`` DDL
             # syntax pgvector emits.
+            # KEEP (coordinator, 2026-11-15; v001 idx_mem_embedding, renamed in 8060d75d7): an owner with many
+            # memories is read nearest-first through it on both engines (an owner of 20,000: PostgreSQL and
+            # YugabyteDB walk it for every read named below), a small one is sorted exactly off the owner index
+            # (test_vector_index_plans holds both). find_same_event is no reader: its message pin wins on both.
+            # Keep or drop on dev's owner sizes is a later performance call, not this declaration's.
+            # KNOWN FOLLOW-UP, not fixed here (owner #101, 2026-11-14; a 50-row owner beside a 20,000-row one,
+            # forced through the index): on YugabyteDB a small owner read through ybhnsw took ~100 ms at k=10
+            # (k=50: 1.6 ms), old and new code alike. Both planners keep a small owner on the owner index today
+            # (test_vector_index_plans), so it bites only when a plan turns to ybhnsw for one.
             SchemaIndex(
                 "ix_memories_embedding_hnsw",
                 "embedding",
                 using="hnsw",
                 ops={"embedding": "vector_cosine_ops"},
                 pg_with={"m": "16", "ef_construction": "64"},
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_similar_for_dedup; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.search_by_semantic; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.hybrid_search._nearest"
+                ),
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_vector_index_plans.py"
+                    "::test_ix_memories_embedding_hnsw_serves_a_heavy_owners_nearest_reads"
+                ),
+                reason=(
+                    "memories carries six indexes: the k nearest memories of an owner too large to sort exactly, "
+                    "for dedup, the search tool and ambient retrieval"
+                ),
             ),
             # v025 (presence/aliveness): GIN over the ``tags`` JSONB label
             # set serves containment (``tags @> '["identity"]'``) and
-            # existence (``tags ? 'identity'``) queries.
+            # existence (``tags ? 'identity'``) queries. KEEP (coordinator, 2026-11-15): a scoped search's
+            # every-tag test (RetrievalScope.tags_all, ``tags @>``, retrieval_scope.build_scope_conditions) is read
+            # through it on both engines when the tag is rarer than the owner's rows (test_vector_index_plans).
+            # The any-tag test goes through gin_filter and never reads it (ybgin refuses a multi-key lookup).
             SchemaIndex(
                 "idx_memories_tags",
                 "tags",
                 using="gin",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.search_by_semantic; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.search_by_fts; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.hybrid_search; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.hybrid_search._nearest"
+                ),
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_vector_index_plans.py"
+                    "::test_idx_memories_tags_serves_a_scoped_searchs_every_tag_test"
+                ),
+                reason=(
+                    "memories carries six indexes: a scoped search's rare tag among one owner's many memories, "
+                    "found by containment"
+                ),
             ),
         ),
         # v0.8.1: global uniqueness on ``memory_id`` (stronger than the
@@ -1824,6 +1880,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         narrowing = (
             *_date_guards("t.date_created", date_after, date_before),
             *_scope_guards(scope),
+            *((Fragment(_EVERY_TAG, (list(scope.tags_all),)),) if scope is not None and scope.tags_all else ()),
             *clause_guards(filter_clause, self.read_filter, "t.tags"),
         )
         salience = Fragment(f"{self._salience_read()} >= $1", (salience_ambient_floor,))
@@ -2111,6 +2168,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             *((Fragment("t.type_memory = $1", (type_filter,)),) if type_filter else ()),
             *_date_guards("t.date_created", date_after, date_before),
             *_scope_guards(scope),
+            *((Fragment(_EVERY_TAG, (list(scope.tags_all),)),) if scope is not None and scope.tags_all else ()),
             Fragment("t.embedding IS NOT NULL", ()),
             *(() if include_retracted else (Fragment("NOT (COALESCE(t.tags, '[]'::jsonb) ? 'retracted')", ()),)),
             *clause_guards(filter_clause, self.read_filter, "t.tags"),
@@ -2227,6 +2285,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             *((Fragment("t.type_memory = $1", (type_filter,)),) if type_filter else ()),
             *_date_guards("t.date_created", date_after, date_before),
             *_scope_guards(scope),
+            *((Fragment(_EVERY_TAG, (list(scope.tags_all),)),) if scope is not None and scope.tags_all else ()),
             *(() if include_retracted else (Fragment("NOT (COALESCE(t.tags, '[]'::jsonb) ? 'retracted')", ()),)),
             *clause_guards(filter_clause, self.read_filter, "t.tags"),
         ]
@@ -3157,11 +3216,26 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
             # ``WITH`` clause here (the index was built before the
             # upstream migration started parametrising hnsw), so this
             # declaration has no ``pg_with=``.
+            # KEEP (coordinator, 2026-11-15; v0.8.1, 8060d75d7): a heavy owner's file contents, nearest first, are
+            # read through it on both engines; a small owner's are sorted off idx_media_content_agent_user
+            # (test_vector_index_plans holds both). The YugabyteDB small-owner ybhnsw cost (~100 ms at k=10) is the
+            # known follow-up at ix_memories_embedding_hnsw.
             SchemaIndex(
                 "ix_media_content_embedding",
                 "embedding",
                 using="hnsw",
                 ops={"embedding": "vector_cosine_ops"},
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MediaContentCollection.hybrid_search; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MediaContentCollection.search_by_semantic"
+                ),
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_vector_index_plans.py"
+                    "::test_ix_media_content_embedding_serves_a_heavy_owners_nearest_reads"
+                ),
+                reason="media_content carries three indexes: the nearest file contents of an owner too large to sort",
             ),
         ),
         # v0.8.1: global uniqueness on ``content_id``. Modelled as a
@@ -3795,11 +3869,27 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
             # v0.8.1: HNSW vector-similarity index with
             # ``vector_cosine_ops``. Prod does NOT carry a ``WITH``
             # clause here (mirror of ``ix_media_content_embedding``).
+            # KEEP (coordinator, 2026-11-15; v007 idx_chunks_embedding, renamed in 8060d75d7): a heavy owner's
+            # chunks, nearest first, are read through it on both engines; a small owner's are sorted off
+            # idx_memory_chunks_agent_user (test_vector_index_plans holds both). hybrid_search_within_memory is no
+            # reader: one memory's chunks are read by ix_memory_chunks_memory. The YugabyteDB small-owner ybhnsw
+            # cost (~100 ms at k=10) is the known follow-up at ix_memories_embedding_hnsw.
             SchemaIndex(
                 "ix_memory_chunks_embedding",
                 "embedding",
                 using="hnsw",
                 ops={"embedding": "vector_cosine_ops"},
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.hybrid_search; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoryChunkCollection.search_by_semantic"
+                ),
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_vector_index_plans.py"
+                    "::test_ix_memory_chunks_embedding_serves_a_heavy_owners_nearest_reads"
+                ),
+                reason="memory_chunks carries four indexes: the nearest chunks of an owner too large to sort exactly",
             ),
         ),
         # v0.8.1: global uniqueness on ``chunk_id``. Modelled as a

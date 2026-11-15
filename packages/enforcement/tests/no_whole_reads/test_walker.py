@@ -1633,6 +1633,87 @@ def test_the_k_nearest_or_a_containment_without_its_index_is_a_whole_read(tmp_pa
     assert any("index by_embedding" in finding and "index-purpose-unused" in finding for finding in findings), findings
 
 
+_CONTAINMENT_SPREAD = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import read_by, read_nearest
+    from threetears.interfaces.keyed import Fragment, Nearest
+
+    _EVERY_TAG = "t.tags @> $1::jsonb"
+
+    NOTES = TableSchema(
+        name="notes",
+        primary_key="note_id",
+        columns=[],
+        indexes=(
+            Index(
+                "by_owner",
+                "agent_id",
+                "user_id",
+                purpose="src/notes.py::tagged; src/notes.py::narrowed; src/notes.py::ranked; src/notes.py::ranked._nearest",
+                plan_test="tests/test_plans.py::test_owner",
+            ),
+            Index(
+                "by_tags",
+                "tags",
+                using="gin",
+                purpose="src/notes.py::tagged; src/notes.py::narrowed; src/notes.py::ranked; src/notes.py::ranked._nearest",
+                plan_test="tests/test_plans.py::test_tags",
+            ),
+        ),
+    )
+
+    async def tagged(conn, agent_id, user_id, tags):
+        return await read_by(
+            conn,
+            "notes",
+            by={"agent_id": agent_id, "user_id": user_id},
+            columns=("note_id",),
+            where=[*((Fragment("t.tags @> $1::jsonb", (tags,)),) if tags else ())],
+        )
+
+    async def narrowed(conn, agent_id, user_id, tags, kind):
+        narrowing = [
+            *((Fragment("t.kind = $1", (kind,)),) if kind else ()),
+            *((Fragment(_EVERY_TAG, (tags,)),) if tags else ()),
+        ]
+        return await read_by(
+            conn, "notes", by={"agent_id": agent_id, "user_id": user_id}, columns=("note_id",), where=narrowing
+        )
+
+    async def ranked(conn, agent_id, user_id, tags, vector):
+        narrowing = (*((Fragment(_EVERY_TAG, (tags,)),) if tags else ()),)
+
+        def _nearest():
+            return read_nearest(
+                conn,
+                "notes",
+                by={"agent_id": agent_id, "user_id": user_id},
+                where=[Fragment("t.embedding IS NOT NULL", ()), *narrowing],
+                nearest=Nearest("embedding", vector),
+                limit=5,
+                columns=("note_id",),
+            )
+
+        keyword = await read_by(
+            conn, "notes", by={"agent_id": agent_id, "user_id": user_id}, columns=("note_id",), where=[*narrowing]
+        )
+        return [*keyword, *await _nearest()]
+"""
+
+
+def test_a_containment_spread_into_a_read_by_a_condition_is_read_through_its_purposed_gin_index(tmp_path: Path) -> None:
+    """Flips if a ``tags @>`` fragment spread into a read's ``where`` by a condition (``*((Fragment(...),) if tags else
+    ())``: written at the call, in a list the function binds once, or in a tuple an inner function spreads) is not
+    seen, so the GIN index its purpose names is reported unused; each read without the tag stays keyed by its owner."""
+    _plans(
+        tmp_path,
+        "def test_owner(plan):\n    assert plan_uses_index(plan, 'by_owner')\n"
+        "def test_tags(plan):\n    assert plan_uses_index(plan, 'by_tags')\n",
+    )
+    findings = no_whole_reads_findings(_config(tmp_path, {"notes.py": _CONTAINMENT_SPREAD}))
+    assert findings == [], findings
+
+
 def test_a_purpose_may_be_a_tuple_of_the_reads_it_serves(tmp_path: Path) -> None:
     """Flips if purpose=("<path>::<fn>", ...) is not read as the reads it names: both found and using the index
     pass; neither using it is named, each one."""
