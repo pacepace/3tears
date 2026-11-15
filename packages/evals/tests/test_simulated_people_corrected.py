@@ -303,7 +303,20 @@ DECIDING_REPLICATES = 16_000
 #: ``(scale, rare share, n) -> (replicates covering the truth, replicates confirming)``. Every row re-runs on the pool
 #: and must reproduce its counts exactly (``random.Random`` with a fixed string seed is the same on every platform), so
 #: the floor read off this table is the simulation's, never a number typed beside it.
-DECIDING: dict[tuple[Scale, float, int], tuple[int, int]] = {}
+DECIDING: dict[tuple[Scale, float, int], tuple[int, int]] = {
+    ("pass_fail", 0.03, 60): (15258, 341),
+    ("pass_fail", 0.06, 60): (15236, 309),
+    ("pass_fail", 0.10, 60): (15248, 328),
+    ("ordinal", 0.05, 60): (15182, 577),
+    ("pass_fail", 0.03, 80): (15217, 360),
+    ("pass_fail", 0.06, 80): (15252, 304),
+    ("pass_fail", 0.10, 80): (15204, 308),
+    ("ordinal", 0.05, 80): (15244, 469),
+    ("pass_fail", 0.03, 100): (15293, 356),
+    ("pass_fail", 0.06, 100): (15199, 400),
+    ("pass_fail", 0.10, 100): (15218, 414),
+    ("ordinal", 0.05, 100): (15160, 462),
+}
 
 
 def _passes(covered: int, confirmed: int, replicates: int = DECIDING_REPLICATES) -> bool:
@@ -572,7 +585,7 @@ def _varying_coverage(seed: str, *, scale: Scale, shift: float, drawn_rule: bool
     covered = 0
     for _ in range(REPLICATES):
         truth, differences, labels = _varying_replicate(
-            rng, scale=scale, population=100, k=3, n=PPI_DECISION_MIN_LABELLED_CASES, shift=shift, drawn_rule=drawn_rule
+            rng, scale=scale, population=200, k=3, n=60, shift=shift, drawn_rule=drawn_rule
         )
         corrected = corrected_reading([labels], differences, direction=1, confidence=LEVEL)
         assert corrected is not None and corrected.interval is not None
