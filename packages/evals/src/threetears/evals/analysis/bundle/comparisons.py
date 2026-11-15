@@ -1038,7 +1038,11 @@ def judged_contrasts_corrected(
         ranked = sorted(range(len(raw)), key=lambda position: raw[position][2])
         filled = []
         for index, comparison in enumerate(family.comparisons):
-            if comparison.reading != "judged" or comparison.verdict not in ("improved", "regressed") or not comparison.delta:
+            if (
+                comparison.reading != "judged"
+                or comparison.verdict not in ("improved", "regressed")
+                or not comparison.delta
+            ):
                 filled.append(comparison)
                 continue
             rank = next(r for r, position in enumerate(ranked) if raw[position][:2] == (index, True))
@@ -1057,9 +1061,7 @@ def _corrected(
 ) -> FamilyComparison:
     """One separated judged contrast with its ``corrected`` check, where a read covers it."""
     dimension = comparison.name
-    sides = [
-        (cell.variant_key, cell.apparatus_class_id) for cell in (comparison.control, comparison.contrast)
-    ]
+    sides = [(cell.variant_key, cell.apparatus_class_id) for cell in (comparison.control, comparison.contrast)]
     judge_values: dict[str, float] = {}
     case_means: list[dict[str, float]] = []
     for key in sides:

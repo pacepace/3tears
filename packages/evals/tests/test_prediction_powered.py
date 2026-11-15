@@ -3,7 +3,9 @@
 The estimator's arithmetic is pinned here; whether its interval holds its level is
 ``test_simulated_prediction_powered.py``'s. The bundle half checks the estimate reaches every surface a judged reading
 does (the judged arm, the cell's reading and the code-only report), reads people's ratings through the one pairing
-agreement uses, and reads "not available" below the stated minimum.
+agreement uses, and reads "not available" where the ratings were chosen rather than drawn at random (owner,
+2026-11-14). A random sample's ratings, and the minimum they are stated from, are ``test_people_corrected.py``'s: the
+bundle reads no blind read yet, so a rating it holds is drawn at random only where it rates the whole cell.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.kernel.surface import PredictionPoweredReading
 from threetears.evals.run import rate_result
 from threetears.evals.schema.models import EvalCaseStratum, EvalResult
+from threetears.evals.schema.reading_states import StateOf
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE, ToyhostStorage
@@ -156,18 +159,37 @@ class TestTheBundleCarriesItBesideTheJudge:
         assert powered.ci_low <= powered.mean <= powered.ci_high
         assert arms[(runs[1].id,)].prediction_powered is None, "nobody rated the other arm"
 
-    def test_below_the_minimum_it_reads_not_available_and_says_so(self) -> None:
-        runs, bundle = _bundle(rated={1: PPI_MIN_LABELLED_RESULTS - 1}, shift=0)
+    @pytest.mark.parametrize("rated", [PPI_MIN_LABELLED_RESULTS - 1, PPI_MIN_LABELLED_RESULTS])
+    def test_ratings_of_part_of_a_cell_given_outside_a_blind_read_read_not_available_and_say_why(
+        self, rated: int
+    ) -> None:
+        runs, bundle = _bundle(rated={1: rated}, shift=0)
         powered = _arms(bundle)[(runs[1].id,)].prediction_powered
         assert powered is not None
         assert (powered.mean, powered.rectifier, powered.ci_low) == (None, None, None)
-        assert powered.n_labelled == PPI_MIN_LABELLED_RESULTS - 1
-        assert powered.unavailable_reason is not None and powered.unavailable_reason.startswith("not available")
+        assert powered.n_labelled == rated
+        assert powered.state == StateOf(state="not_available", reason="not_drawn_at_random")
 
-    def test_at_the_minimum_it_is_stated(self) -> None:
-        runs, bundle = _bundle(rated={1: PPI_MIN_LABELLED_RESULTS}, shift=0)
-        powered = _arms(bundle)[(runs[1].id,)].prediction_powered
-        assert powered is not None and powered.mean is not None
+    def test_an_agent_s_ratings_never_enter_it(self) -> None:
+        campaign, toy = toyhost_campaign()
+        runs = toy.load_eval_runs(campaign.run_ids, TOYHOST_SCOPE)
+        results_by_run = {run.id: toy.query_eval_results_by_run(run.id, TOYHOST_SCOPE) for run in runs}
+        storage = ToyhostStorage(runs, results_by_run)
+        for result in results_by_run[runs[0].id]:
+            score = result.judge_score(TOYHOST_JUDGED_DIMENSION)
+            assert score is not None
+            rate_result(
+                storage,
+                result_id=result.id,
+                scope_id=TOYHOST_SCOPE,
+                rubric_dim=TOYHOST_JUDGED_DIMENSION,
+                rater="sim/reviewer",
+                rater_kind="agent",
+                score=score.score,
+                reason="a model's reading",
+            )
+        bundle = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
+        assert all(arm.prediction_powered is None for arm in _arms(bundle).values())
 
     def test_the_cell_s_reading_is_the_arm_s(self) -> None:
         _, bundle = _bundle(rated={0: 36}, shift=-1)
@@ -201,7 +223,9 @@ class TestTheBundleCarriesItBesideTheJudge:
         assert any(
             " (n=36 over 12 cases); with people's ratings: " in text and "rectifier -1" in text for text in cells
         )
-        assert any("with people's ratings: not available (3 rated by people, under 10)" in text for text in cells)
+        assert any(
+            "with people's ratings: not available (3 rated by people, not drawn at random)" in text for text in cells
+        )
 
 
 class TestTheReadingSaysWhyItIsMissing:
@@ -212,5 +236,18 @@ class TestTheReadingSaysWhyItIsMissing:
     def test_a_stated_estimate_with_a_reason_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="exactly one of"):
             PredictionPoweredReading(
-                n_labelled=12, n_labelled_cases=12, min_labelled=10, mean=3.0, unavailable_reason="not available"
+                n_labelled=12,
+                n_labelled_cases=12,
+                min_labelled=10,
+                mean=3.0,
+                state=StateOf(state="not_available", reason="too_few"),
+            )
+
+    def test_a_missing_estimate_is_not_available_never_another_state(self) -> None:
+        with pytest.raises(ValidationError, match="not_available"):
+            PredictionPoweredReading(
+                n_labelled=3,
+                n_labelled_cases=3,
+                min_labelled=10,
+                state=StateOf(state="set_aside", reason="people_disagree"),
             )

@@ -312,10 +312,14 @@ def _prediction_powered(
     if not rated:
         return None
     census = len(rated) == len(valued)
-    read = {result_id: label for result_id, label in rated.items() if census or (result_id, dimension) in drawn_at_random}
+    read = {
+        result_id: label for result_id, label in rated.items() if census or (result_id, dimension) in drawn_at_random
+    }
     labelled = [row.test_case_id for row in valued if row.result_id in read]
     n_labelled = len(labelled) if read else len(rated)
-    n_labelled_cases = len(set(labelled)) if read else len({row.test_case_id for row in valued if row.result_id in rated})
+    n_labelled_cases = (
+        len(set(labelled)) if read else len({row.test_case_id for row in valued if row.result_id in rated})
+    )
     if not read or n_labelled < PPI_MIN_LABELLED_RESULTS:
         return PredictionPoweredReading(
             n_labelled=n_labelled,

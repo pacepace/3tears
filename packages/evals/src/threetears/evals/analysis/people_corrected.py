@@ -27,7 +27,8 @@ be stated the field's state is ``not_available`` with one reason of the shared s
 (:func:`decides`), never stored.
 
 ``tests/test_simulated_people_corrected.py`` holds the estimator's coverage and the decision floor
-(:data:`PPI_DECISION_MIN_LABELLED_CASES`, the smallest number of labelled cases that met every bar, and at least 40).
+(:data:`PPI_DECISION_MIN_LABELLED_CASES`, the smallest number of labelled cases that met every bar, and at least 40:
+60).
 
 This module computes numbers and prints nothing.
 """
@@ -68,10 +69,11 @@ PPI_REPORT_MIN_LABELLED_CASES: Final = 20
 
 #: The fewest labelled cases a ``corrected`` check decides from. From :data:`PPI_REPORT_MIN_LABELLED_CASES` up to it
 #: the result is ``insufficient``, ``too_few``, its figures shown and moving nothing. A lean concentrated in a few cases
-#: breaks fewer: a sample that met no disagreeing case has a rectifier of exactly zero with zero spread, and the
-#: corrected interval collapses to the judge's own. The smallest number of labelled cases at which every bar of
-#: ``tests/test_simulated_people_corrected.py`` was met, and at least 40.
-PPI_DECISION_MIN_LABELLED_CASES: Final = 40
+#: or answers breaks fewer: a sample that met no leaning case has a rectifier near zero with little spread, and the
+#: corrected interval collapses toward the judge's own. The smallest number of labelled cases at which every bar of
+#: ``tests/test_simulated_people_corrected.py`` was met, and at least 40: at 40 a judge giving a 5 to one candidate
+#: answer in twenty on a 1-to-5 scale was confirmed against people more often than the bar allows.
+PPI_DECISION_MIN_LABELLED_CASES: Final = 60
 
 #: The largest share of a sample's answered items a reader may skip, on the criterion read, before the sample stops
 #: standing for the cases: a skip follows content (the hard item is the one passed over), so past it the field is
@@ -291,7 +293,11 @@ def pair_labels(
                 continue
             by_arm = {output.arm: output for output in item.outputs}
             low, high = by_arm[control[0]], by_arm[candidate[0]]
-            if item.case_id not in population or low.result_id not in judge_values or high.result_id not in judge_values:
+            if (
+                item.case_id not in population
+                or low.result_id not in judge_values
+                or high.result_id not in judge_values
+            ):
                 continue
             reader = counted_label(cells[candidate[0]][high.result_id], dimension, float(given[high.slot])) - (
                 counted_label(cells[control[0]][low.result_id], dimension, float(given[low.slot]))
@@ -374,7 +380,13 @@ def corrected_reading(
         return None
     reader = min(
         labels,
-        key=lambda one: (_unavailable(one) is not None, one.against != "people", -len(one.pairs), one.read_id, one.against_id or ""),
+        key=lambda one: (
+            _unavailable(one) is not None,
+            one.against != "people",
+            -len(one.pairs),
+            one.read_id,
+            one.against_id or "",
+        ),
     )
     level = f"{format_number(100 * confidence)}%"
     common = {
