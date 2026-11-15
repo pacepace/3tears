@@ -58,6 +58,8 @@ from threetears.evals.analysis.contention import (
 )
 from threetears.evals.analysis.cells import (
     pool_observations,
+    rig_of,
+    split_on_served_model,
     subject_key_instabilities,
 )
 from threetears.evals.kernel.numbers import format_number
@@ -66,6 +68,7 @@ from threetears.evals.analysis.reporting import (
     project_score_records,
     request_settings_disclosure,
     request_settings_readings,
+    served_level,
     unconfirmed_model_identities,
 )
 from threetears.evals.analysis.measurement_windows import measurement_window
@@ -591,14 +594,22 @@ def assemble_context_bundle(
     observations, variant_index = observations_of(
         runs, results_by_run, apparatus_classes, scope_id=scope_id, profile=profile
     )
+    # One arm's observations under one rig stay one cell only while one candidate model answered them all: a served
+    # model that changed between runs, or that some responses did not name, classes them apart before anything pools
+    # (owner, 2026-10-23: a silent served model never joins a cell).
+    observations, classes = split_on_served_model(
+        observations,
+        {c.apparatus_class_id: c for c in apparatus_classes.values()},
+        {result_id: served_level(reading) for result_id, reading in served.items()},
+    )
     variant_index = name_arms(variant_index, observations, folds, run_ids)
     # Each arm as the host displays its levels, which orders the decision surface's arms below: never by a name the
     # declaration gives a level, which is presentation (LEVEL_PRESENTATION_FIELDS) and so moves no fingerprinted order.
     displayed = arm_names(variant_index)
     variant_index = declared_level_names(variant_index, declared_design)
-    cells, refused_merges, next_experiments = pool_observations(
-        observations, {c.apparatus_class_id: c for c in apparatus_classes.values()}
-    )
+    cells, refused_merges, next_experiments = pool_observations(observations, classes)
+    # Each split class's rig, so a cell split on the answering model is still read against the control under its rig.
+    rigs = {cell.apparatus_class_id: rig_of(cell) for cell in cells if cell.rig_class_id is not None}
     # Capped like the divergences, keeping the entries that bear on the most evidence: a refusal by the
     # observations its two cells hold, a recording by the observations it would add.
     held = {(cell.variant_key, cell.apparatus_class_id): cell.n_observations for cell in cells}
@@ -861,7 +872,7 @@ def assemble_context_bundle(
         runs,
         results_by_run,
         observations,
-        {c.apparatus_class_id: c for c in apparatus_classes.values()},
+        classes,
         projection.records,
         declared_design,
         tiers=bundle.judge_evidence_tiers,
@@ -896,6 +907,7 @@ def assemble_context_bundle(
         contended={
             key for key, members in results_by_cell.items() if any(result.id in contended_ids for result in members)
         },
+        rigs=rigs,
         # The overall pass rate is compared on each trial as the scoreboard below reads it, at the same threshold: in
         # the question's family when one is asked with a margin, and for the floors whatever the family holds.
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
@@ -908,7 +920,7 @@ def assemble_context_bundle(
     bundle.first_result_at = first_result_at
     # Over the same grouping every per-arm read uses, so an arm's exclusions describe the trials its readings lost.
     bundle.exclusions = cell_arm_exclusions(results_by_cell)
-    bundle.differential_exclusions = differential_exclusions(bundle.exclusions)
+    bundle.differential_exclusions = differential_exclusions(bundle.exclusions, rigs=rigs)
     # Every trial and each arm's census of them, after the catalog, which names each check and says which scorers
     # are pass/fail: the countable half of the report, read off the same results every lens above read, each trial
     # lost or not as `trial_exclusion` (the one classification `exclusions` counts) says.

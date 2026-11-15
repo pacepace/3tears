@@ -31,6 +31,34 @@ home and no forwarding import, so an import written against a module below a roo
 `threetears.evals.analysis.floors`, `projected_cell` and `projection_note` from
 `threetears.evals.analysis.report.projection_words`, `Said` and `SaidFigure` from `threetears.evals.analysis.said`, `judged_name` from
 `threetears.evals.analysis.style`, `tier_sentence_in` from `threetears.evals.analysis.lens_text`.
+### evals: a campaign's cells never pool two answering models, and an operator's judge case takes the next revision
+
+**Changed:** a campaign cell is one arm under one test setup answered by one candidate model (owner ruling,
+2026-10-23: no pooling by assumption; it replaces #684's "disclosed, not split" for campaign cells). Where an arm's
+results under one setup were answered by more than one model, or some by a model no response named, the arm holds a
+cell per answering model, each compared with the control under that setup on its own, and the bundle says why they
+stayed apart (`refused_merges` on `served_model:candidate`). An arm answered by one model throughout, or by none any
+response named, is one cell exactly as before. The arm-level readings (the scoreboard's counts, `arm_served_models`,
+the frontier, history and pivot lenses) still span the arm and disclose the mixture. Nothing is read for a split arm
+as a whole: the campaign's readings give it no row, floor status or pair on that aspect, the campaign page reads the
+aspect as not compared with one line naming the models, and the report input gives it no figure there and says why.
+
+**Changed:** `judge_case_author` and `judge_cases_freeze` adding a case to a judge template that already holds cases
+write the template's next revision, as a definitions reset does, carrying every case of the revision it supersedes.
+Runs of two revisions never pool, so a judge's runs before and after the write are never read as one battery. A write
+into a superseded revision is refused, naming the newest.
+
+**For hosts:** `Cell.rig_class_id` (new, optional, left out when unset) names the setup a split cell shares; pair an
+arm's cell with the control's by `rig_class_id or apparatus_class_id`, not by equal `apparatus_class_id`. Stored runs
+that stop pooling: within one arm and setup of a campaign, results whose candidate responses named different models,
+and those that named none beside those that named one. No host apparatus dimension may be named
+`served_model:candidate`. `CampaignReadings.answer_splits` (new, optional, left out when empty) names each arm read
+per model, as an `AnswerSplit` (new, provisional, `threetears.evals.analysis`); a host that expects a row per candidate and aspect handles its absence there. After a judge-case write, read the receipt's `template_id` (with `revision`,
+`superseded_template_id`, `carried`, `stranded_case_sets`, all new): it is the template to launch and to write the
+next case into, and a case set left on the superseded revision needs its next version minted over `carried`'s
+copies. `freeze_judge_cases` writes in place unless called with `revise=True`.
+
+### evals: a run that did not finish never opens with a verdict, on any surface (#1173)
 
 **Changed:** a failed run's print opened on its failure with no verdict; its HTML and Markdown report, and every
 surface of a cancelled, budget-stopped or exhausted run, still opened with a verdict over the results recorded before
@@ -67,6 +95,28 @@ the evidence it was written from: once its unfinished run has finished or left t
 tone meets `unfinished` (tone `failed`). `RunSummary.ended_because`,
 `Caveats.unfinished` and `DocPage.stopped` are new, optional and left out of a document while unset, so nothing stored
 moves; `EvalSummary.ending` replaces `EvalSummary.failed_text`, which no release shipped.
+
+### evals: a mean cost or latency takes an interval that holds 95% on lognormal-like values
+
+**Changed:** the interval on the mean of a spend or a time (a `nonnegative` measure on the cost or latency axis,
+or in dollars, `ms` or `s`) is the union of the t interval over cases, clipped at zero, and a log-scale interval on the case means. The clipped t
+interval alone, labelled 95%, covered a lognormal mean 83% of the time at 10 cases and 91% at 50 (log-SD 1.0), and 72%
+at 10 cases at log-SD 1.5; the new interval covered at least 96% from 5 to 50 cases on the shapes tested: lognormal to log-SD 1.5, gamma,
+exponential, normal, repeated cases, a fifth of cases free (`tests/test_simulated_floored_mean.py`). **It does not
+hold where rare large cases dominate the cost**: with one case in ten 30 times the rest it is the t interval and
+covers as it does, about 40%, 66% and 89% at 5, 10 and 30 cases (pinned there as a strict xfail). It is wider, by about 1.4 times at 10 cases of moderate skew and several
+times on heavy skew, and **under five cases above zero no interval is stated**, every case free included, only the mean, and a bar
+proposal, a readings cell and an evidence row say why and that five cases above zero give one
+(`docs/measuring-soundly.md`, "Variance, k and how many cases"; limits in `docs/open-problems.md`). Measures on a
+declared range, counts, rates and differences between arms are unchanged.
+
+**Changed:** a launch estimate's detectable difference names its test (`paired t-test`) and marks each rate:
+`DetectableEffect.rate` (new, default false), and a rate's printed line says its bounded interval must exclude zero
+too, so a difference that size needs more cases. The figures themselves are unchanged.
+
+**For hosts:** a host pinning a report page, a bundle's `ci_low` / `ci_high` on a spend or a time, or the launch
+estimate's text updates its match; a reader of those intervals must accept none where the arm holds under five
+differing cases. Nothing stored changes shape.
 
 ### evals: a definitions reset fills the presentation names a template it leaves current lacks
 

@@ -2741,7 +2741,9 @@ class EvalTestCase(DurableDocumentModel):
             "The id of the case this one is a copy of, when a definition reset carried it into its template's next "
             "revision (`run.reset_definitions(..., carry_live_cases=True)`): a live case of the superseded revision "
             "the seed corpus does not carry, copied with its content, payload, labels, stratum, name and seed record "
-            "unchanged. The source stays on the archived revision with every run measured against it; the copy's "
+            "unchanged; or when an operator's judge-case write into a judge template that held cases wrote its next "
+            "revision (`judge_case_author`, `judge_cases_freeze`), which carries every case of the superseded one. "
+            "The source stays on the archived revision with every run measured against it; the copy's "
             "own runs are the new revision's, and the two never pool. In no digest pre-image and no identity key. "
             "None for a case written any other way."
         ),

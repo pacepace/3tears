@@ -2817,6 +2817,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "rebuilt from what its run recorded and the person ratings given on it as labels. One case per judged "
                 "dim of each result; a result whose run did not record its judging, or whose template was edited "
                 "since, is skipped with why. With into_case_set, the next version of that set lists exactly these cases. "
+                "A case added to a template that already holds cases is a case of the template's next revision, which "
+                "carries the earlier cases: the result's template_id is the one to launch and to freeze into next, and "
+                "runs of the two revisions never pool. "
                 "Then run_launch the judge template, one arm per judge (its model, and its overlays config_ids and "
                 "temperature); the trials call only the judge. Calls no model."
             ),
@@ -2887,8 +2890,10 @@ def engine_actions() -> tuple[Action, ...]:
                 "itself. The host must vouch that the caller authors for that person, or the call is refused and "
                 "nothing is written. The case is stored under "
                 "the host's name for that person and records the caller that relayed it. Authoring the same case "
-                "again names the stored one. It mints no case set: case_set_mint lists the cases a launch runs. "
-                "Calls no model."
+                "again names the stored one. A new case written into a template that already holds cases is a case "
+                "of the template's next revision, which carries the earlier cases: the result's template_id is the one "
+                "to launch and to author the next case into, and runs of the two revisions never pool. It mints no "
+                "case set: case_set_mint lists the cases a launch runs. Calls no model."
             ),
         ),
         Action(
