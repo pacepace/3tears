@@ -30,6 +30,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING
 from threetears.evals.kernel import ControlDeclaration, EvalStorage, SweptAxis, resolve_variant_identity
+from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.ops import OpsHost
 from threetears.evals import Log
 from threetears.evals.run import attest_measure_definitions
@@ -45,7 +46,8 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
 )
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
-from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.fixtures.toyhost.kind import FIELD_ACCURACY
+from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.v15_shapes import V15Design
 
@@ -521,3 +523,48 @@ def test_a_divergence_is_never_tested_between_runs_read_under_two_definitions_an
         (scanned,) = [confound for confound in two.apparatus_confounds if confound.dimension == _DEFINITIONS]
         assert scanned.status == ("undecided" if before is None else "varied"), before
         assert _DEFINITIONS in two.confound_catalog, "the reason a reader judges it by is in the bundle"
+
+
+# =============================================================================
+# The host procedure: a reading-code change is marked by its revision FIRST, then each era is attested (R-4)
+# =============================================================================
+
+
+def _digests_at(revision: int) -> dict[str, str]:
+    """The toy host's definitions with ``field_accuracy`` at ``revision`` of its reading code: the descriptor's text
+    otherwise exactly as it is, as a host's descriptors are across a change made in reading code alone."""
+    base = toyhost_profile().measures
+    descriptors = [
+        descriptor.model_copy(update={"definition_revision": revision})
+        if descriptor.name == FIELD_ACCURACY
+        else descriptor
+        for descriptor in TOYHOST_MEASURES
+    ]
+    return MeasureRegistry(descriptors, families=base.families).definition_digests()
+
+
+async def test_two_eras_of_one_descriptor_text_attested_under_their_revisions_never_pool() -> None:
+    """A host whose reading code changed behind an unchanged descriptor raises the measure's revision first, then
+    attests each era under the revision it ran under: the eras stay apart. Attested under the descriptor text alone,
+    as the procedure once read, both eras state one digest and pool across a real change."""
+    assert _digests_at(0) != _digests_at(1), "the revision is in the digest; the text alone is not enough"
+    assert _digests_at(0) == _NOW, "revision 0 is the descriptors as they stand"
+
+    async def attested(eras: Sequence[dict[str, str]]) -> AnalysisContextBundle:
+        old, new = _named(_CANDIDATE, "old-era", None), _named(_CANDIDATE, "new-era", None)
+        control = _named(_CONTROL, "control", None)
+        storage = _stored([control, old, new])
+        host = toyhost_host(storage=storage)
+        for runs, definitions in (([control[0].id, new[0].id], eras[1]), ([old[0].id], eras[0])):
+            await attest_measure_definitions(host, runs, TOYHOST_SCOPE, definitions, attested_by="job:upgrade")
+        return _bundle(storage)
+
+    marked = await attested([_digests_at(0), _digests_at(1)])
+    cells = _arm(marked, control=False)
+    assert len(cells) == 2 and all(cell.split_on == ["measure_definition"] for cell in cells), (
+        "two eras, two cells: the arm is read per definition"
+    )
+
+    unmarked = await attested([_digests_at(0), _digests_at(0)])
+    (pooled,) = _arm(unmarked, control=False)
+    assert pooled.split_on == [], "what following the text alone does: one digest, one cell, across a real change"

@@ -192,7 +192,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 20`
+  <br>`= 21`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
@@ -1593,7 +1593,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `condition_filter` | `'ok'` \| `'candidate_fail'` \| `'infra_exclude'` or `null` | List only results in this condition: ok (delivered, scored), candidate_fail (scored as a hard fail) or infra_exclude (a harness fault, in no aggregate). |
 | `confirm` | `string` | Must echo the id of what is destroyed, exactly. |
 | `control_from_run_id` | `string` or `null` | One of the campaign's runs whose variant becomes the control arm, the stack every other is read against: its variant key is resolved from the run, so nobody types it. Needs a declared campaign. Null clears the control; omitted leaves it as it is. |
-| `coordinate` | `'served_model'` \| `'measure_definition'` \| `'template'` \| `'rig'` | Which coordinate of the runs' identity is stated: measure_definition (what each host measure counted when the runs' values were read) or served_model (the model that answered their candidate calls). No other coordinate is stated after the fact. |
+| `coordinate` | `'served_model'` \| `'measure_definition'` | Which coordinate of the runs' identity is stated: measure_definition (what each host measure counted when the runs' values were read) or served_model (the model that answered their candidate calls). No other coordinate is stated after the fact. |
 | `criteria` | array of `string` or `null` | Criteria, by dimension name; omitted takes every dimension a result was judged on. |
 | `criterion` | `string` | The rubric dimension's name on that template. |
 | `criterion_dim` | `string` or `null` | Only the profiles of this criterion's dim; omitted lists every one. |

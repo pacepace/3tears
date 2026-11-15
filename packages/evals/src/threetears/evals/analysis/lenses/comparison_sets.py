@@ -320,7 +320,7 @@ def measure_definition_disclosure(
     return MeasureDefinitionReading(bool(moved), bool(silent or unfinished), " ".join(sentences) or None)
 
 
-class ServedModelGroupReading(NamedTuple):
+class _ServedModelGroupReading(NamedTuple):
     """What a group's runs' responses said about the models that answered their candidate calls."""
 
     #: Runs that asked for one model were answered by two or more (``served_model_differs``).
@@ -331,9 +331,9 @@ class ServedModelGroupReading(NamedTuple):
     disclosure: str | None
 
 
-def served_model_group_reading(
+def _served_model_group_reading(
     runs: Sequence[EvalRun], results_by_run: Mapping[str, Sequence[ResultView]]
-) -> ServedModelGroupReading:
+) -> _ServedModelGroupReading:
     """Whether a group's runs that asked for one model were answered by different ones, and what a reader is told.
 
     Read as a campaign's cells read it (:func:`~threetears.evals.analysis.reporting.pooled_as`): off the candidate
@@ -345,7 +345,7 @@ def served_model_group_reading(
     :param results_by_run: Each run's results, by run id.
     :ptype results_by_run: Mapping[str, Sequence[ResultView]]
     :return: The reading.
-    :rtype: ServedModelGroupReading
+    :rtype: _ServedModelGroupReading
     """
     attested = attested_served_models(runs)
     by_requested: dict[str, dict[str, set[str]]] = {}
@@ -382,7 +382,7 @@ def served_model_group_reading(
             f"The model that answered the calls of {_listed(stated)} whose response named none was stated by the "
             "host after the run, not recorded: attested, not recorded."
         )
-    return ServedModelGroupReading(bool(moved), bool(silent), " ".join(sentences) or None)
+    return _ServedModelGroupReading(bool(moved), bool(silent), " ".join(sentences) or None)
 
 
 class ComparisonSetsResult(EvalBaseModel):
@@ -672,7 +672,7 @@ def compute_comparison_sets(
             badges.append(_BADGE_MEASURE_DEFINITIONS_DIFFER)
         if definitions.silent and BADGE_CONTEXT_INCOMPLETE not in badges:
             badges.append(BADGE_CONTEXT_INCOMPLETE)
-        answered = served_model_group_reading(grouped, results_by_run)
+        answered = _served_model_group_reading(grouped, results_by_run)
         if answered.differ:
             badges.append(_BADGE_SERVED_MODEL_DIFFERS)
         if answered.silent and BADGE_CONTEXT_INCOMPLETE not in badges:

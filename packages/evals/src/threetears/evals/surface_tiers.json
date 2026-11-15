@@ -793,6 +793,7 @@
 "threetears.evals.run.ArmVerdict": "provisional",
 "threetears.evals.run.assert_preconditions": "stable",
 "threetears.evals.run.attest_measure_definitions": "provisional",
+"threetears.evals.run.attest_served_model": "provisional",
 "threetears.evals.run.Attested": "provisional",
 "threetears.evals.run.borderline_dims": "provisional",
 "threetears.evals.run.BudgetStoppedError": "provisional",

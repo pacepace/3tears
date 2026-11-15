@@ -22,43 +22,77 @@ campaign page says so and names the remedy. A run that names what answered it po
 provider's dated model, a scripted client's own name, a recording. One silent run alone in its arm is still that
 arm's one cell.
 
-**Changed:** a replayed call whose recorded reply named no model reports its recording as what answered
+**Changed:** a replayed call or writer turn whose recorded reply named no model reports its recording as what answered
 (`recording:` and 12 hex digits of the file's sha256), so replays of one recording pool. `Log` takes
 `served_model=` and reads a `served_model` key off a line.
 
 **Changed:** `CELL_MODEL_VERSION` is 15: one move for the served-model split, the measure-definition setup and the
-unrecorded-served-model rule. The frontier's cell sentence and the comparison set's measure-definition disclosure say
-what a campaign's cells keep apart, where they said a campaign still pooled.
+unrecorded-served-model rule. The frontier's cell sentence and the comparison set's disclosures say what a
+campaign's cells keep apart, and which readers still pool.
+
+**Changed:** every reader of the test setup reads the definitions, not the cells alone: the confound scans name
+`measure_definitions` (`apparatus_confounds`, a coverage row's `confounded_by`), and the divergence lens tests no pair
+of lever levels whose runs were not read under one recorded definition (counted in `divergences_untested`).
+
+**Changed:** an arm split on either coordinate is read per cell, never as an arm. `Cell.split_on` (new, left out
+when empty) names the coordinates a cell's arm is split on, and every arm-level reader (the campaign's rows, floors
+and pairs, a measurement's rates, the report input's figures, a one-arm campaign) withholds such an arm. Two arms
+that share no setup, because their runs were read under different definitions or under none recorded, get no floor
+and no row. `AnswerSplit.coordinate` (new; left out when `served_model`) says which coordinate, and the page and the
+report input word it.
 
 **Changed:** one action, `runs_attest` (`write`; `run_ids`, `coordinate`, `measure_definitions?`, `served_model?`,
 `attestation_note?`), states a coordinate of stored runs that they did not record, and answers in one shape whichever
-coordinate (`coordinate`, `run_ids`, `already_attested`, `stated`, `attested_by`). It replaces
-`runs_attest_definitions`, which no release shipped. `coordinate: "measure_definition"` is that action unchanged.
-`coordinate: "served_model"` is new: it records the statement on each run (`EvalRun.served_model_attestation`: who,
-when, the model; core minor 15.20) and writes the model to each candidate usage row of the run that named none. It
-never replaces a model a response named: a run with no silent candidate row, or one stated as another model, is
-refused before anything is written. Stating the same value twice changes nothing. A statement is evidence: it moves
-the fingerprint of every bundle over the runs it stamps.
+coordinate (`coordinate`, `run_ids`, `already_attested`, `stated`, `attested_by`). `coordinate` is the closed set
+`AttestableCoordinate` (`measure_definition`, `served_model`). It replaces `runs_attest_definitions`, which no release
+shipped. `coordinate: "served_model"` records the statement on each run (`EvalRun.served_model_attestation`: who,
+when, the model, and the results it covers; core minor 15.21) and **rewrites no row**: the evidence stays as the
+responses left it. The campaign's cells, pass^k, the served-model confound scan and a comparison set read those
+silent rows through the statement; the bundle carries that they did (`ArmServedModel.n_attested` and
+`attested_models`, `RunSummary.attested_coordinates` for either coordinate); the identity disclosure stays and adds
+"Attested, not recorded", and an aspect page names runs whose definitions were stated. A run with no silent candidate
+row, or one already stated as another model, is refused before anything is written; stating the same value twice
+changes nothing. A statement is evidence: it moves the fingerprint of every bundle over the runs it stamps.
+`threetears.evals.run.attest_served_model` is exported.
 
-**Changed:** a run launched now records every coordinate of its identity; stating one afterwards is an upgrade step
-for stored runs. The one launch that cannot know, an eval over a `Log` whose lines name no served model, says so as
-it launches (a WARNING and a line of `Result.disclosures`), naming the coordinate and the remedy.
+**Changed:** a comparison set reads the served model: `served_model_differs` where runs that asked for one model were
+answered by two, `context_incomplete` where a run's responses named no model and nothing was stated, and
+`served_model_disclosure` says which runs. History, a pivot and the frontier's composite, cost and latency still pool
+across both coordinates, and the disclosures say so.
+
+**Changed:** a run launched now records every coordinate of its identity, or says it did not. A replayed completion
+or writer turn whose recorded reply named no model is answered by its recording. Where the host's own code answered
+and named nothing, the run says so, naming the coordinate and the remedy (a WARNING and a line of
+`Result.disclosures`): an eval over a `Log` whose lines name no served model as it launches, an eval whose runner
+returns an `Answer` naming no `served_model` once its arm ran. A take-up of a run stored before runs recorded
+definitions stays unrecorded, and says so as it is taken up (a WARNING).
 
 **For hosts:** after this change, two kinds of stored run stop pooling, and each has one remedy.
 - *Every campaign over runs that hold host measures and recorded no definition loses its contrasts until the host
   attests.* That is every run stored before runs recorded definitions (#1160) on a host with measures of its own.
-  `runs_attest` with `coordinate: "measure_definition"` takes many runs in one call (omit `measure_definitions` for
-  runs made under today's definitions; pass the digests of the descriptors as they were for older ones), touches no
-  result and may be run twice. A campaign that spans a definition change stays split after it, which is the point.
 - *Runs whose candidate responses named no model each stand alone in their arm* (a router echoing a requested alias
-  back, a logged output, an `Answer` or a kind's usage row naming no `served_model`). `runs_attest` with
-  `coordinate: "served_model"` takes many runs in one call. Going forward, report `served_model` from the completion
-  client, the `Answer` or the log line; a scripted test double names itself there.
-- *Upgrade procedure:* (1) once every reader runs this build, call `runs_attest` (`measure_definition`) over the
-  stored runs of each definition era; (2) call `runs_attest` (`served_model`) over the runs
-  `model_identity_disclosure` names, where the host knows what answered. The upgrade itself rewrites no stored key,
-  identity or fingerprint, and a stored report stays current across the cell model's move; a statement is evidence,
-  so a report written over the runs it stamps is regenerated.
+  back, a logged output, an `Answer` or a kind's usage row naming no `served_model`). Going forward, report
+  `served_model` from the completion client, the `Answer` or the log line; a scripted test double names itself there.
+- *Upgrade procedure, in order:*
+  1. For each measure whose reading code changed what it counts behind an unchanged descriptor, raise
+     `MetricDescriptor.definition_revision` once per change, and deploy that host build. The digest covers the
+     descriptor's fields and its revision, never the reading code, so the descriptors as they were give today's
+     digests: attesting them would pool every era across real changes.
+  2. Deploy this evals build to every reader (an older build pools an attested run on the key its launch stamped).
+  3. Map each stored run to the era of reading code it ran under, from the release the run records.
+  4. For each era, call `runs_attest` with `coordinate: "measure_definition"` and `measure_definitions` set to
+     `MeasureRegistry(descriptors at that era's revisions, measures removed since included).definition_digests()`;
+     omit `measure_definitions` for runs made under today's code. It touches no result and may be run twice.
+  5. A run that already recorded definitions on a build carrying #1160 before step 1 recorded revision-0 digests,
+     and a statement never replaces a record. Where it ran under today's code, it now stands apart from runs
+     launched after step 1: re-measure it (`run_remeasure`, with a `measure_rereader` that answers a measure whose
+     code did not change since as stored) to record today's digests. Where it ran under older code, re-measure it the
+     same way or leave it apart.
+  6. Call `runs_attest` with `coordinate: "served_model"` over the runs `model_identity_disclosure` names, where the
+     host knows what answered.
+  7. Regenerate stored reports over attested runs. Until a run is attested, a stored report over it reads as
+     current (its evidence did not move) while a re-assembled bundle withholds its contrasts; attesting moves the
+     fingerprint.
 - No host apparatus dimension may be named `measure_definitions`. `ApparatusClass.alone_to` (new, optional, left out
   when unset) names the run a class is alone to. A host that called `runs_attest_definitions` on an unreleased build
   calls `runs_attest` with `coordinate: "measure_definition"`.
@@ -274,8 +308,9 @@ A campaign's own cells follow in the entry "a campaign cell holds one definition
 - *On upgrade:* nothing to migrate and no stored key moves. Stored runs whose results hold a host measure each stand
   alone in pass^k until backfilled. A host that assembles runs itself sets
   `measure_definitions=profile.measures.definition_digests()`.
-- *Backfilling old runs:* call `attest_measure_definitions(host, run_ids, scope_id, definitions, attested_by=...)`
-  with the digests of the descriptors as they were when those runs ran
+- *Backfilling old runs:* follow the numbered procedure in the #1187 entry above, which raises
+  `definition_revision` first. Call `attest_measure_definitions(host, run_ids, scope_id, definitions, attested_by=...)`
+  with the digests of the descriptors, at the revisions they had, when those runs ran
   (`MeasureRegistry(descriptors_then).definition_digests()`), and with today's for runs made since the change. It
   reads no result or trace, takes any number of runs, and may be run twice: a run already attested with the same
   definitions is left as it was (`Attested.already_attested`), and one attested with other definitions is refused. To read
