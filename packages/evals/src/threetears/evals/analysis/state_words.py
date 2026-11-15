@@ -1,6 +1,6 @@
 """Every earlier word for "this reading is not being counted", and the shared state and reason it means.
 
-The package grew a vocabulary per feature for one question. :mod:`~threetears.evals.analysis.reading_states` holds the
+The package grew a vocabulary per feature for one question. :mod:`~threetears.evals.schema.reading_states` holds the
 one closed set; this table says, for each earlier word still stored or still spelled in code, which state, reason and
 coordinate it is. A stored value keeps its spelling and is read through this table; code that still decides by an
 earlier word moves onto the shared one, and its rows leave with it.
@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Final, NamedTuple
 
-from threetears.evals.analysis.reading_states import Coordinate, IdentityState, ReadingState, Reason
+from threetears.evals.schema.reading_states import Coordinate, IdentityState, ReadingState, Reason
 
 #: Nothing is declared yet: the table's readers are the call sites that move onto the shared words.
 __all__: list[str] = []

@@ -22,6 +22,24 @@ from __future__ import annotations
 
 from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.reading_states import (
+    ArmIdentity,
+    Coordinate,
+    IdentityState,
+    ReadingState,
+    Reason,
+    SampleKind,
+    StateOf,
+)
+from threetears.evals.schema.blind_read import (
+    BlindAgreement,
+    BlindPreference,
+    BlindReadReport,
+    BlindReview,
+    BlindReviewerCheck,
+    BlindSample,
+    BlindVerdictTable,
+)
 from threetears.evals.schema.call_ledger import (
     PASS_ACTION,
     PASS_TOOL,
@@ -303,6 +321,13 @@ from threetears.evals.schema.versioning import (
 )
 
 __all__ = [
+    "ArmIdentity",
+    "Coordinate",
+    "IdentityState",
+    "ReadingState",
+    "Reason",
+    "SampleKind",
+    "StateOf",
     "TurnText",
     "TurnThinking",
     "TurnToolResult",
@@ -416,6 +441,13 @@ __all__ = [
     "AsyncDeliveryStatus",
     "AsyncExternalSpend",
     "AsyncStoreClock",
+    "BlindAgreement",
+    "BlindPreference",
+    "BlindReadReport",
+    "BlindReview",
+    "BlindReviewerCheck",
+    "BlindSample",
+    "BlindVerdictTable",
     "BoundCompletionClient",
     "CalibrationRating",
     "CallLedger",

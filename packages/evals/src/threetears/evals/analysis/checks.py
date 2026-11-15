@@ -8,7 +8,7 @@ test was read against how often it planned to be.
 
 One class per shape, held by the bundle and the report input alike, so a fact has one spelling at both ends. Every
 field a shape declares is optional except what names it, and every state and reason is one of
-:mod:`~threetears.evals.analysis.reading_states`: no shape here carries a sentence saying why a figure is absent.
+:mod:`~threetears.evals.schema.reading_states`: no shape here carries a sentence saying why a figure is absent.
 
 A blind read's sample and what its readers preferred are the blind read's own shapes, and none is restated here.
 
@@ -21,7 +21,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from threetears.evals.analysis.reading_states import Coordinate, Reason, StateOf
+from threetears.evals.schema.reading_states import Coordinate, Reason, SampleKind, StateOf
 from threetears.evals.kernel.evidence_tiers import CriterionState
 
 __all__ = ["Check", "Corrected", "Looks", "Rescore"]
@@ -44,7 +44,7 @@ class Check(_Shape):
         default_factory=list,
         description="The arms whose candidate model is of the family of the model checked against.",
     )
-    sample: Literal["random", "selected", "none"] | None = Field(
+    sample: SampleKind | None = Field(
         default=None,
         description="Whether the items it was read on were drawn at random, chosen, or no sample stands behind it.",
     )

@@ -532,8 +532,12 @@ def _engine_storage(results: Sequence[EvalResult]) -> EvalStorage:
 
 
 #: Pinned paths a reading leaves out by design: a score's reasoning, read only by the bundle's trials section, which
-#: re-reads the rows it lists whole.
-LEFT_OUT = frozenset({"outcome_score.reasoning", "rubric_scores[].reasoning", "transcript_score.reasoning"})
+#: re-reads the rows it lists whole; and a stored result's whole dump, which the evidence digest takes only of a view
+#: that is the stored result itself (a reading is read by attribute, and ``test_evidence_fingerprint.py`` holds the
+#: two alike).
+LEFT_OUT = frozenset(
+    {"outcome_score.reasoning", "rubric_scores[].reasoning", "transcript_score.reasoning", "model_dump()"}
+)
 
 
 def _reached(holders: list[Any], segments: list[str]) -> bool:

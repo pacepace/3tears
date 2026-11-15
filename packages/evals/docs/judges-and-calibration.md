@@ -31,17 +31,70 @@ path: `Judge(model, rubric, *, examples=(), labels=None, case_material=None, gua
   every repeat gives its verdict. This reading sits beside the labels' and is never pooled into it: a few answers
   written to be hard are not a sample of the run's, and reach no tier's floor. The examples are also stored as cases
   a host's judge campaign calibrates on ([Seeding hard negatives](#seeding-hard-negatives)).
-- **`labels`** names a person's labels, a CSV. Every judged run's report writes `to_label.csv`: each judged answer on
-  each dimension, the judge's verdict withheld. A person fills in `label` and `rater` for about 20 rows of a
-  dimension, without looking at the judge's scores, and saves it as the file `labels=` names. The next run pairs
-  each label with the judge's score of the same answer (by a fingerprint of what was read and of the criterion's
-  wording, so a replayed run pairs, and a reworded dimension does not) and prints, per dimension, the pairs, κ with
-  its lower bound, and the [evidence tier](#step-7-evidence-tiers-and-how-many-ratings-they-take) it earns.
+- **`labels`** names a person's labels, a CSV, and the way to get them is a **blind read**. Every judged run's
+  report writes `blind_read.html`: one static page holding the run's judged answers in one seeded random order,
+  with the case each answers and the criteria as worded, and no arm, run, result or judge score. A person answers it
+  from the top, stops anywhere, and saves the labels as the file `labels=` names (`blind_read.csv` is the same
+  order as rows, for a spreadsheet). The next run pairs each label with the judge's score of the same answer (by a
+  fingerprint of what was read and of the criterion's wording, so a replayed run pairs, and a reworded dimension
+  does not) and prints how far the person read and, per dimension, the results paired with their cases, κ with its
+  bounds, and the [evidence tier](#step-7-evidence-tiers-and-how-many-ratings-they-take) it earns.
+  - **Answered from the top, it is a random sample.** A prefix of a random order is a simple random sample, so
+    nobody picks a sample size first: 12 answered cases and 60 are both random. Answers out of order are not drawn
+    at random: they still count toward κ and the tier, and the line says so. A skipped case, and one answered in
+    part, are counted and said, since a rater skips by content.
+  - **Two results of one case raise the tier's error.** The tier is awarded on a bound that claims a judge exactly
+    at the bar earns it at most 5% of the time. That holds with one result a case. A read of pairs rates two results
+    of every case, and where the judge's errors on the two coincide the measured rate is about 7% (5.3% at 20 cases,
+    6.7% at 60, 7.0% at 120, pass/fail): see
+    [open problems](open-problems.md#two-results-of-one-case-count-as-two). Each line states its cases beside its
+    results for that reason.
+  - **One result per case.** One answer is drawn per case among its repeats; with two arms an item is a pair in
+    slots A and B, assigned by a seeded coin in blocks of two, and the control is the first arm against the first
+    candidate.
+  - **A pass/fail dimension also says what κ cannot.** Where the person failed some answers, the line ends with how
+    many of those the judge failed too: a judge that passes everything agrees on most answers and catches none.
+  - **With two arms, the person's preference is read once.** Each pair asks which output is better. The verdict
+    (the exact two-sided sign test over the non-tie cases, ties counted and never split, a blank preference
+    counted and said, fewer than 6 too few to test) is given when the first 30 cases, or all of them where there are
+    fewer, are answered, and over those cases only. Before that the line says how far the read is and nothing else: a sign test re-read after every
+    case and stopped when it separates is falsely separated about 18% of the time, and a running count tells the
+    reader which arm is ahead.
+  - **Blindness is discipline here, not enforcement.** The labeller holds the store and the report, where the
+    judge's scores are. The page shows none of them and nothing stops a person from looking.
+  - **Labels outlive the draw.** The page's labels and the sheet's carry a fingerprint of the output each was given
+    on. When the answers change (a case added, a reply rewritten) the order is drawn again, and every label whose
+    output is still among the answers is kept, paired with that output and read as not drawn at random; the line
+    says how many were kept, and how many were not read and why (the output is gone; a preference between a pair
+    no longer shown together). An older `to_label.csv` reads the same way: it listed answers arm by arm in store
+    order, so no prefix of it is a random sample.
+- **`reviewer`** names a model that answers the same blind read, one call per case with nothing of any other case
+  in it. Its answers are a model's, never a person's. The judge's agreement with it prints under
+  `checked against a model (<id>)`, with `not yet against people` until a person has answered the same outputs, and
+  then with the model's own agreement with that person beside it; no tier word is printed for it. Where a person's
+  reading is decided (met or not met at the tier's floor) it decides; until then the model's reading stands and the
+  person's is shown beside it. Agreement with a model shows the judge measures what that model measures, and bounds
+  nothing about a lean they share.
+  - **It is not the judge.** A reviewer whose id, or any model that served one of its answers, is the judge's asked
+    or served model is not read as a check: its answers repeat the judge. Where which model served the judge's
+    scores or the reviewer's answers was not recorded, the reviewer cannot be shown to be another model, so it is
+    not read as a check either, and the line says which side was unrecorded. One from the judge's provider is read,
+    with a line saying a lean the two share would not show.
+  - **Its calls are spend.** Each is admitted before it is made, held to the eval's `max_cost_usd` over everything
+    the eval has landed, and written to the out-of-run ledger under the purpose `reviewer`: the cost of checking
+    the judge, in no candidate's cost. The print states it on a `reviewer:` line.
+  - **A case it answered is not asked again.** Beside a file store its answers are kept
+    (`blind_reads/<read>.<model>.csv`, a labels file) and a later run over the same answers reads them back and
+    makes no call; a `Model(recording=...)` replays its calls like any other. With `store=":memory:"`, or a host's
+    own store, nothing is kept and every run pays for the whole read again: run against a file store to pay once. A reply that cannot be used leaves its
+    case not answered, counted and said, and the run completes.
+  - **A labels file may say a row is a model's** (`rater_kind` `reference`, the model's id in `rater`, the model
+    that served it in `served_model`). The file is taken at its word.
 - **`guard`** puts dimensions on the boundary axis with their margins: `guard={"safe": 0.02}`
   ([Step 3](#step-3-guardrails-are-not-capabilities)).
 
-Until labels exist, the printed result says `judge: 0 labels: judge uncalibrated` and the next step, a line no quiet
-print drops. The package provides the mechanism (the file to label, the pairing, κ, the tiers); collecting the labels
+Until labels exist, the printed result says `judge: 0 of N cases read blind: judge uncalibrated` and the next step, a
+line no quiet print drops. The package provides the mechanism (the page to read, the pairing, κ, the tiers); collecting the labels
 is each app's own work, and no label is ever authored for you. The calibrated tier's floor is 20 person-rated
 results; about 50 is a realistic plan for a good judge.
 

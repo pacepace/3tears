@@ -42,7 +42,12 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.hot_path_support import campaign_id_of, toyhost_from
 
-from threetears.evals.analysis import assemble_campaign_bundle, campaign_report, report_markdown, serialize_report
+from threetears.evals.analysis import (
+    assemble_campaign_bundle,
+    campaign_report,
+    report_markdown,
+    serialize_report,
+)
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.arms import ELISION
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -283,7 +288,9 @@ def test_the_bundle_freezes_the_labels_and_fingerprint_it_froze_before() -> None
     bundle = assemble_campaign_bundle(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE)
 
     assert [arm.label for arm in bundle.arms] == _FROZEN_LABELS
-    assert bundle.fingerprint() == _FROZEN_FINGERPRINT
+    # In the version the pin was taken in: the campaign's frame, readings and all, each aspect named by its `v2:`
+    # fingerprint. (`v4:` is over the evidence, #1062.)
+    assert bundle.fingerprint(like="v3:") == _FROZEN_FINGERPRINT
 
 
 def test_no_listing_line_holds_a_cut_of_a_prompt_or_of_the_question() -> None:

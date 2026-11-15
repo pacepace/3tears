@@ -1,6 +1,6 @@
 """The shared reading states: one closed set, one set of reasons, and every earlier word mapped onto them.
 
-Contracts held here (``threetears.evals.analysis.reading_states``, ``state_words`` and ``caveats``):
+Contracts held here (``threetears.evals.schema.reading_states``, ``state_words`` and ``caveats``):
 
 - every state and reason pair the information architecture lists validates, with the one pair the judges design
   adds (a figure not available because an identity is unrecorded), and every cross pair is refused;
@@ -34,7 +34,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, Famil
 from threetears.evals.analysis.campaign_readings import AnswerSplit, CampaignReadings
 from threetears.evals.analysis.caveats import CLASS_OF_KIND, REMEDY_OF_REASON, Remedy
 from threetears.evals.analysis.checks import Check, Corrected, Rescore
-from threetears.evals.analysis.reading_states import (
+from threetears.evals.schema.reading_states import (
     REASONS_OF,
     ArmIdentity,
     CaveatClass,
@@ -294,7 +294,7 @@ def _literals(tree: ast.AST) -> list[tuple[int, set[str]]]:
 def test_no_other_literal_in_the_package_holds_two_of_the_state_words() -> None:
     """A second closed vocabulary for "can this be used" would hold at least two of the four words."""
     states = set(get_args(ReadingState))
-    home = SOURCE / "analysis" / "reading_states.py"
+    home = SOURCE / "schema" / "reading_states.py"
     walked = 0
     offenders = []
     for path in sorted(SOURCE.rglob("*.py")):
@@ -413,7 +413,7 @@ def test_the_judging_state_that_collides_with_set_aside_is_mapped_as_a_trial_s_f
     colliding = sorted(
         f"{name}:{word}"
         for name, words in aliases().items()
-        if not name.startswith("analysis/reading_states.py:")
+        if not name.startswith("schema/reading_states.py:")
         for word in words & set(get_args(ReadingState))
     )
     assert colliding == [

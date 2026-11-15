@@ -337,6 +337,8 @@ class _Builder:
             else:
                 settings = {axis: display for axis, display in differing.get(key, {}).items()}
                 settings.pop(CANDIDATE_MODEL_LEVER, None)
+            # Only where declared, so a view dumping what was set carries no key for an arm naming none.
+            declared_name: dict[str, Any] = {"short_name": declared[key]} if key in declared else {}
             arms.append(
                 Arm(
                     id=label,
@@ -346,8 +348,7 @@ class _Builder:
                     variant_key=key,
                     settings={"model": model, **settings},
                     reasoning_ratio=ratios.get(label),
-                    # Only where declared, so a view dumping what was set carries no key for an arm naming none.
-                    **({"short_name": declared[key]} if key in declared else {}),
+                    **declared_name,
                 )
             )
         return arms

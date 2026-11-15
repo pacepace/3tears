@@ -62,7 +62,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from threetears.evals.analysis.checks import Check, Corrected, Looks
-from threetears.evals.analysis.reading_states import (
+from threetears.evals.schema.reading_states import (
     ArmIdentity,
     CaveatClass,
     CaveatReach,

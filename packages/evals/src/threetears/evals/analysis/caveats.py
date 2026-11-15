@@ -20,7 +20,7 @@ from collections.abc import Iterable, Mapping
 from types import MappingProxyType
 from typing import Final, Literal, Protocol
 
-from threetears.evals.analysis.reading_states import CaveatClass
+from threetears.evals.schema.reading_states import CaveatClass
 from threetears.evals.analysis.report_input import CaveatEntry
 
 #: Nothing is declared yet: the tables' readers are the raisers and the page that renders the first screen.
@@ -75,7 +75,7 @@ Remedy = Literal[
 ]
 
 #: What would close a caveat, by its reason: every reason of
-#: :data:`~threetears.evals.analysis.reading_states.REASONS_OF` has one.
+#: :data:`~threetears.evals.schema.reading_states.REASONS_OF` has one.
 REMEDY_OF_REASON: Final[Mapping[str, Remedy]] = MappingProxyType(
     {
         "instrument_unchecked": "check_against_people",
@@ -145,5 +145,9 @@ def from_legacy(caveats: Iterable[_Legacy]) -> list[CaveatEntry]:
         # A caveat of the earlier shape that says precision is missing was given report reach only where it touches an
         # arm the options call: that is the reading the answer turns on.
         deciding = cls == "E" and caveat.reach == "report"
-        entries.append(CaveatEntry(id=caveat.id, kind=caveat.kind, cls=cls, reach=caveat.reach, deciding=deciding))
+        entries.append(
+            CaveatEntry.model_validate(
+                {"id": caveat.id, "kind": caveat.kind, "class": cls, "reach": caveat.reach, "deciding": deciding}
+            )
+        )
     return entries

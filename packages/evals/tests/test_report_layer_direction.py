@@ -204,6 +204,7 @@ _NUMBERS_MODULES = frozenset(
     {
         "agreement",
         "arms",
+        "blind_read",
         "aspects",
         "bar_proposals",
         "campaign_bundle",
@@ -232,7 +233,6 @@ _NUMBERS_MODULES = frozenset(
         "measurement_windows",
         "out_of_run_spend",
         "quantities",
-        "reading_states",
         "reads",
         "references",
         "remainder",

@@ -26,7 +26,7 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis import first_screen as first_screen_module
-from threetears.evals.analysis import reading_states
+from threetears.evals.schema import reading_states
 from threetears.evals.analysis.caveats import CLASS_OF_KIND, from_legacy, remedy
 from threetears.evals.analysis.checks import Check
 from threetears.evals.analysis.first_screen import RANKS, REASONS_SHOWN, first_screen, subsumed
@@ -582,7 +582,7 @@ def test_the_function_s_module_imports_only_the_closed_sets_and_the_input_s_shap
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and node.module is not None and node.module.startswith("threetears")
     }
-    assert engine == {"threetears.evals.analysis.reading_states", "threetears.evals.analysis.report_input"}
+    assert engine == {"threetears.evals.schema.reading_states", "threetears.evals.analysis.report_input"}
     assert not [node for node in ast.walk(tree) if isinstance(node, ast.Import)]
 
 

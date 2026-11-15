@@ -4,7 +4,7 @@
 list, the gate and the call, and returns the typed value both pages print
 (:class:`~threetears.evals.analysis.report_input.FirstScreen`). It is pure: no clock, no store, no text. It reads no
 eval kind, no campaign shape, no measure name and no word of prose; every comparison it makes is on a member of the
-closed sets of :mod:`~threetears.evals.analysis.reading_states`.
+closed sets of :mod:`~threetears.evals.schema.reading_states`.
 
 The rules, each held by one test:
 
@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Collection, Iterable, Sequence
 from typing import Final, NamedTuple
 
-from threetears.evals.analysis.reading_states import CaveatClass, ReadingState, Reason
+from threetears.evals.schema.reading_states import CaveatClass, ReadingState, Reason
 from threetears.evals.analysis.report_input import CallRead, CaveatEntry, FirstScreen, Gate
 
 __all__ = ["first_screen"]

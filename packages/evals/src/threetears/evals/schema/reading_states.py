@@ -16,7 +16,8 @@ over several, or the coordinate is ``unrecorded``, which matches nothing. A reas
 it.
 
 Nothing here reads an eval's kind, a campaign's shape or a measure's name, and the module imports nothing from the
-package: the bundle and the report input both hold these values, so neither is below the other here.
+package. It sits with the stored shapes because every layer holds these values: a blind read's preference, the
+bundle and the report input alike.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ __all__ = [
     "IdentityState",
     "Maker",
     "ReadingState",
+    "SampleKind",
     "Reason",
     "StateOf",
     "check_state",
@@ -91,6 +93,10 @@ CaveatReach = Literal["report", "scoped", "method"]
 
 #: Who made a judgment: a rating, a preference, a recommendation or a call.
 Maker = Literal["person", "model"]
+
+#: How the items a check was read on were sampled: ``random`` (the first of a drawn order), ``selected`` (any other
+#: set), or ``none`` (nothing was read). A property of a check's sample, and no state of a reading.
+SampleKind = Literal["random", "selected", "none"]
 
 #: The reasons each state may carry; ``counted`` carries none.
 REASONS_OF: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
