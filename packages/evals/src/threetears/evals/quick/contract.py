@@ -805,15 +805,16 @@ def _a_field_no_answer_carries(
 def _carries(answer: Any, result: CaseResult, name: str, *, classifier: bool) -> bool:
     """Whether one stored answer carries field ``name``: an object holding it, or a plain value, its own label.
 
-    An answer JSON could not hold is stored as its ``repr``, a string like a plain value: the classifier's label tells
-    the two apart (a plain string that is not blank is always a label), and any other field's cannot, so it is given
-    the benefit.
+    The stored answer is not always the answer graded: one JSON could not hold is stored as its ``repr``, a string like
+    a plain value, and a named tuple as a list. So for the classifier, the label its grading read decides (a plain
+    string that is not blank is always a label); any other field's grading leaves no such record, so an answer stored
+    in a form that may have hidden the field is given the benefit.
     """
     if isinstance(answer, dict):
         return name in answer
-    if answer is None or isinstance(answer, list):
+    if answer is None:
         return False
-    if isinstance(answer, str) and answer.strip() and classifier:
+    if classifier and not (isinstance(answer, str) and not answer.strip()):
         cell = result.scores.get(CONFUSION_CELL_MEASURE)
         read = confusion_of(cell) if isinstance(cell, str) else None
         return read is None or read[1] != UNUSABLE_ANSWER

@@ -11,13 +11,22 @@ packages (bumped in lock-step).
 **Changed:** a field grader that no answer of any arm carries is refused once the arms have run (exit 2 at the file
 door), naming the fields the answers do carry: `no answer has a field 'label', so its grader could score none of them;
 the answers carry category: grade the field they carry, or have the runner return 'label'`. It used to score every
-case 0% and exit 0. Answers that are all `None` say to return the answer; answers that hold no fields say which
-shapes do. An arm whose answers lack a field another arm's carry is still the product failing, and scored.
+case 0% and exit 0. Answers that hold no fields say which shapes do. The refused eval's runs are archived (kept and
+restorable, as `run_archive` keeps a run): `ls`, the history and the frontier read none of them, and no campaign is
+filed. What is the product failing is still scored as before, 0% included: an arm whose answers lack a field another
+arm's carry, answers that carry the field and are all wrong, and answers that are all `None` from a runner that
+returns a value somewhere (one returning `None` where the model's output never parsed), each case's answer stored as
+`None`.
 
 **Changed:** `Eval(...)` refuses, before anything runs, a runner that cannot be called with one case (a world's agent
-with a case and its tools), a function grader that cannot take `(case, out)`, and a case a field grader other than
-the classifier cannot read a label from. Each names the signature to declare, or the fields the case carries. The
-first used to score 0% and exit 0, the others to fail the run after the runner had answered every case.
+with a case and its tools), a runner whose code has no `return` of a value while a field grader reads its answer, a
+function grader that cannot take `(case, out)`, and a case a field grader other than the classifier cannot read a
+label from. Each names the signature to declare, what to return, or the fields the case carries. The first two used
+to score 0% and exit 0, the others to fail the run after the runner had answered every case. The signature read is
+what is called (a decorator's wrapper, not the function it wraps) and never evaluates annotations, so a name imported
+only under `if TYPE_CHECKING:` is no error; a callable whose signature cannot be read (a C wrapper such as
+`functools.cache`) is not refused. A function grader's `-> bool` is read the same way, so one annotated with such a
+name no longer fails `Eval(...)` with a `NameError` on Python 3.14.
 
 **Changed:** a field is read off any object answer as `out.<field>`, so a dataclass answer is graded by its field; it
 used to read as no label.
@@ -27,8 +36,11 @@ used to read as no label.
 is refused naming both. A model with no key and no recording names `recording=` as the way to run without one, and an
 eval of several arms with no name names `name=` or a cases file, not an example from another app.
 
-**For hosts:** nothing to do. A run that was scoring a field no answer carried now stops with exit 2; its runs stay
-stored, and no campaign is filed for it.
+**For hosts:** no code to change, and two things a host sees. An eval whose answers are objects other than a dict or
+a pydantic model (a dataclass, a named tuple, a plain object) graded by a field moves from 0% to its real score on
+upgrade: its history then shows a step that is the package's change, not the product's. And a run that was scoring a
+field no answer carried now stops with exit 2, its runs archived; `include_archived=True` lists them, and
+`run_archive(..., archived=False)` restores one.
 
 ### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
 

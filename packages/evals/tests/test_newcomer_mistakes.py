@@ -9,17 +9,18 @@ author typed.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 
 from threetears.evals import Eval, Model, World
-from threetears.evals.kernel import ACCURACY_MEASURE
+from threetears.evals.kernel import MATCH_MEASURE
 from threetears.evals.ops import scope_frontier, scope_history
 from threetears.evals.quick import EXIT_OK, EXIT_REFUSED, as_host
 from threetears.evals.run import list_runs
@@ -185,7 +186,7 @@ async def test_a_runner_whose_answers_are_all_none_is_scored_as_answering_nothin
     results = result.results()
     assert len(results) == 3
     assert all(r.answer is None and r.outcome == "scored" and r.state == "failed" for r in results)
-    assert {m.name: m.mean for m in result.summary.measures}[ACCURACY_MEASURE] == 0.0
+    assert _accuracy(result) == 0.0
 
 
 async def test_answers_with_no_fields_name_the_shapes_that_have_them() -> None:
@@ -223,6 +224,24 @@ async def test_a_dataclass_answer_is_read_by_its_field_and_one_without_it_is_ref
         await Eval(CASES, categorised, ["label"], k=1).run(store=":memory:")
 
 
+class LabelledTuple(NamedTuple):
+    label: str
+    urgent: str
+
+
+async def test_a_named_tuple_answer_is_graded_by_its_fields_though_stored_as_a_list() -> None:
+    """A named tuple is stored as a JSON list, a shape with no fields: what its grading read decides, so a correct
+    eval returning one is scored, never refused."""
+
+    def as_tuple(case: Mapping[str, Any]) -> LabelledTuple:
+        return LabelledTuple(_right(case), "no")
+
+    cases = [{**case, "urgent": "no"} for case in CASES]
+    result = await Eval(cases, as_tuple, ["label", "urgent"], k=1).run(store=":memory:")
+    assert _accuracy(result) == 1.0
+    assert all(r.scores["urgent"] == 1.0 for r in result.results())
+
+
 async def test_what_is_the_product_s_failure_is_still_scored() -> None:
     """An arm lacking a field the other arm's answers carry is the product failing; a field every case expects absent
     is answered right by its absence; a field present but blank is an answer with no label, scored 0%. None is
@@ -252,11 +271,13 @@ async def test_what_is_the_product_s_failure_is_still_scored() -> None:
     blanks = await Eval(CASES, blank, ["label"], k=1).run(store=":memory:")
     assert blanks.summary.n_scored == 3
     assert all(cell.predicted != cell.expected for cell in blanks.summary.confusion)
-    assert {m.name: m.mean for m in blanks.summary.measures}[ACCURACY_MEASURE] == 0.0
+    assert _accuracy(blanks) == 0.0
 
 
 def _accuracy(result: Any) -> float:
-    return float({m.name: m.mean for m in result.summary.measures}[ACCURACY_MEASURE])
+    """The share of trials whose label matched, read off each result's own ``match``."""
+    matched = [bool(r.scores[MATCH_MEASURE]) for r in result.results()]
+    return sum(matched) / len(matched)
 
 
 async def test_one_arm_whose_answers_carry_the_field_and_are_all_wrong_scores_0_percent() -> None:
@@ -289,7 +310,7 @@ def test_one_arm_all_wrong_exits_0_at_the_door(answer: str, in_tmp: Path, capsys
 # --- a refused run is kept out of every reading ----------------------------------------------------------------------
 
 
-async def test_a_refused_run_is_archived_so_no_listing_history_or_frontier_reads_it(tmp_path: Path) -> None:
+def test_a_refused_run_is_archived_so_no_listing_history_or_frontier_reads_it(tmp_path: Path) -> None:
     """The runs a refusal after the arms ran leaves behind are archived: kept and restorable, but ls, the history and
     the frontier read none of them, and the first fixed run is a baseline, not a step up from 0%."""
     store = tmp_path / "evals.sqlite"
@@ -299,12 +320,12 @@ async def test_a_refused_run_is_archived_so_no_listing_history_or_frontier_reads
 
     refused = Eval(CASES, classify, ["label"], k=1, name="triage")
     with pytest.raises(ValueError, match="no answer has a field 'label'"):
-        await refused.run(store=store)
+        asyncio.run(refused.run(store=store))
     host = as_host([refused], store=store)
     assert list_runs(host, "triage") == []
     (kept,) = list_runs(host, "triage", include_archived=True)
     assert kept.archived
-    history = scope_history(host, "triage", metric=ACCURACY_MEASURE)
+    history = scope_history(host, "triage")
     assert history.series == [] and history.exclusions.results_from_archived_runs == 3
     frontier = scope_frontier(host, "triage")
     assert frontier.subjects == [] and frontier.exclusions.results_from_archived_runs == 3
@@ -313,9 +334,9 @@ async def test_a_refused_run_is_archived_so_no_listing_history_or_frontier_reads
         return {"label": _right(case)}
 
     classify_fixed.__name__ = "classify"
-    fixed = await Eval(CASES, classify_fixed, ["label"], k=1, name="triage").run(store=store)
+    fixed = asyncio.run(Eval(CASES, classify_fixed, ["label"], k=1, name="triage").run(store=store))
     assert _accuracy(fixed) == 1.0
-    (series,) = scope_history(host, "triage", metric=ACCURACY_MEASURE).series
+    (series,) = scope_history(host, "triage").series
     (point,) = series.points
     assert point.is_baseline and point.run_id == fixed.summary.run_id
 
@@ -501,7 +522,8 @@ ACCEPTED_RUNNERS: dict[str, Any] = {
 
 @pytest.mark.parametrize("runner", ACCEPTED_RUNNERS.values(), ids=ACCEPTED_RUNNERS.keys())
 async def test_every_shape_of_runner_that_can_take_a_case_is_accepted_and_runs(runner: Any) -> None:
-    result = await Eval(CASES, runner, ["label"], k=1, name="accepted").run(store=":memory:")
+    # Named as an arm: a callable object or a partial has no __name__ to label an unnamed arm by.
+    result = await Eval(CASES, {"arm": runner}, ["label"], k=1, name="accepted").run(store=":memory:")
     assert _accuracy(result) == 1.0
 
 
