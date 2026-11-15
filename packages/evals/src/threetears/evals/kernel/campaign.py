@@ -230,6 +230,16 @@ class EvalCampaign(DurableDocumentModel):
     declared_by: str = Field(
         default="", description="Who declared the question, as the declaring surface knows them; empty when unrecorded."
     )
+    volume_per_month: float | None = Field(
+        default=None,
+        ge=0,
+        # Written only when stated, so a campaign stating none is stored as it was before the field.
+        exclude_if=lambda value: value is None,
+        description=(
+            "How many of what the subject's cost counts it serves a month (replies, conversations), as its owner "
+            "states it, so a cost per one can be read as a cost per month. None = not stated."
+        ),
+    )
     call: CampaignCall | None = Field(
         default=None,
         description="What a person decided over the campaign's readings. None = no call recorded yet.",
@@ -818,6 +828,12 @@ class CampaignDeclaration(EvalDocumentModel):
     arms: list[CampaignArm] = Field(description="The arms a person named, the control first.")
     aspects: list[Aspect] = Field(min_length=1, description="Every aspect, as declared, in the campaign's order.")
     floors: list[Floor] = Field(description="Every floor, on the aspect it names.")
+    volume_per_month: float | None = Field(
+        default=None,
+        # Left out when unset, so a declaration stating none dumps and fingerprints as it did before the field.
+        exclude_if=lambda value: value is None,
+        description="What the subject serves a month, as the campaign states it (`EvalCampaign.volume_per_month`).",
+    )
 
     @classmethod
     def of(cls, campaign: EvalCampaign) -> CampaignDeclaration:
@@ -835,6 +851,7 @@ class CampaignDeclaration(EvalDocumentModel):
             arms=list(campaign.arms),
             aspects=list(campaign.aspects),
             floors=list(campaign.floors),
+            volume_per_month=campaign.volume_per_month,
         )
 
 

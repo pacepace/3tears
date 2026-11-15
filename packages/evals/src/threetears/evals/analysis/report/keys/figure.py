@@ -23,9 +23,6 @@ FigureKind = Literal["number", "interval", "text", "arm"]
 #: a count. ``plain``: any other number, in ``Figure.unit`` when it has one.
 Scale = Literal["share", "percent", "points", "usd", "usd_per_1k", "usd_per_1m", "count", "plain"]
 
-#: The dollar scales, each with the factor that states its figure per 1,000 of what it counts.
-_PER_THOUSAND_FACTORS: dict[str, float] = {"usd": 1000.0, "usd_per_1k": 1.0, "usd_per_1m": 0.001}
-
 #: The filters a key may carry. One spelling at most (``pct``, ``pts``, ``usd``, ``usd_per_1k``, ``int``,
 #: ``pct10``), plus ``abs`` and ``interval``, in any order.
 Filter = Literal["pct", "pts", "abs", "signed", "usd", "int", "pct10", "interval", "usd_per_1k", "usd_whole", "words"]
