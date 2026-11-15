@@ -32,6 +32,7 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
+    asks_journal_max,
 )
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
@@ -396,7 +397,7 @@ class _FakeConnection(FakeAsyncpgConnection):
         :rtype: dict[str, Any] | None
         """
         result: dict[str, Any] | None
-        if "COALESCE(MAX(version)" in query:
+        if asks_journal_max(query):
             rel = args[1]
             max_version = self.journal_max_by_path.get(rel, 0)
             result = {"max_version": max_version}

@@ -259,6 +259,10 @@ def test_a_count_whose_literal_pins_bind_no_key_is_still_found(code: str, schema
         ('group_hashes(c, "results", scope="kind", scopes=ss, group="geo", hash_columns=hc)', "non-key-where"),
         # a literal select pinning no key column: every row is read for its filter
         ('literal_select("results", columns=cols, by={"kind": AnyOf(ks)})', "non-key-where"),
+        # a relation's fingerprint (count and key digest), judged where it is built: whole with no filters, a predicate
+        # the walk cannot read with them (coordinator 2026-11-14: the drivers declare their warehouse reads)
+        ('fingerprint_sql("results", key, row_number=n)', "whole-aggregate"),
+        ('postgres_fingerprint_sql("results", key, filters)', "unknown-predicate"),
         # a change record read past its marks pinning no key: every row's stamps are read
         ('read_past_marks(c, "results", columns=cols, marks={"up": m}, by={"kind": k})', "non-key-where"),
         # a changed-rows read keyed by no key of its relation: its hash pages read and sort every row

@@ -279,7 +279,11 @@ async def read_nearest(
         # file of the agent. The joined rows are ordered by the rank the ranked read selects (the similarity, or the
         # text rank): ranked_sql is itself wrapped to re-sort by distance (read_nearest_statement), so the distance
         # is not in its outer select list. Counted and matched joins, and a vector read naming no similarity, keep
-        # the two-step read.
+        # the two-step read. Measured on this one statement (2 users x 10k rows, 1024-dim, quiet, S/c2/lat/run2.log):
+        # PostgreSQL content FTS 2.44 ms against the bare ranked read's 2.33 and the old join's 2.60, chunk
+        # within_memory 5.81 / 5.73 / 5.69; semantic 39.9 ms against the old 1567; YugabyteDB at most 1.14x the bare
+        # read. Guarded by packages/core/tests/integration/test_nearest_join_leg_speed_live.py (2x the bare read, one
+        # statement a read).
         joined_sql, joined_params = _joined_nearest_statement(sql, list(params), nearest, joins)
         rows = [dict(row) for row in await sent_by(conn).fetch(joined_sql, *joined_params)]
         for row in rows:

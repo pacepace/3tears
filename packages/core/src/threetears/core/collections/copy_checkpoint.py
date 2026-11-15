@@ -55,7 +55,8 @@ from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter
 
 from threetears.core.declared import whole_read
-from threetears.core.keyed import WholeReads
+from threetears.core import keyed
+from threetears.core.keyed import InlineDuckDB, WholeReads, run_inline
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join
 
@@ -136,6 +137,9 @@ _WHOLE_WRITES: Final = WholeReads(
 
 #: the stage a part read back is patched in: a change set being applied, never a data table
 _PART_STAGE: Final = f"{STAGE_PREFIX}ckpt_part__"
+
+#: the touched keys a patched part drops from its old rows, staged beside it (:func:`_patched_part`)
+_PART_KEYS_STAGE: Final = f"{STAGE_PREFIX}ckpt_part_keys__"
 
 
 def _writes() -> Any:
@@ -1345,13 +1349,25 @@ def _patched_part(cursor: Any, table: FollowedTable, old: Any, keys: Sequence[Se
     ).fetch_arrow_table()
     if old is None:
         return fresh
+    # the old part's rows no touched key names: keyed.anti over the part and the touched keys, each staged on the
+    # cursor (the keys as text, cast to each key column's type as the read above casts them). It was an ANTI JOIN to
+    # the keys unnested from parameters, written here; the step is the same NOT EXISTS over the same two relations
+    named = {f"k{place}": pa.array(list(values), pa.string()) for place, values in enumerate(keys)}
+    typed = [
+        keyed.Selected(f"CAST(t.k{place} AS {table.key_cast(column)})", column)
+        for place, column in enumerate(table.key)
+    ]
     cursor.register(_PART_STAGE, old)
+    cursor.register(_PART_KEYS_STAGE, pa.table(named))
     try:
-        kept = cursor.execute(
-            f"SELECT t.* FROM {_PART_STAGE} AS t ANTI JOIN (SELECT {pk_unnest}) AS k ON {pk_join}",  # noqa: S608
-            list(keys),
-        ).fetch_arrow_table()
+        step = keyed.anti(
+            _PART_STAGE,
+            keyed.scan(_PART_KEYS_STAGE, typed),
+            on=[keyed.Match(column) for column in table.key],
+        )
+        kept = run_inline(keyed.read_step_arrow(InlineDuckDB(cursor), step))
     finally:
+        cursor.unregister(_PART_KEYS_STAGE)
         cursor.unregister(_PART_STAGE)
     return pa.concat_tables([kept, fresh.cast(kept.schema)])
 

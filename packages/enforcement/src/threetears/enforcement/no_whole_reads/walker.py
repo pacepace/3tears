@@ -228,7 +228,13 @@ _KEYED_MODULES: Final = ("threetears.core.keyed", "threetears.interfaces.keyed")
 #: the modules holding a keyed helper in :data:`KEYED_HELPER_CALLS`: :data:`_KEYED_PACKAGES` and the one the
 #: caller's grants filter (``visible_rows``, :mod:`threetears.agent.acl.visible_customers`); a statement over a
 #: helper's relation parameter there is judged at the helper's call sites (:func:`_helper_relations`)
-_KEYED_HELPER_MODULES: Final = (*_KEYED_PACKAGES, "threetears/agent/acl/visible_customers.py")
+_KEYED_HELPER_MODULES: Final = (
+    *_KEYED_PACKAGES,
+    "threetears/agent/acl/visible_customers.py",
+    # a relation's count and key digest (fingerprint_sql), over the relation its caller names: judged at the callers
+    # (coordinator ruling 2026-11-14)
+    "threetears/core/fingerprint.py",
+)
 
 #: what an expression reads as when it names a relation no statement is judged by where it is written (a declared
 #: transient producer's return, :data:`TRANSIENT_PRODUCED`; a keyed helper's relation parameter,
