@@ -33,7 +33,6 @@ _AGENT_LED_INDEXES_SQL: tuple[str, ...] = (
     "-- purpose: "
     "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.count_by_user; "
     "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_similar_for_dedup; "
-    "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_same_event; "
     "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.search_by_semantic; "
     "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.search_by_fts; "
     "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.list_for_user; "
