@@ -64,6 +64,14 @@ def _node_types(node: Mapping[str, Any]) -> Iterator[str]:
         yield from _node_types(child)
 
 
+def _sorted_rows(node: Mapping[str, Any]) -> Iterator[int]:
+    """the rows each sort node under ``node`` put in order, a loop's worth each."""
+    if node.get("Node Type") in {"Sort", "Incremental Sort"}:
+        yield int(node.get("Actual Rows", 0))
+    for child in node.get("Plans", ()):
+        yield from _sorted_rows(child)
+
+
 def _stores(captured: CapturedL3 | asyncpg.Connection) -> tuple[ScheduledJobCollection, JobFireCollection]:
     registry = CollectionRegistry()
     registry.configure(l3_pool=captured)
@@ -100,6 +108,58 @@ async def test_scheduled_jobs_next_fire(conn: asyncpg.Connection) -> None:
     assert len(due) == 50
     if await on_yugabyte(conn):
         assert page.rows_scanned <= 2 * (50 + 1), page
+
+
+async def test_scheduled_jobs_kind_name(conn: asyncpg.Connection) -> None:
+    """Flips if the operator's listing (list_jobs) or its bounded count (count_jobs) stops walking
+    idx_scheduled_jobs_kind_name_key in its order (``kind, name NULLS LAST, job_id``) and reads and sorts every
+    schedule instead, or a page read from a cursor reads the rows before it (v007; the LIMIT/OFFSET listing it
+    replaced read every schedule for every page)."""
+    # names on most jobs, NULL on the rest, so the order's nullable column is exercised; a run of names tied
+    await conn.execute(
+        "UPDATE scheduled_jobs SET name = 'job ' || lpad((abs(hashtext(job_id::text)) % 300)::text, 3, '0')"
+        " WHERE abs(hashtext(job_id::text)) % 7 <> 0"
+    )
+    await conn.execute("ANALYZE scheduled_jobs")
+    sorts = {"Sort", "Incremental Sort"}
+
+    async def _planned(read: Any) -> Any:
+        captured = CapturedL3(real=conn)
+        jobs, _ = _stores(captured)
+        answered = await read(jobs)
+        (sql, args), *_ = captured.asked
+        return answered, await explain_statement(conn, sql, *args)
+
+    # the first page, unfiltered and by kind: a page of 50 reads about its own rows (and the one past it)
+    for kinds in (None, ["k1", "k3"]):
+        page, plan = await _planned(lambda jobs, kinds=kinds: jobs.list_jobs(kinds=kinds, limit=50))
+        assert len(page.jobs) == 50 and page.next_cursor is not None
+        assert plan_uses_index(plan, "idx_scheduled_jobs_kind_name_key"), plan.plan
+        assert not set(_node_types(plan.plan)) & sorts, plan.plan
+        assert plan.rows_scanned <= 2 * (50 + 1), plan
+        # the page after it, from its cursor: the rows before the cursor are not read again
+        later, after = await _planned(
+            lambda jobs, kinds=kinds, cursor=page.next_cursor: jobs.list_jobs(kinds=kinds, limit=50, cursor=cursor)
+        )
+        assert len(later.jobs) == 50
+        assert not {job.job_id for job in later.jobs} & {job.job_id for job in page.jobs}
+        assert plan_uses_index(after, "idx_scheduled_jobs_kind_name_key"), after.plan
+        # on YugabyteDB the page past a cursor is legs, each a range of the index in its order, and the legs' rows
+        # (the page and the one past it, at most) are put in order at the end; nothing sorts more than that
+        assert all(rows <= 50 + 1 for rows in _sorted_rows(after.plan)), after.plan
+        assert after.rows_scanned <= 2 * (50 + 1), after
+    # a status filter is checked on the index entry, in the index's order, never by a sort: the page reads the
+    # entries until it holds 50 of the status (one job in ten is active here, so about ten entries a row kept)
+    page, plan = await _planned(lambda jobs: jobs.list_jobs(statuses=["active"], limit=50))
+    assert len(page.jobs) == 50 and {job.status for job in page.jobs} == {"active"}
+    assert plan_uses_index(plan, "idx_scheduled_jobs_kind_name_key"), plan.plan
+    assert not set(_node_types(plan.plan)) & sorts, plan.plan
+    assert plan.rows_scanned <= 2 * 10 * (50 + 1), plan
+    # the bounded count walks the same index and stops one past its cap, never counting all 5,000
+    counted, plan = await _planned(lambda jobs: jobs.count_jobs(at_most=100))
+    assert (counted.count, counted.more) == (100, True)
+    assert plan_uses_index(plan, "idx_scheduled_jobs_kind_name_key"), plan.plan
+    assert plan.rows_scanned <= 2 * (100 + 1), plan
 
 
 async def test_job_fires_job_time(conn: asyncpg.Connection) -> None:

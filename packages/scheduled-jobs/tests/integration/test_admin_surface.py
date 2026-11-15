@@ -32,6 +32,8 @@ from uuid import UUID
 
 import asyncpg
 import pytest
+from threetears.core.keyed import BoundedCount
+from threetears.core.pagination import CursorError
 from uuid_utils import uuid7
 
 
@@ -124,7 +126,7 @@ class TestListJobs:
             await _seed_job(pool, kind="beta")
             await _seed_job(pool, kind="gamma")
 
-            listed = await jobs.list_jobs()
+            listed = (await jobs.list_jobs()).jobs
 
             assert {j.kind for j in listed} == {"alpha", "beta", "gamma"}
             assert len({j.partition_key for j in listed}) == 3
@@ -141,7 +143,7 @@ class TestListJobs:
             await _seed_job(pool, kind="paused_one", status="paused")
             await _seed_job(pool, kind="expired_one", status="expired")
 
-            listed = await jobs.list_jobs()
+            listed = (await jobs.list_jobs()).jobs
 
             assert {j.kind for j in listed} == {"active_one", "paused_one", "expired_one"}
         finally:
@@ -157,9 +159,9 @@ class TestListJobs:
             await _seed_job(pool, kind="alpha", status="paused")
             await _seed_job(pool, kind="beta", status="active")
 
-            by_kind = await jobs.list_jobs(kinds=["alpha"])
-            by_status = await jobs.list_jobs(statuses=["paused"])
-            both = await jobs.list_jobs(kinds=["alpha"], statuses=["active"])
+            by_kind = (await jobs.list_jobs(kinds=["alpha"])).jobs
+            by_status = (await jobs.list_jobs(statuses=["paused"])).jobs
+            both = (await jobs.list_jobs(kinds=["alpha"], statuses=["active"])).jobs
 
             assert len(by_kind) == 2
             assert len(by_status) == 1
@@ -180,14 +182,14 @@ class TestListJobs:
             jobs, _ = build_stores(pool)
             await _seed_job(pool, kind="alpha")
 
-            assert await jobs.list_jobs(kinds=[]) == []
-            assert await jobs.list_jobs(statuses=[]) == []
-            assert len(await jobs.list_jobs()) == 1
+            assert (await jobs.list_jobs(kinds=[])).jobs == []
+            assert (await jobs.list_jobs(statuses=[])).jobs == []
+            assert len((await jobs.list_jobs()).jobs) == 1
         finally:
             await pool.close()
 
     async def test_it_pages_deterministically(self, pg_schema: tuple[str, str]) -> None:
-        """Ordering is total, so paging cannot repeat or skip a row."""
+        """Ordering is total and each page is read from the last one's cursor, so paging cannot repeat or skip a row."""
         url, schema = pg_schema
         pool = await apply_schema(url, schema)
         try:
@@ -195,13 +197,27 @@ class TestListJobs:
             for index in range(5):
                 await _seed_job(pool, kind=f"kind_{index}")
 
-            first = await jobs.list_jobs(limit=2, offset=0)
-            second = await jobs.list_jobs(limit=2, offset=2)
-            third = await jobs.list_jobs(limit=2, offset=4)
+            first = await jobs.list_jobs(limit=2)
+            second = await jobs.list_jobs(limit=2, cursor=first.next_cursor)
+            third = await jobs.list_jobs(limit=2, cursor=second.next_cursor)
 
-            seen = [j.job_id for j in (*first, *second, *third)]
+            seen = [j.job_id for j in (*first.jobs, *second.jobs, *third.jobs)]
             assert len(seen) == 5
             assert len(set(seen)) == 5
+            assert third.next_cursor is None
+        finally:
+            await pool.close()
+
+    async def test_a_cursor_it_did_not_issue_is_refused(self, pg_schema: tuple[str, str]) -> None:
+        """A cursor that does not decode is refused, never read as the first page."""
+        url, schema = pg_schema
+        pool = await apply_schema(url, schema)
+        try:
+            jobs, _ = build_stores(pool)
+            await _seed_job(pool, kind="alpha")
+
+            with pytest.raises(CursorError):
+                await jobs.list_jobs(cursor="not-a-cursor")
         finally:
             await pool.close()
 
@@ -215,10 +231,13 @@ class TestListJobs:
             await _seed_job(pool, kind="alpha", status="paused")
             await _seed_job(pool, kind="beta", status="active")
 
-            assert await jobs.count_jobs() == 3
-            assert await jobs.count_jobs(kinds=["alpha"]) == 2
-            assert await jobs.count_jobs(statuses=["active"]) == 2
-            assert await jobs.count_jobs(kinds=[]) == 0
+            assert (await jobs.count_jobs()).count == 3
+            assert (await jobs.count_jobs(kinds=["alpha"])).count == 2
+            assert (await jobs.count_jobs(statuses=["active"])).count == 2
+            assert (await jobs.count_jobs(kinds=[])).count == 0
+            # past its cap the count says "that many or more", never counting on
+            assert await jobs.count_jobs(at_most=2) == BoundedCount(count=2, more=True)
+            assert await jobs.count_jobs(at_most=3) == BoundedCount(count=3, more=False)
         finally:
             await pool.close()
 
@@ -538,7 +557,7 @@ class TestLatestForJobs:
             assert latest[job_a].status == "failed"
             assert latest[job_a].error == "drift beyond tolerance"
             assert latest[job_b].status == "succeeded"
-            assert len(await jobs.list_jobs()) == 2
+            assert len((await jobs.list_jobs()).jobs) == 2
         finally:
             await pool.close()
 

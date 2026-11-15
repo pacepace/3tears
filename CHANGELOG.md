@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### scheduled-jobs: the operator's listing pages by key; its count is bounded
+
+**Changed:** `ScheduledJobCollection.list_jobs(..., cursor=None)` returns a `JobPage` (its `jobs` and `next_cursor`),
+each page read by key from the last one's cursor (`keyset_page`), not by `OFFSET`; `offset` is gone. A cursor it did not
+issue raises `CursorError`. `count_jobs(..., at_most=JOB_COUNT_CAP)` returns a `BoundedCount`, walking the listing's
+index in its order: counted up to 1,000 by default, `more` set past it ("1,000 or more"), never a `count(*)` of every
+schedule. The filters keep their meaning (`None` every kind or status, an empty list nothing).
+**Migrations:** scheduled-jobs v007 builds `idx_scheduled_jobs_kind_name_key` (`kind, name NULLS LAST, job_id`, then
+`status`): the listing's order, so a page walks the index from its cursor and the count stops one past its cap.
+
 ### acl, skills: their raw reads move onto the keyed helpers; a ranked read's ties order by `TextRank(then=...)`
 
 **Removed:** `threetears.agent.acl.caller_visible_customers_query` (and its written-out `CALLER_VISIBLE_CUSTOMERS*_SQL`):

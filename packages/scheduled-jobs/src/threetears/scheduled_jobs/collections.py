@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, ClassVar, get_args
 from uuid import UUID
@@ -43,6 +44,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.keyed import (
     AnyOf,
+    BoundedCount,
     Fragment,
     Sort,
     TableKey,
@@ -60,8 +62,10 @@ from threetears.scheduled_jobs.reschedule import compute_next_fire_at
 from threetears.scheduled_jobs.types import ScheduleStatus
 
 __all__ = [
+    "JOB_COUNT_CAP",
     "REAPED_DISPATCH_ERROR",
     "JobFireCollection",
+    "JobPage",
     "ScheduledJobCollection",
 ]
 
@@ -72,6 +76,26 @@ log = get_logger(__name__)
 # Derived from the Literal rather than restated, so a status added to the
 # vocabulary cannot be silently rejected by the validation in front of it.
 _SCHEDULE_STATUSES: frozenset[str] = frozenset(get_args(ScheduleStatus))
+
+
+#: the most jobs :meth:`ScheduledJobCollection.count_jobs` counts by default: past it the answer is "1,000 or more".
+#: The same cap a binding validation's count stops at (the hub's ``BINDING_COUNT_CAP``): enough to tell an operator
+#: "a few" from "a lot", never a count of the whole table.
+JOB_COUNT_CAP: int = 1_000
+
+
+@dataclass(frozen=True)
+class JobPage:
+    """one page of :meth:`ScheduledJobCollection.list_jobs`.
+
+    :param jobs: the page's jobs, in the listing's order
+    :ptype jobs: list[ScheduledJobEntity]
+    :param next_cursor: the cursor of the page after it; ``None`` on the last page
+    :ptype next_cursor: str | None
+    """
+
+    jobs: list[ScheduledJobEntity]
+    next_cursor: str | None
 
 
 #: ``scheduled_jobs`` as the v001 migration leaves it. ``date_created`` is
@@ -375,9 +399,9 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
         kinds: Sequence[str] | None = None,
         statuses: Sequence[str] | None = None,
         limit: int = 200,
-        offset: int = 0,
-    ) -> list[ScheduledJobEntity]:
-        """Return jobs across every partition, for an operator-facing view.
+        cursor: str | None = None,
+    ) -> JobPage:
+        """Return one page of jobs across every partition, for an operator-facing view.
 
         Distinct from :meth:`list_due_for_tick`, which the engine uses and
         which admits ``status='active'`` and a reached ``next_fire_at``
@@ -396,22 +420,26 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
         caller that computed zero kinds into one operating on the whole
         deployment.
 
-        Ordering is total (``kind``, then ``name``, then ``job_id``) so
-        paging with ``offset`` cannot repeat or skip a row.
+        Ordering is total (``kind``, then ``name`` with unnamed jobs last,
+        then ``job_id``), and a page is read by key from the previous
+        page's cursor, so paging cannot repeat or skip a row.
 
         :param kinds: restrict to these kinds, or ``None`` for every kind
         :ptype kinds: Sequence[str] | None
         :param statuses: restrict to these statuses, or ``None`` for every
             status
         :ptype statuses: Sequence[str] | None
-        :param limit: page size
+        :param limit: page size, at least one
         :ptype limit: int
-        :param offset: rows to skip, for paging
-        :ptype offset: int
-        :return: matching jobs, ordered deterministically
-        :rtype: list[ScheduledJobEntity]
+        :param cursor: the previous page's ``next_cursor``; the first page
+            when ``None``
+        :ptype cursor: str | None
+        :return: the page's jobs in order, and the cursor of the page after
+            it (``None`` on the last page)
+        :rtype: JobPage
+        :raises CursorError: when ``cursor`` is not one this listing issued
         """
-        result: list[ScheduledJobEntity] = []
+        result = JobPage(jobs=[], next_cursor=None)
         if self.l3_pool is not None and kinds != [] and statuses != []:
             # __SPANS_PARTITIONS__: an admin view enumerates a deployment,
             # and each job may hold its own partition, so the partition
@@ -420,21 +448,72 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
             # The column list is written out literally (not interpolated)
             # so the partition-column enforcement walker sees
             # ``partition_key`` as a static literal.
-            rows = await self.l3_pool.fetch(
-                "SELECT partition_key, job_id, kind, payload, schedule_type, "
-                "schedule_config, status, next_fire_at, last_fired_at, "
-                "missed_fire_policy, name, date_created, date_updated "
-                "FROM scheduled_jobs "
-                "WHERE ($1::text[] IS NULL OR kind = ANY($1)) "
-                "AND ($2::text[] IS NULL OR status = ANY($2)) "
-                "ORDER BY kind ASC, name ASC NULLS LAST, job_id ASC "
-                "LIMIT $3 OFFSET $4",
-                list(kinds) if kinds is not None else None,
-                list(statuses) if statuses is not None else None,
-                limit,
-                offset,
+            #
+            # WHY by key (2026-11-15): this read was LIMIT/OFFSET over the whole table with an
+            # ORDER BY no index held, so every page read and sorted every schedule, and a page deep in the list
+            # read every row before it as well. idx_scheduled_jobs_kind_name_key (v007) holds the order, so a
+            # page walks the index from its cursor: about a page of entries read (plan test
+            # test_index_plans.py::test_scheduled_jobs_kind_name). A kind filter is a range of that index; a
+            # status filter is checked on the entry (status rides last in the index).
+            # Every status when unfiltered: the table's CHECK holds status to that vocabulary, so pinning all of
+            # it keeps every row, and the read states its filters the same way whether narrowed or not.
+            states = AnyOf(sorted(_SCHEDULE_STATUSES) if statuses is None else list(statuses), cast=None)
+            # Two calls, not one with a built ``by``: each states its pins as a literal the no-whole-reads walk
+            # reads (a pin map built at run time is a predicate it cannot see).
+            if kinds is None:
+                page = await keyset_page(
+                    self.l3_pool,
+                    "scheduled_jobs",
+                    columns=(
+                        "partition_key",
+                        "job_id",
+                        "kind",
+                        "payload",
+                        "schedule_type",
+                        "schedule_config",
+                        "status",
+                        "next_fire_at",
+                        "last_fired_at",
+                        "missed_fire_policy",
+                        "name",
+                        "date_created",
+                        "date_updated",
+                    ),
+                    by={"status": states},
+                    order=[Sort("kind"), Sort("name", nullable=True), Sort("job_id", cast="uuid")],
+                    limit=limit,
+                    cursor=cursor,
+                    records=True,
+                )
+            else:
+                page = await keyset_page(
+                    self.l3_pool,
+                    "scheduled_jobs",
+                    columns=(
+                        "partition_key",
+                        "job_id",
+                        "kind",
+                        "payload",
+                        "schedule_type",
+                        "schedule_config",
+                        "status",
+                        "next_fire_at",
+                        "last_fired_at",
+                        "missed_fire_policy",
+                        "name",
+                        "date_created",
+                        "date_updated",
+                    ),
+                    by={"kind": AnyOf(list(kinds), cast=None), "status": states},
+                    order=[Sort("kind"), Sort("name", nullable=True), Sort("job_id", cast="uuid")],
+                    limit=limit,
+                    cursor=cursor,
+                    records=True,
+                )
+            result = JobPage(
+                jobs=[ScheduledJobEntity(dict(row), is_new=False, collection=self) for row in page.rows],
+                next_cursor=page.next_cursor,
             )
-            result = [ScheduledJobEntity(dict(row), is_new=False, collection=self) for row in rows]
         return result
 
     async def get_by_job_id(self, job_id: UUID) -> ScheduledJobEntity | None:
@@ -493,34 +572,63 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
         *,
         kinds: Sequence[str] | None = None,
         statuses: Sequence[str] | None = None,
-    ) -> int:
-        """Count jobs matching the same filters :meth:`list_jobs` applies.
+        at_most: int = JOB_COUNT_CAP,
+    ) -> BoundedCount:
+        """Count jobs matching the same filters :meth:`list_jobs` applies, up to ``at_most``.
 
         Exists so a paging caller can size the result set without
         fetching it. The filter semantics are deliberately identical:
         a count computed under different rules than the listing would
         mis-page whoever trusted it.
 
+        The count stops at ``at_most``: past it the answer is "``at_most``
+        or more" (``more`` set), never the exact number, the rule a
+        binding validation's count follows. An operator reads a few dozen
+        schedules; counting a deployment's every row to print a number
+        nobody pages to the end of is a whole read.
+
         :param kinds: restrict to these kinds, or ``None`` for every kind
         :ptype kinds: Sequence[str] | None
         :param statuses: restrict to these statuses, or ``None`` for every
             status
         :ptype statuses: Sequence[str] | None
-        :return: number of matching jobs
-        :rtype: int
+        :param at_most: the most jobs counted, at least one
+        :ptype at_most: int
+        :return: the jobs counted (never more than ``at_most``), and whether
+            more match
+        :rtype: BoundedCount
         """
-        total = 0
+        total = BoundedCount(count=0, more=False)
         if self.l3_pool is not None and kinds != [] and statuses != []:
             # __SPANS_PARTITIONS__: counts what list_jobs would return, so
             # it carries the same cross-partition exemption.
-            counted = await self.l3_pool.fetchval(
-                "SELECT count(*) FROM scheduled_jobs "
-                "WHERE ($1::text[] IS NULL OR kind = ANY($1)) "
-                "AND ($2::text[] IS NULL OR status = ANY($2))",
-                list(kinds) if kinds is not None else None,
-                list(statuses) if statuses is not None else None,
-            )
-            total = int(counted or 0)
+            #
+            # WHY bounded (2026-11-15): this was count(*) over every schedule. It now walks the listing's own
+            # index (idx_scheduled_jobs_kind_name_key, v007) in its order and stops after at_most + 1 entries: the
+            # hub answers past the cap as "N or more" (JOB_COUNT_CAP, 1,000, the binding validation's cap). Read as
+            # one keyset page of the sort columns, not count_at_most: count_at_most's pins are a leading part of an
+            # index, and a status filter is checked on the entry, after the order, exactly as the listing's page
+            # checks it, so the count and the listing cannot apply different rules.
+            states = AnyOf(sorted(_SCHEDULE_STATUSES) if statuses is None else list(statuses), cast=None)
+            if kinds is None:
+                walked = await keyset_page(
+                    self.l3_pool,
+                    "scheduled_jobs",
+                    columns=("kind", "name", "job_id"),
+                    by={"status": states},
+                    order=[Sort("kind"), Sort("name", nullable=True), Sort("job_id", cast="uuid")],
+                    limit=at_most,
+                )
+            else:
+                walked = await keyset_page(
+                    self.l3_pool,
+                    "scheduled_jobs",
+                    columns=("kind", "name", "job_id"),
+                    by={"kind": AnyOf(list(kinds), cast=None), "status": states},
+                    order=[Sort("kind"), Sort("name", nullable=True), Sort("job_id", cast="uuid")],
+                    limit=at_most,
+                )
+            total = BoundedCount(count=len(walked.rows), more=walked.next_cursor is not None)
         return total
 
     async def set_status(

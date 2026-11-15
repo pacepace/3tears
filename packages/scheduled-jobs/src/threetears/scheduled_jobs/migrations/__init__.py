@@ -34,6 +34,8 @@ Version history:
   this one).
 - v006 builds ``idx_job_fires_job_time_key`` (``job_id, actual_fired_at DESC, fire_id DESC``: one job's fires in their
   order completed by the key) and drops v001's ``idx_job_fires_job_time``, which it covers.
+- v007 builds ``idx_scheduled_jobs_kind_name_key`` (``kind, name NULLS LAST, job_id``, then ``status``: the admin
+  listing's order completed by the key, its pages read by cursor and its bounded count walking the same index).
 """
 
 from __future__ import annotations
@@ -61,6 +63,9 @@ from threetears.scheduled_jobs.migrations.v005_contract_unread_indexes_dropped i
 )
 from threetears.scheduled_jobs.migrations.v006_job_fires_time_key_index import (
     add_job_fires_time_key_index,
+)
+from threetears.scheduled_jobs.migrations.v007_admin_listing_key_index import (
+    add_admin_listing_key_index,
 )
 
 PACKAGE_NAME = "scheduled_jobs"
@@ -91,6 +96,7 @@ def register(runner: MigrationRunner, *, held_contract: bool = False) -> Package
     if held_contract:
         pkg.version(5)(drop_unread_scheduled_job_indexes)
     pkg.version(6)(add_job_fires_time_key_index)
+    pkg.version(7)(add_admin_listing_key_index)
     runner.register(pkg)
     return pkg
 

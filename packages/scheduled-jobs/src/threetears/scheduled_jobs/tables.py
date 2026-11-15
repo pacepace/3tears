@@ -149,6 +149,21 @@ def scheduled_jobs_table(metadata: MetaData) -> Table:
                 "plan_test": "packages/scheduled-jobs/tests/integration/test_index_plans.py::test_scheduled_jobs_next_fire",
             },
         ),
+        # v007: the admin listing's order completed by the key, then the status a filter checks on the entry
+        Index(
+            "idx_scheduled_jobs_kind_name_key",
+            sa_text("kind ASC"),
+            sa_text("name ASC NULLS LAST"),
+            sa_text("job_id ASC"),
+            sa_text("status ASC"),
+            info={
+                "purpose": (
+                    "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::ScheduledJobCollection.list_jobs; "
+                    "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::ScheduledJobCollection.count_jobs"
+                ),
+                "plan_test": "packages/scheduled-jobs/tests/integration/test_index_plans.py::test_scheduled_jobs_kind_name",
+            },
+        ),
     )
 
 
