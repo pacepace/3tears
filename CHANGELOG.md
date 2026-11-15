@@ -104,7 +104,10 @@ definitions stays unrecorded, and says so as it is taken up (a WARNING).
      change since as stored), so it records today's digests. Such a run recorded revision-0 digests, which step 5
      states for the earliest era, and a statement never replaces a record: left as it is, it pools with the earliest
      era's runs once they are stated, whatever code it ran under. One that ran under the earliest era's code is of
-     that era already and needs nothing.
+     that era already and needs nothing. Where `run_remeasure` refuses such a run (a moved measure shaped the run,
+     or no reader can answer it from what was stored), it cannot be kept apart from runs recorded or stated at
+     revision 0: run it again under today's code and delete it, and until then state no era at revision 0 (leave
+     the earliest era's runs unrecorded).
   5. For each era, call `runs_attest` with `coordinate: "measure_definition"` and `measure_definitions` set to
      `MeasureRegistry(descriptors at that era's revisions, measures removed since included).definition_digests()`;
      omit `measure_definitions` for runs made under today's code. It touches no result and may be run twice.

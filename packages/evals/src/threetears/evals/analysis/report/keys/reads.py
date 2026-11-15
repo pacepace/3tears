@@ -845,6 +845,9 @@ def _aspect_scoreboard(report_input: ReportInput, values: tuple[str, ...], path:
 
 
 def _board_figure(row: ScoreboardRow, statistic: str, path: str) -> Figure:
+    if statistic == "failed" and row.passed is None:
+        # An arm the cells keep apart has its passes withheld, and its failures with them: never an empty count's 0.
+        return _number(path, None, "trials failed", "count")
     if statistic in ("lost", "failed"):
         return _number(path, sum(getattr(row, statistic).values()), f"trials {statistic}", "count")
     if statistic.endswith("_usd"):

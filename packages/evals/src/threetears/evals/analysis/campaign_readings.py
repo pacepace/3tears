@@ -1936,9 +1936,11 @@ def _board(bundle: AnalysisContextBundle, key: str) -> ArmScoreboard | None:
 def _pass_rate_on(bundle: AnalysisContextBundle, key: str) -> tuple[float, float] | None:
     """An arm's pass rate on an aspect in percent, its usable trials passed, and its standard error read off the
     Wilson interval with the cases as the draws; None where it ran no usable trial or fewer than two cases, or where
-    its census counts more cases with a usable trial than usable trials, which no interval can be read over."""
+    its census counts more cases with a usable trial than usable trials, which no interval can be read over, and where
+    the cells keep the arm apart on a coordinate of its identity (:func:`~threetears.evals.analysis.cells.unread_arms`):
+    its count pools two models' or two definitions' trials."""
     board = _board(bundle, key)
-    if board is None or not board.usable or board.usable_cases > board.usable:
+    if board is None or unread_arms(bundle.cells, key) or not board.usable or board.usable_cases > board.usable:
         return None
     interval = pooled_rate_interval(board.passed, board.usable, cases=board.usable_cases)
     if interval is None:

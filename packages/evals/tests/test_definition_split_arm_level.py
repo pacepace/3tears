@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import pytest
+
 from threetears.evals.analysis import (
     assemble_context_bundle,
     build_code_only_report,
@@ -31,7 +33,9 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
+from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.model import ChartBlock, Report
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -299,3 +303,60 @@ def test_an_aspect_read_under_one_definition_throughout_withholds_nothing_on_its
     assert _scoreboard_row(first, _CANDIDATE)[3] == str(1 + CASES)
     assert read.bars() == [_CONTROL, _CANDIDATE]
     assert report_input(read.whole).scoreboard[_CANDIDATE].passed == 1 + CASES
+
+
+def test_a_written_page_cites_no_failure_count_for_the_split_arm_and_the_controls_count_resolves() -> None:
+    """The report input withholds the split arm's failures as an empty count, which no key reads as 0 failed."""
+    built = report_input(_Read({_CONTROL: [_AFTER], _CANDIDATE: [_BEFORE, _AFTER]}).whole)
+
+    for key in (f"scoreboard.{_CANDIDATE}.failed", f"aspects.{ASPECT}.scoreboard.{_CANDIDATE}.failed"):
+        with pytest.raises(UnstatedFigure):
+            resolve(key, built)
+    for key in (f"scoreboard.{_CONTROL}.failed", f"aspects.{ASPECT}.scoreboard.{_CONTROL}.failed"):
+        assert resolve(key, built).value == CASES - 1
+
+
+_TONE = "tone"
+
+
+def _across_two_aspects(read: _Read) -> CampaignReadings:
+    """The campaign's readings with a second aspect, on which each arm was read under one definition throughout, beside its own."""
+    trials: list[tuple[EvalRun, list[EvalResult]]] = []
+    for arm, passing in ((_CONTROL, 5), (_CANDIDATE, 4)):
+        run = run_of(arm, measure_definitions=_AFTER).model_copy(update={"id": f"run-{_TONE}-{arm}"})
+        trials.append((run, _results(run, passing)))
+    runs = [run for run, _ in trials]
+    tone = make_aspect_campaign(
+        id=read.campaign.id,
+        label=_TONE,
+        run_ids=[run.id for run in runs],
+        design=minimal_aspect_design(merit_axes=[]),
+        question=QUESTION,
+        asked_at=ASKED_AT,
+        control=read.arms[0],
+        margin=10.0,
+        arms=read.arms,
+        floors=[RateDrop(max_points=10)],
+        scope_id=runs[0].scope_id,
+        name=read.campaign.name,
+        subject_id=runs[0].subject_snapshot.subject_id,
+        subject_kind="s",
+        created_at=ASKED_AT,
+    )
+    bundle = assemble_context_bundle(
+        tone, storage=ToyhostStorage(runs, {run.id: held for run, held in trials}), profile=toyhost_profile()
+    )
+    campaign = read.campaign.model_copy(
+        update={"aspects": [*read.campaign.aspects, *tone.aspects], "floors": [*read.campaign.floors, *tone.floors]}
+    )
+    return campaign_readings(campaign, {ASPECT: read.bundle, _TONE: bundle}, arms=read.arms)
+
+
+def test_the_equal_weight_figures_withhold_the_pass_rate_of_an_arm_read_under_two_definitions_on_an_aspect() -> None:
+    """Its count on that aspect pools what its cells keep apart: the figure across aspects is withheld, naming it."""
+    aggregate = _across_two_aspects(_Read({_CONTROL: [_AFTER], _CANDIDATE: [_BEFORE, _AFTER]})).aggregate
+
+    assert aggregate is not None, "the arms are compared on the other aspect, or this asserts nothing"
+    held = {figures.arm_label: figures for figures in aggregate.arms}
+    assert (held[_CANDIDATE].pass_rate.value, held[_CANDIDATE].pass_rate.missing) == (None, [ASPECT])
+    assert held[_CONTROL].pass_rate.value is not None and held[_CONTROL].pass_rate.missing == []

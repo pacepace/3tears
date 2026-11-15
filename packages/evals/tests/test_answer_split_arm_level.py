@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import pytest
+
 from threetears.evals.analysis import (
     assemble_context_bundle,
     build_code_only_report,
@@ -30,7 +32,9 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
+from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.model import ChartBlock, Report
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -46,14 +50,22 @@ _CONTROL, _ALIAS = "pinned", "latest"
 _MARCH, _JUNE = "m-03", "m-06"
 
 
-def _results(run: EvalRun, served: str, passing: int) -> list[EvalResult]:
-    """The run's trials, the first ``passing`` of them passing, each answered by ``served``."""
-    usage = [RoleUsage(role="candidate", model=run.candidate_model, served_model=served, cost_usd=0.002, call_count=1)]
+def _results(run: EvalRun, served: str, passing: int, cost: float = 0.002, step: float = 0.0) -> list[EvalResult]:
+    """The run's trials, the first ``passing`` of them passing, each answered by ``served``; trial ``i`` costs
+    ``cost + i * step``."""
     return [
         result_of(
             run,
             index,
-            usage=usage,
+            usage=[
+                RoleUsage(
+                    role="candidate",
+                    model=run.candidate_model,
+                    served_model=served,
+                    cost_usd=cost + index * step,
+                    call_count=1,
+                )
+            ],
             goal_state_outcomes=[{"expression": "reply.total == case.total", "passed": index < passing}],
         )
         for index in range(CASES)
@@ -63,11 +75,23 @@ def _results(run: EvalRun, served: str, passing: int) -> list[EvalResult]:
 class _Read:
     """One campaign of a control and an alias arm of two runs, read through every door."""
 
-    def __init__(self, alias_served: Sequence[str], *, control_served: Sequence[str] = ("pinned-1",)) -> None:
+    def __init__(
+        self,
+        alias_served: Sequence[str],
+        *,
+        control_served: Sequence[str] = ("pinned-1",),
+        alias_costs: Sequence[float] | None = None,
+    ) -> None:
+        """``alias_costs``, one per alias run, also has every alias run pass as often as the control: the arms then
+        differ on cost alone."""
         trials: list[tuple[EvalRun, list[EvalResult]]] = []
         for arm, served_by, passing in ((_CONTROL, control_served, 5), (_ALIAS, alias_served, 1)):
             for index, served in enumerate(served_by):
                 run = run_of(arm).model_copy(update={"id": f"run-{arm}-{index}"})
+                if arm == _ALIAS and alias_costs is not None:
+                    # each trial's cost a little apart, so a cell's cost has a spread a contrast can read
+                    trials.append((run, _results(run, served, 5, alias_costs[index], step=0.0001)))
+                    continue
                 # The alias's second run passes everything, so the two answering models read far apart.
                 trials.append((run, _results(run, served, CASES if arm == _ALIAS and index else passing)))
         runs = [run for run, _ in trials]
@@ -285,6 +309,26 @@ def test_the_aspect_page_gives_an_arm_answered_by_two_models_no_count_no_cost_no
     assert read.bars() == [_CONTROL]
 
 
+def test_an_arm_answered_by_two_models_that_cost_differently_is_not_compared_and_never_undecided() -> None:
+    """Each cell's cost reads apart from the control's while no pass rate does: the line never says the evidence cannot
+    tell the split arm from the control, and says it is not compared, and why."""
+    read = _Read([_MARCH, _JUNE], alias_costs=[0.004, 0.008])
+    first = read.aspect_first_screen()
+    separated = {
+        comparison.name
+        for family in read.bundle.multiple_comparisons.families
+        for comparison in family.comparisons
+        if comparison.verdict != "not_separated"
+    }
+    assert separated == {"production_replicating_cost"}, "only cost reads apart, or this asserts nothing"
+
+    assert "cannot tell" not in first, first
+    assert (
+        f"{_ALIAS} is not compared with {_CONTROL}: its trials were answered by more than one model, or by one no "
+        "response named, so they are read per model."
+    ) in first
+
+
 def test_the_aspect_page_says_no_candidate_is_compared_with_a_control_answered_by_two_models() -> None:
     first = _Read([_MARCH], control_served=["pinned-1", "pinned-2"]).aspect_first_screen()
 
@@ -319,3 +363,69 @@ def test_an_arm_answered_by_one_model_throughout_withholds_nothing_on_its_aspect
     assert _scoreboard_row(first, _ALIAS)[3] == str(1 + CASES)
     assert read.bars() == [_CONTROL, _ALIAS]
     assert report_input(read.whole).scoreboard[_ALIAS].passed == 1 + CASES
+
+
+def test_a_written_page_cites_no_failure_count_for_the_split_arm_and_the_controls_count_resolves() -> None:
+    """The report input withholds the split arm's failures as an empty count, which no key reads as 0 failed."""
+    built = report_input(_Read([_MARCH, _JUNE]).whole)
+
+    for key in (f"scoreboard.{_ALIAS}.failed", f"aspects.{ASPECT}.scoreboard.{_ALIAS}.failed"):
+        with pytest.raises(UnstatedFigure):
+            resolve(key, built)
+    for key in (f"scoreboard.{_CONTROL}.failed", f"aspects.{ASPECT}.scoreboard.{_CONTROL}.failed"):
+        assert resolve(key, built).value == CASES - 5
+
+
+_TONE = "tone"
+
+
+def _across_two_aspects(read: _Read) -> CampaignReadings:
+    """The campaign's readings with a second aspect, on which each arm was answered by one model throughout, beside its own."""
+    trials: list[tuple[EvalRun, list[EvalResult]]] = []
+    for arm, passing in ((_CONTROL, 5), (_ALIAS, 4)):
+        run = run_of(arm).model_copy(update={"id": f"run-{_TONE}-{arm}"})
+        trials.append((run, _results(run, _MARCH, passing)))
+    runs = [run for run, _ in trials]
+    tone = make_aspect_campaign(
+        id=read.campaign.id,
+        label=_TONE,
+        run_ids=[run.id for run in runs],
+        design=minimal_aspect_design(merit_axes=[]),
+        question=QUESTION,
+        asked_at=ASKED_AT,
+        control=read.arms[0],
+        margin=10.0,
+        arms=read.arms,
+        floors=[RateDrop(max_points=10)],
+        scope_id=runs[0].scope_id,
+        name=read.campaign.name,
+        subject_id=runs[0].subject_snapshot.subject_id,
+        subject_kind="s",
+        created_at=ASKED_AT,
+    )
+    bundle = assemble_context_bundle(
+        tone, storage=ToyhostStorage(runs, {run.id: held for run, held in trials}), profile=toyhost_profile()
+    )
+    campaign = read.campaign.model_copy(
+        update={"aspects": [*read.campaign.aspects, *tone.aspects], "floors": [*read.campaign.floors, *tone.floors]}
+    )
+    return campaign_readings(campaign, {ASPECT: read.bundle, _TONE: bundle}, arms=read.arms)
+
+
+def test_the_equal_weight_figures_withhold_the_pass_rate_of_an_arm_answered_by_two_models_on_an_aspect() -> None:
+    """Its count on that aspect pools what its cells keep apart: the figure across aspects is withheld, naming it."""
+    aggregate = _across_two_aspects(_Read([_MARCH, _JUNE])).aggregate
+
+    assert aggregate is not None, "the arms are compared on the other aspect, or this asserts nothing"
+    held = {figures.arm_label: figures for figures in aggregate.arms}
+    assert (held[_ALIAS].pass_rate.value, held[_ALIAS].pass_rate.missing) == (None, [ASPECT])
+    assert held[_CONTROL].pass_rate.value is not None and held[_CONTROL].pass_rate.missing == []
+
+
+def test_the_equal_weight_figures_withhold_the_pass_rate_of_a_control_answered_by_two_models_on_an_aspect() -> None:
+    aggregate = _across_two_aspects(_Read([_MARCH], control_served=["pinned-1", "pinned-2"])).aggregate
+
+    assert aggregate is not None, "the arms are compared on the other aspect, or this asserts nothing"
+    held = {figures.arm_label: figures for figures in aggregate.arms}
+    assert (held[_CONTROL].pass_rate.value, held[_CONTROL].pass_rate.missing) == (None, [ASPECT])
+    assert held[_ALIAS].pass_rate.value is not None and held[_ALIAS].pass_rate.missing == []

@@ -611,28 +611,33 @@ def verdict_line(
             if verdict.kind == "contrast" and f"{verdict.heading}: {verdict.words}" in said
         )
     )
+    read = _read_against_control(bundle)
+    not_compared = _not_compared_sentences(bundle, arm)
     # Whether the line says no reading tells any arm apart from the control (:func:`_undecided`).
     undecided = True
-    if said and costs_only:
-        # A cost is never the lead on its own: what the evidence leaves undecided first, then the cost.
+    if said and costs_only and read:
+        # A cost is never the lead on its own: what the evidence leaves undecided first, then the cost. Only where
+        # some arm is read against the control: an arm never compared with it is not undecided.
         result = f"{_undecided(bundle, arm)} on every reading but cost; " + "; ".join(said)
     elif said:
         result, undecided = "; ".join(said), False
     elif declared_question and not any(family.aspect is not None for family in bundle.multiple_comparisons.families):
         result, undecided = "The declared question is untested", False
-    elif _read_against_control(bundle):
+    elif read:
         result = _undecided(bundle, arm) + (
             " on any reading the question asks" if declared_question else " on any reading"
         )
     else:
         # Every arm is apart from the control: nothing was compared, so nothing is undecided either, and the line is
         # why (an arm's name is never capitalised as a sentence's opening word would be).
-        result, undecided = _not_compared_sentences(bundle, arm).strip().removesuffix("."), False
-    if declared_question and _read_against_control(bundle):
+        result, undecided, not_compared = not_compared.strip().removesuffix("."), False, ""
+    if declared_question and read:
         result = result[:1].upper() + result[1:]
+    # Every arm not read against the control is said to be, and why, whatever else the line says (its own text, where
+    # nothing else was compared, already is that).
     guardrails = (
         _guardrail_sentences(verdicts) if verdicts else "".join(f" {line}" for line in guardrail_lines(bundle, arm))
-    ) + (_not_compared_sentences(bundle, arm) if _read_against_control(bundle) else "")
+    ) + not_compared
     return VerdictLine(
         rule=rule, text=f"{prefix}{result}.{guardrails}", lead=f"{result}.", decisions=(result,), undecided=undecided
     )
@@ -675,11 +680,9 @@ def _undecided(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
     """That the evidence tells no arm apart from the control, the arms by name, the control last:
     ``the evidence cannot tell v2 and v1 apart`` (:func:`~threetears.evals.analysis.style.cannot_tell_apart`). Never
     "no difference", and never "nothing separated": an undecided contrast claims none. Only the arms read against the
-    control are named (:func:`_read_against_control`); one never compared with it is not undecided."""
-    others = [arm(key) for key in _read_against_control(bundle)] or [
-        arm(board.variant_key) for board in bundle.scoreboard if board.variant_key != _control_of(bundle)
-    ]
-    return cannot_tell_apart(others, arm(_control_of(bundle)))
+    control are named (:func:`_read_against_control`), and the caller asks only where one is: an arm never compared with it
+    is not undecided."""
+    return cannot_tell_apart([arm(key) for key in _read_against_control(bundle)], arm(_control_of(bundle)))
 
 
 def _not_read(bundle: AnalysisContextBundle) -> list[str]:
