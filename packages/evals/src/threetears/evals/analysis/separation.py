@@ -434,6 +434,9 @@ _TILT_STEPS: Final = 60
 #: The seeded extends the reach's own spread is read on (:func:`_reach_noise`).
 _DRAWS: Final = 16
 
+#: The seeded relabellings a critical draw is read under (:func:`cases_to_lift`): odd, so most of them is a majority.
+_RELABELLINGS: Final = 3
+
 #: Too few cases to read: fewer than two a side, no count, or no count up to the search's cap (an estimate on its
 #: line, or so near it) at which the reading clears.
 _TOO_FEW: Final = StateOf(state="not_available", reason="too_few")
@@ -534,6 +537,23 @@ def _drawn(pairs: Sequence[tuple[float, float]], chances: Sequence[float], count
             cumulative += chances[at]
         drawn.append(pairs[at])
     return drawn
+
+
+def _relabelled(
+    pairs: Sequence[tuple[float, float]], value_range: tuple[float, float], drawn: random.Random
+) -> list[tuple[float, float]]:
+    """``pairs`` each moved to a place along ``value_range`` that ``drawn`` picks, its difference kept: a paired
+    reading reads the differences alone, so only the order its pairs sort in changes."""
+    low, high = value_range
+    moved = []
+    for x, y in pairs:
+        difference = y - x
+        first = low + max(0.0, -difference) + drawn.random() * max(0.0, high - low - abs(difference))
+        second = first + difference
+        if second > high:
+            first, second = high - difference, high
+        moved.append((first, second))
+    return moved
 
 
 def _reach_noise(
@@ -702,10 +722,24 @@ def cases_to_lift(
         room = (math.fsum(second) - math.fsum(first)) / total - (estimate - distance) - allowance
         if room <= 0:
             return False
-        found = bounded_cases_to_clear(
-            first, second, paired=True, value_range=value_range, confidence=confidence, room=room, cap=total
-        )
-        return found is not None and found <= total
+        # The interval reads the critical draw in a few seeded orders of its pairs, sorted by their values first, so
+        # pairs that differ alike but sit at other values would read other orders: the draw is read under several
+        # seeded relabellings (each pair moved along the range, its difference kept) and clears where most do, its
+        # typical reach rather than one labelling's luck.
+        cleared = 0
+        for seed in range(_RELABELLINGS):
+            relabelled = _relabelled(design, value_range, random.Random(f"lift-relabel-{seed}-{total}"))
+            found = bounded_cases_to_clear(
+                [x for x, _ in relabelled],
+                [y for _, y in relabelled],
+                paired=True,
+                value_range=value_range,
+                confidence=confidence,
+                room=room,
+                cap=total,
+            )
+            cleared += found is not None and found <= total
+        return 2 * cleared > _RELABELLINGS
 
     total = _fewest(lifts, fixed, cap)
     return _TOO_FEW if total is None else total - fixed
