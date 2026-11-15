@@ -23,13 +23,21 @@ fails at the miss, as since #1162.
 
 **Changed:** rung 5's `judge.jsonl` is re-keyed in place, for $0 and with no call made again
 (`packages/evals/scripts/rekey_judge_recording.py`): 112 lines before and after, each changing only its `key`, its
-`recorder_version` (3 to 4) and the `inputs` it gains. Every replayed response, share and score is as it was.
+`recorder_version` (3 to 4) and the `inputs` and `prompt_key` (its old key) it gains. Every replayed response, share
+and score is as it was.
+
+**Added:** a format-4 line keyed by its inputs keeps `prompt_key`, the key its prompt had. A replay serves such a call
+whatever its prompt says now, and counts each one served over a prompt that has changed since
+(`RecordedCompletions.served_over_changed_prompts`, `Model.served_over_changed_prompts`). A writer eval says the count
+among its disclosures: `judge: N call(s) replayed over a page rendered otherwise since it was recorded`.
 
 **For hosts:** nothing to do. A recording made before format 4 still replays: a call naming its inputs that no line
 holds under them is served by its prompt, as before. Your own kinds' evidence names no inputs unless you set
 `JudgeEvidence.inputs` (new, optional, core v15.20 and durable v17.1, left out of the stored document while unset), and their calls are
-keyed by their prompts as they were. No fingerprint or label key moves: `fingerprint_judged_output` hashes the
-evidence's three strings alone.
+keyed by their prompts as they were. Setting it adds no fingerprint input: `fingerprint_judged_output` hashes the
+evidence's three strings alone. Recording keys are over inputs (what was asked) and label keys over what was read, so
+a label does not carry across a re-render. Set `inputs` so that, with the package's rendering code, they determine all
+three strings; anything else that can change them belongs in `inputs`.
 
 ### evals: one closed set of reading states, one caveat entry and one first-screen value, all unset
 

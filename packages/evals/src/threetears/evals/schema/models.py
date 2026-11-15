@@ -1032,6 +1032,9 @@ def fingerprint_judged_output(evidence: JudgeEvidence) -> str:
     case's context rather than the output and are not part of it; nor is the judge's prompt, which is the
     judge's, not the output's. Nor is the evidence's ``inputs``, which names what the strings were rendered from
     for a replay's key and is not what was read, so a fingerprint is what it was before the field existed.
+    Recording keys are over the inputs (what was asked) and label keys over what was read, so a label does not
+    carry across a re-render: a page reworded is another judged output, and a label pairs with exactly what its
+    labeller read.
 
     :param evidence: What the judge reads, as stored on the cell's trace (or frozen on a judge case).
     :ptype evidence: JudgeEvidence
@@ -5865,8 +5868,10 @@ class JudgeEvidence(CoreShapeModel):
 
     A recorded judge call over evidence that names its inputs is keyed by them instead of by its prompt
     (:class:`~threetears.evals.testing.RecordedCompletions`), so a word the package prints differently on the page
-    moves no recording. It is in no fingerprint: :func:`fingerprint_judged_output` hashes the three strings alone, so
-    a label key is what it was."""
+    moves no recording. These inputs, together with the package's own rendering code, must determine all three
+    strings: anything else that can change them belongs in ``inputs``, or a changed question replays a stale answer.
+    It is in no fingerprint: :func:`fingerprint_judged_output` hashes the three strings alone. Recording keys are over
+    the inputs (what was asked) and label keys over what was read, so a label does not carry across a re-render."""
 
 
 def eval_trace_doc_id(result_id: str) -> str:

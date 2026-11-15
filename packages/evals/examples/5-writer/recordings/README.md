@@ -14,7 +14,10 @@ The judge reads each report's page as the package lays it out, but each of its c
 rendered from, not by the page's text: the report document the writer stored, the snapshot it was written over, its
 open findings, and the criterion asked (format 4, the table in `testing/recorded_completions.py`). So a change to what
 the page prints (its words, its figures' precision) replays every judge call as recorded, for nothing. A replay then
-checks the plumbing and the arithmetic, not the judge's opinion of today's page: that is the paid lane's job.
+checks the plumbing and the arithmetic, not the judge's opinion of today's page: that is the paid lane's job. Each
+line also keeps `prompt_key`, the key its prompt had when it was recorded, so a replay counts the calls it served over a
+page rendered otherwise since, and the run says how many among its disclosures (`judge: N call(s) replayed over a page
+rendered otherwise since it was recorded`).
 
 **When an input moves, the replay says so.** A call whose inputs moved (a report written again, a case frozen again,
 a criterion reworded) is no longer found, and it is never dropped in silence. A scoring call the recording does not
@@ -28,7 +31,8 @@ The recording was keyed by each call's prompt until 2026-11-15, when
 `packages/evals/scripts/rekey_judge_recording.py` re-keyed its 112 lines in place: it replayed the rung at a commit
 whose pages matched every stored key, proved each line's request by recording it again (with no network) to its stored
 key, and wrote the key of its inputs. Only `key`, `recorder_version` and the added `inputs` changed; every response,
-cell and index is as recorded.
+cell and index is as recorded. Each line's old key was then kept as its `prompt_key`, taken line for line from the
+format-3 file in git, for $0.
 
 A file deleted or gone stale is refused by name, with the key that would record it: `judge.jsonl` and
 `OPENROUTER_API_KEY`, or the writer's first turn file and `ANTHROPIC_API_KEY`.

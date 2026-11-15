@@ -16,7 +16,8 @@ whose pages still match every stored key, which is what makes this a one-off. Fo
 2. records it again with the call's inputs bound: the key the recorder writes is the line's new key.
 
 Every line must be matched by exactly one call and every call by one line, the new keys must be distinct, and a line's
-other members are written back exactly as read. Each line then gains ``inputs`` and the format it is now in, 4; its
+other members are written back exactly as read. Each line then gains ``inputs``, ``prompt_key`` (its old key, the
+key its prompt had, so a replay can tell a page rendered otherwise since) and the format it is now in, 4; its
 ``result``, ``extra``, ``cell``, ``index``, ``settings``, ``sent_settings``, ``user_head`` and ``recorded_at`` are
 unchanged, so every replayed response is byte for byte what was recorded. Nothing is sent to a provider: the replay
 serves the recording, and the scratch recordings answer from a stub.
@@ -183,7 +184,7 @@ async def _rekeyed(lines: list[dict[str, Any]], asked: list[_Asked]) -> dict[str
 
 def _rewrite(text: str, mapping: Mapping[str, tuple[str, dict[str, Any]]]) -> tuple[str, list[dict[str, Any]]]:
     """The recording re-keyed, and its lines as read; every member but ``key``, ``recorder_version`` and the added
-    ``inputs`` written back as read."""
+    ``inputs`` and ``prompt_key`` (the line's old key) written back as read."""
     raw = text.splitlines()
     read = [json.loads(line) for line in raw]
     out: list[str] = []
@@ -193,7 +194,7 @@ def _rewrite(text: str, mapping: Mapping[str, tuple[str, dict[str, Any]]]) -> tu
         if line["recorder_version"] != 3:
             raise SystemExit(f"a line is in format {line['recorder_version']}, not 3: already re-keyed?")
         new, inputs = mapping[line["key"]]
-        rekeyed = {**line, "recorder_version": 4, "key": new, "inputs": inputs}
+        rekeyed = {**line, "recorder_version": 4, "key": new, "inputs": inputs, "prompt_key": line["key"]}
         out.append(json.dumps(rekeyed, ensure_ascii=False, allow_nan=False))
     return "".join(f"{line}\n" for line in out), read
 
@@ -211,11 +212,11 @@ def main(argv: list[str] | None = None) -> int:
     after = [json.loads(line) for line in rewritten.splitlines()]
     unchanged = all(
         {k: v for k, v in a.items() if k not in ("key", "recorder_version")}
-        == {k: v for k, v in b.items() if k not in ("key", "recorder_version", "inputs")}
+        == {k: v for k, v in b.items() if k not in ("key", "recorder_version", "inputs", "prompt_key")}
         for a, b in zip(lines, after, strict=True)
     )
     print(f"{path.relative_to(PACKAGE)}: {len(lines)} line(s) before, {len(after)} after; {len(asked)} call(s) asked")
-    print(f"members other than key, recorder_version and the added inputs unchanged: {unchanged}")
+    print(f"members other than key, recorder_version and the added inputs and prompt_key unchanged: {unchanged}")
     if not unchanged or len(lines) != len(after):
         return 1
     if not args.check:

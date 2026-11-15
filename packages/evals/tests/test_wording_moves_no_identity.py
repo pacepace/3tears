@@ -11,17 +11,20 @@ What is held, each part by perturbing text the package renders, through the fron
   document, snapshot or findings; another criterion; another intent, variation or goal outcome; the pair's other
   order) moves it. So a key that reads rendered text again turns this red;
 - **a recorded judge call**: scored through the judge service onto a recording, then replayed over a reworded page,
-  it is served the recorded answer; over a changed input it is refused naming that input;
+  it is served the recorded answer and counted as served over a changed prompt; over a changed input it is refused
+  naming that input;
 - **rung 5 whole** (``examples/5-writer``): replayed as shipped and again with a word changed throughout every page
   and every page's computed facts, and the pair's labels reworded, it exits 0 both times and prints the same
-  readings; every stored score (its dimension, score and reasoning, the replayed responses) is the same, and so is
+  readings, the reworded replay adding one disclosure that its judge calls were served over pages rendered otherwise
+  since they were recorded; every stored score (its dimension, score and reasoning, the replayed responses) is the same, and so is
   every stored fingerprint and digest (each snapshot's bundle fingerprint and report-input digest, the case set's
   fingerprints, the template's) but the judged output's, below.
 
-**Not yet true, held as a strict xfail:** a judged output's fingerprint (the output half of a label key,
-:func:`~threetears.evals.schema.models.fingerprint_judged_output`) is taken over the evidence's text as the judge read
-it, so a reworded page moves it. Whether a person's label of a page pairs with a judgment of the same document
-re-rendered is a ruling the design has not made; the S4 report drafts the issue. Fixing it flips the xfail.
+**One identity moves, by the label rule:** a label pairs with exactly what the labeller read. A judged output's
+fingerprint (the output half of a label key, :func:`~threetears.evals.schema.models.fingerprint_judged_output`) is over
+the evidence's three strings, which a labeller reads, so a reworded page moves it on every page, and a label does not
+carry across a re-render; the evidence's ``inputs``, which no one reads, move it not at all. Recording keys are over
+what was asked, label keys over what was read.
 
 The design's other perturbation (a host vocabulary overlay renaming every measure, lever, arm and stratum, over the
 four hot-path fixtures) turns on with S7, which separates labels from ids.
@@ -215,6 +218,7 @@ async def test_a_recorded_judge_call_replays_over_a_reworded_page_and_is_refused
     replayed = await _service(replay).score_dimension(_FIRST_SCREEN, _context(_reworded(evidence)))
     assert replayed.score is not None
     assert (replayed.score.score, replayed.score.reasoning) == (recorded.score.score, recorded.score.reasoning)
+    assert replay.served_over_changed_prompts == 1, "served over a reworded page, and counted"
 
     moved = RecordedCompletions.replay(path, settings=_SETTINGS)
     with pytest.raises(RecordingRefused) as refused:
@@ -225,10 +229,13 @@ async def test_a_recorded_judge_call_replays_over_a_reworded_page_and_is_refused
 
 # --- rung 5 whole ------------------------------------------------------------------------------------------------
 
+#: Every judge call rung 5 replays: its 98 scores (7 criteria over 14 pages) and the pairwise pass's 14.
+_JUDGE_CALLS: Final = 112
+
 #: The stored fields that are identities: every one must be the same over a reworded page, but the one below.
 _IDENTITY_FIELDS: Final = ("fingerprint", "digest")
 
-#: The one stored identity a reworded page still moves: the judged output's fingerprint (the xfail below).
+#: The one stored identity a reworded page moves, on every page: the judged output's fingerprint, a label key's half.
 _OVER_TEXT: Final = "output_fingerprint"
 
 
@@ -320,19 +327,33 @@ def test_rung_five_replays_every_judge_call_with_the_same_answers_over_reworded_
     # Every call replayed, with the answers it was recorded with.
     assert plain.exit_code == moved.exit_code == 0, moved.printed
     assert "7 result(s): 7 scored, 0 excluded" in moved.printed and "| lead-first | every pair |" in moved.printed
-    assert moved.printed == plain.printed
+    # It says so: every judge call was served over a page rendered otherwise since it was recorded, and the
+    # replay as shipped served none.
+    rerendered = f"judge: {_JUDGE_CALLS} call(s) replayed over a page rendered otherwise since it was recorded"
+    assert "replayed over a page rendered otherwise" not in plain.printed
+    assert rerendered in moved.printed, moved.printed
+    assert [line for line in moved.printed.splitlines() if rerendered not in line] == plain.printed.splitlines()
     assert len(plain.scores) == 98 and moved.scores == plain.scores
     # Every stored fingerprint and digest, but the judged output's, is where it was.
     kept = {path: held for path, held in plain.identities.items() if not path.endswith(_OVER_TEXT)}
     assert {path: held for path, held in moved.identities.items() if not path.endswith(_OVER_TEXT)} == kept
     assert any("bundle_fingerprint" in path for path in kept) and any("report_input_digest" in path for path in kept)
+    # The judged output's fingerprint moves on every reworded page: a label of the page as it read does not carry over.
+    over_text = {path for path in plain.identities if path.endswith(_OVER_TEXT)}
+    assert over_text and over_text == {path for path in moved.identities if path.endswith(_OVER_TEXT)}
+    for path in over_text:
+        assert len(moved.identities[path]) == len(plain.identities[path]), path
+        assert not set(moved.identities[path]) & set(plain.identities[path]), path
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a judged output's fingerprint (a label key's output half) is over the evidence's text; whether a label "
-    "pairs with the same document re-rendered awaits a ruling (S4 report, issue draft)",
-)
-def test_a_reworded_page_moves_no_judged_output_fingerprint() -> None:
+def test_a_reworded_page_moves_the_judged_output_fingerprint_and_its_inputs_alone_do_not() -> None:
+    """A label pairs with exactly what the labeller read: a re-rendered page is another judged output, while evidence
+    read identically under other inputs is the same one."""
     evidence = _evidence()
-    assert fingerprint_judged_output(_reworded(evidence)) == fingerprint_judged_output(evidence)
+    assert fingerprint_judged_output(_reworded(evidence)) != fingerprint_judged_output(evidence)
+    assert fingerprint_judged_output(_reworded(evidence, subject=False)) != fingerprint_judged_output(evidence)
+    other_inputs = _evidence(document="b" * 64, snapshot="report-snapshot:4567", findings="e" * 64)
+    assert fingerprint_judged_output(other_inputs) == fingerprint_judged_output(evidence)
+    assert fingerprint_judged_output(evidence.model_copy(update={"inputs": None})) == fingerprint_judged_output(
+        evidence
+    )

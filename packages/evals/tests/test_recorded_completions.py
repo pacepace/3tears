@@ -269,7 +269,7 @@ async def test_a_format_2_line_names_no_cell_and_is_served_by_repeat_index_then_
     lines = _lines(path)
     for line in lines:
         line["recorder_version"] = 2
-        del line["cell"], line["inputs"]
+        del line["cell"], line["inputs"], line["prompt_key"]
     path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
 
     client = RecordedCompletions.replay(path, settings=BUDGETED)
@@ -307,11 +307,18 @@ async def test_a_call_named_by_its_inputs_is_keyed_by_them_so_its_reworded_promp
     async with RecordedCompletions.record(_FakeInner(_Reply(content="4")), by_prompt, settings=BUDGETED) as client:
         await client.generate(system=SYSTEM, user="Page: the total is 3.", response_format=SCHEMA)
     assert _lines(by_prompt)[0]["key"] != line["key"] and _lines(by_prompt)[0]["inputs"] is None
+    # The line keeps the key its prompt had; a call keyed by its prompt keeps none beside it.
+    assert line["prompt_key"] == _lines(by_prompt)[0]["key"] and _lines(by_prompt)[0]["prompt_key"] is None
 
     replay = RecordedCompletions.replay(path, settings=BUDGETED)
     with bind_call_inputs(PAGE_INPUTS):
         served = await replay.generate(system=SYSTEM, user="Page: teh total is 3, reworded.", response_format=SCHEMA)
     assert served.content == "4"
+    assert replay.served_over_changed_prompts == 1, "served over a page rendered otherwise since, and counted"
+    same = RecordedCompletions.replay(path, settings=BUDGETED)
+    with bind_call_inputs(PAGE_INPUTS):
+        await same.generate(system=SYSTEM, user="Page: the total is 3.", response_format=SCHEMA)
+    assert same.served_over_changed_prompts == 0, "the prompt it was recorded with is no changed prompt"
     with pytest.raises(RecordingRefused, match="no call is recorded for the prompt 'Page: teh total"):
         await RecordedCompletions.replay(path, settings=BUDGETED).generate(
             system=SYSTEM, user="Page: teh total is 3, reworded.", response_format=SCHEMA
@@ -353,12 +360,13 @@ async def test_a_format_3_recording_replays_a_call_that_now_names_its_inputs_by_
     lines = _lines(path)
     for line in lines:
         line["recorder_version"] = 3
-        del line["inputs"]
+        del line["inputs"], line["prompt_key"]
     path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
 
     replay = RecordedCompletions.replay(path, settings=BUDGETED)
     with bind_call_inputs(PAGE_INPUTS):
         assert (await replay.generate(system=SYSTEM, user="Page one.")).content == "4"
+        assert replay.served_over_changed_prompts == 0, "served by its own prompt, which has not changed"
         with pytest.raises(RecordingRefused, match="the recording keeps no call keyed by its inputs, only by prompt"):
             await replay.generate(system=SYSTEM, user="Page one, reworded.")
 
@@ -848,6 +856,7 @@ def _good_line(**overrides: Any) -> dict[str, Any]:
         "extra": {},
         "cell": None,
         "inputs": None,
+        "prompt_key": None,
     }
     return {**line, **overrides}
 
@@ -884,6 +893,10 @@ def _good_line(**overrides: Any) -> dict[str, Any]:
         (json.dumps(_good_line(sent_settings="high")), "its sent_settings are a JSON str, not an object or null"),
         (json.dumps(_good_line(inputs="page 3")), "its inputs are a JSON str, not an object or null"),
         (json.dumps({k: v for k, v in _good_line().items() if k != "inputs"}), "it lacks inputs"),
+        (json.dumps({k: v for k, v in _good_line().items() if k != "prompt_key"}), "it lacks prompt_key"),
+        (json.dumps(_good_line(prompt_key="abc")), "its prompt_key 'abc' is not a sha256 hex digest or null"),
+        (json.dumps(_good_line(inputs={"document": "d1"})), "it carries inputs and no prompt_key"),
+        (json.dumps(_good_line(prompt_key="c" * 64)), "it carries inputs and no prompt_key, or a prompt_key and no"),
         (
             json.dumps(_good_line(sent_settings={"max_tokens": 0})),
             "its sent_settings are not request settings this build reads",

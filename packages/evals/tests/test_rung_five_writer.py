@@ -175,6 +175,9 @@ def test_the_judge_recording_is_keyed_by_each_call_s_inputs_and_serves_what_was_
     assert len(lines) == 112 and {line["recorder_version"] for line in lines} == {4}
     assert all(line["inputs"] is not None for line in lines), "every judge call over a page is keyed by its inputs"
     assert len({line["key"] for line in lines}) == 112
+    # Each keeps the key its prompt had, so a replay can count a call served over a page rendered otherwise since.
+    assert all(re.fullmatch(r"[0-9a-f]{64}", line["prompt_key"]) for line in lines)
+    assert len({line["prompt_key"] for line in lines} | {line["key"] for line in lines}) == 224
     pairs = [line for line in lines if "pair" in line["inputs"]["evidence"]]
     assert len(pairs) == 14 and all(len(line["inputs"]["evidence"]["pair"]) == 2 for line in pairs)
     served = [

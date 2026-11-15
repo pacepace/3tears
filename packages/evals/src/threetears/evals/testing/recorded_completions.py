@@ -32,7 +32,11 @@ component of such a key, and why a printed word cannot move it while a change to
 | ``response_format``, ``model``, ``temperature``, ``settings`` | as for a prompt-keyed call | all structured | each changes the answer |
 | ``index``; the line's ``cell`` (subject, arm, case, repeat, ask) | which ask of the key it was, by which cell | counted, never rendered | another cell, or one more ask, is another call |
 
-The prompt's head is still kept on the line, for inspection only.
+The prompt's head is still kept on the line, for inspection only, and so is ``prompt_key``: the key the call would
+have had by its prompt (``null`` on a line keyed by its prompt). A replay serves a call by its inputs whatever its
+prompt says now, so it compares that prompt's key with the line's and counts each call served over a prompt that has
+changed since it was recorded (:attr:`RecordedCompletions.served_over_changed_prompts`): an answer about the page as
+it was then, which a run says beside its readings. The answer is not refused: the question asked is the same.
 
 **Which recorded call a cell is served.** A run's cells start in an order shuffled by the run's fresh id, several at
 once, so serving a prompt's calls in the order they are asked would hand a recorded answer to a different cell on each
@@ -164,8 +168,9 @@ __all__ = ["RecordedCompletions", "RecordedPrompt", "RecordingRefused", "Replaye
 #: - **3** — each line carries ``cell``, the cell the call was made for (``null`` outside every cell), so a replay serves
 #:   each cell its own call. A format-2 line noted none and is still read, served by the fallback.
 #: - **4** — each line carries ``inputs``, what its caller named the call as being about (``null`` where it named
-#:   nothing), and a line carrying some is keyed by them in place of its prompt. A format-3 line carries none and is
-#:   still read, keyed by its prompt.
+#:   nothing), and a line carrying some is keyed by them in place of its prompt; such a line also carries
+#:   ``prompt_key``, the key its prompt had (``null`` beside ``null`` inputs), so a replay can tell a prompt that has
+#:   changed since. A format-3 line carries neither and is still read, keyed by its prompt.
 _FORMAT_VERSION = 4
 
 #: The oldest format this build reads: a line below it is refused by name.
@@ -183,7 +188,11 @@ _FORMAT_2_MEMBERS = frozenset(
 )
 
 #: The top-level members a line carries, and nothing else, by the format it was written in.
-_LINE_MEMBERS = {2: _FORMAT_2_MEMBERS, 3: _FORMAT_2_MEMBERS | {"cell"}, 4: _FORMAT_2_MEMBERS | {"cell", "inputs"}}
+_LINE_MEMBERS = {
+    2: _FORMAT_2_MEMBERS,
+    3: _FORMAT_2_MEMBERS | {"cell"},
+    4: _FORMAT_2_MEMBERS | {"cell", "inputs", "prompt_key"},
+}
 
 #: How many differing input paths a miss names before it stops listing them.
 _PATHS_NAMED = 4
@@ -342,12 +351,15 @@ class _Read(NamedTuple):
     :ivar heads: The head of each key's user message, as its lines keep it: what a miss is compared with.
     :ivar inputs: The inputs each key's calls were keyed by, as its lines keep them, or ``None`` for a key of a
         prompt: what a miss of a call keyed by its inputs is compared with.
+    :ivar prompt_keys: The key each call's prompt had, by key in index order (``None`` for a call keyed by its
+        prompt, or a line from before format 4): what a call served by its inputs compares its prompt's key with.
     """
 
     recorded: dict[str, _Recorded]
     cells: dict[str, list[_CellAsk | None]]
     heads: dict[str, str]
     inputs: dict[str, dict[str, Any] | None]
+    prompt_keys: dict[str, list[str | None]]
 
 
 class RecordedCompletions:
@@ -416,6 +428,12 @@ class RecordedCompletions:
         #: Replaying, the inputs each key's calls were keyed by (``None`` for a key of a prompt), as the file keeps
         #: them: what a miss of a call keyed by its inputs names the input that differs by. Set by :meth:`replay`.
         self._inputs: dict[str, dict[str, Any] | None] = {}
+        #: Replaying, the key each recorded call's prompt had, by key in index order (``None`` for a call keyed by its
+        #: prompt). Set by :meth:`replay`.
+        self._prompt_keys: dict[str, list[str | None]] = {}
+        #: Replaying, how many calls were served by their inputs over a prompt that has changed since they were
+        #: recorded (:attr:`served_over_changed_prompts`).
+        self._changed_prompts = 0
         #: Replaying, how many times each cell has asked each key, so a cell's second ask of a prompt is served its
         #: second call.
         self._asks: dict[tuple[str, _CellCoordinates], int] = {}
@@ -472,8 +490,8 @@ class RecordedCompletions:
         if replace:
             path.unlink(missing_ok=True)
         path.parent.mkdir(parents=True, exist_ok=True)
-        recorded, cells, _, _ = (
-            _read_recording(path, _rerecord_remedy(path, None)) if path.exists() else ({}, {}, {}, {})
+        recorded, cells, _, _, _ = (
+            _read_recording(path, _rerecord_remedy(path, None)) if path.exists() else ({}, {}, {}, {}, {})
         )
         client = cls(path, inner=inner, settings=settings, recorded=recorded)
         client._cells = cells
@@ -502,11 +520,12 @@ class RecordedCompletions:
         :raises RecordingRefused: ``path`` does not exist, holds no calls, holds a line this build cannot read, or holds
             one from a newer format.
         """
-        recorded, cells, heads, inputs = _readable_replay(path, _rerecord_remedy(path, rerecord))
+        recorded, cells, heads, inputs, prompt_keys = _readable_replay(path, _rerecord_remedy(path, rerecord))
         client = cls(path, inner=None, settings=settings, recorded=recorded, rerecord=rerecord)
         client._cells = cells
         client._heads = heads
         client._inputs = inputs
+        client._prompt_keys = prompt_keys
         return client
 
     @classmethod
@@ -537,7 +556,7 @@ class RecordedCompletions:
             one or more prompts, or holds them only under other request settings, each named.
         """
         remedy = _rerecord_remedy(path, rerecord)
-        recorded, _, _, _ = _readable_replay(path, remedy)
+        recorded, *_ = _readable_replay(path, remedy)
         uncovered: list[str] = []
         for prompt, asked in _tally(prompts):
             key, others = _lookup(recorded, prompt, settings)
@@ -575,6 +594,21 @@ class RecordedCompletions:
             return named
         model, _ = _client_of(self._recorded)
         return model
+
+    @property
+    def served_over_changed_prompts(self) -> int:
+        """How many calls this replay served by their inputs over a prompt that has changed since they were recorded.
+
+        Such a call asks what it asked then (its inputs are the same), so it is served, but the text it is sent is not
+        the text the recorded answer was given on: a page the package now renders otherwise. Its answer is about the
+        page as it was recorded, so a run says how many it served. Counted only for a line that keeps its prompt's
+        key (format 4, keyed by its inputs); ``0`` recording, and for a replay that served none.
+
+        :return: The count so far.
+        :rtype: int
+        """
+        with self._lock:
+            return self._changed_prompts
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         """The most one :meth:`generate` can cost
@@ -717,6 +751,11 @@ class RecordedCompletions:
             if index is None:
                 raise self._spent(user, len(calls), taken.values(), asking)
             taken[index] = asking
+            recorded_prompt = self._prompt_keys.get(key, [None] * len(calls))[index]
+            if inputs is not None and recorded_prompt is not None:
+                model, temperature = _client_of(self._recorded)
+                if _call_key(system, user, response_format, model, temperature, self._settings) != recorded_prompt:
+                    self._changed_prompts += 1
         return calls[index]
 
     def _index_of(self, key: str, cell: CellIdentity | None, user: str) -> int | None:
@@ -869,8 +908,8 @@ class RecordedCompletions:
         key = _call_key(system, user, response_format, members["model"], members["temperature"], self._settings, inputs)
         with _APPEND_LOCK, self._lock:
             if _file_size(self.path) != self._size:
-                self._recorded, self._cells, _, _ = (
-                    _read_recording(self.path, self._remedy) if self.path.exists() else ({}, {}, {}, {})
+                self._recorded, self._cells, *_ = (
+                    _read_recording(self.path, self._remedy) if self.path.exists() else ({}, {}, {}, {}, {})
                 )
             if self._recorded and (held := _client_of(self._recorded)) != (members["model"], members["temperature"]):
                 raise RecordingRefused(
@@ -893,6 +932,9 @@ class RecordedCompletions:
                 "extra": extra,
                 "cell": None if tag is None else tag._asdict(),
                 "inputs": inputs,
+                "prompt_key": None
+                if inputs is None
+                else _call_key(system, user, response_format, members["model"], members["temperature"], self._settings),
             }
             with self.path.open("a", encoding="utf-8") as recording:
                 recording.write(json.dumps(line, ensure_ascii=False, allow_nan=False) + "\n")
@@ -1263,12 +1305,13 @@ def _read_recording(path: Path, remedy: str) -> _Read:
     cells: dict[str, list[_CellAsk | None]] = {}
     heads: dict[str, str] = {}
     keyed_by: dict[str, dict[str, Any] | None] = {}
+    prompt_keys: dict[str, list[str | None]] = {}
     lines = path.read_text(encoding="utf-8").split("\n")
     if lines and lines[-1] == "":
         lines.pop()  # the newline that ends the last line
     client: _Client | None = None
     for number, text in enumerate(lines, start=1):
-        key, index, settings, completion, cell, head, inputs = _read_line(path, number, text, remedy)
+        key, index, settings, completion, cell, head, inputs, prompt_key = _read_line(path, number, text, remedy)
         if client is None:
             client = (completion.model, completion.temperature)
         elif (completion.model, completion.temperature) != client:
@@ -1309,7 +1352,8 @@ def _read_recording(path: Path, remedy: str) -> _Read:
         cells.setdefault(key, []).append(cell)
         heads.setdefault(key, head)
         keyed_by.setdefault(key, inputs)
-    return _Read(recorded, cells, heads, keyed_by)
+        prompt_keys.setdefault(key, []).append(prompt_key)
+    return _Read(recorded, cells, heads, keyed_by, prompt_keys)
 
 
 def _mismatch(expected: frozenset[str], found: Iterable[str]) -> str | None:
@@ -1380,7 +1424,9 @@ def _read_cell(path: Path, number: int, cell: Any, remedy: str) -> _CellAsk | No
 
 def _read_line(
     path: Path, number: int, text: str, remedy: str
-) -> tuple[str, int, ClientRequestSettings | None, ReplayedCompletion, _CellAsk | None, str, dict[str, Any] | None]:
+) -> tuple[
+    str, int, ClientRequestSettings | None, ReplayedCompletion, _CellAsk | None, str, dict[str, Any] | None, str | None
+]:
     try:
         line = json.loads(text)
     except json.JSONDecodeError as undecodable:
@@ -1437,4 +1483,16 @@ def _read_line(
     inputs = line.get("inputs")
     if inputs is not None and not isinstance(inputs, dict):
         raise _malformed(path, number, f"its inputs are a JSON {type(inputs).__name__}, not an object or null", remedy)
-    return key, index, settings, _completion_of(members, sent, extra), cell, line["user_head"], inputs
+    prompt_key = line.get("prompt_key")
+    if prompt_key is not None and (not isinstance(prompt_key, str) or len(prompt_key) != 64):
+        raise _malformed(path, number, f"its prompt_key {prompt_key!r} is not a sha256 hex digest or null", remedy)
+    if version >= 4 and (prompt_key is None) != (inputs is None):
+        raise _malformed(
+            path,
+            number,
+            "it carries inputs and no prompt_key, or a prompt_key and no inputs: a line keyed by its inputs keeps its "
+            "prompt's key beside them, and only such a line does",
+            remedy,
+        )
+    head = line["user_head"]
+    return key, index, settings, _completion_of(members, sent, extra), cell, head, inputs, prompt_key
