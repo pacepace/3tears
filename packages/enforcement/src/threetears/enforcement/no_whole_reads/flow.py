@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Final, Literal
 
-from threetears.enforcement.common import dotted
+from threetears.enforcement.common import dotted, kept_for, walk_tree
 from threetears.enforcement.no_whole_reads.helpers import COPY_CALLS, STEP_CALLS, STEP_RELATIONS, STEP_TARGETS
 
 __all__ = [
@@ -180,7 +180,7 @@ def _private(function: Function, owner: ast.ClassDef | None) -> bool:
 def _annotations(tree: ast.Module) -> set[int]:
     """the ids of every node inside an annotation (a parameter's, a return's, an annotated assignment's)."""
     inside: set[int] = set()
-    for node in ast.walk(tree):
+    for node in walk_tree(tree):
         annotations: list[ast.expr | None] = []
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             arguments = node.args
@@ -191,7 +191,7 @@ def _annotations(tree: ast.Module) -> set[int]:
             annotations.append(node.annotation)
         for annotation in annotations:
             if annotation is not None:
-                inside.update(id(part) for part in ast.walk(annotation))
+                inside.update(id(part) for part in walk_tree(annotation))
     return inside
 
 
@@ -290,7 +290,7 @@ def _callable_of_step(annotation: ast.expr | None) -> bool:
         and isinstance(node.slice, ast.Tuple)
         and len(node.slice.elts) == 2
         and _names_step(node.slice.elts[1])
-        for node in ast.walk(annotation)
+        for node in walk_tree(annotation)
     )
 
 
@@ -313,7 +313,7 @@ def step_builders(modules: list[ast.Module]) -> frozenset[str]:
     building: set[str] = set()
     other: set[str] = set()
     for tree in modules:
-        for node in ast.walk(tree):
+        for node in walk_tree(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 (building if _names_step(node.returns) and not _callable_of_step(node.returns) else other).add(
                     node.name
@@ -404,7 +404,7 @@ class RepoForwarders:
         named: dict[str, int] = {}
         for path, tree in modules:
             mine: dict[str, str] = {}
-            for statement in ast.walk(tree):
+            for statement in walk_tree(tree):
                 if isinstance(statement, ast.ImportFrom) and statement.module and not statement.level:
                     mine.update({a.asname or a.name: f"{statement.module}.{a.name}" for a in statement.names})
                 elif isinstance(statement, ast.ImportFrom):
@@ -412,11 +412,11 @@ class RepoForwarders:
                 elif isinstance(statement, ast.Import):
                     mine.update({a.asname or a.name: a.name for a in statement.names})
             imports[path] = mine
-            called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+            called = {id(node.func) for node in walk_tree(tree) if isinstance(node, ast.Call)}
             annotated = _annotations(tree)
-            skipped = called | annotated | local_names(tree)
+            skipped = called | annotated | kept_for(tree, local_names)
             names: set[str] = set()
-            for node in ast.walk(tree):
+            for node in walk_tree(tree):
                 if isinstance(node, ast.Name) and id(node) not in skipped:
                     names.add(node.id)
                 elif isinstance(node, ast.Attribute) and id(node) not in called:
@@ -549,11 +549,11 @@ class RelationFlow:
         called: set[int] = set()
         loose_names: set[str] = set()
         loose_attributes: set[str] = set()
-        for node in ast.walk(tree):
+        for node in walk_tree(tree):
             if isinstance(node, ast.Call):
                 called.add(id(node.func))
-        local = local_names(tree)
-        for node in ast.walk(tree):
+        local = kept_for(tree, local_names)
+        for node in walk_tree(tree):
             if isinstance(node, ast.Name) and id(node) not in called and id(node) not in local:
                 loose_names.add(node.id)
             elif isinstance(node, ast.Attribute) and id(node) not in called:
@@ -582,7 +582,7 @@ class RelationFlow:
             else:
                 self._candidates.add(id(function))
         sited: set[int] = set()
-        for node in ast.walk(tree):
+        for node in walk_tree(tree):
             if isinstance(node, ast.Call) and (matched := self._match(node)) is not None:
                 sited.add(id(matched.function))
         self._candidates &= sited
@@ -632,7 +632,7 @@ class RelationFlow:
                     # a return hands its parameters on only where a call of the function stands as a relation
                     self._returning_now = id(function)
                     try:
-                        for node in ast.walk(function):
+                        for node in walk_tree(function):
                             if isinstance(node, ast.Return) and node.value is not None:
                                 self._judged(node.value, "rel", scope)
                     finally:
@@ -640,7 +640,7 @@ class RelationFlow:
                 elif id(function) in self._wanted:
                     returned = [
                         node.value
-                        for node in ast.walk(function)
+                        for node in walk_tree(function)
                         if isinstance(node, ast.Return) and node.value is not None
                     ]
                     self._dry = True
@@ -662,7 +662,7 @@ class RelationFlow:
     def _positions(self, function: Function) -> Iterator[tuple[ast.expr, Mode]]:
         """each expression a function names a relation by: a step's relation arguments, a forwarder's handed
         arguments, and its returns where it is a relation-returning forwarder."""
-        for node in ast.walk(function):
+        for node in walk_tree(function):
             if isinstance(node, ast.Call):
                 # a step, or a keyed write from a relation (apply_stage's stage, update_from's source)
                 if (_final(node) in STEP_CALLS or _final(node) in STEP_RELATIONS) and self._keyed_step(node):
@@ -955,7 +955,7 @@ class RelationFlow:
         def add(name: str, binding: _Binding) -> None:
             found.setdefault(name, []).append(binding)
 
-        for node in ast.walk(function):
+        for node in walk_tree(function):
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     self._assigned(target, node.value, function, add)
@@ -1057,7 +1057,7 @@ class RelationFlow:
         for method in owner.body:
             if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            for node in ast.walk(method):
+            for node in walk_tree(method):
                 if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
                     targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                     value = node.value
@@ -1084,7 +1084,7 @@ class RelationFlow:
 
 
 def _names(node: ast.expr | None) -> list[str]:
-    return [] if node is None else [n.id for n in ast.walk(node) if isinstance(n, ast.Name)]
+    return [] if node is None else [n.id for n in walk_tree(node) if isinstance(n, ast.Name)]
 
 
 #: a container's methods adding one value, or the values of their argument

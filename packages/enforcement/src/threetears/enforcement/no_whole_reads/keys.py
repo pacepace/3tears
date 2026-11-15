@@ -24,6 +24,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final
 
+from threetears.enforcement.common import walk_tree
+
 __all__ = [
     "THREETEARS_KEY_SOURCES",
     "KeySources",
@@ -60,7 +62,7 @@ def annotated_key(annotation: ast.expr | None) -> bool:
     """
     if annotation is None:
         return False
-    for node in ast.walk(annotation):
+    for node in walk_tree(annotation):
         if isinstance(node, ast.Name) and node.id in _KEY_TYPES:
             return True
         if isinstance(node, ast.Attribute) and node.attr in _KEY_TYPES:
@@ -99,7 +101,7 @@ def declared_key_sources(trees: Iterable[ast.Module], *, base: frozenset[str] = 
     """
     names: set[str] = set(base)
     for tree in trees:
-        for node in ast.walk(tree):
+        for node in walk_tree(tree):
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and annotated_key(node.returns):
                 names.add(node.name)
             elif isinstance(node, ast.ClassDef):
