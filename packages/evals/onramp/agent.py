@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from threetears.evals import Model
@@ -303,8 +304,8 @@ async def _turns(sandbox: Sandbox, brain: Brain, caps: Caps, system: str, run: A
                 return
         try:
             answer = await brain.next(system, user, run.steps)
-        except ProviderError as failed:
-            why = f"the model call failed: {failed}"
+        except (ProviderError, httpx.HTTPError) as broke:  # a decline, or a send that broke and was not resent
+            why = f"the model call failed: {broke}"
             usage = Usage(None, None, None, ceiling_usd=bound)
             step = Step(turn, None, Observation(ok=False, text=why, first_error=why))
             run.usages.append(usage)

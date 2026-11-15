@@ -85,8 +85,9 @@ async def _regrade(
     python, rerun = sandbox.runner.python, sandbox.runner.rerun
 
     async def execute(argv: list[str], cwd: Path, *, door: bool = False) -> Observation:
+        # Only the regrade's own reading (rerun.py) is handed rerun.py: a replay of the agent's command never sees it.
         left = max(1.0, deadline - time.monotonic())
-        return await sandbox.execute(argv, cwd=cwd, door=door, timeout_s=left, grading=True)
+        return await sandbox.execute(argv, cwd=cwd, door=door, timeout_s=left, grading=rerun in argv)
 
     left = sandbox.made()
     shipped = sandbox.grading_copy(trial / "regrade", twin=False, overlay=left)

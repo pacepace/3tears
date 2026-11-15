@@ -21,7 +21,7 @@ from packages.evals.onramp.sandbox import DocsBuild
 #: Every field a trial's record carries.
 RECORDED = {
     "app", "arm", "build", "model", "stopped", "wall_s", "turns", "input_tokens", "output_tokens", "cost_usd",
-    "commands", "errors_hit", "pages_read", "written", "stuck", "report", "report_problem", "sandbox", "checks",
+    "charged_usd", "maybe_billed_sends", "commands", "errors_hit", "pages_read", "written", "stuck", "report", "report_problem", "sandbox", "checks",
 }  # fmt: skip
 
 
@@ -46,6 +46,10 @@ async def test_a_scripted_agent_runs_the_whole_harness_and_every_field_is_record
         assert set(record) == RECORDED, row["arm"]
         assert record["stopped"] == "done" and record["turns"] >= 6 and record["wall_s"] > 0
         assert (record["input_tokens"], record["output_tokens"], record["cost_usd"]) == (0, 0, 0.0)
+        assert (record["charged_usd"], record["maybe_billed_sends"]) == (0.0, 0)
+        trial = Path(record["sandbox"]).parent
+        assert json.loads((trial / "record.json").read_text(encoding="utf-8")) == record, "kept beside the trial"
+        assert (trial / "steps.jsonl").read_text(encoding="utf-8").count("\n") == record["turns"] + 1
         assert record["commands"] and all({"exit_code", "first_error"} <= set(c) for c in record["commands"])
         assert {"page": "llms.txt", "lines": record["pages_read"][0]["lines"], "turn": 2} in record["pages_read"]
         succeeded = row["arm"] == "scripted@succeeds"
@@ -76,7 +80,7 @@ async def test_a_scripted_agent_runs_the_whole_harness_and_every_field_is_record
 def test_the_command_runs_the_harness_offline_and_keeps_every_trial(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert main(["--scripted", "succeeds", "--k", "1", "--apps", "holds", "--workdir", str(tmp_path)]) == 0
+    assert main(["--scripted", "succeeds", "--host", "--k", "1", "--apps", "holds", "--workdir", str(tmp_path)]) == 0
     said = capsys.readouterr().out
     (run_dir,) = [path for path in tmp_path.iterdir() if path.is_dir()]
     (row,) = [json.loads(line) for line in (run_dir / "trials.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -88,3 +92,22 @@ def test_the_command_runs_the_harness_offline_and_keeps_every_trial(
     }
     assert (run_dir / "onramp.sqlite").is_file() and (run_dir / "report" / "report.html").is_file()
     assert f"trials: {run_dir / 'trials.jsonl'}" in said
+
+
+@pytest.mark.timeout(900)
+def test_a_run_where_every_agent_fails_says_so_on_its_first_line_and_in_its_census(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The graders are checks (each returns ``bool``, annotated so), so a trial one fails is failed and the package's
+    first line counts it; and the harness's own census states each check's tally and what so few runs cannot show."""
+    main(["--scripted", "stuck", "--host", "--k", "1", "--apps", "holds", "--workdir", str(tmp_path)])
+    said = capsys.readouterr().out.splitlines()
+    assert said[0] == "arm docs@here: this interpreter"
+    assert said[1].startswith("onramp: docs@here passed 0 of 1 cases."), said[1]
+    for name in ("eval_runs", "measures_the_app", "read_right"):
+        assert any(line.startswith(f"  {name}: 0 of 1 trials, 95% range 0.00 to ") for line in said), said
+    assert any("cannot show" in line for line in said)
+    (run_dir,) = [path for path in tmp_path.iterdir() if path.is_dir()]
+    assert (run_dir / "census.txt").read_text(encoding="utf-8").splitlines() == said[
+        said.index(next(line for line in said if line.startswith("what 1 run(s) can say"))) :
+    ][:6]

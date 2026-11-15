@@ -11,6 +11,7 @@ cd "$REPO_ROOT"
 # Usage:
 #   ./scripts/onramp-agent.sh --dry-run                       what would run, and what it may cost; builds nothing
 #   ./scripts/onramp-agent.sh --scripted succeeds --k 1       the harness against today's wheel, offline and free
+#   ... --scripted succeeds --host                            the same, its commands run on this machine (scripted only)
 #   ONRAMP_LIVE=1 ./scripts/onramp-agent.sh --cap 4.50        the live baseline: cheap tier, three apps, k=3
 #   ... --tier ceiling --cap 13.50                            Claude Haiku 5.5, direct to Anthropic
 #   ... --arm docs@candidate=PATH.whl                         a second docs build, tested against the control
@@ -18,6 +19,12 @@ cd "$REPO_ROOT"
 # The control arm, docs@control, is today's wheel: 3tears-evals built from ONRAMP_CONTROL_REF (default f9ab6f74d,
 # the docs and messages before any on-ramp fix), so a later fix never leaks into the baseline. It is built once into
 # packages/evals/onramp/runs/wheels/<ref>/ and reused.
+#
+# Every command an agent runs, and every re-run of its work, runs in a trial container (Docker, no network, not root,
+# nothing of this machine but a copy of the trial's directory): packages/evals/onramp/isolation.py. The image is built
+# at set-up from packages/evals/onramp/container/Dockerfile and the wheel. A run that cannot have one (no Docker daemon,
+# or the image did not build) is refused before anything is sent. --host, which runs commands here, is only for
+# --scripted. The canaries that hold this: ./scripts/test-integration.sh --here -k onramp -rs.
 #
 # A live run spends money. It is refused unless ONRAMP_LIVE=1 is set and --cap states the most it may spend; it quotes
 # its cost first, holds each run to its share of the cap, and reads keys only from the environment: OPENROUTER_API_KEY

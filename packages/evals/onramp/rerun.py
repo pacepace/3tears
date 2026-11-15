@@ -16,6 +16,7 @@ import json
 import os
 import sys
 from collections import defaultdict
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -40,12 +41,25 @@ def unpassed(result: Result) -> float:
     return sum(failed.values()) / len(failed) if failed else 1.0
 
 
-def read(result: Result) -> dict[str, Any]:
-    """The result's readings on the control arm: each measure's mean and the way the package states is better for it,
-    and whether every arm's run finished."""
-    measures = result.arms[result.control].measures
-    means = {measure.name: measure.mean for measure in measures}
-    higher = {measure.name: measure.higher_is_better for measure in measures}
+def directions(ev: Eval, module: Any) -> dict[str, bool | None]:  # Any: the eval file's module
+    """Which way is better on each grader's measure, as the build declares it: a measure declared with ``@measure``
+    states its own (``higher_is_better``); a guardrail states its own direction; every other grader is a quality score,
+    higher is better (``scorer_measure`` in ``quick/one_call.py``, in every build this harness measures). A measure
+    whose direction the build does not state here is ``None``, and counts for neither way."""
+    declared: dict[str, bool | None] = {}
+    for value in vars(module).values():
+        descriptor = getattr(value, "descriptor", None)
+        if isinstance(getattr(descriptor, "higher_is_better", None), bool):
+            declared[descriptor.name] = descriptor.higher_is_better
+    for name, guardrail in getattr(getattr(ev, "plan", None), "guardrails", {}).items():
+        declared[name] = getattr(guardrail, "higher_is_better", None)
+    return declared
+
+
+def read(result: Result, declared: Mapping[str, bool | None]) -> dict[str, Any]:
+    """The result's readings on the control arm: each measure's mean and which way is better on it (``declared``, else
+    higher), and whether every arm's run finished."""
+    means = {measure.name: measure.mean for measure in result.arms[result.control].measures}
     if "accuracy" in result.grader_readings and "match" in means:
         means.setdefault("accuracy", means["match"])
     return {
@@ -54,10 +68,7 @@ def read(result: Result) -> dict[str, Any]:
         "readings": list(result.grader_readings),
         "finished": all(summary.status == "completed" for summary in result.arms.values()),
         "means": {name: means.get(name) for name in result.grader_readings},
-        "higher_is_better": {
-            name: higher.get("match" if name == "accuracy" and name not in higher else name)
-            for name in result.grader_readings
-        },
+        "higher_is_better": {name: declared.get(name, True) for name in result.grader_readings},
     }
 
 
@@ -75,7 +86,7 @@ async def main(path: Path, *, nothing_too: bool) -> dict[str, Any]:
         if not evals:
             return {"refused": f"{path.name} defines no Eval at module level"}
         ev = evals[0]
-        read_out = read(await ev.run(store=":memory:"))
+        read_out = read(await ev.run(store=":memory:"), directions(ev, module))
         if nothing_too:
             ev.arms = {arm: nothing for arm in ev.arms}
             read_out["nothing_unpassed"] = unpassed(await ev.run(store=":memory:"))

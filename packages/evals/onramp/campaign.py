@@ -43,7 +43,7 @@ from .agent import (
     parse_report,
     stuck_point,
 )
-from .checks import GRADERS, REGRADE_BUDGET_S, regrade
+from .checks import GRADERS, regrade
 from .isolation import IsolationUnavailable, unavailable
 from .sandbox import HERE, DocsBuild, Sandbox
 
@@ -371,7 +371,9 @@ def _finish(ev: Eval, run_dir: Path) -> int:
             print(
                 f"stuck: {row['arm']} {record['app']} turns {stuck['from_turn']}-{stuck['to_turn']}: {stuck['opened_by']}"
             )
-    print("\n".join(census(rows)))
+    said = census(rows)
+    (run_dir / "census.txt").write_text("\n".join(said) + "\n", encoding="utf-8")
+    print("\n".join(said))
     for unfinished in sorted(path.parent for path in run_dir.glob("*/*/steps.jsonl")):
         if not (unfinished / "record.json").is_file():
             print(f"unfinished: {unfinished} (its steps.jsonl holds every step it took)")
