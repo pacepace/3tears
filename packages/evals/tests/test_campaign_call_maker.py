@@ -25,6 +25,7 @@ from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, 
 
 PERSON = "ana@example.com"
 MODEL = "anthropic/claude-opus"
+MISSED_BAR = "extract_invoice_fields/field_accuracy"
 
 
 def _attests(*, scope_id: str, caller: str, person: str) -> str | None:
@@ -59,7 +60,14 @@ def _evals() -> MountedTool:
 
 async def _record(host: OpsHost, fixture: OpsFixture, arm: str, **params: Any) -> Any:
     return await _evals().call(
-        {"action": "campaign_record", "campaign_id": fixture.campaign.id, "arm": arm, **params},
+        {
+            "action": "campaign_record",
+            "campaign_id": fixture.campaign.id,
+            "arm": arm,
+            # The toy control misses its field-accuracy bar, which every call on it overrides by name.
+            "bars_overridden": [MISSED_BAR],
+            **params,
+        },
         host=host,
         caller=CALLER,
     )
