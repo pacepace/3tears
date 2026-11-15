@@ -45,6 +45,7 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
+    asks_journal_max,
 )
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
@@ -208,10 +209,10 @@ class _FakeConnection(FakeAsyncpgConnection):
         self.executions.append((query, args, self.transaction_open))
         return "INSERT 0 1"
 
-    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+    async def fetch(self, query: str, *args: Any, namespace: Any = None) -> list[dict[str, Any]]:
         """the head read is a keyed point read (``threetears.core.keyed.read_row``): one statement sent through
         ``fetch``, its first row taken. Answered here as :meth:`fetchrow` answers the same statement."""
-        row = await self.fetchrow(query, *args)
+        row = await self.fetchrow(query, *args, namespace=namespace)
         return [] if row is None else [row]
 
     async def fetchrow(self, query: str, *args: Any, namespace: Any = None) -> dict[str, Any] | None:
@@ -220,7 +221,7 @@ class _FakeConnection(FakeAsyncpgConnection):
         """
         self.fetchrows.append((query, args, self.transaction_open))
         result: dict[str, Any] | None
-        if "COALESCE(MAX(version)" in query:
+        if asks_journal_max(query):
             result = {"max_version": self.journal_max_version}
         else:
             result = self.head_row

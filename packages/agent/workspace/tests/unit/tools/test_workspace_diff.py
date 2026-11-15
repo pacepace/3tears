@@ -103,15 +103,15 @@ class _FakeConnection(FakeAsyncpgConnection):
 
     async def fetchrow(self, query: str, *args: Any, namespace: Any = None) -> dict[str, Any] | None:
         self.fetchrows.append((query, args))
-        # selector: last positional matches the ref shape
+        # selector: last positional matches the ref shape (the keyed reads bind their pins in order)
         # for head: args = (ws_id, path)
         # for int: args = (ws_id, path, int_version)
-        # for label: args = (ws_id, path, label)
+        # for label: args = (ws_id, path, 'checkpoint', label)
         relative_path = args[1]
         if len(args) == 2:
             selector: Any = "head"
         else:
-            selector = args[2]
+            selector = args[-1]
         return self.script.get((relative_path, selector))
 
     async def fetch(self, query: str, *args: Any, namespace: Any = None) -> list[dict[str, Any]]:

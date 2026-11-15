@@ -34,6 +34,7 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
+    asks_journal_max,
 )
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
@@ -245,7 +246,7 @@ class _FakeConnection(FakeAsyncpgConnection):
         """
         self.fetchrows.append((query, args, self.transaction_open))
         result: dict[str, Any] | None
-        if "COALESCE(MAX(version)" in query:
+        if asks_journal_max(query):
             result = {"max_version": self.journal_max_version}
         else:
             result = self.head_row
@@ -507,8 +508,9 @@ async def test_resolve_ref_head_selects_newest_version_row() -> None:
     assert result == row
     assert len(conn.calls) == 1
     sql, args = conn.calls[0]
-    assert "ORDER BY version DESC" in sql
-    assert "LIMIT 1" in sql
+    assert 'ORDER BY t."version" DESC' in sql
+    # a page of one: one row asked, and one more to tell whether a next page holds any
+    assert sql.endswith("LIMIT 2")
     assert args == (workspace_id, "a.txt")
 
 
@@ -547,9 +549,9 @@ async def test_resolve_ref_non_numeric_string_treated_as_checkpoint_label() -> N
     result = await resolve_ref(conn, workspace_id, "a.txt", "v1-release")
     assert result == row
     sql, args = conn.calls[0]
-    assert "action = 'checkpoint'" in sql
-    assert "label = $3" in sql
-    assert args == (workspace_id, "a.txt", "v1-release")
+    assert 't."action" = $3' in sql
+    assert 't."label" = $4' in sql
+    assert args == (workspace_id, "a.txt", "checkpoint", "v1-release")
 
 
 @pytest.mark.asyncio

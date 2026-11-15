@@ -618,6 +618,11 @@ def _build_workspace_diff(
             del query, args, kw
             return None
 
+        async def fetch(self, query: str, *args: Any, **kw: Any) -> list[Any]:
+            """the enrich step's keyed read: no namespace row, as ``fetchrow`` answers."""
+            del query, args, kw
+            return []
+
         def acquire(self) -> Any:
             """acquire must never be reached in this test."""
             raise RuntimeError("pool not wired for diff test")
@@ -724,6 +729,11 @@ def _build_fs_write(
             del query, args, kw
             return None
 
+        async def fetch(self, query: str, *args: Any, **kw: Any) -> list[Any]:
+            """the enrich step's keyed read: no namespace row, as ``fetchrow`` answers."""
+            del query, args, kw
+            return []
+
         def acquire(self) -> Any:
             """acquire must never be reached in this test."""
             raise RuntimeError("pool not wired in authorize matrix test")
@@ -765,6 +775,11 @@ def _build_fs_edit(
             """authorize's enrich step tolerates None rows."""
             del query, args, kw
             return None
+
+        async def fetch(self, query: str, *args: Any, **kw: Any) -> list[Any]:
+            """the enrich step's keyed read: no namespace row, as ``fetchrow`` answers."""
+            del query, args, kw
+            return []
 
         def acquire(self) -> Any:
             """acquire must never be reached in this test."""
@@ -810,6 +825,11 @@ def _build_doc_set(
             del query, args, kw
             return None
 
+        async def fetch(self, query: str, *args: Any, **kw: Any) -> list[Any]:
+            """the enrich step's keyed read: no namespace row, as ``fetchrow`` answers."""
+            del query, args, kw
+            return []
+
         def acquire(self) -> Any:
             """acquire must never be reached in this test."""
             raise RuntimeError("pool not wired in authorize matrix test")
@@ -853,6 +873,11 @@ def _build_doc_merge(
             """authorize's enrich step tolerates None rows."""
             del query, args, kw
             return None
+
+        async def fetch(self, query: str, *args: Any, **kw: Any) -> list[Any]:
+            """the enrich step's keyed read: no namespace row, as ``fetchrow`` answers."""
+            del query, args, kw
+            return []
 
         def acquire(self) -> Any:
             """acquire must never be reached in this test."""
@@ -899,6 +924,11 @@ def _build_workspace_checkpoint(
             del query, args, kw
             return None
 
+        async def fetch(self, query: str, *args: Any, **kw: Any) -> list[Any]:
+            """the enrich step's keyed read: no namespace row, as ``fetchrow`` answers."""
+            del query, args, kw
+            return []
+
         def acquire(self) -> Any:
             """acquire must never be reached in this test."""
             raise RuntimeError("pool not wired in authorize matrix test")
@@ -932,6 +962,11 @@ def _build_workspace_rollback(
             """authorize's enrich step tolerates None rows."""
             del query, args, kw
             return None
+
+        async def fetch(self, query: str, *args: Any, **kw: Any) -> list[Any]:
+            """the enrich step's keyed read: no namespace row, as ``fetchrow`` answers."""
+            del query, args, kw
+            return []
 
         def acquire(self) -> Any:
             """acquire must never be reached in this test."""
@@ -973,6 +1008,11 @@ def _build_workspace_refresh(
             del query, args, kw
             return None
 
+        async def fetch(self, query: str, *args: Any, **kw: Any) -> list[Any]:
+            """the enrich step's keyed read: no namespace row, as ``fetchrow`` answers."""
+            del query, args, kw
+            return []
+
         def acquire(self) -> Any:
             """acquire must never be reached in this test."""
             raise RuntimeError("pool not wired in authorize matrix test")
@@ -1009,6 +1049,11 @@ def _build_workspace_reset(
             """authorize's enrich step tolerates None rows."""
             del query, args, kw
             return None
+
+        async def fetch(self, query: str, *args: Any, **kw: Any) -> list[Any]:
+            """the enrich step's keyed read: no namespace row, as ``fetchrow`` answers."""
+            del query, args, kw
+            return []
 
         def acquire(self) -> Any:
             """acquire must never be reached in this test."""
@@ -1048,6 +1093,11 @@ def _build_workspace_delete(
             """authorize's enrich step tolerates None rows."""
             del query, args, kw
             return None
+
+        async def fetch(self, query: str, *args: Any, **kw: Any) -> list[Any]:
+            """the enrich step's keyed read: no namespace row, as ``fetchrow`` answers."""
+            del query, args, kw
+            return []
 
         def acquire(self) -> Any:
             """acquire must never be reached in this test."""

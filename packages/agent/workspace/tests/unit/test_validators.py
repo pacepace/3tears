@@ -29,6 +29,7 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
+    asks_journal_max,
 )
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceEntity,
@@ -98,7 +99,7 @@ class _FakeConnection(FakeAsyncpgConnection):
         """
         self.fetchrows.append((query, args, self.transaction_open))
         result: dict[str, Any] | None
-        if "COALESCE(MAX(version)" in query:
+        if asks_journal_max(query):
             result = {"max_version": self.journal_max_version}
         else:
             result = self.head_row

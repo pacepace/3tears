@@ -46,6 +46,7 @@ __all__ = [
     "check_active_schedule_cap",
     "check_fire_limits",
     "check_rate_limit",
+    "count_active",
     "create_schedule_serialized",
     "resume_schedule_serialized",
 ]
@@ -56,20 +57,38 @@ __all__ = [
 # serialize. The lock + count + insert MUST share one connection / txn for
 # the cap to hold under concurrency. Protected wakes are not counted: they
 # exist for the agent's own sake and must never crowd out, or be refused by,
-# the cap.
-COUNT_ACTIVE_SQL = (
-    "SELECT COUNT(*) FROM agent_wake_schedules WHERE agent_id = $1 AND status = 'active' AND NOT protected"
-)
+# the cap. Read off idx_wake_schedules_agent_status (agent_id, status).
+_UNPROTECTED = Fragment("NOT t.protected", ())
 
 
-# The same count for the resume path, EXCLUDING the schedule being
-# (re)activated, so re-resuming an already-active schedule cannot refuse
-# itself at exactly cap: the cap counts OTHER active schedules, then this one
-# makes it ``other + 1 <= cap`` iff ``other < cap``.
-COUNT_ACTIVE_EXCLUDING_SQL = (
-    "SELECT COUNT(*) FROM agent_wake_schedules "
-    "WHERE agent_id = $1 AND status = 'active' AND NOT protected AND schedule_id != $2"
-)
+async def count_active(conn: Any, agent_id: UUID, *, excluding: UUID | None = None) -> int:
+    """An agent's unprotected active schedules, on ``conn`` (the caller's lock and transaction, when it holds them).
+
+    The resume path counts EXCLUDING the schedule being (re)activated, so
+    re-resuming an already-active schedule cannot refuse itself at exactly
+    cap: the cap counts OTHER active schedules, then this one makes it
+    ``other + 1 <= cap`` iff ``other < cap``.
+
+    :param conn: asyncpg-compatible connection or pool
+    :ptype conn: Any
+    :param agent_id: the agent
+    :ptype agent_id: UUID
+    :param excluding: a schedule left out of the count; None counts every one
+    :ptype excluding: UUID | None
+    :return: the count
+    :rtype: int
+    """
+    where = [_UNPROTECTED]
+    if excluding is not None:
+        where.append(Fragment('t."schedule_id" != $1', (excluding,)))
+    (counted,) = await aggregate_keyed(
+        conn,
+        "agent_wake_schedules",
+        aggregates={"n": Count()},
+        by={"agent_id": agent_id, "status": "active"},
+        where=where,
+    )
+    return int(counted["n"])
 
 
 # Per-agent advisory lock taken for the transaction's lifetime. ``hashtext``
@@ -388,8 +407,7 @@ async def check_active_schedule_cap(
     elif pool is not None:
         # cache-bypass: aggregate COUNT not pk-addressable, and a cap read from
         # cache is a cap that lets an extra schedule through.
-        value = await pool.fetchval(COUNT_ACTIVE_SQL, agent_id)
-        count = int(value or 0)
+        count = await count_active(pool, agent_id)
     else:
         return True
 
@@ -490,7 +508,7 @@ async def create_schedule_serialized(
         async with CallerTransaction(conn):
             await _lock_agent(conn, agent_id)
             if not data.get("protected", False):
-                await _refuse_at_cap(conn, COUNT_ACTIVE_SQL, (agent_id,), agent_id=agent_id, cap=cap, action="create")
+                await _refuse_at_cap(conn, agent_id=agent_id, cap=cap, action="create")
             row = dict(data)
             if make_wake_conversation is not None:
                 row["conversation_id"] = await make_wake_conversation(conn)
@@ -547,9 +565,8 @@ async def resume_schedule_serialized(
             await _lock_agent(conn, agent_id)
             await _refuse_at_cap(
                 conn,
-                COUNT_ACTIVE_EXCLUDING_SQL,
-                (agent_id, schedule_id),
                 agent_id=agent_id,
+                excluding=schedule_id,
                 cap=cap,
                 action="resume",
             )
@@ -584,30 +601,27 @@ async def _lock_agent(conn: Any, agent_id: UUID) -> None:
 
 async def _refuse_at_cap(
     conn: Any,
-    sql: str,
-    args: tuple[Any, ...],
     *,
     agent_id: UUID,
     cap: int,
     action: str,
+    excluding: UUID | None = None,
 ) -> None:
     """Count under the lock and raise when the agent is at its cap.
 
     :param conn: the transaction's connection, holding the agent's lock
     :ptype conn: Any
-    :param sql: the count to run
-    :ptype sql: str
-    :param args: its arguments
-    :ptype args: tuple[Any, ...]
     :param agent_id: the agent
     :ptype agent_id: UUID
     :param cap: the cap
     :ptype cap: int
     :param action: ``'create'`` or ``'resume'``, for the log line
     :ptype action: str
+    :param excluding: the schedule being resumed, left out of the count (:func:`count_active`)
+    :ptype excluding: UUID | None
     :raises ScheduleCapExceeded: when ``count >= cap``
     """
-    count = int(await conn.fetchval(sql, *args) or 0)
+    count = await count_active(conn, agent_id, excluding=excluding)
     if count >= cap:
         log.info(
             "rate-limit: active-schedule cap exceeded (serialized)",

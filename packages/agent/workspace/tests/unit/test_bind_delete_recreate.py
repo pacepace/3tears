@@ -33,6 +33,7 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
+    asks_journal_max,
 )
 from packages.agent.workspace.tests.helpers.scripted_watch import ScriptedWatch
 from packages.agent.workspace.tests.helpers.workspace_shims import (
@@ -213,7 +214,7 @@ class _FakeConnection(FakeAsyncpgConnection):
         """
         self.fetchrows.append((query, args, self.transaction_open))
         result: dict[str, Any] | None
-        if "COALESCE(MAX(version)" in query:
+        if asks_journal_max(query):
             workspace_id: UUID = args[0]
             relative_path: str = args[1]
             result = {"max_version": self.journal_max_by_path.get((workspace_id, relative_path), 0)}

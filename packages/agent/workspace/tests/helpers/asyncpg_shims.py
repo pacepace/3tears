@@ -30,6 +30,7 @@ methods the test actually expects.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 __all__ = [
@@ -37,7 +38,25 @@ __all__ = [
     "FakeAsyncpgConnection",
     "FakeAsyncpgPool",
     "FakeAsyncpgTransaction",
+    "asks_journal_max",
 ]
+
+#: the largest-version aggregate however it is written: the hand-written ``COALESCE(MAX(version), 0)`` or the keyed
+#: aggregate's ``MAX(t."version")``
+_JOURNAL_MAX = re.compile(r'MAX\(\s*(?:t\.)?"?version"?\s*\)', re.IGNORECASE)
+
+
+def asks_journal_max(query: str) -> bool:
+    """whether ``query`` asks the journal's largest version of one path (``workspace_file_versions``, pinned by
+    ``(workspace_id, relative_path)`` as ``$1, $2``), by its shape rather than its exact text: the fakes answer it the
+    same whether the statement is hand-written or a keyed helper's.
+
+    :param query: the statement a fake connection was sent
+    :ptype query: str
+    :return: whether it is the journal-max read
+    :rtype: bool
+    """
+    return "workspace_file_versions" in query and _JOURNAL_MAX.search(query) is not None
 
 
 # parity-exempt: parity bases ARE the canonical shims that per-test workspace fakes subclass; they have no further parity to declare against asyncpg
@@ -65,7 +84,36 @@ class FakeAsyncpgConnection:
     here because the walker only checks that subclasses exist as
     parity declarations; method-surface overlap with asyncpg.Connection
     is intentionally partial.
+
+    ``fetch`` answers as the subclass's ``fetchrow`` answers the same statement, as a list: the keyed helpers send
+    every read through ``fetch`` and take its rows, where the hand-written reads they replaced called ``fetchrow``.
     """
+
+    async def fetchrow(self, query: str, *args: Any) -> Any:
+        """the subclass's per-statement answer. subclasses that are sent reads MUST override.
+
+        :param query: the statement
+        :ptype query: str
+        :param args: its parameters
+        :ptype args: Any
+        :return: the row, or None
+        :rtype: Any
+        :raises NotImplementedError: the subclass answers no read
+        """
+        raise NotImplementedError("FakeAsyncpgConnection subclass must override fetchrow()")
+
+    async def fetch(self, query: str, *args: Any) -> list[Any]:
+        """``fetchrow``'s answer to the same statement, as the rows ``fetch`` returns.
+
+        :param query: the statement
+        :ptype query: str
+        :param args: its parameters
+        :ptype args: Any
+        :return: no row, or the one row ``fetchrow`` answers
+        :rtype: list[Any]
+        """
+        row = await self.fetchrow(query, *args)
+        return [] if row is None else [row]
 
 
 # parity-exempt: parity bases ARE the canonical shims that per-test workspace fakes subclass; they have no further parity to declare against asyncpg

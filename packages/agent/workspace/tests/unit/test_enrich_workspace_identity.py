@@ -59,7 +59,11 @@ _PLATFORM_SCHEMA = "aibots"
 _AGENT_SCHEMA = "agent_0123456789abcdef0123456789abcdef"
 
 #: ``FROM <schema>.<table>`` / ``FROM <table>`` in the statements under test.
-_FROM = re.compile(r"\bfrom\s+(?:(?P<schema>[a-z_][a-z0-9_]*)\.)?(?P<table>[a-z_][a-z0-9_]*)", re.IGNORECASE)
+_FROM = re.compile(r'\bfrom\s+(?:"?(?P<schema>[a-z_][a-z0-9_]*)"?\.)?"?(?P<table>[a-z_][a-z0-9_]*)"?', re.IGNORECASE)
+
+#: a pinned column in the statements under test, however written: ``namespace_id = $1``, ``t."namespace_id" = $2``,
+#: ``t."row_scope" = ANY($1)``; the fake answers by these pins, not by the statement's exact text
+_PIN = re.compile(r'(?:\bt\.)?"?(?P<column>[a-z_][a-z0-9_]*)"?\s*=\s*(?P<any>ANY\()?\$(?P<place>\d+)', re.IGNORECASE)
 
 
 class UndefinedTable(Exception):
@@ -142,7 +146,53 @@ class _BrokerLikePool:
             named = f"{qualifier}.{table}" if qualifier is not None else table
             raise UndefinedTable(f'relation "{named}" does not exist')
         rows = tables[table]
-        return next((row for row in rows if row.get("namespace_id") == params[0]), None)
+        return next((row for row in rows if _pinned(row, query, params)), None)
+
+    async def fetch(
+        self,
+        query: str,
+        *params: Any,
+        namespace: str | None = None,
+        customer_scope: UUID | None = None,
+    ) -> list[dict[str, Any]]:
+        """what :meth:`fetchrow` serves for the same statement, as rows: a keyed helper sends its read here.
+
+        :param query: the caller's SQL
+        :ptype query: str
+        :param params: bound parameter values
+        :ptype params: Any
+        :param namespace: as :meth:`fetchrow`'s
+        :ptype namespace: str | None
+        :param customer_scope: as :meth:`fetchrow`'s
+        :ptype customer_scope: UUID | None
+        :return: the matching row, or none
+        :rtype: list[dict[str, Any]]
+        """
+        row = await self.fetchrow(query, *params, namespace=namespace, customer_scope=customer_scope)
+        return [] if row is None else [row]
+
+
+def _pinned(row: dict[str, Any], query: str, params: tuple[Any, ...]) -> bool:
+    """whether ``row`` holds every value the statement's pins name (a column the seeded row does not carry, such as
+    ``row_scope``, is not judged).
+
+    :param row: a seeded row
+    :ptype row: dict[str, Any]
+    :param query: the statement
+    :ptype query: str
+    :param params: its parameters
+    :ptype params: tuple[Any, ...]
+    :return: whether it matches
+    :rtype: bool
+    """
+    for pin in _PIN.finditer(query):
+        column = pin.group("column")
+        if column not in row:
+            continue
+        value = params[int(pin.group("place")) - 1]
+        if not (row[column] in value if pin.group("any") else row[column] == value):
+            return False
+    return True
 
 
 @dataclass

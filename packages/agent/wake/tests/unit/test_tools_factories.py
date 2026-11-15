@@ -52,7 +52,7 @@ def _new_uuid() -> UUID:
 
 
 # Minimal advisory-lock + count seam create_schedule_serialized drives:
-# execute(advisory-lock) -> fetchval(count-active) -> save_entity(conn=self).
+# execute(advisory-lock) -> fetch(count-active, a keyed aggregate) -> save_entity(conn=self).
 # Not a ``_Fake*`` (so it is exempt from the fake-parity walker): it mocks
 # only the three-method txn-connection slice, not the full asyncpg.Connection
 # surface, which the parity check would (correctly) demand in full. The unit
@@ -77,14 +77,20 @@ class _CapLockConn:
         del sql, args
         return "SELECT 1"
 
-    async def fetchval(self, sql: str, *args: Any) -> int:
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, int]]:
+        """the active count as ``count_active`` asks it: ``(agent_id, 'active')``, then the schedule left out on resume.
+
+        resume_schedule_serialized counts active rows EXCLUDING the schedule
+        being resumed; create_schedule_serialized counts every one. Protected
+        rows never count.
+        """
         del sql
         agent_id = args[0]
-        # resume_schedule_serialized passes (agent_id, schedule_id) and counts
-        # active rows EXCLUDING the schedule being resumed;
-        # create_schedule_serialized passes (agent_id,) only. Protected rows
-        # never count.
-        exclude_schedule_id = args[1] if len(args) > 1 else None
+        exclude_schedule_id = args[2] if len(args) > 2 else None
+        return [{"n": self._count(agent_id, exclude_schedule_id)}]
+
+    def _count(self, agent_id: Any, exclude_schedule_id: Any) -> int:
+        """the agent's unprotected active schedules, one left out when named."""
         return sum(
             1
             for sid, r in self._collection.rows.items()

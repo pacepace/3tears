@@ -185,8 +185,8 @@ async def test_check_active_schedule_cap_returns_true_under_cap() -> None:
         is True
     )
     sql, args = pool.calls[0]
-    assert "agent_id = $1" in sql and "NOT protected" in sql
-    assert args == (agent_id,)
+    assert "agent_id = $1" in sql and "status = $2" in sql and "NOT t.protected" in sql
+    assert args == (agent_id, "active")
 
 
 @pytest.mark.asyncio
@@ -370,6 +370,10 @@ class _SerializedConn:
         self.counted.append((sql, args))
         return self._count_value
 
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, int]]:
+        """the active count as the keyed aggregate (``count_active``) asks it: one row, its ``n``."""
+        return [{"n": await self.fetchval(sql, *args)}]
+
 
 # parity-with: asyncpg.Pool (acquire() context manager).
 class _SerializedPool:
@@ -430,7 +434,7 @@ async def test_create_schedule_serialized_inserts_under_cap() -> None:
     locks = [args for sql, args in conn.executed if "pg_advisory_xact_lock" in sql]
     assert locks == [(str(agent_id),)]
     # The count is the agent's.
-    assert conn.counted[0][1] == (agent_id,)
+    assert conn.counted[0][1][0] == agent_id
     # The entity was persisted, bound to the locked transaction connection.
     assert collection.saved == [entity]
     assert entity["conversation_id"] == row["conversation_id"]

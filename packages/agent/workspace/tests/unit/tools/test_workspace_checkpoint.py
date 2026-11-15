@@ -20,6 +20,7 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
+    asks_journal_max,
 )
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
@@ -135,7 +136,7 @@ class _FakeConnection(FakeAsyncpgConnection):
         fetchrow shape, so returning the per-path max (or 0) covers
         every call site.
         """
-        if "COALESCE(MAX(version)" in query:
+        if asks_journal_max(query):
             rel = args[1]
             return {"max_version": self._journal_max_by_path.get(rel, 0)}
         return None

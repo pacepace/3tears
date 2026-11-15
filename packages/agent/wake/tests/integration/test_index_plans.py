@@ -211,12 +211,9 @@ async def test_wake_schedules_agent_status(conn: asyncpg.Connection) -> None:
     captured = CapturedL3()
     collections = _collections(captured)
     await collections.schedules.list_for_agent(agent)
-    statements = [
-        *captured.asked,
-        (rate_limit.COUNT_ACTIVE_SQL, (agent,)),
-        (rate_limit.COUNT_ACTIVE_EXCLUDING_SQL, (agent, uuid.uuid4())),
-        (rate_limit.COUNT_AGENT_FIRES_SQL, (agent, _NOW - timedelta(days=1), True)),
-    ]
+    await rate_limit.count_active(captured, agent)
+    await rate_limit.count_active(captured, agent, excluding=uuid.uuid4())
+    statements = [*captured.asked, (rate_limit.COUNT_AGENT_FIRES_SQL, (agent, _NOW - timedelta(days=1), True))]
     for sql, args in statements:
         plan = await explain_statement(conn, sql, *args)
         assert plan_uses_index(plan, "idx_wake_schedules_agent_status"), (sql, plan.plan)
