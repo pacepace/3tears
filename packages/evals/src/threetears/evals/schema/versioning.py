@@ -519,6 +519,13 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #:   JSON), never validated as a memo and never read; every door lays its analysis out as code's page with the retired
 #:   writer's line. Loosening the field refuses nothing it accepted, so every stored v13 analysis still reads, and a
 #:   build from before it reads everything it writes, since it writes no new field.
+#:
+#:   Within v13, a missing people's-ratings estimate says why in a shared state and reason, with no bump:
+#:   ``PredictionPoweredReading.state`` replaces ``unavailable_reason``, a sentence, in a frozen bundle and a frozen
+#:   decision surface. A reading stored before it is read with the key dropped and, where its estimate is missing,
+#:   ``not_available`` with ``too_few``, the only meaning that sentence had, so every stored v13 analysis still reads
+#:   and lists. A build from before it refuses a reading this one writes (a field it does not know), which is the
+#:   regenerable rule's own answer.
 REGENERABLE_SCHEMA_VERSION: int = 13
 """The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 

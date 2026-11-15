@@ -27,7 +27,8 @@ A leaf module: the analysis models import it, so it imports neither them nor the
 
 from __future__ import annotations
 
-from typing import Literal, NamedTuple
+from collections.abc import Mapping
+from typing import Any, Literal, NamedTuple
 
 from pydantic import Field, field_validator, model_validator
 
@@ -101,6 +102,30 @@ class PredictionPoweredReading(EvalDocumentModel):
             "stated."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _read_the_sentence_state_replaced(cls, data: Any) -> Any:
+        """Read a reading stored before ``state`` replaced ``unavailable_reason``, as that build meant it.
+
+        A frozen bundle and a frozen decision surface hold this shape, and a dump writes every field, so every one
+        stored with an estimate carries ``unavailable_reason``: null beside a stated ``mean``, else a sentence that
+        only ever said the labelled observations were under ``min_labelled``. The key is dropped, and a missing
+        estimate reads ``not_available`` with ``too_few``, the one meaning that sentence had. Loosening a read refuses
+        nothing it accepted, so nothing stored is refused or regenerated (the v13 precedent,
+        :data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`); a dump writes ``state``.
+
+        :param data: The input under validation; only a mapping holding the retired key is touched.
+        :ptype data: Any
+        :return: The input without ``unavailable_reason``, with ``state`` set where it explained a missing estimate.
+        :rtype: Any
+        """
+        if not isinstance(data, Mapping) or "unavailable_reason" not in data:
+            return data
+        read = {key: value for key, value in data.items() if key != "unavailable_reason"}
+        if data["unavailable_reason"] is not None and read.get("mean") is None and read.get("state") is None:
+            read["state"] = StateOf(state="not_available", reason="too_few")
+        return read
 
     @model_validator(mode="after")
     def _stated_or_explained(self) -> PredictionPoweredReading:

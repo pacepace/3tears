@@ -18,6 +18,8 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.agreement import person_scores_by_result
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.report import TableBlock, build_code_only_report
 from threetears.evals.analysis.stats import (
     PPI_MIN_LABELLED_RESULTS,
@@ -25,13 +27,18 @@ from threetears.evals.analysis.stats import (
     prediction_powered_mean,
 )
 from threetears.evals.kernel.surface import PredictionPoweredReading
+from threetears.evals.ops.analysis import analyses_list
 from threetears.evals.run import rate_result
 from threetears.evals.schema.models import EvalCaseStratum, EvalResult
 from threetears.evals.schema.reading_states import StateOf
-from packages.evals.tests.factories import make_calibration_rating, make_eval_result
+from threetears.evals.storage import InMemoryDocumentStore
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
+from packages.evals.tests.factories import analysed_aspect, make_analysis, make_calibration_rating, make_eval_result
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import ops_fixture
 
 
 class TestTheEstimator:
@@ -251,3 +258,135 @@ class TestTheReadingSaysWhyItIsMissing:
                 min_labelled=10,
                 state=StateOf(state="set_aside", reason="people_disagree"),
             )
+
+
+def _as_stored_before_state(document: object) -> object:
+    """``document`` with every prediction-powered reading in it as a build before ``state`` dumped it: ``state`` gone,
+    ``unavailable_reason`` written beside every field, null where the estimate is stated, else that build's sentence."""
+    if isinstance(document, list):
+        return [_as_stored_before_state(item) for item in document]
+    if not isinstance(document, dict):
+        return document
+    moved = {key: _as_stored_before_state(value) for key, value in document.items()}
+    powered = moved.get("prediction_powered")
+    if isinstance(powered, dict):
+        old = {key: value for key, value in powered.items() if key != "state"}
+        old["unavailable_reason"] = (
+            None
+            if powered["mean"] is not None
+            else (
+                f"not available: {powered['n_labelled']} of the counted scores here were rated by a person, under "
+                f"the {powered['min_labelled']} a prediction-powered estimate is stated from."
+            )
+        )
+        moved["prediction_powered"] = old
+    return moved
+
+
+def _readings(document: object) -> list[dict]:
+    """Every prediction-powered reading a document holds, at any depth."""
+    if isinstance(document, list):
+        return [reading for item in document for reading in _readings(item)]
+    if not isinstance(document, dict):
+        return []
+    held = [document["prediction_powered"]] if isinstance(document.get("prediction_powered"), dict) else []
+    return held + [reading for value in document.values() for reading in _readings(value)]
+
+
+class TestAReadingStoredBeforeStateStillReads:
+    """A frozen bundle and a frozen decision surface hold this shape; one stored before ``state`` replaced
+    ``unavailable_reason`` reads, lists and dumps again, with no regeneration (the v13 loosening precedent)."""
+
+    def test_the_old_key_is_dropped_and_a_missing_estimate_reads_too_few(self) -> None:
+        stated = PredictionPoweredReading.from_dict(
+            {
+                "n_labelled": 12,
+                "n_labelled_cases": 12,
+                "min_labelled": 10,
+                "mean": 3.0,
+                "rectifier": -0.5,
+                "sem": None,
+                "ci_low": None,
+                "ci_high": None,
+                "unavailable_reason": None,
+            }
+        )
+        assert (stated.mean, stated.state) == (3.0, None)
+        missing = PredictionPoweredReading.from_dict(
+            {
+                "n_labelled": 3,
+                "n_labelled_cases": 3,
+                "min_labelled": 10,
+                "mean": None,
+                "rectifier": None,
+                "sem": None,
+                "ci_low": None,
+                "ci_high": None,
+                "unavailable_reason": "not available: 3 of the counted scores here were rated by a person, under the "
+                "10 a prediction-powered estimate is stated from.",
+            }
+        )
+        assert missing.state == StateOf(state="not_available", reason="too_few")
+        assert "unavailable_reason" not in missing.to_dict()
+        assert PredictionPoweredReading.from_dict(missing.to_dict()) == missing
+
+    def test_an_old_reading_that_explained_nothing_is_still_refused(self) -> None:
+        # The old shape refused a missing estimate with no sentence; loosening the read accepts nothing it refused.
+        with pytest.raises(ValidationError, match="exactly one of"):
+            PredictionPoweredReading.from_dict(
+                {"n_labelled": 3, "n_labelled_cases": 3, "min_labelled": 10, "mean": None, "unavailable_reason": None}
+            )
+
+    def test_an_analysis_stored_before_it_reads_lists_and_dumps_again(self) -> None:
+        store = InMemoryDocumentStore()
+        fixture = off_loop(ops_fixture, store=store)
+        host = fixture.host.eval_host
+        _, bundle = _bundle(rated={0: 36, 1: 3}, shift=-1)
+        surface = bundle_decision_surface(bundle)
+        analysis = make_analysis(
+            campaign_id=fixture.campaign.id,
+            scope_id=TOYHOST_SCOPE,
+            aspects=[analysed_aspect(bundle, decision_surface=surface)],
+            campaign_bundle=campaign_bundle(bundle).frame(),
+        )
+        host.storage.save_analysis(analysis)
+        before = analyses_list(host, fixture.campaign.id, TOYHOST_SCOPE)
+        raw = store.get(analysis.id, TOYHOST_SCOPE)
+        assert raw is not None
+        old = _as_stored_before_state(raw)
+        assert isinstance(old, dict)
+        held = _readings(old["aspects"][0]["bundle"]) + _readings(old["aspects"][0]["decision_surface"])
+        # Both kinds the old shape stored are in it, in the bundle and in the surface: a stated one and a missing one.
+        assert _readings(old["aspects"][0]["decision_surface"])
+        assert any(reading["unavailable_reason"] is None for reading in held)
+        assert any(reading["unavailable_reason"] is not None for reading in held)
+        assert all("state" not in reading for reading in held)
+        store.upsert(old)
+
+        # It lists as it did, line for line: nothing about it needs regenerating.
+        assert analyses_list(host, fixture.campaign.id, TOYHOST_SCOPE) == before
+
+        read = host.storage.load_analysis(analysis.id, TOYHOST_SCOPE)
+        assert read is not None
+        # The surface reads as it was frozen: a stated reading unchanged, a missing one with the old sentence's meaning.
+        now, was = _readings(read.aspects[0].decision_surface.to_dict()), _readings(surface.to_dict())
+        assert len(now) == len(was)
+        for reading, frozen_reading in zip(now, was, strict=True):
+            if frozen_reading["mean"] is not None:
+                assert reading == frozen_reading
+            else:
+                assert reading == {**frozen_reading, "state": {"state": "not_available", "reason": "too_few"}}
+        frozen = AnalysisContextBundle.from_dict(dict(read.aspects[0].bundle))
+        missing = [
+            arm.prediction_powered
+            for measure in frozen.judged_measures
+            for arm in measure.arms
+            if arm.prediction_powered is not None and arm.prediction_powered.mean is None
+        ]
+        assert missing
+        assert all(powered.state == StateOf(state="not_available", reason="too_few") for powered in missing)
+        dumped = frozen.to_dict()
+        assert _readings(dumped) and all("unavailable_reason" not in reading for reading in _readings(dumped))
+        assert AnalysisContextBundle.from_dict(dumped) == frozen
+        surface_again = read.aspects[0].decision_surface.to_dict()
+        assert all("unavailable_reason" not in reading for reading in _readings(surface_again))
