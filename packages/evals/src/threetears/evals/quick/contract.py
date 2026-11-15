@@ -244,9 +244,12 @@ def _declare_as(called: Any, handed: str, written: str) -> tuple[str, str]:
         name = f"partial({getattr(called.func, '__name__', type(called.func).__name__)}, ...)"
         return name, f"declare its function so that what the partial leaves free is exactly ({handed})"
     if not inspect.isroutine(called) and not isinstance(called, type):
-        name = type(called).__name__
-        return name, f"declare its __call__ to take exactly that: {written} __call__(self, {handed}): ..."
-    name = getattr(called, "__name__", None) or type(called).__name__
+        return (
+            type(called).__name__,
+            f"declare its __call__ to take exactly that: {written} __call__(self, {handed}): ...",
+        )
+    named = getattr(called, "__name__", None)
+    name = named if isinstance(named, str) else type(called).__name__
     return name, f"declare it to take exactly that: {written} {name}({handed}): ..."
 
 
