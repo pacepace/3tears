@@ -4190,6 +4190,11 @@ _V2_FIELDS: Final[frozenset[str]] = frozenset(
 _ADDED_SINCE_V2: Final[frozenset[str]] = frozenset()
 
 
+#: The cell model every version 2 fingerprint was taken under: bundle shape 66 and cell model 14 moved together, and
+#: no build wrote a version 2 fingerprint after cell model 15.
+_V2_CELL_MODEL_VERSION: Final[int] = 14
+
+
 def known_fingerprint(fingerprint: str) -> bool:
     """Whether ``fingerprint`` is of a version this build computes (``v3:`` or ``v2:``).
 
@@ -4249,6 +4254,10 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
     if isinstance(manifest, Mapping) and not (like is not None and like.startswith(_V2_PREFIX)):
         return manifest_fingerprint(manifest)
     evidence = {key: value for key, value in document.items() if key in _V2_FIELDS}
+    if isinstance(stamped := evidence.get("cell_model_version"), int) and stamped > _V2_CELL_MODEL_VERSION:
+        # The cell model's version is the package's, not evidence, and version 2 hashed it: put back, as each
+        # Hedges' g is, so a version 2 fingerprint is matched by the same evidence assembled under a later model.
+        evidence["cell_model_version"] = _V2_CELL_MODEL_VERSION
     if isinstance(scoreboard := evidence.get("scoreboard"), list):
         # How an arm's cost was priced (_NOT_ARM_EVIDENCE) is no part of what the bundle read.
         evidence["scoreboard"] = unpresented(scoreboard, _NOT_ARM_EVIDENCE)
