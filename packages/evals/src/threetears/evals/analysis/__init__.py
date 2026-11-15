@@ -105,6 +105,7 @@ from threetears.evals.analysis.campaign_bundle import ArmSpelling, CampaignBundl
 from threetears.evals.analysis.campaign_readings import (
     AggregateFigure,
     AggregateWeighting,
+    AnswerSplit,
     ArmAggregate,
     AspectReading,
     BarState,
@@ -183,7 +184,7 @@ from threetears.evals.analysis.gate import (
     parse_fail_on,
     verdict_token,
 )
-from threetears.evals.analysis.report.decision import CasesNeeded, NeedKind, SampleProjection
+from threetears.evals.analysis.floors import CasesNeeded, NeedKind, SampleProjection
 from threetears.evals.analysis.report import (
     KIT_CHARTS,
     BarRow,
@@ -451,6 +452,7 @@ __all__ = [
     # A campaign read one aspect at a time, and the shapes of what code reads off it across aspects.
     "AggregateFigure",
     "AggregateWeighting",
+    "AnswerSplit",
     "ArmAggregate",
     "AspectDeclaration",
     "AspectReading",

@@ -4,14 +4,14 @@ prints it off any page.
 Here rather than with the other lens renderings in :mod:`threetears.evals.ops` because the command
 line prints a frontier too, and :mod:`threetears.evals.quick` sits beside ``ops`` rather than above it.
 One rendering, so both surfaces carry the same caveats: what was left out, and why. The tier sentence sits here
-rather than with :mod:`~threetears.evals.analysis.agreement`, which a page's forms import: an off-page sentence is
-printed in the off-page forms, and this module may import them.
+rather than with :mod:`~threetears.evals.analysis.agreement`, which decides a tier and never imports a page's forms:
+its wording prints every figure in the forms of the page it is on (:func:`tier_sentence_in`), or in the off-page
+forms (:func:`tier_sentence`), and this module may import them.
 """
 
 from __future__ import annotations
 
 
-from threetears.evals.analysis.agreement import tier_sentence_in
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.depth import times
 from threetears.evals.analysis.depth_reading import SubjectDepth, subject_depth
@@ -25,7 +25,7 @@ from threetears.evals.analysis.report.verdict import MIN_CASES
 
 
 from threetears.evals.analysis.reporting import ProjectionExclusions
-from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier
+from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier, TierCriterion
 from threetears.evals.analysis.lenses.frontier import (
     PASS_HAT_K_CELL_READING,
     FrontierPoint,
@@ -33,6 +33,7 @@ from threetears.evals.analysis.lenses.frontier import (
     SubjectFrontier,
     pass_hat_k_cell_lines,
 )
+from threetears.evals.schema.models import MODEL_DEFAULT_TEMPERATURE, is_builtin_judge_config_id, sent_settings_phrase
 
 
 def exclusion_lines(exclusions: ProjectionExclusions) -> list[str]:
@@ -211,11 +212,98 @@ def frontier_text(result: FrontierResult) -> str:
     return "\n".join(lines)
 
 
+def tier_sentence_in(tier: JudgeEvidenceTier, forms: PageForms) -> str:
+    """One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it,
+    every figure (a kappa, its bounds and bar, a temperature, a count of cases) printed by ``forms``, the forms of the
+    page it is printed on.
+
+    :param tier: The tier as decided.
+    :ptype tier: JudgeEvidenceTier
+    :param forms: The forms of the page the sentence is printed on, which print its every figure by the lone figure
+        rule.
+    :ptype forms: PageForms
+    :return: The sentence, naming the judge (its config, when one asked, its temperature and the request settings its
+        calls were sent with), the tier and each criterion's
+        agreement, pairs and results against its bar — and, for a tier read from a stored judge profile, the profile,
+        when and on which cases it was measured, and what the campaign's own evidence read.
+    :rtype: str
+    """
+    judge = tier.judge_model or "an unnamed judge"
+    if tier.judge_config_id is not None:
+        what = "built-in prompt" if is_builtin_judge_config_id(tier.judge_config_id) else "config"
+        judge = f"{judge}, {what} {tier.judge_config_id}"
+    temperature = tier.judge_temperature
+    judge += (
+        ", temperature not recorded"
+        if temperature is None
+        else ", sent no temperature"
+        if temperature == MODEL_DEFAULT_TEMPERATURE
+        else f", temperature {forms.lone(temperature).text}"
+    )
+    judge += f", {sent_settings_phrase(tier.judge_sent_settings)}"
+    measured = (
+        f"{tier.rubric_dim} ({judge}): {tier.tier} — agreement with people "
+        f"{_criterion_words(tier.calibration, forms)}; with its own repeats {_criterion_words(tier.separation, forms)}."
+    )
+    consulted = tier.consulted_profile
+    if consulted is not None:
+        return (
+            f"{measured} This campaign's evidence decided no tier, so it consulted the judge's stored profile "
+            f"{consulted.profile_id}, measured at {consulted.measured_at} on {forms.lone(consulted.cases).text} frozen "
+            f"cases (case set {consulted.case_set_fingerprint[:12]}, runs {', '.join(consulted.run_ids)}), which is "
+            f"undetermined too: agreement with the labels {_criterion_words(consulted.calibration, forms)}; with its own "
+            f"repeats {_criterion_words(consulted.separation, forms)}."
+        )
+    profile = tier.from_profile
+    if profile is None:
+        return measured
+    # Never silently: a tier read from a stored profile says so, with when and on what it was measured, and what
+    # the campaign's own evidence read (#628).
+    return (
+        f"{tier.rubric_dim} ({judge}): {tier.tier}, read from the judge's stored profile {profile.profile_id}, "
+        f"measured at {profile.measured_at} on {forms.lone(profile.cases).text} frozen cases (case set "
+        f"{profile.case_set_fingerprint[:12]}, runs {', '.join(profile.run_ids)}) — agreement with the labels "
+        f"{_criterion_words(tier.calibration, forms)}; with its own repeats {_criterion_words(tier.separation, forms)}. This "
+        f"campaign's own evidence decided no tier: agreement with people {_criterion_words(profile.own_calibration, forms)}; "
+        f"with its own repeats {_criterion_words(profile.own_separation, forms)}."
+    )
+
+
+def _criterion_words(criterion: TierCriterion, forms: PageForms) -> str:
+    """A criterion as a clause: its agreement, bounds, pairs and results against the bar, and what it still needs,
+    each figure by the lone figure rule, in ``forms``."""
+    bar = f"(bar {forms.lone(criterion.threshold).text} over at least {criterion.min_results} results)"
+    needed = criterion.results_needed
+    if criterion.n == 0:
+        return f"not measured {bar} — needs {criterion.min_results} results"
+    if criterion.agreement is None:
+        # Undefined kappa below the floor is still short of the floor: the results it needs are stated as they are
+        # for a defined one, so the sentence never reads as though only the kappa were missing.
+        undefined = f"undefined over {criterion.n} pairs from {criterion.results} results {bar}"
+        return f"{undefined} — needs {needed} more results" if needed is not None else undefined
+    over = f"over {criterion.n} pairs from {criterion.results} results"
+    if criterion.interval is not None:
+        low, high = criterion.interval
+        over = f"(bounds {forms.lone(low).text} to {forms.lone(high).text}) {over}"
+    verdict = {
+        "met": "meets",
+        "not_met": "misses",
+        "undecided": "undecided — the bounds straddle",
+        "insufficient": "too few results for" if criterion.results < criterion.min_results else "no bounds for",
+    }[criterion.state]
+    clause = f"{forms.lone(criterion.agreement).text} {over}, {verdict} {bar}"
+    if needed is not None and criterion.state == "insufficient":
+        clause += f" — needs {needed} more results"
+    elif needed is not None:
+        clause += f" — about {needed} more results would decide it if agreement holds"
+    return clause
+
+
 def tier_sentence(tier: JudgeEvidenceTier) -> str:
     """One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
 
-    Off any page, as a host prints it (a console, a lens): :func:`~threetears.evals.analysis.agreement.tier_sentence_in`
-    in an off-page surface's own forms. A page states it in its own forms, through ``tier_sentence_in``.
+    Off any page, as a host prints it (a console, a lens): :func:`tier_sentence_in` in an off-page surface's own
+    forms. A page states it in its own forms, through ``tier_sentence_in``.
 
     :param tier: The tier as decided.
     :ptype tier: JudgeEvidenceTier
@@ -229,4 +317,5 @@ __all__ = [
     "exclusion_lines",
     "frontier_text",
     "tier_sentence",
+    "tier_sentence_in",
 ]

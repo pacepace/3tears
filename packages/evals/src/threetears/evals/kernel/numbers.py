@@ -12,6 +12,9 @@ Over the whole package and the kit's script, that is checked from the source by
 parts under ``analysis/report/number_forms/`` that decides a figure's form is listed there, the list only shrinks,
 and the report trees (``_SPELLING_TREES`` there) are held to the stricter rule, which names each deliberate fixed
 spelling it allows (a share's percentage, an SVG coordinate) and flags every other format spec that chooses digits.
+The engine's trees and the numbers side of the analysis package reach no page's forms, so a fixed form they state (a
+refusal's figure, a ledger's dollars, a disclosure's share) is spelled by a function of this module and by nothing
+else.
 
 A browser renderer that restates this rule pins itself to the same cases this package's tests read,
 ``tests/fixtures/number-format-cases.json``.
@@ -184,6 +187,39 @@ def spell_dollars(amount: float) -> str:
 
 #: What an amount no client could price reads as. Never ``$0``: an unpriced call may have been billed.
 UNPRICED = "unpriced"
+
+
+#: The decimals a ledger's dollars read to: the precision one call's price needs, which cents would read as nothing.
+_LEDGER_PLACES = 4
+
+
+def spell_ledger_dollars(amount: float) -> str:
+    """An amount of money as a spend ledger states it, to four decimals, its ``$`` before the number (``$0.0012``):
+    a call's cost and its priced ceiling, a ledger's totals. A fixed form, the same on a page
+    (:meth:`~threetears.evals.analysis.report.forms.PageForms.money_ledger`) and off one.
+
+    :param amount: Dollars, as stored.
+    :ptype amount: float
+    :return: ``$0.0012``, ``$12.5000``.
+    :rtype: str
+    """
+    return f"${amount:.{_LEDGER_PLACES}f}"
+
+
+def spell_share(value: float | None) -> str:
+    """A share of a whole (0 to 1) in whole percent (``37%``): a different sentence from a measured rate, "37% of
+    it", at its own fixed precision. A fixed form, the same on a page
+    (:meth:`~threetears.evals.analysis.report.forms.PageForms.share`) and off one.
+
+    :param value: The share; None for none.
+    :ptype value: float | None
+    :return: ``37%``, ``95%``; :data:`ABSENT` for an absent or non-finite share.
+    :rtype: str
+    """
+    if value is None or not math.isfinite(value):
+        return ABSENT
+    return f"{value:.0%}"
+
 
 #: The least amount, in magnitude, that cents state: a set of money per something whose least non-zero member is under
 #: it is drawn per a thousand times more of what it counts (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`).

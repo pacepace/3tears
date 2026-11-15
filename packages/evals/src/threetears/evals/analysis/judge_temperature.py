@@ -23,7 +23,6 @@ import statistics
 
 from pydantic import Field
 
-from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.agreement import JudgeSelfAgreement, self_agreement_of_repeats
 from threetears.evals.kernel.judge_temperature import (
     TEMPERATURE_SETTINGS,
@@ -34,6 +33,7 @@ from threetears.evals.kernel.judge_temperature import (
     TemperatureSetting,
     TemperatureSkip,
 )
+from threetears.evals.kernel.numbers import format_number, spell_dollars, spell_share, spell_stored_counts
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import JudgeRepeat, JudgeTemperature, RepeatedScore, RubricScale
 
@@ -148,18 +148,17 @@ class JudgeTemperatureComparison(EvalBaseModel):
 
     def render(self) -> str:
         """The comparison as text: what was asked and spent, then each dimension's two settings side by side."""
-        forms = PageForms.off_page()
-        cost = "unpriced" if self.cost_usd is None else forms.money_total(self.cost_usd).text
+        cost = "unpriced" if self.cost_usd is None else spell_dollars(self.cost_usd)
         requested = {read.setting: read for read in self.settings}
         pinned = requested["pinned"].requested
         lines = [
             f"judge temperature comparison on run {self.run_id} (judge {self.judge_model}): {self.cases} "
             f"{self.selection} case(s) over {self.results} result(s), {self.repeats} repeat(s) at temperature "
-            f"{forms.lone(pinned).text} and at the provider default; {self.calls_made} call(s), {cost} — measurement cost, "
+            f"{format_number(pinned)} and at the provider default; {self.calls_made} call(s), {cost} — measurement cost, "
             "ledgered under judge, never the candidate's",
         ]
         if not self.comparable:
-            lines.append(f"NOT COMPARABLE: {forms.stored_counts(self.incomparable or '')}")
+            lines.append(f"NOT COMPARABLE: {spell_stored_counts(self.incomparable or '')}")
         if self.stopped:
             lines.append(f"stopped: {self.stopped}")
         lines += [f"skipped {skip.result_id}: {skip.reason}" for skip in self.skipped]
@@ -171,18 +170,18 @@ class JudgeTemperatureComparison(EvalBaseModel):
         for row in self.dimensions:
             lines.append(f"- {row.rubric_dim} ({row.scale})")
             # one line: a figure printed by the lone figure rule holds no line break
-            lines.append(f"    temperature {forms.lone(pinned).text}:      {_side_text(row.pinned, forms)}")
-            lines.append(f"    provider default:   {_side_text(row.provider_default, forms)}")
+            lines.append(f"    temperature {format_number(pinned)}:      {_side_text(row.pinned)}")
+            lines.append(f"    provider default:   {_side_text(row.provider_default)}")
         return "\n".join(lines)
 
 
-def _side_text(side: TemperatureSide, forms: PageForms) -> str:
-    """One setting of one dimension, in a line, its figures as ``forms`` states them."""
-    agreement = "n/a" if side.exact_agreement is None else forms.share(side.exact_agreement).text
+def _side_text(side: TemperatureSide) -> str:
+    """One setting of one dimension, in a line, each figure in its fixed form."""
+    agreement = "n/a" if side.exact_agreement is None else spell_share(side.exact_agreement)
     kappa = side.weighted_kappa if side.weighted_kappa is not None else side.kappa
     return (
-        f"{side.cases} case(s), variance {forms.lone(side.mean_variance).text} / {forms.lone(side.max_variance).text}, "
-        f"{side.unstable_cases} unstable, exact agreement {agreement}, kappa {forms.lone(kappa).text}"
+        f"{side.cases} case(s), variance {format_number(side.mean_variance)} / {format_number(side.max_variance)}, "
+        f"{side.unstable_cases} unstable, exact agreement {agreement}, kappa {format_number(kappa)}"
     )
 
 
@@ -190,7 +189,7 @@ def _recorded_text(temperature: JudgeTemperature | None) -> str:
     """A recorded temperature as the report spells it."""
     if temperature is None:
         return "unrecorded"
-    return temperature if isinstance(temperature, str) else PageForms.off_page().lone(temperature).text
+    return temperature if isinstance(temperature, str) else format_number(temperature)
 
 
 def _case(answered: TemperatureCaseAnswers, expected: JudgeTemperature) -> tuple[TemperatureCase, set[str]]:

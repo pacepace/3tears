@@ -40,7 +40,7 @@ from threetears.evals.analysis.bundle.schema import (
 )
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
-from threetears.evals.analysis.report.decision import (
+from threetears.evals.analysis.floors import (
     FloorOutcome,
     aspect_pass_rate,
     evaluate_floor,

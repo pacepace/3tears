@@ -428,13 +428,26 @@ CORE_SCHEMA_VERSION: int = 15
 #:   as before. In no identity, key or digest. An older build reads the run's rules as the one version its proofs
 #:   stand under, which the re-proof made true.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-#: - **v15.18** — an out-of-run call can be a blind read's model reviewer's: ``reviewer``, a new value of the open
+#: - **v15.18** — a run records what each of its host's measures counted, and a statement or a re-measure of it is
+#:   recorded: ``EvalRun.measure_definitions`` (default None: stored before the field existed, or assembled without a
+#:   launch; NOT RECORDED, never "unchanged") is the definition digest of each measure the host declared at launch, by
+#:   measure key, and ``ContextComponents.measure_definitions`` is the same map as an additive component of the
+#:   context key: composed only where it is non-empty, so every key computed without it is what it was and
+#:   ``IDENTITY_VERSION`` stays 25. ``EvalRun.measure_attestation`` (default None: never attested) records a host's
+#:   later statement of the definitions a run ran under; ``EvalRun.measure_remeasures`` (default empty: never
+#:   re-measured) and ``EvalResult.measure_rereads`` (default empty: its measures are as its cell wrote them) record a
+#:   re-measure of the run and the values it replaced on each result. Each is left out of the document when unset, so
+#:   a run or result setting none is stored as before. An older build reads a re-measured result's values as its
+#:   cell's own and pools an attested or re-measured run on the key its launch stamped, so a host attests or
+#:   re-measures only once every reader runs this build.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.19** — an out-of-run call can be a blind read's model reviewer's: ``reviewer``, a new value of the open
 #:   vocabulary ``OutOfRunPurpose`` on ``OutOfRunSpend.purpose``, written when a model answers a blind read's sheet
 #:   (one call per item). Measurement spend on its own line, never the candidate's and never the judge's. In no
 #:   identity, key or digest. An older build refuses a row carrying it unless the row says this minor wrote it, and
 #:   then lists the purpose by name beside the ones it knows.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 18
+CORE_SCHEMA_MINOR: int = 19
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

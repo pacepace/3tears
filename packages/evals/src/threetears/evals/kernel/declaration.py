@@ -1541,7 +1541,7 @@ def decision_readings(template: EvalTemplate | None, profile: HostProfile) -> li
     measure the host's catalogue describes (:func:`~threetears.evals.kernel.metrics.rule_rates`: a boolean with a
     better end, either end, or a pass/fail scorer or grader), by its key. Each is a rate by the one predicate a family
     contrast's interval reads too (:func:`~threetears.evals.kernel.metrics.reads_as_rate`). Exactly the rates
-    :func:`~threetears.evals.analysis.report.decision.rule_readings` gives a rule, which reads the same function.
+    :func:`~threetears.evals.analysis.floors.floor_readings` gives a rate floor, which reads the same function.
 
     :param template: The campaign's template; None when it names none that could be read.
     :ptype template: EvalTemplate | None
