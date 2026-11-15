@@ -816,9 +816,7 @@ def _anytime_preference(
     if decided < PREFERENCE_MIN_ITEMS:
         state = StateOf(state="not_available", reason="too_few")
     else:
-        p = bounded_separation_p(
-            [0.5] * len(means), means, paired=True, value_range=(0.0, 1.0), planned_n=len(pairs)
-        )
+        p = bounded_separation_p([0.5] * len(means), means, paired=True, value_range=(0.0, 1.0), planned_n=len(pairs))
         if p is None or p >= SIGNIFICANCE_ALPHA or for_candidate == for_control:
             verdict = "not_separated"
         else:
