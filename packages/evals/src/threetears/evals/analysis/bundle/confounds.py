@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Collection
 
 from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.analysis.cells import MEASURE_DEFINITIONS_DIMENSION
 from threetears.evals.analysis.bundle.schema import (
     OBSERVED_MECHANISMS,
     SERVED_MODEL_CONFOUNDS,
@@ -92,6 +93,13 @@ def _world_confound_reason(matters: str) -> str:
     return f"{_WORLD_PLACEMENT_CONFOUND}. What this dimension is: {matters}"
 
 
+#: Why runs read under two definitions of a host measure, or under none recorded, cloud a comparison.
+_MEASURE_DEFINITIONS_CONFOUND = (
+    "the host's measures were not read under one recorded definition across these runs, so a difference in a host "
+    "measure may be the definition's and not the candidate's; such runs share no cell and no contrast"
+)
+
+
 def _apparatus_confound_reasons(profile: HostProfile) -> dict[str, str]:
     """Apparatus dimension -> why a change in it clouds the measurement, for one host.
 
@@ -120,6 +128,9 @@ def _apparatus_confound_reasons(profile: HostProfile) -> dict[str, str]:
         for declared in profile.sweepables.rig_dimensions
         if declared.confounds is not None
     }
+    # The package's own dimension of the rig, present in the levels only where the runs were not all read under one
+    # definition of each host measure.
+    reasons[MEASURE_DEFINITIONS_DIMENSION] = _MEASURE_DEFINITIONS_CONFOUND
     if profile.world is not None:
         reasons.update(
             {

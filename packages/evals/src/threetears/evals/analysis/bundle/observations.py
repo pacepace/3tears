@@ -12,6 +12,8 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.cells import (
+    MEASURE_DEFINITIONS_DIMENSION,
+    NO_MEASURE_DEFINITIONS,
     ApparatusClass,
     Observation,
     apparatus_class_of,
@@ -50,10 +52,14 @@ def classify_apparatus(
     :rtype: dict[str, ApparatusClass]
     """
     dimensions = set(apparatus_levels)
+    definitions = apparatus_levels.get(MEASURE_DEFINITIONS_DIMENSION, {})
     return {
         run.id: apparatus_class_of(
             {dim: apparatus_levels.get(dim, {}).get(run.id) for dim in dimensions},
             dimensions=dimensions,
+            # Measure definitions nothing recorded match nothing, not even another run's silence: the class is
+            # alone to the run, where a host's own unrecorded dimension pools with the same silence.
+            alone=run.id if run.id in definitions and definitions[run.id] is None else None,
             # Read off the run, never assumed: the launch path stamps `commissioned`, and a host
             # capturing traffic it did not control writes `witnessed`. It enters the class id, so a
             # captured session beside a launched arm of the same variant is two cells everywhere.
@@ -66,34 +72,39 @@ def classify_apparatus(
 def measure_definition_levels(
     runs: Sequence[EvalRun], results_by_run: dict[str, list[ResultView]]
 ) -> dict[str, str | None]:
-    """The definitions of its host's measures each result's values were read under, as the level a rig is split on
-    (:func:`~threetears.evals.analysis.cells.split_on_measure_definitions`).
+    """The definitions of its host's measures each run's values were read under, as the rig's level of
+    :data:`~threetears.evals.analysis.cells.MEASURE_DEFINITIONS_DIMENSION`, where the runs do not all say one thing.
 
     Read as pass^k reads it (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell`), off what each run RECORDED
     (``EvalRun.measure_definitions``: its launch's, a re-measure's or its host's attestation) and what its results
-    hold, never off the host's registry as it is today.
+    hold, never off the host's registry as it is today. The assembly adds the answer to the runs' apparatus levels,
+    so the cells, the confound scans, the coverage rows, the divergences and the factor aliasing all read it as they
+    read any dimension of the rig.
 
     :param runs: The campaign's resolved runs.
     :ptype runs: Sequence[EvalRun]
     :param results_by_run: Each run's results, keyed by run id.
     :ptype results_by_run: dict[str, list[ResultView]]
-    :return: Result id → one digest of the run's recorded map, in any key order. ``None`` where nothing says which
-        definition the run's values were read under: its results hold a host measure
-        (:func:`~threetears.evals.kernel.metrics.holds_host_measure`) and it recorded none, or a re-measure of it
-        began and did not finish, so its results hold values read under two. A result ABSENT here has no definition
-        to record: its run recorded an empty map, or recorded none and holds no host measure.
+    :return: Run id → one digest of the run's recorded map, in any key order;
+        :data:`~threetears.evals.analysis.cells.NO_MEASURE_DEFINITIONS` where it has none to record (an empty map,
+        or none recorded and no host measure held); ``None`` where nothing says which definition its values were
+        read under: its results hold a host measure and it recorded none, or a re-measure of it began and did not
+        finish. EMPTY where every run says one known thing: the dimension separates nothing, so it is no dimension
+        of this campaign's rig and no class id moves.
     :rtype: dict[str, str | None]
     """
     levels: dict[str, str | None] = {}
     for run in runs:
-        results = results_by_run.get(run.id, [])
-        holds = any(holds_host_measure(result.host_measures) for result in results)
+        holds = any(holds_host_measure(result.host_measures) for result in results_by_run.get(run.id, []))
         if remeasure_unfinished(run) or definitions_unrecorded(run, holds_host_measures=holds):
-            levels.update({result.id: None for result in results})
+            levels[run.id] = None
         elif run.measure_definitions:
-            digest = canonical_digest(run.measure_definitions)
-            levels.update({result.id: digest for result in results})
-    return levels
+            levels[run.id] = canonical_digest(run.measure_definitions)
+        else:
+            levels[run.id] = NO_MEASURE_DEFINITIONS
+    said = set(levels.values())
+    # One silent run beside nothing else separates nothing either: there is no other run to pool or contrast it with.
+    return levels if len(said) > 1 or (None in said and len(levels) > 1) else {}
 
 
 def observations_of(

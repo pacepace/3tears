@@ -67,7 +67,7 @@ from threetears.evals.analysis.bundle.schema import (
     TrialRow,
 )
 from threetears.evals.analysis.campaign_bundle import KIND_MEANS, CampaignBundle
-from threetears.evals.analysis.cells import answer_split_variants
+from threetears.evals.analysis.cells import split_arms
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading, reading_name
 from threetears.evals.analysis.floors import floor_subject
 from threetears.evals.analysis.depth import REPEATS_FLOOR
@@ -679,15 +679,23 @@ class _Builder:
         withheld and ``caveats.unreported`` says why."""
         cells: dict[str, CellFacts] = {}
         rigs: dict[str, int] = {}
-        split = answer_split_variants(aspect.cells)
+        split = split_arms(aspect.cells)
         for cell in aspect.cell_measures:
             label = self.arm(cell.variant_key)
             if cell.variant_key in split:
-                note = (
-                    f"{label}'s results on {aspect.aspect} were answered by more than one candidate model, or by "
-                    f"one no response named, so they are read per model in {split[cell.variant_key]} cells and no "
-                    f"figure is given for {label} there."
-                )
+                on = split[cell.variant_key]
+                if "served_model" in on:
+                    note = (
+                        f"{label}'s results on {aspect.aspect} were answered by more than one candidate model, or "
+                        f"by one no response named, so they are read per model in {on['served_model']} cells and no "
+                        f"figure is given for {label} there."
+                    )
+                else:
+                    note = (
+                        f"{label}'s runs on {aspect.aspect} were read under more than one definition of a host "
+                        f"measure, or under none recorded, so they are read per definition in "
+                        f"{on['measure_definition']} cells and no figure is given for {label} there."
+                    )
                 if note not in self.unreported:
                     self.unreported.append(note)
                 continue
@@ -733,7 +741,7 @@ class _Builder:
                         p95=tail,
                     )
                     facts.setdefault(summary.name, self.measure_facts(aspect, summary.name))
-            split = answer_split_variants(aspect.cells)
+            split = split_arms(aspect.cells)
             for measured in self.bundle.readings.measures:
                 # An arm read per answering model has no figure of its own (`cells`), so none is filled in for it
                 # from readings frozen before they withheld it.

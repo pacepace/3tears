@@ -506,6 +506,23 @@ class ArmServedModel(EvalDocumentModel):
         )
     )
 
+    # Both left out of the document when nothing was stated, so an arm no host attested is stored as it was.
+    n_attested: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "Of the unrecorded results, those whose run's host stated afterwards which model answered: attested, "
+            "not recorded. The responses still named none, so n_unrecorded and state are what was recorded; the "
+            "arm's cells pool those results with the stated model's on the host's word, and a reader is told so."
+        ),
+    )
+    attested_models: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The models those statements name, sorted. A host's word, never a response's.",
+    )
+
     @model_validator(mode="after")
     def _state_follows_the_counts(self) -> ArmServedModel:
         """The state is the one the served models and the unrecorded count imply, never a second opinion.
@@ -1347,6 +1364,17 @@ class RunSummary(EvalDocumentModel):
             "nothing past running its cells one at a time with no judge or simulated user pinned, no latency "
             "declaration, no arm schedule, no rubric scale and no execution mode on any result; or the bundle was "
             "assembled before the field existed (its shape names no apparatus, so read it as not carried)."
+        ),
+    )
+    # Left out of the document when empty, so a run no host attested summarises as one did before the field existed.
+    attested_coordinates: list[Coordinate] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "The coordinates of this run's identity its host stated after the run, which the run did not record: "
+            "`measure_definition` (EvalRun.measure_attestation) and `served_model` (EvalRun.served_model_attestation)"
+            ". Attested, not recorded: the run pools on the host's word, and a reading over it says so. Empty = "
+            "nothing was stated of it."
         ),
     )
     # Left out of the document when unset, so a run that finished summarises, and is fingerprinted, as one did before
@@ -4187,7 +4215,10 @@ _V2_FIELDS: Final[frozenset[str]] = frozenset(
 #: Field names added, since the freeze, INSIDE a value one of :data:`_V2_FIELDS` holds (a new field of a comparison, a
 #: scoreboard row, a cell), which a version 2 pre-image leaves out at every depth. A change that adds such a field
 #: names it here; a name any shape-66 document already uses at any depth cannot be listed.
-_ADDED_SINCE_V2: Final[frozenset[str]] = frozenset()
+_ADDED_SINCE_V2: Final[frozenset[str]] = frozenset(
+    # #1187: what a cell's arm is split on, and what a host stated of a run or an arm after the fact.
+    {"split_on", "attested_coordinates", "n_attested", "attested_models"}
+)
 
 
 #: The cell model every version 2 fingerprint was taken under: bundle shape 66 and cell model 14 moved together, and

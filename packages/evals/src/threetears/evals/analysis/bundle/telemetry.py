@@ -187,6 +187,10 @@ def digest_run(
         apparatus=_run_apparatus(run, run_results),
         # Why a run that did not finish ended, which its page opens on in place of a verdict.
         ended_because=run_ending_reason(run) if run.status != "completed" else None,
+        attested_coordinates=[
+            *(["served_model"] if run.served_model_attestation is not None else []),
+            *(["measure_definition"] if run.measure_attestation is not None else []),
+        ],
     )
 
 

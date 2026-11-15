@@ -24,7 +24,7 @@ the two coordinates the package itself reads (which model answered, and which de
 of each host measure a run's values were read under) a silence matches nothing, not even
 another silence: two runs that each recorded none can have been answered by two models or
 read under two definitions, so each stands in a class of its own
-(:func:`split_on_served_model`, :func:`split_on_measure_definitions`). That cost is paid
+(:func:`split_on_served_model`, :func:`apparatus_class_of`'s ``alone``). That cost is paid
 deliberately, and :class:`NextExperiment` is what keeps it from being pure refusal: the
 engine says what recording would unblock, and how many more observations it would pool.
 
@@ -46,7 +46,7 @@ named one for some and none for others, or named none in two runs, each stands i
 its own, and a silence is never read as a match.
 
 *One definition of each host measure, or no merge and no contrast.* What a host measure counts is
-part of the instrument, so it is a dimension of the rig (:func:`split_on_measure_definitions`):
+part of the instrument, so it is a dimension of the rig (:data:`MEASURE_DEFINITIONS_DIMENSION`):
 runs that recorded different definitions are under different rigs, and a run whose results hold a
 host measure and that recorded none is under a rig of its own, pooled and contrasted with nothing
 until its host states the definitions or re-measures it.
@@ -67,6 +67,7 @@ from pydantic import Field, model_validator
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.models import ApparatusProvenance
+from threetears.evals.schema.reading_states import Coordinate
 
 #: The cell model this module implements, stamped onto every analysis generated under it
 #: (``GenerationProvenance.cell_model_version``).
@@ -87,7 +88,7 @@ from threetears.evals.schema.models import ApparatusProvenance
 #: rules. A variant's observations under one rig stand in a cell per answering candidate model
 #: (:func:`split_on_served_model`, in the package since the build before this one under 14); two runs whose responses
 #: each named no model no longer share a cell; and the definitions of the host's measures a run's values were read
-#: under are a dimension of the rig (:func:`split_on_measure_definitions`), a run holding host measures that recorded
+#: under are a dimension of the rig (:data:`MEASURE_DEFINITIONS_DIMENSION`), a run holding host measures that recorded
 #: none being a rig of its own.
 CELL_MODEL_VERSION: int = 15
 
@@ -100,14 +101,15 @@ _SERVED_CANDIDATE_DIMENSION = "served_model:candidate"
 #: cell that is split: it recorded that nothing answered, which is neither a model nor a silence.
 _NO_CANDIDATE_CALL = "no candidate call"
 
-#: The rig dimension a class is split on where the runs under it were not all read under one definition of each host
-#: measure (:func:`split_on_measure_definitions`): recorded at the digest of the definitions a run recorded, and
-#: unrecorded for a run whose results hold a host measure and that recorded none.
+#: The rig dimension the definitions of the host's measures are read under, present where a campaign's runs were not
+#: all read under one (the assembly adds it to the runs' apparatus levels, so every reader of the rig sees it):
+#: recorded at the digest of the definitions a run recorded or its host stated, and unrecorded for a run whose results
+#: hold a host measure and that recorded none, whose class is then alone to it (:func:`apparatus_class_of`).
 MEASURE_DEFINITIONS_DIMENSION = "measure_definitions"
 
-#: The level :data:`MEASURE_DEFINITIONS_DIMENSION` records for an observation with no definition to record (its run
-#: recorded an empty map, or its results hold no host measure), in a class that is split: a recording, not a silence.
-_NO_MEASURE_DEFINITIONS = "no host measure definitions"
+#: The level :data:`MEASURE_DEFINITIONS_DIMENSION` records for a run with no definition to record (it recorded an
+#: empty map, or its results hold no host measure), where the dimension is present: a recording, not a silence.
+NO_MEASURE_DEFINITIONS = "no host measure definitions"
 
 
 class ApparatusClass(EvalDocumentModel):
@@ -321,6 +323,20 @@ class Cell(EvalDocumentModel):
         ),
     )
 
+    # Left out of the document when empty, so a cell of an arm that is not split is stored as it was before the field.
+    split_on: list[Coordinate] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "The coordinates of its identity this cell's ARM is split on under what its host calls one test setup: "
+            "`served_model` where the arm's observations there were answered by more than one candidate model, or by "
+            "one no response named in more than one run; `measure_definition` where they were read under more than "
+            "one definition of a host measure, or under none recorded. An arm holding such a cell has no one cell to "
+            "read as the arm's: no figure, change, floor or verdict is given for the arm, and each cell is read on "
+            "its own (:func:`split_arms`). Empty = the arm is one cell on every coordinate the package reads."
+        ),
+    )
+
     @model_validator(mode="after")
     def _the_counts_agree_with_each_other(self) -> Cell:
         """Every count is arithmetic over the evidence, never a second source of truth for it.
@@ -486,8 +502,8 @@ def apparatus_class_of(
         experiment.
     :ptype provenance: ApparatusProvenance
     :param alone: The batch a class is alone to, where an unrecorded dimension of it matches nothing, not even
-        another silence (the package's own coordinates: :func:`split_on_served_model`,
-        :func:`split_on_measure_definitions`). It enters the id, so two batches silent alike are two classes. ``None``
+        another silence (the package's own coordinates: the answering model, :func:`split_on_served_model`, and
+        the measure definitions, :data:`MEASURE_DEFINITIONS_DIMENSION`). It enters the id, so two batches silent alike are two classes. ``None``
         (every class a host's dimensions make) leaves the id as it was.
     :ptype alone: str | None
     :return: The class. Its id digests the recorded map, the names of the unrecorded dimensions and the
@@ -604,23 +620,53 @@ def rig_of(cell: Cell) -> str:
     return cell.rig_class_id or cell.apparatus_class_id
 
 
-def answer_split_variants(cells: Iterable[Cell]) -> dict[str, int]:
-    """The variants whose observations under one rig stand in a cell per answering model, with how many such cells.
+def split_arms(cells: Iterable[Cell]) -> dict[str, dict[Coordinate, int]]:
+    """The arms split on a coordinate of their identity, each with the coordinates and how many cells it holds there.
 
-    What a reader of ONE figure per arm asks before it reads any: an arm here has no single cell under the rig, so a
-    figure, a change or a verdict given for the arm would be one answering model's presented as the arm's, or two
-    models' pooled.
+    The one fact every reader of ONE figure per arm asks before it reads any (the campaign's rows, floors and pairs,
+    a measurement's rates, the report input's figures): an arm here has no single cell, so a figure, a change or a
+    verdict given for the arm would be one answering model's, or one definition's, presented as the arm's, or two
+    pooled. Read off ``Cell.split_on``, which the pooling sets, so no reader re-derives it.
 
     :param cells: The cells to consider: a bundle's.
     :ptype cells: Iterable[Cell]
-    :return: Variant key -> its cells split on the answering model (``rig_class_id`` set); empty when none is split.
-    :rtype: dict[str, int]
+    :return: Variant key -> coordinate -> its cells split on that coordinate; empty when no arm is split.
+    :rtype: dict[str, dict[Coordinate, int]]
     """
-    split: dict[str, int] = defaultdict(int)
+    split: dict[str, dict[Coordinate, int]] = {}
     for cell in cells:
-        if cell.rig_class_id is not None:
-            split[cell.variant_key] += 1
-    return dict(split)
+        for coordinate in cell.split_on:
+            held = split.setdefault(cell.variant_key, {})
+            held[coordinate] = held.get(coordinate, 0) + 1
+    return split
+
+
+def unread_arms(cells: Iterable[Cell], *arms: str, definitions_moved: bool = False) -> bool:
+    """Whether no one figure may be read for ``arms`` against each other: the one question the arm-level readers ask.
+
+    True where any of them is split on a coordinate of its identity (:func:`split_arms`), and, where the campaign's
+    runs were not all read under one definition of each host measure, where the arms named share no test setup: they
+    were read under different definitions, or under none recorded, so a count of one beside a count of the other
+    compares two instruments.
+
+    :param cells: The cells to consider: a bundle's.
+    :ptype cells: Iterable[Cell]
+    :param *arms: The variant keys read together: one arm, or the two of a contrast.
+    :ptype arms: str
+    :param definitions_moved: Whether measure definitions are a dimension of this campaign's rig: its runs were not
+        all read under one (the bundle names it among its ``apparatus_confounds``).
+    :ptype definitions_moved: bool
+    :return: True where nothing is read for the arms as arms.
+    :rtype: bool
+    """
+    held = list(cells)
+    split = split_arms(held)
+    if any(arm in split for arm in arms):
+        return True
+    if not definitions_moved or len(arms) < 2:
+        return False
+    rigs = [{rig_of(cell) for cell in held if cell.variant_key == arm} for arm in arms]
+    return not set.intersection(*rigs)
 
 
 def _batch_of(obs: Observation) -> str:
@@ -639,73 +685,6 @@ def _refuse_taken(rig: ApparatusClass, dimension: str, why: str) -> None:
         raise ValueError(
             f"apparatus class {rig.apparatus_class_id} already holds a dimension named {dimension}, the name {why}"
         )
-
-
-def split_on_measure_definitions(
-    observations: Sequence[Observation],
-    classes: Mapping[str, ApparatusClass],
-    definitions: Mapping[str, str | None],
-) -> tuple[list[Observation], dict[str, ApparatusClass]]:
-    """Keep observations read under different definitions of a host measure under different rigs.
-
-    What a host measure counts is the instrument's, so it is a dimension of the rig, :data:`MEASURE_DEFINITIONS_DIMENSION`:
-    recorded at the digest of the definitions an observation's run recorded (its launch's, a re-measure's or its
-    host's attestation), and unrecorded where the run's results hold a host measure and it recorded none. Unlike a
-    host's own dimension, that silence matches nothing: each such batch is a class of its own, so it pools with no
-    other and, a contrast being drawn only under one rig, is contrasted with nothing. The pooling that follows
-    (:func:`pool_observations`) states the refusal and what recording it would pool.
-
-    Where every observation under a rig says one thing (one digest, or none to record), nothing is split and the
-    class is the rig's as it was: the dimension enters a class id only where it separates something. So does one
-    silent batch with nothing else under its rig, which no other observation could be pooled or contrasted with.
-
-    :param observations: Every observation under analysis.
-    :ptype observations: Sequence[Observation]
-    :param classes: Apparatus class id → the class, for every id the observations reference.
-    :ptype classes: Mapping[str, ApparatusClass]
-    :param definitions: Observation id → the digest of the definitions its values were read under; ``None`` where
-        its run's results hold a host measure and the run recorded none. An observation ABSENT here has none to
-        record: its run recorded an empty map, or its results hold no host measure.
-    :ptype definitions: Mapping[str, str | None]
-    :return: The observations in the order given, those of a split class re-classed, and every class they now
-        reference: the given ones and each split class.
-    :rtype: tuple[list[Observation], dict[str, ApparatusClass]]
-    :raises KeyError: An observation references an apparatus class not in ``classes``.
-    :raises ValueError: A host's own apparatus dimension is named :data:`MEASURE_DEFINITIONS_DIMENSION`.
-    """
-
-    def level_of(obs: Observation) -> tuple[str | None, str | None]:
-        """``(level, alone)``: the digest, or None with the batch it is alone to where none was recorded."""
-        if obs.id not in definitions:
-            return _NO_MEASURE_DEFINITIONS, None
-        level = definitions[obs.id]
-        return level, (_batch_of(obs) if level is None else None)
-
-    levels = {obs.id: level_of(obs) for obs in observations}
-    said_by_rig: dict[str, set[tuple[str | None, str | None]]] = defaultdict(set)
-    for obs in observations:
-        said_by_rig[obs.apparatus_class_id].add(levels[obs.id])
-
-    known: dict[str, ApparatusClass] = dict(classes)
-    placed: list[Observation] = []
-    for obs in observations:
-        if obs.apparatus_class_id not in classes:
-            raise KeyError(f"observation {obs.id} references unknown apparatus class {obs.apparatus_class_id}")
-        if len(said_by_rig[obs.apparatus_class_id]) < 2:
-            placed.append(obs)
-            continue
-        rig = classes[obs.apparatus_class_id]
-        _refuse_taken(rig, MEASURE_DEFINITIONS_DIMENSION, "a rig is split on by its host measures' definitions")
-        level, alone = levels[obs.id]
-        split = apparatus_class_of(
-            {**rig.recorded, MEASURE_DEFINITIONS_DIMENSION: level},
-            provenance=rig.provenance,
-            dimensions=rig.unknown_dimensions,
-            alone=alone,
-        )
-        known[split.apparatus_class_id] = split
-        placed.append(obs.model_copy(update={"apparatus_class_id": split.apparatus_class_id}))
-    return placed, known
 
 
 def split_on_served_model(
@@ -822,6 +801,21 @@ def pool_observations(
             raise KeyError(f"observation {obs.id} references unknown apparatus class {obs.apparatus_class_id}")
         grouped[(obs.variant_key, obs.apparatus_class_id)].append(obs)
 
+    # The definitions each arm's classes were read under: an arm holding two is split on them.
+    definitions_of: dict[str, set[tuple[str | None, str | None]]] = defaultdict(set)
+    for variant, class_id in grouped:
+        if (level := _definitions_level(classes[class_id])) is not None:
+            definitions_of[variant].add(level)
+
+    def split_on(variant: str, klass: ApparatusClass) -> list[Coordinate]:
+        """The coordinates the arm is split on at this class, in the order :data:`Coordinate` lists them."""
+        found: list[Coordinate] = []
+        if klass.rig_class_id is not None:
+            found.append("served_model")
+        if _definitions_level(klass) is not None and len(definitions_of[variant]) > 1:
+            found.append("measure_definition")
+        return found
+
     cells = [
         Cell(
             variant_key=variant,
@@ -832,12 +826,24 @@ def pool_observations(
             observation_ids=sorted(o.id for o in members),
             unknown_dimensions=classes[class_id].unknown_dimensions,
             rig_class_id=classes[class_id].rig_class_id,
+            split_on=split_on(variant, classes[class_id]),
         )
         for (variant, class_id), members in sorted(grouped.items())
     ]
 
     refused = _refused_merges(cells, classes)
     return cells, refused, _next_experiments(cells, classes)
+
+
+def _definitions_level(klass: ApparatusClass) -> tuple[str | None, str | None] | None:
+    """What a class says of the measure definitions its observations were read under: ``(digest, None)`` where
+    recorded, ``(None, run)`` where unrecorded and alone to a run, and None where the class does not hold the
+    dimension (the campaign's runs were all read under one)."""
+    if MEASURE_DEFINITIONS_DIMENSION in klass.recorded:
+        return klass.recorded[MEASURE_DEFINITIONS_DIMENSION], None
+    if MEASURE_DEFINITIONS_DIMENSION in klass.unknown_dimensions:
+        return None, klass.alone_to
+    return None
 
 
 def _replication_of(members: Sequence[Observation]) -> dict[str, int | None]:
@@ -1084,19 +1090,20 @@ def subject_key_instabilities(observed: Iterable[tuple[str, str]]) -> list[Subje
 __all__ = [
     "CELL_MODEL_VERSION",
     "MEASURE_DEFINITIONS_DIMENSION",
+    "NO_MEASURE_DEFINITIONS",
     "ApparatusClass",
     "Cell",
     "NextExperiment",
     "Observation",
     "RefusedMerge",
     "SubjectKeyInstability",
-    "answer_split_variants",
     "apparatus_class_of",
     "cell_ref",
     "pool_observations",
     "rig_of",
-    "split_on_measure_definitions",
+    "split_arms",
     "split_on_served_model",
     "subject_key_instabilities",
+    "unread_arms",
     "variant_of_cell_ref",
 ]

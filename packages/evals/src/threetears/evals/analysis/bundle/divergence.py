@@ -12,6 +12,7 @@ from fractions import Fraction
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from threetears.evals.analysis.cells import MEASURE_DEFINITIONS_DIMENSION
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     LevelDifference,
@@ -487,6 +488,8 @@ def scope_divergences(
     n_tested = n_untested = 0
     all_run_ids = [run.id for run in runs]
     lever_levels = read_lever_levels(runs, results_by_run, profile=profile, declared_axes=declared_axes)
+    # The definitions each run's host measures were read under, where the runs do not all say one thing.
+    definitions = apparatus_levels.get(MEASURE_DEFINITIONS_DIMENSION, {})
     for lever, campaign_wide in lever_levels.items():
         cohort = set(lever_cohort(lever, design, all_run_ids))
         by_level = {
@@ -514,6 +517,12 @@ def scope_divergences(
         family: list[tuple[LevelDifference, dict[str, Any]]] = []
         for index, level_a in enumerate(levels):
             for level_b in levels[index + 1 :]:
+                read_under = {definitions.get(run_id) for run_id in by_level[level_a] + by_level[level_b]}
+                if definitions and (None in read_under or len(read_under) > 1):
+                    # Runs read under two definitions of a host measure, or under none recorded, are contrasted
+                    # nowhere (#1187): the two levels are not tested against each other.
+                    n_untested += 1
+                    continue
                 confounded = uncontrolled_dimensions(
                     lever,
                     by_level[level_a] + by_level[level_b],

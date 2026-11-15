@@ -516,8 +516,10 @@ def arm_mechanisms(
 ServedModels = dict[str, ResultServedReading]
 
 
-def served_models(results: Iterable[ResultView]) -> ServedModels:
-    """Read which model answered each result's candidate calls, off its candidate usage rows.
+def served_models(results: Iterable[ResultView], attested: Mapping[str, str] | None = None) -> ServedModels:
+    """Read which model answered each result's candidate calls, off its candidate usage rows, with what its run's
+    host stated afterwards beside a silence (``attested``: run id -> the stated model,
+    :func:`~threetears.evals.analysis.reporting.attested_served_models`).
 
     ``RoleUsage.served_model`` only — what the provider's response named — and never ``RoleUsage.model``
     or the run's ``candidate_model``, which are what the launch asked for and, for a floating alias, name
@@ -528,7 +530,12 @@ def served_models(results: Iterable[ResultView]) -> ServedModels:
     :return: Each result's reading, for the results whose candidate left a usage row.
     :rtype: ServedModels
     """
-    return {result.id: reading for result in results if (reading := served_reading(result)) is not None}
+    stated = attested or {}
+    return {
+        result.id: through_attestation(reading, stated.get(result.eval_run_id))
+        for result in results
+        if (reading := served_reading(result)) is not None
+    }
 
 
 def served_model_confounds(result_ids: Iterable[str], served: ServedModels) -> list[Confound]:
