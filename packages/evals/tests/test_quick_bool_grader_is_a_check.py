@@ -14,6 +14,7 @@ count or compares one.
 from __future__ import annotations
 
 import functools
+import re
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -425,3 +426,34 @@ async def test_two_arms_under_the_case_floor_with_a_check_still_compare_their_pa
 
     first = result.render().splitlines()[0]
     assert first == "few: Exploratory: b passed more often than a; too few cases to call a difference."
+
+
+@pytest.mark.parametrize(
+    ("bad", "ranged", "said"),
+    [
+        (None, False, r"returned None on case c[012], and it is annotated to return a number"),
+        (float("nan"), False, r"returned nan on case c[012], and it is annotated to return a number"),
+        (float("inf"), False, r"returned inf on case c[012], and it is annotated to return a number"),
+        (False, False, r"returned False on case c[012], a pass or fail, but it is annotated to return a number"),
+        ("0.5", False, r"returned '0\.5', a builtins\.str, on case c[012]"),
+        (_NotAPythonBool(False), False, r"\._NotAPythonBool, on case c[012]"),
+        (7.0, True, r"returned 7\.0 on case c[012], outside the range 0 to 1 declared for it"),
+    ],
+    ids=["None", "nan", "infinity", "a bool", "a string", "another type", "off its declared range"],
+)
+async def test_a_number_grader_s_unusable_value_fails_the_run_naming_the_case(
+    bad: Any, ranged: bool, said: str
+) -> None:
+    def rating(case: Mapping[str, Any], out: Any) -> float:
+        return bad if case["want"] == "q" else 0.5  # type: ignore[no-any-return]
+
+    graded = grader(rating, range=(0, 1)) if ranged else rating
+    # 10 cases, 3 such answers: the first the run meets fails it.
+    result = await Eval(TEN, classify, [graded], k=1).run(store=":memory:")
+
+    lines = result.render().splitlines()
+    assert lines[0].startswith("classify: the run failed, so there is no verdict: the grader rating ")
+    assert re.search(said, lines[0])
+    # Never a completed run whose mean is over the 7 cells that happened to be usable.
+    assert result.summary.status == "failed"
+    assert result.exit_code() == 1

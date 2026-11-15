@@ -17,9 +17,9 @@ annotation read as both (`-> bool | float`) or as neither (an alias, `-> np.floa
 `Eval` is built, saying what was read and the spellings accepted; it is parsed as written, never evaluated. A check's
 False fails the case on the first line, it is listed among the misses, it prints as a pass rate with its count (`33%,
 1 of 3 trials`), and a comparison gates on it. A value the declaration contradicts (anything but `True`, `False`, 0
-or 1 from a check, `None` from a function that falls off its end and a numpy bool among them; a bool from a grader
-declared to grade a number) fails the run at the first such answer, naming the case and the fix; no cell is dropped
-from the count. Where no grader is a check and no judged dimension counts, one arm's first line states no pass count
+or 1 from a check, `None` from a function that falls off its end and a numpy bool among them; from a grader declared
+to grade a number, a bool, `None`, NaN, infinity, a string, or a score outside its declared range) fails the run at
+the first such answer, naming the case and the fix; no cell is dropped from the count or the mean. Where no grader is a check and no judged dimension counts, one arm's first line states no pass count
 (`classify ran 3 of 3 cases; no grader here says pass or fail.`, its readings carrying the means), and two arms under
 the case floor compare none (`b and a ran 3 cases each; no grader here says pass or fail; too few cases to call a
 difference.`).
@@ -29,7 +29,9 @@ difference.`).
 it `-> bool`. A run graded before this by an unannotated grader stored its grades under a number's measure
 definition; read back through the same grader, its 0.0s fail their trials, and that recorded definition keeps it from
 pooling with runs graded now. A grader annotated `-> bool | float`, or with an annotation the engine reads as neither
-kind, is refused until it names one. A check returning a numpy bool fails its run: return `bool(...)`. An old run of an
+kind, is refused until it names one. A check returning a numpy bool fails its run: return `bool(...)`. A grader of a number whose `None`, NaN or
+out-of-range score used to exclude its cell now fails its run: return a finite number on its scale, or declare the
+scale it has (`range=`). An old run of an
 unannotated grader of a number (0.25, 0.5), re-read before the grader is annotated, is described as a check, its every
 non-zero value a pass: annotate the grader `-> float` before re-reading it.
 

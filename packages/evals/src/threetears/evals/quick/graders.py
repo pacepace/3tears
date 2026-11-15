@@ -8,7 +8,8 @@ An :class:`~threetears.evals.quick.contract.Eval`'s ``grader`` is one grader or 
   a range (``grader(f, range=(1, 5))``), it grades a number. An annotation read as neither, or as both
   (``-> bool | float``), is refused when the eval is built. A check returns a Python ``True`` or ``False`` (or 0 or 1)
   on every path, and anything else from it (``None`` from a function that falls off its end, a numpy bool, 0.25)
-  fails the run, as a bool from a grader of a number does, naming the fix.
+  fails the run, naming the case and the fix; so does anything from a grader of a number that is not a finite number
+  on its declared range (a bool, ``None``, NaN, a score off its scale).
 - **A field name** (``"category"``): the answer's ``category`` (``out.category`` on a pydantic model,
   ``out["category"]`` on a mapping, the answer itself when it is a plain value) against the case's ``category``. A
   field is graded as a label: the first field listed is the run's classifier, so the run carries its confusion

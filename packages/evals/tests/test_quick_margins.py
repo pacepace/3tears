@@ -333,7 +333,10 @@ class TestADeclaredRange:
         assert row["verdict"].startswith("cheaper and current equivalent") and "(margin ±0.5)" in row["verdict"]
         assert "value_range" not in report_markdown(comparison.report)
 
-    async def test_a_score_outside_it_excludes_the_cell_naming_the_scorer(self) -> None:
+    async def test_a_score_outside_it_fails_the_run_naming_the_scorer_and_the_case(self) -> None:
+        # Re-pinned deliberately (T1, coordinator ruling): this held that the cell was excluded, which left a mean over
+        # the cells that happened to be usable, its denominator shrunk without saying so. A score off its declared
+        # scale is the rig's defect: the run fails, naming the scorer, the case and the fix.
         def overrated(case: Mapping[str, Any], answer: str) -> float:
             """A rating that runs past its own scale on one case."""
             return 7.0 if case["n"] == 0 else 3.0
@@ -347,8 +350,11 @@ class TestADeclaredRange:
                 1,
             )
         ).arms["current"]
-        assert summary.n_excluded == 1
-        assert any("returned 7.0, outside the range 1 to 5 declared for it" in error for error in summary.errors)
+        assert summary.status == "failed"
+        assert any(
+            "the grader overrated returned 7.0 on case 0, outside the range 1 to 5 declared for it" in error
+            for error in summary.errors
+        )
 
     @pytest.mark.parametrize(
         ("ranges", "match"),
