@@ -299,7 +299,7 @@ def documents() -> dict[str, str]:
 #: fingerprinted a shape-3 frame (at shape 2, without ``readings.aggregate`` or ``arm_spellings``), computes the old
 #: pin; shape 4 reads its frame as it is, so only the shape, the empty ``arm_spellings`` and the aggregate moved it.
 PINNED: dict[str, str] = {
-    "CELL_MODEL_VERSION": "14",
+    "CELL_MODEL_VERSION": "15",
     "IDENTITY_VERSION": "25",
     "Queue discipline under a full queue cells": (
         "b5891590ed94b7c2b7425372664a24f7f2c4d80e77a9e001ece5e0a7544a0ed9@6aa21c8030ab220f21fa1422945cfff2cfa"

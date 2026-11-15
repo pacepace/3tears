@@ -6,6 +6,54 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a campaign cell holds one definition of each host measure and one answering model, and an unrecorded coordinate matches nothing (#1187)
+
+**Changed:** what a host measure counts is part of the test setup. In a campaign, runs that recorded different
+definitions of a host measure (`EvalRun.measure_definitions`) are under different test setups: they share no cell and
+no contrast, and the bundle says why (`refused_merges`, `apparatus_differs` on `measure_definitions`). A run whose
+results hold a host measure and that recorded no definition is under a setup of its own: it is pooled and compared
+with nothing (`apparatus_unknown` on `measure_definitions`), `next_experiments` says what stating the definitions
+would pool, and the aspect's page prints the disclosure with the remedy. A run with no host measure, and a campaign
+whose runs all recorded one definition, read exactly as before, under the same cell ids.
+
+**Changed:** two runs whose candidate responses each named no model no longer share a cell. Each is a cell of its own
+under the arm's setup, compared with the control alone (`apparatus_unknown` on `served_model:candidate`), and the
+campaign page says so and names the remedy. A run that names what answered it pools as before, whatever the name: a
+provider's dated model, a scripted client's own name, a recording. One silent run alone in its arm is still that
+arm's one cell.
+
+**Changed:** a replayed call whose recorded reply named no model reports its recording as what answered
+(`recording:` and 12 hex digits of the file's sha256), so replays of one recording pool. `Log` takes
+`served_model=` and reads a `served_model` key off a line.
+
+**Changed:** `CELL_MODEL_VERSION` is 15: one move for the served-model split, the measure-definition setup and the
+unrecorded-served-model rule. The frontier's cell sentence and the comparison set's measure-definition disclosure say
+what a campaign's cells keep apart, where they said a campaign still pooled.
+
+**Added:** the `runs_attest_served_model` action (`write`; `run_ids`, `served_model`, `attestation_note?`). It
+records the host's statement on each run (`EvalRun.served_model_attestation`: who, when, the model; core minor 15.19)
+and writes the model to each candidate usage row of the run that named none. It never replaces a model a response
+named: a run with no silent candidate row, or one stated as another model, is refused before anything is written.
+Stating the same model twice changes nothing.
+
+**For hosts:** after this change, two kinds of stored run stop pooling, and each has one remedy.
+- *Every campaign over runs that hold host measures and recorded no definition loses its contrasts until the host
+  attests.* That is every run stored before runs recorded definitions (#1160) on a host with measures of its own.
+  `runs_attest_definitions` takes many runs in one call (omit `measure_definitions` for runs made under today's
+  definitions; pass the digests of the descriptors as they were for older ones), touches no result and may be run
+  twice. A campaign that spans a definition change stays split after it, which is the point.
+- *Runs whose candidate responses named no model each stand alone in their arm* (a router echoing a requested alias
+  back, a logged output, an `Answer` or a kind's usage row naming no `served_model`). `runs_attest_served_model`
+  takes many runs in one call. Going forward, report `served_model` from the completion client, the `Answer` or the
+  log line; a scripted test double names itself there.
+- *Upgrade procedure:* (1) once every reader runs this build, call `runs_attest_definitions` over the stored runs of
+  each definition era; (2) call `runs_attest_served_model` over the runs `model_identity_disclosure` names, where
+  the host knows what answered. No stored key, identity or digest is rewritten by the upgrade itself; a statement
+  changes the runs it stamps, so a report written over them is regenerated.
+- No host apparatus dimension may be named `measure_definitions`. `ApparatusClass.alone_to` (new, optional, left out
+  when unset) names the run a class is alone to.
+
+
 ### evals: numbers never import presentation, with no exemption
 
 **Changed:** no module on the numbers side of `threetears.evals.analysis` (the statistics, the bundle, the lenses, the
@@ -79,8 +127,7 @@ held (`EvalResult.measure_rereads`), the run is marked (`EvalRun.measure_remeasu
 definitions it was read under. Nothing is interpolated: an unanswered stored value, a missing reader or a moved
 measure that declares `shapes_run` refuses the run before anything is written.
 
-**Not yet:** a campaign's own cells (variant by rig), and so its tables, composites, bars and history, do not read
-measure definitions and still pool such runs. The comparison disclosure says so on the page.
+A campaign's own cells follow in the entry "a campaign cell holds one definition of each host measure" (#1187).
 
 **For hosts:**
 - *Marking a change:* raise `MetricDescriptor.definition_revision` (default 0) on a measure whenever its reading code

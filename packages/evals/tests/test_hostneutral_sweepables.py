@@ -314,6 +314,22 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
             "simulator_sent_settings",
         },
     ),
+    # 66/15 (#1187): the pooling rule moved and no declaration did. A cell holds one answering candidate model and one
+    # definition of each host measure, read off what each run recorded (its usage rows, `EvalRun.measure_definitions`),
+    # and a silence in either matches nothing. Neither is a declared sweepable, so the set holds; the bundle's shape
+    # holds too, since a stored bundle is read as stored and a fingerprint is over evidence, which the rule is not.
+    # The first cell-model-only bump.
+    (
+        (66, 15),
+        (_CORE_V24 - {"max_cost_usd"})
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
 )
 
 
@@ -330,10 +346,13 @@ class TestTheCoresApparatusSetIsPinnedToTheVersionsThatNameIt:
         assert rig == CORE_PINNED[-1][1]
 
     def test_a_set_change_moves_both_versions(self) -> None:
-        """Every row after the baseline moves the bundle version, and the cell model too when the set moved."""
+        """Every row after the baseline moves a version and takes neither back, and a set change moves both: the
+        bundle's, since every bundle applying the set moves, and the cell model's. A pooling rule that moves with no
+        declaration (66/15) moves the cell model alone."""
         for ((schema_before, cell_before), set_before), ((schema_after, cell_after), set_after) in zip(
             CORE_PINNED, CORE_PINNED[1:], strict=False
         ):
-            assert schema_after > schema_before
+            assert schema_after >= schema_before and cell_after >= cell_before
+            assert (schema_after, cell_after) != (schema_before, cell_before)
             if set_after != set_before:
-                assert cell_after > cell_before
+                assert schema_after > schema_before and cell_after > cell_before
