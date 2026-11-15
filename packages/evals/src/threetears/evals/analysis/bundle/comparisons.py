@@ -45,7 +45,13 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.kernel.campaign import ReadingKind
 from threetears.evals.analysis.aspects import AspectDeclaration
 from threetears.evals.analysis.checks import Looks
-from threetears.evals.analysis.significance import SeparationTest, looks_alpha, looks_confidence, looks_taken
+from threetears.evals.analysis.significance import (
+    SeparationTest,
+    look_sizes,
+    looks_alpha,
+    looks_confidence,
+    looks_taken,
+)
 from threetears.evals.schema.campaign_upgrade import aware_instant
 from threetears.evals.kernel.declaration import (
     JUDGED_MERIT_AXIS,
@@ -655,7 +661,11 @@ def _family_disclosure(
             + (
                 f"{format_number(100 * (1 - alpha))}%."
                 if looks is None
-                else f"{format_number(100 * (1 - alpha * looks))}% over the {looks} looks its design plans."
+                else (
+                    f"{format_number(100 * (1 - alpha * looks))}% over the {looks} looks its design plans, where each "
+                    "look's cases were fixed before its data; where cases were added as a reading asked, that holds "
+                    "only as far as the caveat on looks says."
+                )
             )
         )
     if n_untested:
@@ -715,7 +725,10 @@ def _corrected_family(
     :ptype tested: list[_Tested]
     :param looks: The looks the plan in force allows: each verdict is then read at α/L
         (:func:`~threetears.evals.analysis.significance.looks_alpha`, the family's ``look_alpha``), so the error the
-        family states (``alpha``) holds over every look the plan allows. None reads at α.
+        family states (``alpha``) holds over every look the plan allows whose size was fixed before its data; over
+        extends sized by the planner from the readings, only where
+        :func:`~threetears.evals.analysis.significance.plan_kept` shows it (on the bounded test in the simulated
+        setting, not on the t test). None reads at α.
     :ptype looks: int | None
     :return: The corrected family.
     :rtype: ComparisonFamily
@@ -789,7 +802,8 @@ def _corrected_family(
     return ComparisonFamily(
         aspect=aspect,
         merit_axes=axes,
-        # What a reader is told the verdicts hold: α, over every look a plan allows; each look reads at `look_alpha`.
+        # The level the plan is for: α over every look it allows, where each look's size was fixed before its data
+        # (over planner-sized extends only where `plan_kept` shows it); each look reads at `look_alpha`.
         alpha=SIGNIFICANCE_ALPHA,
         look_alpha=alpha if planned is not None else None,
         family_size=family_size,
@@ -1175,11 +1189,18 @@ def aspect_looks(
     - **Each re-measure** of a member run is one occasion, at when it finished (or began, where it has not); **each
       re-judge** is read per result (``rejudged_at``).
 
-    **Looks were not recorded** (``recorded`` false, no ``taken``) where a member's joining was never recorded: it
+    **Looks were not recorded** (``recorded`` false) where a member's joining was never recorded: it
     joined before durable 17.3 recorded membership. Its runs' stored occasions are how they were stored, not occasions
     anyone could read a verdict on, and old runs joined in one write are dated each by its own launch, so the count can
     be too high as well as too low: it is given as ``evidence_changes``, never as looks, and never as a bound. A silent
-    past is stated as not recorded, never assumed to hold no looks and never assumed to hold the most.
+    past is stated as not recorded, never assumed to hold no looks and never assumed to hold the most. What is
+    recorded is still stated: the first comparison, and each occasion after it that is not a launch of a run whose
+    joining was never recorded, is a look whatever the past held, so ``taken`` is that count, a lower count
+    (``lower_bound``), where it is more than one; None where it is one.
+
+    **Sizes** (``launched``, ``largest_step``): the fewest cases any contrast read at its first look and the most one
+    later occasion added (:func:`~threetears.evals.analysis.significance.look_sizes`), which a reference rate's setting
+    is checked against.
 
     **The count is a lower bound** (``lower_bound``) where a fact it needs is not stored: a run that left with no first
     result recorded (a deleted run), an archived or unresolved member (``unread``), a result with no ordered time, or
@@ -1266,26 +1287,45 @@ def aspect_looks(
         if control in deliveries
         else [(first, second) for index, first in enumerate(arms) for second in arms[index + 1 :]]
     )
+    # The launches of runs whose joining was never recorded: occasions of how the runs were stored, not recorded looks.
+    launch_of = {run_id: ("launch", run.launch_group_id or run.id) for run_id, run in by_id.items()}
+    uncounted = {launch_of[run_id] for run_id in by_id if run_id not in joined} - {
+        launch_of[run_id] for run_id in by_id if run_id in joined
+    }
     counts: list[tuple[int, bool]] = []
+    since: list[int] = []
+    sizes: list[tuple[int, int]] = []
     for pair in pairs:
         pair_runs = sorted(arm_runs[pair[0]] | arm_runs[pair[1]])
+        pair_deliveries = [*deliveries[pair[0]], *deliveries[pair[1]]]
+        pair_changes = [
+            *changes,
+            *(
+                (at, ("remeasure", run_id, index))
+                for run_id in pair_runs
+                for index, remeasure in enumerate(by_id[run_id].measure_remeasures)
+                if (at := _orderable(remeasure.completed_at or remeasure.remeasured_at)) is not None
+            ),
+        ]
+        pair_rejudges = [*rejudges[pair[0]], *rejudges[pair[1]]]
         counted = looks_taken(
-            [*deliveries[pair[0]], *deliveries[pair[1]]],
-            arms=pair,
-            changes=[
-                *changes,
-                *(
-                    (at, ("remeasure", run_id, index))
-                    for run_id in pair_runs
-                    for index, remeasure in enumerate(by_id[run_id].measure_remeasures)
-                    if (at := _orderable(remeasure.completed_at or remeasure.remeasured_at)) is not None
-                ),
-            ],
-            departed=departed,
-            rejudges=[*rejudges[pair[0]], *rejudges[pair[1]]],
+            pair_deliveries, arms=pair, changes=pair_changes, departed=departed, rejudges=pair_rejudges
         )
-        if counted is not None:
-            counts.append(counted)
+        if counted is None:
+            continue
+        counts.append(counted)
+        if not recorded:
+            recent = looks_taken(
+                pair_deliveries,
+                arms=pair,
+                changes=pair_changes,
+                departed=departed,
+                rejudges=pair_rejudges,
+                uncounted=uncounted,
+            )
+            since.append(recent[0] if recent is not None else 1)
+        if (sized := look_sizes(pair_deliveries, arms=pair)) is not None:
+            sizes.append(sized)
     if not counts:
         return None
     taken = max(count for count, _ in counts)
@@ -1299,13 +1339,17 @@ def aspect_looks(
     )
     declared = _orderable(declared_at) if declared_at is not None else None
     in_force = planned is not None and declared is not None and declared <= first_compared
+    # Not recorded: the first comparison and the looks recorded since, a lower count, where any were.
+    recorded_since = max(since, default=1)
     return Looks(
         planned=planned if in_force else None,
-        taken=taken if recorded else None,
+        taken=taken if recorded else (recorded_since if recorded_since > 1 else None),
         plannable=plannable,
-        lower_bound=recorded and (lower or any(lowered for _, lowered in counts)),
+        lower_bound=(lower or any(lowered for _, lowered in counts)) if recorded else recorded_since > 1,
         recorded=recorded,
         evidence_changes=None if recorded else taken,
+        launched=min((launch for launch, _ in sizes), default=None),
+        largest_step=max((step for _, step in sizes), default=None),
         late_plan=planned if planned is not None and not in_force else None,
     )
 
@@ -1422,7 +1466,8 @@ def _guardrail_check(
     """Decide one guardrail for one arm against the control under one rig (:func:`~threetears.evals.analysis.stats.guardrail_decision`).
 
     ``held`` is a claim of safety made at every look, so under a plan of ``looks`` looks it is read on the bounded
-    interval at :func:`~threetears.evals.analysis.significance.looks_confidence`, which holds its tail over all of them;
+    interval at :func:`~threetears.evals.analysis.significance.looks_confidence`, which holds its tail over all of them
+    where their sizes were fixed before the data (over planner-sized extends, not shown: no held row is measured);
     a held the tighter interval does not clear is undecided, and the check carries that interval. A breach still warns
     at the nominal level at every look.
 

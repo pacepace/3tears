@@ -15,7 +15,9 @@ any rate it reads is shown past it, so each rate is read on its own two-sided bo
 values, never at the family's Bonferroni level: a warning that fires less often for every floor added is no warning.
 **Except under a plan of looks** (``AspectDesign.planned_looks`` = L, read off the bundle's ``reading_scope.looks``):
 ``held`` claims the candidate is no worse, and the claim is made at every look, so it is read at
-``1 − (1 − level)/L`` (:func:`~threetears.evals.analysis.significance.looks_confidence`) and holds its tail over all L;
+``1 − (1 − level)/L`` (:func:`~threetears.evals.analysis.significance.looks_confidence`) and holds its tail over all L
+where each look's size was fixed before its data (over planner-sized extends this is not shown: the cost floor's held
+row measures 2.38% and 2.44% against its 2.5% tail with upper bounds above it, and no rate floor's held row is measured);
 broken and unclear still warn at the nominal level at every look. The overall pass rate's and the cost per reply's values are the bundle's ``floor_contrasts``, carried whatever the
 family compares; a check's are its family comparison's (``case_values``). Each rate a rate floor reads (the overall pass
 rate and each check's, or the one reading it names) is in one of three states, and so is cost, on its own interval:
@@ -292,7 +294,8 @@ class RateReading:
     ``judged`` says ``measure`` is a judged dimension's id, which the rate is named by as one (:func:`_rate_name`).
     ``looks`` is the looks the aspect's design plans, where it plans more than one: a claim that the drop stays within a
     margin is then read on the interval at :func:`~threetears.evals.analysis.significance.looks_confidence`
-    (:meth:`held_worst_drop`), so it holds its tail over every planned look; a drop shown past the margin is read at
+    (:meth:`held_worst_drop`), so it holds its tail over every planned look whose size was fixed before its data (over
+    planner-sized extends, not shown); a drop shown past the margin is read at
     ``confidence`` whatever is planned, so it warns at every look.
     """
 
@@ -1140,7 +1143,8 @@ def floor_readings(
         if cost is None
         else difference_interval(*cost.case_values, paired=cost.test == "paired", confidence=confidence)
     )
-    # The looks the aspect's design plans: a claim that a candidate is no worse holds its tail over every one of them.
+    # The looks the aspect's design plans: a claim that a candidate is no worse holds its tail over every one of them
+    # whose size was fixed before its data (over planner-sized extends, not shown).
     planned = bundle.reading_scope.looks.planned if bundle.reading_scope.looks is not None else None
     cost_held_interval = (
         None

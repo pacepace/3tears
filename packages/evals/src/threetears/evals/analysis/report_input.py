@@ -62,7 +62,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from threetears.evals.analysis.checks import Check, Corrected, Looks
-from threetears.evals.analysis.significance import SeparationTest
+from threetears.evals.analysis.significance import QuoteReads, SeparationTest, Unquoted
 from threetears.evals.schema.reading_states import (
     ArmIdentity,
     CaveatClass,
@@ -1007,24 +1007,58 @@ _CHANGES_THE_ANSWER = frozenset({"set_aside", "withheld"})
 
 
 class FalseSeparation(_Part):
-    """How often a test with no true difference separates at some look, measured for one test the aspect's readings
-    are read by, looked at so many times under its plan
-    (:func:`~threetears.evals.analysis.significance.looks_false_separation`): what a caveat on looks states the loosened
-    level to be, or that it was not measured for that situation."""
+    """A reference figure for one test the aspect's readings are read by: how often a test with no true difference
+    separated at some look in a simulation of that test, plan and count, in the setting stated beside it
+    (:func:`~threetears.evals.analysis.significance.looks_false_separation`). It is never this campaign's own rate,
+    which is not known, and it is no limit on it: a campaign launched smaller, extended by more cases a step, or
+    reading several claims at once can err more. For a claim of held (one tail) it is the two-sided separation rate."""
 
-    test: SeparationTest = Field(description="The test it is measured for: bounded or t.")
+    test: SeparationTest = Field(description="The test the reference simulates: bounded or t.")
     rate: float | None = Field(
         description=(
-            "The rate the simulation measured for this test, plan and count, as a share (for the procedure that errs "
-            "more, since how the looks were added is not stored); None where it measured none for the situation: "
-            "then no rate is stated, neither as a floor nor as a ceiling."
+            "The rate a reference simulation of this test, plan and count measured, as a share, in the setting beside "
+            "it; never this campaign's rate. None where none is quoted (``unquoted`` says why)."
         )
     )
+    reads: QuoteReads | None = Field(
+        default=None,
+        description=(
+            "measured: the reference rate for exactly ``looks`` looks (the larger of batches fixed in advance and "
+            "planner-sized extends, since which added the looks is not stored); floor: where the looks counted are a "
+            "lower count, the smaller of the two at ``looks`` looks, which more looks only raise. None with no rate."
+        ),
+    )
     upper: float | None = Field(
-        default=None, description="The rate's one-sided 97.5% upper confidence bound, as a share; None with no rate."
+        default=None,
+        description=(
+            "The reference simulation's own uncertainty about ``rate``: the one-sided 97.5% Wilson upper confidence "
+            "limit from its replicates. Nothing about this campaign's error. None with no rate."
+        ),
     )
     row: str | None = Field(
-        default=None, description="The row of `significance.FALSE_SEPARATION` it is read from; None with no rate."
+        default=None, description="The row of `significance.FALSE_SEPARATION` the rate is read from; None with no rate."
+    )
+    looks: int = Field(ge=1, description="The looks the reference rate is for.")
+    setting: str | None = Field(
+        default=None,
+        description=(
+            "What the reference simulated, in one line: a single contrast, the test, the per-case values, the launch "
+            "and the extends. None where no row measured the situation."
+        ),
+    )
+    launched: list[int] = Field(
+        default_factory=list, description="The cases the simulated first looks read; empty where no row measured it."
+    )
+    largest_step: int | None = Field(
+        default=None, description="The most cases one later look added in the simulation; None where no row did."
+    )
+    unquoted: Unquoted | None = Field(
+        default=None,
+        description=(
+            "Why no rate is quoted: not_measured (no row for this test, plan and count) or outside_setting (the "
+            "aspect's own first-look cases or largest step, from stored facts, fall outside the simulated setting, "
+            "so the reference does not cover it). None with a rate."
+        ),
     )
 
 
@@ -1099,10 +1133,10 @@ class CaveatEntry(_Part):
         default_factory=list,
         exclude_if=lambda value: not value,
         description=(
-            "For a caveat on looks: per test the aspect's readings are read by, how often a test with no true "
-            "difference separates at some look, measured for that many looks under that plan (the level the readings "
-            "it names now hold, in place of the one stated), or that it was not measured. Empty where the aspect's "
-            "looks were not recorded: no rate is stated for a count that is not one."
+            "For a caveat on looks: per test the aspect's readings are read by, a reference false-separation rate from "
+            "a simulation of that test, plan and count, with the setting it was simulated in, or why none is quoted. "
+            "A reference figure, never this campaign's own rate, which is not known and can be higher. Empty where "
+            "the aspect's looks were not recorded and none were since."
         ),
     )
 

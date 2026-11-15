@@ -41,11 +41,12 @@ from threetears.evals.analysis.campaign_readings import CampaignReadings, campai
 from threetears.evals.analysis.caveats import caveat_list
 from threetears.evals.analysis.checks import Looks
 from threetears.evals.analysis.floors import floor_readings
-from threetears.evals.analysis.report_input import FalseSeparation, ReportInput, report_input_digest
+from threetears.evals.analysis.report_input import CaveatEntry, FalseSeparation, ReportInput, report_input_digest
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.significance import (
     FALSE_SEPARATION,
     SeparationTest,
+    look_sizes,
     looks_alpha,
     looks_confidence,
     looks_false_separation,
@@ -334,9 +335,9 @@ def _with_guardrail(margin: float | None) -> HostProfile:
 
 
 def _counted(bundle: AnalysisContextBundle) -> Looks | None:
-    """The bundle's looks, without the tests its readings use (held on their own below)."""
+    """The bundle's looks, without the tests its readings use and its sizes (held on their own below)."""
     looks = bundle.reading_scope.looks
-    return None if looks is None else looks.model_copy(update={"tests": []})
+    return None if looks is None else looks.model_copy(update={"tests": [], "launched": None, "largest_step": None})
 
 
 def test_a_campaign_launched_once_reads_one_look_and_none_planned() -> None:
@@ -398,17 +399,38 @@ def test_an_aspect_whose_members_joining_was_never_recorded_states_its_looks_wer
     assert dumped == {"planned": None, "taken": None, "recorded": False, "evidence_changes": 2}
 
 
-def test_one_member_whose_joining_was_never_recorded_leaves_the_looks_not_recorded() -> None:
-    """A campaign stored before the record and extended after it: the runs from before still joined unrecorded."""
+def test_a_campaign_extended_after_the_record_counts_the_looks_recorded_since_as_a_lower_count() -> None:
+    """A campaign stored before the record and extended twice after it: the looks before are not recorded, and the
+    first comparison and the two recorded launches since are three looks at least."""
     bundle, _, _ = _bundle(
         [("g1", 0, range(20)), ("g2", 120, range(20, 40)), ("g3", 240, range(40, 60))], unrecorded={0}
     )
-    assert _counted(bundle) == Looks(planned=None, recorded=False, evidence_changes=3)
+    assert _counted(bundle) == Looks(planned=None, taken=3, lower_bound=True, recorded=False, evidence_changes=3)
+
+
+def test_unrecorded_launches_after_the_first_comparison_are_not_counted_as_looks_since() -> None:
+    """Two launches stored before the record and one recorded join since: the unrecorded second launch is no
+    recorded look, so the count since is the first comparison and the recorded launch."""
+    bundle, _, _ = _bundle(
+        [("g1", 0, range(20)), ("g2", 120, range(20, 40)), ("g3", 240, range(40, 60))], unrecorded={0, 1}
+    )
+    assert _counted(bundle) == Looks(planned=None, taken=2, lower_bound=True, recorded=False, evidence_changes=3)
+
+
+def test_an_aspect_carries_the_cases_its_first_look_read_and_its_largest_step() -> None:
+    bundle, _, _ = _bundle([("g1", 0, range(20)), ("g2", 120, range(20, 50))])
+    assert bundle.reading_scope.looks is not None
+    assert (bundle.reading_scope.looks.launched, bundle.reading_scope.looks.largest_step) == (20, 30)
+    assert look_sizes(
+        [*_cases("a", 0, range(20), "run-a"), *_cases("b", 90, range(20), "run-b"), *_cases("a", 200, range(20), "r")],
+        arms=_AB,
+    ) == (20, 0), "arms launched alone are one launch; more trials of held cases add no cases"
 
 
 def test_unrecorded_looks_carry_no_count_and_recorded_looks_no_evidence_changes() -> None:
     with pytest.raises(ValueError, match="unrecorded"):
         Looks(recorded=False, taken=2, evidence_changes=2)
+    assert Looks(recorded=False, taken=2, lower_bound=True, evidence_changes=2).taken == 2, "a lower count since"
     with pytest.raises(ValueError, match="unrecorded"):
         Looks(recorded=False, evidence_changes=2, lower_bound=True)
     with pytest.raises(ValueError, match="recorded looks carry taken"):
@@ -534,7 +556,9 @@ def test_a_p_between_alpha_over_three_and_alpha_separates_with_no_plan_and_not_u
     assert p is not None and SIGNIFICANCE_ALPHA / 3 < p < SIGNIFICANCE_ALPHA, f"the seed drifted off its branch: p={p}"
     assert accuracy(unplanned).verdict == "improved"
     assert accuracy(planned).verdict == "not_separated"
-    assert "over the 3 looks its design plans" in _accuracy_family(planned).disclosure
+    assert "over the 3 looks its design plans, where each look's cases were fixed before its data" in (
+        _accuracy_family(planned).disclosure
+    ), "a plan's level is stated with its condition"
 
 
 def _candidate_arm() -> CampaignArm:
@@ -700,10 +724,23 @@ def _looks_caveats(built):  # type: ignore[no-untyped-def]  # the input's caveat
 _TWO_LOOKS_AND_A_GAIN = dict(shift=0.08, seed="gain-0")
 
 
-def _quoted(test: SeparationTest, planned: int | None, taken: int) -> FalseSeparation:
-    """What the caveat quotes for ``test``: the named row's figure, read straight off the table."""
-    measured = looks_false_separation(test, planned, taken)
-    return FalseSeparation(test=test, rate=measured.rate, upper=measured.upper, row=measured.row)
+def _quoted(
+    test: SeparationTest, planned: int | None, taken: int, *, at_least: bool = False, launched: int | None = None
+) -> FalseSeparation:
+    """What the caveat quotes for ``test``: the named row's figure and setting, read straight off the table."""
+    measured = looks_false_separation(test, planned, taken, at_least=at_least, launched=launched)
+    return FalseSeparation(
+        test=test,
+        rate=measured.rate,
+        reads=measured.reads,
+        upper=measured.upper,
+        row=measured.row,
+        looks=measured.looks,
+        setting=measured.setting,
+        launched=list(measured.launched),
+        largest_step=measured.largest_step,
+        unquoted=measured.unquoted,
+    )
 
 
 def test_a_reader_of_a_campaign_that_took_an_undeclared_second_look_is_told_two_looks_none_planned_and_one_caveat() -> (
@@ -711,7 +748,10 @@ def test_a_reader_of_a_campaign_that_took_an_undeclared_second_look_is_told_two_
 ):
     built = _built(*_bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], **_TWO_LOOKS_AND_A_GAIN)[:2])  # type: ignore[arg-type]
     (aspect,) = built.aspects
-    assert aspect.looks is not None and aspect.looks.model_copy(update={"tests": []}) == Looks(planned=None, taken=2)
+    assert aspect.looks is not None
+    assert aspect.looks.model_copy(update={"tests": [], "launched": None, "largest_step": None}) == Looks(
+        planned=None, taken=2
+    )
     (looks,) = _looks_caveats(built)
     assert (looks.id, looks.cls, looks.reach) == (f"looks:{_ASPECT}", "D", "report")
     assert f"{_ASPECT}/field_accuracy" in looks.readings, "it names the claim the second look loosened"
@@ -763,13 +803,15 @@ def test_the_caveat_quotes_the_row_measured_for_its_situation(
 ) -> None:
     (looks,) = _looks_caveats(_restated(gained, planned=planned, taken=taken, tests=[test]))
     (quote,) = looks.false_separation
-    assert (quote.test, quote.row) == (test, row)
+    assert (quote.test, quote.row, quote.looks) == (test, row, taken)
     if row is None:
-        assert (quote.rate, quote.upper) == (None, None), "not measured: no rate, no bound"
+        assert (quote.rate, quote.upper, quote.unquoted) == (None, None, "not_measured"), "not measured: no rate"
         return
     measured = FALSE_SEPARATION[row]
     assert (measured.test, measured.planned) == (test, planned)
     assert quote.rate == measured.rates[taken - 1], "the named row's own figure"
+    assert (quote.reads, quote.setting) == ("measured", measured.setting), "the reference setting rides with it"
+    assert quote.launched and quote.largest_step is not None
     assert quote.upper == pytest.approx(measured_upper_bound(measured.rates[taken - 1], measured.replicates))
     others = [
         other.rates[taken - 1]
@@ -831,17 +873,24 @@ def test_a_second_look_at_a_campaign_created_before_looks_were_counted_qualifies
     assert looks.reach == "method" and looks.looks is not None and looks.looks.plannable is False
 
 
-def test_a_plan_whose_keeping_the_count_cannot_show_raises_the_caveat_and_quotes_no_rate() -> None:
-    """A run deleted after its look: the count is a lower bound, so looks past the plan cannot be ruled out, and the
-    looks taken are not known, so no row is the situation's."""
+def test_a_plan_whose_keeping_the_count_cannot_show_raises_the_caveat_and_quotes_a_floor() -> None:
+    """A run deleted after its look: the count is a lower bound, so looks past the plan cannot be ruled out. The
+    reference quoted is a floor: the smaller procedure's rate at that many looks, which more looks only raise."""
     gone = MembershipChange(run_id="gone", change="left", at=_stamp(300))
     built = _built(*_bundle([("g1", 0, range(20))], planned=2, left=[gone], **_TWO_LOOKS_AND_A_GAIN)[:2])  # type: ignore[arg-type]
     (aspect,) = built.aspects
     assert aspect.looks is not None
-    assert aspect.looks.model_copy(update={"tests": []}) == Looks(planned=2, taken=2, lower_bound=True)
+    stripped = aspect.looks.model_copy(update={"tests": [], "launched": None, "largest_step": None})
+    assert stripped == Looks(planned=2, taken=2, lower_bound=True)
     (looks,) = _looks_caveats(built)
     assert looks.reach == "report"
-    assert looks.false_separation == [FalseSeparation(test=test, rate=None) for test in aspect.looks.tests]
+    assert looks.false_separation == [
+        _quoted(test, 2, 2, at_least=True, launched=aspect.looks.launched) for test in aspect.looks.tests
+    ]
+    for quote in looks.false_separation:
+        assert quote.reads == "floor" and quote.rate is not None
+        smaller = min(row.rates[1] for row in FALSE_SEPARATION.values() if (row.test, row.planned) == (quote.test, 2))
+        assert quote.rate == smaller
 
 
 def test_a_campaign_whose_looks_were_not_recorded_says_so_with_no_rate_and_no_count_of_looks() -> None:
@@ -865,12 +914,52 @@ def test_a_campaign_whose_looks_were_not_recorded_and_whose_evidence_changed_onc
     assert not _looks_caveats(built)
 
 
+def test_a_campaign_extended_after_the_record_raises_at_report_reach_with_the_looks_recorded_since() -> None:
+    """Mixed: a campaign created before looks were counted, its first launch unrecorded, extended since. The looks
+    recorded since are a lower count, the caveat reaches the report (owner ruling L5), and the reference is a floor."""
+    built = _built(
+        *_bundle(
+            [("g1", 0, range(20)), ("g2", 120, range(20, 40))], unrecorded={0}, stamped=False, **_TWO_LOOKS_AND_A_GAIN
+        )[:2]  # type: ignore[arg-type]
+    )
+    (aspect,) = built.aspects
+    assert aspect.looks is not None
+    assert (aspect.looks.recorded, aspect.looks.taken, aspect.looks.lower_bound) == (False, 2, True)
+    (looks,) = _looks_caveats(built)
+    assert looks.reach == "report"
+    assert looks.false_separation and all(quote.reads == "floor" for quote in looks.false_separation)
+
+
 def test_a_campaign_whose_looks_were_recorded_gets_a_count_and_a_rate() -> None:
     """The same two launches, recorded: a count of looks, and the rate measured for it."""
     built = _built(*_bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], **_TWO_LOOKS_AND_A_GAIN)[:2])  # type: ignore[arg-type]
     (looks,) = _looks_caveats(built)
     assert looks.looks is not None and looks.looks.taken == 2
     assert looks.false_separation and all(quote.rate is not None for quote in looks.false_separation)
+
+
+def test_a_reference_outside_the_campaign_s_own_sizes_quotes_no_rate(gained: ReportInput) -> None:
+    """A launch smaller than any simulated, or a step larger than the simulated cap: the reference does not cover the
+    campaign, so it is named with its setting and no rate is quoted. Within the setting, the rate is quoted."""
+    for sizes in ({"launched": 10}, {"launched": 60}, {"launched": 20, "largest_step": 150}):
+        (looks,) = _looks_caveats(_restated(gained, planned=None, taken=3, tests=["t"], **sizes))
+        (quote,) = looks.false_separation
+        assert (quote.rate, quote.upper, quote.unquoted) == (None, None, "outside_setting"), sizes
+        assert quote.setting is not None and quote.launched == [20, 40] and quote.largest_step == 100
+    (looks,) = _looks_caveats(_restated(gained, planned=None, taken=3, tests=["t"], launched=30, largest_step=100))
+    (quote,) = looks.false_separation
+    assert quote.rate is not None and quote.unquoted is None
+
+
+def test_the_quote_is_described_as_a_reference_and_never_as_the_campaign_s_level() -> None:
+    """No description tells a writer the readings now hold the quoted rate, or that it limits the campaign's error."""
+    texts = [field.description or "" for field in FalseSeparation.model_fields.values()]
+    texts += [FalseSeparation.__doc__ or "", CaveatEntry.model_fields["false_separation"].description or ""]
+    for text in texts:
+        for wrong in ("now hold", "readings hold", "ceiling", "at most"):
+            assert wrong not in text, (wrong, text)
+    assert "reference" in (CaveatEntry.model_fields["false_separation"].description or "")
+    assert "never this campaign" in (FalseSeparation.model_fields["rate"].description or "")
 
 
 def test_an_aspect_s_looks_are_outside_the_input_s_digest() -> None:

@@ -202,6 +202,8 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
         "Criterion.statistic",
         "FamilyComparison.basis",
         "analysis/significance.py:SeparationTest",
+        "analysis/significance.py:QuoteReads",
+        "analysis/significance.py:Unquoted",
         "FamilyComparison.margin_source",
         "InterJudgeDimension.kappa_weighting",
         "LeverCoverageInput.cohort_scope",

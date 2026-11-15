@@ -129,8 +129,11 @@ class Looks(_Shape):
     durable 17.3 recorded membership. The occasions its stored results give are then artifacts of how the runs were
     stored (each arm launched alone, one group of cases after another), not occasions on which a reading could have
     been taken, and runs joined in one write are dated each by its own launch: the count could be too high or too low,
-    so it is neither a bound above nor a bound below, and it is not given as looks. ``taken`` is then None, and
-    ``evidence_changes`` gives the count as what it is: how many times the stored evidence changed.
+    so it is neither a bound above nor a bound below, and it is not given as looks. ``evidence_changes`` gives that
+    count as what it is: how many times the stored evidence changed. Where looks were recorded since (a run joined,
+    left, was launched after it joined, re-measured or re-judged after the first comparison), ``taken`` is the first
+    comparison plus those, a true lower count (``lower_bound``): at least that many looks since looks were recorded,
+    and earlier ones not recorded. Where none were, ``taken`` is None.
     """
 
     planned: int | None = Field(
@@ -141,7 +144,12 @@ class Looks(_Shape):
         ),
     )
     taken: int | None = Field(
-        default=None, ge=1, description="The looks taken; None where looks were not recorded (``recorded``)."
+        default=None,
+        ge=1,
+        description=(
+            "The looks taken. Where looks were not recorded (``recorded`` false): the looks recorded since, counting "
+            "the first comparison, a lower count; None where none were."
+        ),
     )
     # Left out where true, so the looks of a campaign created once looks were counted read {planned, taken} alone.
     plannable: bool = Field(
@@ -164,7 +172,7 @@ class Looks(_Shape):
         exclude_if=lambda value: value,
         description=(
             "Whether looks were recorded: false where a member run joined before durable 17.3 recorded membership, so "
-            "no count of looks is given (``taken`` None), neither as a lower nor as an upper bound."
+            "the looks before are not counted; ``taken`` is then only the looks recorded since, a lower count, or None."
         ),
     )
     # Left out where none: only an aspect whose looks were not recorded carries it.
@@ -176,6 +184,19 @@ class Looks(_Shape):
             "Where looks were not recorded: how many times the stored evidence of a contrast changed (its runs' "
             "launches, re-measures and re-judges as stored), context and not a count of looks. None where they were."
         ),
+    )
+    # Left out where none: the sizes a reference rate's setting is checked against.
+    launched: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description="The fewest cases any contrast of the aspect read at its first look. None where not counted.",
+    )
+    largest_step: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description="The most cases one later occasion added to any contrast of the aspect. None where not counted.",
     )
     # Left out where empty.
     tests: list[SeparationTest] = Field(
@@ -199,10 +220,10 @@ class Looks(_Shape):
 
     @model_validator(mode="after")
     def _a_count_or_not_recorded(self) -> Looks:
-        """A count of looks where they were recorded; where they were not, no count, no bound, and the evidence
-        changes in its place."""
+        """A count of looks where they were recorded; where they were not, the evidence changes, and the looks
+        recorded since only as a lower count."""
         if self.recorded and (self.taken is None or self.evidence_changes is not None):
             raise ValueError("recorded looks carry taken and no evidence_changes")
-        if not self.recorded and (self.taken is not None or self.evidence_changes is None or self.lower_bound):
-            raise ValueError("unrecorded looks carry evidence_changes, and no taken and no lower_bound")
+        if not self.recorded and (self.evidence_changes is None or self.lower_bound != (self.taken is not None)):
+            raise ValueError("unrecorded looks carry evidence_changes, and a taken only as a lower_bound")
         return self

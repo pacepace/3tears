@@ -25,8 +25,9 @@ names the tests the aspect's readings are read by (`bounded`, `t`).
 **Changed:** under `AspectDesign.planned_looks` = L, declared before the first look, each look of the aspect's family
 reads at α/L (`ComparisonFamily.look_alpha`), and a floor's and a guardrail's `held`, a campaign row's
 `within_margin` and the cases an unclear row projects are read at 1 − (1 − level)/L. `ComparisonFamily.alpha` and
-`CampaignReadings.alpha` are the level the plan guarantees over its looks, which pages print; the per-look level is
-`look_alpha`. A plan declared after the first look is no plan (`late_plan`). With no plan nothing moves. Past its plan
+`CampaignReadings.alpha` are the level the plan is for, which pages print: it holds over looks whose sizes were fixed
+before their data, and over extends sized by the planner only where the simulation shows it (on pass-rate aspects in
+the simulated setting; not shown on t-test aspects); the per-look level is `look_alpha`. A plan declared after the first look is no plan (`late_plan`). With no plan nothing moves. Past its plan
 (past the first look with none), under a plan a lower-bound count cannot show was kept, or within a plan whose keeping
 is not shown for a test the aspect uses (extends sized by the planner from the reading before are shown to hold α only
 where the measured rate's 97.5% upper bound is at most α: today on the bounded test, not on the t test), the caveat

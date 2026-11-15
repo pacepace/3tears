@@ -660,8 +660,10 @@ class CampaignReadings(EvalDocumentModel):
         gt=0.0,
         lt=1.0,
         description=(
-            "The campaign's α: the error each candidate's two Holm families hold, over every look a plan allows. What "
-            "a reader is told; under a plan each look is tested at `look_alpha`."
+            "The campaign's α: the error each candidate's two Holm families are read for, held over every look a plan "
+            "allows whose size was fixed before its data, and over planner-sized extends only where "
+            "`significance.plan_kept` shows it (on the bounded test, not on the t test); under a plan each look is "
+            "tested at `look_alpha`."
         ),
     )
     # Left out with no plan, so readings with none dump as they did.
@@ -1344,7 +1346,8 @@ def campaign_readings(
     every = _distinct(arms)
     kind = campaign_kind(every)
     # A candidate's gains and drops are one family across its aspects, read again whenever any of them is: under the
-    # largest plan of looks among them each look reads at α/L, so the family's error holds over every planned look.
+    # largest plan of looks among them each look reads at α/L, so the family's error holds over every planned look
+    # whose size was fixed before its data (over planner-sized extends, only where `plan_kept` shows it).
     plans = [bundle.reading_scope.looks.planned for bundle in checked.values() if bundle.reading_scope.looks]
     plan = max((looks for looks in plans if looks is not None and looks > 1), default=None)
     alpha = looks_alpha(plan)

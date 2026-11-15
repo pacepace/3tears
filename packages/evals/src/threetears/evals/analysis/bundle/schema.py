@@ -2097,8 +2097,10 @@ class ComparisonFamily(EvalDocumentModel):
     alpha: float = Field(
         default=SIGNIFICANCE_ALPHA,
         description=(
-            "The family-wise error rate the verdicts hold, over every look the aspect's plan allows: what a reader is "
-            "told. Under a plan each look is read at `look_alpha`."
+            "The family-wise error rate the plan is for: the verdicts hold it over every look the aspect's plan allows "
+            "whose size was fixed before its data; over extends sized by the planner from the readings, only where "
+            "the simulation of looks shows it (`significance.plan_kept`: on the bounded test in the simulated "
+            "setting, not on the t test). Under a plan each look is read at `look_alpha`."
         ),
     )
     # Left out with no plan, so a family read at alpha dumps as it did.
@@ -2107,7 +2109,9 @@ class ComparisonFamily(EvalDocumentModel):
         exclude_if=lambda value: value is None,
         description=(
             "The level each look's verdicts are read at under a plan of L looks (`AspectDesign.planned_looks`): "
-            "alpha / L, so the family holds `alpha` over all L. Its intervals are at 1 − look_alpha / family_size. "
+            "alpha / L, so the family holds `alpha` over all L where each look's size was fixed before its data (over "
+            "planner-sized extends, only where `significance.plan_kept` shows it). Its intervals are at "
+            "1 − look_alpha / family_size. "
             "None with no plan in force, where each look reads at `alpha`."
         ),
     )
@@ -2132,7 +2136,8 @@ class ComparisonFamily(EvalDocumentModel):
         description=(
             "The level of each comparison's `interval`: 1 − alpha / family_size, Bonferroni's, so the family's "
             "intervals hold together at 1 − alpha (under a plan of looks, 1 − look_alpha / family_size, so they hold "
-            "together at 1 − alpha over its looks). None when no comparison carried a p."
+            "together at 1 − alpha over its looks where each look's size was fixed before its data; over "
+            "planner-sized extends, only where `significance.plan_kept` shows it). None when no comparison carried a p."
         ),
     )
     n_untested: int = Field(ge=0, description="Comparisons in the family that could run no test, so carry no p.")

@@ -773,6 +773,23 @@ def test_the_table_the_caveat_quotes_is_the_measured_one() -> None:
     stated = {(row.test, row.procedure, row.planned): (row.rates, row.replicates) for row in FALSE_SEPARATION.values()}
     assert stated == measured
     assert len(FALSE_SEPARATION) == len(measured)
+    # The sizes each row's setting states are the ones simulated here: what a campaign's own sizes are checked against.
+    simulated_sizes = {
+        ("t", "fixed_batches", None): ((_sizes(2)[0],), _sizes(2)[1] - _sizes(2)[0]),
+        **{("t", "fixed_batches", planned): ((20,), 20) for planned in _PAST_PLAN},
+        **{
+            (test, "planner_extends", planned): ((20, 40), EXTEND_CAP)
+            for test in ("t", "bounded")
+            for planned in (None, 2, 3)
+        },
+        **{
+            ("bounded", "fixed_batches", planned): ((_RATE_BATCHES[0],), _RATE_BATCHES[1] - _RATE_BATCHES[0])
+            for planned in (None, 2, 3)
+        },
+    }
+    assert {
+        (row.test, row.procedure, row.planned): (row.launched, row.largest_step) for row in FALSE_SEPARATION.values()
+    } == simulated_sizes
     for name, row in FALSE_SEPARATION.items():
         procedure = "fixed batches" if row.procedure == "fixed_batches" else "planner-sized"
         plan = "no plan" if row.planned is None else f"plan of {row.planned}"
