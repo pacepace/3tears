@@ -34,7 +34,7 @@ Pinned here, through a real store, the bundle, both reports, the frontier and a 
 Mutations that turn this file red: reading ``scored`` or ``all_observed`` for an undeclared cost or latency
 measure in ``summary_population``; widening ``delivered_a_turn`` to every candidate failure; the frontier's
 latency or cost not asking ``delivered_a_turn``; ``_accuracy_leaves`` reading a failure's ``match`` as a hit;
-dropping ``_failures_as_misses``; dropping ``n_no_turn`` from ``_cell_measures``; leaving the blank under an
+dropping ``failures_as_misses``; dropping ``n_no_turn`` from ``cell_measures``; leaving the blank under an
 all-failed stratum's cost or latency in the strata table.
 """
 

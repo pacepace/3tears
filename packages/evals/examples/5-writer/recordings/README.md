@@ -4,15 +4,23 @@
 
 | What | Recorded |
 |---|---|
-| On | 2026-11-03, at head `28efc1fd1`, the writer's turns; the judge's calls on 2026-11-10, over the pages built at `7601153ed` |
+| On | 2026-11-03, at head `28efc1fd1`, the writer's turns; the judge's calls on 2026-11-14, over the pages built at `67c222242` |
 | Reports | 14: 2 arms x 7 held-out cases, once each, about 12.4 writer turns a report |
 | Writer | `claude-sonnet-5-5` at effort `medium`, analyst and editor: $6.90 |
-| Judge | `google/gemini-3.8-flash`: 112 calls, the pairwise pass's 14 among them, $0.63 |
-| Total | $7.53 |
+| Judge | `google/gemini-3.8-flash`: 112 calls, the pairwise pass's 14 among them, $0.28 |
+| Total | $7.18 |
 
 The judge reads each report's page as the package lays it out, so a change to what that page prints (its words, its
 figures' precision) moves every judge call's key: the judge's calls are recorded again with the `RECORD=1` command
 below, and the writer's turns replay free.
+
+**When the page text moves, the replay says so.** A call whose prompt moved is no longer found, and it is never
+dropped in silence. A scoring call the recording does not hold fails that arm's run at the miss, and the eval exits 1.
+The pairwise pass stops at the first call it does not hold and ends `failed`, so the run prints no share and exits 1.
+Either way the message names `judge.jsonl`, the prompt's
+opening, its key, and where it parts from the nearest recorded prompt. If you meant to change the page, record the
+judge again with the `RECORD=1` command below, and re-pin the tests that read its shares, saying why. If you did not,
+the message names the prompt that moved.
 
 A file deleted or gone stale is refused by name, with the key that would record it: `judge.jsonl` and
 `OPENROUTER_API_KEY`, or the writer's first turn file and `ANTHROPIC_API_KEY`.
@@ -50,8 +58,9 @@ the ones it sets today:
 
 The judge's floor is one call with no page in it, $0.0101: its 2,048-token output cap and 2,048 prompt tokens at
 OpenRouter's rates. The run is refused before any arm launches when an arm's reports and judging, or the pass, could
-pass its part at that floor. The pages a call reads are priced only once they are written, and the cap is checked
-between cells, so the cells in flight when an arm's part runs out can finish past it.
+pass its part at that floor. The pages a call reads are priced only once they are written: a case's judging is then
+priced in full and admitted against what its run has left, and a case it does not fit is set aside unjudged, so an
+arm's judging stays within its part wherever the judge's price ceiling bounds what it is billed.
 
 ## When a recording run is cut short
 

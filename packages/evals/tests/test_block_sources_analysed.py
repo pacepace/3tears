@@ -1,6 +1,6 @@
 """Block sources over what the analysis tools compute, and a lattice from the arms' own settings.
 
-Contracts held here (``analysis.report_rows`` selectors ``compare``, ``settle``, ``levers``, ``bar_reads`` and
+Contracts held here (``analysis.report.rows`` selectors ``compare``, ``settle``, ``levers``, ``bar_reads`` and
 ``config_grid``; ``analysis.report.block_spec``; the plan page's resolvers):
 
 - **compare** draws two arms' difference with its interval, every row an ``arms_compare`` row, its figures as their
@@ -42,8 +42,8 @@ from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.report_rows import config_grid, lever_arms, query_rows
+from threetears.evals.analysis.report.fact_arms import fact_arms
+from threetears.evals.analysis.report.rows import config_grid, lever_arms, query_rows
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
 

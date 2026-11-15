@@ -46,7 +46,7 @@ from threetears.evals.analysis.report_input import (
     Example,
     ReportInput,
 )
-from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS, report_input
+from threetears.evals.analysis.report.input_build import EXAMPLE_EXCERPT_CHARS, report_input
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_inputs"

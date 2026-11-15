@@ -87,7 +87,9 @@ from threetears.evals.analysis.analyst.compare import ArmsComparison, Comparison
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow, LeverEffects, lever_effects
 from threetears.evals.analysis.analyst.settle import Settle, SettleRow, settle_cases
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.figure_keys import arm_settings, price_frontier, resolve
+from threetears.evals.analysis.report.keys.levers import arm_settings
+from threetears.evals.analysis.report.keys.prices import price_frontier
+from threetears.evals.analysis.report.keys.resolve import resolve
 from threetears.evals.analysis.report_input import (
     Aspect,
     BarRead,

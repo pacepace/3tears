@@ -44,14 +44,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.cited import WrittenFigure, cite_written
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.analysis.report.figure_keys import (
-    FILTER_SPELLINGS,
-    figure_filters,
-    key_form,
-    key_subjects,
-    parse_key,
-    resolve,
-)
+from threetears.evals.analysis.report.keys.figure import FILTER_SPELLINGS
+from threetears.evals.analysis.report.keys.resolve import figure_filters, key_form, key_subjects, parse_key, resolve
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput

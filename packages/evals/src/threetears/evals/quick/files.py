@@ -26,7 +26,8 @@ level and inside a runner that imports at call time alike. The door is a command
 files in two directories that each hold a ``helper.py`` both get the first one loaded; give siblings distinct names.
 
 Each eval runs into its default store, prints its result quietly (``--verbose`` prints it whole), and writes its
-report to ``.evals/reports/<name>/``. The exit code is the worst of the evals': 0 done, 1 a run did not complete,
+report to ``.evals/reports/<name>/``. A run that failed (a replay miss fails one) prints its failure first, naming
+what failed, and no verdict. The exit code is the worst of the evals': 0 done, 1 a run did not complete,
 2 refused (the file, or what it declares), 3 an error nothing anticipated (its traceback printed), 4 a comparison's
 gate failed, with a line after its report's saying why (:meth:`RunResult.why_failed`), in the report's words. Anything else is
 the host command line (:func:`~threetears.evals.quick.cli.run_cli`), unchanged.

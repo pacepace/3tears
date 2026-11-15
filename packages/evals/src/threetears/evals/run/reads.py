@@ -12,11 +12,11 @@ interprets. The host chooses what a scope is and passes it through.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.run_pages import iter_stored_results
-from threetears.evals.kernel.storage import RunsRead
+from threetears.evals.kernel.storage import RunsPage, RunsRead
 from threetears.evals.kernel.status_filter import StatusFilterError, validate_status_filter
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_RESULT
@@ -177,6 +177,55 @@ def list_runs_disclosing(
     )
 
 
+def list_runs_page(
+    host: EvalHost,
+    scope_id: str,
+    *,
+    limit: int,
+    after: tuple[Any, str] | None = None,
+    status: str | None = None,
+    include_archived: bool = False,
+    label: str | None = None,
+) -> RunsPage:
+    """One page of :func:`list_runs_disclosing`: newest first by ``(created_at, id)``, ``limit`` stored rows a page.
+
+    The status and the archive filter are predicates of the store's read
+    (:meth:`~threetears.evals.kernel.EvalStorage.query_eval_runs_page`), so a default listing's pages are full but the
+    last. The label filter runs in Python over the page, as :func:`list_runs_disclosing` runs it, so a labelled page can
+    list fewer runs than it read: ``rows`` minus the runs and the unreadable rows is how many it left out (with any
+    run whose settled status left the listing). ``after`` is where the next page starts whether or not this one was
+    narrowed, so a caller reading every page reads every run once.
+
+    :param host: As :func:`list_runs` takes it.
+    :ptype host: EvalHost
+    :param scope_id: As :func:`list_runs` takes it.
+    :ptype scope_id: str
+    :param limit: The page's size in stored rows, at least 1.
+    :ptype limit: int
+    :param after: Where the page starts: the ``after`` of the page before, or ``None`` for the first.
+    :ptype after: tuple[Any, str] | None
+    :param status: As :func:`list_runs` takes it.
+    :ptype status: str | None
+    :param include_archived: As :func:`list_runs` takes it.
+    :ptype include_archived: bool
+    :param label: As :func:`list_runs` takes it.
+    :ptype label: str | None
+    :return: The page, its runs narrowed by the label filter; ``rows`` is what the store returned.
+    :rtype: RunsPage
+    :raises ValidationFailedError: ``status`` is not one a run can carry, nor ``"all"``.
+    :raises UnreadableRunError: A run read, but writing it lost was refused by a model.
+    """
+    page = host.storage.query_eval_runs_page(
+        scope_id,
+        _listing_status_filter(status),
+        limit=limit,
+        after=after,
+        include_archived=include_archived,
+        elide_payload=host.profile.listing_elisions,
+    )
+    return page._replace(runs=_narrowed(page.runs, include_archived=True, label=label))
+
+
 def _narrowed(runs: list[EvalRun], *, include_archived: bool, label: str | None) -> list[EvalRun]:
     """``runs`` narrowed by the listing's label and archive filters, which run in Python over what the store returned."""
     if label is not None:
@@ -265,4 +314,5 @@ __all__ = [
     "list_results",
     "list_runs",
     "list_runs_disclosing",
+    "list_runs_page",
 ]

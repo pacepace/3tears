@@ -3,10 +3,10 @@ from the plan's query, the criteria and the configs.
 
 Held over every r1–r5 anchor and current run, and over charts these tests build on the same inputs for the sources no
 committed plan draws yet. The expected side is always computed from the input, never typed in: the gate check
-(:func:`~threetears.evals.analysis.report_gates.gate_check`), routing
-(:func:`~threetears.evals.analysis.report_gates.routing_picks`), the criteria's thresholds through their figure keys
+(:func:`~threetears.evals.analysis.report.gates.gate_check`), routing
+(:func:`~threetears.evals.analysis.report.gates.routing_picks`), the criteria's thresholds through their figure keys
 (:func:`~threetears.evals.analysis.report.figure_keys.resolve`), the rows a query selects
-(:func:`~threetears.evals.analysis.report_rows.query_rows`) and the factors and configs.
+(:func:`~threetears.evals.analysis.report.rows.query_rows`) and the factors and configs.
 
 - **Every chart of these kinds resolves** to its own kind, the kit's model validates it, and its values table holds
   every row; every (kind, source) pair the chart checks accept for these kinds draws on some input.
@@ -37,7 +37,6 @@ from packages.evals.tests.hostile_page_support import HOSTILE_LINE
 from packages.evals.tests.page_contract_support import what_runs
 from packages.evals.tests.plan_charts_support import (
     StoredCharts,
-    anchor_look,
     charts_html,
     charts_markdown,
     drawn_charts,
@@ -50,16 +49,18 @@ from threetears.evals.analysis import (
     LatticeChart,
 )
 from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_count, per_noun
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.model import PageChart
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import GATE_WORDS, NOT_GATED
-from threetears.evals.analysis.report_gates import gate_check, routing_picks, task_costs
+from threetears.evals.analysis.report.gates import gate_check, routing_picks, task_costs
 from threetears.evals.analysis.report_input import Criterion, FloorRead, Reading, ReportInput, Task
 from threetears.evals.analysis.report_margins import criterion_place, flip_margin
-from threetears.evals.analysis.report_rows import query_rows
+from threetears.evals.analysis.report.rows import query_rows
 from threetears.evals.kernel.chart_query import ChartSpec
 
 #: The kinds this file holds.
@@ -269,7 +270,7 @@ def test_a_task_matrix_whose_tasks_costs_count_different_things_is_refused_namin
     held = _input("r1")
     (per_1k,) = [key for key, measure in held.measures.items() if measure.unit == "usd_per_1k"]
     spec = _spec("gate_matrix", "tasks")
-    drawn = _resolved(held, spec, "r1")
+    drawn = _resolved(held, spec)
     assert isinstance(drawn.data, GateMatrixChart) and drawn.data.cost_unit, "the control: r1's matrix prices its tasks"
     data = held.model_dump(mode="json", by_alias=True, exclude_none=True)
     reply = "reply_cost"
@@ -291,7 +292,7 @@ def test_a_task_matrix_whose_tasks_costs_count_different_things_is_refused_namin
     nouns = {per_noun(mixed.measures[key]) for key in (reply, per_1k)}
     assert len(nouns) == 2, "the control: the two cost measures count different things"
     with pytest.raises(UnresolvableReference) as refused:
-        _resolved(mixed, spec, "r1")
+        _resolved(mixed, spec)
     said = str(refused.value)
     assert "counting different things" in said and "one cost unit" in said, said
     assert all(key in said for key in (reply, per_1k)), said
@@ -397,9 +398,10 @@ def test_a_floors_matrix_reads_each_floors_status() -> None:
         assert cell.status == {"held": "good", "unclear": "warn", "broken": "bad"}[floor.status]
         assert cell.label.lower() == floor.status
         assert floor.worst_drop is not None and floor.margin is not None and cell.reasons
-        # r5's two rates (the pass rate, a floor that reads none, and holds character) read in whole points on its page
-        # (number rule 2), so each drop does too (10.79 and 7.11), and the margin prints as declared, never "+15.0".
-        assert cell.reasons[0] == f"worst drop +{round(floor.worst_drop)} pts against a +{floor.margin:g} pts margin"
+        # r5's two rates (the pass rate, a floor that reads none, and holds character) read to a tenth on its page
+        # (number rule 2, two significant figures of the narrowest interval's width: owner ruling, 2026-11-14), so each
+        # drop does too (10.79 and 7.11 read 10.8 and 7.1), and the margin prints as declared, never "+15.0".
+        assert cell.reasons[0] == f"worst drop +{floor.worst_drop:.1f} pts against a +{floor.margin:g} pts margin"
 
 
 @pytest.mark.parametrize(("name", "source"), [("r4", "measures"), ("r3", "configs"), ("r2", "configs")])
@@ -555,9 +557,10 @@ def test_a_lattice_tiles_the_first_factor_by_the_rest_with_each_configs_figures_
     assert data.emphasis == spec.emphasis
 
 
-def _resolved(report_input: ReportInput, spec: ChartSpec, anchor: str) -> ChartBlock:
-    """The chart as the resolver draws it on ``report_input``, under the look the input's anchor plan gives."""
-    drawn = resolve_chart(spec, anchor_look(_plan(anchor), report_input), title="", forms=PageForms.of(report_input))
+def _resolved(report_input: ReportInput, spec: ChartSpec) -> ChartBlock:
+    """The chart as the resolver draws it on ``report_input``, under the look every page draws with."""
+    look = block_look(report_input, fact_arms(report_input))
+    drawn = resolve_chart(spec, look, title="", forms=PageForms.of(report_input))
     assert isinstance(drawn.chart, ChartBlock)
     return drawn.chart
 
@@ -575,7 +578,7 @@ def test_at_a_zero_margin_a_reading_is_outside_it_by_the_decisions_rule() -> Non
     reading = report_input.aspects[0].readings[0]
     assert flip_margin(reading) == 0.0 and -float(reading.within_interval[0]) < 0.0  # the two rules differ here
 
-    data_block = _resolved(report_input, _spec("gate_matrix", "readings"), "r5").data
+    data_block = _resolved(report_input, _spec("gate_matrix", "readings")).data
     assert isinstance(data_block, GateMatrixChart)
     columns = [column.label for column in data_block.columns]
     cell = data_block.rows[0].cells[columns.index(_arm_name(report_input, reading.arm))]
@@ -589,7 +592,7 @@ def test_a_lattice_tile_no_gate_reads_has_no_status_never_a_pass() -> None:
     arms = [config.arm for config in report_input.configs]
     key = next(key for key, measure in report_input.measures.items() if all(arm in measure.per_arm for arm in arms))
 
-    lattice = _resolved(report_input, _spec("lattice", "configs", measures=[key]), "r3").data
+    lattice = _resolved(report_input, _spec("lattice", "configs", measures=[key])).data
 
     assert isinstance(lattice, LatticeChart)
     tiles = [cell for row in lattice.rows for cell in row.cells]

@@ -33,7 +33,7 @@ from threetears.evals.actions.report_writing import campaign_report_writer
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.doc_analysis import doc_analysis
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.kernel import EvalCampaign, EvalStorage
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalInsight
 from threetears.evals.kernel.host import CompletionClients

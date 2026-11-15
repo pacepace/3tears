@@ -39,7 +39,9 @@ For each cell:
    the candidate's own failures and the rig's apart — and, through the cell's sink, what it is waiting
    on and how to read what it has spent so far, so a cell its deadline cancels is still recorded.
    An :class:`~threetears.evals.kernel.host.apparatus.ApparatusError` out of ``prepare`` or
-   ``invoke`` is recorded the same way, as that one cell excluded, and the run goes on.
+   ``invoke`` is recorded the same way, as that one cell excluded, and the run goes on. A replay miss
+   (:class:`~threetears.evals.kernel.host.apparatus.ReplayMiss`), or a judge call's rig fault out of ``invoke``
+   (:class:`JudgeCallUnserved`), is recorded the same way and then fails the run, as one in step 4 does.
 4. Run the rubric judge, when a judge service is wired and the cell produced something to judge.
 5. Build one :class:`~threetears.evals.schema.models.EvalResult`, and one trace document beside it.
 
@@ -87,7 +89,7 @@ from threetears.evals.kernel.covariates import (
 )
 from threetears.evals.kernel.dsl import evaluate_with_detail
 from threetears.evals.kernel.errors import JobFenced, StorageError
-from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.kernel.host.apparatus import ApparatusError, ReplayMiss
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.schema.completion import CompletionProtocolDefect
 from threetears.evals.run.judge import defect_usage
@@ -141,6 +143,7 @@ from threetears.evals.kernel.usage_capture import (
     async_delivery_usage,
     blended_cost_roles,
     cell_cost,
+    maybe_billed_usd,
 )
 from threetears.evals.run.cassette_proxy import CassetteCell, CassetteLane
 from threetears.evals.run.executor import CellExecutor, InProcessCellExecutor
@@ -155,7 +158,7 @@ from threetears.evals.run.metering import CellMeter, MeteredCallLedger, MeteredC
 from threetears.evals.run.run_document import fault_entry, record_run_faults
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.schema.logs import contain, get_logger
-from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError
+from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, ModelUnservedError
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.world import WorldRegistry
@@ -372,6 +375,38 @@ class EveryCellApparatusFailedError(RuntimeError):
         )
 
 
+class JudgeCallUnserved(Exception):
+    """A judge call the rig could not serve, raised out of ``invoke`` by a kind whose candidate is itself a judge.
+
+    An :class:`~threetears.evals.kernel.host.apparatus.ApparatusError` out of ``invoke`` excludes that one cell and the
+    run goes on: a later cell may meet a working rig. A judge call's is not a cell's alone. A replayed judge whose
+    recording holds no call for the prompt (its prompt moved since it was recorded) fails the run naming the call
+    wherever it is asked (owner ruling, #1162), so a replay never reads on fewer judgments in silence: the run's scoring
+    judge fails it in the judge phase, and the judge kind, whose trial asks the judge under test, wraps the fault in
+    this. It is not itself an ``ApparatusError``, so the exclusion around ``invoke`` lets it pass; :func:`execute_run`
+    records the cell ``apparatus_failed`` naming :attr:`fault`, and raises the fault, as it raises the scoring judge's.
+
+    :ivar fault: What the rig raised, naming the call it could not serve.
+    """
+
+    def __init__(self, fault: ApparatusError) -> None:
+        """Carry the rig's fault.
+
+        :param fault: What the judge's client raised.
+        :ptype fault: ApparatusError
+        """
+        self.fault = fault
+        super().__init__(f"{type(fault).__name__}: {fault}")
+
+
+#: How many cells in a row, as a run records them, must find its candidate's model not served before the run stops
+#: (:class:`~threetears.evals.run.ModelUnservedError`). A provider's "not served" is deterministic for a retired model,
+#: so a few in a row prove it, and three keep one stray routing answer from stopping an arm a served model would have
+#: measured. Waiting for them costs next to nothing: the provider refuses each call before serving it, and no cell
+#: that meets it is judged. A run that ends holding any cell that met it, short of a run of three, still ends stopped,
+#: so those cells are taken up again once the model is served.
+_UNSERVED_CIRCUIT_CELLS: Final = 3
+
 #: How many distinct exclusion errors a :class:`NothingMeasuredError` quotes, and how much of each.
 _QUOTED_ERRORS = 3
 _QUOTED_ERROR_CHARS = 400
@@ -475,6 +510,10 @@ class ErrorLedger:
     #: (``CandidateOutput.account_refused``, read by :meth:`of`). Carried out of the cell to
     #: stop the whole run: every later call is behind the same key.
     account_refused: bool = False
+    #: The candidate's call named a model its provider does not serve, as the kind reported it
+    #: (``CandidateOutput.model_unserved``, read by :meth:`of`). The cell is never judged, and the
+    #: run loop counts it toward the circuit that stops a run its model is not served for.
+    model_unserved: bool = False
 
     @classmethod
     def of(cls, candidate: CandidateOutput | None) -> ErrorLedger:
@@ -491,6 +530,7 @@ class ErrorLedger:
             candidate=list(candidate.candidate_errors),
             infra=list(candidate.infra_errors),
             account_refused=candidate.account_refused,
+            model_unserved=candidate.model_unserved,
         )
 
     def add_candidate(self, msg: str) -> None:
@@ -533,6 +573,15 @@ class ErrorLedger:
         property rather than the flag and the message separately.
         """
         return self.infra_error if self.account_refused else None
+
+    @property
+    def unserved_model(self) -> str | None:
+        """The cell's infra errors when its candidate's model is not served, else None — what the circuit counts.
+
+        Never ``None`` for such a cell, for the reason :attr:`account_refusal` gives: ``CandidateOutput`` refuses the
+        flag without an infra entry.
+        """
+        return self.infra_error if self.model_unserved else None
 
     @property
     def candidate_error(self) -> str | None:
@@ -588,10 +637,17 @@ class _JudgeRecord(NamedTuple):
     usage: list[RoleUsage]
     #: dim -> the reply the provider cut short, for each dim ``judge_error`` names for that cause.
     judge_cut_short: dict[str, JudgeCutShort]
+    #: Whether the run's cost cap had too little left for the phase, so it asked nothing it had not asked already
+    #: (``EvalResult.judging_set_aside``).
+    set_aside: bool = False
 
 
 def _judge_record(
-    phase: _JudgePhase, outcomes: Sequence[tuple[str, JudgeOutcome]], *, unfinished: str | None = None
+    phase: _JudgePhase,
+    outcomes: Sequence[tuple[str, JudgeOutcome]],
+    *,
+    unfinished: str | None = None,
+    set_aside: bool = False,
 ) -> _JudgeRecord:
     """Fold a judge phase's returned calls into what the result stores, naming any dim that did not finish.
 
@@ -607,6 +663,8 @@ def _judge_record(
     :param unfinished: Why a dim with no returned call did not finish. ``None`` asserts every call
         returned.
     :ptype unfinished: str | None
+    :param set_aside: Whether the run's cost cap kept the dims that did not finish from being asked.
+    :ptype set_aside: bool
     :return: The record.
     :rtype: _JudgeRecord
     :raises RuntimeError: ``unfinished`` is ``None`` and a dim the phase asks returned no call — the
@@ -645,6 +703,7 @@ def _judge_record(
         judge_cannot_tell_boundary=sorted(dim for dim in folded.cannot_tell if dim in phase.boundary_dims),
         usage=folded.usage,
         judge_cut_short=folded.cut_short,
+        set_aside=set_aside,
     )
 
 
@@ -678,6 +737,235 @@ def _refuse_an_unusable_amount(amount: float | None, *, what: str) -> None:
         raise ValueError(f"{what} is a finite amount of US dollars, 0 or more; got {amount!r}")
 
 
+#: The judge error a dim the run's cost cap kept from being asked stores: the cell is set aside, never scored low,
+#: and its judging is taken up by a re-judge, which reads the evidence the cell stored.
+_JUDGING_SET_ASIDE = (
+    "not judged: the run's cost cap had too little left for this cell's judging (a re-judge takes it up)"
+)
+
+
+class _OnSetAside(Protocol):
+    """What a :class:`_JudgingGate` tells the run when the cap refuses a cell's judging (:meth:`_JudgingGate.set_aside`)."""
+
+    def __call__(self, breach: CapBreach, pending: float | None, *, judge_faulted: bool = False) -> None: ...
+
+
+class _JudgeHold:
+    """One cell's judge phase, admitted under the run's cost cap until it is released.
+
+    A phase whose every call the judge prices holds the calls' summed price ceiling (:attr:`usd`) against the cap
+    while it runs, and sends its calls as the phase always does. A phase with a call the judge cannot price holds
+    the run's judging alone (``usd`` is ``None``): no other phase runs beside it, and it sends one call at a time,
+    each only while the run is within its cap (:meth:`may_send`), so it can pass the cap by its last call alone.
+    """
+
+    def __init__(self, gate: _JudgingGate, usd: float | None, billed: Callable[[], float] | None = None) -> None:
+        self.gate = gate
+        self.usd = usd
+        self.released = False
+        # What the phase's cell had been billed for judging when it was admitted, so the hold counts only what its
+        # calls have not billed yet: a call's bill lands in the running spend as it returns, and counting the whole
+        # ceiling beside it would count that call twice.
+        self._billed = billed
+        self._billed_at_admission = billed() if billed is not None else 0.0
+
+    def outstanding(self) -> float:
+        """What the hold still holds: its ceiling less what its calls have billed so far, never below nothing.
+
+        :return: The dollars held; 0 for a phase holding the judging alone, which holds no amount.
+        :rtype: float
+        """
+        if self.usd is None:
+            return 0.0
+        billed = self._billed() - self._billed_at_admission if self._billed is not None else 0.0
+        return max(self.usd - billed, 0.0)
+
+    def may_send(self, *, judge_faulted: bool = False) -> bool:
+        """Whether the next call of a phase holding the judging alone may be sent: the run is within its cap.
+
+        The first refusal is reported to the gate (:meth:`_JudgingGate.set_aside`), which stops the run; the phase
+        sends nothing after it.
+
+        :param judge_faulted: Whether the judge already failed the phase on a dim it asked, so a refusal leaves the
+            cell the judge's fault rather than one the cap set aside.
+        :ptype judge_faulted: bool
+        :return: True while what the run has spent, landed and running, is within its cap.
+        :rtype: bool
+        """
+        running = self.gate.running()
+        breach = self.gate.budget_gate(running)
+        if breach is None:
+            return True
+        self.gate.set_aside(breach, running, judge_faulted=judge_faulted)
+        return False
+
+    def release(self) -> None:
+        """Stop holding, once the phase has ended however it ended; a second release does nothing."""
+        if not self.released:
+            self.released = True
+            self.gate.release(self)
+
+
+class _JudgingGate:
+    """Admits each cell's judge phase against what the run's cost cap has left, on the phase's price ceiling.
+
+    The cap is otherwise read between cells, against what the recorded cells landed, and a cell's candidate is never
+    refused a call. The judge phase is the one thing a cell asks the cap about, and it asks before any call is paid
+    for: it is admitted when what the run has spent (the recorded cells', and the running cells' so far), with the
+    ceilings the admitted phases hold and its own, fits the cap. It waits while another phase holds, since that one's
+    bills may come in under its ceiling, and is set aside only once nothing holds and it still does not fit: spend
+    only grows, so it never would. A phase is admitted whole, never call by call, because a trial judged on some of
+    its dimensions is set aside all the same, and the calls it made would be spent for nothing.
+
+    A cell set aside is not judged, so it carries no score to lower a reading; its dims name the cap
+    (:data:`_JUDGING_SET_ASIDE`), a re-judge takes it up from the evidence it stored, and the run stops: no new cell
+    starts, and the run counts the cell on its stop record.
+    """
+
+    def __init__(
+        self,
+        budget_gate: Callable[[float | None], CapBreach | None],
+        running: Callable[[], float | None],
+        on_set_aside: _OnSetAside,
+    ) -> None:
+        """Bind the gate to the run's cost cap and to how the run reads its running cells' spend.
+
+        :param budget_gate: The run's cap, asked whether a pending amount fits beside what has landed.
+        :ptype budget_gate: Callable[[float | None], CapBreach | None]
+        :param running: What the running cells have spent so far; ``None`` once some of it could not be priced.
+        :ptype running: Callable[[], float | None]
+        :param on_set_aside: Told once for each cell set aside, with the breach that refused it and the pending
+            amount the breach counted beside what had landed, and whether the judge had already failed the cell.
+        :ptype on_set_aside: _OnSetAside
+        """
+        self.budget_gate = budget_gate
+        self.running = running
+        self._on_set_aside = on_set_aside
+        self._holds: list[_JudgeHold] = []
+        # The cap itself, read off the breach any amount past it gives: a gate is built only where one does.
+        reading = budget_gate(math.inf)
+        self.ceiling = reading.max_cost_usd if reading is not None else math.inf
+        # Replaced, never cleared, on each release: a waiter holds the event it waits on, so a release wakes every
+        # waiter at once and none can miss it.
+        self._released = asyncio.Event()
+
+    async def admit(self, ceiling_usd: float | None, billed: Callable[[], float] | None = None) -> _JudgeHold | None:
+        """Admit a judge phase whose calls cost at most ``ceiling_usd``, waiting while another phase holds.
+
+        :param ceiling_usd: The phase's summed price ceiling, every attempt included; ``None`` when a call of it
+            cannot be priced.
+        :ptype ceiling_usd: float | None
+        :param billed: What the phase's cell has been billed for judging so far, which its hold counts its calls'
+            bills against; ``None`` holds the whole ceiling until the phase ends.
+        :ptype billed: Callable[[], float] | None
+        :return: The hold to release once the phase ends, or ``None``: the cell is set aside.
+        :rtype: _JudgeHold | None
+        """
+        while True:
+            released = self._released
+            running = self.running()
+            if ceiling_usd is None:
+                if not self._holds:
+                    breach = self.budget_gate(running)
+                    if breach is None:
+                        return self._hold(None, billed)
+                    self.set_aside(breach, running)
+                    return None
+            elif not any(hold.usd is None for hold in self._holds):
+                held = math.fsum(hold.outstanding() for hold in self._holds)
+                pending = None if running is None else running + held + ceiling_usd
+                breach = self.budget_gate(pending)
+                if breach is None:
+                    return self._hold(ceiling_usd, billed)
+                if not self._holds:
+                    self.set_aside(breach, pending)
+                    return None
+            await released.wait()
+
+    def no_room(self) -> tuple[CapBreach, float | None] | None:
+        """Whether the cap has nothing left for another cell's judging: what has landed, what the running cells have
+        spent and the judging the admitted phases hold reach it, reaching it exactly included.
+
+        Asked before a cell of a judged run starts. A cell started then would pay for its candidate and have its
+        judging set aside, so it is not started.
+
+        :return: The cap's reading of that sum and the amount it counted beside what had landed (``None`` when the
+            running cells' spend could not be priced), or ``None`` while room is left.
+        :rtype: tuple[CapBreach, float | None] | None
+        """
+        running = self.running()
+        pending = None if running is None else running + math.fsum(hold.outstanding() for hold in self._holds)
+        if (breach := self.budget_gate(pending)) is not None:
+            return breach, pending
+        assert pending is not None
+        # Within the cap: read what has landed off an amount surely past it, to tell "exactly at it" from "under it".
+        probe = pending + self.ceiling + 1.0
+        if (past := self.budget_gate(probe)) is None:
+            return None
+        spent = past.accumulated_usd - probe + pending
+        if spent < self.ceiling:
+            return None
+        return replace(past, accumulated_usd=spent), pending
+
+    def _hold(self, usd: float | None, billed: Callable[[], float] | None) -> _JudgeHold:
+        hold = _JudgeHold(self, usd, billed)
+        self._holds.append(hold)
+        return hold
+
+    def release(self, hold: _JudgeHold) -> None:
+        """Stop counting ``hold`` and wake every phase waiting to be admitted.
+
+        :param hold: The hold of a phase that has ended.
+        :ptype hold: _JudgeHold
+        """
+        self._holds.remove(hold)
+        released, self._released = self._released, asyncio.Event()
+        released.set()
+
+    def set_aside(self, breach: CapBreach, pending: float | None, *, judge_faulted: bool = False) -> None:
+        """Report one cell set aside, with the breach that refused it.
+
+        :param breach: The cap's reading that refused the phase or its next call.
+        :ptype breach: CapBreach
+        :param pending: What the breach counted beside what had landed; ``None`` when it was unpriced spend.
+        :ptype pending: float | None
+        :param judge_faulted: Whether the judge already failed the cell on a dim the phase asked first, so the cell
+            is the judge's fault and not one the cap set aside; the run stops on the cap all the same.
+        :ptype judge_faulted: bool
+        """
+        self._on_set_aside(breach, pending, judge_faulted=judge_faulted)
+
+
+async def _judging_ceiling(template: EvalTemplate, judge_service: JudgeService, context: JudgeContext) -> float | None:
+    """The most one cell's judge phase can cost: every call's price ceiling, each attempt included, summed.
+
+    Priced as :func:`judge_dims` will send the calls, on the clients it sends them on, with their prices brought up
+    to date first. A call its client cannot price, or a client that cannot be built or priced, leaves the phase
+    unpriced (``None``); :func:`judge_dims` meets the same failure on that call and records it on the dim.
+
+    :param template: The run's template.
+    :ptype template: EvalTemplate
+    :param judge_service: The judge.
+    :ptype judge_service: JudgeService
+    :param context: What every call reads.
+    :ptype context: JudgeContext
+    :return: The summed ceiling in dollars, or ``None``.
+    :rtype: float | None
+    """
+    requests = judge_requests(template=template, judge_service=judge_service, context=context)
+    try:
+        for client in {id(client): client for client in map(judge_service.client_for, requests)}.values():
+            await refresh_prices(client)
+        ceilings = [judge_service.price_ceiling(request) for request in requests]
+    except Exception as e:  # prawduct:ok-broad-except — judge boundary; the dim's own call records the failure
+        # NOSILENT: the phase is admitted unpriced, one call at a time, and the call that meets this records it.
+        contain(e, log=log, what=f"Judge phase for case={context.case_id} could not be priced", level="warning")
+        return None
+    if any(ceiling is None for ceiling in ceilings):
+        return None
+    return math.fsum(ceiling for ceiling in ceilings if ceiling is not None)
+
+
 @dataclass
 class _CellSink:
     """The engine's record of one cell as it runs — everything a deadline's record is built from.
@@ -693,8 +981,9 @@ class _CellSink:
     It holds two things the kind reports — :attr:`pending` and how to read the candidate side
     so far — and three the engine observes for itself: the judge calls that returned, the kind
     dispatched to, and what ``invoke`` returned once it has. Beside those it keeps the cell's spend by source
-    (:attr:`spent`) and its slice of the metered-call ledger (:attr:`meter`). It carries no question of the run's
-    ceilings: both are read between cells, against what has landed. **Nothing may assign
+    (:attr:`spent`) and its slice of the metered-call ledger (:attr:`meter`). It asks no ceiling for the kind's
+    calls: those are read between cells, against what has landed. The one question of the cost cap inside a cell
+    is the engine's own, before its judge phase (:attr:`judging_gate`). **Nothing may assign
     :attr:`pending` in a ``finally``** — a cancel unwinds through those, and a write there would
     overwrite the answer with whatever the unwind was doing.
     """
@@ -738,6 +1027,12 @@ class _CellSink:
     #: (:meth:`add_spend`) — ``None`` once part of a source's spend could not be priced. Kept apart so
     #: no part of the cell reporting its spend can replace another part's.
     spent: dict[CellPending, float | None] = field(default_factory=dict)
+    #: What admits the cell's judge phase against the run's cost cap; ``None`` for a cell no enforcing cap bounds.
+    judging_gate: _JudgingGate | None = None
+    #: Whether the cell's judge phase is waiting for the cap to have room for it. A deadline that strikes then cut off
+    #: no judge call: the cap kept the judging from starting, so the cell is set aside under the cap, as one the cap
+    #: refused is. Left set by a cancel that strikes during the wait, which is what the deadline's arm reads.
+    awaiting_room: bool = False
     #: The one reading taken, once :meth:`side` has taken it.
     _read: CandidateOutput | None = None
 
@@ -791,6 +1086,48 @@ class _CellSink:
         _refuse_an_unusable_amount(cost_usd, what=f"{source} spend")
         total = self.spent.get(source, 0.0)
         self.spent[source] = None if total is None or cost_usd is None else total + cost_usd
+
+    def judge_billed(self) -> float:
+        """What the cell's judge calls have billed so far; an unpriced bill counts nothing here, since an unpriced
+        running spend already keeps the cap from admitting anything.
+
+        :return: The dollars.
+        :rtype: float
+        """
+        return self.spent.get("judge") or 0.0
+
+    def wait_for_room(self, waiting: bool) -> None:
+        """Say whether the judge phase is waiting for the cost cap to have room for it (:attr:`awaiting_room`).
+
+        :param waiting: True as the wait begins, False once it ends.
+        :ptype waiting: bool
+        """
+        self.awaiting_room = waiting
+
+    def spent_so_far(self, rate_table: ExternalRateTable | None) -> float | None:
+        """What the cell has spent so far, as the run's cost cap counts a running cell.
+
+        Once the kind's ``invoke`` has returned, its candidate side is counted from the rows it returned, as the
+        cell's result will total them, beside the judge calls that have returned: a kind need report no spend
+        through :meth:`add_spend` for its whole candidate side to count before the cell is judged. Before then,
+        what the cell has reported through :meth:`add_spend` is all there is to count.
+
+        :param rate_table: The run's rate table, which prices its background work's external calls.
+        :ptype rate_table: ExternalRateTable | None
+        :return: The spend, or ``None`` once part of it could not be priced.
+        :rtype: float | None
+        """
+        if self.returned is None:
+            reported = list(self.spent.values())
+            return None if None in reported else math.fsum(amount for amount in reported if amount is not None)
+        side = self.returned
+        candidate = cell_cost(
+            _candidate_side_usage(side.telemetry.usage, side.async_deliveries, rate_table=rate_table),
+            async_deliveries=side.async_deliveries,
+            rate_table=rate_table,
+        )
+        judge = self.spent.get("judge", 0.0)
+        return None if candidate is None or judge is None else candidate + judge
 
     def begin_judging(self, phase: _JudgePhase) -> None:
         """Mark the judge phase begun: the cell now waits on the judge, and the phase is on record.
@@ -1443,6 +1780,10 @@ async def _run_one_result(
             termination=failure.termination,
             preconditions=failure.preconditions,
         )
+    except ReplayMiss:
+        # A recording that cannot serve the run: the next cell reads the same recording, so it fails the run, its cell
+        # recorded by the run's loop naming the call (owner ruling, #1162).
+        raise
     except ApparatusError as fault:
         return _apparatus_cell(fault, during="prepare")
     if cell_cassettes is not None and not cell_cassettes.wired:
@@ -1478,11 +1819,16 @@ async def _run_one_result(
             # perturbed with nothing perturbed: the kind's code, so refused here rather than recorded.
             world_session.require_schedule_announced(ran_its_course=_ran_its_course(candidate))
             await world_session.end_state()
+    except ReplayMiss:
+        # A recording that cannot serve the candidate: the next cell reads the same recording, so it fails the run
+        # rather than reading on fewer cells in silence (owner ruling, #1162). The run's loop records the cell
+        # ``apparatus_failed`` naming the call before it raises the miss.
+        raise
     except ApparatusError as fault:
-        # The rig broke under the candidate — a replay miss, a corrupt recording, a harness fault
-        # a kind's tool boundary re-raised as the seam tells it to. That is THIS cell's exclusion,
-        # never the run's: every later cell may meet a working rig. The cell's record is built
-        # from its sink, which closes the cassette handle and folds its background work's spend.
+        # The rig broke under the candidate — a corrupt recording, a harness fault a kind's tool boundary
+        # re-raised as the seam tells it to. That is THIS cell's exclusion, never the run's: every later
+        # cell may meet a working rig. The cell's record is built from its sink, which closes the cassette
+        # handle and folds its background work's spend.
         return _apparatus_cell(fault, during="invoke")
     finally:
         # However ``invoke`` ended — returned, raised, or cancelled by the deadline — the capture's
@@ -1498,10 +1844,9 @@ async def _run_one_result(
     metered_cell = metered_cell_tally(options.metered_calls)
 
     # 3. Below the dispatch: ``output`` + ``mechanical_facts`` + telemetry, and nothing
-    # kind-shaped. ``trace`` is the judged artifact AND the stored transcript — one document,
+    # kind-shaped. ``output`` is the judged artifact AND the stored transcript — one document,
     # because for every kind so far they are the same one.
     telemetry = candidate.telemetry
-    trace = candidate.output
     # Held here so a kind that skipped a check is refused before the judge phase is paid for, and so the
     # judge reads the outcomes the cell will store; the assembly holds the output again, idempotently,
     # because it is what every completed cell — a witnessed one included — passes through.
@@ -1575,19 +1920,20 @@ async def _run_one_result(
 
     # 4. Judge — dual-score axes (transcript + outcome) are universal; per-dim
     # rubric scores only when the template declares dimensions. Judging needs a
-    # judge service and a non-empty transcript; factory / immediate-error slots
-    # (no trace) skip it and leave the scores None.
+    # judge service and a non-empty transcript under a served model; factory / immediate-error
+    # slots (no trace) and a model the provider does not serve skip it and leave the scores None.
     judged = _unjudged_record()
     # Timed off a monotonic clock, not harvested: the judge emits no spans (llm.call
     # spans come from the candidate's own call path alone), and it runs after the harvest
     # closes, so it sits outside every turn-root span the total sums. None until the
     # phase actually runs — see LatencyMetrics.judge_ms.
     judge_ms: float | None = None
-    # ``trace`` alone gates the phase whatever the kind: empty output means nothing was
-    # produced to judge. Which axes are judged is the kind's declaration; what each reads is the
-    # evidence the kind rendered, which the declaration check above guarantees is here.
+    # One gate whatever the kind (:func:`_judgeable`): empty output means nothing was produced to
+    # judge, and a model the provider does not serve means what was produced is the setup's, not the
+    # candidate's. Which axes are judged is the kind's declaration; what each reads is the evidence
+    # the kind rendered, which the declaration check above guarantees is here.
     judge_evidence = candidate.judge_evidence
-    if judge_service is not None and trace and judge_evidence is not None:
+    if judge_service is not None and judge_evidence is not None and _judgeable(candidate):
         phase = _JudgePhase(
             judged_artifact=judged_artifact,
             evidence=judge_evidence,
@@ -1606,6 +1952,9 @@ async def _run_one_result(
             settled=sink.judged,
             eval_run_id=eval_run_id,
             sink=sink,
+            gate=sink.judging_gate,
+            awaiting_room=sink.wait_for_room,
+            judge_billed=sink.judge_billed,
         )
 
     # Second (and final) conditions sample — see sample_concurrent_eval_jobs. Taken after
@@ -1655,6 +2004,9 @@ async def _run_judge_phase(
     settled: list[tuple[str, JudgeOutcome]],
     eval_run_id: str,
     sink: CellSink | None,
+    gate: _JudgingGate | None = None,
+    awaiting_room: Callable[[bool], None] | None = None,
+    judge_billed: Callable[[], float] | None = None,
 ) -> tuple[_JudgeRecord, float]:
     """Run one cell's judge phase and fold what it left, however it ended: the one judge phase a completed cell takes.
 
@@ -1681,31 +2033,68 @@ async def _run_judge_phase(
     :param sink: The cell's sink, which keeps each call in the cell's spend; ``None`` for a witnessed cell,
         which no run's cap bounds.
     :ptype sink: CellSink | None
+    :param gate: What admits the phase against the run's cost cap before any call is paid for
+        (:class:`_JudgingGate`); a phase it sets aside asks nothing, and each of its dims names the cap. ``None``
+        when no enforcing cap bounds the cell.
+    :ptype gate: _JudgingGate | None
+    :param awaiting_room: Told ``True`` as the phase starts waiting for the gate and ``False`` once admitted or set
+        aside, so a deadline striking during the wait is read as the cap's, not the judge's.
+    :ptype awaiting_room: Callable[[bool], None] | None
+    :param judge_billed: What the cell has been billed for judging so far, which the phase's hold counts its calls'
+        bills against.
+    :ptype judge_billed: Callable[[], float] | None
     :return: What the phase leaves on the result, and its wall clock in milliseconds.
     :rtype: tuple[_JudgeRecord, float]
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol. Every other failure of the phase
-        is folded into the record; this one is the host's code, which every cell would meet, so it fails the run.
+        is folded into the record but the next; this one is the host's code, which every cell would meet, so it fails
+        the run.
+    :raises ApparatusError: The rig could not serve a judge call (a replayed judge's miss): it fails the run too.
     """
     judge_started = time.monotonic()
+    context = build_judge_context(
+        template=template,
+        test_case=test_case,
+        goal_outcomes=goal_outcomes,
+        judged_artifact=phase.judged_artifact,
+        judge_evidence=phase.evidence,
+    )
+    hold: _JudgeHold | None = None
     try:
-        outcomes = await judge_dims(
-            template=template,
-            judge_service=judge_service,
-            concurrency=concurrency,
-            settled=settled,
-            sink=sink,
-            context=build_judge_context(
+        if gate is not None:
+            ceiling = await _judging_ceiling(template, judge_service, context)
+            if awaiting_room is not None:
+                awaiting_room(True)
+            hold = await gate.admit(ceiling, judge_billed)
+            # Not in a ``finally``: a cancel during the wait leaves it set, for the deadline's arm to read.
+            if awaiting_room is not None:
+                awaiting_room(False)
+        if gate is not None and hold is None:
+            # Nothing was asked, so nothing was paid for and no dim carries a score: the cell is set aside.
+            judged = _judge_record(phase, settled, unfinished=_JUDGING_SET_ASIDE, set_aside=True)
+        elif hold is not None and hold.usd is None:
+            judged = await _judge_one_call_at_a_time(
+                phase, hold, template=template, judge_service=judge_service, context=context, settled=settled, sink=sink
+            )
+        else:
+            outcomes = await judge_dims(
                 template=template,
-                test_case=test_case,
-                goal_outcomes=goal_outcomes,
-                judged_artifact=phase.judged_artifact,
-                judge_evidence=phase.evidence,
-            ),
-        )
+                judge_service=judge_service,
+                concurrency=concurrency,
+                settled=settled,
+                sink=sink,
+                context=context,
+            )
+            judged = _judge_record(phase, outcomes)
     except CompletionProtocolDefect:
         # The host's completion type breaks the protocol: not a judging outcome, and every cell would meet it,
         # so it fails the run (as a kind's defect does) instead of becoming an error on each dimension.
         log.error("Eval run %s: a judge completion breaks the protocol; the run fails", eval_run_id)
+        raise
+    except ApparatusError as fault:
+        # The rig could not serve a judge call (a replayed judge's recording holds none for its prompt): no judging
+        # outcome, and excluding the cell would let a replay read on fewer judgments in silence, so it fails the run
+        # naming the call (owner ruling, #1162).
+        log.error("Eval run %s: the judge's rig could not serve a call; the run fails: %s", eval_run_id, fault)
         raise
     except Exception as e:  # prawduct:ok-broad-except — judge boundary; a judge failure must not wedge the slot
         # NOSILENT: the judge record names every dim the phase did not finish as failed with this cause.
@@ -1713,15 +2102,65 @@ async def _run_judge_phase(
         # The calls that returned before it raised were paid for and keep their scores; the
         # rest are named as failed with the cause.
         judged = _judge_record(phase, settled, unfinished=f"the judge phase raised {type(e).__name__}: {e}")
-    else:
-        judged = _judge_record(phase, outcomes)
     finally:
+        # Released on every exit, a cancel's included: what the phase spent is on the cell's sink by now, which the
+        # gate counts until the cell is recorded.
+        if hold is not None:
+            hold.release()
         # Stamped on the way out of EVERY exit, not just the scoring one. A judge
         # that raised after two minutes spent those two minutes, and leaving the
         # phase untimed there would file real wall-clock under the same absence as
         # a run that never had a judge at all — judge_error is what says it failed.
         judge_ms = (time.monotonic() - judge_started) * 1000.0
     return judged, judge_ms
+
+
+async def _judge_one_call_at_a_time(
+    phase: _JudgePhase,
+    hold: _JudgeHold,
+    *,
+    template: EvalTemplate,
+    judge_service: JudgeService,
+    context: JudgeContext,
+    settled: list[tuple[str, JudgeOutcome]],
+    sink: CellSink | None,
+) -> _JudgeRecord:
+    """Judge a phase the judge cannot price, holding the run's judging alone: one call at a time, each sent only
+    while the run is within its cap, so the run passes its cap by the last call at most.
+
+    :param phase: What the judge reads and the dims it asks.
+    :ptype phase: _JudgePhase
+    :param hold: The phase's hold, which holds the run's judging alone.
+    :ptype hold: _JudgeHold
+    :param template: The run's template.
+    :ptype template: EvalTemplate
+    :param judge_service: The judge.
+    :ptype judge_service: JudgeService
+    :param context: What every call reads.
+    :ptype context: JudgeContext
+    :param settled: The caller-owned list each returned call is appended to.
+    :ptype settled: list[tuple[str, JudgeOutcome]]
+    :param sink: The cell's sink, which keeps each call in the cell's spend.
+    :ptype sink: CellSink | None
+    :return: The phase's record; a dim not asked because the cap was reached names it.
+    :rtype: _JudgeRecord
+    """
+    for dim in phase.dims:
+        # A dim the judge already failed makes the cell the judge's fault, which a re-judge recovers; it is excluded
+        # as that, never filed under the cap, though the cap keeps the dims after it unasked and names itself on them.
+        judge_faulted = bool(fold_judge_outcomes(settled).errors)
+        if not hold.may_send(judge_faulted=judge_faulted):
+            return _judge_record(phase, settled, unfinished=_JUDGING_SET_ASIDE, set_aside=not judge_faulted)
+        await judge_dims(
+            template=template,
+            judge_service=judge_service,
+            context=context,
+            concurrency=1,
+            only=frozenset({dim}),
+            settled=settled,
+            sink=sink,
+        )
+    return _judge_record(phase, settled)
 
 
 async def judge_witnessed_output(
@@ -1738,8 +2177,9 @@ async def judge_witnessed_output(
 ) -> tuple[_JudgeRecord, float] | tuple[None, None]:
     """Judge a host-observed cell's output through the runner's own judge phase, as the runner gates it.
 
-    The gate is the runner's: an output with nothing in it, or with no evidence rendered, is not judged.
-    Used by :func:`~threetears.evals.run.witnessed.record_witnessed_cell` for a judged witnessed run.
+    The gate is the runner's (:func:`_judgeable`): an output with nothing in it, with no evidence rendered, or whose
+    candidate's model the provider does not serve, is not judged. Used by
+    :func:`~threetears.evals.run.witnessed.record_witnessed_cell` for a judged witnessed run.
 
     :param template: The template whose intent and rubric the judge reads.
     :ptype template: EvalTemplate
@@ -1766,7 +2206,7 @@ async def judge_witnessed_output(
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol — the host's defect, never a
         judge error on the cell.
     """
-    if not output.output or output.judge_evidence is None:
+    if output.judge_evidence is None or not _judgeable(output):
         return None, None
     phase = _JudgePhase(
         judged_artifact=judged_artifact,
@@ -1786,6 +2226,29 @@ async def judge_witnessed_output(
         eval_run_id=eval_run_id,
         sink=None,
     )
+
+
+#: The exclusions that are a fault the harness recorded on the cell (``infra_error``), which a run whose every cell
+#: met one measured nothing from: the rig's, and a model the provider does not serve. Neither a judge call's error
+#: alone (a re-judge recovers it) nor judging the cost cap set aside (a re-judge recovers that too) nor a cut-off judge
+#: reply nor a "can't tell".
+_RECORDED_FAULTS: frozenset[ExclusionCause | None] = frozenset({"infra", "model_unserved"})
+
+
+def _judgeable(output: CandidateOutput) -> bool:
+    """Whether a cell's output is the candidate's to judge: it produced something, under a model its provider serves.
+
+    A model the provider does not serve (``CandidateOutput.model_unserved``) gates the judge whatever ``output``
+    holds. A conversing kind goes on past a failed call, so its transcript is not empty: it holds the simulated
+    user's lines and turns with no reply, and judging those scores the setup as the candidate's failure, a paid
+    judge call per cell.
+
+    :param output: What the kind returned.
+    :ptype output: CandidateOutput
+    :return: True when the judge phase may run on it.
+    :rtype: bool
+    """
+    return bool(output.output) and not output.model_unserved
 
 
 def hold_to_declaration(kind_name: str, judged_artifact: JudgedArtifact, output: CandidateOutput) -> None:
@@ -2218,6 +2681,7 @@ def assemble_completed_cell(
         judge_cannot_tell=judged.judge_cannot_tell,
         judge_cannot_tell_boundary=judged.judge_cannot_tell_boundary,
         judge_cut_short=judged.judge_cut_short,
+        judging_set_aside=judged.set_aside,
         variant_key=variant.variant_key,
         identity_version=variant.identity_version,
         # Reached the end of the cell. Stated on the success path too, and not only on the
@@ -2288,6 +2752,7 @@ def _cut_short_cell(
     unfinished_judging: str | None,
     ungraded_goal_checks: Sequence[GoalStateOutcome] = (),
     metered_calls_refused: int | None = None,
+    judging_set_aside: bool = False,
 ) -> CellOutcome:
     """The two documents of a cell cut off before :func:`run_one_result` returned them.
 
@@ -2328,6 +2793,8 @@ def _cut_short_cell(
         message — or ``None`` for a cut that cannot strike the judge phase.
     :ptype unfinished_judging: str | None
     :param ungraded_goal_checks: See :func:`_degraded_capture_fields`.
+    :param judging_set_aside: Whether the cut struck while the judge phase waited for the cost cap's room, so the
+        cap, not the judge, left the dims unasked (``EvalResult.judging_set_aside``).
     :ptype ungraded_goal_checks: Sequence[GoalStateOutcome]
     :param metered_calls_refused: The cell's refused metered calls, where the caller still holds the
         dispatch's baseline; ``None`` where it does not.
@@ -2336,7 +2803,9 @@ def _cut_short_cell(
     :rtype: CellOutcome
     """
     judged = (
-        _judge_record(sink.judging, sink.judged, unfinished=unfinished_judging) if sink.judging is not None else None
+        _judge_record(sink.judging, sink.judged, unfinished=unfinished_judging, set_aside=judging_set_aside)
+        if sink.judging is not None
+        else None
     )
     errors = sink.errors
     side = sink.side()
@@ -2350,6 +2819,7 @@ def _cut_short_cell(
             "judge_error": judged.judge_error,
             "judge_cannot_tell": judged.judge_cannot_tell,
             "judge_cut_short": judged.judge_cut_short,
+            "judging_set_aside": judged.set_aside,
         }
         if judged is not None
         else {}
@@ -3233,6 +3703,10 @@ async def judge_dims(
     completion breaking the protocol** (:class:`~threetears.evals.schema.completion.CompletionProtocolDefect`):
     that is the host's code, which every call would meet, so it is raised — what its calls were billed counted in
     the cell's spend, every sibling call still in flight cancelled — and fails whatever is judging, a run included.
+    **Nor a call the rig could not serve** (:class:`~threetears.evals.kernel.host.apparatus.ApparatusError`: a replayed
+    judge's recording holding no call for the prompt): it is no judging outcome, so it is raised the same way and fails
+    whatever is judging (a run, a re-judge, a second judge, a quick judged eval), naming the call, rather than letting
+    a replay read on fewer judgments.
 
     :param template: The run's template, whose ``rubric`` names the per-dim calls.
     :ptype template: EvalTemplate
@@ -3250,12 +3724,14 @@ async def judge_dims(
     :ptype settled: list[tuple[str, JudgeOutcome]] | None
     :param sink: The cell's sink when the calls are a cell's, which keeps each one in the cell's spend: what a
         call cost is added (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`) when it returns.
-        Nothing is refused here; the run's cost cap is read between cells.
+        Nothing is refused here: a cell's phase is admitted against the run's cost cap before this is called.
         ``None`` for calls no run's cap bounds (a re-judge, whose calls are priced out of run).
     :ptype sink: CellSink | None
     :return: ``(dim_id, outcome)`` for every call made, in dimension order.
     :rtype: list[tuple[str, JudgeOutcome]]
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol; the other calls are cancelled
+        first.
+    :raises ApparatusError: The rig could not serve a judge call (a replay's miss); the other calls are cancelled
         first.
     """
     gate = asyncio.Semaphore(concurrency)
@@ -3294,6 +3770,9 @@ async def judge_dims(
                                 ),
                             )
                         )
+                    raise
+                except ApparatusError:
+                    # The rig could not serve the call (a replay's miss): it fails the run, never this dim alone.
                     raise
                 except (
                     Exception
@@ -3369,11 +3848,13 @@ class _RunStop:
     ceilings: list[_CeilingReached] = field(default_factory=list)
     #: The provider's refusal of the calling account, when that stopped it.
     refusal: str | None = None
+    #: The last cell's answer that the provider does not serve the run's model, when that stopped it.
+    unserved: str | None = None
 
     @property
     def decided(self) -> bool:
         """Whether a cell has stopped the run."""
-        return bool(self.ceilings) or self.refusal is not None
+        return bool(self.ceilings) or self.refusal is not None or self.unserved is not None
 
     def budget(self, reached: list[_CeilingReached]) -> None:
         """Stop the run on the ceilings its landed amounts had reached, unless something stopped it first."""
@@ -3384,6 +3865,11 @@ class _RunStop:
         """Stop the run on its account's refusal, unless something stopped it first."""
         if not self.decided:
             self.refusal = refusal
+
+    def model_unserved(self, unserved: str) -> None:
+        """Stop the run on its model not being served, unless something stopped it first."""
+        if not self.decided:
+            self.unserved = unserved
 
 
 @dataclass
@@ -3602,11 +4088,29 @@ async def execute_run(
     :class:`~threetears.evals.run.budget.BudgetStoppedError`, carrying a
     :class:`~threetears.evals.schema.models.BudgetStop` for EVERY ceiling reached at that boundary, each with
     the counters' numbers: the ceiling, what had landed at the stop and once the running cells finished, how
-    many were running and how many never started. **A run may therefore overshoot a ceiling by up to the
-    width's worth of cells, and that is the design**: a refusal inside a cell contaminated whichever cell
-    asked after the ceiling was spent, so identical runs at width above 1 contaminated different cells. A cell
-    that loops is bounded by the cell timeout, not by a ceiling. A host whose metered tools are declared
-    absent (``none_declared``) is the one in-cell refusal left, at dispatch, and it is no budget.
+    many were running, how many never started and how many ran but were not judged. **A candidate's calls are
+    never refused inside a cell**: a refusal there contaminated whichever cell asked after the ceiling was spent,
+    so identical runs at width above 1 contaminated different cells, and a run may land past a ceiling by what its
+    running cells' candidates go on to spend. A cell that loops is bounded by the cell timeout, not by a ceiling.
+    A host whose metered tools are declared absent (``none_declared``) is the one in-cell refusal of a candidate's
+    call left, at dispatch, and it is no budget.
+
+    **The judge phase is admitted against the cost cap.** Judging is the engine's own spend, and a cell running
+    when the cap was crossed would otherwise judge on past it. Before any judge call of a cell is paid for, the
+    phase's summed price ceiling must fit what the run has spent (landed and running) beside the ceilings the
+    phases already admitted hold; it waits while one holds, and is set aside once none does and it still does not
+    fit. A set-aside cell asks the judge nothing, is marked (``EvalResult.judging_set_aside``) and left out of the
+    judged readings under its own cause (``cost_cap``), its other readings counting it, its dims' judge errors naming
+    the cap (a re-judge takes it up from the evidence it stored), and stops the run: no new cell starts, the run ends
+    ``budget_stopped``, and its cost-cap record counts the cell (``BudgetStop.cells_not_judged``). The record is kept
+    when the account's refusal or the unserved-model circuit stopped the run first: it rides that error, and the run,
+    ``exhausted``, carries it. A cell whose deadline strikes while its judging waits for room is marked set aside the
+    same way, but the record does not count it and it stops nothing: it waited on a hold that might have billed less,
+    so the cap's shortage was never established; its mark is its count (the summary's ``n_not_judged``). A phase the
+    judge cannot price holds the run's judging alone and sends one call at a time while the run is within its cap; when
+    the cap refuses its next call after the judge failed it on a dim, the cell is the judge's fault, not a set-aside.
+    So judging stays within the cost cap wherever its price ceiling bounds what its calls are billed, and passes it
+    by one call at most when the judge cannot price its calls. No gate (``budget_gate`` ``None``, or one that admits any amount) asks nothing.
 
     Every already-run cell is saved before its successor's check, so nothing
     produced is lost; the job manager translates the raise into the
@@ -3617,7 +4121,12 @@ async def execute_run(
     recording) — the pure-function contract for tests and cap-disabled contexts.
 
     Apparatus faults: a cell an :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`
-    ended is recorded excluded and the loop goes on. Only when EVERY cell of the run ended that
+    out of its kind's ``prepare`` or ``invoke`` ended is recorded excluded and the loop goes on. A replay miss
+    (:class:`~threetears.evals.kernel.host.apparatus.ReplayMiss`: a recording that cannot serve the run, wherever it
+    is met) is not,
+    nor any rig fault out of a judge call, in its judge phase or out of a judge kind's ``invoke``
+    (:class:`JudgeCallUnserved`): the cell is recorded ``apparatus_failed`` naming the call, and the fault fails the
+    run, as a judge completion breaking the protocol does. Only when EVERY cell of the run ended that
     way does the loop raise :class:`EveryCellApparatusFailedError`, after the last cell is saved:
     the rig never worked, so the run measured nothing, and the job manager files it ``failed``. When every
     cell was excluded for an ``infra`` fault the harness recorded on it but not all by the rig (a provider that
@@ -3643,13 +4152,26 @@ async def execute_run(
     translates it into the ``exhausted`` status. Unlike the cost cap this needs no caller wiring —
     the refusal is observed, not configured.
 
+    A model not served: when the provider answers that it does not serve the model the run's candidate names (a
+    retired model, a model id it does not know: ``CandidateOutput.model_unserved``), the cell is lost to the test setup
+    and never judged. Once three cells in a row (``_UNSERVED_CIRCUIT_CELLS``) have met that answer the loop stops as it
+    does for the account, raising :class:`~threetears.evals.run.budget.ModelUnservedError` once the cells still running
+    have ended; a cell whose model was served in between starts the count again. A run whose matrix ran out first,
+    holding any such cell, raises it too, after its last cell: a run ends ``completed`` holding no cell its model was
+    not served for. The job manager files it ``exhausted``, naming the model and the provider's words, and a take-up
+    once the model is served runs those cells again.
+
     :raises ValueError: ``judge_service`` and ``run.judge_model`` disagree about whether this run is
         judged — one is set and the other is not. Refused before any cell runs, so nothing
         has been spent.
     :raises BudgetStoppedError: A per-run ceiling (the cost cap, the metered-call ceiling, or both) had been
-        reached before a cell would start.
+        reached before a cell would start, or the cost cap set a cell's judging aside.
     :raises AccountExhaustedError: A cell's call was refused for the calling account.
+    :raises ModelUnservedError: The provider does not serve the run's model, as the circuit counts it.
     :raises EveryCellApparatusFailedError: An apparatus fault excluded every cell the run produced.
+    :raises ApparatusError: A replay miss wherever it is met (:class:`~threetears.evals.kernel.host.apparatus.ReplayMiss`),
+        or a judge call the rig could not serve (the run's scoring judge's or a judge kind's judge under test's),
+        naming the call; its cell is recorded first.
     :raises NothingMeasuredError: Every cell was excluded for an ``infra`` fault the harness recorded on it, not every
         one by an apparatus fault.
     :raises asyncio.CancelledError: The run was cancelled; the cell it struck is recorded first, unless the run is
@@ -3683,10 +4205,17 @@ async def execute_run(
         for cell in stored.done
         if cell.summary.termination == "apparatus_failed"
     ]
-    # Each cell excluded for an ``infra`` cause, by its error — see the check after the loop.
+    # Each cell excluded for a fault the harness recorded on it, by its error — see the check after the loop.
     infra_exclusions: list[str] = [
-        cell.infra_error for cell in stored.done if cell.exclusion == "infra" and cell.infra_error
+        cell.infra_error for cell in stored.done if cell.exclusion in _RECORDED_FAULTS and cell.infra_error
     ]
+    # The cells that found the run's model not served, in a row as the loop records them, which the circuit reads, and
+    # the last one's message, which the check after the loop reads. A take-up runs a stored unserved cell again, so no
+    # done cell is one.
+    unserved_in_a_row = 0
+    last_unserved: str | None = None
+    # How many of this holding's cells found the model not served, which a cap stop names beside its record.
+    unserved_cells = 0
     # The caller's list when it supplied one, so what it can read mid-flight is
     # the identical object this returns — never a copy that could disagree.
     summaries: list[CellSummary] = cell_sink if cell_sink is not None else []
@@ -3753,6 +4282,79 @@ async def execute_run(
     # capturing at once would interleave their writes. They take turns; cells of different cases do not.
     case_turns: dict[str, asyncio.Lock] | None = {} if run.cassette_mode == "capture" and width > 1 else None
 
+    # The cells whose judging the cost cap refused, and the stop the first of them decided: the cost cap's own reading
+    # at that moment, kept as the run's cost-cap record however the run came to stop. A cell whose deadline struck
+    # while its judging waited for room is marked set aside on its row, and is neither counted here nor a stop.
+    cells_not_judged = 0
+    judging_stop: _CeilingReached | None = None
+
+    def running_spend() -> float | None:
+        """What the running cells have spent so far (:meth:`_CellSink.spent_so_far`); ``None`` once some of it could
+        not be priced."""
+        amounts: list[float] = []
+        for running in in_flight:
+            amount = running.spent_so_far(options.external_rates)
+            if amount is None:
+                return None
+            amounts.append(amount)
+        return math.fsum(amounts)
+
+    def judging_set_aside(breach: CapBreach, pending: float | None, *, judge_faulted: bool = False) -> None:
+        """Count a cell whose judging the cap set aside, and stop the run at the first: no new cell starts.
+
+        A cell whose judge already failed it on a dim of the same phase (``judge_faulted``) is the judge's fault, not
+        a set-aside, so it is not counted; the cap still had too little left for its other dims, so the run stops.
+        """
+        nonlocal cells_not_judged, judging_stop
+        if not judge_faulted:
+            cells_not_judged += 1
+        if judging_stop is not None:
+            return
+        # The breach counted ``pending`` beside what had landed (``EvalRunCostCap.check``); what had landed is what a
+        # stop record states, and an unpriced pending amount is the running cells', not a recorded result's.
+        judging_stop = _CeilingReached(
+            "cost_usd",
+            breach.max_cost_usd,
+            max(breach.accumulated_usd - (pending or 0.0), 0.0),
+            breach.unpriced_results - (1 if pending is None else 0),
+            len(in_flight),
+        )
+        log.warning(
+            "Eval run %s stopping: its cost cap of %s had too little left for a running cell's judging after %d/%d "
+            "results; that cell is %s, no new cell starts, and the %d cell(s) still running are judged only as the "
+            "cap admits",
+            run.id,
+            breach.max_cost_usd,
+            done,
+            total,
+            "the judge's fault on a dim it asked first" if judge_faulted else "set aside unjudged",
+            len(in_flight) - 1,
+        )
+        stop.budget([judging_stop])
+
+    # A gate that admits any amount bounds nothing (cost enforcement is off), so its judging is left unasked.
+    judging_gate = (
+        _JudgingGate(budget_gate, running_spend, judging_set_aside)
+        if budget_gate is not None and budget_gate(math.inf) is not None
+        else None
+    )
+
+    def landed_reading(ceiling: float) -> CapBreach | None:
+        """The cost cap's reading of what has landed, whether or not the run is past its cap.
+
+        The gate gives its figures only on a breach, counting a pending amount beside what has landed, so a run
+        still within its cap is read by asking it about an amount past its ceiling and taking that amount off.
+        """
+        if budget_gate is None:
+            return None
+        if (breach := budget_gate(0.0)) is not None:
+            return breach
+        probe = ceiling + 1.0
+        probed = budget_gate(probe)
+        if probed is None:
+            return None
+        return replace(probed, accumulated_usd=max(probed.accumulated_usd - probe, 0.0))
+
     def ceilings_reached() -> list[_CeilingReached]:
         """Every per-run ceiling the LANDED amounts have reached: the recorded cells', never the running ones'."""
         reached: list[_CeilingReached] = []
@@ -3782,11 +4384,25 @@ async def execute_run(
         # A stop decided while this cell waited for its turn reaches it here too.
         if stop.decided:
             return
-        # Both per-run ceilings, read here and nowhere inside a cell: stop gracefully BEFORE starting a cell
-        # once what the recorded cells landed has reached either. The cells already running are not asked
-        # and not refused anything; they finish whole and the run lands past a ceiling by up to the width's
-        # worth of cells. Results already saved are preserved; the stop becomes a ``budget_stopped`` run.
-        if reached := ceilings_reached():
+        # Both per-run ceilings, read here: stop gracefully BEFORE starting a cell once what the recorded cells
+        # landed has reached either. The cells already running are refused no candidate call; they finish, their
+        # judging admitted only as the cost cap has room for it (``judging_gate``). Results already saved are
+        # preserved; the stop becomes a ``budget_stopped`` run.
+        if not (reached := ceilings_reached()) and judge_service is not None and judging_gate is not None:
+            # A judged run also stops once the running cells' spend and the judging already admitted leave the cap
+            # nothing: a cell started then would pay for its candidate and have its judging set aside.
+            if (full := judging_gate.no_room()) is not None:
+                breach, pending = full
+                reached = [
+                    _CeilingReached(
+                        "cost_usd",
+                        breach.max_cost_usd,
+                        max(breach.accumulated_usd - (pending or 0.0), 0.0),
+                        breach.unpriced_results - (1 if pending is None else 0),
+                        len(in_flight),
+                    )
+                ]
+        if reached:
             for ceiling in reached:
                 log.warning(
                     "Eval run %s stopping: %s landed %s against its ceiling of %s after %d/%d results, with %d "
@@ -3817,7 +4433,7 @@ async def execute_run(
             k_iteration=k,
             variant_key=variant.variant_key,
         )
-        sink = _CellSink(cell=cell)
+        sink = _CellSink(cell=cell, judging_gate=judging_gate)
         cells_started += 1
         in_flight.append(sink)
         try:
@@ -3831,9 +4447,9 @@ async def execute_run(
                 in_flight.remove(sink)
 
     async def run_and_record(k: int, tc: EvalTestCase, sink: _CellSink) -> None:
-        nonlocal done
+        nonlocal done, unserved_in_a_row, unserved_cells, last_unserved
         cancelled_in_cell = False
-        run_defect: CandidateKindDefect | CompletionProtocolDefect | None = None
+        run_defect: CandidateKindDefect | CompletionProtocolDefect | ApparatusError | None = None
         try:
             async with host.cell_timeout(options.cell_timeout_s):
                 result, cell_trace = await run_one_result(
@@ -3901,11 +4517,16 @@ async def execute_run(
                 termination="cell_timeout",
                 judge_model=run.judge_model,
                 rate_table=options.external_rates,
-                unfinished_judging=f"did not finish: {msg}",
+                # A deadline that struck while the judging waited for the cap's room cut off no judge call: the cap
+                # kept the judging from starting, so the cell is set aside under it, as a refused phase is.
+                unfinished_judging=_JUDGING_SET_ASIDE if sink.awaiting_room else f"did not finish: {msg}",
+                judging_set_aside=sink.awaiting_room,
                 ungraded_goal_checks=(
                     _unevaluated_goal_checks(template, waiting_on=waiting_on) if charged_to == "candidate" else []
                 ),
             )
+            # A set-aside here is neither a stop nor counted on the cap's record: a phase waits only while another holds
+            # room it may not bill, so the cap's shortage was never established. The cell's mark is its count.
         except asyncio.CancelledError:
             # NOSILENT: the cell is recorded excluded with what it spent, and the cancel is re-raised once it is saved.
             # The run was cancelled while this cell ran. The cancel still ends the run — it is
@@ -3942,12 +4563,19 @@ async def execute_run(
                 unfinished_judging=f"did not finish: {msg}",
             )
             cancelled_in_cell = True
-        except (CandidateKindDefect, CompletionProtocolDefect) as defect:
+        except (CandidateKindDefect, CompletionProtocolDefect, ApparatusError, JudgeCallUnserved) as raised:
             # NOSILENT: the cell is recorded excluded with what it spent, and the defect is re-raised to fail the run.
             # The host's code — a kind contradicting its declaration, a judge completion short of the protocol —
-            # which every cell would meet, so it fails the run; it is re-raised below. But what the cell was billed
+            # which every cell would meet, so it fails the run; it is re-raised below. So does a replay miss wherever
+            # it is met (a ReplayMiss: a recording that cannot serve the run), and any judge call the rig could not
+            # serve, the run's scoring
+            # judge's or, carried out of ``invoke`` as a JudgeCallUnserved, the judge kind's judge under test (a
+            # candidate's other rig faults are excluded in their cell and never reach here): a replay must fail at the
+            # miss, never read on fewer cells (owner ruling, #1162). Either way the cell and the run name the rig's
+            # own fault. But what the cell was billed
             # before it was found is real spend, and lives only on this sink: the cell is recorded excluded first,
             # so the run's totals and its cost cap count it, as a cancelled cell's are.
+            defect = raised.fault if isinstance(raised, JudgeCallUnserved) else raised
             log.error(
                 "Eval cell hit %s, which fails its run (test_case=%s model=%s k=%s run=%s); recording what it spent",
                 type(defect).__name__,
@@ -3990,6 +4618,7 @@ async def execute_run(
                 "lease_epoch": lease_epoch,
                 "metered_calls": metered,
                 "account_refused": sink.account_refusal is not None,
+                "model_unserved": sink.errors.model_unserved,
             }
         )
         if (over := stored.replaced.get((tc.id, k))) is not None:
@@ -3998,7 +4627,8 @@ async def execute_run(
             superseded = (
                 None
                 if over.summary.cost_usd is None or over.superseded_spend_usd is None
-                else over.summary.cost_usd + over.superseded_spend_usd
+                # The replaced row's dropped sends move with its spend, so its next take-up's cap still counts them.
+                else over.summary.cost_usd + over.summary.maybe_billed_usd + over.superseded_spend_usd
             )
             result = result.model_copy(
                 update={
@@ -4056,7 +4686,11 @@ async def execute_run(
         # cap never counts it twice.
         in_flight.remove(sink)
         if on_cost is not None:
-            on_cost(result.cost_usd)
+            # Beside it, any send that broke before a response began and was sent again, which the provider may have
+            # billed and no row's cost holds: counted at its call's own price, so the cap counts what it cannot see.
+            on_cost(
+                None if result.cost_usd is None else result.cost_usd + maybe_billed_usd(result.usage, result.cost_roles)
+            )
         # The cell's metered calls land on the run in the step that records its result: the metered-call
         # ceiling is read against these and never against calls a running cell has made.
         if options.metered_calls is not None and sink.meter is not None:
@@ -4068,8 +4702,14 @@ async def execute_run(
         if sink.errors.apparatus_failed:
             apparatus_failures.append(sink.errors.infra_error or "an apparatus fault")
         # The harness's own fault on the cell, not a judge call's alone: a re-judge recovers that one.
-        if trial_exclusion(result) == "infra" and result.infra_error:
+        if trial_exclusion(result) in _RECORDED_FAULTS and result.infra_error:
             infra_exclusions.append(result.infra_error)
+        if (unserved := sink.errors.unserved_model) is not None:
+            unserved_in_a_row += 1
+            unserved_cells += 1
+            last_unserved = unserved
+        else:
+            unserved_in_a_row = 0
         async with reporting:
             if callbacks.on_result is not None:
                 await callbacks.on_result(result)
@@ -4091,6 +4731,19 @@ async def execute_run(
             )
             stop.exhausted(refusal)
             return
+        # The provider does not serve the run's model, and the cells say so in a row: every later cell names the same
+        # model and would be lost the same way, so none is launched. The run's other arms are runs of their own.
+        if last_unserved is not None and unserved_in_a_row >= _UNSERVED_CIRCUIT_CELLS:
+            log.warning(
+                "Eval run %s stopping: the provider does not serve model %s, %d cell(s) in a row, after %d/%d results",
+                run.id,
+                model,
+                unserved_in_a_row,
+                done,
+                total,
+            )
+            stop.model_unserved(last_unserved)
+            return
 
     try:
         await executor.execute([partial(run_cell, k, tc) for k, tc in order], width=width)
@@ -4099,21 +4752,18 @@ async def execute_run(
         if faults:
             await _record_contained_faults(host, run, faults)
 
-    if stop.refusal is not None:
-        priced = [summary.cost_usd for summary in summaries if summary.cost_usd is not None]
-        accumulated_usd = sum(priced)
-        unpriced_results = len(summaries) - len(priced)
-        raise AccountExhaustedError(
-            done, total, accumulated_usd=accumulated_usd, unpriced_results=unpriced_results, detail=stop.refusal
-        )
-    if stop.ceilings:
+    def stop_records(reached_ceilings: list[_CeilingReached]) -> tuple[list[BudgetStop], CapBreach | None]:
+        """The typed record of each ceiling reached, read now that every cell has ended and is recorded, and the cost
+        cap's own reading of what landed (``None`` when no cost ceiling is among them, or the gate gives none)."""
         # Every cell has ended and is recorded: what landed now is what the in-flight cells added.
-        cost_now = budget_gate(0.0) if budget_gate is not None else None
+        cost_now = next(
+            (landed_reading(float(reached.ceiling)) for reached in reached_ceilings if reached.currency == "cost_usd"),
+            None,
+        )
         records = []
-        for reached in stop.ceilings:
+        for reached in reached_ceilings:
             if reached.currency == "cost_usd":
-                # The gate reads a breach for as long as the run is over its cap; the figure from the stop stands
-                # in only should that read come back inside it.
+                # The cap's own reading; the figure from the stop stands in only should the gate give none.
                 landed_final = cost_now.accumulated_usd if cost_now is not None else reached.landed_at_stop
                 unpriced = cost_now.unpriced_results if cost_now is not None else reached.unpriced_results
             else:
@@ -4127,11 +4777,59 @@ async def execute_run(
                     landed_final=landed_final,
                     cells_in_flight=reached.cells_in_flight,
                     cells_not_started=len(order) - cells_started,
+                    cells_not_judged=cells_not_judged if reached.currency == "cost_usd" else 0,
                     unpriced_results=unpriced,
                 )
             )
+        return records, cost_now
+
+    priced = [summary.cost_usd for summary in summaries if summary.cost_usd is not None]
+    # What each priced cell's dropped sends may have billed counts too, as the cap counted it as the cells landed.
+    accumulated_usd = sum(priced) + sum(
+        summary.maybe_billed_usd for summary in summaries if summary.cost_usd is not None
+    )
+    unpriced_results = len(summaries) - len(priced)
+    # The cost cap's record of the cells whose judging it set aside, when the account's refusal or the model's
+    # provider stopped the run first: the cap reached its own stop beside it, and its count is kept on the run.
+    set_aside_stops = stop_records([judging_stop])[0] if judging_stop is not None and not stop.ceilings else []
+    if stop.refusal is not None:
+        raise AccountExhaustedError(
+            done,
+            total,
+            accumulated_usd=accumulated_usd,
+            unpriced_results=unpriced_results,
+            detail=stop.refusal,
+            stops=set_aside_stops,
+        )
+    # Stopped by the circuit, or the matrix ran out holding a cell its model was not served for: either way the run
+    # stops resumable, naming the model, so a take-up once the model is served runs those cells, rather than ending
+    # completed with them, or failing as a run that measured nothing.
+    # A ceiling that stopped the run keeps its record whatever else the run met: its stop line, what landed and the
+    # cells it kept from starting or from being judged. Cells the model was not served for beside it are named on the
+    # budget stop, and a take-up runs them again as it runs any such cell, the run being resumable either way.
+    unserved_detail = stop.unserved or (last_unserved if not stop.ceilings else None)
+    if unserved_detail is not None:
+        raise ModelUnservedError(
+            done,
+            total,
+            model=model,
+            accumulated_usd=accumulated_usd,
+            unpriced_results=unpriced_results,
+            detail=unserved_detail,
+            stops=set_aside_stops,
+        )
+    if stop.ceilings:
+        reached_ceilings = list(stop.ceilings)
+        if judging_stop is not None and not any(reached.currency == "cost_usd" for reached in reached_ceilings):
+            # Another ceiling stopped the run first; the cells the cost cap set aside are still its to state.
+            reached_ceilings.append(judging_stop)
+        records, cost_now = stop_records(reached_ceilings)
         error = BudgetStoppedError(
-            done, total, cost_now if any(r.currency == "cost_usd" for r in records) else None, stops=records
+            done,
+            total,
+            cost_now if any(r.currency == "cost_usd" for r in records) else None,
+            stops=records,
+            unserved=(model, unserved_cells, last_unserved) if last_unserved is not None else None,
         )
         log.warning("Eval run %s stopped by its ceiling: %s", run.id, error)
         raise error
@@ -4161,6 +4859,7 @@ __all__ = [
     "ErrorLedger",
     "EveryCellApparatusFailedError",
     "GoalCheckUnevaluable",
+    "JudgeCallUnserved",
     "NOTHING_MEASURED_FAULT",
     "NothingMeasuredError",
     "template_as_graded",

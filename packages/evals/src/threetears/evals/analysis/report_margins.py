@@ -35,7 +35,7 @@ guardrail figure fails, and no breached guardrail removes, but with a gate it ha
 
 **Only a margin that could change the call alone counts.** An option survives when it clears every gate and guardrail
 figure, has a figure for each at every place its scope reads (:func:`criterion_places`), and breaches no guardrail the pipeline read (GENERATOR §3, as
-:func:`~threetears.evals.analysis.report_decision.surviving_options` reads it). Every margin of a surviving option
+:func:`~threetears.evals.analysis.report.call.surviving_options` reads it). Every margin of a surviving option
 counts: missing a gate would drop it, and a floor, bar, reading or margin moves how it is read. An option that does
 not survive counts only by the one gate or guardrail figure it misses, when that is all that keeps it out, so
 clearing it alone would let it back in; an option out on two figures, or for any other reason, is not one figure

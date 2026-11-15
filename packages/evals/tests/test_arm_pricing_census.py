@@ -40,8 +40,8 @@ from threetears.evals.analysis.report.parts.words import (
     TOOL_SPEND_TEMPLATE,
 )
 from threetears.evals.analysis.report_input import Pricing
-from threetears.evals.analysis.report_input_build import report_input
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.input_build import report_input
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.schema.models import EvalResult, EvalRun, RoleUsage
 

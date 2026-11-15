@@ -184,6 +184,7 @@ from threetears.evals.analysis.out_of_run_spend import (
     out_of_run_spend_text,
     scope_out_of_run_spend,
 )
+from threetears.evals.kernel.list_pages import LIST_PAGE_MAX, LIST_PAGE_SIZE
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.ops.judge_cases import (
     JudgeCaseAuthor,
@@ -388,6 +389,8 @@ __all__ = [
     "campaign_runs_remove",
     "campaign_update",
     "campaigns_list",
+    "LIST_PAGE_MAX",
+    "LIST_PAGE_SIZE",
     "dollars_text",
     "format_number",
     "estimate_text",

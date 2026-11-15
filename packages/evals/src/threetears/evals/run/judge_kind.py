@@ -49,8 +49,14 @@ from threetears.evals.kernel.candidate_kind import (
     CellSpanWindow,
     VariantConfig,
 )
-from threetears.evals.kernel.capped_completion import call_ceiling, ceiling_is_estimate, refresh_prices
+from threetears.evals.kernel.capped_completion import (
+    call_ceiling,
+    ceiling_is_estimate,
+    refresh_prices,
+    unpriced_because,
+)
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.failed_call import failed_call_output
 from threetears.evals.kernel.run_pages import iter_keyed_results
 from threetears.evals.kernel.judge_cases import (
@@ -83,10 +89,12 @@ from threetears.evals.run.launch import (
     KindWiring,
     LaunchableKind,
     UnknownSubject,
+    UnpricedCall,
     launch_run,
     require_candidate_model,
 )
 from threetears.evals.run.rejudge import reproducible_judge_inputs
+from threetears.evals.run.runner import JudgeCallUnserved
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
@@ -610,6 +618,7 @@ def freeze_judge_cases(
         nothing could be frozen.
     :raises NotFoundError: A run does not load.
     :raises StorageError: A case or the set could not be persisted.
+    :raises ValueError: A case a definition reset carried into the template holds a judge case this build cannot read.
     """
     _judge_template(template)
     if from_labels and (run_ids or result_ids is not None):
@@ -924,6 +933,28 @@ class JudgeKind:
             )
         return PreparedJudge(model=self._model, span_window=span_window)
 
+    def client_for_case(self, test_case: EvalTestCase) -> Any:
+        """The client :meth:`invoke`'s call for ``test_case`` goes through, built on first ask and kept.
+
+        What a launch brings up to date (``refresh_prices``) before it prices the case's call, and asks why when the
+        call cannot be priced.
+
+        :param test_case: The cell's case, carrying the judge case in its ``host_payload``.
+        :ptype test_case: EvalTestCase
+        :return: The kind's judge client at the temperature the case's criterion is asked at.
+        :rtype: Any
+        :raises ValueError: As :meth:`price_case` raises it.
+        """
+        case = judge_case_of(test_case)
+        if case is None:
+            raise ValueError(f"test case {test_case.id!r} carries no judge case to price")
+        service = JudgeService(
+            client_factory=lambda _model, temperature: self._client(temperature),
+            configs=self._configs,
+            failure_describer=self._failure_describer,
+        )
+        return service.client_for(self._request(service, case, _context_of(test_case, case)))
+
     def price_case(self, test_case: EvalTestCase) -> float | None:
         """The ceiling of the call :meth:`invoke` makes for ``test_case``, built as it builds it.
 
@@ -962,7 +993,14 @@ class JudgeKind:
     async def invoke(self, instance: PreparedJudge, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Ask the judge under test the case's criterion over the frozen evidence, and grade its answer.
 
-        Never raises. A case that cannot be read is the harness's (``infra_errors``, the cell excluded). The judge's
+        Raises only what fails the run outside the judge's answer: a
+        :class:`~threetears.evals.run.runner.JudgeCallUnserved` carrying the rig's
+        :class:`~threetears.evals.kernel.host.ApparatusError` (a replayed judge whose recording holds no call for the
+        prompt, :class:`~threetears.evals.testing.RecordingRefused`), on which the runner records the cell
+        ``apparatus_failed`` naming the call and fails the run with the fault, as a scoring judge's miss does, never a
+        trial graded ``no_reply`` and charged to the judge; and a
+        :class:`~threetears.evals.schema.completion.CompletionProtocolDefect`, which fails the run. A case that cannot
+        be read is the harness's (``infra_errors``, the cell excluded). The judge's
         own call failing is the candidate's (``candidate_errors``) — unless the host's describer says the call was the
         account's, which excludes the cell and stops the run (``account_refused``), or the provider's (it declined the
         call: a rate limit, or the provider overloaded or unavailable), which excludes the cell and lets the run go
@@ -1010,6 +1048,11 @@ class JudgeKind:
             try:
                 with scopes.collecting():
                     outcome = await service.score_request(request, case_id=test_case.id)
+            except ApparatusError as fault:
+                # The rig could not serve the judge's call (a replay's miss): no answer of the judge's, so no trial.
+                # A judge call's miss fails the run, never one excluded trial, so a replay never reads on fewer trials
+                # in silence (owner ruling, #1162): carried through ``invoke`` for the runner to fail the run naming it.
+                raise JudgeCallUnserved(fault) from fault
             except CompletionProtocolDefect as defect:
                 # The host's completion type fails the run (raised through ``invoke``), but its billed calls are
                 # added and reported as this cell's spend, so the runner records them.
@@ -1085,6 +1128,7 @@ class JudgeKind:
                 refused="judge: the call was refused for the calling account",
                 declined="judge: the provider declined the call",
                 failed="judge",
+                unserved="judge: the call named a model the provider does not serve",
                 log=lambda what, level: log.log(level, "%s, case %s: %s", what, test_case.id, error),
                 telemetry=telemetry,
                 kind_payload=payload,
@@ -1276,12 +1320,24 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         )
         return kind, request.cases_or(_template_cases(host.storage, request.template, request.scope_id))
 
-    async def price_largest_call(request: LaunchRequest) -> CallCeiling | None:
+    async def price_largest_call(request: LaunchRequest) -> CallCeiling | UnpricedCall | None:
         # Every case's call is priced as invoke builds it — the prompt is the case's frozen evidence, so the
-        # largest call is the case with the most of it — on the clients the run's cells would call through.
+        # largest call is the case with the most of it — on the clients the run's cells would call through, each
+        # brought up to date first: a fresh process has read no price catalogue yet. A case whose call still cannot
+        # be priced makes the largest call unknown, which a cost cap refuses.
         kind, cases = await run_blocking(launch_host().eval_host.blocking_executor, built, request)
         try:
-            priced = [(ceiling, case.id) for case in cases if (ceiling := kind.price_case(case)) is not None]
+            for client in {id(client): client for client in map(kind.client_for_case, cases)}.values():
+                await refresh_prices(client)
+            priced: list[tuple[float, str]] = []
+            for case in cases:
+                ceiling = kind.price_case(case)
+                if ceiling is None:
+                    return UnpricedCall(
+                        call=f"the judge call on case {case.id!r} on {kind.model!r}",
+                        why=unpriced_because(kind.client_for_case(case)),
+                    )
+                priced.append((ceiling, case.id))
             estimate = kind.ceiling_is_estimate()
         finally:
             await kind.aclose()
@@ -1350,4 +1406,6 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         ignored_template_fields=frozenset(TEMPLATE_FIELDS),
         plan_arm=plan,
         price_largest_call=price_largest_call,
+        # The judge under test is called as a judge-role client of the host's factory (built()).
+        candidate_role="judge",
     )

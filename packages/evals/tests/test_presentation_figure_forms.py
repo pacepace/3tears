@@ -57,9 +57,9 @@ from threetears.evals.analysis.report.chart_svg import chart_drawing
 from threetears.evals.analysis.report.html_parts import KIT_JS, grid_html
 from threetears.evals.analysis.report.parts.look import arm_token
 from threetears.evals.analysis.report.svg import interval_glyph_svg
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.kernel.numbers import MoneyForm, money_form
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
@@ -671,8 +671,8 @@ def test_a_written_page_s_tables_say_an_undecided_reading_in_the_glossary_s_word
 
 def test_a_forest_s_values_table_reads_each_figure_at_its_unit_s_one_precision() -> None:
     """A forest of changes in points prints its values and their intervals' ends at the pass rate's one precision on
-    the page (number policy, rule 1: Kairo's half-width of 3.5 points reads them whole), never at the float's four
-    figures (``-3.010 | -5.815 to +1.136``)."""
+    the page (number policy, rule 1: Kairo's half-width of 3.5 points, a 7-point width, reads them to a tenth under the
+    precision rule, owner ruling 2026-11-14), never at the float's four figures (``-3.010 | -5.815 to +1.136``)."""
     held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
     look = block_look(held, fact_arms(held))
     spec, faults = complete_chart(
@@ -704,7 +704,7 @@ def test_a_forest_s_values_table_reads_each_figure_at_its_unit_s_one_precision()
     _, rows = values_table(drawn.chart)
     figures = [number for row in rows for cell in row[1:3] for number in re.findall(r"[+-]?\d+\.\d+|[+-]?\d+", cell)]
     places = PageForms.of(held).measure(TRIAL_PASS_NAME, kind="trial").places
-    assert places == 0
+    assert places == 1
     assert figures and all(len(number.partition(".")[2]) == places for number in figures), rows
 
 

@@ -131,8 +131,9 @@ _NOTE = re.compile(r"^(?P<share>\S+%) passed · (?P<passed>\d+) of (?P<trials>\d
 
 
 def test_the_outcome_note_and_the_scorecard_print_one_rate_alike() -> None:
-    """Kairo's control passed 765 of 897 trials: its fold's outcome note and the scorecard's cell both read ``85%``
-    (the note read ``85.3%`` beside the scorecard's ``85%``)."""
+    """Kairo's control passed 765 of 897 trials: its fold's outcome note and the scorecard's cell both read ``85.3%``,
+    the pass rate's one precision on the campaign (two significant figures of its narrowest interval's width, 7.0
+    points), as the service builds the folds in the campaign's forms."""
     page = kairo_page()
     scorecard = [block for block in page.blocks if isinstance(block, TableBlock) and block.section == "scorecard"]
     stated = {
@@ -159,7 +160,7 @@ def test_the_outcome_note_and_the_scorecard_print_one_rate_alike() -> None:
     ]
     assert alike, f"no outcome note shares a count with a scorecard cell: {notes} against {stated}"
     assert all(share == figure for share, figure in alike), alike
-    assert ("85%", "85%") in alike
+    assert ("85.3%", "85.3%") in alike
 
 
 def test_a_copy_keeps_its_text_opening_with_its_level() -> None:

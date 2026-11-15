@@ -8,7 +8,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 
 - ``holm_adjust``: dropping the running maximum (adjusted p no longer monotone); multiplying by ``m``
   for every rank (plain Bonferroni); removing the out-of-range refusal.
-- ``_multiple_comparisons``: reading the verdict off ``p_raw`` instead of ``p_adjusted``; correcting
+- ``multiple_comparisons``: reading the verdict off ``p_raw`` instead of ``p_adjusted``; correcting
   over each comparison alone (``holm_adjust([p])``); dropping the control-variant filter on pairs.
 - ``_compare`` (through the bundle): disabling the paired no-spread branch, so a deterministic gap is named as a
   shortage of cases; reading the gap by the t-test's refusal instead of ``separation_p``, so a constant

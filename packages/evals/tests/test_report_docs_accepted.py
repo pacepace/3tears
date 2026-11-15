@@ -33,7 +33,7 @@ from packages.evals.tests.report_writer_support import RecordedModel, written
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
-from threetears.evals.analysis.report_doc_store import doc_verdicts_and_page, made_line
+from threetears.evals.analysis.report.doc_page.store import doc_verdicts_and_page, made_line
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc, ReportFinding
 from threetears.evals.testing import RecordedTurns

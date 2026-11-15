@@ -1,7 +1,7 @@
 """How many entries each of the context bundle's growing lists may carry, and the one cap they share.
 
 Every list here grows with the campaign, the ledger or the measure count rather than with what a reader
-can act on, and each rides whole into a paid prompt. :func:`_capped` keeps at most the cap and counts the
+can act on, and each rides whole into a paid prompt. :func:`capped` keeps at most the cap and counts the
 rest, so a capped list is never read as a complete one. Part of the bundle assembler
 (:mod:`threetears.evals.analysis.bundle.assemble`).
 """
@@ -16,21 +16,21 @@ from collections.abc import Callable
 # thorough campaign can produce more of these than a reader will ever act on — which is
 # the failure the gate exists to prevent, arriving by volume instead of by noise. The
 # count dropped is reported rather than silently truncated.
-_MAX_DIVERGENCES = 8
+MAX_DIVERGENCES = 8
 
 # The same cap, for the three other lists that grow with the campaign or the ledger rather than with what a
-# reader can act on, each with what it dropped counted beside it (see `_capped`). `refused_merges` is
+# reader can act on, each with what it dropped counted beside it (see `capped`). `refused_merges` is
 # quadratic in the cells a variant spans, `next_experiments` grows with variants × unrecorded dimensions, and
 # `prior_insights` grows with every generation over the subject — and all three ride whole into a paid prompt.
 # Starting values, not measured ones: tuning them is separate work.
-_MAX_REFUSED_MERGES = 8
-_MAX_NEXT_EXPERIMENTS = 8
-_MAX_PRIOR_INSIGHTS = 12
+MAX_REFUSED_MERGES = 8
+MAX_NEXT_EXPERIMENTS = 8
+MAX_PRIOR_INSIGHTS = 12
 # Pivots over co-varying factor pairs, which grow with the square of the factors in the worst case.
-_MAX_FACTOR_PAIR_PIVOTS = 8
+MAX_FACTOR_PAIR_PIVOTS = 8
 # The cells of a declared crossing listed, which grow with the product of the declared levels.
-_MAX_DECLARED_CELLS = 64
-_CELL_STATES = ("ran", "not_run", "skipped_by_design", "undetermined")
+MAX_DECLARED_CELLS = 64
+CELL_STATES = ("ran", "not_run", "skipped_by_design", "undetermined")
 
 #: How many trials the bundle's `trials` may carry. Each carries a capped excerpt, so this bounds the bundle near a
 #: megabyte; the lost and failed trials are kept first, and every trial is still counted by the scoreboard.
@@ -49,7 +49,7 @@ MAX_ERROR_CHARS = 500
 ELLIPSIS = "…"
 
 
-def _capped[T](items: list[T], cap: int, *, weight: Callable[[T], float] | None) -> tuple[list[T], int]:
+def capped[T](items: list[T], cap: int, *, weight: Callable[[T], float] | None) -> tuple[list[T], int]:
     """Keep at most ``cap`` of ``items`` and count the rest, so a capped list is never read as a complete one.
 
     The one cap the bundle's growing lists share. Deterministic, so the fingerprint stays stable: the kept
@@ -108,13 +108,21 @@ def tail_text(text: str, cap: int) -> str:
 
 
 __all__ = [
+    "CELL_STATES",
     "ELLIPSIS",
+    "MAX_DECLARED_CELLS",
+    "MAX_DIVERGENCES",
     "MAX_ERROR_CHARS",
     "MAX_EXCERPT_CHARS",
+    "MAX_FACTOR_PAIR_PIVOTS",
     "MAX_INPUT_CHARS",
     "MAX_LABEL_INPUT_CHARS",
+    "MAX_NEXT_EXPERIMENTS",
+    "MAX_PRIOR_INSIGHTS",
     "MAX_REASON_CHARS",
+    "MAX_REFUSED_MERGES",
     "MAX_TRIALS",
+    "capped",
     "capped_text",
     "tail_text",
 ]

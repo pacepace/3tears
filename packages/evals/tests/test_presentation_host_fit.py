@@ -1243,7 +1243,8 @@ def test_a_hyphenated_id_in_a_pinned_cell_is_one_word_and_only_its_text_is_read(
     page = report_page([table])
     _frame, markup = _framed(page, "probe")
     firsts = re.findall(r"<tr[^>]*><td[^>]*>(.*?)</td>", markup)
-    assert firsts[:2] == [f'<span class="id">{SHORT_ID}</span>', f'\u25b8 <span class="id long">{LONG_ID}</span>']
+    # The control's mark stays before the held word, kept on its line by a no-break space (#1136).
+    assert firsts[:2] == [f'<span class="id">{SHORT_ID}</span>', f'\u25b8&nbsp;<span class="id long">{LONG_ID}</span>']
     assert firsts[2] == TOO_LONG_ID, "past any cap, an id wraps after its hyphens"
     assert firsts[3] == "<code>a-b-c</code>" and firsts[4] == "All cases"
     # The column past the pinned one keeps its link as built, its id held whole inside it.
@@ -1460,7 +1461,8 @@ def test_a_nav_link_is_one_line_cut_with_an_ellipsis() -> None:
     assert (link["white-space"], link["overflow"], link["text-overflow"]) == ("nowrap", "hidden", "ellipsis")
     assert link["max-width"].startswith("min(100%,"), link
     nav = page[page.index("<nav>") : page.index("</nav>")]
-    assert f">{html.escape(_LONG_LABEL)}</a>" in nav and "title=" not in nav
+    # The fold's heading is a label in words, so it opens on a capital (#1127 item 11).
+    assert f">{html.escape(_LONG_LABEL[:1].upper() + _LONG_LABEL[1:])}</a>" in nav and "title=" not in nav
 
 
 def test_a_fold_s_summary_never_ends_a_line_on_its_separator() -> None:

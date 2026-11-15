@@ -760,9 +760,9 @@ class _Floors:
         return self._read[key][1]
 
     def pass_rate(self, bundle: AnalysisContextBundle, control: str, candidate: str) -> RateReading | None:
-        """:func:`~threetears.evals.analysis.report.decision.aspect_pass_rate` at its defaults: the overall rate of
-        :meth:`readings`, the one carrying no measure."""
-        return next((rate for rate in self.readings(bundle, control, candidate).rates if rate.measure is None), None)
+        """:func:`~threetears.evals.analysis.report.decision.aspect_pass_rate` at its defaults: :meth:`readings`'
+        overall rate (:meth:`~threetears.evals.analysis.report.decision.FloorReadings.pass_rate`)."""
+        return self.readings(bundle, control, candidate).pass_rate()
 
 
 @dataclass
@@ -1060,7 +1060,7 @@ def reading_reason(reading: AspectReading, bundle: AnalysisContextBundle, *, con
     if bundle.aspect != reading.aspect or control_key is None:
         raise ValueError(f"the bundle of aspect {bundle.aspect!r} holds no row of aspect {reading.aspect!r}")
     base = floor_readings(bundle, control_key, reading.arm)
-    rate = next((rate for rate in base.rates if rate.measure is None), None)
+    rate = base.pass_rate()
     if rate is None:
         raise ValueError(f"the bundle of aspect {bundle.aspect!r} holds no pass rate for {reading.arm_label}")
     row = _Row(

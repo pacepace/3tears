@@ -547,7 +547,7 @@ class ResolvedControl(EvalBaseModel):
     and the key its lever map re-keys to, which the cells stamped under this one carry. Matching only the
     re-keyed one would read a campaign holding only old cells as stale. Which of them is the control ARM in a
     given campaign is a question about its cells, so it is answered where the cells are (:meth:`matched`,
-    from ``_campaign_design``): the first one any cell carries, in :attr:`variant_keys` order. A campaign
+    from ``campaign_design``): the first one any cell carries, in :attr:`variant_keys` order. A campaign
     carrying both keeps ONE control arm, the re-keyed cells, and names the others as the control under the
     earlier predicate (``RealizedDesign.earlier_control``) — never pooled into the control's numbers, which
     would mix two predicates' keys, and never contrasted with it, which would read the control against
@@ -1112,7 +1112,7 @@ class Floor(EvalDocumentModel, CoreShapeModel):
     A floor WARNS, and loudly: a broken floor is the first thing on the campaign's page, the writer must address it,
     and a recorded call that adopts the arm anyway names it as overridden (:attr:`CampaignCall.floors_overridden`).
     It never blocks or removes an option. Read broken on an asked aspect, it caps the candidate's standing in code's
-    dominance read (:mod:`~threetears.evals.analysis.report_decision`). A stored decision rule reads back as floors on
+    dominance read (:mod:`~threetears.evals.analysis.report.call`). A stored decision rule reads back as floors on
     its one aspect, one per clause. A floor's :attr:`key` is unique within its campaign, which the campaign holding the
     floors enforces.
     """

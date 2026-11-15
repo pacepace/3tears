@@ -45,8 +45,8 @@ from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_doc_checks import check_report_doc
-from threetears.evals.analysis.report_doc_store import doc_verdicts
+from threetears.evals.analysis.report.doc_page.checks import check_report_doc
+from threetears.evals.analysis.report.doc_page.store import doc_verdicts
 from threetears.evals.kernel.report_doc import ReportDoc, report_doc_prose
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -467,7 +467,13 @@ def _served(tool: MountedTool) -> list[str]:
 #: blocks or removes an option and, read broken on an asked aspect, caps the candidate's standing in the dominance read.
 #: The evals tool moved again when campaign_create's and campaign_update's aspects description gained an axis's
 #: reader_name (what every page calls the lever; omitted, the name the host declares for it).
-_EVALS_BYTES = "f9485e7733a9187e659856d6694ac13cc07cbc70c743cbed2b62f1f575aef904"
+#: The evals tool's help names JobsStarted's notices on every action that starts a job: what admitting the work found
+#: and did not refuse it for, such as a served-model check that could not be made. EvalSummary's fields include
+#: n_not_judged: the cases a run's cost cap left unjudged.
+#: The evals tool moved again when runs_list and campaigns_list came to page by default (#1145; owner ruling
+#: 2026-11-14, a cursor with a default): each gained cursor and limit, its help a paging line, and its result next
+#: (and runs_list's filtered). Nothing else it serves moved.
+_EVALS_BYTES = "bd48f8b0426489a8867fa7fc580789941edff650eacd20b1eca2dc257a5ece91"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).

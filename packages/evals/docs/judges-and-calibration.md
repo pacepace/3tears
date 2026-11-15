@@ -897,9 +897,10 @@ each batch a run of every arm in one campaign. After each batch the pass judges 
 answers it already has, and reads the bet's prefix. The arms stop launching once every candidate's preference has
 separated, or at N. A host picks the batch from its concurrent-cell count and its admitted-runs limit: a batch of the
 cells a run holds in flight is one full wave. At k = N the side-by-side reading is the one-batch reading, number for
-number; the gated readings are too when every batch run stored a page. A batch run that stored no page judged nothing,
-so it is left out of the gated readings, its pairs read side by side (a missing page losing its pair, or tying it),
-and the run says so once.
+number, and so are the gated readings. A batch run that stored no page judged nothing, yet it sits in its arm's test
+setup: a judge dimension none of its results exercised reads at the level its arm's runs read. Its unwritten reports
+count as failures in Report finished, the judged readings find no score of it, its pairs read side by side (a missing
+page losing its pair, or tying it), and the run says so once.
 
 | At the stop | What the run does |
 |---|---|
@@ -911,10 +912,13 @@ The money is in the arms: a landslide over 25 cases stops near case 7 or 8 and s
 
 **The spend cap is a budget the run runs under.** Before each batch the run checks that the batch's worst case (its
 reports at `budget_usd`, their judging and its pairs at the judge's floor) fits what each part has left after its spend
-so far, as its runs and passes recorded it. Each batch's runs run under that reservation. The engine checks a run's
-cap between cells, so cells running when it is crossed finish past it, and the last admitted batch can take an arm
-past its part by what those cells go on to spend, as an unbatched run can (#1111). A batch that came in under
-its reservation leaves the rest to the next. The first batch that does not fit is not launched: the
+so far, as its runs and passes recorded it. Once launched, each arm's run runs under all its part has left. The
+engine admits each case's judging, priced in full once its page is written, against what its run has left before
+paying for any of it: a case whose judging does not fit is set aside unjudged (a re-judge takes it up) and stops its
+run. So a case is set aside only when its arm cannot afford its judging, and an arm's judging stays within its part
+wherever the judge's price ceiling bounds what it is billed; its reports are never refused, so the arm's running
+cases can still take it past its part by what they write. What a batch
+did not spend is left to the next. The first batch that does not fit is not launched: the
 run stops at the spend cap, reads what it has, and its pass's record and line say so once, with the spend and the
 reservation (`stopped_on`: `separated`, `all_cases` or `spend_cap`). Only a spend cap that cannot admit the first batch
 is refused, naming the smallest that would. At `--cap-usd 45` each arm's part is $18. A batch of 4 reserves

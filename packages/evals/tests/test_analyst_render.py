@@ -8,7 +8,7 @@ Contracts held here (``analysis.report.block_spec``, ``analysis.analyst.blocks``
 - **each anchor plan's charts** (as the retired report planner's anchors stored them, ``fixtures/plan_charts/``),
   completed by today's code (a stored plan keeps the level code filled when it was
   stored; only that may move), read the same values table, level, unit, axis and reference line through
-  ``block_render`` as through the chart resolver under the plan's look;
+  ``block_render`` as through the chart resolver under the page's look;
 - **a values table says what the input holds**: a plain table over several measures is a row per arm with a column
   per measure; every figure's interval the input holds is printed beside it, at the block's level; a scatter names
   every point by its reader name, never by an id the input names otherwise;
@@ -35,7 +35,7 @@ from typing import Any, get_args
 
 import pytest
 
-from packages.evals.tests.plan_charts_support import anchor_look, stored_charts
+from packages.evals.tests.plan_charts_support import stored_charts
 from packages.evals.tests.analyst_support import KAIRO, aspect_tagged, budget_inputs, fixture_inputs, fixture_snapshots
 from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.off_loop import off_loop
@@ -48,15 +48,16 @@ from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, block_loo
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, GateMatrixChart
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report.figure_keys import figure_key_grammar, held_means, resolve, figure_unit
+from threetears.evals.analysis.report.figure_keys import figure_key_grammar, figure_unit, resolve
+from threetears.evals.analysis.report.keys.reads import held_means
 from threetears.evals.analysis.report.parts.charting import figure_stat, money_words
 from threetears.evals.analysis.report.parts.look import figure_text, quantity, quantity_of
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import ASPECT_MEASURE_TEMPLATE, GROUP_LEVEL_TEMPLATE
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.analysis.report_input import Cell, Contrast, ReportInput, Stratum, Task
-from threetears.evals.analysis.report_rows import SourceRow, query_rows
+from threetears.evals.analysis.report.rows import SourceRow, query_rows
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.chart_query import ChartQuery, ChartReference, ChartSpec, PlannedChart
 
@@ -172,7 +173,7 @@ def test_each_anchor_plans_charts_read_the_same_through_block_render_as_through_
         summary=[_completed_now(spec, held) for spec in stored.summary],
         sections=[replace(section, chart=_completed_now(section.chart, held)) for section in stored.sections],
     )
-    look = anchor_look(plan, held)
+    look = block_look(held, fact_arms(held))
     charts = [(spec, resolve_chart(spec, look, title=spec.title, forms=PageForms.of(held))) for spec in plan.summary]
     charts += [
         (section.chart, resolve_chart(section.chart, look, title=section.chart.title, forms=PageForms.of(held)))

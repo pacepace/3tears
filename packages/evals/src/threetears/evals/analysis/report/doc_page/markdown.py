@@ -12,8 +12,9 @@ own heading (each term with the labels of the caveats it lands), the review find
 
 A block's values are :func:`~threetears.evals.analysis.analyst.blocks.values_table`'s, the table the analyst and the
 editor read. Nothing quoted is structure: the document's prose is laid out by the writers every page shares
-(:mod:`~threetears.evals.analysis.report.md_parts`), which escape a line's opening so it opens no block, and print a
-table cell on one line with its pipes escaped.
+(:mod:`~threetears.evals.analysis.report.md_parts`), which escape a line's opening so it opens no block, escape every
+``<`` and entity (:func:`~threetears.evals.analysis.report.md_parts.escaped`) so no field is markup wherever in a line
+it sits, and print a table cell on one line with its pipes escaped.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ from threetears.evals.analysis.report.doc_page.words import (
 from threetears.evals.analysis.report.html_parts import check_anchor
 from threetears.evals.analysis.report.md_parts import (
     code_span,
+    escaped,
     inert,
     markdown_table,
     one_line,
@@ -72,21 +74,22 @@ def _values(block: ChartBlock | TableBlock) -> list[str]:
 
 
 def _caveats(labels: list[str]) -> str:
-    """The caveats landed beside a claim or a Method term, by label, as code's line (:func:`caveats_line`)."""
+    """The caveats landed beside a claim or a Method term, by label, as code's line (:func:`caveats_line`), words as
+    given: the writer escapes the line."""
     return caveats_line(labels)
 
 
 def _claim(claim: DocClaim) -> list[str]:
-    lines = [f"{_WEIGHT_HEADINGS[claim.weight]}{one_line(claim.text)}"]
+    lines = [f"{_WEIGHT_HEADINGS[claim.weight]}{escaped(one_line(claim.text))}"]
     if claim.caveats:
         lines += ["", inert(f"_{_caveats(claim.caveats)}_")]
     for evidence in claim.evidence:
         if evidence.chart is not None:
             lines += ["", *_values(evidence.chart.chart)]
-            lines += [line for note in evidence.chart.notes for line in ("", inert(note))]
+            lines += [line for note in evidence.chart.notes for line in ("", inert(one_line(note)))]
         lines += ["", *paragraphs(evidence.caption)]
         if evidence.degraded:
-            lines += ["", inert(f"_{evidence.degraded}_")]
+            lines += ["", inert(f"_{one_line(evidence.degraded)}_")]
     return lines
 
 
@@ -98,47 +101,47 @@ def _lines(page: DocPage) -> Iterator[list[str]]:
     if opened := open_findings_line(page):
         yield [inert(f"_{opened}_")]
     if page.degraded:
-        yield [inert(f"**{page.degraded}**")]
-    yield [f"# {one_line(page.headline)}"]
+        yield [inert(f"**{one_line(page.degraded)}**")]
+    yield [f"# {escaped(one_line(page.headline))}"]
     yield paragraphs(page.lede)
     if page.flag:
         yield [inert(f"**{one_line(page.flag)}**")]
     confidence = page.confidence
     items = [
-        f"- {CHECKED_MARK + ' ' if line.checked else ''}**{one_line(line.label)}.** {inert(one_line(line.text))}"
+        f"- {CHECKED_MARK + ' ' if line.checked else ''}**{escaped(one_line(line.label))}.** {inert(one_line(line.text))}"
         for line in confidence.caveats
     ]
-    yield [inert(f"**{CONFIDENCE_LABEL}: {confidence.words}.**"), *([""] + items if items else [])]
+    yield [inert(f"**{CONFIDENCE_LABEL}: {one_line(confidence.words)}.**"), *([""] + items if items else [])]
     for slot in page.decision:
-        yield [inert(f"**{slot.title}.** {one_line(slot.text)}")]
+        yield [inert(f"**{one_line(slot.title)}.** {one_line(slot.text)}")]
     yield table_lines(page.options)
     for claim in page.claims:
         yield _claim(claim)
     if page.explore is not None:
-        yield [f"## {page.explore.title}", "", *table_lines(page.explore)]
+        yield [f"## {escaped(one_line(page.explore.title))}", "", *table_lines(page.explore)]
     if page.next:
         yield [
             f"## {NEXT_TITLE}",
             "",
-            *(f"- {inert(one_line(step.text))} _{one_line(step.settles)}_" for step in page.next),
+            *(f"- {inert(one_line(step.text))} _{escaped(one_line(step.settles))}_" for step in page.next),
         ]
     yield [f"## {APPENDIX_TITLE}"]
     key = page.arms_key
-    yield [f"### {key.eyebrow}", "", inert(key.takeaway), "", *table_lines(key.table)]
+    yield [f"### {escaped(one_line(key.eyebrow))}", "", inert(one_line(key.takeaway)), "", *table_lines(key.table)]
     for table in map(laid_out, page.full_results):
-        yield [f"### {one_line(table.title)}", "", *table_lines(table)]
+        yield [f"### {escaped(one_line(table.title))}", "", *table_lines(table)]
     if page.omitted:
         yield [
             f"### {OMITTED_TITLE}",
             "",
-            *(f"- **{one_line(item.what)}** {one_line(item.why)}" for item in page.omitted),
+            *(f"- **{escaped(one_line(item.what))}** {escaped(one_line(item.why))}" for item in page.omitted),
         ]
     yield [
         f"### {METHOD_TITLE}",
         "",
         *(
-            f"- **{one_line(item.term)}** {one_line(item.text)}"
-            + (f" _{_caveats(item.caveats)}_" if item.caveats else "")
+            f"- **{escaped(one_line(item.term))}** {escaped(one_line(item.text))}"
+            + (f" _{escaped(one_line(_caveats(item.caveats)))}_" if item.caveats else "")
             for item in page.method
         ),
     ]
@@ -147,7 +150,7 @@ def _lines(page: DocPage) -> Iterator[list[str]]:
             f"### {CHECKS_TITLE}",
             "",
             *(
-                f'- <a id="{check_anchor(check.name)}"></a>**{one_line(check.name)}**: '
+                f'- <a id="{check_anchor(check.name)}"></a>**{escaped(one_line(check.name))}**: '
                 f"{check_definition([(check.expression, None)], span=code_span)}"
                 for check in page.checks
             ),
@@ -156,7 +159,10 @@ def _lines(page: DocPage) -> Iterator[list[str]]:
         yield [
             f"### {FINDINGS_TITLE}",
             "",
-            *(f"- **{finding.severity}** · {finding.about}: {one_line(finding.said)}" for finding in page.findings),
+            *(
+                f"- **{escaped(finding.severity)}** · {escaped(one_line(finding.about))}: {escaped(one_line(finding.said))}"
+                for finding in page.findings
+            ),
         ]
     if page.made:
         yield [inert(f"_{one_line(page.made)}_")]

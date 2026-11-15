@@ -187,8 +187,12 @@ class Sweepable:
     result_level: bool = False
     """True when the value is observed ACROSS a run's results rather than declared on the run.
 
-    Descriptive, not a rule — it tells a reader that omitting ``results`` makes the value
-    meaningless. Undecidability is decided by :attr:`indeterminate_when_blank` alone.
+    It tells a reader that omitting ``results`` makes the value meaningless. Undecidability is decided by
+    :attr:`indeterminate_when_blank` alone. It carries one rule beside that: such a reader returns an EMPTY
+    collection exactly when none of the run's results exercised the input (no score to read a judge off, no
+    simulator call), and ``None`` when some did and left it unrecorded (:meth:`SweepableRegistry.unexercised`).
+    An input nothing in a run exercised cannot have shaped any of its observations, so a reader of rig levels may
+    give that run the level its arm's other runs read, rather than a rig of its own.
     """
 
     no_own_coordinate: str | None = None
@@ -1524,6 +1528,29 @@ class SweepableRegistry(HostAttributed):
         if declared is None:
             raise KeyError(f"{self._host}{name} is not declared by this host")
         return declared.reader_prose
+
+    def unexercised(self, name: str, value: Any) -> bool:
+        """True when ``value`` says none of a run's results exercised ``name``: a result-level input read empty.
+
+        Narrower than :meth:`is_indeterminate`, which it implies on every core input: an empty reading of a
+        :attr:`Sweepable.result_level` input means nothing in the run's results touched it (a run whose every
+        report went unscored has no score to read its judge off), while ``None`` means something did and its
+        record is partial. Only the first says the input shaped none of the run's observations.
+
+        :param name: A declared input name. A name this host never declared is never unexercised.
+        :ptype name: str
+        :param value: The run's reading of it.
+        :ptype value: Any
+        :return: True when ``name`` is result-level and ``value`` is an empty list, tuple, set or mapping.
+        :rtype: bool
+        """
+        declared = self._by_name.get(name)
+        return bool(
+            declared
+            and declared.result_level
+            and isinstance(value, list | tuple | set | frozenset | dict)
+            and not value
+        )
 
     def is_indeterminate(self, name: str, *values: Any) -> bool:
         """True when ``name``'s comparison cannot be decided rather than coming out equal.

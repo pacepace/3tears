@@ -109,6 +109,10 @@ UNDECIDED_CONFOUND_PREFIX = "not recorded on every run in this campaign, so whet
 #: measure moved; only ``equivalent`` says the move is small, and only against a declared margin.
 MovementDirection = Literal["improved", "regressed", "equivalent", "not_separated", "untested"]
 
+#: How many result ids a :class:`NegativeValues` names (and its log line): the count is whole, the ids a sample, so a
+#: host bug on every result cannot flood a log or a bundle.
+NEGATIVE_VALUE_IDS_SHOWN: Final[int] = 10
+
 
 class MeasureMovement(EvalDocumentModel):
     """How one measure moved between two levels of a lever, and whether that movement separates from noise.
@@ -294,7 +298,7 @@ SERVED_MODEL_PREFIX = "served_model:"
 CANDIDATE_SERVED_MODEL_CONFOUND = f"{SERVED_MODEL_PREFIX}candidate"
 
 #: Why the candidate's served model moving under one requested id clouds a comparison, in the catalog's words.
-_SERVED_MODEL_CONFOUNDS = (
+SERVED_MODEL_CONFOUNDS = (
     "the candidate was asked for one model id and the provider's responses named more than one model as having "
     "answered it — a floating alias (a 'latest' pointer) resolves on the provider's side and can move between "
     "runs or within one — so the numbers recorded under that id are a mixture of models, and a difference between "
@@ -322,7 +326,7 @@ class _ObservedMechanism:
 #: The covariates read as observed mechanisms, each with its threshold and the reason a divergence in it
 #: clouds a comparison. One entry today; the check is written over the covariate name, so a second
 #: is an entry here rather than a second code path.
-_OBSERVED_MECHANISMS: dict[str, _ObservedMechanism] = {
+OBSERVED_MECHANISMS: dict[str, _ObservedMechanism] = {
     REASONING_RATIO_KEY: _ObservedMechanism(
         threshold=REASONING_SHARE_DIVERGENCE,
         reason=(
@@ -2673,6 +2677,42 @@ class RoleUnanswered(EvalDocumentModel):
         return None if reasons is None else dict(sorted(reasons.items(), key=lambda item: (-item[1], item[0])))
 
 
+class NegativeValues(EvalDocumentModel):
+    """Results of one arm that recorded a negative value on one measure declared non-negative.
+
+    A measure declared ``nonnegative`` draws its intervals no lower than zero, so a value below zero can only come
+    from a host bug and the clamp would hide it. The count says how many results did, so a page can name the bug and
+    say what the clamp did, and the ids say which results to look at.
+    """
+
+    measure: str = Field(min_length=1, description="The measure's key.")
+    variant_key: str = Field(min_length=1, description="The arm.")
+    n_results: int = Field(ge=1, description="Results of the arm with a value below zero on the measure.")
+    result_ids: list[str] = Field(
+        description=f"The first of them, by id, at most {NEGATIVE_VALUE_IDS_SHOWN}; `n_results` is the whole count."
+    )
+
+    def sentence(self, measure_name: str, arm_name: str) -> str:
+        """The one line a page and a report input state it in.
+
+        :param measure_name: What the page calls the measure.
+        :ptype measure_name: str
+        :param arm_name: What the page calls the arm.
+        :ptype arm_name: str
+        :return: The line, naming the measure and the arm, how many results and what the page did with them.
+        :rtype: str
+        """
+        what = (
+            "1 result recorded a negative value"
+            if self.n_results == 1
+            else (f"{self.n_results} results recorded a negative value")
+        )
+        return (
+            f"{measure_name}, {arm_name}: {what} on a measure declared non-negative (a host bug); "
+            f"{'it is' if self.n_results == 1 else 'they are'} drawn at 0."
+        )
+
+
 class ArmPricing(EvalDocumentModel):
     """How one arm's cost was priced, read off the usage rows of the roles its production cost counts.
 
@@ -2683,13 +2723,24 @@ class ArmPricing(EvalDocumentModel):
     **A model's providers are its model rows' alone.** ``providers`` reads the token-metered rows (every role but
     ``external``), so it names who served the model and never a tool the model called: a web-search API metered as an
     ``external`` row is in ``tool_providers``, and its spend stays in the cost, its calls in ``calls``, as before.
+
+    **A provider is what a reply named, never a guess.** A model row names the upstream its replies named
+    (``RoleUsage.served_provider``); a row that named none is not recorded. Empty ``providers`` is every model row not
+    recorded, and ``providers_in_part`` is some of them not recorded beside rows that named one.
     """
 
     sources: list[str] = Field(default_factory=list, description="Each price source a priced row names, sorted.")
     providers: list[str] = Field(
         default_factory=list,
-        description="Each provider a model row (every role but external) names as serving its calls, sorted; empty "
-        "where none does.",
+        description="Each provider a model row (every role but external) names as serving its calls (the upstream its "
+        "replies named, else the provider its host named), sorted; empty where none does: not recorded.",
+    )
+    # Left out of the document while False, so an arm whose rows all named a provider, or none did, reads as before.
+    providers_in_part: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Some model row named no provider beside rows that named one: `providers` names who served part "
+        "of the calls, and the rest are not recorded.",
     )
     # Left out of the document while empty, so an arm whose rows named no tool provider reads as it did before.
     tool_providers: list[str] = Field(
@@ -3359,6 +3410,17 @@ class AnalysisContextBundle(EvalDocumentModel):
             "count, never a score: `usable` is how many trials could be read, not how good they were."
         ),
     )
+    # Left out of the document while empty, so a bundle over results with no negative value on a non-negative measure
+    # is this shape byte for byte; one with such a result holds the evidence, and its fingerprint moves with it.
+    negative_values: list[NegativeValues] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "Per measure declared non-negative and per arm, the results that recorded a value below zero on it: a "
+            "host bug, which the measure's intervals (clamped at zero) would otherwise hide. Sorted by measure, then "
+            "arm. Empty when no result did."
+        ),
+    )
     trials: list[TrialRow] = Field(
         default_factory=list,
         description=(
@@ -3823,7 +3885,7 @@ class AnalysisContextBundle(EvalDocumentModel):
 
     def level_name(self, axis_id: str, content_hash: str) -> str:
         """What a page calls a declared level: its display as the aspect's declared design renders it, the first one
-        declaring the hash on the axis, as the variant index names it (``_declared_level_names``). A name read at
+        declaring the hash on the axis, as the variant index names it (``declared_level_names``). A name read at
         render time from the declaration the bundle froze, never from fingerprinted evidence, so a stored analysis
         prints the names it was frozen with and renaming a level moves no fingerprint.
 
@@ -4288,6 +4350,7 @@ def host_declarations_digest(profile: HostProfile) -> str:
 
 
 __all__ = [
+    "ASPECT_BUNDLE_SHAPE",
     "AliasedFactors",
     "AnalysisContextBundle",
     "ArmMechanismReading",
@@ -4300,70 +4363,73 @@ __all__ = [
     "ComparisonFamily",
     "ComparisonReading",
     "ComparisonVerdict",
-    "SEPARATED_VERDICTS",
     "Confound",
+    "CriterionKind",
     "DeclaredCellCoverage",
     "DeclaredCrossing",
     "DeclaredLevelCoverage",
     "DesignArm",
-    "exploratory_disclosure",
-    "ASPECT_BUNDLE_SHAPE",
-    "refuse_a_bundle_of_another_shape",
-    "asks_a_question",
-    "CriterionKind",
-    "late_criteria",
-    "LateCriterion",
-    "question_axes",
+    "FINGERPRINT_PREFIX",
+    "FLOOR_COST_MEASURE",
     "FactorPairCell",
     "FactorPairPivot",
     "FactorPairScan",
     "FamilyComparison",
-    "FLOOR_COST_MEASURE",
     "FloorContrast",
     "FloorContrastReading",
     "GoalCheckProofReading",
     "HeldFixedReading",
-    "host_declarations_digest",
     "INTERACTION_ALIASING_UNCHECKED",
-    "JudgeChange",
     "JUDGED_OFF_RANKING_REASON",
-    "JudgedArm",
-    "JudgedMeasure",
+    "JudgeChange",
     "JudgeDriftLink",
     "JudgeIdentityLevel",
+    "JudgedArm",
+    "JudgedMeasure",
+    "LateCriterion",
     "LeverCoverageInput",
     "MeasureMovement",
     "MechanismCheck",
     "MechanismUncheckedReason",
     "MeritTier",
     "MovementDirection",
-    "PairingCorrelation",
     "MultipleComparisons",
-    "NO_DESIGN_EXPLORATORY",
+    "NEGATIVE_VALUE_IDS_SHOWN",
     "NO_AXIS_EXPLORATORY",
+    "NO_DESIGN_EXPLORATORY",
     "NO_QUESTION_EXPLORATORY",
-    "observed_mechanism_key",
+    "NegativeValues",
+    "OBSERVED_MECHANISMS",
     "OBSERVED_MECHANISM_PREFIX",
+    "PairingCorrelation",
     "QuestionScope",
+    "REASONING_SHARE_DIVERGENCE",
     "ReadingScope",
     "RealizedDesign",
     "RoleUnanswered",
     "RunApparatus",
-    "REASONING_SHARE_DIVERGENCE",
     "RunSummary",
-    "ScopeDivergence",
+    "SEPARATED_VERDICTS",
+    "SERVED_MODEL_CONFOUNDS",
     "SERVED_MODEL_PREFIX",
+    "ScopeDivergence",
     "ShortCell",
+    "TRIAL_PASS_NAME",
     "TelemetryRollup",
     "TokenRollup",
-    "TRIAL_PASS_NAME",
     "UNDECIDED_CONFOUND_PREFIX",
-    "UnexercisedFactor",
     "UNVERIFIED_FOLD_PREFIX",
+    "UnexercisedFactor",
     "VerdictOrder",
     "WholeSwing",
-    "FINGERPRINT_PREFIX",
+    "asks_a_question",
     "evidence_digest",
-    "unnamed_axes",
+    "exploratory_disclosure",
     "fingerprint_digest",
+    "host_declarations_digest",
+    "late_criteria",
+    "observed_mechanism_key",
+    "question_axes",
+    "refuse_a_bundle_of_another_shape",
+    "unnamed_axes",
 ]

@@ -75,8 +75,11 @@ from threetears.evals.run.launch import (
     LaunchHost,
     TEMPLATE_FIELDS,
     TemplateField,
+    ServedCheck,
+    ServedRole,
     SubjectResolver,
     UnknownSubject,
+    UnpricedCall,
     LaunchPricer,
     LaunchQuote,
     LaunchRequest,
@@ -111,7 +114,14 @@ from threetears.evals.run.executor import (
 )
 from threetears.evals.run.metering import CellMeter, MeteredCallLedger, MeteredCallTally
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.run.reads import get_result, get_result_trace, list_results, list_runs, list_runs_disclosing
+from threetears.evals.run.reads import (
+    get_result,
+    get_result_trace,
+    list_results,
+    list_runs,
+    list_runs_disclosing,
+    list_runs_page,
+)
 from threetears.evals.run.judge_repeat import (
     JudgeRepeatEstimate,
     JudgeRepeatReport,
@@ -199,7 +209,13 @@ from threetears.evals.run.simulator import (
     TurnDriver,
 )
 from threetears.evals.run.witnessed import WitnessedJudging, record_witnessed_cell, stamp_witnessed_judge
-from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, CapBreach, EvalRunCostCap
+from threetears.evals.run.budget import (
+    AccountExhaustedError,
+    BudgetStoppedError,
+    CapBreach,
+    EvalRunCostCap,
+    ModelUnservedError,
+)
 from threetears.evals.run.case_sets import mint_case_set, resolve_case_set
 from threetears.evals.run.ceilings import (
     CeilingRaisedError,
@@ -296,8 +312,11 @@ __all__ = [
     "LaunchHost",
     "TEMPLATE_FIELDS",
     "TemplateField",
+    "ServedCheck",
+    "ServedRole",
     "SubjectResolver",
     "UnknownSubject",
+    "UnpricedCall",
     "LaunchPricer",
     "LaunchQuote",
     "LaunchRequest",
@@ -305,6 +324,7 @@ __all__ = [
     "LaunchableKind",
     "MeteredCallLedger",
     "MeteredCallTally",
+    "ModelUnservedError",
     "RatingStore",
     "Regrade",
     "RegradedDim",
@@ -372,6 +392,7 @@ __all__ = [
     "list_rubric_dims",
     "list_runs",
     "list_runs_disclosing",
+    "list_runs_page",
     "list_templates",
     "load_run_as_listed",
     "load_seed_corpus",

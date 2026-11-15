@@ -69,6 +69,10 @@ _JUDGING_STATES: dict[str, dict[str, object]] = {
     },
     "failed": {"judge_error": "judge timed out"},
     "not_attempted": {},
+    "set_aside": {
+        "judge_error": "conversation.tone: not judged: the run's cost cap had too little left",
+        "judging_set_aside": True,
+    },
 }
 
 #: A result in each scoring outcome, on the same terms.

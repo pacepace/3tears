@@ -135,7 +135,7 @@ each vocabulary also has a ``Literal`` of the values this build knows (``KnownUs
 caller-facing parameter (an action's filter, a query's) and every writer here takes, so a caller's misspelt value
 is refused as before, and the registry is that ``Literal``'s values. The open vocabularies:
 ``UsageRole`` (``USAGE_ROLES``), ``SimulatorPurpose`` (``SIMULATOR_PURPOSES``), ``FailedBecause``
-(``FAILED_BECAUSE``), ``CostCapOrigin``
+(``FAILED_BECAUSE``), ``ExhaustedBecause`` (``EXHAUSTED_BECAUSE``), ``CostCapOrigin``
 (``COST_CAP_ORIGINS``), ``MeteredCallOrigin`` (``METERED_CALL_ORIGINS``), ``CellTimeoutOrigin``
 (``CELL_TIMEOUT_ORIGINS``), ``ModelRoleOrigin`` (``MODEL_ROLE_ORIGINS``), ``RoleModelOrigin``
 (``ROLE_MODEL_ORIGINS``), ``ReasoningEffort`` (``REASONING_EFFORTS``), ``OutOfRunPurpose``
@@ -382,7 +382,53 @@ CORE_SCHEMA_VERSION: int = 15
 #:   so a run setting none is stored byte for byte as before. None is in any identity, context or variant key, cell or
 #:   confound; the disclosure is carried into the bundle, so a run setting one moves its bundle's fingerprint.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 11
+#: - **v15.12** — a usage row names the upstream provider that served its token-metered calls, as the replies named
+#:   it: ``RoleUsage.served_provider`` (default None: not recorded, a direct provider, or stored before the field
+#:   existed), beside ``served_model``, and a key of the row as it is, so calls a router sent to two upstreams are two
+#:   rows. Left out of the document when unset, so a row setting none is stored byte for byte as before. In no
+#:   identity, key or digest; the bundle's census reads it into each arm's pricing, which no fingerprint covers.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.13** — a model the provider does not serve is a cause of its own: ``EvalResult.model_unserved`` (default
+#:   False: stored before the field existed) marks a cell whose candidate call the provider answered that it does not
+#:   serve the model named (retired, or a model id it does not know); the cell is excluded with an ``infra_error``
+#:   quoting the provider, never judged, and a run taken up again runs it again. ``EvalRun.exhausted_because`` (an open
+#:   vocabulary, ``ExhaustedBecause``: ``account_refused`` or ``model_unserved``; default None: the run did not stop
+#:   exhausted, or was stored before the field existed, when only the account could stop it) says why an ``exhausted``
+#:   run stopped. Neither is in any identity, context key or digest. An older build reads a ``model_unserved`` cell as
+#:   the infra exclusion its ``infra_error`` makes it, and an ``exhausted`` run's cause from its ``error_details``,
+#:   which name the model; an older build taking such a run up keeps its unserved cells as done, excluded.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.14** — a run's cost cap admits each cell's judge phase before any of its calls is paid for, and the run
+#:   records the cells it set aside: ``BudgetStop.cells_not_judged`` (default 0: none set aside, a metered-call stop,
+#:   or stored before the field existed) counts the cells that ran but whose judging the cap had too little left
+#:   for. Such a cell is stored as any cell whose judging did not finish: each of its dims carries a judge error that
+#:   names the cap, which excludes it from every reading and which a re-judge takes up. In no identity, key or
+#:   digest. An older build reads the cell as excluded by its judge errors, and the record without the count.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.15** — a cell whose judging the cost cap set aside is marked: ``EvalResult.judging_set_aside`` (default
+#:   False: judged, or nothing set it aside, or stored before the field existed). Such a cell is no fault of the
+#:   harness: its measures, checks and cost count, and only its judged readings leave it out, under a cause of its own,
+#:   ``cost_cap``, which a report names with its remedy (a re-judge). A re-judge clears it. In no identity, key or
+#:   digest. An older build reads such a cell as excluded whole by its judge errors, under ``infra``, as it did before
+#:   this minor; a re-judge on an older build leaves the mark, which this build reads only while a judge error stands.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.16** — a usage row counts the sends of its calls whose connection broke before any response began and that
+#:   were sent again: ``RoleUsage.maybe_billed_sends`` (default None: none counted, its client counts none, or stored
+#:   before the field existed), beside ``call_count`` and never in it; the provider may have served and billed each,
+#:   and the row's ``cost_usd`` holds none of it. A background delivery names the upstream that served its calls:
+#:   ``AsyncDelivery.served_provider`` (default None: not recorded, a direct provider, or stored before the field
+#:   existed), filled by the host, never on a substituted delivery. Each is left out of the document when unset, so a
+#:   row or entry setting none is stored byte for byte as before. In no identity, key or digest.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.17** — a run's holding records the goal-check proof rules its checks were proved under:
+#:   ``RunLifetime.goal_check_proof_rules`` (default None: the run recorded no proofs, or the holding was stored before
+#:   the field existed), the launch's on the first holding and the rules a take-up re-proved the run's own checks
+#:   under on each later one. A take-up whose re-proof matched moves ``EvalRun.goal_check_proof_rules`` forward to the
+#:   rules it re-proved under. Left out of the document when unset, so a holding setting none is stored byte for byte
+#:   as before. In no identity, key or digest. An older build reads the run's rules as the one version its proofs
+#:   stand under, which the re-proof made true.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 17
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
@@ -805,7 +851,8 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   holding the source's content, payload, stratum, name and seed record unchanged. Written only on such a copy, so
 #:   every case stored before reads as a copy of nothing. In no digest pre-image and no identity key, so it changes no
 #:   reading, pool or drift. An older build (v16.8 and earlier) reading a copy keeps the field opaquely and writes it
-#:   back.
+#:   back, but does not know the copy stands for its source: a judge-case freeze run on such a pod during a rolling
+#:   deploy stores the case again beside its carried copy.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 #: - **v17.0** — the lever's reader name (above): every other durable shape exactly as v16.9 stored it.
 DURABLE_SCHEMA_MINOR: int = 0

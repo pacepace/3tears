@@ -22,7 +22,7 @@ fails loudly (an ``AttributeError`` at run time, a type error under mypy), never
 from __future__ import annotations
 
 import copy
-from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Collection, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, cast
 
@@ -146,6 +146,8 @@ class UsageView(Protocol):
     @property
     def served_model(self) -> str | None: ...
     @property
+    def served_provider(self) -> str | None: ...
+    @property
     def prompt_tokens(self) -> int | None: ...
     @property
     def completion_tokens(self) -> int | None: ...
@@ -175,6 +177,8 @@ class UsageView(Protocol):
     def unanswered_lost(self) -> int | None: ...
     @property
     def unanswered_reasons(self) -> Mapping[str, int] | None: ...
+    @property
+    def maybe_billed_sends(self) -> int | None: ...
 
 
 class LatencyView(Protocol):
@@ -308,6 +312,10 @@ class ResultView(Protocol):
     def metered_calls(self) -> int | None: ...
     @property
     def metered_calls_refused(self) -> int | None: ...
+    @property
+    def model_unserved(self) -> bool: ...
+    @property
+    def judging_set_aside(self) -> bool: ...
     @property
     def candidate_kind(self) -> str | None: ...
     @property
@@ -535,6 +543,7 @@ class UsageReading:
     role: str
     model: str | None
     served_model: str | None
+    served_provider: str | None
     prompt_tokens: int | None
     completion_tokens: int | None
     reasoning_tokens: int | None
@@ -550,6 +559,7 @@ class UsageReading:
     unanswered_retried: int | None
     unanswered_lost: int | None
     unanswered_reasons: Mapping[str, int] | None
+    maybe_billed_sends: int | None
 
     @classmethod
     def of(cls, row: RoleUsage, shared: SharedValues) -> UsageReading:
@@ -559,6 +569,7 @@ class UsageReading:
             role=shared.text(row.role),
             model=shared.text(row.model),
             served_model=shared.text(row.served_model),
+            served_provider=shared.text(row.served_provider),
             prompt_tokens=row.prompt_tokens,
             completion_tokens=row.completion_tokens,
             reasoning_tokens=row.reasoning_tokens,
@@ -574,6 +585,7 @@ class UsageReading:
             unanswered_retried=row.unanswered_retried,
             unanswered_lost=row.unanswered_lost,
             unanswered_reasons=None if (reasons := row.unanswered_reasons) is None else shared.mapping(reasons),
+            maybe_billed_sends=row.maybe_billed_sends,
         )
 
 
@@ -749,6 +761,8 @@ class ResultReading:
     superseded_spend_usd: float | None
     metered_calls: int | None
     metered_calls_refused: int | None
+    model_unserved: bool
+    judging_set_aside: bool
     candidate_kind: str | None
     candidate_instance_id: str | None
     subject_id: str | None
@@ -817,6 +831,8 @@ class ResultReading:
             superseded_spend_usd=result.superseded_spend_usd,
             metered_calls=result.metered_calls,
             metered_calls_refused=result.metered_calls_refused,
+            model_unserved=result.model_unserved,
+            judging_set_aside=result.judging_set_aside,
             candidate_kind=text(result.candidate_kind),
             candidate_instance_id=text(result.candidate_instance_id),
             subject_id=text(result.subject_id),
@@ -896,7 +912,7 @@ class ReadingsRead:
     :ivar store_calls: The store calls made so far.
     """
 
-    __slots__ = ("path", "store_calls", "_pages", "_walked")
+    __slots__ = ("path", "store_calls", "_pages", "_walk")
 
     def __init__(self, path: ReadPath, *, store_calls: int, pages: Iterator[tuple[int, list[ResultReading]]]) -> None:
         """Hold a read.
@@ -911,20 +927,53 @@ class ReadingsRead:
         self.path = path
         self.store_calls = store_calls
         self._pages = pages
-        self._walked = False
+        self._walk: Generator[ResultReading] | None = None
 
     def __iter__(self) -> Iterator[ResultReading]:
         """Each reading, in the read's order.
 
-        :raises RuntimeError: The read was walked before: its pages are read once, and a second walk would hand out
-            nothing as though nothing were stored.
+        :raises RuntimeError: The read was walked, or closed, before: its pages are read once, and a second walk would
+            hand out nothing as though nothing were stored.
         """
-        if self._walked:
+        if self._walk is not None:
             raise RuntimeError("a read of readings is walked once; read again for a second walk")
-        self._walked = True
-        for calls, page in self._pages:
-            self.store_calls += calls
-            yield from page
+        self._walk = self._walked()
+        return self._walk
+
+    def _walked(self) -> Generator[ResultReading]:
+        """The one walk of the pages; however it ends, it closes them."""
+        try:
+            for calls, page in self._pages:
+                self.store_calls += calls
+                yield from page
+        finally:
+            self._close_pages()
+
+    def _close_pages(self) -> None:
+        close = getattr(self._pages, "close", None)
+        if callable(close):
+            close()
+
+    def close(self) -> None:
+        """Close the read: the store's rows it holds open are released now, and nothing more is handed out.
+
+        A walk left part way (a ``break``, or an exception in the reader) otherwise holds the store's rows open until
+        it is collected. A reader that may stop part way holds the read in a ``with`` block, which closes it however
+        the block ends. A read walked to its end has closed itself; closing it again does nothing.
+        """
+        if self._walk is None:
+            # Never walked: no walk will be, so the pages are closed here.
+            self._walk = self._walked()
+        self._walk.close()
+        self._close_pages()
+
+    def __enter__(self) -> ReadingsRead:
+        """The read, closed when the ``with`` block ends."""
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        """Close the read (:meth:`close`)."""
+        self.close()
 
 
 @dataclass(frozen=True, slots=True)

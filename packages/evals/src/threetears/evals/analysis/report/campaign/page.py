@@ -38,7 +38,6 @@ from threetears.evals.analysis.report.campaign.depth_blocks import depth_blocks,
 from threetears.evals.analysis.report.campaign.answer_blocks import (
     NO_LONGER_READS,
     call_blocks,
-    report_doc_blocks,
     unread_analysis_blocks,
 )
 from threetears.evals.analysis.report.campaign.names import AspectNames
@@ -76,8 +75,9 @@ from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.analysis.report.blocks import TableBlock, bare_columns
-from threetears.evals.analysis.report.build import contrast_evidence
+from threetears.evals.analysis.report.aspect.contrasts import contrast_evidence
 from threetears.evals.analysis.report.verdict import led_sentences
+from threetears.evals.analysis.report.words import heading_case
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 
 __all__ = ["build_campaign_report"]
@@ -89,7 +89,6 @@ def build_campaign_report(
     aspect_reports: Mapping[str, Report],
     *,
     call: CampaignCall | None = None,
-    report_doc_id: str | None = None,
     unread_analysis_id: str | None = None,
     unread_report_doc_id: str | None = None,
     unread_line: str = NO_LONGER_READS,
@@ -109,10 +108,6 @@ def build_campaign_report(
     :ptype aspect_reports: Mapping[str, Report]
     :param call: The person's call; None while none is recorded.
     :ptype call: CampaignCall | None
-    :param report_doc_id: The report document of the analysis the page is laid out for, when it is one
-        (``EvalAnalysis.report_doc_id``): the first screen says the report is written and stored there; None for any
-        other page.
-    :ptype report_doc_id: str | None
     :param unread_analysis_id: The campaign's analysis this version no longer reads, which this code-only page stands in
         for: the first screen says so in the one regenerate line
         (:data:`~threetears.evals.analysis.report.campaign.answer_blocks.NO_LONGER_READS`), and the page names it
@@ -152,7 +147,6 @@ def build_campaign_report(
         readings,
         aspect_reports,
         call=call,
-        report_doc_id=report_doc_id,
         unread_analysis_id=unread_analysis_id,
         unread_report_doc_id=unread_report_doc_id,
         unread_line=unread_line,
@@ -169,7 +163,6 @@ def build_campaign_report_in_aspect_forms(
     aspect_reports: Mapping[str, Report],
     *,
     call: CampaignCall | None = None,
-    report_doc_id: str | None = None,
     unread_analysis_id: str | None = None,
     unread_report_doc_id: str | None = None,
     unread_line: str = NO_LONGER_READS,
@@ -191,8 +184,6 @@ def build_campaign_report_in_aspect_forms(
     :ptype aspect_reports: Mapping[str, Report]
     :param call: As :func:`build_campaign_report` reads it.
     :ptype call: CampaignCall | None
-    :param report_doc_id: As :func:`build_campaign_report` reads it.
-    :ptype report_doc_id: str | None
     :param unread_analysis_id: As :func:`build_campaign_report` reads it.
     :ptype unread_analysis_id: str | None
     :param unread_report_doc_id: As :func:`build_campaign_report` reads it.
@@ -232,7 +223,6 @@ def build_campaign_report_in_aspect_forms(
             if lead is None
             else lead
         ),
-        *report_doc_blocks(report_doc_id),
         *unread_analysis_blocks(unread_analysis_id, unread_report_doc_id, line=unread_line),
         *bar_warnings(readings, names=names),
         *floor_warnings(readings, names=names, forms=forms),
@@ -416,9 +406,9 @@ _EVIDENCE_HEADING = "Evidence"
 def _fold_heading(aspect: Aspect, names: AspectNames, title: str) -> str:
     """An aspect fold's heading: its full label, which a declared short name stands in for everywhere else; an
     engine-given label by the name the page calls the aspect; and a fold named as the page is, its evidence, so no
-    heading prints twice."""
+    heading prints twice. A heading is a label, so one in words opens on a capital (:func:`heading_case`)."""
     heading = aspect.label if aspect.short_name is not None else names(aspect.label)
-    return _EVIDENCE_HEADING if heading == title else heading
+    return _EVIDENCE_HEADING if heading == title else heading_case(heading)
 
 
 def _title(campaign: EvalCampaign) -> str:

@@ -31,7 +31,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.bundle.schema import JudgedArm, JudgedMeasure
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.analysis import report_html, report_markdown
-from threetears.evals.analysis.report.build import FLOORS_WARN_ONLY
+from threetears.evals.analysis.report.aspect.question import FLOORS_WARN_ONLY
 from threetears.evals.analysis.report.decision import (
     FloorReadings,
     FloorVerdict,

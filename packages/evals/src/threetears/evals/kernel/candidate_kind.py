@@ -300,6 +300,21 @@ class CandidateOutput(EvalBaseModel):
     what excludes the cell and what the run's own stop reason quotes.
     """
 
+    model_unserved: bool = False
+    """The candidate's call named a model its provider does not serve — retired, unknown, or not a valid id.
+
+    Set exactly when the host's describer reads the failure as ``unserved``
+    (:attr:`~threetears.evals.schema.ProviderFailure.owner`), alongside the apparatus entry it puts
+    on ``infra_errors``, which names the model's call and the provider's message. The trial is lost
+    to the test setup, never the candidate's to fail: the runner never judges a cell that sets it,
+    whatever ``output`` holds (a conversing kind that went on past the failed call has turns with
+    no reply in it, and judging those would score the setup), and a run whose cells keep meeting
+    it stops, resumable once the model is served (:class:`~threetears.evals.run.ModelUnservedError`).
+
+    Requires an ``infra_errors`` entry, as ``account_refused`` does: the entry is what excludes the
+    cell and what the run's stop reason quotes.
+    """
+
     host_measures: dict[str, bool | float | str] = {}
     """What the host's own grader measured about this cell, by registered measure name.
 
@@ -382,6 +397,11 @@ class CandidateOutput(EvalBaseModel):
         if self.account_refused and not self.infra_errors:
             raise ValueError(
                 "account_refused is set but infra_errors is empty; an account refusal is an apparatus fault"
+            )
+        if self.model_unserved and not self.infra_errors:
+            raise ValueError(
+                "model_unserved is set but infra_errors is empty; a model the provider does not serve is a fault of "
+                "the test setup, recorded there"
             )
         return self
 

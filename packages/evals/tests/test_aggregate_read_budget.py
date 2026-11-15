@@ -182,8 +182,11 @@ class FakeCountingStore:
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
     ) -> GroupsRead:
-        groups = self._inner.result_groups(run_ids, scope_id, by=by, measures=measures)
+        groups = self._inner.result_groups(
+            run_ids, scope_id, by=by, measures=measures, exclude_in_items=exclude_in_items
+        )
         if run_ids is not None:
             self.run_reads.extend(dict.fromkeys(run_ids))
         else:

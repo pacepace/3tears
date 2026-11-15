@@ -42,7 +42,7 @@ import unicodedata
 from collections.abc import Iterable, Sequence
 from typing import Final
 
-from threetears.evals.analysis.report.figure_keys import is_figure_key
+from threetears.evals.analysis.report.keys.resolve import is_figure_key
 from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.kernel.analyst_gap import EvalAnalystGap, GapDigest, GapGroup
 

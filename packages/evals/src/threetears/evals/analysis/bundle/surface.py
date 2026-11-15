@@ -1,7 +1,7 @@
 """The bundle's decision surface: its per-cell facts frozen into what an analysis or a code-only report reads.
 
 Copied, never recomputed: :func:`bundle_decision_surface` freezes the facts assembly already computed
-(:func:`cell_measure_facts`, :func:`cell_dimension_facts`), and :func:`_measure_catalog` names every measure the
+(:func:`cell_measure_facts`, :func:`cell_dimension_facts`), and :func:`measure_catalog` names every measure the
 surface carries.
 """
 
@@ -22,10 +22,10 @@ from threetears.evals.kernel.surface import (
     MeasureFacts,
 )
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.bundle.cell_reads import _cell_collections
+from threetears.evals.analysis.bundle.cell_reads import cell_collections
 
 
-def _measure_catalog(
+def measure_catalog(
     bundle: AnalysisContextBundle, *, profile: HostProfile, judge_kind: bool = False
 ) -> dict[str, MetricDescriptor]:
     """Collect the descriptor for every measure name appearing anywhere in the bundle.
@@ -46,7 +46,7 @@ def _measure_catalog(
     collections = [
         bundle.telemetry.measures,
         *(summary.measures for summary in bundle.run_summaries),
-        *(collection for cell in bundle.cell_measures for collection in _cell_collections(cell)),
+        *(collection for cell in bundle.cell_measures for collection in cell_collections(cell)),
         *(cell.measures for cell in _time_axis_cells(bundle)),
     ]
     names = {measure.name for collection in collections for measure in collection.measures}
@@ -77,7 +77,7 @@ def cell_measure_facts(bundle: AnalysisContextBundle) -> dict[str, MeasureFacts]
     """
     cells = [*bundle.cell_measures, *_time_axis_cells(bundle)]
     names = sorted(
-        {measure.name for cell in cells for collection in _cell_collections(cell) for measure in collection.measures}
+        {measure.name for cell in cells for collection in cell_collections(cell) for measure in collection.measures}
     )
     return {
         name: MeasureFacts(
@@ -102,7 +102,7 @@ def cell_dimension_facts(bundle: AnalysisContextBundle) -> dict[str, JudgedDimen
     so the direction a merit claim on a judged score is read in, and the scale a chart draws it on,
     are the ones the generator was handed for the same name. Every dimension a cell carries has an
     entry there by construction: a cell's judged readings are ``judged_measures`` transposed
-    (:func:`_cell_measures`).
+    (:func:`cell_measures`).
 
     :param bundle: An assembled bundle.
     :ptype bundle: AnalysisContextBundle
@@ -184,4 +184,5 @@ __all__ = [
     "bundle_decision_surface",
     "cell_dimension_facts",
     "cell_measure_facts",
+    "measure_catalog",
 ]

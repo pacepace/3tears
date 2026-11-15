@@ -8,10 +8,10 @@ shows a reader a number imports it from here, and nothing here imports anything 
 It lives in ``kernel``, the package both ``run`` and ``analysis`` may import, so a launch's refusal spells its
 figures by the same rule as a report; ``threetears.evals.analysis`` re-exports its public names.
 Over the whole package and the kit's script, that is checked from the source by
-``tests/test_one_owner_of_number_forms.py``: every site outside this module and ``analysis/report/forms.py`` that
-decides a figure's form is listed there, the list only shrinks, and the report trees (``_SPELLING_TREES`` there) are
-held to the stricter rule, which names each deliberate fixed spelling it allows (a share's percentage, an SVG
-coordinate) and flags every other format spec that chooses digits.
+``tests/test_one_owner_of_number_forms.py``: every site outside this module, ``analysis/report/forms.py`` and its
+parts under ``analysis/report/number_forms/`` that decides a figure's form is listed there, the list only shrinks,
+and the report trees (``_SPELLING_TREES`` there) are held to the stricter rule, which names each deliberate fixed
+spelling it allows (a share's percentage, an SVG coordinate) and flags every other format spec that chooses digits.
 
 A browser renderer that restates this rule pins itself to the same cases this package's tests read,
 ``tests/fixtures/number-format-cases.json``.

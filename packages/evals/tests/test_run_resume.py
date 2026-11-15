@@ -41,6 +41,7 @@ from threetears.evals.kernel.errors import StorageError
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.scoring import compute_pass_hat_k
+from threetears.evals.kernel.usage_capture import maybe_billed_usd
 from threetears.evals.ops import OpsHost, job_poll, run_job_id
 from threetears.evals.run import (
     ArmPrice,
@@ -61,7 +62,13 @@ from threetears.evals.run import (
 from threetears.evals.run.definition_digests import measured_template_digest
 from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.schema import EvalResult, EvalRun, EvalTemplate, JobLease
-from threetears.evals.schema.models import RunLifetime, cell_result_id, eval_trace_doc_id
+from threetears.evals.schema.models import (
+    GOAL_CHECK_PROOF_RULES,
+    RunLifetime,
+    cell_result_id,
+    eval_trace_doc_id,
+    goal_check_proofs_as_read,
+)
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_run, make_template
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_COST_CEILING_USD, TOYHOST_SUBJECT
@@ -511,6 +518,33 @@ def test_a_scoring_guide_edited_since_the_run_launched_refuses_its_take_up_namin
     )
 
 
+@pytest.mark.parametrize(
+    "edit",
+    [
+        pytest.param({"variation_axes": []}, id="variation_axes"),
+        pytest.param({"tools_required": ["shop"]}, id="tools_required"),
+        pytest.param({"universal": True}, id="universal"),
+    ],
+)
+def test_an_edit_to_what_a_template_varies_or_applies_to_refuses_a_take_up_saying_it_changes_the_measurement(
+    edit: dict[str, Any],
+) -> None:
+    template = make_template(created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00")
+    stored = make_eval_run(created_at="2026-06-01T00:00:00+00:00", template_digest=measured_template_digest(template))
+    edited = _edited(template, **edit)
+    assert edited != template, f"the edit moves the template: {edit}"
+    fresh = stored.model_copy(update={"template_digest": measured_template_digest(edited)})
+
+    difference = _measured_otherwise(stored, fresh, edited, toyhost_profile())
+
+    assert difference is not None, f"an edit to {next(iter(edit))} is refused"
+    assert difference.startswith(
+        f"template {template.id!r}: its measured content changed since the run started, and such an edit changes "
+        "what the run measures"
+    ), difference
+    assert "variation axes, required tools, universal flag" in difference, difference
+
+
 #: When the tests' template edits land: after every run they interrupt was created.
 EDITED_AT = "2099-01-01T00:00:00+00:00"
 
@@ -612,6 +646,90 @@ async def test_a_run_whose_template_was_edited_in_nothing_it_measures_is_taken_u
     assert (first.template_edited_at, second.template_edited_at) == (None, EDITED_AT), "the holding after it says so"
 
 
+#: The proof rules a run is rewritten as stored under: older than the ones in force.
+OLDER_PROOF_RULES = GOAL_CHECK_PROOF_RULES - 1
+
+
+def _as_proved_under_older_rules(store: ClockedStore, run_id: str, **proofs: str) -> None:
+    """Rewrite a run's record as a build with older goal-check proof rules stored it, its proofs as given (each
+    check's own when none is)."""
+    document = store.get(run_id, TOYHOST_SCOPE)
+    assert document is not None
+    document["goal_check_proof_rules"] = OLDER_PROOF_RULES
+    document["goal_check_proofs"] = {**document["goal_check_proofs"], **proofs}
+    store.upsert(document)
+
+
+async def test_a_run_whose_checks_the_current_proof_rules_prove_alike_is_taken_up_under_the_current_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder, run_id, launched, store = await _interrupted(monkeypatch, "cancelled")
+    assert launched.goal_check_proofs, "the toy's template has goal checks to prove"
+    assert "proven" in launched.goal_check_proofs.values(), "a proven check is what older rules would demote"
+    _as_proved_under_older_rules(store, run_id)
+    resumer = other_process(holder)
+
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+
+    run = await _assert_ends_as_the_control(holder, run_id, launched)
+    assert run.goal_check_proofs == launched.goal_check_proofs
+    assert run.goal_check_proof_rules == GOAL_CHECK_PROOF_RULES, "re-proved alike, the run moves to today's rules"
+    assert goal_check_proofs_as_read(run) == launched.goal_check_proofs, "so its `proven` reads as proven again"
+    assert [holding.goal_check_proof_rules for holding in run.lifetimes] == [
+        OLDER_PROOF_RULES,
+        GOAL_CHECK_PROOF_RULES,
+    ], "each holding says which rules proved its checks: the launch's, then the take-up's re-proof"
+
+
+async def test_a_run_taken_up_under_its_own_proof_rules_records_them_on_each_holding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder, run_id, launched, _ = await _interrupted(monkeypatch, "cancelled")
+    resumer = other_process(holder)
+
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+
+    run = await _assert_ends_as_the_control(holder, run_id, launched)
+    assert run.goal_check_proof_rules == launched.goal_check_proof_rules == GOAL_CHECK_PROOF_RULES
+    assert [holding.goal_check_proof_rules for holding in run.lifetimes] == [GOAL_CHECK_PROOF_RULES] * 2
+
+
+def test_a_holding_stored_before_holdings_recorded_their_proof_rules_reads_and_writes_as_before() -> None:
+    stored = {"holder": "worker-1", "epoch": 1, "started_at": "2026-06-01T00:00:00+00:00", "status": "cancelled"}
+
+    holding = RunLifetime.model_validate(stored)
+
+    assert holding.goal_check_proof_rules is None, "not recorded, never a guess"
+    assert "goal_check_proof_rules" not in holding.model_dump(mode="json"), "left out of the document when unset"
+    recorded = holding.model_copy(update={"goal_check_proof_rules": GOAL_CHECK_PROOF_RULES})
+    assert recorded.model_dump(mode="json")["goal_check_proof_rules"] == GOAL_CHECK_PROOF_RULES
+
+
+async def test_a_run_whose_checks_the_current_proof_rules_prove_otherwise_is_refused_naming_both_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder, run_id, launched, store = await _interrupted(monkeypatch, "cancelled")
+    assert launched.goal_check_proofs
+    check = sorted(launched.goal_check_proofs)[0]
+    other = "refuted" if launched.goal_check_proofs[check] != "refuted" else "unproven"
+    _as_proved_under_older_rules(store, run_id, **{check: other})
+    before = off_loop(_run, holder, run_id)
+
+    with pytest.raises(ValidationFailedError) as refused:
+        await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
+
+    message = refused.value.message
+    assert "goal_check_proofs (" in message, message
+    assert (
+        f"re-proved under proof rules {GOAL_CHECK_PROOF_RULES}; the run's were derived under {OLDER_PROOF_RULES}"
+        in message
+    ), message
+    assert "goal_check_proof_rules (" not in message, "the rules' number alone is never a difference"
+    assert off_loop(_run, holder, run_id) == before, "nothing was written"
+
+
 # =============================================================================
 # Its budget
 # =============================================================================
@@ -661,6 +779,63 @@ async def test_a_run_its_budget_stopped_is_taken_up_only_under_a_cap_above_its_s
     assert first.budget_stops and first.reason == stopped.budget_stop_reason
     assert (second.status, second.max_cost_usd, second.epoch) == ("budget_stopped", barely, 1)
     assert (third.status, third.max_cost_usd, third.epoch) == ("completed", 2.0, 2)
+
+
+async def test_a_take_up_counts_what_its_rows_dropped_sends_may_have_billed_toward_its_cap() -> None:
+    """A stored row whose calls each met a send that broke before any response began may have been billed twice. The
+    uninterrupted run's cap counted those sends at their calls' price, so a take-up counts them too: a cap above the
+    rows' cost but below it with the dropped sends is refused. Counted from the rows' cost alone, it was admitted and
+    the run went on past what its cap allowed."""
+    store = ClockedStore()
+    holder = _cheaply_priced(off_loop(ops_fixture, store=store).host)
+    run_id = await launched_run(holder, K, max_cost_usd=0.000001)
+    assert (await settled(holder, run_job_id(run_id))).status == "budget_stopped"
+    spent = sum(row.cost_usd or 0.0 for row in _rows(holder, run_id))
+    for (_scope, _doc_id), document in list(store.documents.items()):
+        if document.get("doc_type") != "eval_result" or document.get("eval_run_id") != run_id:
+            continue
+        # Each priced row in the cell's cost as one call that met a drop (the toy's rows count no calls of their own).
+        usage = [
+            row | {"call_count": row.get("call_count") or 1, "maybe_billed_sends": row.get("call_count") or 1}
+            if row.get("cost_usd") and row["role"] in document["cost_roles"]
+            else row
+            for row in document["usage"]
+        ]
+        store.upsert(document | {"usage": usage})
+    dropped = sum(maybe_billed_usd(row.usage, row.cost_roles) for row in _rows(holder, run_id))
+    assert dropped > 0
+
+    with pytest.raises(ValidationFailedError, match="max_cost_usd above"):
+        await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE, max_cost_usd=spent + dropped / 2)
+
+
+async def test_a_replaced_row_s_dropped_sends_move_with_its_spend_onto_the_row_written_over_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cell a cancel cut short had spent $0.05 on one call whose first send broke before any response began, so the
+    provider may have billed $0.05 more. Taken up, the cell runs again and its row is written over the old one: the
+    old attempt's spend moves onto it whole, the dropped send included, so a later take-up's cap still counts it."""
+    holder, run_id, _launched, store = await _interrupted(monkeypatch, "cancelled")
+    for document in list(store.documents.values()):
+        if document.get("eval_run_id") == run_id and document.get("termination") == "cancelled":
+            row = {
+                "role": "candidate",
+                "model": "toy",
+                "cost_usd": CUT_SHORT_USD,
+                "call_count": 1,
+                "maybe_billed_sends": 1,
+            }
+            store.upsert(document | {"cost_usd": CUT_SHORT_USD, "usage": [row]})
+    cut_short = [row for row in _rows(holder, run_id) if row.termination == "cancelled"]
+    assert cut_short and all(maybe_billed_usd(row.usage, row.cost_roles) == CUT_SHORT_USD for row in cut_short)
+
+    resumer = other_process(holder)
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+
+    after = {row.id: row for row in _rows(holder, run_id)}
+    for row in cut_short:
+        assert after[row.id].superseded_spend_usd == pytest.approx(2 * CUT_SHORT_USD), "the dropped send moved too"
 
 
 # =============================================================================

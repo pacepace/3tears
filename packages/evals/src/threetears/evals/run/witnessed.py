@@ -73,6 +73,7 @@ from threetears.evals.run.rejudge import (
 )
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.run_pages import iter_stored_results
+from threetears.evals.kernel.usage_capture import maybe_billed_usd
 from threetears.evals.run.runner import (
     DEFAULT_JUDGE_CONCURRENCY,
     assemble_completed_cell,
@@ -453,7 +454,11 @@ async def record_witnessed_cell(
             # The host's defect is raised to it, and no cell is recorded; but the judge calls made before it was
             # found were paid for, so they count against the run's judge ceiling as a judged cell's would.
             if settled:
-                judging.count_unrecorded(fold_judge_outcomes(settled).cost_usd)
+                fold = fold_judge_outcomes(settled)
+                # Beside their cost, what their dropped sends may have billed, as a judged cell's judging counts it.
+                judging.count_unrecorded(
+                    None if fold.cost_usd is None else fold.cost_usd + maybe_billed_usd(fold.usage, {"judge"})
+                )
             raise
         result, trace = assemble(judged, judge_ms, template.goal_state_checks)
         judging.count(result)
@@ -585,7 +590,10 @@ def _judge_spend(result: EvalResult) -> float | None | Literal[False]:
     judging = [row.cost_usd for row in result.usage if row.role == "judge"]
     if not judging:
         return False
-    return None if None in judging else math.fsum(cost for cost in judging if cost is not None)
+    if None in judging:
+        return None
+    # Beside the rows' cost, what the judge's dropped sends may have billed, which no row's cost holds.
+    return math.fsum(cost for cost in judging if cost is not None) + maybe_billed_usd(result.usage, {"judge"})
 
 
 class WitnessedJudging:

@@ -53,7 +53,7 @@ import math
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -98,7 +98,6 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import (
     EvalResult,
-    EvalRun,
     EvalTemplate,
     EvalTestCase,
     JudgedArtifact,
@@ -371,8 +370,9 @@ class WriterPairwiseReport(EvalBaseModel):
     )
     outside_run_ids: list[str] = Field(
         default_factory=list,
-        description="Runs launched for the campaign and left out of its readings (a batch that stored no page on either "
-        "arm), whose pairs this pass read as any pair.",
+        description="Runs launched for the campaign and left out of its readings, whose pairs this pass read as any "
+        "pair: a batch run that stored no page, in a report stored before such a run joined its arm's test setup. "
+        "Empty in every report this build stores.",
     )
     calls_made: int = Field(description="Judge calls made, each ledgered under purpose judge.")
     cost_usd: float | None = Field(description="What they cost together; None when any call went unpriced.")
@@ -426,8 +426,6 @@ class _Collected:
     unpaired: list[str]
     #: The earliest orderable ``scored_at`` among the paired results; None with none.
     first_result_at: str | None
-    #: The runs read beside the campaign's, left out of its readings.
-    outside: list[str]
 
 
 def _first_result_at(results: Sequence[EvalResult]) -> str | None:
@@ -476,24 +474,7 @@ def _by_case_and_repeat(results: Sequence[EvalResult], arm: CampaignArm) -> dict
     return indexed
 
 
-def _rig_of(host: EvalHost, runs: Sequence[EvalRun], results: Sequence[EvalResult]) -> dict[str, Any]:
-    """Each run's rig, by run id: its provenance and its value on every dimension of the rig the host declares, read as
-    the campaign's apparatus classes read them, so two runs compare equal exactly when they share a rig."""
-    sweepables = host.profile.sweepables
-    names = [declared.name for declared in sweepables.rig_dimensions]
-    by_run: dict[str, list[EvalResult]] = {}
-    for result in results:
-        by_run.setdefault(result.eval_run_id, []).append(result)
-    rigs: dict[str, Any] = {}
-    for run in runs:
-        values = sweepables.read_all(run, by_run.get(run.id, []))
-        rigs[run.id] = (run.apparatus_provenance, [values.get(name) for name in names])
-    return rigs
-
-
-def _collect(
-    host: EvalHost, campaign_id: str, scope_id: str, candidate: str, outside: Sequence[str] = ()
-) -> _Collected:
+def _collect(host: EvalHost, campaign_id: str, scope_id: str, candidate: str) -> _Collected:
     """Read the campaign, its arms, its results paired by case and repeat, and their pages: blocking, so off the loop.
 
     :raises NotFoundError: No campaign, a run it names is not stored, or the runs' template is not stored.
@@ -512,15 +493,7 @@ def _collect(
             ", ".join(missing),
             remedy="restore the run, or take it off the campaign (campaign_runs_remove), then ask again",
         )
-    # Runs the writer eval launched and left out of the campaign's readings (a batch that stored no page on either
-    # arm): their pairs are read here as any pair is, and they sit under no rig of the campaign's.
-    aside = {run_id: storage.load_eval_run(run_id, scope_id) for run_id in outside if run_id not in loaded}
-    if missing := [run_id for run_id, run in aside.items() if run is None]:
-        raise NotFoundError(
-            "run left out of the campaign", ", ".join(missing), remedy="restore the run, then ask again"
-        )
-    campaign_runs = [run for run in loaded.values() if run is not None]
-    runs = [*campaign_runs, *(run for run in aside.values() if run is not None)]
+    runs = [run for run in loaded.values() if run is not None]
     refuse_unfixed_scoring_judge(runs)
     judge_model, template_id = runs[0].judge_model, runs[0].template_id
     assert judge_model is not None  # refuse_unfixed_scoring_judge refuses a run that recorded none
@@ -560,11 +533,17 @@ def _collect(
     theirs = _by_case_and_repeat([result for result in results if result.variant_key in control_keys], control)
     shared = sorted(mine.keys() & theirs.keys())
     if len(rigs[arm.label]) > 1:
-        # A launch made in batches is several runs of each arm, and a batch whose every page went unjudged records no
-        # judge, so it reads as a rig of its own. Its pairs are still two pages written under one rig when each pair's
-        # two runs read the same rig, as the two arms' runs of one batch do.
-        rig = _rig_of(host, runs, results)
-        if any(rig.get(mine[key].eval_run_id) != rig.get(theirs[key].eval_run_id) for key in shared):
+        # A launch made in batches is several runs of each arm, and one batch's runs may read a rig the others do not
+        # (a judge alias that served another model, a batch recorded as witnessed). Its pairs are still two pages
+        # written under one rig when each pair's two results sit in cells of the same rig, as the two arms' runs of
+        # one batch do: read off the campaign's own cells, so a pair and the readings agree on what a rig is.
+        rig = {
+            result_id: cell.apparatus_class_id
+            for aspect in bundle.aspects
+            for cell in aspect.cells
+            for result_id in cell.observation_ids
+        }
+        if any(rig.get(mine[key].id) != rig.get(theirs[key].id) for key in shared):
             raise unlike
     if not shared:
         raise ValidationFailedError(
@@ -603,7 +582,6 @@ def _collect(
         pairs=pairs,
         unpaired=unpaired,
         first_result_at=_first_result_at(paired),
-        outside=sorted(aside),
     )
 
 
@@ -665,7 +643,6 @@ async def _prepare(
     past_the_stop: bool = False,
     launched: Collection[str] | None = None,
     out_of_budget: str | None = None,
-    outside: Sequence[str] = (),
 ) -> _Prepared:
     """Collect the campaign, check the judge's family, build the judge over budgeted clients and admit every call
     no earlier pass (``judged``) answered.
@@ -673,7 +650,7 @@ async def _prepare(
     :raises ValidationFailedError: Anything :func:`_collect` refuses; the judge is of a writer's family; or the calls
         are priced above the cap or cannot be priced under it. All before any call.
     """
-    collected = await run_blocking(host.blocking_executor, _collect, host, campaign_id, scope_id, candidate, outside)
+    collected = await run_blocking(host.blocking_executor, _collect, host, campaign_id, scope_id, candidate)
     try:
         judge_family = [
             judge_family_check(model, collected.judge_model, model_family) for model in collected.writer_models
@@ -1073,7 +1050,6 @@ async def _run(prepared: _Prepared, *, out_of_run_cap_usd: float | None) -> Writ
         reliability=_reliability(cases, [pair for pair in pairs if pair.reached]),
         stopped=stopped,
         stopping=stopping,
-        outside_run_ids=collected.outside,
         calls_made=len(spends) + (0 if earlier is None else earlier.calls_made),
         cost_usd=None if None in costs else math.fsum(cost for cost in costs if cost is not None),
         cap_usd=out_of_run_cap_usd,
@@ -1315,7 +1291,6 @@ async def _writer_pairwise_work(
     past_the_stop: bool = False,
     launched: Collection[str] | None = None,
     out_of_budget: str | None = None,
-    outside: Sequence[str] = (),
 ) -> JobWork[EvalActionJob]:
     """Admit the pairwise pass over a writer campaign's candidate and control: every refusal made, every call priced.
 
@@ -1350,9 +1325,6 @@ async def _writer_pairwise_work(
     :param out_of_budget: Why the run stopped launching at its spend cap, in one sentence, which the record carries;
         ``None`` when it did not.
     :ptype out_of_budget: str | None
-    :param outside: Runs launched for this campaign and left out of its readings (a batch that stored no page on
-        either arm), whose pairs are read as any pair is; the report names them.
-    :ptype outside: Sequence[str]
     :return: The admitted work; its record is an :class:`~threetears.evals.run.EvalActionJob` under
         :data:`WRITER_PAIRWISE_ACTION`.
     :rtype: JobWork[EvalActionJob]
@@ -1379,7 +1351,6 @@ async def _writer_pairwise_work(
         past_the_stop=past_the_stop,
         launched=launched,
         out_of_budget=out_of_budget,
-        outside=outside,
     )
 
     async def run() -> WriterPairwiseReport:
@@ -1417,7 +1388,6 @@ async def writer_pairwise(
     past_the_stop: bool = False,
     launched: Collection[str] | None = None,
     out_of_budget: str | None = None,
-    outside: Sequence[str] = (),
 ) -> JobsStarted:
     """Admit the pairwise pass over a writer campaign, then start it as a job, under the host's out-of-run cap.
 
@@ -1447,8 +1417,6 @@ async def writer_pairwise(
     :ptype launched: Collection[str] | None
     :param out_of_budget: Why the run stopped launching at its spend cap, which the record carries; ``None`` when not.
     :ptype out_of_budget: str | None
-    :param outside: Runs launched for this campaign and left out of its readings, whose pairs are read as any pair is.
-    :ptype outside: Sequence[str]
     :return: The pass's one job (``action:<id>``); polled once it completes, its result is the
         :class:`WriterPairwiseReport`.
     :rtype: JobsStarted
@@ -1471,7 +1439,6 @@ async def writer_pairwise(
         past_the_stop=past_the_stop,
         launched=launched,
         out_of_budget=out_of_budget,
-        outside=outside,
     )
     return await start_job(
         host, AdmittedJob(work=work, kind="action", target_id=WRITER_PAIRWISE_ACTION, label=work.record.label)

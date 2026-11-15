@@ -37,6 +37,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
+from threetears.evals.analysis.report.chart_levels import levels_said
 from threetears.evals.analysis.report.doc_page.model import (
     DocCheck,
     DocClaim,
@@ -159,6 +160,36 @@ def _block(evidence: DocEvidence, chart_id: str, *, static: bool) -> str:
         drawn += "".join(f'<p class="cap">{_said(note)}</p>' for note in evidence.chart.notes)
     degraded = f'<p class="cap">{_said(evidence.degraded)}</p>' if evidence.degraded else ""
     return f'{drawn}<p class="cap">{_prose(evidence.caption)}</p>{degraded}'
+
+
+def _levels_said(claims: Sequence[DocClaim]) -> list[DocClaim]:
+    """The claims with their evidence charts' heads set to state each interval level once on the page, in the order
+    the page draws them (:func:`~threetears.evals.analysis.report.chart_levels.levels_said`, #1128)."""
+    placed = [
+        (at, place, evidence.chart)
+        for at, claim in enumerate(claims)
+        for place, evidence in enumerate(claim.evidence)
+        if evidence.chart is not None
+    ]
+    said = levels_said([chart.chart for _, _, chart in placed])
+    moved = {
+        (at, place): chart.model_copy(update={"chart": block})
+        for (at, place, chart), block in zip(placed, said, strict=True)
+        if block is not chart.chart
+    }
+    return [
+        claim.model_copy(
+            update={
+                "evidence": [
+                    evidence.model_copy(update={"chart": moved[at, place]}) if (at, place) in moved else evidence
+                    for place, evidence in enumerate(claim.evidence)
+                ]
+            }
+        )
+        if any(key[0] == at for key in moved)
+        else claim
+        for at, claim in enumerate(claims)
+    ]
 
 
 def _claim(claim: DocClaim, *, static: bool) -> str:
@@ -312,7 +343,7 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
         '<div class="bluf">',
         *bluf,
         "</div>",
-        *(_claim(claim, static=static) for claim in page.claims),
+        *(_claim(claim, static=static) for claim in _levels_said(page.claims)),
         *([_explore(page.explore)] if page.explore is not None else []),
         *([_next(page.next)] if page.next else []),
         *_appendix(page),

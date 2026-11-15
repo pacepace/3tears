@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from threetears.evals.analysis.report.figure_keys import page_arm_names
+from threetears.evals.analysis.report.keys.names import page_arm_names
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import ReportInput
 

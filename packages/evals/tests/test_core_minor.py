@@ -751,7 +751,7 @@ def test_every_vocabulary_on_a_core_shape_is_open_or_listed_closed() -> None:
 
 
 def test_every_open_vocabulary_is_a_string_on_its_stored_fields() -> None:
-    """The eleven open vocabularies are not ``Literal``s anywhere on a core shape, and each is named in the policy."""
+    """The twelve open vocabularies are not ``Literal``s anywhere on a core shape, and each is named in the policy."""
     from threetears.evals.schema import versioning
 
     registries = {
@@ -766,6 +766,7 @@ def test_every_open_vocabulary_is_a_string_on_its_stored_fields() -> None:
         "OutOfRunPurpose": "OUT_OF_RUN_PURPOSES",
         "RefusalKind": "REFUSAL_KINDS",
         "FailedBecause": "FAILED_BECAUSE",
+        "ExhaustedBecause": "EXHAUSTED_BECAUSE",
     }
     import threetears.evals.schema as schema
 

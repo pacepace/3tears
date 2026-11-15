@@ -501,6 +501,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/job_context.py",
     "kernel/job_leases.py",
     "kernel/job_timeout.py",
+    # A listing's page size and its opaque cursor (#1145): the package's own encoding of a place in the engine's own
+    # listing order, so a host noun here would be one host's codec written into every host's paging.
+    "kernel/list_pages.py",
     "schema/job_lease.py",
     "schema/refusal.py",
     # The generic trial loop and the per-result covariate derivation, both importing nothing of the

@@ -164,7 +164,11 @@ from threetears.evals.analysis.reporting import (
 )
 from threetears.evals.analysis.lenses.aggregation import DEFAULT_WEIGHTING, WEIGHTING_EQUAL_PER_SCENARIO, metric_help
 from threetears.evals.analysis.lenses.comparison_sets import DECLARED_INPUT_ORIGIN, difference_was_declared_at_launch
-from threetears.evals.analysis.lenses.cost_estimate import COST_ESTIMATE_MIN_BASIS, COST_PREDICTION_METHOD
+from threetears.evals.analysis.lenses.cost_estimate import (
+    BORROWED_PREDICTION_METHOD,
+    COST_ESTIMATE_MIN_BASIS,
+    COST_PREDICTION_METHOD,
+)
 from threetears.evals.analysis.lenses.pivot import CELL_MEASURED, CELL_NOT_RUN, CELL_WITHHELD
 from threetears.evals.analysis.lenses.history import HISTORY_METRICS
 from threetears.evals.analysis.significance import format_significance, significance_disclosure
@@ -309,6 +313,7 @@ from threetears.evals.analysis.bundle.schema import (
     ArmMechanismReading,
     ArmPricing,
     ArmScoreboard,
+    NegativeValues,
     FailCause,
     LossCause,
     TrialCheck,
@@ -399,7 +404,8 @@ from threetears.evals.analysis.lenses.frontier import (
 from threetears.evals.kernel.scoring import UnpooledReason
 from threetears.evals.analysis.lenses.history import HistoryResult, MeasureSeries, RegressionFlag, SeriesPoint
 from threetears.evals.analysis.lenses.export import ExportFormat, ExportPage, ScoreExport
-from threetears.evals.analysis.service import AnalysisStore
+from threetears.evals.analysis.service import AnalysisReportStore, AnalysisStore
+from threetears.evals.analysis.report.doc_page.store import ReportDocReads
 
 
 from threetears.evals.analysis.lens_text import frontier_text, tier_sentence
@@ -592,6 +598,7 @@ __all__ = [
     "Report",
     "ReportBasis",
     "ReportBlock",
+    "ReportDocReads",
     "ReportSection",
     "ReportSource",
     "TableBlock",
@@ -615,6 +622,7 @@ __all__ = [
     "report_html",
     "report_markdown",
     "ABSENT",
+    "BORROWED_PREDICTION_METHOD",
     "CELL_MEASURED",
     "CELL_NOT_RUN",
     "CELL_WITHHELD",
@@ -643,6 +651,7 @@ __all__ = [
     "ArmExclusions",
     "ArmPricing",
     "ArmScoreboard",
+    "NegativeValues",
     "FailCause",
     "LossCause",
     "TrialCheck",
@@ -650,6 +659,7 @@ __all__ = [
     "TrialRow",
     "TrialState",
     "AnalysisContextBundle",
+    "AnalysisReportStore",
     "AnalysisStore",
     "ArmLevel",
     "ArmMechanismReading",

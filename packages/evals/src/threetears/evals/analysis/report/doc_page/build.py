@@ -16,7 +16,7 @@ the page has or their order.
 - *Confidence*: the form in code's words, then each caveat in the document's order: its label (code's for a caveat
   code assigns, from :data:`~threetears.evals.analysis.report.doc_page.words.CAVEAT_LABELS`; the analyst's for an
   ``analyst:`` one), then the analyst's clause, or code's checked line where code proved it immaterial
-  (:func:`~threetears.evals.analysis.report_decision.caveat_materiality`).
+  (:func:`~threetears.evals.analysis.report.call.caveat_materiality`).
 - *Decision*: each entry in the document's order, titled by its slot word alone.
 - *Options*: every arm, with its settings, served model and cost, the arms ``recommends`` names marked
   (:func:`~threetears.evals.analysis.report.parts.tables.arms_table`).
@@ -82,16 +82,9 @@ from threetears.evals.analysis.report.doc_page.words import (
     SLOT_TITLES,
     UNRESOLVED,
 )
-from threetears.evals.analysis.report.figure_keys import (
-    Figure,
-    NamedKind,
-    format_figure,
-    input_check_name,
-    is_figure_key,
-    render,
-    resolve,
-    written_arm,
-)
+from threetears.evals.analysis.report.keys.figure import Figure, written_arm
+from threetears.evals.analysis.report.keys.names import NamedKind, input_check_name
+from threetears.evals.analysis.report.keys.resolve import format_figure, is_figure_key, render, resolve
 from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.kernel.metrics import goal_check_of
@@ -107,7 +100,7 @@ from threetears.evals.analysis.report.parts.model import (
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.tables import arms_key, arms_table
 from threetears.evals.analysis.report.parts.words import CONFIDENCE_WORDS, REFERENCE_TEMPLATE
-from threetears.evals.analysis.report_decision import (
+from threetears.evals.analysis.report.call import (
     Caveat,
     ImpliedCaveat,
     Materiality,
@@ -116,17 +109,18 @@ from threetears.evals.analysis.report_decision import (
     late_subject,
 )
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_doc_prose import reads_as_a_tag
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.doc_page.prose import reads_as_a_tag
+from threetears.evals.analysis.report.fact_arms import fact_arms
+from threetears.evals.analysis.report.words import label_case
 from threetears.evals.analysis.style import humanize, measure_name
 from threetears.evals.kernel.report_doc import DocCaveat, Evidence, ReportDoc, ReportFinding, is_analyst_caveat
 from threetears.evals.kernel.chart_query import ChartSpec, PlannedChart
 
 #: The entry points, with their callers: :func:`build`, for the writing loop's editor (the page text); the store gate
-#: (``analysis/report_doc_store.py``), the one checker, which builds a draft's page strict for the analyst's
+#: (``analysis/report/doc_page/store.py``), the one checker, which builds a draft's page strict for the analyst's
 #: ``report_check`` and the loop alike; and the report writer (``actions/report_writing.py``, the page it stores).
 #: :func:`written_prose`, for a surface that prints one piece of a stored document's prose without its page: the
-#: campaign listing's headline (``analysis/report_doc_store.py``'s :func:`stored_headline`).
+#: campaign listing's headline (``analysis/report/doc_page/store.py``'s :func:`stored_headline`).
 __all__ = ["build", "written_prose"]
 
 #: A figure key in the document's prose, as the figure keys' grammar spells one: ``{path|filter}``.
@@ -320,7 +314,7 @@ def _code_label(caveat: Caveat | ImpliedCaveat, look: PageLook, report_input: Re
     else:
         name = humanize("dimension", rest.rsplit(":", 1)[-1])
     label = CAVEAT_LABELS.get(caveat.kind, humanize("dimension", caveat.kind)).format(name=name)
-    return label[:1].upper() + label[1:]
+    return label_case(label)
 
 
 @dataclass(frozen=True)
@@ -497,7 +491,7 @@ def _reference(spec: ChartSpec, forms: PageForms) -> str:
         return ""
     line = spec.reference[0]
     return REFERENCE_TEMPLATE.format(
-        kind=humanize("dimension", line.kind).capitalize(),
+        kind=label_case(humanize("dimension", line.kind)),
         value=format_figure(resolve(line.key, forms.report_input), forms=forms),
     )
 
@@ -556,7 +550,7 @@ def _key_words(path: str) -> str:
 
 def _claim_id(ids: Iterable[str]) -> re.Pattern[str] | None:
     """The document's claim ids as an editor's finding quotes them, which the page names by their place: each id that
-    reads as a tag (:func:`~threetears.evals.analysis.report_doc_prose.reads_as_a_tag`: ``c2``, ``c-cost``, as the
+    reads as a tag (:func:`~threetears.evals.analysis.report.doc_page.prose.reads_as_a_tag`: ``c2``, ``c-cost``, as the
     document's checks read it), matched whole and in its own case, longest first so no id is read as a part of a
     longer one. A plain word (``lead``) reads as the word and an id of digits alone as a number, so neither is taken
     for a claim; ``None`` when no id reads as a tag."""

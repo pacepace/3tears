@@ -5,7 +5,7 @@ names it (:mod:`~threetears.evals.analysis.analyst.cited`), so a sentence the an
 renderer prints the same:
 
 - :func:`dominance`: which options survive the gates and which dominates, on the decision's own axes (every gate,
-  cost per 1,000 of what the cost counts, the asked aspects) as :mod:`~threetears.evals.analysis.report_decision`
+  cost per 1,000 of what the cost counts, the asked aspects) as :mod:`~threetears.evals.analysis.report.call`
   reads them, with the extra axes the analyst names compared beside them on point estimates, descriptively.
 - :func:`sensitivity`: how the decision moves as one declared criterion moves (an aspect's margin, a floor's margin,
   a gate's threshold), or as a hypothetical line the snapshot does not declare moves: the value each arm's status
@@ -18,7 +18,7 @@ reads off the declared criteria: interpretive facts for the analyst and the edit
 report may say. Each result says so where it carries one.
 
 **No dominance from cost alone.** Where the snapshot declares nothing but cost (no gate, guardrail, control, asked
-aspect or ranking rule: :func:`~threetears.evals.analysis.report_decision.weighed_axes`), the dominance rule reduces
+aspect or ranking rule: :func:`~threetears.evals.analysis.report.call.weighed_axes`), the dominance rule reduces
 to a cost ranking, and the cheapest option would read as dominant though nothing declared says it is good enough.
 These analyses make no dominance call there: no option is dominant or dominated, code's call is a tradeoff, and the
 result says why (``withheld``). The extra axes the caller names are weighed beside cost, descriptively
@@ -26,7 +26,7 @@ result says why (``withheld``). The extra axes the caller names are weighed besi
 the caller names; none is added.
 
 **Per-slice picks.** Where the snapshot holds routable tasks, a sweep reads each one's pick beside the one-option
-call (:func:`~threetears.evals.analysis.report_gates.routing_picks`: the cheapest arm passing in the task and in every
+call (:func:`~threetears.evals.analysis.report.gates.routing_picks`: the cheapest arm passing in the task and in every
 cross-cutting task), so a gate that moves a routed plan without moving the one-option call shows it.
 
 **A sweep's reach.** With no range, a sweep walks every flip: a threshold or a hypothetical line from no lower end
@@ -86,9 +86,9 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
+from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if, contrast_key
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report_decision import (
+from threetears.evals.analysis.report.call import (
     AskedStanding,
     DecisionAt,
     StandingWord,
@@ -100,8 +100,8 @@ from threetears.evals.analysis.report_decision import (
     surviving_options,
     weighed_axes,
 )
-from threetears.evals.analysis.report_gates import GateFinding, GateStatus, gate_check, gate_findings, routing_picks
-from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, ReportInput
+from threetears.evals.analysis.report.gates import GateFinding, GateStatus, gate_check, gate_findings, routing_picks
+from threetears.evals.analysis.report_input import Aspect, Criterion, ReportInput
 from threetears.evals.analysis.report_margins import (
     CriterionFigure,
     criterion_aspect,
@@ -195,7 +195,7 @@ def _number_or_none(key: str, report_input: ReportInput) -> CitedFigure | None:
         return cite(key, report_input)
     except UnresolvableReference:
         # NOSILENT: an arm whose cost no source states has no cost, which is how the dominance rule reads it
-        # (report_decision's cost rule treats every refusal of this key so); the result shows the figure as absent.
+        # (report.call's cost rule treats every refusal of this key so); the result shows the figure as absent.
         return None
 
 
@@ -291,7 +291,7 @@ def _stated(keys: Sequence[str], report_input: ReportInput) -> list[CitedFigure]
 
 def gate_reads(report_input: ReportInput, arm: str, status: Literal["fail", "borderline", "unknown"]) -> list[GateRead]:
     """Every figure an arm fails, holds borderline or has none at, on the gates and guardrails, each by the keys that
-    state it: the gate check's own findings (:func:`~threetears.evals.analysis.report_gates.gate_findings`), keyed, so
+    state it: the gate check's own findings (:func:`~threetears.evals.analysis.report.gates.gate_findings`), keyed, so
     a reason's numbers reach a reader as figures.
 
     :param report_input: The snapshot's report input.
@@ -549,13 +549,6 @@ class Dominance(BaseModel):
     notes: list[str] = Field(description="How the result was read, where that is not the default, and why.")
 
 
-def _contrast_key(contrast: Contrast) -> str:
-    """A contrast's key, by its aspect where it states one (the form every aspect's contrast reads by)."""
-    if contrast.aspect is not None:
-        return f"aspects.{contrast.aspect}.contrast.{contrast.arm}.{contrast.measure}"
-    return f"contrast.{contrast.arm}.{contrast.measure}"
-
-
 def _place(report_input: ReportInput, figure: CriterionFigure) -> str | None:
     """Where a criterion's figure sits, as its key names it: a task's id, a cell's ``<row>.<column>``, or None."""
     if figure.cell is not None:
@@ -603,7 +596,7 @@ def _standing_figures(report_input: ReportInput, arm: str) -> list[CitedFigure]:
                 found.append(cite(f"aspects.{aspect.id}.pair.{pair.arms[0]}.{pair.arms[1]}.change", report_input))
     for contrast in separating_contrasts(report_input, arm):
         if contrast.delta is not None:
-            found.append(cite(_contrast_key(contrast) + ".delta", report_input))
+            found.append(cite(f"{contrast_key(report_input, contrast)}.delta", report_input))
     asked_ids = {aspect.id for aspect in asked}
     for read in report_input.floors:
         if read.arm == arm and read.aspect in asked_ids and read.status != "held":
@@ -746,10 +739,10 @@ def dominance(
     The declared bars are read as ``bars_as`` says (this module's How bars are read), every figure cited as the
     snapshot states it.
 
-    The survivors, the dominant options and code's call are :mod:`~threetears.evals.analysis.report_decision`'s own
-    (:func:`~threetears.evals.analysis.report_decision.surviving_options`,
-    :func:`~threetears.evals.analysis.report_decision.dominant_options`,
-    :func:`~threetears.evals.analysis.report_decision.decision_at`), save where cost is the only axis the snapshot
+    The survivors, the dominant options and code's call are :mod:`~threetears.evals.analysis.report.call`'s own
+    (:func:`~threetears.evals.analysis.report.call.surviving_options`,
+    :func:`~threetears.evals.analysis.report.call.dominant_options`,
+    :func:`~threetears.evals.analysis.report.call.decision_at`), save where cost is the only axis the snapshot
     declares: there no option is dominant or dominated and the call is a tradeoff (this module's No dominance from
     cost alone). ``dominated_by`` applies the same pairwise rule, cost per 1,000 of what the cost counts and the asked
     standing, to each pair of survivors; ``dominated_with_axes`` adds the extra axes.
@@ -1080,7 +1073,7 @@ class _Read:
 
 
 def _picks(report_input: ReportInput) -> _Picks:
-    """Each routable task's pick (:func:`~threetears.evals.analysis.report_gates.routing_picks`) over every arm, in
+    """Each routable task's pick (:func:`~threetears.evals.analysis.report.gates.routing_picks`) over every arm, in
     the tasks' order; empty where the input holds no routable task."""
     routable = [task.id for task in report_input.tasks if task.routable]
     if not routable:
@@ -1655,7 +1648,7 @@ def sensitivity(
 
     The range is cut at every value some arm's status flips at (a reading's flip margin, a floor's ``held_above`` and
     ``broken_at``, a criterion's figure for an arm at each place it reads), and code's call is read inside each piece
-    (:func:`~threetears.evals.analysis.report_decision.decision_at`; a threshold on the input with that one threshold
+    (:func:`~threetears.evals.analysis.report.call.decision_at`; a threshold on the input with that one threshold
     moved). Adjacent pieces with the same call are one segment, so a criterion the call never rests on is one segment.
 
     :param report_input: The snapshot's report input.

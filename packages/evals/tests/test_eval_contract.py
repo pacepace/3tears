@@ -367,6 +367,7 @@ async def test_a_world_of_lookups_records_its_answers_once_and_replays_them_afte
 
     changed = [{**ticket, "text": ticket["text"] + "!"} for ticket in TICKETS[:1]]
     missed = await Eval(changed, lookups(agent), [found], k=1).run(store=":memory:")
+    assert missed.summary.status == "failed", "a lookup its recording does not hold fails the run (#1162)"
     assert missed.summary.n_excluded == 1 and "holds no answer" in missed.render()
 
 

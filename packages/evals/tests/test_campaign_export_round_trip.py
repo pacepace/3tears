@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import os
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -263,6 +265,60 @@ def test_a_write_failing_part_way_leaves_no_directory_and_the_same_command_runs_
     assert main(args) == EXIT_OK
     assert sorted(path.name for path in out.iterdir()) == sorted(FILES)
     assert [path.name for path in tmp_path.iterdir()] == ["export"]
+
+
+def test_an_interrupted_write_leaves_no_directory_and_the_interrupt_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "export"
+    args = _export_args(out, host=f"{__name__}:courier_export_host", scope=COURIER_SCOPE, campaign=_courier_campaign())
+    write_bytes = Path.write_bytes
+    written: list[str] = []
+
+    def second_write_interrupted(path: Path, data: bytes) -> int:
+        if written:
+            raise KeyboardInterrupt
+        written.append(path.name)
+        return write_bytes(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", second_write_interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        main(args)
+    assert written == ["documents.json"], "the first file was written before the second was interrupted"
+    assert list(tmp_path.iterdir()) == [], "neither the export nor its partial directory is left behind"
+
+
+def test_a_cleanup_failing_under_an_interrupt_is_recorded_and_the_interrupt_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    out = tmp_path / "export"
+    args = _export_args(out, host=f"{__name__}:courier_export_host", scope=COURIER_SCOPE, campaign=_courier_campaign())
+
+    def interrupted(path: Path, data: bytes) -> int:
+        raise KeyboardInterrupt
+
+    def unremovable(path: Path) -> None:
+        raise OSError(16, "Device or resource busy")
+
+    monkeypatch.setattr(Path, "write_bytes", interrupted)
+    monkeypatch.setattr("threetears.evals.harness.__main__.shutil.rmtree", unremovable)
+    with pytest.raises(KeyboardInterrupt):
+        main(args)
+    assert any("was not removed after an interrupt" in record.getMessage() for record in caplog.records)
+
+
+def test_the_export_directory_takes_the_umask_mode_not_the_owner_only_one(tmp_path: Path) -> None:
+    out = tmp_path / "export"
+    umask = os.umask(0o022)
+    try:
+        args = _export_args(
+            out, host=f"{__name__}:courier_export_host", scope=COURIER_SCOPE, campaign=_courier_campaign()
+        )
+        assert main(args) == EXIT_OK
+    finally:
+        os.umask(umask)
+    assert stat.S_IMODE(out.stat().st_mode) == 0o755
+    assert {stat.S_IMODE((out / name).stat().st_mode) for name in FILES} == {0o644}
 
 
 def test_an_empty_out_directory_is_filled_and_one_holding_other_files_is_refused(

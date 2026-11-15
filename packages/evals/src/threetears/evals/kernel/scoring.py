@@ -55,6 +55,7 @@ from threetears.evals.schema.models import (
     RunCompleteness,
 )
 from threetears.evals.kernel.result_condition import (
+    ExclusionCause,
     ResultOutcome,
     candidate_failure_cause,
     classify_result,
@@ -71,7 +72,11 @@ from threetears.evals.kernel.metrics import (
     goal_check_measure,
 )
 from threetears.evals.kernel.identity import StateCoordinateError, resolve_context_identity
-from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
+from threetears.evals.kernel.usage_capture import (
+    count_substituted_deliveries,
+    maybe_billed_usd,
+    production_replicating_cost,
+)
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.profile import HostProfile
@@ -120,6 +125,10 @@ class CellSummary:
     #: this is the one field whose ``False`` a reader cannot recover by loading
     #: the record — there is no record to load.
     persisted: bool
+    #: What the cell's sends that broke before any response began and were sent again may have billed, at their calls'
+    #: own price (:func:`~threetears.evals.kernel.usage_capture.maybe_billed_usd`): no row's cost holds it, and every
+    #: cost cap and every stop total counts it beside ``cost_usd``.
+    maybe_billed_usd: float = 0.0
 
     @classmethod
     def from_result(cls, result: EvalResult, *, persisted: bool) -> CellSummary:
@@ -142,6 +151,7 @@ class CellSummary:
             termination=result.termination,
             cost_usd=result.cost_usd,
             persisted=persisted,
+            maybe_billed_usd=maybe_billed_usd(result.usage, result.cost_roles),
         )
 
 
@@ -577,6 +587,11 @@ def _carries_a_check(result: ResultView, catalog: Mapping[str, MetricDescriptor]
     )
 
 
+#: The exclusions that leave only a trial's judging unread — the judge could not tell, or the cost cap kept it from
+#: being asked — so a failed check or a sub-bar dim still decides the trial.
+_JUDGING_ONLY: frozenset[ExclusionCause | None] = frozenset({"judge_cannot_tell", "cost_cap"})
+
+
 def _trial_pass(
     result: ResultView, *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]
 ) -> tuple[bool | None, bool]:
@@ -590,7 +605,7 @@ def _trial_pass(
     are attempts that failed.
     """
     exclusion = trial_exclusion(result)
-    if exclusion == "judge_cannot_tell" and _already_failed(result, rubric_threshold=rubric_threshold, catalog=catalog):
+    if exclusion in _JUDGING_ONLY and _already_failed(result, rubric_threshold=rubric_threshold, catalog=catalog):
         # The unscored dim cannot rescue a trial a failed check or a sub-bar dim has already
         # decided, so it counts as the fail it is rather than vanishing from the denominator.
         exclusion = None

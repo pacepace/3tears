@@ -61,7 +61,14 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
-from threetears.evals.kernel.numbers import POINT_PLACES, MoneyForm, format_number, group_thousands, spell_at, spell_dollars
+from threetears.evals.kernel.numbers import (
+    POINT_PLACES,
+    MoneyForm,
+    format_number,
+    group_thousands,
+    spell_at,
+    spell_dollars,
+)
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, signed_with_unit, with_unit
 from threetears.evals.analysis.report.charts import ChartShape, ChartStatus
@@ -70,8 +77,8 @@ from threetears.evals.analysis.report.words import aspect_stratum_key
 
 if TYPE_CHECKING:
     # The page builder's facts sit above the report's blocks, which read this module: named for the checker alone.
-    from threetears.evals.analysis.report.figure_keys import NamedKind
-    from threetears.evals.analysis.report_arms import FactArm
+    from threetears.evals.analysis.report.keys.names import NamedKind
+    from threetears.evals.analysis.report.fact_arms import FactArm
 
 __all__ = [
     "GATE_STATUS",
@@ -219,20 +226,19 @@ class ArmLook:
 
 @dataclass(frozen=True)
 class PageLook:
-    """Every arm's look on one page, the order the page lists arms in, and the names it writes for ids.
+    """Every arm's look on one page and the names it writes for ids.
 
     :ivar arms: Each arm's look, by id, in the input's order.
-    :ivar order: The arms in the page's order, then every other arm in the input's order: the order a chart's rows
-        take where its query lists none.
-    :ivar recommended: The arm the page recommends, whose point a scatter labels and a difference heatmap compares;
-        None for none.
     :ivar names: Each id's one reader name, by kind (aspect, measure, judged, stratum, task, criterion), then id.
     """
 
     arms: Mapping[str, ArmLook]
-    order: tuple[str, ...]
-    recommended: str | None
     names: Mapping[str, Mapping[str, str]]
+
+    @property
+    def order(self) -> tuple[str, ...]:
+        """The arms in the input's order: the order a chart's rows take where its query lists none."""
+        return tuple(self.arms)
 
     def arm(self, arm_id: str) -> ArmLook:
         """One arm's look.
@@ -282,49 +288,29 @@ class PageLook:
         return sorted(given, key=lambda arm: (place.get(arm, len(place)), given.index(arm)))
 
 
-def page_look(
-    arms: Sequence[FactArm],
-    slots: Mapping[str, int],
-    *,
-    order: Sequence[str],
-    recommended: str | None,
-    names: Mapping[str, Mapping[str, str]],
-) -> PageLook:
-    """A page's look: each arm's tag and name as code's facts give them, its colour and mark from its colour slot in
-    ``slots`` (an arm ``slots`` holds none for takes the facts' own). Its one caller,
-    :func:`~threetears.evals.analysis.report.block_spec.block_look`, passes the facts' slots, no order and no arm.
+def page_look(arms: Sequence[FactArm], *, names: Mapping[str, Mapping[str, str]]) -> PageLook:
+    """A page's look: each arm's tag and name as code's facts give them, its colour and mark from its colour slot as
+    the facts give it. Its one caller is :func:`~threetears.evals.analysis.report.block_spec.block_look`.
 
     :param arms: Each arm as code's facts tell of it, in the input's order.
     :ptype arms: Sequence[FactArm]
-    :param slots: Each arm's colour slot, by id, as the plan stores it.
-    :ptype slots: Mapping[str, int]
-    :param order: The options table's arms, in its order.
-    :ptype order: Sequence[str]
-    :param recommended: The arm the plan recommends; None for none.
-    :ptype recommended: str | None
     :param names: Each id's reader name, by kind, then id.
     :ptype names: Mapping[str, Mapping[str, str]]
     :return: The look.
     :rtype: PageLook
     """
-    looks: dict[str, ArmLook] = {}
-    for arm in arms:
-        slot = slots.get(arm.id, arm.color_slot)
-        looks[arm.id] = ArmLook(
+    looks = {
+        arm.id: ArmLook(
             id=arm.id,
             name=arm.name,
             tag=arm.tag,
-            token=_slot_token(slot),
-            shape=_slot_shape(slot),
+            token=_slot_token(arm.color_slot),
+            shape=_slot_shape(arm.color_slot),
             control=arm.role == "control",
         )
-    listed = [arm for arm in order if arm in looks]
-    return PageLook(
-        arms=looks,
-        order=tuple(dict.fromkeys([*listed, *looks])),
-        recommended=recommended,
-        names=names,
-    )
+        for arm in arms
+    }
+    return PageLook(arms=looks, names=names)
 
 
 @dataclass(frozen=True)
@@ -431,9 +417,7 @@ def _money_text(value: float, drawn: Quantity) -> str:
 _PLACED_FORMATS = frozenset({"num", "pct", "pts", "ms", "s"})
 
 
-def quantity(
-    unit: str, values: Sequence[float] = (), *, change: bool = False, places: int | None = None
-) -> Quantity:
+def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False, places: int | None = None) -> Quantity:
     """How a quantity in ``unit`` is drawn (this module's table).
 
     :param unit: The figure's unit, as the page reads it: ``share``, ``percent`` (or ``pct``), ``points``, ``usd``,

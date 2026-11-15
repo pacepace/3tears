@@ -283,6 +283,9 @@ class TurnReply:
         before (``anthropic 520: the response body is not JSON``, ``anthropic 529: Overloaded``) or the connection
         that was never made. Empty when the first attempt was answered. A recording keeps it with the reply, so a
         replay says the turn was sent more than once.
+    :ivar maybe_billed_sends: How many of the turn's sends broke before any response began and were sent again: the
+        provider may have served and billed each, and ``cost_usd`` holds none of it. ``0`` when none did. A recording
+        keeps it with the reply, as it keeps the reply's cost.
     """
 
     content: tuple[TurnBlock, ...]
@@ -301,6 +304,7 @@ class TurnReply:
     sent_binding: str | None = None
     input_transformations: tuple[dict[str, Any], ...] | None = None  # Any: the provider's JSON objects
     resent_after: tuple[str, ...] = ()
+    maybe_billed_sends: int = 0
 
     @property
     def text(self) -> str:
@@ -324,10 +328,13 @@ class TurnReply:
         """The reply as JSON, read back by :meth:`from_json`.
 
         :return: Every member, the blocks as the Messages API writes them; ``resent_after`` only when the turn was
-            resent, so a reply answered at once is written as it was before the member existed.
+            resent, and ``maybe_billed_sends`` only when a send broke before any response began, so a reply answered
+            at once is written as it was before either member existed.
         :rtype: dict[str, Any]
         """
         resent: dict[str, Any] = {"resent_after": list(self.resent_after)} if self.resent_after else {}
+        if self.maybe_billed_sends:
+            resent["maybe_billed_sends"] = self.maybe_billed_sends
         return {
             "content": [block.to_json() for block in self.content],
             "stop_reason": self.stop_reason,
@@ -390,6 +397,7 @@ class TurnReply:
             sent_binding=_optional_text(value, "sent_binding"),
             input_transformations=_transformations(value.get("input_transformations")),
             resent_after=_resends(value.get("resent_after")),
+            maybe_billed_sends=_maybe_billed(value.get("maybe_billed_sends")),
         )
 
 
@@ -411,9 +419,19 @@ def _resends(value: Any) -> tuple[str, ...]:  # Any: JSON
     return tuple(value)
 
 
+def _maybe_billed(value: Any) -> int:  # Any: JSON
+    """A reply's stored ``maybe_billed_sends``: absent for a turn none of whose sends broke, else a count of at least
+    1."""
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"a turn reply's maybe_billed_sends {value!r} is not a whole number of at least 1")
+    return value
+
+
 #: The members :meth:`TurnReply.to_json` writes since it first could, each read as absent (``None``, or no resend)
 #: where a reply written before lacks it.
-_LATER_REPLY_MEMBERS = frozenset({"sent_binding", "input_transformations", "resent_after"})
+_LATER_REPLY_MEMBERS = frozenset({"sent_binding", "input_transformations", "resent_after", "maybe_billed_sends"})
 
 #: The members every reply :meth:`TurnReply.to_json` wrote has, and :meth:`TurnReply.from_json` requires.
 _REPLY_MEMBERS = frozenset(

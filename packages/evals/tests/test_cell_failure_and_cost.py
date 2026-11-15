@@ -6,9 +6,10 @@ record the runner WROTE wrongly, so a hand-built result could not have shown any
 
 * A judge reply whose ``reasoning`` is not a string is a judge-reply defect for that dim, with its
   spend kept — never a run failure.
-* An apparatus fault — a replay miss, any :class:`ApparatusError` — out of a kind's ``prepare`` or
+* An apparatus fault — any :class:`ApparatusError` but a :class:`ReplayMiss` — out of a kind's ``prepare`` or
   ``invoke`` excludes THAT cell with what it had spent, and the run goes on; a run whose every cell
-  the rig excluded measured nothing and fails.
+  the rig excluded measured nothing and fails. A recording that cannot serve the run (a ``ReplayMiss``, a host's own
+  among them, and a refusal while recording) records its cell the same way and fails the run.
 * A deadline in the judge phase keeps the cell's evidence and the scores that came back, names each
   dim that did not finish, and leaves the cell one a re-judge can recover.
 * A cancel that lands mid-cell records the cell's spend before the cancel ends the run.
@@ -19,10 +20,12 @@ record the runner WROTE wrongly, so a hand-built result could not have shown any
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -37,7 +40,7 @@ from threetears.evals.kernel.candidate_kind import (
     CellSpanWindow,
     VariantConfig,
 )
-from threetears.evals.kernel.host import ApparatusError, EvalHost, WorldRegistry
+from threetears.evals.kernel.host import ApparatusError, EvalHost, ReplayMiss, WorldRegistry
 from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
@@ -93,6 +96,7 @@ from packages.evals.tests.fixtures.toyhost.kind import (
 )
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_run, toyhost_template, toyhost_test_cases
 from packages.evals.tests.off_loop import off_loop
+from threetears.evals.testing import RecordedCompletions, RecordingRefused
 
 # =============================================================================
 # The drive: one toy run through the real runner, as small as the case needs
@@ -263,6 +267,19 @@ class _ScriptedJudge:
     then_hang: bool = False
     #: The dims whose call raises, as a provider that is down does.
     raises: set[str] = field(default_factory=set)
+    #: What it prices each call at before it is made; ``None`` is a judge that cannot say, as one with no
+    #: ``price_ceiling`` at all. Under an enforcing cap a priced phase runs its calls side by side, and an unpriced one
+    #: one call at a time.
+    ceiling_usd: float | None = None
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, str] | None = None) -> float | None:
+        """The scripted ceiling, whatever the prompt.
+
+        :return: :attr:`ceiling_usd`.
+        :rtype: float | None
+        """
+        del system, user, response_format
+        return self.ceiling_usd
 
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, str] | None = None
@@ -343,7 +360,7 @@ async def test_a_cannot_tell_whose_reasoning_is_not_a_string_is_a_judge_defect_n
 
 
 # =============================================================================
-# An apparatus fault excludes its cell, never the run
+# An apparatus fault excludes its cell, never the run; a replay miss fails the run
 # =============================================================================
 
 #: What the kind below had billed before the rig broke under it.
@@ -351,15 +368,17 @@ _SPENT_BEFORE_THE_FAULT = 0.0031
 
 
 class _RigBreaksUnderKind(ToyExtractorKind):
-    """A toy extractor whose tool boundary re-raises a replay miss, as the cassette seam tells it to.
+    """A toy extractor whose tool boundary re-raises a rig fault, as the cassette seam tells it to.
 
     It breaks on the documents named in ``breaks_on``, after a first call it has already paid for
-    and reported through the sink; every other cell runs as the shipped kind does.
+    and reported through the sink; every other cell runs as the shipped kind does. The fault is a seeded payload that
+    no longer rebuilds, which excludes its one cell, or with ``misses`` a replay miss, which fails the run.
     """
 
-    def __init__(self, *args: Any, breaks_on: frozenset[str], **kwargs: Any) -> None:
+    def __init__(self, *args: Any, breaks_on: frozenset[str], misses: bool = False, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.breaks_on = breaks_on
+        self.misses = misses
 
     async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         if test_case.variation_params[DOCUMENT_PARAM] not in self.breaks_on:
@@ -382,6 +401,8 @@ class _RigBreaksUnderKind(ToyExtractorKind):
                 ),
             )
         )
+        if not self.misses:
+            raise ApparatusError("the ledger's seeded payload no longer rebuilds as the type its seam declares")
         raise CassetteMiss(
             CassetteKey(
                 corpus_id="capture-run",
@@ -395,9 +416,13 @@ class _RigBreaksUnderKind(ToyExtractorKind):
         )
 
 
-def _breaking_on(*documents: str) -> KindFor:
+def _breaking_on(*documents: str, misses: bool = False) -> KindFor:
     return lambda world: _RigBreaksUnderKind(
-        client=ScriptedExtractionClient(), world=world, breaks_on=frozenset(documents), goal_checks=_TOY_CHECKS
+        client=ScriptedExtractionClient(),
+        world=world,
+        breaks_on=frozenset(documents),
+        misses=misses,
+        goal_checks=_TOY_CHECKS,
     )
 
 
@@ -409,7 +434,7 @@ async def test_an_apparatus_fault_mid_cell_excludes_that_cell_with_its_spend_and
     assert len(drive.results) == 3, "the fault ended one cell, not the run"
     faulted = drive.result_for(first)
     assert faulted.termination == "apparatus_failed"
-    assert faulted.infra_error is not None and faulted.infra_error.startswith("apparatus: CassetteMiss")
+    assert faulted.infra_error is not None and faulted.infra_error.startswith("apparatus: ApparatusError: ")
     assert faulted.candidate_error is None
     assert classify_result(faulted) is ResultOutcome.INFRA_EXCLUDE
     (row,) = faulted.usage
@@ -419,6 +444,27 @@ async def test_an_apparatus_fault_mid_cell_excludes_that_cell_with_its_spend_and
     assert trace is not None and trace.trace == [{"turn": "asked the ledger for the vendor"}]
     others = [result for result in drive.results if result.id != faulted.id]
     assert [result.termination for result in others] == ["completed", "completed"]
+
+
+async def test_a_candidate_s_replay_miss_on_one_cell_fails_the_run_naming_the_call_with_its_spend():
+    """One cell of three asks its cassettes what the corpus never recorded. That cell was once excluded and the run
+    completed on the other two, so a replay read on fewer cells in silence. The next cell reads the same corpus, so a
+    miss fails the run (owner ruling, #1162): the cell is recorded apparatus_failed naming the call, with what it
+    had spent, and the run raises the miss."""
+    first = toyhost_test_cases(toyhost_template())[0]
+    drive, go = off_loop(_drive, _breaking_on(first.variation_params[DOCUMENT_PARAM], misses=True), n_cases=3)
+
+    with pytest.raises(CassetteMiss, match="the corpus never recorded tool='ledger' action='lookup'"):
+        await go()
+
+    faulted = drive.result_for(first)
+    assert faulted.termination == "apparatus_failed"
+    assert faulted.infra_error is not None and faulted.infra_error.startswith("apparatus: CassetteMiss: ")
+    assert "tool='ledger' action='lookup'" in faulted.infra_error
+    assert faulted.candidate_error is None
+    assert faulted.cost_usd == _SPENT_BEFORE_THE_FAULT
+    others = [result for result in drive.results if result.id != faulted.id]
+    assert all(result.termination == "completed" for result in others)
 
 
 class _DeclinedAfterBillingKind(ToyExtractorKind):
@@ -472,11 +518,12 @@ async def test_a_run_its_cost_cap_stopped_is_budget_stopped_even_when_every_cell
 
 
 class _RigFailsToPrepareKind(ToyExtractorKind):
-    """A toy extractor whose preparation meets a corrupt recording on its first cell only."""
+    """A toy extractor whose preparation meets a rig fault on its first cell only: a broken corpus, or ``fault``."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, fault: ApparatusError | None = None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.prepared = 0
+        self.fault = fault or ApparatusError("the delivery corpus for this case does not rebuild")
 
     async def prepare(
         self,
@@ -490,7 +537,7 @@ class _RigFailsToPrepareKind(ToyExtractorKind):
     ) -> ToyExtractorInstance:
         self.prepared += 1
         if self.prepared == 1:
-            raise ApparatusError("the delivery corpus for this case does not rebuild")
+            raise self.fault
         return await super().prepare(
             subject_snapshot=subject_snapshot,
             variant_config=variant_config,
@@ -514,6 +561,95 @@ async def test_an_apparatus_fault_in_prepare_excludes_that_cell_and_the_run_goes
     assert classify_result(faulted) is ResultOutcome.INFRA_EXCLUDE
 
 
+class _HostReplayMiss(ReplayMiss):
+    """A host's own replay, which raises the engine's ``ReplayMiss`` for a call its recording does not hold."""
+
+
+async def test_a_host_s_own_replay_miss_out_of_prepare_fails_the_run_naming_the_call():
+    """A miss met while the cell is prepared (a host's own replay, seeding its candidate) is a recording that cannot
+    serve the run, as one out of ``invoke`` is: the cell is recorded apparatus_failed naming the call, never excluded
+    alone, and the run raises the miss rather than going on to the next cell."""
+    miss = _HostReplayMiss("the host's replay holds no seed call for case doc-01 (call 0, key 0123456789ab)")
+    drive, go = off_loop(
+        _drive,
+        lambda world: _RigFailsToPrepareKind(
+            client=ScriptedExtractionClient(), world=world, goal_checks=_TOY_CHECKS, fault=miss
+        ),
+        n_cases=2,
+    )
+
+    with pytest.raises(_HostReplayMiss, match="holds no seed call for case doc-01"):
+        await go()
+
+    (faulted,) = drive.results
+    assert faulted.termination == "apparatus_failed"
+    assert faulted.infra_error == f"apparatus: _HostReplayMiss: {miss}"
+    assert faulted.usage == []
+
+
+#: The lookup the kind below asks, in the words the scripted judge answers by.
+_LOOKUP_SYSTEM = f'Look up the vendor: the single key "{FAITHFULNESS_DIM}".'
+
+
+class _OtherModelJudge(_ScriptedJudge):
+    """Answers every call as a model other than the one a recording already holds."""
+
+    async def generate(
+        self, *, system: str, user: str, response_format: dict[str, str] | None = None
+    ) -> ToyJudgeCompletion:
+        reply = await super().generate(system=system, user=user, response_format=response_format)
+        return dataclasses.replace(reply, model="toy/another-model")
+
+
+class _RecordsALookupKind(ToyExtractorKind):
+    """A toy extractor that, before it extracts, asks a model a lookup through a recording client in record mode
+    (what ``RECORD=1`` runs), after a first call it has already paid for and reported through the sink."""
+
+    def __init__(self, *args: Any, recorder: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.recorder = recorder
+
+    async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
+        sink.report_progress(
+            lambda: CandidateOutput(
+                telemetry=CandidateTelemetry(
+                    usage=[RoleUsage(role="candidate", cost_usd=_SPENT_BEFORE_THE_FAULT, call_count=1)]
+                ),
+            )
+        )
+        await self.recorder.generate(system=_LOOKUP_SYSTEM, user=test_case.id)
+        return await super().invoke(instance, test_case, sink)
+
+
+async def test_a_refusal_while_recording_fails_the_run_with_its_cell_and_spend_recorded(tmp_path: Path):
+    """A recording run (``RECORD=1``) whose recording refuses a call it was sent (here: the file holds another
+    model's calls) fails at the refusal, as a replay miss does (the #1162 ruling, extended to recording runs): a
+    recording missing that call would fail its first replay anyway, and every cell after the refusal would be spend
+    the recording cannot keep. The cell is recorded apparatus_failed naming the refusal, with what it had spent."""
+    recording = tmp_path / "lookups.jsonl"
+    async with RecordedCompletions.record(
+        _ScriptedJudge(default=_scored(FAITHFULNESS_DIM)), recording, settings=None
+    ) as recorder:
+        await recorder.generate(system=_LOOKUP_SYSTEM, user="an earlier case")
+    onto = RecordedCompletions.record(_OtherModelJudge(default=_scored(FAITHFULNESS_DIM)), recording, settings=None)
+    drive, go = off_loop(
+        _drive,
+        lambda world: _RecordsALookupKind(
+            client=ScriptedExtractionClient(), world=world, goal_checks=_TOY_CHECKS, recorder=onto
+        ),
+        n_cases=2,
+    )
+
+    with pytest.raises(RecordingRefused, match="a recording holds one model at one temperature"):
+        await go()
+
+    (faulted,) = drive.results
+    assert faulted.termination == "apparatus_failed"
+    assert faulted.infra_error is not None and faulted.infra_error.startswith("apparatus: RecordingRefused: recording ")
+    assert "toy/another-model" in faulted.infra_error
+    assert faulted.cost_usd == _SPENT_BEFORE_THE_FAULT
+
+
 async def test_a_run_whose_every_cell_the_rig_excluded_fails_after_recording_them_all():
     """Every cell is still recorded; then the run fails, because it measured nothing."""
     documents = [case.variation_params[DOCUMENT_PARAM] for case in toyhost_test_cases(toyhost_template())]
@@ -523,7 +659,7 @@ async def test_a_run_whose_every_cell_the_rig_excluded_fails_after_recording_the
         await go()
 
     assert raised.value.total == 2
-    assert "CassetteMiss" in str(raised.value)
+    assert "seeded payload no longer rebuilds" in str(raised.value)
     assert [result.termination for result in drive.results] == ["apparatus_failed", "apparatus_failed"]
 
 
@@ -595,8 +731,9 @@ async def test_a_cell_whose_judging_the_deadline_cut_is_recovered_by_a_rejudge_o
 
 
 async def test_a_judge_completion_carrying_no_temperature_fails_the_run_naming_the_conformance_check():
-    """Not an error on the dim: every call through the host's client returns the same type, so every cell would."""
-    judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True)
+    """Not an error on the dim: every call through the host's client returns the same type, so every cell would. The
+    judge prices its calls, so the phase is admitted whole under the cap and its two calls go out side by side."""
+    judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True, ceiling_usd=0.001)
     cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
     drive, go = off_loop(_drive, judge=judge, template=_two_dim_template(), cell_timeout_s=30, cap=cap)
 
@@ -619,6 +756,24 @@ async def test_a_judge_completion_carrying_no_temperature_fails_the_run_naming_t
     assert result.cost_usd is not None and cap.accumulated_usd == pytest.approx(result.cost_usd)
 
 
+async def test_an_unpriced_judge_s_defective_completion_fails_the_run_before_its_next_call_is_sent():
+    """The same defect from a judge that cannot price its calls, under an enforcing cap: its phase is asked one call at
+    a time, so the defect fails the run before the sibling dim's call is sent. One call is paid for, and counted."""
+    judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True)
+    cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
+    drive, go = off_loop(_drive, judge=judge, template=_two_dim_template(), cell_timeout_s=30, cap=cap)
+
+    with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance"):
+        await go()
+
+    assert len(judge.calls) == 1, "the sibling dim's call was never sent"
+    (result,) = drive.results
+    assert result.termination == "apparatus_failed"
+    (judge_row,) = [row for row in result.usage if row.role == "judge"]
+    assert (judge_row.call_count, judge_row.cost_usd) == (1, pytest.approx(0.0004))
+    assert result.cost_usd is not None and cap.accumulated_usd == pytest.approx(result.cost_usd)
+
+
 async def test_a_running_cell_beside_the_defect_ends_as_a_run_stopping_cell_s_siblings_do():
     judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True)
     drive, go = off_loop(_drive, judge=judge, n_cases=2, max_concurrent_cells=2, cell_timeout_s=30)
@@ -629,6 +784,63 @@ async def test_a_running_cell_beside_the_defect_ends_as_a_run_stopping_cell_s_si
     # The sibling was waiting on its judge when the defect stopped the run: cancelled, its spend recorded; the
     # defect's own cell is recorded too, with what it was billed.
     assert sorted(result.termination for result in drive.results) == ["apparatus_failed", "cancelled"]
+
+
+async def test_a_replayed_scoring_judge_whose_recording_misses_fails_the_run_naming_the_call(tmp_path: Path):
+    """The judge replays a recording that holds none of the prompts this run asks, as after the page it reads moved.
+
+    It once failed the dim with the miss's text withheld, excluding the result, so a replay read on fewer judgments in
+    silence. A judge the rig cannot serve now fails the run, as a protocol defect does (owner ruling, #1162): the
+    cell is recorded excluded, naming the call, and the run raises the miss."""
+    recording = tmp_path / "judge.jsonl"
+    async with RecordedCompletions.record(
+        _ScriptedJudge(default=_scored(FAITHFULNESS_DIM)), recording, settings=None
+    ) as recorder:
+        await recorder.generate(system=f'A prompt this run never asks: the single key "{FAITHFULNESS_DIM}".', user="x")
+    replay = RecordedCompletions.replay(recording, settings=None)
+    drive, go = off_loop(_drive, judge=replay, template=_two_dim_template(), cell_timeout_s=30)
+
+    with pytest.raises(RecordingRefused, match=r"no call is recorded for the prompt .+ \(call 0, key [0-9a-f]{12}\)"):
+        await go()
+
+    (result,) = drive.results
+    assert result.termination == "apparatus_failed"
+    assert result.infra_error is not None and "RecordingRefused" in result.infra_error
+    assert "no call is recorded for the prompt" in result.infra_error and str(recording) in result.infra_error
+
+
+@dataclass(frozen=True)
+class _ResentCompletion(ToyJudgeCompletion):
+    """A judge reply whose first send broke before any response began and was sent again, as the shipped client
+    counts it: the provider may have billed that send too."""
+
+    maybe_billed_sends: int = 1
+
+
+@dataclass
+class _ResendingJudge(_ScriptedJudge):
+    """Every call's first send dropped before a response, then answered: each reply counts the dropped send."""
+
+    async def generate(
+        self, *, system: str, user: str, response_format: dict[str, str] | None = None
+    ) -> ToyJudgeCompletion:
+        reply = await super().generate(system=system, user=user, response_format=response_format)
+        return _ResentCompletion(**dataclasses.asdict(reply))
+
+
+async def test_a_judge_send_that_may_have_been_billed_twice_is_on_its_row_and_in_the_cap():
+    """The row's cost holds the answered call alone and counts the dropped send beside it; the cap counts the dropped
+    send at its call's own price, so a run never ends past its cap by what no row could state."""
+    cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
+    drive = await _driven(judge=_ResendingJudge(default=_scored(FAITHFULNESS_DIM), ceiling_usd=0.001), cap=cap)
+
+    (result,) = drive.results
+    judge_rows = [row for row in result.usage if row.role == "judge"]
+    assert judge_rows and all(row.maybe_billed_sends == row.call_count for row in judge_rows)
+    assert all(row.maybe_billed_sends is None for row in result.usage if row.role != "judge")
+    judged = sum(row.cost_usd or 0.0 for row in judge_rows)
+    assert result.cost_usd is not None and judged > 0
+    assert cap.accumulated_usd == pytest.approx(result.cost_usd + judged)
 
 
 class _EvidencelessKind(ToyExtractorKind):

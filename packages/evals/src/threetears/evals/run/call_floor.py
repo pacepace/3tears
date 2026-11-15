@@ -30,19 +30,29 @@ to a fixed output cap, times the client's own re-sends
 
 **What it cannot see.** The output cap and the client's retry multiplier dominate many ceilings — the incident a
 judge-kind arm hit had a $0.58 call under a $0.50 cap — and those are whole in the floor. A ceiling dominated by a
-long transcript is not: a floor under the cap admits the arm, and that call is held to the cap as the run
-reserves it, as before. A candidate's own calls are the kind's, not the engine's, and are not priced here.
+long transcript is not: a floor under the cap admits the arm, and the run's cap counts that call's spend once its
+cell is recorded. A candidate's own calls are the kind's, not the engine's, and are not priced here.
+
+**Priced fresh, or refused as unpriced.** Each client is brought up to date (``refresh_prices``) before its calls
+are priced, so a launch or a resume in a process that has not read the price catalogue yet reads it here. A call
+the cell is bound to make that its client still cannot price is an :class:`~threetears.evals.run.UnpricedCall`,
+which a cost cap refuses: unknown is not $0.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from threetears.evals.kernel.capped_completion import call_ceiling, ceiling_is_estimate
+from threetears.evals.kernel.capped_completion import (
+    call_ceiling,
+    ceiling_is_estimate,
+    refresh_prices,
+    unpriced_because,
+)
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS
-from threetears.evals.run.launch import CallCeiling, LaunchRequest, build_judge_service
+from threetears.evals.run.launch import CallCeiling, LaunchRequest, UnpricedCall, build_judge_service
 from threetears.evals.run.simulator import (
     SIMULATED_USER_RESPONSE_FORMAT,
     SIMULATOR_MAX_TOKENS,
@@ -65,7 +75,7 @@ class _Floor:
 
 async def price_subject_call_floor(
     host: EvalHost, request: LaunchRequest, *, judged_artifact: JudgedArtifact
-) -> CallCeiling | None:
+) -> CallCeiling | UnpricedCall | None:
     """A floor under a subject arm's largest judge or simulator call, for its ``LaunchableKind.price_largest_call``.
 
     What a host composes into the launch entry of each of its own subject kinds — any conversational or
@@ -88,9 +98,10 @@ async def price_subject_call_floor(
     :param judged_artifact: What the kind's judge reads — the declaration its launcher builds its judge with.
     :ptype judged_artifact: JudgedArtifact
     :return: The larger of the judge's and the simulated user's floor, flagged a lower bound
-        (:attr:`~threetears.evals.run.CallCeiling.lower_bound`); ``None`` for an arm with no plan, or one whose
-        plan names neither a judge nor a simulated user bound to speak, or whose clients cannot price a call.
-    :rtype: CallCeiling | None
+        (:attr:`~threetears.evals.run.CallCeiling.lower_bound`); the first call whose client cannot price it even
+        after its prices were refreshed, as an :class:`~threetears.evals.run.UnpricedCall`; ``None`` for an arm with
+        no plan, or one whose plan names neither a judge nor a simulated user bound to speak.
+    :rtype: CallCeiling | UnpricedCall | None
     :raises ValidationFailedError: The launch's judge-config selection does not fit the template (as
         :func:`~threetears.evals.run.plan_judge` refuses it).
     :raises ValueError: The host supplies no completion clients, or a client priced a call at an amount no
@@ -102,13 +113,16 @@ async def price_subject_call_floor(
     floors: list[_Floor] = []
     if plan.judge is not None and judged_artifact is not JudgedArtifact.UNJUDGED:
         judge = await _judge_floor(host, request, plan.judge.model, judged_artifact)
+        if isinstance(judge, UnpricedCall):
+            return judge
         if judge is not None:
             floors.append(judge)
     conversation = request.template.conversation
     if plan.simulator_model is not None and conversation is not None and _utterance_certain(conversation):
         simulator = await _simulator_floor(host, plan.simulator_model, conversation)
-        if simulator is not None:
-            floors.append(simulator)
+        if isinstance(simulator, UnpricedCall):
+            return simulator
+        floors.append(simulator)
     if not floors:
         return None
     floor = max(floors, key=lambda each: each.usd)
@@ -123,8 +137,9 @@ async def price_subject_call_floor(
 
 async def _judge_floor(
     host: EvalHost, request: LaunchRequest, judge_model: str, judged_artifact: JudgedArtifact
-) -> _Floor | None:
-    """The largest of the per-dim judge floors: each is under a call every judged result makes."""
+) -> _Floor | UnpricedCall | None:
+    """The largest of the per-dim judge floors: each is under a call every judged result makes. A dim whose call
+    cannot be priced makes the arm's largest call unknown, so it is the answer, as an :class:`UnpricedCall`."""
     template = request.template
     run_judge = await run_blocking(
         host.blocking_executor,
@@ -134,15 +149,29 @@ async def _judge_floor(
     )
     service = run_judge.service
     try:
+        requests = await run_blocking(
+            host.blocking_executor,
+            lambda: service.floor_requests(template.rubric, intent=template.intent, judged_artifact=judged_artifact),
+        )
+        # Each client's prices brought up to date before any is read: a fresh process has read no catalogue yet.
+        for client in {id(client): client for client in map(service.client_for, requests)}.values():
+            await refresh_prices(client)
 
-        def priced() -> tuple[list[tuple[float, str]], bool]:
-            requests = service.floor_requests(template.rubric, intent=template.intent, judged_artifact=judged_artifact)
-            ceilings = [(usd, each.dim_id) for each in requests if (usd := service.price_ceiling(each)) is not None]
+        def priced() -> tuple[list[tuple[float | None, str]], bool]:
+            ceilings = [(service.price_ceiling(each), each.dim_id) for each in requests]
             return ceilings, any(ceiling_is_estimate(service.client_for(each)) for each in requests)
 
-        floors, estimate = await run_blocking(host.blocking_executor, priced)
+        ceilings, estimate = await run_blocking(host.blocking_executor, priced)
+        for (usd, dim_id), each in zip(ceilings, requests, strict=True):
+            if usd is None:
+                model = run_judge.effective_judges.get(dim_id, judge_model)
+                return UnpricedCall(
+                    call=f"the {dim_id!r} judge call every judged case makes on {model!r}",
+                    why=unpriced_because(service.client_for(each)),
+                )
     finally:
         await service.aclose()
+    floors = [(usd, dim_id) for usd, dim_id in ceilings if usd is not None]
     if not floors:
         return None
     usd, dim_id = max(floors)
@@ -163,17 +192,24 @@ async def _judge_floor(
     )
 
 
-async def _simulator_floor(host: EvalHost, simulator_model: str, conversation: ConversationSpec) -> _Floor | None:
-    """The smallest utterance floor over the actors, or ``None`` when any actor's call cannot be priced."""
+async def _simulator_floor(
+    host: EvalHost, simulator_model: str, conversation: ConversationSpec
+) -> _Floor | UnpricedCall:
+    """The smallest utterance floor over the actors, or the unpriced call when any actor's call cannot be priced."""
     client = host.completion_clients("pricing a simulated user")("simulator", simulator_model)
     try:
+        # Its prices brought up to date before they are read: a fresh process has read no catalogue yet.
+        await refresh_prices(client)
         floors: list[tuple[float, str]] = []
         for actor in conversation.actors:
             system, user = smallest_utterance_prompts(actor)
             usd = call_ceiling(client, system=system, user=user, response_format=SIMULATED_USER_RESPONSE_FORMAT)
             if usd is None:
                 # The minimum over the actors is unknown when one of them is: that actor might be the one to speak.
-                return None
+                return UnpricedCall(
+                    call=f"a simulated-user utterance (actor {actor.id!r}) on {simulator_model!r}",
+                    why=unpriced_because(client),
+                )
             floors.append((usd, actor.id))
         estimate = ceiling_is_estimate(client)
     finally:

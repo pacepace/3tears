@@ -142,9 +142,18 @@ pass it to every entrypoint. It holds:
 - your `failure_describer` — how a raised provider call reads. It is the only thing that can say whose failure a
   call was (`ProviderFailure.owner`): the calling `account`'s (a refused key, spent credit), which stops a run
   rather than excluding its cells; the `provider`'s (it declined the call: a 429 rate limit, or a 529 overloaded or
-  503 unavailable), which excludes the cell and lets the run go on; or the `candidate`'s, charged as any failure.
-  `withhold_failure_detail` is the honest one for an app with no error types of its own, and says `candidate` for
-  every failure;
+  503 unavailable), which excludes the cell and lets the run go on; `unserved` (the provider does not serve the model
+  the call named: a retired model, or a model id it does not know), which loses the cell to the test setup; or the
+  `candidate`'s, charged as any failure. Returning `unserved` is optional: a describer that never does keeps working,
+  and a retired model's calls are then charged to the candidate. `withhold_failure_detail` is the honest one for an
+  app with no error types of its own, and says `candidate` for every failure.
+  Your own candidate kind routes a model call that raised through `failed_call_output` (from
+  `threetears.evals.kernel`), passing the owner your describer read, as the package's own kinds do. That is what
+  acts on the owner: an `account` refusal stops the run, a `provider` decline excludes the cell, and `unserved` sets
+  `CandidateOutput.model_unserved`, so the cell is never judged, even when your kind went on to record a transcript
+  of turns with no reply, and three such cells in a row, or any left when the run's cells run out, stop the run
+  `exhausted`, resumable once the model is served.
+  A kind that builds its own `CandidateOutput` for a failed call skips all three;
 - your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
   where the host is built;
 - your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the questions
@@ -261,8 +270,12 @@ replay as the `k` answers they were. Inside an eval's cell, each call is also re
 one prompt get back what each got, whatever order the cells run in. A recording made before format 3 noted no cell
 and is still read: repeat `i` is served the call of index `i`, and otherwise the first call left. A prompt the recording does not hold, or one asked once more than it was, is
 refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
-an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. To name a prompt that
-changed under its recording before a replay starts, hand
+a `ReplayMiss` ([rig failures](#rig-failures-a-broken-rig-costs-one-cell-a-recording-that-cannot-serve-costs-the-run)),
+so a candidate that meets one never has its cell scored: the cell is recorded `apparatus_failed`, naming the call, and
+the run fails; so does a call the recorder refuses while recording. A judge that meets a `RecordingRefused` raises it too, rather than recording a
+failed call: a run's scoring judge fails the run, naming the call, as does a judge kind's judge under test on any one
+trial, and a writer's pairwise pass fails. To name a
+prompt that changed under its recording before a replay starts, hand
 `RecordedCompletions.check_covers(RECORDING, prompts, settings=...)` the prompts your code sends. A file holds one
 model's calls at one temperature, under any number of settings (one model at two efforts), and each client replays
 its own with `replay(path, settings=...)`; record a second model into a file of its own, since recording it onto
@@ -302,7 +315,7 @@ from threetears.evals.providers import Clients, describe_failure
 
 async def build_host() -> EvalHost:
     clients = Clients(default="deepseek/deepseek-v4-flash", judge="google/gemini-3.5-flash-lite")
-    unpriced = await clients.load_prices()  # once, at boot: {model: why} for any model left unpriced
+    unpriced = await clients.load_prices()  # the boot step: {model: why} for any model left unpriced
     return EvalHost(..., clients=clients, failure_describer=describe_failure)
 ```
 
@@ -332,7 +345,10 @@ billed; a resend cut at the time bound may already have been, and its spend is n
 back to carry it.
 `describe_failure` reads the client's one error type, `ProviderError` (the provider, the status and its own message,
 never the body, `after 3 attempts` when it was sent again, and its `owner`: `account` for a refused key or spent
-credit, which stops a run), and an `httpx` transport error by the host it was sending to.
+credit, which stops a run, and `unserved` for a model the provider does not serve: OpenRouter's 404 for a model it
+has retired and its 400 for a model id it does not know, Anthropic's 404 `not_found_error`, OpenAI's
+`model_not_found`; OpenRouter's other 404s, no endpoint taking the request, stay the candidate's), and an `httpx`
+transport error by the host it was sending to.
 
 **A model that lacks a setting still answers, sent the closest one it takes.** The choosing, the refusal reading and
 the resending are `threetears.evals.negotiation`'s, the same a client of your own uses (below), and each completion's
@@ -369,9 +385,42 @@ when a cache share was priced at a rate the row does not list for it. The `price
 (the BYOK sum, `openrouter:reported+upstream`) and `OPENROUTER_CATALOGUE`, the prefix of
 `openrouter-catalogue:<id>`. Compare a stored `price_source` with them rather than spelling the words.
 A
-model's `price_ceiling` answers once its catalogue is loaded. The engine awaits the model's `refresh_prices()`
-before it prices a call, which loads it; `await clients.load_prices()` at boot reads it early and says which models
-it cannot price. A long-lived process is not priced from its first
+model's `price_ceiling` answers once its catalogue is loaded. **The boot step: await `clients.load_prices()` before
+your host offers any launch or resume.** It reads the catalogue and answers which of the models your factory names
+it cannot price, so an operator hears that at boot. Admission does not depend on it: a launch, an estimate and a
+resume each await every client's `refresh_prices()` before they price an arm's largest call, which loads the
+catalogue in a process that has not read it yet; and under a cost cap an arm whose largest call still cannot be
+priced is refused, naming the call and why, never admitted unchecked.
+
+**Admission also checks the models are still served.** `Clients.model_listing(model, role=...)` answers what
+OpenRouter's model list (the same catalogue, so the same read) says of a model that goes to OpenRouter, and admission
+asks it of each arm's candidate, judge and simulator models: a model the list does not name is refused, naming it,
+and a list that cannot be read lets the launch, the sweep or the resume go ahead saying the check was skipped
+(`JobsStarted.notices`, `ArmEstimate.served_check_skipped`). A model going to Anthropic or OpenAI directly is not
+checked. A candidate your kind calls through your own route, not a role of the factory, is asked with `role=None`:
+`Clients` does not route it and answers nothing, so its check is reported skipped, and the notice names the fix; it
+comes with every launch until you make it. The list is read under the catalogue's own refresh, so a model retired
+within the last `refresh_after` (six hours by default) can pass: the unserved-model circuit, which stops the arm
+after three cells in a row meet the provider's answer, is the backstop.
+
+**Declaring your candidate's route takes one line.** When your kind calls its candidate through a client of your
+factory, name that role on its launch entry, and the candidate is checked against that role's provider list:
+
+```python
+LaunchableKind(
+    launch=your_persona_launcher,
+    resolve_subject=your_persona_subject,
+    plan_arm=plan_persona_arm,
+    candidate_role="analyst",  # the factory role your launcher builds the candidate's client in
+)
+```
+
+The report writer's entry takes the same as an argument (`launchable_report_writer_kind(..., candidate_role="analyst")`)
+when your `models` factory builds the writer on your factory's analyst client; the judge kind declares its own. When
+your candidate goes somewhere your factory does not build, answer for it instead: a factory of your own may offer
+`async model_listing(model, *, role) -> ModelListing | None` (`ModelListing` from `threetears.evals.schema`),
+answering for `role=None` with the list of the provider your candidates go to, and `None` for a model whose provider
+keeps no list it reads. A factory without `model_listing` is not checked. A long-lived process is not priced from its first
 fetch forever: the catalogue refreshes on the first live call after `refresh_after` (`Catalogue(refresh_after=...)`,
 six hours by default). A refresh that fails keeps the last rates rather than failing the call, logs it, and marks the
 completions they price: `Completion.pricing_stale_since` is when those rates expired (`None` while fresh, and on an
@@ -425,6 +474,10 @@ members (and `sent_settings`, when it can say what the request carried), whose `
 `failure_describer` over that SDK's errors. The package ships no adapter to any of them, so evals depends on no other
 3tears package; `check_completion_conformance` on your client's completions, and `check_refusal_negotiation` on the
 client, in your suite, hold the wrapper to what the engine reads.
+
+**A wrapper around a `Model` or a completion client forwards `price_ceiling_refusal()`.** A forwarding proxy or a
+decorator (a timing wrapper, a logging one) passes `price_ceiling_refusal()` through to what it wraps, as it does
+`price_ceiling`; one that does not loses the reason, and its capped refusals say the model gave none.
 
 **A client builder of your own sends every reasoning field.** The judge asks by a token budget
 (`JUDGE_REQUEST_SETTINGS.reasoning_max_tokens`, with `reasoning_effort=None`), so its reasoning is bounded where a
@@ -690,7 +743,7 @@ because every stored model reads strictly.
 
 **Prove your store with the conformance kit.** `threetears.evals.testing.STORE_CONFORMANCE_CASES`
 states every rule of the port — scoping, the strip on read, `exclude`/`keep` projection, `by_doc_type`'s
-equality and membership (`field_in`) predicates, ordering, etag conflicts and the re-read that recovers one, create-only writes, merge and delete — as a case you
+equality and membership (`field_in`) predicates, ordering, paging (`after`), etag conflicts and the re-read that recovers one, create-only writes, merge and delete — as a case you
 hand a fresh, empty store. Every case is mandatory: in particular a store must implement both write
 preconditions — `if_match` (the stored document still carries this etag), because several writers share a
 run document as it finishes, and `create_only` (nothing is stored under this scope and id, of any type),
@@ -708,6 +761,69 @@ drops repeated values. Parametrise your test runner over it:
 def test_my_store_conforms(case: StoreConformanceCase, tmp_path: Path) -> None:
     case.run(MyDocumentStore(tmp_path / "evals.sqlite"))
 ```
+
+**`by_doc_type` pages with `after`.** The run and campaign listings (`runs_list`, `campaigns_list`) read a page at a
+time, newest first by `(created_at, id)`: `by_doc_type(..., order_by="created_at", limit=101, after=(created_at,
+id))`, where `after` is the last document of the page before and the read returns only documents strictly past it.
+Your store need not do anything to keep working. A `by_doc_type` that does not declare `after` by name is never handed
+one: the engine reads it with `page_by_doc_type`, the port's default (provisional), which asks your store for
+the whole match and orders and slices it in Python, so every listing call reads the scope's whole match until you
+declare it. To page in your backend:
+
+- **Declare `after` by name**, keyword-only, as `exclude_in_items` is declared (`takes_after` is the probe;
+  `**field_eq` does not count, because an old store reads `after=` as an equality predicate and answers nothing).
+  Call `check_after(after, order_by)` first: it refuses what the port refuses (`after` without `order_by`, a pair
+  that is not a scalar and a string id).
+- **Break every ordered read's ties by `id`**, in the sort direction, the first page's included: a page cut where
+  several documents share a `created_at` must end where the next one starts. On Postgres, descending:
+  `ORDER BY data->>'created_at' DESC NULLS LAST, id DESC` (Postgres puts nulls first descending unless told; the
+  port puts a missing or null value lowest), and the keyset condition `(data->>'created_at' < $1 OR
+  (data->>'created_at' = $1 AND id < $2) OR data->>'created_at' IS NULL)`; a null `after` value names a place among
+  the documents without the field (`data->>'created_at' IS NULL AND id < $2`). Compare under one collation in the
+  `ORDER BY` and the condition (`COLLATE "C"` on both is the port's code-point order). `order_and_page` is the port's
+  meaning in Python, to compare against.
+- **The status filter stays index-friendly.** A single-status listing reads by equality (`status=...`); only the
+  `cancelled` listing, which a lapsed `pending` or `running` run joins, reads by `field_in` over the three.
+
+**Declaring `after` means honouring it.** A strictly typed adapter must declare it to match the port, but one that
+declares it and drops it hands back the first page again, and a caller reading until `next` is `None` would never
+stop; `page_by_doc_type` refuses such a page with `PageNotPastAfter`, naming your adapter. If your backend cannot page
+yet, declare `after`, call `check_after`, and return `order_and_page(rows, order_by=..., descending=..., after=after,
+limit=limit)` over your own unlimited read: correct, and no dearer than the default.
+
+The kit's `page.walk_reads_each_once`, `page.holds_predicates_and_projection`, `page.after_is_honoured` and
+`page.after_refusals` read your store through `page_by_doc_type`, or ask only a store that declares `after`, so a store
+that does not declare it passes them through the default, and one that does is held to what it declares. The async bridge and the routed store declare `after`, and do the same for the
+stores beneath them: a store beneath one that does not declare it has every ordered read made whole and ordered
+above it, an ordered read with a `limit` included.
+
+**Reading every page of a listing.** `runs_list` and `campaigns_list` (and their actions) return `next`, the cursor
+for the page after, and take it back as `cursor`: call again with `cursor=next` until `next` is `None`. The page is
+100 rows unless `limit` names another (1 to 1000 from Python, 1 to 200 through an action). The cursor is the
+package's own opaque string, bound to the filters it was read with; hand it through unchanged, beside the same
+filters. A `runs_list` page read with a `label` can list fewer runs than `limit` while `next` is set: the label filter
+runs after the read (the status and archive filters are in it), and `filtered` counts the runs it left out.
+
+**Narrowed and grouped reads are optional** (`ResultReadings`, provisional; `RESULT_READINGS_CONFORMANCE_CASES`
+proves a store that offers them). Three of their rules are newer than the capability:
+
+- **`grouped` takes `exclude_in_items`**, with `iter_narrowed`'s meaning, applied to every `values` value: the spend
+  lenses ask to leave each re-judge's `cannot_tell` and `errors` prose out. Declare it by name and narrow before you
+  ship a value; a backend that cannot narrow inside an extracted value narrows each `values` value in Python as
+  `iter_narrowed` narrows a row, before it hands the groups back. A `grouped` that does not declare it keeps working: the engine, the routed
+  store and the async bridge ask it without the parameter and narrow its values themselves (`grouped_narrowed`), and
+  the kit's `grouped.values_narrowed_in_items` reads it the same way. It ships the items whole until it declares the
+  parameter, and mypy reads it as not matching `ResultReadings` until then.
+- **`sum_int` is exact past 64 bits, or refused with `TypeError`**, never wrapped, rounded or failed as a backend
+  error: the kit's `grouped.sum_int` sums integers past a signed 64-bit range. On Postgres, sum through `numeric`
+  (`sum((data #>> '{path}')::numeric)`, which is exact at any width) and hand back a Python `int`; a store that sums
+  through `bigint` raises `bigint out of range`, which reads as an outage, so catch it and raise `TypeError`
+  instead, or do not sum through `bigint`. `values` must return an integer of 2**63 or more whole, as your own reads do
+  (`grouped.values_exact`): a `jsonb` number read through the JSON text keeps it.
+- **A narrowed read is closed when abandoned.** A walk the engine leaves part way closes your `iter_narrowed` iterator
+  (`close()`, or `aclose()` through the async bridge, which now closes any async iterator that has one, not only an
+  async generator): release your cursor there. A reader holding `EvalStorage.iter_result_readings`'s read can close it
+  at once with `close()`, or hold it in a `with` block.
 
 **The store is called off the event loop.** The port is synchronous and the engine is async: every store call
 the engine makes runs on the host's `blocking_executor`, never on the loop, and `EvalStorage` refuses a call made
@@ -813,7 +929,8 @@ measured on the paths a host runs (constants of `threetears.evals.analysis.reads
 (28,116, 1 GiB) for a campaign's bundle; `PLANNING_READ_BUDGET` (37,010, 256 MiB) for a launch estimate's planning
 block; `SPEND_READ_BUDGET` (105,196, 1 GiB) for `program_budget` and `orphaned_runs`, which read each result's
 spend figures off one grouped read, never a result, but hold that read whole before folding it (1,683 bytes a result
-on a store offering grouped reads, 10,207 on a store without them, whose rows the engine groups). They take no
+on a store offering grouped reads; on a store without them the engine groups its rows a page at a time, holding the
+groups and one page, not every row, and the budget is not yet re-measured for that path). They take no
 filter, so past it they are refused, the remedy naming where to read the spend a page at a time.
 
 - **A scope within the budget** is read whole, as before.
@@ -1001,7 +1118,7 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.11), durable documents (v16.9), regenerable documents
+**Each version space moves on its own.** Core documents (`CORE_SCHEMA_VERSION`.`CORE_SCHEMA_MINOR`), durable documents (v16.9), regenerable documents
 (v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`), the cell model
 (`CELL_MODEL_VERSION`) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The code-only page has none: it is rendered from the bundle, which is the versioned machine
 form. Report documents and their sessions carry a version of their own, as cassettes do: a change to the report document's shape moves that version alone, the shared regenerable version stays where it is, and a report from before it reads as the code-only page with a line to regenerate it.
@@ -1343,8 +1460,9 @@ anything is spent.
 
 **Your kind's paid calls are counted by the run's cost cap when its cell lands, and never refused.** The cell's
 sink keeps the cell's spend by source, and the cap is read between cells, against the cells already recorded: a
-cell running when the cap is reached finishes whole, and a run may land past it by up to the width's worth of cells
-([Cost and budgets: caps](cost-and-budgets.md#caps)). Report each paid call's cost as it lands: wrap the client in
+cell running when the cap is reached finishes its candidate, and a run may land past the cap by what the running
+cells' candidates spend. The engine's own judging is admitted against the cap on its price ceiling before it is paid
+for, so it stays within the cap wherever that ceiling bounds the bill ([Cost and budgets: caps](cost-and-budgets.md#caps)). Report each paid call's cost as it lands: wrap the client in
 `CappedCompletion(client, sink=sink, source="candidate")`, which does it for every call, or call
 `sink.add_spend(source, cost)` once a call returns; a call that raises counts nothing. Each call adds, and never
 replaces what another source reported. Return the cell's spend on its output; that is what the cap counts.
@@ -1390,9 +1508,13 @@ bound to make, with the transcript and evidence left out, on the clients your ce
 and the launch then refuse an arm whose cap cannot afford even that, before anything is spent. That catches a
 judge or simulator client whose output cap and retries alone put one call above the cap. Pass the `eval_host`
 your launcher builds the judge on and the `judged_artifact` it hands `build_judge_service`. The figure is a
-floor, not the largest call (`CallCeiling.lower_bound`): a cap above it is admitted, and a call its transcript
-makes larger is still held to the cap as the run reserves it. A kind with no judge and no simulated user has
-nothing to price here, and returns `None`.
+floor, not the largest call (`CallCeiling.lower_bound`): a cap above it is admitted, and the run's cap counts the
+spend of a call its transcript makes larger once its cell is recorded. Each client's prices are brought up to date
+before it is priced; a call whose client still cannot price it comes back as an `UnpricedCall` naming the call and
+why, and under a cap the arm is refused. A pricer of your own does the same: await `refresh_prices` on each client
+first, and answer an `UnpricedCall` rather than `None` for a call it cannot price (`unpriced_because` from
+`threetears.evals.kernel` words the client's reason). A kind with no judge and no simulated user
+has nothing to price here, and returns `None`.
 
 **A transport launches in two halves.** `run_launch` admits the launch in its call (`admit_launch`: every refusal
 above, every arm planned and priced, the runs' room reserved) and runs the rest as one job
@@ -1402,14 +1524,17 @@ in the call and must not. A script awaits both halves in a row through `start_ru
 
 ### At boot: settle, then offer resumes
 
-A process that dies leaves its runs to read `lost` once their leases lapse. At boot, settle them, then offer what
-can be taken up again:
+A process that dies leaves its runs to read `lost` once their leases lapse. At boot, read the prices, settle the
+runs, then offer what can be taken up again:
 
-1. `sweep_abandoned_runs(storage, scopes)` writes lost every run your last process left running.
-2. The `jobs_resumable` action (or the function behind it, `resumable_jobs(storage, scopes)`) lists the runs, sweeps
+1. `await clients.load_prices()` (the boot step under [Bringing a provider](#bringing-a-provider)): the resume an
+   operator asks for next is priced fresh by its admission either way, and this says at boot which models are left
+   unpriced.
+2. `sweep_abandoned_runs(storage, scopes)` writes lost every run your last process left running.
+3. The `jobs_resumable` action (or the function behind it, `resumable_jobs(storage, scopes)`) lists the runs, sweeps
    and launches `job_resume` would take up. Each comes with how it ended and why, its cells done and expected, what
    it spent and its cap, and, for a run its cost cap or its metered-call ceiling stopped, what it needs to resume.
-3. Offer each one to an operator. **Nothing resumes on its own**: a resume spends money, so it is always asked for
+4. Offer each one to an operator. **Nothing resumes on its own**: a resume spends money, so it is always asked for
    (`job_resume`). An operator declines a run by archiving it (`EvalStorage.set_eval_run_archived`): an archived
    run is never listed again, nor a sweep or launch whose every run is archived.
 
@@ -1915,11 +2040,26 @@ scope holds no version of is minted over their stored ids through `mint_case_set
 and reported under `case_set` as `<name> v1`; a scope holding any version keeps it (the next version is
 `case_set_mint`'s), so a host's own minting script over `case_set_mint` can be dropped.
 
-**A stored template's presentation fields reach it through `update_template`.** The seed fills empty slots only, and
-the template digest a reset reads leaves `goal_check_names` and `stratum_names` out, so `update_template` is the one
-seam that gives a stored template a check's or a stratum's reader name. A name holds at most `DECLARED_NAME_CHARS`
-characters, and `check_names(checks, {})` over the host's seeded checks shows which the namer leaves `GOAL_CHECK`, the
-ones worth a declared name.
+**The seed, and a reset, give a stored template the corpus's presentation names it lacks.** The template digest a
+reset reads leaves `goal_check_names` and `stratum_names` out, so a name your corpus later declares for a template the
+store already holds never makes it stale, and a reset never writes it a new revision for one. The seed fills it
+instead, on every boot, into the template's
+current revision: each goal check the stored template holds and names nothing, and each stratum it names nothing, is
+given the corpus's name, unless the stored template already gives that name to another check or stratum. An entry the
+seed reads on the stored template is never overwritten, only those two fields are written, and `updated_at` stays
+where it was, so no run reads the template as edited. Each template filled is reported under
+`SeedOutcome.presentation_named` with the entries written; a write your store refuses is reported under
+`SeedOutcome.presentation_fill_failed` with its reason, logged at WARNING, and tried again on the next boot. A second
+boot writes nothing. The template write is not conditional, so a name an operator gives through `update_template`
+between the seed's read and its write can be lost, the same race two `update_template` calls have. A host pass at
+boot that fills these names through `update_template` can be dropped; `update_template` stays the seam for an
+operator's own names, which the seed then leaves alone. `reset_definitions` runs the same pass after its writes, on
+every corpus template reading `current` after the reset (named in the call or not), so a release step's reset leaves
+no template waiting for the next boot for its names; it reports them under `DefinitionReset.presentation_named` and
+`DefinitionReset.presentation_fill_failed`, the same shapes as the seed's, and `DefinitionReset.render()` prints a
+line for each. A name holds at most `DECLARED_NAME_CHARS` characters, and
+`check_names(checks, {})` over the host's seeded checks shows which the namer leaves `GOAL_CHECK`, the ones worth a
+declared name.
 
 **A corpus edit reaches a seeded scope only through a reset.** The seed fills empty slots and never updates, so a
 template whose cases grew in git stays as first seeded. Every definition the seed writes records the digest of what it
@@ -1943,23 +2083,25 @@ a row seeded before `.30`) or `absent` (the next boot seeds it).
 
 A reset never edits in place. A template's new content is its next **revision**: a new record under the same name
 (`EvalTemplate.revision`), the old one archived and readable by id, so a run, its results and its cases keep the
-content they ran against, and a launch, the seed and `load_template_by_name` resolve the name to the newest revision,
-which `templates_list` shows beside each template (`revision`). A judge template's new revision holds the corpus's
-whole battery, and the corpus's case sets over it are minted again; a template the corpus gives cases gets every one
-of them in its new revision. The reset refuses `customized` and `unknown` unless `overwrite_customized=True`. It
-refuses a judge template (or a template the corpus gives cases) holding live cases the corpus does not carry, such as
-cases frozen from people's ratings, unless one of two flags says what becomes of them. `carry_live_cases=True` copies
-each into the new revision beside the corpus's cases, content and labels unchanged, the copy naming its source
-(`EvalTestCase.carried_from`) and the source staying on the archived revision with its runs; the template then reads
-`current`, the same reset again writes nothing, and freezing the same labels into the new revision names the copy
-rather than adding the case again. `overwrite_customized=True` leaves them on the archived revision alone. The flags are independent: carrying never accepts a `customized` or `unknown` definition, and both together
-write the corpus over it and carry the cases. A case set outside the corpus over the archived revision is not minted
-again: `DefinitionReset.stranded_case_sets` names each one, and `carried` maps each source case to its copy for its
-next mint. A reset writes nothing when it refuses and names every refusal. Each row of the result (`DefinitionReset.reset`) names what it wrote
-and the stored record it replaced (`replaced_id`), and reads `discarded: true` only where that stored copy read
-`customized` or `unknown` and was written over under the flag. A campaign holding runs of two revisions of one
-template is refused (at creation, adding a run, and its bundle), since their results are two datasets; two templates
-that only share a name at one revision number are not revisions of each other and are not refused.
+content they ran against, and a launch, the seed and `load_template_by_name` resolve the name to the newest
+revision, which `templates_list` shows beside each template (`revision`). A judge template's new revision holds the
+corpus's whole battery, and the corpus's case sets over it are minted again; a template the corpus gives cases gets
+every one of them in its new revision. The reset refuses `customized` and `unknown` unless
+`overwrite_customized=True`. It refuses a judge template (or a template the corpus gives cases) holding live cases
+the corpus does not carry, such as cases frozen from people's ratings, unless one of two flags says what becomes of
+them. `carry_live_cases=True` copies each into the new revision beside the corpus's cases, content and labels
+unchanged, the copy naming its source (`EvalTestCase.carried_from`) and the source staying on the archived revision
+with its runs; the template then reads `current`, the same reset again writes nothing, and freezing the same labels
+into the new revision names the copy rather than adding the case again. `overwrite_customized=True` leaves them on
+the archived revision alone. The flags are independent: carrying never accepts a `customized` or `unknown`
+definition, and both together write the corpus over it and carry the cases. A case set outside the corpus over the
+archived revision is not minted again: `DefinitionReset.stranded_case_sets` names each one, and `carried` maps each
+source case to its copy (`render()` prints each pair) for its next mint. A reset writes nothing when it refuses and
+names every refusal. Each row of the result (`DefinitionReset.reset`) names what it wrote and the stored record it
+replaced (`replaced_id`), and reads `discarded: true` only where that stored copy read `customized` or `unknown` and
+was written over under the flag. A campaign holding runs of two revisions of one template is refused (at creation,
+adding a run, and its bundle), since their results are two datasets; two templates that only share a name at one
+revision number are not revisions of each other and are not refused.
 
 Rows seeded before the seed kept a record read `unknown`: judge cases and templates seeded before `.30`, and template
 cases your own seed wrote before `.32`, unless the corpus still has their content (`current`), and any new one.
@@ -2002,8 +2144,10 @@ round declares no actors at all, and its conversation makes no simulator call.
 ## Background work, payloads and spend
 
 **Background work** a candidate hands off and gets back turns later is recorded as `async_deliveries`,
-one `AsyncDelivery` each: who asked, when it was acknowledged and delivered, on what model, whether a
-harness supplied it, and what it spent — its tokens, model calls, `cost_usd` with its own
+one `AsyncDelivery` each: who asked, when it was acknowledged and delivered, on what model, which upstream
+served its calls where the replies named one (`served_provider`: you fill it, as `RoleUsage.served_provider` is
+filled for a completion; left unset it reads as not recorded, never as a guess), whether a harness supplied it, and
+what it spent — its tokens, model calls, `cost_usd` with its own
 `price_source`, and any paid non-LLM calls (`external_spend`) — their calls, the provider's own units, and
 `money` where the provider itself billed a figure. The engine folds that spend into the result's
 `inner_agent` and `external` usage, for work still in flight when the cell ended as well as work that
@@ -2025,6 +2169,12 @@ was answered keeps a row of its own (`RoleUsage.answers_nothing`): its `call_cou
 nothing, and no cost reads it. A reader that keys rows on `call_count` should expect that row. Each count you leave
 out reads as not counted, never as zero. So where your rate measures need the counts on every row, mark a row whose
 calls were all answered with `add_unanswered(model=..., retried=0, lost=0)` on its key.
+
+**Sends your client sent again after a drop.** When a send's connection broke before any response began and your
+client sent it again, the provider may have served and billed the first, and no completion carries that cost. Put
+the count on your completion as the optional `maybe_billed_sends` member (the shipped `Model`'s completions carry
+it), or pass `maybe_billed_sends=` to `RoleUsageLedger.add`. The row counts them as `RoleUsage.maybe_billed_sends`,
+beside its `call_count` and never in its cost, and leaves it unset while none is counted.
 
 ## Cassettes: recording and replaying tools
 
@@ -2057,13 +2207,26 @@ cell.
 - **No silent live runs.** A kind that does not wire the handle it was given, or a candidate with no
   seams, is refused rather than run live under a replay.
 
-## Rig failures: a broken rig costs one cell, never the run
+## Rig failures: a broken rig costs one cell, a recording that cannot serve costs the run
 
-**A broken rig costs one cell, never the run.** A replay miss, a corrupt recording or any other
-fault of the measuring rig rather than of the world under test is an `ApparatusError`; your kind's
-tool boundary re-raises it instead of turning it into an ordinary tool failure. Out of `prepare` or
+**A broken rig costs one cell; a recording that cannot serve costs the run.** A fault of the measuring rig rather than
+of the world under test (a malformed seed, a harness bug, a recording that cannot serve) is an `ApparatusError`; your
+kind's tool boundary re-raises it instead of turning it into an ordinary tool failure. Out of `prepare` or
 `invoke`, the engine records that cell excluded (termination `apparatus_failed`) with whatever spend
-the kind had reported through its sink, and goes on. A run whose every cell the rig excluded measured
+the kind had reported through its sink, and goes on.
+
+A recording that cannot serve this run is the exception: a `ReplayMiss` (from `threetears.evals.kernel.host`), whose
+causes are a call the recording does not hold or holds fewer times than asked, a recording file missing, unreadable or
+corrupt, a format this build does not read, a call already served to another eval's run, and a call refused while
+recording. `RecordingRefused`, a cassette's `CassetteMiss`, `CassetteExhausted` and `CassetteCorrupt`, and a world
+recording's `ToolRecordingMiss` are each one. It fails the run wherever it is met, a candidate's call or a judge's
+(owner ruling): the cell is recorded the same way, naming the call, and the run raises it, so a replay never reads on
+fewer cells in silence. Each message carries its cause's own remedy. A recording run (`RECORD=1`) fails at a refusal
+the same way, which extends the ruling to recording: a recording missing that call would fail its first replay anyway,
+and every cell after the refusal is spend it cannot keep. A live run with no recording never meets one. A host whose
+own recording cannot serve its run raises `ReplayMiss`.
+
+A run whose every cell the rig excluded measured
 nothing, and ends `failed` (`EveryCellApparatusFailedError`). So does a run whose every cell was excluded for any
 other fault the harness recorded on the cell (`NothingMeasuredError`): a provider that declined every call, a
 candidate that could not be built. Its reason quotes the cells' own errors, the status and the provider's message
