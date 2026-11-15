@@ -138,6 +138,24 @@ log = get_logger(__name__)
 #: make every call site explicit rather than to pick a new value.
 DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS: float = 300.0
 
+#: the session settings every platform pool starts with, merged into the caller's ``server_settings`` by
+#: :func:`create_pool_with_startup_timeout` (the caller's own keys win). They travel in the STARTUP packet, so they are
+#: the connection's session defaults: asyncpg's ``RESET ALL`` on release keeps them, and no statement ever sends a SET.
+#:
+#: ``hnsw.iterative_scan = relaxed_order`` (measured 2026-11-14): every vector reader pins an owner, and at a heavy
+#: owner the planner walks the HNSW index and filters it; pgvector stops at ``hnsw.ef_search`` (40) candidates, so a
+#: small owner beside a heavy one got fewer than ``limit`` rows (PG 16 + pgvector 0.8.7, 20,000-row owner beside a
+#: 50-row one, k=10: 0 of 10 by default, 10 of 10 in 13 ms with this setting). Relaxed order may hand rows back
+#: slightly out of distance order, so ``read_nearest`` re-sorts its ``limit`` rows (the comment at
+#: ``threetears.interfaces.keyed.read_nearest_statement``). Why the startup packet and not ``SET LOCAL`` in the read:
+#: YugabyteDB refuses ``SET hnsw.*`` ("hnsw" is a reserved prefix) but accepts the name at startup, and PostgreSQL
+#: without pgvector loaded keeps it as a placeholder; ybhnsw applies the owner pin inside its scan and returned 10 of 10
+#: either way. Probes: scratchpad a100/hnsw/probe.py, probe_startup.py.
+#:
+#: A pool on a database the platform does not own (a datasource's, behind a pooler that may refuse an unknown startup
+#: parameter) passes ``platform_settings=False``.
+_PLATFORM_SERVER_SETTINGS: dict[str, str] = {"hnsw.iterative_scan": "relaxed_order"}
+
 #: env var operators use to tune ``max_inactive_connection_lifetime``
 #: without a code change. verbose on purpose -- it is an operator tuning
 #: knob, not a dev convenience.
@@ -778,6 +796,7 @@ async def create_pool_with_startup_timeout(
     startup_timeout: float = DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS,
     connect_timeout: float | None = None,
     connect: Callable[..., Awaitable[asyncpg.Connection]] | None = None,
+    platform_settings: bool = True,
     **create_pool_kwargs: Any,
 ) -> asyncpg.Pool:
     """start an asyncpg pool, retrying stalled or refused connects, inside one startup budget.
@@ -824,6 +843,10 @@ async def create_pool_with_startup_timeout(
     :param connect: the caller's own connect hook, run inside the wrapper's; ``None`` for
         ``asyncpg.connect``
     :ptype connect: Callable[..., Awaitable[asyncpg.Connection]] | None
+    :param platform_settings: whether the pool's sessions start with the platform's startup settings
+        (``hnsw.iterative_scan = relaxed_order``) under the caller's ``server_settings`` (the caller's keys win);
+        False for a database the platform does not own
+    :ptype platform_settings: bool
     :param create_pool_kwargs: everything else ``asyncpg.create_pool`` takes (``min_size``,
         ``max_size``, ``server_settings``, ``init``, ``connection_class``, the
         :func:`get_pg_pool_kwargs` splat, ...), except ``timeout``, which the wrapper sets
@@ -845,6 +868,11 @@ async def create_pool_with_startup_timeout(
             "create_pool_with_startup_timeout sets timeout= itself; pass the per-connect bound as connect_timeout="
         )
     per_connect = resolve_pool_connect_timeout(startup_timeout, connect_timeout)
+    if platform_settings:
+        create_pool_kwargs["server_settings"] = {
+            **_PLATFORM_SERVER_SETTINGS,
+            **(create_pool_kwargs.get("server_settings") or {}),
+        }
     opener: Callable[..., Awaitable[asyncpg.Connection]] = connect if connect is not None else asyncpg.connect
     identity = _pool_identity(dsn, create_pool_kwargs)
     client_target = _keyword_target(create_pool_kwargs)

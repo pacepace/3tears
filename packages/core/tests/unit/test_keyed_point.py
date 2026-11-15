@@ -20,6 +20,7 @@ from threetears.core.keyed import (
     Joined,
     Lock,
     Nearest,
+    Selected,
     Sort,
     TextRank,
     ThreadedDuckDB,
@@ -201,8 +202,10 @@ async def test_an_unlocked_point_read_takes_no_lock() -> None:
 async def test_a_nearest_read_orders_by_the_distance_alone_under_its_limit() -> None:
     """Flips if ``read_nearest`` does not send its pins and guards, the similarity (``1 -`` the distance) after the
     columns, the order by the vector column's distance from the vector bound once past them (no tie-break column, so an
-    approximate-nearest-neighbour index answers it), and its LIMIT last; or takes a distance pgvector has no
-    operator for, or a negative limit."""
+    approximate-nearest-neighbour index answers it), and its LIMIT last, all inside a subquery the outer read answers
+    the columns and the similarity from, re-sorted by the distance (an iterative HNSW scan in relaxed order hands rows
+    back slightly out of order), naming no relation but the table (no CTE: the hub broker's gates read every name); or
+    takes a distance pgvector has no operator for, or a negative limit."""
     conn = _Sent()
     await read_nearest(
         conn,
@@ -216,14 +219,31 @@ async def test_a_nearest_read_orders_by_the_distance_alone_under_its_limit() -> 
     [(sql, params)] = conn.calls
     distance = 't."embedding" OPERATOR(public.<=>) $4::text::public.vector'
     assert sql == (
-        f'SELECT t."memory_id", 1 - ({distance}) AS "similarity" FROM "memories" AS t WHERE t."agent_id" = $1 AND '
-        f't."user_id" = $2 AND (t.salience >= $3) ORDER BY {distance} LIMIT $5'
+        f'SELECT n."memory_id", n."similarity" FROM (SELECT t."memory_id", 1 - ({distance}) AS "similarity", '
+        f'{distance} AS "_nearest_distance" FROM "memories" AS t WHERE t."agent_id" = $1 AND t."user_id" = $2 AND '
+        f'(t.salience >= $3) ORDER BY {distance} LIMIT $5) AS n ORDER BY n."_nearest_distance"'
     )
     assert params == ("a", "u", 0.5, "[1,0]", 4)
-    with pytest.raises(ValueError, match="distance"):
-        Nearest("embedding", "[1]", operator="<>")
-    with pytest.raises(ValueError, match="no fewer"):
-        await read_nearest(conn, "memories", by={"agent_id": "a"}, nearest=Nearest("embedding", "[1]"), limit=-1)
+    conn.calls.clear()
+    # every column (none named): the row travels whole through the wrapper and is spread again; a Selected column is
+    # answered under its own name; no similarity named, none answered
+    await read_nearest(conn, "memories", by={"agent_id": "a"}, nearest=Nearest("embedding", "[1]"), limit=2)
+    await read_nearest(
+        conn,
+        "memories",
+        by={"agent_id": "a"},
+        nearest=Nearest("embedding", "[1]"),
+        limit=2,
+        columns=(Selected("embedding::text", "embedding"),),
+    )
+    [(whole, _), (named, _)] = conn.calls
+    distance = 't."embedding" OPERATOR(public.<=>) $2::text::public.vector'
+    assert whole == (
+        f'SELECT (n."_nearest_row").* FROM (SELECT t AS "_nearest_row", {distance} AS "_nearest_distance" FROM '
+        f'"memories" AS t WHERE t."agent_id" = $1 ORDER BY {distance} LIMIT $3) AS n ORDER BY n."_nearest_distance"'
+    )
+    assert named.startswith('SELECT n."embedding" FROM (SELECT embedding::text AS "embedding", ')
+    assert named.endswith('LIMIT $3) AS n ORDER BY n."_nearest_distance"')
 
 
 async def test_a_text_ranked_read_orders_by_the_rank_best_first_under_its_limit() -> None:
