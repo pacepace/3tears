@@ -1,0 +1,10 @@
+{"tool": "run", "command": "python -m threetears.evals --help"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nev = Eval(\"cases.jsonl\", runner=lambda case: case, grader=[lambda case, out: out is not None])\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "write", "path": "cases.jsonl", "text": "{\"text\": \"anything\"}\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\n\ndef main():\n    def echo(case):\n        \"\"\"Echo.\"\"\"\n        return case\n\n    def answered(case, out):\n        \"\"\"Something came back.\"\"\"\n        return out is not None\n\n    return Eval(\"cases.jsonl\", runner=echo, grader=[answered])\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "run", "command": "cat {package}/no-such-page.md"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"\", \"pass_rate\": 0, \"finished\": false}"}

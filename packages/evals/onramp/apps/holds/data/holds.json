@@ -1,0 +1,12 @@
+[
+  {"id": "h-01", "patron": "p-104", "title": "The Left Hand of Darkness", "pickup_by": "2026-03-12"},
+  {"id": "h-02", "patron": "p-104", "title": "Middlemarch", "pickup_by": "2026-03-08"},
+  {"id": "h-03", "patron": "p-104", "title": "Kindred", "pickup_by": "2026-02-20"},
+  {"id": "h-04", "patron": "p-221", "title": "The Dispossessed", "pickup_by": "2026-03-09"},
+  {"id": "h-05", "patron": "p-221", "title": "Beloved", "pickup_by": "2026-03-15"},
+  {"id": "h-06", "patron": "p-317", "title": "Piranesi", "pickup_by": "2026-03-01"},
+  {"id": "h-07", "patron": "p-317", "title": "Station Eleven", "pickup_by": "2026-03-04"},
+  {"id": "h-08", "patron": "p-402", "title": "A Wizard of Earthsea", "pickup_by": "2026-04-02"},
+  {"id": "h-09", "patron": "p-402", "title": "Gilead", "pickup_by": "2026-03-10"},
+  {"id": "h-10", "patron": "p-555", "title": "Cloud Atlas", "pickup_by": "2026-02-27"}
+]
