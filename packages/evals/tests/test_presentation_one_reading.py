@@ -208,11 +208,15 @@ def test_a_margin_lead_opens_on_its_cell_s_reading_then_says_an_arm_lies_below_t
     policy, rule 2: two significant figures of its narrowest interval's width, 7.0 points)."""
     page = kairo_page()
     (lead,) = _said(page.blocks, "verdict", "answer")
+    # Re-pinned deliberately (T1, coordinator ruling): qwen3.8-flash ran 897 trials and 2 were not graded (lost to the
+    # test setup); its count left them out of its denominator without saying so. The lead now says so after it, through
+    # the one owner of a pass count; everything before that sentence is unchanged.
     assert lead.text == (
         "Pass rate: qwen3.8-flash against September no worse than the margin, though below September. Of 897 trials, "
         "September passed 765. Of 895, qwen3.8-flash passed 695. The interval puts qwen3.8-flash between 3.4 and 10.8 "
         "points worse. Pass rate: 1017 against September no worse than the margin. Of 897 trials each, September "
-        "passed 765 and 1017 738. The interval allows 1017 to be as much as 5.8 points worse or 1.1 better."
+        "passed 765 and 1017 738. The interval allows 1017 to be as much as 5.8 points worse or 1.1 better. "
+        "qwen3.8-flash's figures are over its graded trials: 2 of 897 were not graded."
     )
     # Each arm's first clause carries its scorecard cell's reading term, word for word.
     (rows,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "aspects"]

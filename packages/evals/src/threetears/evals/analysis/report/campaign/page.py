@@ -87,6 +87,7 @@ from threetears.evals.analysis.report.verdict import (
     led_sentences,
     unfinished_line,
     ungraded_sentence,
+    ungraded_sentences,
 )
 from threetears.evals.analysis.report.words import heading_case
 from threetears.evals.analysis.style import CANNOT_TELL_APART
@@ -408,11 +409,17 @@ def _lead_blocks(
             # graded after it, as the quick print says them.
             prefix = f"On {names(aspect.label)}, " if several else ""
             sentences += [f"{prefix}{said}.{after}" for said, after in measured]
+            continue
         else:
             undecided = undecided or reads_undecided(readings, aspect.label)
             decision = f"On {names(aspect.label)}, {aspect_shows(readings, aspect.label, bundle=report.bundle)}"
             sentences.append(f"{decision}.")
             decisions.append(decision)
+        # Every count above is over the graded trials: an arm with trials nothing graded says so beside them, as the
+        # quick print's comparison line does (one owner, :func:`~threetears.evals.analysis.report.verdict.passed_clause`).
+        labels = readings.arm_labels()
+        if ungraded := ungraded_sentences(report.bundle, lambda key: labels.get(key, key), _case_namer(report.bundle)):
+            sentences.append(ungraded.strip())
 
     if not sentences:
         # Every aspect has a run that did not finish, so the page's opening is all there is to lead with.

@@ -435,13 +435,13 @@ def ungraded_sentence(count: PassCount, case_name: Callable[[str], str], *, arm:
     return f" Not graded{on}: {', '.join(shown)}{more}{why}."
 
 
-def _ungraded_sentences(
+def ungraded_sentences(
     bundle: AnalysisContextBundle, arm: Callable[[str], str], case_name: Callable[[str], str]
 ) -> str:
     """For each arm of a comparison with trials nothing graded, that its figures are over its graded trials and how
     many were not (``a's figures are over its graded trials: 3 of 10 were not graded.``), then which and why
-    (:func:`ungraded_sentence`); empty where every trial was graded. Every comparison's verdict line says it through
-    this.
+    (:func:`ungraded_sentence`); empty where every trial was graded. Every comparison's verdict line and a page's lead
+    on a compared aspect say it through this.
 
     :param bundle: The aspect's evidence.
     :ptype bundle: AnalysisContextBundle
@@ -647,7 +647,7 @@ def verdict_line(
         )
     declared_question = bundle.question_declared
     # Every figure below is over the graded trials: an arm that lost any says so, and which, beside them.
-    ungraded = _ungraded_sentences(bundle, arm, case_name or (lambda case: case))
+    ungraded = ungraded_sentences(bundle, arm, case_name or (lambda case: case))
     if any(board.usable_cases < MIN_CASES for board in boards):
         lead = "" if declared_question else "Exploratory: "
         return VerdictLine(rule="too_small", text=lead + _too_small(bundle, arm) + ungraded)
@@ -945,7 +945,7 @@ def _too_small(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
         apart_said = _not_compared_sentences(bundle, arm)
         if len(ordered) == 1:
             return apart_said.strip()
-        # Every case that ran is the count; the trials nothing graded are said apart (:func:`_ungraded_sentences`).
+        # Every case that ran is the count; the trials nothing graded are said apart (:func:`ungraded_sentences`).
         if len({board.cases for board in ordered}) == 1:
             ran = f"{', '.join(names[:-1])} and {names[-1]} ran {reference.cases} cases each"
         else:
@@ -1134,5 +1134,6 @@ __all__ = [
     "lost_share",
     "passed_clause",
     "ungraded_sentence",
+    "ungraded_sentences",
     "verdict_line",
 ]
