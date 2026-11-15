@@ -44,12 +44,12 @@ def _choice(attests: Any = _attests) -> tuple[OpsHost, OpsFixture, str]:
         TOYHOST_SCOPE,
         updated_by=CALLER.identity,
     )
-    campaign = off_loop(eval_host.storage.load_campaign, fixture.campaign.id, TOYHOST_SCOPE)
-    assert campaign is not None
-    arm = next(arm for arm in campaign.arms if arm.role != "control")
+    # The candidate, by the variant key its run's results carry: a call names an arm by label or variant key.
+    (held, *_) = off_loop(eval_host.storage.query_eval_results_by_run, fixture.campaign.run_ids[1], TOYHOST_SCOPE)
+    arm = held.variant_key
     launch = fixture.host.launch
     host = replace(fixture.host, launch=replace(launch, eval_host=replace(eval_host, attests_person=attests)))
-    return host, fixture, arm.label
+    return host, fixture, arm
 
 
 def _evals() -> MountedTool:

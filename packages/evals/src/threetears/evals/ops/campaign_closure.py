@@ -599,6 +599,8 @@ def _gather(closure: _Closure, campaign: Mapping[str, Any], scope_id: str) -> No
         closure.where("eval_second_judge_pass", run_id=run_id)
         closure.where("eval_judge_temperature_check", run_id=run_id)
         closure.where("eval_out_of_run_spend", run_id=run_id)
+    # The blind reads drawn over the campaign: what people answered of its outputs, and what the reads found.
+    closure.where("blind_read", campaign_id=campaign["id"])
 
     # Definitions the runs ran: templates, cases, case sets, judge configs and their rubric dims, cassettes.
     case_sets: list[dict[str, Any]] = []

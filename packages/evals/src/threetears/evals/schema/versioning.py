@@ -182,6 +182,14 @@ the document, so extending one is a major. Each, and why:
 - ``SecondJudgeAskedBy`` — an unknown asker's pass would be pooled into the wrong agreement.
 - ``StopReason`` — the normalized provider contract, which already has a catch-all for output cut short by a
   cause it does not name (``truncated``), kept apart from a call that failed (``error``).
+- ``Maker`` — whether a person or a model made a judgment (a call); a model's read is never a person's.
+- On a blind read: ``BlindSlot``, ``BlindAsk``, ``BlindPreferenceAnswer`` — what an item showed and asked, and
+  what an answer gave, which its ratings are read from; ``BlindRaterKind`` — a person's answer is read as people's
+  and a reference reviewer's apart, never pooled; ``BlindPreferenceTest`` and ``BlindPreference.verdict`` — which
+  test a preference was read by, and what it read; ``SampleKind`` — whether answers are a random sample.
+- The reading states a stored preference carries (``ReadingState``, ``SetAsideReason``, ``WithheldReason``,
+  ``NotAvailableReason``, ``Coordinate``) — the one closed set every reader shares; a new member is made in one
+  module, for every reader at once.
 - Every ``doc_type`` — a new type is a new model, never a new value.
 
 **A minor's ledger entry asserts its additivity in words**, and review holds it there, because a schema diff
@@ -635,6 +643,7 @@ DURABLE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyTyp
         "eval_campaign": _ADDRESSED_EVERYWHERE | {"subject_id", "behavior", "archived", "created_at"},
         # Listed newest first by its time, a bounded read (``EvalStorage.list_analyst_gaps``).
         "eval_analyst_gap": _ADDRESSED_EVERYWHERE | {"created_at"},
+        "blind_read": _ADDRESSED_EVERYWHERE | {"campaign_id", "created_at"},
     }
 )
 
