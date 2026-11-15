@@ -7295,6 +7295,53 @@ def test_a_run_time_table_read_by_its_declared_key_is_keyed(tmp_path: Path) -> N
         assert keyed not in functions, (keyed, found)
 
 
+_RUN_TIME_TABLE_STATEMENT_BY_ITS_DECLARED_KEY = """
+    from threetears.core.keyed import Fragment, Sort
+    from threetears.interfaces.keyed.page import keyset_page_statement, keyset_rows_statement
+    from threetears.interfaces.keyed.rows import KeyColumns
+
+
+    def page_statement_by_key(table, column, key: KeyColumns):
+        order = tuple(Sort(name, cast=None) for name in key)
+        sql, _ = keyset_page_statement(
+            table, columns=(*key, column), by={key[0]: 0}, order=order, limit=500,
+            where=[Fragment(f"t.{column} <= $1", (0,))],
+        )
+        return sql
+
+
+    def rows_statement_by_key(table, column, key: KeyColumns):
+        order = tuple(Sort(name, cast=None) for name in key)
+        sql, _ = keyset_rows_statement(table, columns=(*key, column), by={key[0]: 0}, order=order)
+        return sql
+
+
+    def page_statement_by_other(table, column, key: KeyColumns, wanted):
+        order = tuple(Sort(name, cast=None) for name in wanted)
+        sql, _ = keyset_page_statement(table, columns=(column,), by={key[0]: 0}, order=order, limit=500)
+        return sql
+
+
+    def rows_statement_by_part_of_key(table, column, key: KeyColumns):
+        order = tuple(Sort(name, cast=None) for name in key[1:])
+        sql, _ = keyset_rows_statement(table, columns=(*key, column), by={key[0]: 0}, order=order)
+        return sql
+"""
+
+
+def test_a_run_time_tables_page_statement_by_its_declared_key_is_keyed(tmp_path: Path) -> None:
+    """Flips if a page's statement built by a pure builder (``keyset_page_statement``, ``keyset_rows_statement``, the
+    statements ``keyset_page`` / ``keyset_rows`` send, built once by a caller that sends them through its own reader)
+    over a table named at run time is unknown when its order flows from a declared key source, as the runner's is
+    keyed; or passes when the order does not (a parameter named ``wanted``, or the key past its lead)."""
+    found = _symbols(_config(tmp_path, {"runtime.py": _RUN_TIME_TABLE_STATEMENT_BY_ITS_DECLARED_KEY}))
+    functions = {function for function, _ in found}
+    for flagged in ("page_statement_by_other", "rows_statement_by_part_of_key"):
+        assert flagged in functions, (flagged, found)
+    for keyed in ("page_statement_by_key", "rows_statement_by_key"):
+        assert keyed not in functions, (keyed, found)
+
+
 _CASCADE_KINDS = """
     from dataclasses import dataclass
     from typing import Literal
