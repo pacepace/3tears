@@ -23,7 +23,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Literal, overload
 
 from threetears.core.keyed._filters import Fragment, Lock, Selected, sent_by
-from threetears.core.keyed._joining import Joined, check_joins, join_rows, joined_columns
+from threetears.core.keyed._joining import Joined, check_joins, join_rows, joined_columns, lateral_joins
 from threetears.core.keyed.page import yugabyte_index_hint
 from threetears.interfaces.keyed.filters import (
     Derived,
@@ -468,28 +468,11 @@ def _joined_nearest_statement(
     """
     ranked = _ranked_by(nearest)
     assert ranked is not None
-    qualifier: dict[str, str] = {}
-    selected: list[str] = ["r.*"]
-    laterals: list[str] = []
     binds = list(params)
-    for number, join in enumerate(joins, start=1):
-        alias = f"j{number}"
-        conditions = [
-            f"j.{quote_identifier(column)} = {qualifier.get(row, 'r.' + quote_identifier(row))}"
-            for column, row in join.on.items()
-        ]
-        pinned, values = by_conditions(join.by or {}, first=len(binds) + 1, alias="j")
-        binds += values
-        wanted = ", ".join(quote_identifier(column) for column in dict.fromkeys(join.columns.values()))
-        laterals.append(
-            f"LEFT JOIN LATERAL (SELECT {wanted} FROM {quoted_table(join.table)} AS j"
-            f" WHERE {' AND '.join([*conditions, *pinned])}) AS {alias} ON TRUE"
-        )
-        for name, column in join.columns.items():
-            selected.append(f"{alias}.{quote_identifier(column)} AS {quote_identifier(name)}")
-            qualifier[name] = f"{alias}.{quote_identifier(column)}"
+    joined, laterals = lateral_joins(joins, binds)
+    selected = ["r.*", *joined]
     sql = (
-        f"SELECT {', '.join(selected)} FROM ({ranked_sql}) AS r {' '.join(laterals)}"
+        f"SELECT {', '.join(selected)} FROM ({ranked_sql}) AS r{laterals}"
         f" ORDER BY r.{quote_identifier(ranked)} DESC LIMIT ${len(params)}"
     )
     return sql, binds

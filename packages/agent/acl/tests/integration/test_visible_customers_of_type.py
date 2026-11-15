@@ -161,9 +161,9 @@ async def test_the_typed_set_admits_what_the_clause_admits(conn: asyncpg.Connect
 async def test_the_typed_set_reads_the_callers_memberships_then_their_groups_grants(
     conn: asyncpg.Connection,
 ) -> None:
-    """Flips if the typed set stops reading the caller's memberships (and the level above them) through
-    idx_group_members_reverse, or their groups' grants through idx_role_assignments_group_scope: each of its reads
-    planned as it sends it, among 500 groups of 4 members each."""
+    """Flips if the typed set stops reading the caller's memberships (and each level above them) through
+    idx_group_members_reverse, or their groups' grants through idx_role_assignments_group_scope, in its one statement:
+    among 500 groups of 4 members each, it reads about the caller's own rows."""
     await conn.execute(
         "INSERT INTO groups (row_scope, group_id, customer_id, name)"
         " SELECT 'platform', gen_random_uuid(), NULL, 'g' || g FROM generate_series(1, 500) g"
@@ -185,12 +185,11 @@ async def test_the_typed_set_reads_the_callers_memberships_then_their_groups_gra
     caller = await conn.fetchval("SELECT member_id FROM group_members ORDER BY id LIMIT 1")
     recorder = PlanRecorder(conn)
     await visible_customers(recorder, user_id=caller, namespace_type=_TYPE)
-    memberships, above, grants = recorder.plans
-    for plan in (memberships, above):
-        assert plan_uses_index(plan, "idx_group_members_reverse"), plan.plan
-        assert plan.rows_scanned <= 10, plan
-    assert plan_uses_index(grants, "idx_role_assignments_group_scope"), grants.plan
-    assert grants.rows_scanned <= 10, grants
+    (plan,) = recorder.plans
+    assert plan_uses_index(plan, "idx_group_members_reverse"), plan.plan
+    assert plan_uses_index(plan, "idx_role_assignments_group_scope"), plan.plan
+    # the caller's membership, the empty level above it, its group's grant: never the 2,000 memberships or 500 grants
+    assert plan.rows_scanned <= 20, plan
 
 
 #: the groups the equivalence seeds hang memberships on, each holding one grant (some a second)

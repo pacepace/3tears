@@ -64,7 +64,7 @@ class _Conn:
         return rows
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        """answer the grants' reads (the caller's group, none above it, the group's grants), else the next page.
+        """answer the grants' read (the caller's group, nested in none, beside its grants), else the next page.
 
         :param sql: the statement
         :ptype sql: str
@@ -76,11 +76,9 @@ class _Conn:
         if sql.startswith("SELECT version()"):
             # the pager asks once which database it pages, as a pool is asked: a PostgreSQL one
             return [{"v": "PostgreSQL 16.15"}]
-        if '"group_members"' in sql or '"role_assignments"' in sql:
+        if sql.startswith("WITH RECURSIVE reached"):
             self.grant_reads.append((sql, params))
-            if '"role_assignments"' in sql:
-                return self._grant_rows()
-            return [{"group_id": _GROUP}] if "user" in params else []
+            return [{"group_id": _GROUP, "namespace_customer_id": None, **grant} for grant in self._grant_rows()]
         self.page_reads.append((sql, params))
         return self.pages.pop(0) if self.pages else []
 
@@ -135,9 +133,9 @@ def test_the_fragment_is_total_every_row_no_row_or_the_set() -> None:
 
 
 async def test_the_set_is_read_once_for_the_namespace_type() -> None:
-    """the grants are read from the caller's memberships (bound by the caller), up the groups they nest in, then those
-    groups' grants; a type grant on the listing's namespace type adds its customer, and the customers come back
-    sorted."""
+    """the grants are read in one statement from the caller's memberships (bound by the caller), up the groups they
+    nest in, beside those groups' grants; a type grant on the listing's namespace type adds its customer, and the
+    customers come back sorted."""
     caller = uuid4()
     first, second = UUID(int=2), UUID(int=1)
     conn = _Conn({"is_all": False, "customer_ids": [first, second]}, [])
@@ -145,10 +143,8 @@ async def test_the_set_is_read_once_for_the_namespace_type() -> None:
     visible = await visible_customers(conn, user_id=caller, namespace_type="knowledge")
 
     assert visible == VisibleCustomers(is_all=False, customer_ids=(second, first))
-    memberships, above, grants = conn.grant_reads
-    assert '"group_members"' in memberships[0] and caller in memberships[1] and "user" in memberships[1]
-    assert '"group_members"' in above[0] and "group" in above[1]
-    assert '"role_assignments"' in grants[0]
+    ((sql, params),) = conn.grant_reads
+    assert '"group_members"' in sql and '"role_assignments"' in sql and caller in params and "user" in params
 
 
 async def test_a_platform_wide_grant_reads_every_customer_but_not_another_users_rows() -> None:

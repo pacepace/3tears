@@ -17,8 +17,9 @@ from uuid import UUID
 
 from threetears.core.keyed._filters import Selected
 from threetears.core.keyed.rows import read_joined
+from threetears.interfaces.keyed.filters import by_conditions, quote_identifier, quoted_table
 
-__all__ = ["Joined", "cast_of", "check_joins", "join_rows", "joined_columns"]
+__all__ = ["Joined", "cast_of", "check_joins", "join_rows", "joined_columns", "lateral_joins"]
 
 
 @dataclass(frozen=True)
@@ -201,3 +202,53 @@ async def join_rows(
             for column in hidden:
                 del row[column]
     return rows
+
+
+def lateral_joins(
+    joins: Sequence[Joined], binds: list[Any], *, source: str = "r", fenced: bool = False
+) -> tuple[list[str], str]:
+    """each join as a ``LATERAL`` lookup of the rows of its table the row ``source`` names (``j1."group_id" =
+    r."group_id"`` and the join's own pins, a later join's ``on`` naming an earlier one's column by the name it lands
+    under), and the select-list items its columns land under: the one spelling of a join inside one statement, driven
+    from the read's few rows by key, never a join the planner may hash from the joined side (as a plain join over a
+    small derived set, YugabyteDB hashed every row of the joined table). A ``left`` join keeps a row none matches
+    (``LEFT JOIN LATERAL ... ON TRUE``); any other drops it (``CROSS JOIN LATERAL``).
+
+    :param joins: the joins, in order; none counted or matched
+    :ptype joins: Sequence[Joined]
+    :param binds: the statement's binds so far; each join's pins are appended
+    :ptype binds: list[Any]
+    :param source: the alias of the row the joins look up from
+    :ptype source: str
+    :param fenced: end each lookup in ``OFFSET 0``, so the planner keeps it a lookup a row and never pulls it up into
+        a join it may hash from the joined side (a source whose row count it cannot estimate, a recursive walk's)
+    :ptype fenced: bool
+    :return: the select-list items, and the joins' text (each after a space)
+    :rtype: tuple[list[str], str]
+    :raises ValueError: when a join counts or says whether it matched (a lookup answers neither)
+    """
+    qualifier: dict[str, str] = {}
+    selected: list[str] = []
+    laterals: list[str] = []
+    for number, join in enumerate(joins, start=1):
+        if join.counts or join.matched:
+            raise ValueError(f"a join of {join.table} inside one statement neither counts nor says it matched")
+        alias = f"j{number}"
+        conditions = [
+            f"j.{quote_identifier(column)} = {qualifier.get(row, f'{source}.' + quote_identifier(row))}"
+            for column, row in join.on.items()
+        ]
+        pinned, values = by_conditions(join.by or {}, first=len(binds) + 1, alias="j")
+        binds += values
+        wanted = ", ".join(quote_identifier(column) for column in dict.fromkeys(join.columns.values()))
+        kind = "LEFT JOIN LATERAL" if join.left else "CROSS JOIN LATERAL"
+        tail = " ON TRUE" if join.left else ""
+        fence = " OFFSET 0" if fenced else ""
+        laterals.append(
+            f" {kind} (SELECT {wanted} FROM {quoted_table(join.table)} AS j"
+            f" WHERE {' AND '.join([*conditions, *pinned])}{fence}) AS {alias}{tail}"
+        )
+        for name, column in join.columns.items():
+            selected.append(f"{alias}.{quote_identifier(column)} AS {quote_identifier(name)}")
+            qualifier[name] = f"{alias}.{quote_identifier(column)}"
+    return selected, "".join(laterals)

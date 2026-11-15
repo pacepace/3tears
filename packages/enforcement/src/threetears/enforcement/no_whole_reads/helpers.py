@@ -831,7 +831,8 @@ def _joined_statements(call: ast.Call) -> list[str]:
 def _read_reached(call: ast.Call) -> list[str]:
     """a walk of a table's links (``read_reached``): its first rows by ``start``'s pins, as :func:`_read_by` judges a
     read, then each level's keyed batch by the column a row is reached by (``on``) with ``by`` beside, as
-    :func:`_read_joined` judges one."""
+    :func:`_read_joined` judges one; a capped walk's ``joins=`` (inside its one statement, a lookup a reached row), each
+    joined table by the columns it is joined on, as :func:`_joined_statements` judges them."""
     table = _argument(call, "table", 1) or ast.Name("_unseen", ast.Load())
     first = ast.Call(
         func=ast.Name("read_by", ast.Load()),
@@ -848,7 +849,8 @@ def _read_reached(call: ast.Call) -> list[str]:
             *([ast.keyword(arg="by", value=by)] if (by := _argument(call, "by", None)) is not None else []),
         ],
     )
-    return [*_read_by(first), *_read_joined(level)]
+    joins = _joined_statements(call) if _argument(call, "joins", None) is not None else []
+    return [*_read_by(first), *_read_joined(level), *joins]
 
 
 def _read_link_chain(call: ast.Call) -> list[str]:

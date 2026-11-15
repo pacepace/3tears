@@ -9,9 +9,12 @@ packages (bumped in lock-step).
 ### acl, skills: their raw reads move onto the keyed helpers; a ranked read's ties order by `TextRank(then=...)`
 
 **Removed:** `threetears.agent.acl.caller_visible_customers_query` (and its written-out `CALLER_VISIBLE_CUSTOMERS*_SQL`):
-no consumer called it; `visible_customers(pool, user_id=..., namespace_type=...)` reads the same set by keyed reads
-(the caller's memberships and the groups they nest in, a level a read to the configured depth, then their grants and a
-namespace grant's namespace). `namespace_type` may now be `None` (a `type_customer` grant on any type).
+no consumer called it; `visible_customers(pool, user_id=..., namespace_type=...)` reads the same set in one statement
+of keyed lookups (`read_reached` capped at the configured nesting, each reached group's grants and a namespace grant's
+namespace joined beside it). `namespace_type` may now be `None` (a `type_customer` grant on any type).
+**Added:** `read_reached(..., depth=n, joins=[Joined(...)])`: the walk capped at `n` levels as ONE recursive statement,
+each reached row looked up in each joined table by key (`LEFT JOIN LATERAL`, fenced); without `depth`, a keyed read a
+level as before (joins need a depth). The no-whole-reads walk judges each join by the columns it is joined on.
 **Removed:** acl's `NAMESPACE_IDS_UNDER_NAME_SQL`, `TOOL_ELIGIBLE_NAMESPACES_SQL`, `SKILL_ELIGIBLE_NAMESPACES_SQL`:
 their methods read through `read_by`.
 **Added:** `TextRank(..., then=(Sort(...), ...))`: rows tied on the rank come in that order (a listing's recency, its

@@ -335,25 +335,33 @@ class _Tables:
         self.reads: list[str] = []
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        """answer the one capped walk :func:`visible_customers` sends: the caller's groups within the depth, each
+        beside its grants and a namespace grant's namespace's customer (a group with none kept, as LEFT joins keep
+        it)."""
         self.reads.append(sql)
-        if '"group_members"' in sql:
-            kind, wanted = params
-            ids = set(wanted) if isinstance(wanted, list) else {wanted}
-            return [{"group_id": g} for t, m, g in self.members if t == kind and m in ids]
-        if '"role_assignments"' in sql:
-            (groups,) = params
-            return [
-                {
-                    key: grant.get(key)
-                    for key in ("scope_type", "scope_customer_id", "scope_namespace_type", "scope_namespace_id")
-                }
-                for grant in self.grants
-                if grant["group_id"] in set(groups)
-            ]
-        if '"namespaces"' in sql:
-            _scopes, ids = params
-            return [{"customer_id": self.namespaces[i]} for i in ids if i in self.namespaces]
-        raise AssertionError(sql)
+        assert sql.startswith("WITH RECURSIVE reached") and '"group_members"' in sql, sql
+        start_kind, user, link_kind, depth, _scopes = params
+        level = {g for t, m, g in self.members if t == start_kind and m == user}
+        reached = set(level)
+        for _ in range(depth - 1):
+            level = {g for t, m, g in self.members if t == link_kind and m in level}
+            reached |= level
+        rows: list[dict[str, Any]] = []
+        for group in reached:
+            grants = [grant for grant in self.grants if grant["group_id"] == group] or [{}]
+            for grant in grants:
+                namespace = grant.get("scope_namespace_id")
+                rows.append(
+                    {
+                        "group_id": group,
+                        **{
+                            key: grant.get(key)
+                            for key in ("scope_type", "scope_customer_id", "scope_namespace_type", "scope_namespace_id")
+                        },
+                        "namespace_customer_id": self.namespaces.get(namespace) if namespace is not None else None,
+                    }
+                )
+        return rows
 
 
 def _grant(group: UUID, scope_type: str, **values: Any) -> dict[str, Any]:
@@ -427,20 +435,15 @@ async def test_visible_customers_reaches_through_nesting_to_the_configured_depth
     assert visible.customer_ids == tuple(UUID(int=level + 1) for level in range(MAX_GROUP_MEMBERSHIP_DEPTH))
 
 
-async def test_visible_customers_reads_only_what_it_needs() -> None:
-    """Flips if a caller in a group nested in nothing costs more than its memberships, the empty level above them and
-    their grants (no namespace read without a namespace grant), or a caller in no group more than its memberships."""
+async def test_visible_customers_is_one_statement() -> None:
+    """Flips if the set costs more than one round trip, for a caller in groups or in none: the capped walk and its
+    lookups are one statement."""
     user, group = uuid4(), uuid4()
     tables = _Tables([("user", user, group)], [_grant(group, "all")])
     await visible_customers(tables, user_id=user, namespace_type="tool")
-    assert [sql.split(" FROM ")[1].split(" ")[0] for sql in tables.reads] == [
-        '"group_members"',
-        '"group_members"',
-        '"role_assignments"',
-    ]
     alone = _Tables([], [])
     await visible_customers(alone, user_id=user, namespace_type="tool")
-    assert len(alone.reads) == 1
+    assert (len(tables.reads), len(alone.reads)) == (1, 1)
 
 
 _DEPTH_AT_A_NESTING = """

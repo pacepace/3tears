@@ -531,6 +531,19 @@ def test_a_walk_of_links_is_judged_as_its_first_read_and_its_keyed_batch_a_level
     assert _judged(unkeyed_walk, schema)[1] != []
 
 
+def test_a_capped_walk_s_joins_are_judged_beside_its_levels(schema: SchemaCatalog) -> None:
+    """Flips if ``read_reached`` with ``joins=`` (its capped one statement) is judged without the joined tables: each
+    joined table is looked up by the columns it is joined on and its own pins, keyed when they lead its key (a
+    finding when not), as ``read_by_joined``'s joins are; joins the walk cannot read are unseen."""
+    walk = (
+        'read_reached(c, "results", start={"state": s}, on="state", to="geo", columns=("geo",), depth=3, '
+        'joins=[Joined("grants", on={"who": "geo"}, columns={"g": "state"}, left=True)])'
+    )
+    assert _judged(walk, schema) == [[], [], []]
+    assert _judged(walk.replace('on={"who": "geo"}', 'on={"state": "geo"}'), schema)[2] != []
+    assert list(helper_statements(_call(walk.replace("joins=[", "joins=js or ["))))[-1].unseen
+
+
 @pytest.mark.parametrize(
     "code",
     [

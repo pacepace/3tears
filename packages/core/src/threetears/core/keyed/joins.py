@@ -29,7 +29,9 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from threetears.core.keyed._filters import Fragment, Selected
-from threetears.core.keyed._joining import Joined, cast_of, check_joins, join_rows, joined_columns
+from threetears.core.keyed._filters import sent_by
+from threetears.core.keyed._joining import Joined, cast_of, check_joins, join_rows, joined_columns, lateral_joins
+from threetears.interfaces.keyed.filters import by_conditions, quote_identifier, quoted_table
 from threetears.core.keyed.page import keyset_page
 from threetears.core.keyed.point import read_by
 from threetears.core.keyed.rows import read_keyed
@@ -110,6 +112,8 @@ async def read_reached(
     by: Mapping[str, Any] | None = None,
     follow: Mapping[str, Any] | None = None,
     batch: int | None = None,
+    depth: int | None = None,
+    joins: Sequence[Joined] = (),
 ) -> list[dict[str, Any]]:
     """every row a walk of ``table``'s links reaches, each once: what a recursive statement walking them answered
     (``WITH RECURSIVE reached(node, path) AS (... UNION ALL SELECT s.<to>, ... JOIN reached r ON s.<on> = r.node
@@ -119,6 +123,12 @@ async def read_reached(
     (one whose ``follow`` columns hold their values; every row when None), and the rows whose ``on`` holds a node not
     walked yet (within ``by``) are read next, one keyed batch a level, until a level names no new node. A cycle ends
     where it comes back. Each read is keyed as ``on`` leads an index of the table (``start``'s own pins likewise).
+
+    With ``depth``, the walk stops after that many levels (the ``start`` rows are the first) and is ONE statement
+    (:func:`_reached_statement`): the levels as a recursive term capped at the depth, each level's rows found by key
+    from the level before, and each reached row then joined by ``joins`` (a ``LATERAL`` lookup a row,
+    :func:`~threetears.core.keyed._joining.lateral_joins`) -- the walk and what it reaches in one round trip, where a
+    level a read cost one each (why: the comment at :func:`_reached_statement`).
 
     :param conn: anything with an asyncpg-shaped ``fetch``
     :ptype conn: Any
@@ -139,14 +149,28 @@ async def read_reached(
     :ptype follow: Mapping[str, Any] | None
     :param batch: the most nodes a statement names; None: the connection's
     :ptype batch: int | None
-    :return: the rows reached, each its ``columns``, distinct, level by level
+    :param depth: the most levels walked, the ``start`` rows the first, in one statement; every level, a read each,
+        when None
+    :ptype depth: int | None
+    :param joins: the tables each reached row is joined to, by its ``columns`` (a ``left`` join keeps a row none
+        matches); only with ``depth``
+    :ptype joins: Sequence[Joined]
+    :return: the rows reached, each its ``columns`` (and each join's), distinct, level by level
     :rtype: list[dict[str, Any]]
-    :raises ValueError: when ``start`` pins nothing or no column is answered
+    :raises ValueError: when ``start`` pins nothing, no column is answered, ``depth`` is under one, or ``joins`` come
+        without a ``depth``
     """
     if not start:
         raise ValueError(f"a walk of {table} starts at the rows its pins name")
     if not columns:
         raise ValueError(f"a walk of {table} answers at least one column")
+    if depth is not None:
+        sql, params = _reached_statement(
+            table, start=start, on=on, to=to, columns=columns, by=by, follow=follow, depth=depth, joins=joins
+        )
+        return [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
+    if joins:
+        raise ValueError(f"a walk of {table} joins what it reaches only in one statement: give it a depth")
     followed = dict(follow or {})
     read = list(dict.fromkeys([on, to, *followed, *columns]))
     walked: set[Any] = {start[on]} if on in start and start[on] is not None else set()
@@ -169,3 +193,83 @@ async def read_reached(
             conn, table, keys=KeyBatch((on,), [(node,) for node in nodes], (cast,)), columns=read, by=by, batch=batch
         )
     return list(answered.values())
+
+
+def _reached_statement(
+    table: str,
+    *,
+    start: Mapping[str, Any],
+    on: str,
+    to: str,
+    columns: Sequence[str],
+    by: Mapping[str, Any] | None,
+    follow: Mapping[str, Any] | None,
+    depth: int,
+    joins: Sequence[Joined],
+) -> tuple[str, list[Any]]:
+    """the walk of :func:`read_reached` capped at ``depth`` levels, and what each reached row joins, as ONE statement::
+
+        WITH RECURSIVE reached("member_id", "group_id", "level") AS (
+            SELECT t."member_id", t."group_id", 1 FROM "group_members" AS t
+             WHERE t."member_type" = $1 AND t."member_id" = $2
+            UNION
+            SELECT t."member_id", t."group_id", r."level" + 1 FROM reached AS r
+              JOIN "group_members" AS t ON t."member_id" = r."group_id" AND t."member_type" = $3
+             WHERE r."level" < $4
+        )
+        SELECT DISTINCT r."group_id", j1."scope_type" AS "scope_type", ...
+          FROM (SELECT DISTINCT "group_id" FROM reached) AS r
+          LEFT JOIN LATERAL (SELECT ... FROM "role_assignments" AS j WHERE j."group_id" = r."group_id") AS j1 ON TRUE
+
+    Each level's rows are found by key (``on`` and ``by``) from the level before; a row is reached at most once a
+    level (``UNION``), so a cycle walks round only until the cap. The rows reached within the cap are the rows a walk
+    of every level reaches within it, each at its shortest level, so the answer is :func:`read_reached`'s cut to the
+    cap.
+
+    WHY one statement (2026-11-15, D5): the visible-customer set of a caller (``threetears.agent.acl.visible_customers``)
+    is the closure of the caller's groups to the configured nesting and those groups' grants; read a level a read and
+    the grants a read more, it cost 3 round trips where the hand-written reached-CTE cost one (PostgreSQL, 5,000
+    groups, a caller in two: 1.18-1.26 ms against 0.38-0.42 ms; scratchpad d5/lat/pg.log). As this one statement:
+    0.55-0.69 ms on PostgreSQL (1.23-1.36x the hand-written CTE), 1.64-2.09 ms on YugabyteDB (1.14-1.15x); the
+    guard is the caller's speed test (``test_visible_customers_speed_live``).
+
+    :return: the statement and its binds
+    :rtype: tuple[str, list[Any]]
+    :raises ValueError: when ``depth`` is under one
+    """
+    if isinstance(depth, bool) or depth < 1:
+        raise ValueError(f"a walk of {table} walks at least one level, not {depth!r}")
+    followed = dict(follow or {})
+    read = list(dict.fromkeys([on, to, *followed, *columns]))
+    level = quote_identifier("level")
+    listed = ", ".join(quote_identifier(column) for column in read)
+    first, params = by_conditions(start, alias="t")
+    pinned, values = by_conditions(by or {}, first=len(params) + 1, alias="t")
+    params += values
+    walked: list[str] = []
+    for column, value in followed.items():
+        params.append(value)
+        walked.append(f"r.{quote_identifier(column)} = ${len(params)}")
+    params.append(depth)
+    walked.append(f"r.{level} < ${len(params)}")
+    on_link = [f"t.{quote_identifier(on)} = r.{quote_identifier(to)}", *pinned]
+    recursive = (
+        f"WITH RECURSIVE reached({listed}, {level}) AS ("
+        f" SELECT {', '.join(f't.{quote_identifier(column)}' for column in read)}, 1"
+        f" FROM {quoted_table(table)} AS t WHERE {' AND '.join(first)}"
+        f" UNION SELECT {', '.join(f't.{quote_identifier(column)}' for column in read)}, r.{level} + 1"
+        f" FROM reached AS r JOIN {quoted_table(table)} AS t ON {' AND '.join(on_link)}"
+        f" WHERE {' AND '.join(walked)} )"
+    )
+    answered = ", ".join(f"r.{quote_identifier(column)}" for column in columns)
+    distinct = ", ".join(quote_identifier(column) for column in columns)
+    # fenced (``OFFSET 0``): PostgreSQL cannot estimate the walk's rows, so an unfenced lookup is pulled up into a join
+    # it hashed from the joined side (every grant of 500 groups scanned for the caller's one, the plan test
+    # test_the_typed_set_reads_the_callers_memberships_then_their_groups_grants, 2026-11-15); the reached-CTE this
+    # replaced fenced its grants the same way
+    joined, laterals = lateral_joins(joins, params, fenced=True)
+    selected = ", ".join([answered, *joined])
+    return (
+        f"{recursive} SELECT DISTINCT {selected} FROM (SELECT DISTINCT {distinct} FROM reached) AS r{laterals}",
+        params,
+    )
