@@ -60,10 +60,11 @@ from threetears.evals.quick.one_call import (
 from threetears.evals.quick.result import (
     CREATED_BY,
     Result,
-    calibrate,
+    blind_reading,
+    model_slug,
     coordinates,
     declare,
-    judged_rows,
+    read_blind,
     refuse_an_unusable_margin,
     with_judge_examples,
 )
@@ -452,8 +453,11 @@ class Eval:
                 "its own storage; pass one or the other (as_host([...], store=...) builds a host over a store)"
             )
         scope_id = self.name if scope is None else scope
+        store_file: Path | None = None
         if host is None:
             opened, where = open_store(store)
+            if isinstance(opened, SqliteDocumentStore) and (store is None or isinstance(store, str | os.PathLike)):
+                store_file = DEFAULT_STORE if store is None else Path(store)
             host = as_host([self], store=opened)
         else:
             where = f"host {host.profile.host_id!r}"
@@ -508,9 +512,6 @@ class Eval:
         control = self.control if self.control is not None else summaries[0].candidate_model
         if not levels:
             levels = {control: {"model": summaries[0].candidate_model}}
-        names = _case_names(self.cases)
-        template = summaries[0].template_id or ""
-        case_names = {f"{template}-{index}": case for index, case in enumerate(names)}
 
         def declared() -> Result:
             result = declare(
@@ -535,6 +536,8 @@ class Eval:
                 margin=self.margin,
                 measure_order=self.plan.readings,
             )
+            read, _loose = read_blind(judge, host, keyed, control, scope_id, self.name)
+            drawn.extend([read.id] if read is not None else [])
             return with_judge_examples(
                 replace(
                     result,
@@ -542,14 +545,22 @@ class Eval:
                     fields=tuple(self.plan.fields),
                     judge=judge,
                     disclosures=disclosures,
-                    calibrations=tuple(calibrate(judge, host, keyed, scope_id)),
-                    to_label=tuple(judged_rows(host, keyed, scope_id, case_names)) if judge is not None else (),
+                    **blind_reading(judge, read, keyed),
                 ),
                 examples,
             )
 
         # Filing the campaign and reading its report and labels are store reads and writes, so they run off the loop.
-        return await run_blocking(host.blocking_executor, declared)
+        drawn: list[str] = []
+        result = await run_blocking(host.blocking_executor, declared)
+        if judge is not None and judge.reviewer is not None and drawn:
+            # A model answers the sheet a person would, once the read is drawn: held to what the eval's cap has left,
+            # ledgered, and kept beside a file store so the same draw is not paid for twice.
+            kept = None
+            if store_file is not None:
+                kept = store_file.parent / "blind_reads" / f"{drawn[0]}.{model_slug(judge.reviewer)}.csv"
+            result = await result.reviewed_by(judge.reviewer, max_cost_usd=self.max_cost_usd, kept=kept)
+        return result
 
     def _disclosures(self) -> list[str]:
         """What the result must say about how the runner's answers were come by, beside its readings."""
@@ -579,11 +590,6 @@ def _landed_usd(summaries: Sequence[EvalSummary]) -> float | None:
                 return None
             landed.append(result.cost_usd)
     return math.fsum(landed)
-
-
-def _case_names(cases: Sequence[Mapping[str, Any]]) -> list[str]:
-    """What each case is called: its ``id``, else its position."""
-    return [str(case["id"]) if "id" in case else str(index) for index, case in enumerate(cases)]
 
 
 def _refuse_undeclared_readings(host: EvalHost, plan: GraderPlan) -> None:

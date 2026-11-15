@@ -115,6 +115,41 @@ hosts build against, and whether a reader sees a question's cost before asking.
 
 ## Judging
 
+### An operator's new judge case joins the live revision
+
+Since `.30` the boot seed never adds a case to a judge template that already holds cases: the case waits for
+`reset_definitions`, which writes a new revision, and runs of two revisions never pool. An operator's own
+`judge_case_author` or `judge_cases_freeze` into such a template still adds to the revision in place, so runs of that
+judge template before and after the write share a revision id while their cases differ. Fix: an operator's write into
+a judge template that holds cases writes the next revision, as the reset does.
+
+### Two results of one case count as two
+
+Not decided; found by simulation with the blind read (2026-11-14), which is the first door that rates two results
+of one case as a matter of course: a pair item gives one from each arm.
+
+A judge's tier is decided on an interval that treats each rated result as its own cluster. Where a case's two
+results draw judge errors that coincide (a hard case is hard for both arms), the interval is too narrow. At the
+worst case, errors coinciding outright, a judge exactly at the bar (kappa 0.6) is awarded `calibrated` more often
+than the 5% the bound claims, and the gap grows with the number of cases:
+
+| Cases, two results each | Pass/fail | 1-5 | The same, errors independent |
+|---|---|---|---|
+| 10 | 2.7% | 1.9% | 1.1%, 0.6% |
+| 20 | 5.3% | 3.8% | 2.8%, 1.9% |
+| 30 | 5.9% | 4.4% | 3.2%, 2.6% |
+| 60 | 6.7% | 5.2% | 3.9%, 3.4% |
+| 120 | 7.0% | 5.7% | 4.2%, 3.7% |
+
+Measured over 20,000 reads a cell; `tests/test_simulated_agreement.py` holds the cells that hold, pins the 60-case
+pass/fail cell between 5.9% and 8%, and carries a strict xfail at the 5% bar. A read of one arm gives one result a
+case and is unaffected. A model that answers a blind read always rates both outputs of every case, so it sits in
+this scenario by construction; a person's read of pairs does too.
+
+Fix, known: take the interval over cases, summing a case's results. Measured the same way it awards the tier 1.2%
+to 1.8% of the time at the worst case and 0.4% to 0.7% with independent errors, so it holds the bound and costs
+power. Until then every agreement line states its cases beside its results.
+
 ### A tier's bounds are conservative on a 1-5 scale
 
 A tier is decided on score bounds for kappa

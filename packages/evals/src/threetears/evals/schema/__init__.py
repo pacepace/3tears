@@ -22,6 +22,15 @@ from __future__ import annotations
 
 from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.blind_read import (
+    BlindAgreement,
+    BlindPreference,
+    BlindReadReport,
+    BlindReview,
+    BlindReviewerCheck,
+    BlindSample,
+    BlindVerdictTable,
+)
 from threetears.evals.schema.call_ledger import (
     PASS_ACTION,
     PASS_TOOL,
@@ -416,6 +425,13 @@ __all__ = [
     "AsyncDeliveryStatus",
     "AsyncExternalSpend",
     "AsyncStoreClock",
+    "BlindAgreement",
+    "BlindPreference",
+    "BlindReadReport",
+    "BlindReview",
+    "BlindReviewerCheck",
+    "BlindSample",
+    "BlindVerdictTable",
     "BoundCompletionClient",
     "CalibrationRating",
     "CallLedger",

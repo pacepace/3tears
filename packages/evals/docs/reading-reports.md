@@ -1104,7 +1104,9 @@ and two bootstraps over six marginals (`tests/test_simulated_agreement.py`). At 
 showed a judge exactly at the bar over it 3.0–3.2% of the time, against 12–34% for the others, which read their
 spread off the estimate and so make a sample that happens to agree look certain. The disagreement size used is
 the larger of the observed and the chance one, a miss is decided on the 97.5% upper bound because the upper
-bound runs looser, and raters of one result are treated as a cluster.
+bound runs looser, and raters of one result are treated as a cluster. Each result is its own cluster, so two results
+of one case whose judge errors coincide (a blind read of pairs) raise that rate: measured 5.3% at 20 cases and about
+7% at 60 to 120 ([open problems](open-problems.md#two-results-of-one-case-count-as-two)).
 
 **How many ratings a judge needs.** Seeded simulation, one rater per result, 1,500 replicates. The chance that a
 judge earns the tier, by distinct results:
