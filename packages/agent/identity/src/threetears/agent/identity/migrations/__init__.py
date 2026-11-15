@@ -21,6 +21,8 @@ version history:
 - v003 adds the ``variant`` column (``''`` = the block itself) and moves the
   one-active and history indexes onto ``(..., block_key, variant)``, so a
   block can keep consumer-named variants, each with its own chain.
+- v004 builds ``idx_identity_pending_created`` (``(agent_id, user_id, date_created)`` over the ``proposed`` rows: the
+  pending queue in its order) and drops v001's ``idx_identity_pending``, which it covers.
 
 No soft-ref provenance columns (no ``conversation_id`` / ``source_*``), so
 the package declares no cross-package apply-order dependency.
@@ -36,6 +38,9 @@ from threetears.agent.identity.migrations.v002_add_wants_needs_block_keys import
 )
 from threetears.agent.identity.migrations.v003_add_block_variants import (
     add_block_variants,
+)
+from threetears.agent.identity.migrations.v004_pending_queue_ordered_index import (
+    order_pending_queue_index,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -62,6 +67,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(1)(create_identity_versions_table)
     pkg.version(2)(add_wants_needs_block_keys)
     pkg.version(3)(add_block_variants)
+    pkg.version(4)(order_pending_queue_index)
     runner.register(pkg)
     return pkg
 

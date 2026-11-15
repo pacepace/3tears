@@ -38,7 +38,8 @@ pg_hint_plan reads a statement's first comment: ``/*+ IndexOnlyScan(t <index>) *
 holds every column read, else an index scan of that same index.
 
 What registers: each ``TableSchema`` (``threetears.core.collections.schema_backed``) on construction, its primary key
-and each plain B-tree index it declares (no predicate, no operator class, no collation, no other access method). A table
+and each plain B-tree index it declares (no operator class, no collation, no other access method; no predicate, or one
+of nothing but ``column = 'text'`` conjuncts, which serves only a read pinning each to that text). A table
 is known by its identity, as for its keys: ``schema.table`` when declared so, else the bare name the search path
 finds.
 
@@ -72,6 +73,7 @@ __all__ = [
     "serving_index",
     "register_partial_predicates",
     "stated_literals",
+    "stated_predicate",
 ]
 
 
@@ -264,12 +266,16 @@ class DeclaredIndex:
     :ivar columns: its columns, in order
     :ivar descending: the columns it sorts descending
     :ivar primary: whether it is the table's primary key (the planner's own choice; never hinted)
+    :ivar stated: a partial index's predicate as the ``(column, text)`` pairs it names (``WHERE status = 'proposed'``,
+        :func:`stated_predicate`): it serves only a read pinning each column to exactly that text; empty for a whole
+        index
     """
 
     name: str
     columns: tuple[str, ...]
     descending: frozenset[str] = frozenset()
     primary: bool = False
+    stated: frozenset[tuple[str, str]] = frozenset()
 
     def __post_init__(self) -> None:
         """refuse an index naming anything but plain columns, or a name a hint could not carry unquoted.
@@ -278,7 +284,7 @@ class DeclaredIndex:
         """
         if not self.columns:
             raise ValueError(f"index {self.name!r} names at least one column")
-        for name in (self.name, *self.columns, *self.descending):
+        for name in (self.name, *self.columns, *self.descending, *(column for column, _ in self.stated)):
             if not isinstance(name, str) or _COLUMN.fullmatch(name) is None:
                 raise ValueError(f"a declared index names plain identifiers only, not {name!r}")
         stray = self.descending - set(self.columns)
@@ -325,6 +331,36 @@ def register_partial_predicates(table: str, predicates: Iterable[str]) -> None:
             stated = (relation, found.group(1).lower(), found.group(2).replace("''", "'"))
             if stated not in _STATED:
                 _STATED.append(stated)
+
+
+def stated_predicate(where: str) -> frozenset[tuple[str, str]] | None:
+    """a partial index's predicate as the ``(column, text)`` pairs it names, when it is nothing but ``column = 'text'``
+    conjuncts (``status = 'proposed'``); None for any other predicate, which no keyed read is judged to state.
+
+    :param where: the predicate, as declared
+    :ptype where: str
+    :return: the pairs, or None
+    :rtype: frozenset[tuple[str, str]] | None
+    """
+    pairs: set[tuple[str, str]] = set()
+    for conjunct in re.split(r"\s+AND\s+", where, flags=re.IGNORECASE):
+        found = _STATED_EQUALITY.fullmatch(conjunct)
+        if found is None:
+            return None
+        pairs.add((found.group(1).lower(), found.group(2).replace("''", "'")))
+    return frozenset(pairs) or None
+
+
+def _states(index: DeclaredIndex, by: Mapping[Any, Any]) -> bool:
+    """whether a read pinning ``by`` states ``index``'s partial predicate: each of its columns pinned to exactly its
+    text (a whole index's empty predicate is stated by every read).
+
+    WHY: a partial index holds only the rows its predicate admits; named to YugabyteDB for a read that does not state
+    it, the read would miss every other row. Stated, the index holds every row asked for (identity's pending queue:
+    ``(agent_id, user_id, date_created) WHERE status = 'proposed'``; unhinted, YugabyteDB read 400 rows and
+    sorted them for a page of 10, 3tears #98).
+    """
+    return all(isinstance(by.get(column), str) and by[column] == text for column, text in index.stated)
 
 
 def stated_literals(table: Any) -> frozenset[tuple[str, str]]:
@@ -384,14 +420,14 @@ def _leading_held(index: DeclaredIndex, pinned: set[str]) -> int:
     return held
 
 
-def _unordered_serving(relation: Relation, pinned: set[str]) -> DeclaredIndex | None:
+def _unordered_serving(relation: Relation, pinned: set[str], by: Mapping[Any, Any]) -> DeclaredIndex | None:
     """the declared index that serves an unordered read of ``relation`` pinning ``pinned``: a secondary index binding
     more pinned leading columns than the primary key (the one binding most, then the narrower); else the primary key
     where it binds any (always when it binds all its columns: a point read); else None.
 
     YugabyteDB plans such a read through the primary key's prefix and filters the rest (3tears #95: 100 rows scanned
     for 20); the coordinator's ruling (#96) names the index that binds more of the pins."""
-    indexes = [index for named, index in _INDEXES if named == relation]
+    indexes = [index for named, index in _INDEXES if named == relation and _states(index, by)]
     primary = next((index for index in indexes if index.primary), None)
     floor = _leading_held(primary, pinned) if primary is not None else 0
     if primary is not None and floor == len(primary.columns):
@@ -427,13 +463,13 @@ def serving_index(table: Any, by: Mapping[Any, Any], order: Sequence[Sort]) -> D
     pinned = {column for column, value in by.items() if isinstance(column, str) and not isinstance(value, AnyOf)}
     sorts = [sort for sort in order if sort.expression is not None or sort.column not in pinned]
     if not sorts:
-        return _unordered_serving(relation, pinned)
+        return _unordered_serving(relation, pinned, by)
     if any(sort.expression is not None for sort in sorts):
         return None
     ranked = [
         (rank, index)
         for named, index in _INDEXES
-        if named == relation and (rank := _rank(index, pinned, sorts)) is not None
+        if named == relation and _states(index, by) and (rank := _rank(index, pinned, sorts)) is not None
     ]
     if not ranked:
         return None

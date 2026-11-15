@@ -5387,5 +5387,123 @@
     "params": []
    }
   ]
+ },
+ {
+  "args": [
+   "after or UUID(int=0)",
+   "limit"
+  ],
+  "columns": [
+   "grant_id",
+   "principal_type",
+   "principal_id",
+   "tool_name",
+   "permission",
+   "date_created"
+  ],
+  "function": "McpToolGrantCollection.list_grants_page",
+  "helper": "keyset_page",
+  "key_from": 1,
+  "limit": {
+   "param": 2
+  },
+  "line": 263,
+  "method": "fetch",
+  "new_call": "(await keyset_page(self.l3_pool, 'mcp_tool_grants', columns=('grant_id', 'principal_type', 'principal_id', 'tool_name', 'permission', 'date_created'), by={}, where=[Fragment('grant_id > $1', (after or UUID(int=0),))], order=[Sort('grant_id')], limit=limit, records=True)).rows",
+  "old_sql": "SELECT grant_id, principal_type, principal_id, tool_name, permission, date_created FROM mcp_tool_grants WHERE grant_id > $1 ORDER BY grant_id LIMIT $2",
+  "order": [
+   {
+    "column": "grant_id",
+    "descending": false,
+    "nulls": null
+   }
+  ],
+  "path": "packages/mcp/src/threetears/mcp/rbac.py",
+  "pins": [],
+  "returning": [],
+  "sets": [],
+  "shape": "first",
+  "table": "mcp_tool_grants",
+  "where": [
+   {
+    "cast": null,
+    "column": "",
+    "compared": [
+     "grant_id"
+    ],
+    "kind": "guard",
+    "literal": "grant_id > $1",
+    "param": null,
+    "params": [
+     1
+    ]
+   }
+  ]
+ },
+ {
+  "args": [
+   "partition_key",
+   "job_id",
+   "limit"
+  ],
+  "columns": [
+   "partition_key",
+   "fire_id",
+   "job_id",
+   "scheduled_fire_at",
+   "actual_fired_at",
+   "status",
+   "output",
+   "latency_ms",
+   "error",
+   "date_created"
+  ],
+  "function": "JobFireCollection.list_for_job",
+  "helper": "keyset_page",
+  "key_from": 1,
+  "limit": {
+   "param": 3
+  },
+  "line": 1234,
+  "method": "fetch",
+  "new_call": "(await keyset_page(self.l3_pool, 'job_fires', columns=('partition_key', 'fire_id', 'job_id', 'scheduled_fire_at', 'actual_fired_at', 'status', 'output', 'latency_ms', 'error', 'date_created'), by={'partition_key': partition_key, 'job_id': job_id}, order=[Sort('actual_fired_at', descending=True), Sort('fire_id', descending=True)], limit=limit, records=True)).rows",
+  "old_sql": "SELECT partition_key, fire_id, job_id, scheduled_fire_at, actual_fired_at, status, output, latency_ms, error, date_created FROM job_fires WHERE partition_key = $1 AND job_id = $2 ORDER BY actual_fired_at DESC LIMIT $3",
+  "order": [
+   {
+    "column": "actual_fired_at",
+    "descending": true,
+    "nulls": null
+   },
+   {
+    "column": "fire_id",
+    "descending": true,
+    "nulls": null
+   }
+  ],
+  "path": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py",
+  "pins": [
+   {
+    "cast": null,
+    "column": "partition_key",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 1,
+    "params": []
+   },
+   {
+    "cast": null,
+    "column": "job_id",
+    "compared": [],
+    "kind": "param",
+    "literal": null,
+    "param": 2,
+    "params": []
+   }
+  ],
+  "returning": [],
+  "sets": [],
+  "shape": "first",
+  "table": "job_fires"
  }
 ]

@@ -11,6 +11,7 @@ rule is a partial unique index, and only Postgres enforces it.
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -56,7 +57,9 @@ async def _indexes(url: str, schema: str) -> dict[str, str]:
             "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = $1 AND tablename = 'identity_versions'",
             schema,
         )
-        return {r["indexname"]: r["indexdef"] for r in rows}
+        # YugabyteDB spells each key column's sharding (``agent_id HASH, customer_id ASC``); PostgreSQL spells none.
+        # Read alike, the columns and their DESC are what is compared
+        return {r["indexname"]: re.sub(r" (?:HASH|ASC)\b", "", r["indexdef"]) for r in rows}
     finally:
         await conn.close()
 
@@ -90,6 +93,10 @@ async def test_upgrade_keeps_every_row_as_the_block_itself(pg_schema: tuple[str,
     assert "(agent_id, customer_id, user_id, block_key, variant)" in after["uq_identity_active_per_variant"]
     assert "WHERE (status = 'active'" in after["uq_identity_active_per_variant"]
     assert "(agent_id, user_id, block_key, variant, date_created DESC)" in after["idx_identity_variant_history"]
+    # v004: the pending queue's index holds its order, and the one it covers is gone
+    assert "idx_identity_pending" not in after
+    assert "(agent_id, user_id, date_created)" in after["idx_identity_pending_created"]
+    assert "WHERE (status = 'proposed'" in after["idx_identity_pending_created"]
 
     pool = await make_pool(url, schema)
     try:

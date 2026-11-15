@@ -35,7 +35,6 @@ from uuid import UUID
 
 from sqlalchemy import MetaData, Table
 from threetears.core.collections.generation import WRITE_GENERATION
-from threetears.core.declared import whole_read
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
     STRING_TYPE,
@@ -44,8 +43,9 @@ from threetears.core.collections.schema_backed import (
     SchemaBackedCollection,
     TableSchema,
 )
+from threetears.core.declared import whole_read
 from threetears.core.entities.base import BaseEntity
-from threetears.core.keyed import read_row
+from threetears.core.keyed import Fragment, Sort, keyset_page, read_row
 from threetears.core.tenancy import no_tenant
 from threetears.observe import get_logger
 from uuid_utils import uuid7
@@ -259,12 +259,18 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
                 "wire CollectionRegistry.configure(l3_pool=...) before "
                 "calling list_grants_page",
             )
-        rows = await self.l3_pool.fetch(
-            "SELECT grant_id, principal_type, principal_id, tool_name, permission, date_created FROM mcp_tool_grants "
-            "WHERE grant_id > $1 ORDER BY grant_id LIMIT $2",
-            after or UUID(int=0),
-            limit,
-        )
+        rows = (
+            await keyset_page(
+                self.l3_pool,
+                "mcp_tool_grants",
+                columns=("grant_id", "principal_type", "principal_id", "tool_name", "permission", "date_created"),
+                by={},
+                where=[Fragment("grant_id > $1", (after or UUID(int=0),))],
+                order=[Sort("grant_id")],
+                limit=limit,
+                records=True,
+            )
+        ).rows
         return [dict(row) for row in rows]
 
     async def load_all_grants(self) -> list[dict[str, Any]]:

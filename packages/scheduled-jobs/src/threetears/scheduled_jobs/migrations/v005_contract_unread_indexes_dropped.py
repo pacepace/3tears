@@ -4,8 +4,8 @@
   status. The due scan reads ``idx_scheduled_jobs_next_fire_key`` (v004), the admin listing pins no partition, and
   every other read of ``scheduled_jobs`` is a point read by its whole key.
 - ``idx_job_fires_partition_time`` (v001, ``(partition_key, actual_fired_at DESC)``): no read orders a partition's
-  fires by time. One job's history (``list_for_job``) pins the job and reads ``idx_job_fires_job_time``; the latest
-  fire of each listed job reads the same index.
+  fires by time. One job's history (``list_for_job``) pins the job and reads ``idx_job_fires_job_time`` (v006:
+  ``idx_job_fires_job_time_key``); the latest fire of each listed job reads the same index.
 
 Found unread by the index tool's run with the hub as consumer (o96, 2026-11-14); dropped under Pace's rule (b)
 (2026-11-13: a non-unique index no read uses). A pod of an older release may still plan through a dropped index

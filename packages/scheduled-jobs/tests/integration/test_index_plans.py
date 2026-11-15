@@ -102,14 +102,36 @@ async def test_scheduled_jobs_next_fire(conn: asyncpg.Connection) -> None:
 
 
 async def test_job_fires_job_time(conn: asyncpg.Connection) -> None:
-    """Flips if the latest fire of each listed job stops reading idx_job_fires_job_time."""
+    """Flips if the latest fire of each listed job, or one job's history page (newest first, completed by
+    ``fire_id``), stops reading idx_job_fires_job_time_key, or the page reads and sorts the job's fires rather than
+    walking the index in its order (v006: the index holds ``fire_id DESC`` after ``actual_fired_at DESC``)."""
     jobs = [row["job_id"] for row in await conn.fetch("SELECT job_id FROM scheduled_jobs LIMIT 20")]
     captured = CapturedL3()
     _, fires = _stores(captured)
     await fires.latest_for_jobs(jobs)
     (sql, args), *_ = captured.asked
     plan = await explain_statement(conn, sql, *args)
-    assert plan_uses_index(plan, "idx_job_fires_job_time"), plan.plan
+    assert plan_uses_index(plan, "idx_job_fires_job_time_key"), plan.plan
+    # one job's history at a long-lived job's size (2,000 fires; at the seed's 4 PostgreSQL rightly ANDs two bitmaps
+    # and sorts the 4), a page of 2
+    job = await conn.fetchrow("SELECT partition_key, job_id FROM scheduled_jobs LIMIT 1")
+    await conn.execute(
+        "INSERT INTO job_fires (partition_key, fire_id, job_id, scheduled_fire_at, actual_fired_at, status)"
+        " SELECT $1, gen_random_uuid(), $2, now(), now() - n * interval '1 minute', 'succeeded'"
+        " FROM generate_series(1, 2000) n",
+        job["partition_key"],
+        job["job_id"],
+    )
+    await conn.execute("ANALYZE job_fires")
+    history = CapturedL3(real=conn)
+    _, fires = _stores(history)
+    await fires.list_for_job(job["partition_key"], job["job_id"], limit=2)
+    (sql, args), *_ = history.asked
+    page = await explain_statement(conn, sql, *args)
+    assert plan_uses_index(page, "idx_job_fires_job_time_key"), page.plan
+    assert not set(_node_types(page.plan)) & {"Sort", "Incremental Sort"}, page.plan
+    # the page of 2 with keyset_page's one row past it
+    assert page.rows_scanned <= 2 + 1, page
 
 
 async def test_job_fires_dispatching(conn: asyncpg.Connection) -> None:

@@ -188,7 +188,7 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
                 "agent_id",
                 "user_id",
                 "salience",
-                where=f"status = '{IntentionStatus.OPEN.value}'",
+                where="status = 'open'",
                 desc="salience",
             ),
             # HNSW over the embedding for the log-time dedup lookup.
@@ -318,10 +318,20 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
             return []
         # cache-bypass: the ranked multi-row scan is not primary-key
         # addressable, so it stays on the Collection (single entry point).
+        # WHY no index holds the order (coordinator ruling 2026-11-14): with
+        # decay on, the rank is ln(salience) + ln2/half_life * epoch(stamp);
+        # EXTRACT(EPOCH FROM timestamptz) is STABLE, not IMMUTABLE, and
+        # half_life is per-class config, so neither a stored generated column
+        # nor an expression index can hold it (only an app-maintained column
+        # written on every salience write could). There is no LIMIT: the read
+        # is one user's open wants, which idx_intentions_open_ranked's
+        # (agent_id, user_id) prefix under status = 'open' bounds, so the sort
+        # is of that small set alone.
         rows = await self.l3_pool.fetch(
             f"SELECT {_INTENTIONS_SELECT_COLUMNS} FROM intentions "
             "WHERE agent_id = $1 AND user_id = $2 "
-            f"AND status = '{IntentionStatus.OPEN.value}' "
+            # the partial index's predicate as its literal ('open', IntentionStatus.OPEN), so the read states it
+            "AND status = 'open' "
             "AND (last_surfaced_at IS NULL OR last_surfaced_at < $3) "
             f"ORDER BY {self._salience_rank()} DESC, date_created DESC",
             agent_id,

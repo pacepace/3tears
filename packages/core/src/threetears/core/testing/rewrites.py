@@ -2283,6 +2283,9 @@ async def explain_index_read(conn: Any, entry: Mapping[str, Any]) -> StatementPl
 #: an index-purpose entry's read's sort, as the keyed helpers write it (the table read as ``t``)
 _ENTRY_ORDER: Final = re.compile(r'\bORDER BY t\."(\w+)"( DESC)?', re.IGNORECASE)
 
+#: a column compared to a text in a manifest entry's statement (``t."status" = 'open'``, ``(status = 'proposed')``)
+_ENTRY_TEXT: Final[re.Pattern[str]] = re.compile(r"""(?<![\w"])(?:t\.)?"?([a-z_]\w*)"?\s*=\s*'((?:[^']|'')*)'""")
+
 
 def _declared_hint(entry: Mapping[str, Any], params: Sequence[Any]) -> str:
     """the hint a keyed helper starts the entry's read with on YugabyteDB, as production sends it: the declared index
@@ -2303,7 +2306,11 @@ def _declared_hint(entry: Mapping[str, Any], params: Sequence[Any]) -> str:
         if "/src/" in path and path.endswith(".py"):
             # its module declares the table (a TableSchema registers its indexes when its class is built)
             importlib.import_module(path.split("/src/", 1)[1].removesuffix(".py").replace("/", "."))
-    by = {pin["column"]: params[pin["param"] - 1] for pin in entry["pins"] if pin["kind"] == "param"}
+    by: dict[str, Any] = {pin["column"]: params[pin["param"] - 1] for pin in entry["pins"] if pin["kind"] == "param"}
+    # a text the statement compares a column to (a partial index's WHERE kept in the read, a literal pin) is pinned,
+    # as the helper's literal pin is: a partial index serves only a read stating its predicate (keys.serving_index)
+    for column, text in _ENTRY_TEXT.findall(entry["sql"]):
+        by.setdefault(column, text.replace("''", "'"))
     order = [Sort(column, descending=bool(down)) for column, down in _ENTRY_ORDER.findall(entry["sql"])]
     index = serving_index(entry["table"], by, order)
     return "" if index is None or index.primary else index_hint(index)

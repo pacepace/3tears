@@ -1153,8 +1153,10 @@ def test_a_first_of_read_is_parsed_with_its_limit() -> None:
 
 def test_first_of_and_top_n_reads_are_rewritten_onto_keyset_page_s_first_page(tmp_path: Path) -> None:
     """Flips if a first-of or top-n read is not rewritten onto ``keyset_page``'s first page with records, its order
-    completed by the table's key (the pins and sort holding a key complete nothing), read as the old method answered;
-    or a read with a key column unselected, no order, or no LIMIT is taken."""
+    completed by the table's key (the pins and sort holding a key complete nothing) running the way the order's last
+    term does (``name DESC`` completed ``geo_id DESC``: one index, ``(state, name, geo_id)``, walked backward serves it;
+    completed ascending no index does, 3tears #98), read as the old method answered; or a read with a key column
+    unselected, no order, or no LIMIT is taken."""
     config = _config(tmp_path)
     (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_FIRSTS), encoding="utf-8")
     (tmp_path / "src/pkg/indexes.py").write_text(textwrap.dedent(_GEO_NAME_INDEX), encoding="utf-8")
@@ -1177,7 +1179,7 @@ def test_first_of_and_top_n_reads_are_rewritten_onto_keyset_page_s_first_page(tm
     assert "from threetears.core.keyed import Sort, keyset_page" in source
     assert (
         "(await keyset_page(conn, 'geos', columns=('geo_id', 'name'), by={'state': state}, "
-        "order=[Sort('name', descending=True), Sort('geo_id')], limit=n, records=True)).rows" in source
+        "order=[Sort('name', descending=True), Sort('geo_id', descending=True)], limit=n, records=True)).rows" in source
     )
     assert "next(iter((await keyset_page(conn, 'geos', columns=('geo_id', 'name')," in source
     assert "next((row['geo_id'] for row in (await keyset_page(" in source

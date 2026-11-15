@@ -43,10 +43,22 @@ async def test_idx_folders_user(engine_conn: Any) -> None:
     assert plan_uses_index(plan, "idx_folders_user"), json.dumps(plan.plan)
 
 
+async def test_idx_identity_pending_created(engine_conn: Any) -> None:
+    """Flips if packages/agent/identity/src/threetears/agent/identity/collections.py::IdentityVersionsCollection.find_pending's read stops reading idx_identity_pending_created."""
+    plan = await explain_index_read(engine_conn, _ENTRIES["idx_identity_pending_created"])
+    assert plan_uses_index(plan, "idx_identity_pending_created"), json.dumps(plan.plan)
+
+
 async def test_idx_identity_variant_history(engine_conn: Any) -> None:
     """Flips if packages/agent/identity/src/threetears/agent/identity/collections.py::IdentityVersionsCollection.find_versions_for_block's read stops reading idx_identity_variant_history."""
     plan = await explain_index_read(engine_conn, _ENTRIES["idx_identity_variant_history"])
     assert plan_uses_index(plan, "idx_identity_variant_history"), json.dumps(plan.plan)
+
+
+async def test_idx_intentions_open_ranked(engine_conn: Any) -> None:
+    """Flips if packages/agent/intention/src/threetears/agent/intention/collections.py::IntentionsCollection.find_open_for_deliberation's read stops reading idx_intentions_open_ranked."""
+    plan = await explain_index_read(engine_conn, _ENTRIES["idx_intentions_open_ranked"])
+    assert plan_uses_index(plan, "idx_intentions_open_ranked"), json.dumps(plan.plan)
 
 
 async def test_idx_workspace_file_versions_history(engine_conn: Any) -> None:
