@@ -28,8 +28,19 @@ _LOAD = json.dumps({"prefixes": [{"state": "PA"}, {"state": "OH"}]}, separators=
 _RESET = json.dumps({"reason": "reset"}, separators=(",", ":"))
 
 
-#: ``_noted_rows_sql``'s select list, in order
-_FIELDS = ("switch_no", "previous_switched_at", "reach", "noted", "key_text", "keys", "columns", "tenant")
+#: ``noted_rows_since``'s select list (``read_row_beside``: the ring row's columns, then the notes'), in order
+_FIELDS = (
+    "current_ring",
+    "switch_no",
+    "previous_switched_at",
+    "wait_seconds",
+    "writes_previous_until",
+    "noted",
+    "key_text",
+    "keys",
+    "columns",
+    "tenant",
+)
 
 
 class _Record(tuple[Any, ...]):
@@ -40,8 +51,8 @@ class _Record(tuple[Any, ...]):
 
 
 def _note(key_text: str | None, keys: list[str] | None, columns: Any, tenant: str | None) -> _Record:
-    """one row of ``_noted_rows_sql``: the ring (no switch yet), then a note."""
-    return _Record((0, _EPOCH, _EPOCH, True, key_text, keys, columns, tenant))
+    """one row of ``noted_rows_since``'s statement: the ring (no switch yet), then a note."""
+    return _Record((0, 0, _EPOCH, 60.0, _EPOCH, True, key_text, keys, columns, tenant))
 
 
 class _Notes:

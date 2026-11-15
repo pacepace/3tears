@@ -25,20 +25,23 @@ from typing import Any, Literal, overload
 from threetears.core.keyed._filters import Fragment, Lock, Selected, sent_by
 from threetears.core.keyed._joining import Joined, check_joins, join_rows, joined_columns
 from threetears.core.keyed.page import yugabyte_index_hint
-from threetears.interfaces.keyed.filters import by_conditions, quote_identifier, quoted_table
+from threetears.interfaces.keyed.filters import Derived, by_conditions, quote_identifier, quoted_table
 from threetears.interfaces.keyed.page import Sort
 from threetears.interfaces.keyed.point import (
     Nearest,
     TextRank,
     read_by_statement,
     read_nearest_statement,
+    read_row_beside_statement,
     read_row_statement,
 )
+from threetears.interfaces.keyed.steps import Step
 
 __all__ = [
     "read_by",
     "read_nearest",
     "read_row",
+    "read_row_beside",
     "read_value",
 ]
 
@@ -126,6 +129,7 @@ async def read_row(
     records: Literal[False] = ...,
     lock: Lock | None = ...,
     where: Sequence[Fragment] = ...,
+    beside: Derived | None = ...,
 ) -> dict[str, Any] | None: ...
 
 
@@ -139,6 +143,7 @@ async def read_row(
     records: Literal[True],
     lock: Lock | None = ...,
     where: Sequence[Fragment] = ...,
+    beside: Derived | None = ...,
 ) -> Any: ...
 
 
@@ -151,6 +156,7 @@ async def read_row(
     records: bool = False,
     lock: Lock | None = None,
     where: Sequence[Fragment] = (),
+    beside: Derived | None = None,
 ) -> dict[str, Any] | Any | None:
     """the first row of ``table`` the pinned columns name, or None: what ``fetchrow`` of the hand-written statement
     answered (one row asked for, ``LIMIT 1``; which one, where the key names several, is the database's, as it was).
@@ -170,15 +176,55 @@ async def read_row(
     :ptype lock: Lock | None
     :param where: guards beside the pins, each a fragment written as ``t."col"`` from ``$1``; none when empty
     :ptype where: Sequence[Fragment]
+    :param beside: a TRUSTED table-less derived row read beside the table's (``b``), its values taken before the
+        select list runs (:func:`~threetears.interfaces.keyed.read_row_statement`); none when None
+    :ptype beside: Derived | None
     :return: the row, or None when the key names none
     :rtype: dict[str, Any] | Any | None
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
-    sql, params = read_row_statement(table, by=by, columns=columns, lock=lock, where=where)
+    sql, params = read_row_statement(table, by=by, columns=columns, lock=lock, where=where, beside=beside)
     rows = list(await sent_by(conn).fetch(sql, *params))
     if not rows:
         return None
     return rows[0] if records else dict(rows[0])
+
+
+async def read_row_beside(
+    conn: Any,
+    table: str,
+    *,
+    by: Mapping[str, Any],
+    columns: Sequence[str | Selected],
+    beside: Step,
+    limit: int,
+    present: str,
+) -> list[Any]:
+    """the first row of ``table`` the pins name and, beside it, up to ``limit`` rows of a step reading that row's
+    columns as ``r."col"``, in one statement: one round trip, and one snapshot for the row and the rows it decides
+    (:func:`~threetears.interfaces.keyed.read_row_beside_statement`). Each answered row is the table's row's columns,
+    then ``present`` (TRUE; NULL on the row alone when the step holds none), then the step's columns, as records.
+
+    :param conn: anything with an asyncpg-shaped ``fetch(query, *params)``
+    :ptype conn: Any
+    :param table: the table, a TRUSTED identifier
+    :ptype table: str
+    :param by: as :func:`read_by`'s; at least one
+    :ptype by: Mapping[str, Any]
+    :param columns: the row's columns, as :func:`read_by`'s; each one the step reads among them
+    :ptype columns: Sequence[str | Selected]
+    :param beside: the step (:mod:`threetears.core.keyed.steps`), its conditions on the row written ``r."col"``
+    :ptype beside: Step
+    :param limit: the most step rows read
+    :ptype limit: int
+    :param present: the name of the column TRUE on a step row, a TRUSTED identifier
+    :ptype present: str
+    :return: the rows, empty when the pins name no row
+    :rtype: list[Any]
+    :raises ValueError: when nothing is pinned, or for a limit under one row
+    """
+    sql, params = read_row_beside_statement(table, by=by, columns=columns, beside=beside, limit=limit, present=present)
+    return list(await sent_by(conn).fetch(sql, *params))
 
 
 async def read_value(

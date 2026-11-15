@@ -150,7 +150,20 @@ from threetears.core.ddl.change_notes import (
     trigger_function_sql,
 )
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
-from threetears.core.keyed import Fragment, Sort, delete_before, keyset_rows
+from threetears.core.keyed import (
+    Derived,
+    Step,
+    Fragment,
+    Selected,
+    Sort,
+    delete_before,
+    distinct,
+    keyset_rows,
+    read_row,
+    read_row_beside,
+    scan,
+    union,
+)
 from threetears.core.ddl.index_health import ddl_body, rebuild_unusable_indexes
 from threetears.core.declared import whole_read
 from threetears.core.ddl.errors import DdlLockTimeoutError
@@ -2258,41 +2271,76 @@ class NotedRows:
     whole: tuple[NotedChange, ...] = ()
 
 
-def _noted_rows_sql(owner: str) -> str:
-    """the one statement :func:`noted_rows_since` asks: the ring row, and the table's notes in its coverage.
+#: a note's columns :func:`noted_rows_since` reads, each slot's alike
+_NOTE_COLUMNS: Final = ("key_text", "keys", "columns", "tenant")
 
-    One statement, not a read of the ring row then one of the notes, so the reconciler's ask a marked table
-    is one round trip, and the ring and its notes are read in one snapshot. Each note table's branch is read
-    only when it is the current or the previous table (a one-time filter on the ring row); the previous one only
-    while the reach is before the last switch's fence has passed (a copy of the slot read before the switch writes
-    there for at most the fence after it, so past that it holds no note from the reach on, and is not read), from the reach
-    (``since`` less half the ring's wait), and only when the coverage reaches back that far. Each branch is
-    answered from the ``(table_name, noted_at)`` index, which carries the columns read
-    (:func:`~threetears.core.ddl.change_notes.change_notes_ddl`). A row comes back for the ring with no note
-    (``noted`` NULL) when the coverage holds none, and none at all when the ring has no row.
+#: the ring row's columns :func:`noted_rows_since` reads (``r``): its slot, switch and wait, and the end of the time a
+#: copy of the slot read before the last switch may still write the previous table (the switch, plus the larger of the
+#: fence and the wait)
+_ROWS_RING_COLUMNS: Final = (
+    "current_ring",
+    "switch_no",
+    "previous_switched_at",
+    "wait_seconds",
+    Selected(
+        "t.switched_at + make_interval(secs => GREATEST(t.fence_seconds, t.wait_seconds))", "writes_previous_until"
+    ),
+)
 
-    :param owner: the quoted schema holding the ring
-    :ptype owner: str
-    :return: the statement: ``$1`` the table, ``$2`` since, ``$3`` the most notes to answer
-    :rtype: str
+#: a slot's one-time condition on the ring row (``$1`` the slot, ``$2`` the ring's size, ``$3`` since): it is the
+#: current table, or the previous one while the reach (since less half the wait) is before the last switch's writes
+#: there could end
+_SLOT_READ: Final = (
+    "r.current_ring = $1 OR ((r.current_ring - 1 + $2) % $2 = $1 "
+    "AND $3::timestamptz - make_interval(secs => r.wait_seconds / 2) < r.writes_previous_until)"
+)
+
+
+def _noted_rows_step(schema: str, table: str, since: datetime) -> Step:
+    """the notes :func:`noted_rows_since` reads beside the ring row (``r``): each note table's notes of ``table`` from
+    the reach on, the distinct (key, columns, tenant) of them.
+
+    Each note table's leg is read only when it is the current or the previous table (:data:`_SLOT_READ`, a one-time
+    filter on the ring row); the previous one only while the reach is before the last switch's fence has passed (a
+    copy of the slot read before the switch writes there for at most the fence after it, so past that it holds no note
+    from the reach on); from the reach (``since`` less half the ring's wait); and only when the coverage reaches back
+    that far (before a first switch nothing was ever emptied). Each leg is answered from the ``(table_name,
+    noted_at)`` index, which carries the columns read (:func:`~threetears.core.ddl.change_notes.change_notes_ddl`).
+
+    :param schema: the schema holding the ring
+    :ptype schema: str
+    :param table: the table whose notes are read
+    :ptype table: str
+    :param since: the oldest write's time, by the database's clock
+    :ptype since: datetime
+    :return: the step
+    :rtype: Step
     """
-    branches = " UNION ALL ".join(
-        f"SELECT keys, columns, key_text, tenant FROM {owner}.{quote_identifier(note_table(index))} "  # noqa: S608 - trusted identifiers
-        f"WHERE (r.current_ring = {index} OR ((r.current_ring - 1 + {NOTE_RING_SIZE}) % {NOTE_RING_SIZE} = {index} "
-        "AND r.reach < r.writes_previous_until)) "
-        "AND table_name = $1 AND noted_at >= r.reach"
-        for index in range(NOTE_RING_SIZE)
+    coverage = Fragment(
+        "r.switch_no = 0 OR $1::timestamptz - make_interval(secs => r.wait_seconds / 2) >= r.previous_switched_at",
+        (since,),
     )
-    return (  # one statement; each interpolated piece is a fixed name this module builds
-        "SELECT r.switch_no, r.previous_switched_at, r.reach, n.noted, n.key_text, n.keys, n.columns, n.tenant "
-        f"FROM (SELECT current_ring, switch_no, previous_switched_at, "
-        "$2::timestamptz - make_interval(secs => wait_seconds / 2) AS reach, "
-        "switched_at + make_interval(secs => GREATEST(fence_seconds, wait_seconds)) AS writes_previous_until "
-        f"FROM {owner}.{quote_identifier(RING_TABLE)} WHERE id = 1) r "
-        "LEFT JOIN LATERAL (SELECT TRUE AS noted, key_text, keys, columns, tenant "
-        f"FROM (SELECT DISTINCT key_text, keys, columns, tenant FROM ({branches}) u) d LIMIT $3) n "
-        "ON r.switch_no = 0 OR r.reach >= r.previous_switched_at"
+    from_reach = Fragment(
+        "t.table_name = $1 AND t.noted_at >= $2::timestamptz - make_interval(secs => r.wait_seconds / 2)",
+        (table, since),
     )
+    # one leg a slot of the ring (NOTE_RING_SIZE, 3), each its own index read
+    first = scan(
+        f"{schema}.{note_table(0)}",
+        _NOTE_COLUMNS,
+        where=[Fragment(_SLOT_READ, (0, NOTE_RING_SIZE, since)), coverage, from_reach],
+    )
+    second = scan(
+        f"{schema}.{note_table(1)}",
+        _NOTE_COLUMNS,
+        where=[Fragment(_SLOT_READ, (1, NOTE_RING_SIZE, since)), coverage, from_reach],
+    )
+    third = scan(
+        f"{schema}.{note_table(2)}",
+        _NOTE_COLUMNS,
+        where=[Fragment(_SLOT_READ, (2, NOTE_RING_SIZE, since)), coverage, from_reach],
+    )
+    return distinct(union(first, second, third, keep_all=True), _NOTE_COLUMNS)
 
 
 async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: datetime, cap: int) -> NotedRows | str:
@@ -2318,21 +2366,37 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     :rtype: NotedRows | str
     :raises GenerationUnavailableError: when a whole-table note names a reach this module never writes
     """
-    owner = quote_identifier(notes_schema)
     try:
-        found = await pool.fetch(_noted_rows_sql(owner), table, since, cap + 1)
+        # the ring row and its notes in one statement (read_row_beside): one round trip, the ring and its notes read in
+        # one snapshot, as the reconciler's ask of a marked table was made one statement for (364941102: on YugabyteDB
+        # 2.56 ms at 1M notes, 1.60x its bare read; the two-statement form it replaced answered the same in every case).
+        # Through the helper (2026-11-15) the plan is the hand-written one's, node for node (each slot a one-time
+        # filter over its (table_name, noted_at) index read); building the statement costs ~0.09 ms of Python a call.
+        # Its budget: test_noted_rows_scale_live (YugabyteDB, within 2x the bare read)
+        found = await read_row_beside(
+            pool,
+            f"{notes_schema}.{RING_TABLE}",  # the helper quotes it a segment at a time
+            by={"id": 1},
+            columns=_ROWS_RING_COLUMNS,
+            beside=_noted_rows_step(notes_schema, table, since),
+            limit=cap + 1,
+            present="noted",
+        )
     except asyncpg.UndefinedTableError, asyncpg.InvalidSchemaNameError:
         # NOSILENT: no ring installed here: the caller names the whole table instead, said and counted there
         return "notes_unavailable"
     if not found:
         return "notes_unavailable"
     ring = found[0]
+    # the reach as the statement's legs compute it (since less half the wait, wait_seconds a DOUBLE PRECISION), as
+    # _noted_keys_read computes it from the same ring row
+    reach = since - timedelta(seconds=float(ring["wait_seconds"]) / 2)
     # before a first switch nothing was ever emptied: every note since the triggers were given is there
-    if int(ring["switch_no"]) != 0 and ring["reach"] < ring["previous_switched_at"]:
+    if int(ring["switch_no"]) != 0 and reach < ring["previous_switched_at"]:
         return "not_covered"
-    # each note's values by position (_noted_rows_sql's select list: noted, key_text, keys, columns, tenant from 3):
-    # at 500 notes the rows' handling, not the statement, was the larger part of the call
-    notes = [note for note in found if note[3]]
+    # each note's values by position (the select list: the ring's five _ROWS_RING_COLUMNS, then noted, key_text, keys,
+    # columns, tenant): at 500 notes the rows' handling, not the statement, was the larger part of the call
+    notes = [note for note in found if note[5]]
     if not notes:
         return "no_notes"
     if len(notes) > cap:
@@ -2341,8 +2405,8 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     # reach they name (a whole-table note keeps it as its columns), as a restore folds them
     reaches: dict[str | None, list[Any]] = {}
     for note in notes:
-        if note[4] is None:
-            reaches.setdefault(None if note[7] is None else str(note[7]), []).append(note[6])
+        if note[6] is None:
+            reaches.setdefault(None if note[9] is None else str(note[9]), []).append(note[8])
     whole = tuple(_whole_change(table, tenant, reached) for tenant, reached in reaches.items())
     # a plain or reset change covers its own tenant's rows (or every tenant's, when it is _all's), never another
     # schema's; a load's names only its prefixes, so a row beside them is still named
@@ -2351,15 +2415,15 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     if None not in covering:
         # the statement answers each (key, columns, tenant) once (its DISTINCT), so each note is one row
         for note in notes:
-            if note[4] is None:
+            if note[6] is None:
                 continue
-            token = None if note[7] is None else str(note[7])
+            token = None if note[9] is None else str(note[9])
             if token in covering:
                 continue
-            columns = note[6]
+            columns = note[8]
             rows.append(
                 ChangedRow(
-                    ids=[str(key) for key in note[5]],
+                    ids=[str(key) for key in note[7]],
                     columns=dict(_columns_of(columns)) or None if columns is not None else None,
                     tenant=token,
                 )
@@ -2450,10 +2514,30 @@ _INDEX_ORDER: Final = (
     "set_config('enable_sort', 'off', false)"
 )
 
-#: the settings :data:`_INDEX_ORDER` changes, as they were, read before it in the same statement
-_SETTINGS_WERE: Final = (
+#: the settings :data:`_INDEX_ORDER` changes, as they were, read before it in the same statement: the ring row's
+#: read reads this table-less row beside it (``read_row(beside=)``, ``FROM (<this>) AS b CROSS JOIN <ring> AS t``),
+#: whose values are taken before the select list's ``set_config`` runs (``OFFSET 0`` keeps it a row of its own)
+_SETTINGS_WERE: Final = Derived(
     "SELECT current_setting('enable_bitmapscan') AS bitmapscan, current_setting('enable_seqscan') AS seqscan, "
     "current_setting('enable_sort') AS sort OFFSET 0"
+)
+
+#: the ring row's columns a noted keys page reads: the settings as they were (:data:`_SETTINGS_WERE`), the planner
+#: told (:data:`_INDEX_ORDER`, one item a setting), and the ring's slot, switch and fence
+_PAGE_RING_COLUMNS: Final = (
+    Selected("b.bitmapscan", "bitmapscan"),
+    Selected("b.seqscan", "seqscan"),
+    Selected("b.sort", "sort"),
+    Selected("set_config('enable_bitmapscan', 'off', false)", "told_bitmapscan"),
+    Selected("set_config('enable_seqscan', 'off', false)", "told_seqscan"),
+    Selected("set_config('enable_sort', 'off', false)", "told_sort"),
+    "current_ring",
+    "switch_no",
+    "previous_switched_at",
+    "wait_seconds",
+    Selected(
+        "t.switched_at + make_interval(secs => GREATEST(t.fence_seconds, t.wait_seconds))", "writes_previous_until"
+    ),
 )
 
 #: a notes read's one-time condition putting the settings back (``$6`` to ``$8``, as they were): run once as the
@@ -2561,12 +2645,13 @@ async def noted_keys_page(
     held = conn.acquire() if not hasattr(conn, "transaction") else nullcontext(conn)
     async with held as one:
         return await _noted_keys_page(
-            one, owner, table, tenant_token, since, until, cursor, limit, max_bytes, every_tenant
+            one, notes_schema, owner, table, tenant_token, since, until, cursor, limit, max_bytes, every_tenant
         )
 
 
 async def _noted_keys_page(
     conn: Any,
+    schema: str,
     owner: str,
     table: str,
     tenant: str | None,
@@ -2578,21 +2663,22 @@ async def _noted_keys_page(
     every: bool,
 ) -> NotedKeysPage | str:
     try:
-        # the ring row, and the planner told to keep the index's order for the notes read after it (_INDEX_ORDER),
-        # the settings as they were read first: one round trip. Told only where the ring row is
-        rings = await conn.fetch(
-            f"SELECT was.bitmapscan, was.seqscan, was.sort, {_INDEX_ORDER}, current_ring, switch_no, "  # noqa: S608
-            "previous_switched_at, wait_seconds, "
-            "switched_at + make_interval(secs => GREATEST(fence_seconds, wait_seconds)) AS writes_previous_until "
-            f"FROM ({_SETTINGS_WERE}) was "
-            f"CROSS JOIN {owner}.{quote_identifier(RING_TABLE)} WHERE id = 1"
+        # the ring row by its key, and the planner told to keep the index's order for the notes read after it
+        # (_INDEX_ORDER), the settings as they were read first, beside it (_SETTINGS_WERE): one round trip (f93ef9522:
+        # a page in two round trips, not four). Told only where the ring row is
+        ring = await read_row(
+            conn,
+            f"{schema}.{RING_TABLE}",  # the helper quotes it a segment at a time
+            by={"id": 1},
+            columns=_PAGE_RING_COLUMNS,
+            beside=_SETTINGS_WERE,
+            records=True,
         )
     except asyncpg.UndefinedTableError, asyncpg.InvalidSchemaNameError:
         # NOSILENT: no ring installed here: the asker is behind on the table, said and counted there
         return "notes_unavailable"
-    if not rings:
+    if ring is None:
         return "notes_unavailable"
-    ring = rings[0]
     was = (ring["bitmapscan"], ring["seqscan"], ring["sort"])
     # each notes read puts the settings back as it starts (_RESTORED); a read after another in the page tells the
     # planner again first. A page that ends with them still told (no notes read since, or a failure) puts them back

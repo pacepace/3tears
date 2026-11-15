@@ -18,6 +18,7 @@ The contract this pins (:mod:`threetears.core.collections.copy_checkpoint`):
 
 from __future__ import annotations
 
+import random
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any
@@ -26,7 +27,7 @@ import pytest
 from sqlalchemy import BigInteger, Column as SaColumn, MetaData, String, Table
 
 pa = pytest.importorskip("pyarrow")
-pytest.importorskip("duckdb")
+duckdb = pytest.importorskip("duckdb")
 ipc = pytest.importorskip("pyarrow.ipc")
 
 from prometheus_client import REGISTRY  # noqa: E402
@@ -41,6 +42,7 @@ from threetears.core.collections.copy_checkpoint import (  # noqa: E402
 )
 from threetears.core.collections.copy_follower import FollowedTable  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
+from threetears.core.sql_fragments import quote_identifier, unnest_key_join  # noqa: E402
 
 _VOTES = "votes"
 _RACES = "races"
@@ -820,3 +822,108 @@ async def test_a_table_read_whole_names_why_and_is_written_by_that_situations_re
         checkpoints.applied(1, {_VOTES: None}, whys={_VOTES: why})
         assert await checkpoints.write(copy.read) is not None
         assert reached == [kind], (why, reached)
+
+
+# --- a patched part: keyed.anti answers what the hand-written ANTI JOIN answered -----------------------------------
+
+
+def _reference_patch(cursor: Any, table: FollowedTable, old: Any, keys: Sequence[Sequence[str]]) -> Any:
+    """a table with no scope's part patched as it was written before keyed.anti (15b4ee732's parent): the copy's rows
+    of the touched keys, and the old part's rows by an ANTI JOIN to the keys unnested from parameters."""
+    pk_unnest, pk_join = unnest_key_join(table.key, [table.key_cast(column) for column in table.key])
+    fresh = cursor.execute(
+        f"SELECT t.* FROM {quote_identifier(table.name)} AS t JOIN (SELECT {pk_unnest}) AS k ON {pk_join}",  # noqa: S608
+        list(keys),
+    ).fetch_arrow_table()
+    cursor.register("reference_part__", old)
+    try:
+        kept = cursor.execute(
+            f"SELECT t.* FROM reference_part__ AS t ANTI JOIN (SELECT {pk_unnest}) AS k ON {pk_join}",  # noqa: S608
+            list(keys),
+        ).fetch_arrow_table()
+    finally:
+        cursor.unregister("reference_part__")
+    return pa.concat_tables([kept, fresh.cast(kept.schema)])
+
+
+def _changed_world(seed: int) -> tuple[dict[str, Any], dict[str, Any], dict[str, set[tuple[str, ...]]]]:
+    """two tables with no scope, votes (a two-column key, text and bigint) and races (one bigint key): each one's rows
+    before and after a change, and the keys the change touched: rows changed, added and dropped, keys no row holds on
+    either side, and a text key value that is a number's spelling."""
+    rng = random.Random(seed)
+    states = ["VA", "IL", "OH", "10", "S 1"]
+    old_votes = {(s, g): rng.randrange(100) for s in states for g in range(rng.randrange(5, 40))}
+    new_votes = dict(old_votes)
+    touched_votes: set[tuple[str, ...]] = {("NOWHERE", "99999")}
+    for key in rng.sample(sorted(old_votes), k=len(old_votes) // 3):
+        if rng.random() < 0.5:
+            new_votes[key] = old_votes[key] + 1000
+        else:
+            del new_votes[key]
+        touched_votes.add((key[0], str(key[1])))
+    for g in range(100, 100 + rng.randrange(1, 10)):
+        key = (rng.choice(states), g)
+        new_votes[key] = 7
+        touched_votes.add((key[0], str(g)))
+    old_races = {r: f"race{r}" for r in range(rng.randrange(3, 30))}
+    new_races = {r: (f"{n}!" if rng.random() < 0.3 else n) for r, n in old_races.items() if rng.random() > 0.2}
+    new_races.update({r: f"new{r}" for r in range(500, 500 + rng.randrange(0, 5))})
+    touched_races = {(str(r),) for r in old_races.keys() | new_races.keys() if old_races.get(r) != new_races.get(r)}
+    touched_races.add(("-1",))
+    before = {
+        _VOTES: _votes([(s, g, v) for (s, g), v in old_votes.items()]),
+        _RACES: _races(list(old_races.items())),
+    }
+    after = {
+        _VOTES: _votes([(s, g, v) for (s, g), v in new_votes.items()]),
+        _RACES: _races(list(new_races.items())),
+    }
+    return before, after, {_VOTES: touched_votes, _RACES: touched_races}
+
+
+@pytest.mark.parametrize("seed", range(40))
+async def test_a_patched_part_holds_what_the_hand_written_anti_join_held(seed: int) -> None:
+    """Flips if a checkpoint write patching a table with no scope (copy_checkpoint._patched_part: keyed.anti over the
+    old part and the staged touched keys, cast to each key column's type) stores other rows, columns or types than
+    the ANTI JOIN to the unnested keys it replaced, for a two-column key of text and bigint and a one-column bigint
+    key: keys changed, added, dropped and named by no row, and a text value spelling a number. Mutation-checked:
+    keyed.semi for keyed.anti, or a key column left out of the match, turns every seed red. (The keys left as text
+    stay green: DuckDB casts a text to the bigint it is compared with, so that cast is the statement's type, not its
+    rows.)"""
+    before, after, touched = _changed_world(seed)
+    votes = FollowedTable(name=_VOTES, key=_VOTES_KEY, columns=_tables()[0].columns)
+    tables = [votes, _tables()[1]]
+    store, pointers = _Store(), _Pointers()
+    copy = _Copy()
+    for name, rows in before.items():
+        copy.put(name, rows, f"{name}1", 1)
+    checkpoints = CopyCheckpoints(
+        name="copy",
+        tables=tables,
+        backend=copy.backend,
+        store=store,
+        pointers=pointers,
+        retire=store.retire,
+        owner="a",
+        part_rows=10_000,
+    )
+    first = await checkpoints.write(copy.read)
+    assert first is not None
+    for name, rows in after.items():
+        copy.put(name, rows, f"{name}2", 2)
+    checkpoints.applied(
+        1, {name: frozenset() for name in after}, {name: sorted(keys) for name, keys in touched.items()}
+    )
+    second = await checkpoints.write(copy.read)
+    assert second is not None
+    for table in tables:
+        [(old_name, _, _)], [(new_name, _, _)] = first.tables[table.name].parts, second.tables[table.name].parts
+        old = ipc.open_stream(store.objects[old_name]).read_all()
+        got = ipc.open_stream(store.objects[new_name]).read_all()
+        keys = sorted(touched[table.name])
+        with copy.backend.read_snapshot() as cursor:
+            want = _reference_patch(cursor, table, old, [[key[i] for key in keys] for i in range(len(table.key))])
+        assert got.schema == want.schema, (table.name, got.schema, want.schema)
+        assert sorted(zip(*got.to_pydict().values(), strict=True), key=repr) == sorted(
+            zip(*want.to_pydict().values(), strict=True), key=repr
+        ), table.name

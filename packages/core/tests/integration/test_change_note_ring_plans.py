@@ -135,8 +135,8 @@ async def test_threetears_change_notes_0_table_reads_the_scrubs_any_note_look(ri
 
 async def test_threetears_change_notes_0_table_reads_a_tables_notes_since_a_time(ring: _Ring) -> None:
     """Flips if any read of one table's notes since a time stops planning through the table-and-time index: the
-    scrub's any-note look, the write-mark reconciler's read (``noted_rows_since``, its statement built by
-    ``_noted_rows_sql``) and a follower's keys page (``noted_keys_page``, each notes read built by
+    scrub's any-note look, the write-mark reconciler's read (``noted_rows_since``, its notes read built by
+    ``_noted_rows_step``) and a follower's keys page (``noted_keys_page``, each notes read built by
     ``_noted_keys_sql``), each on the ring's current table."""
     plans = await _scrub_plans(ring)
     assert any(plan_uses_index(plan, "threetears_change_notes_0_table") for plan in plans), [p.plan for p in plans]

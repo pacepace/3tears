@@ -10,6 +10,10 @@ The whole reads the no-whole-reads ledger keeps, each held within 2x its bare op
 - ``copy_checkpoint._batches`` (a checkpoint write at a table's cold start): the table read from the copy and stored
   as parts, against the bare read of the same rows and their encoding.
 
+And the one keyed patch beside them: ``copy_checkpoint._patched_part`` (a checkpoint write of a table with no scope:
+its one part's untouched rows kept through ``keyed.anti``, the touched keys' rows read from the copy by key), against
+the bare work of the same patch (the touched keys' keyed read, the part's untouched rows by DuckDB's own ANTI JOIN).
+
 Timed runs belong under measure-lock. Against the session ``db_container`` (Postgres); set
 ``THREETEARS_TEST_POSTGRES_URL`` to a YugabyteDB URL to run them there. ``THREETEARS_FOLLOW_SPEED_ROWS`` sets the rows
 (default 1,000,000: a long table of an election night's copy).
@@ -34,6 +38,7 @@ pa = pytest.importorskip("pyarrow")
 ipc = pytest.importorskip("pyarrow.ipc")
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange  # noqa: E402
+from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, rail_arrow_types  # noqa: E402
 from threetears.core.collections.copy_checkpoint import CopyCheckpoints  # noqa: E402
@@ -41,6 +46,7 @@ from threetears.core.collections.copy_follower import CopyFollower, FollowedTabl
 from threetears.core.collections.epoch_change import EpochChange, EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
 from threetears.core.keyset import keyset_arrow_pages  # noqa: E402
+from threetears.core.sql_fragments import unnest_key_join  # noqa: E402
 from threetears.core.testing.calibrate import best_seconds, budget_problem  # noqa: E402
 
 pytestmark = pytest.mark.integration
@@ -339,4 +345,129 @@ async def test_checkpoint_whole_write_speed_at_real_size() -> None:
         f"cold-start write of {_ROWS} rows {took:.2f} s, bare read and encode {baseline:.2f} s, {took / baseline:.2f}x"
     )
     problem = budget_problem(f"a cold-start checkpoint write (_batches_cold_start) of {_ROWS} rows", took, baseline)
+    assert problem is None, problem
+
+
+#: a table with no scope at its largest: one part (copy_checkpoint's default part_rows)
+_PART_ROWS = 250_000
+#: the keys one checkpoint write touched in it: a tenth of its rows, half of them changed and half new
+_PART_TOUCHED = 25_000
+
+
+async def test_checkpoint_patch_speed_at_real_size() -> None:
+    """a checkpoint write of a table with no scope (CopyCheckpoints.write patching its one part,
+    copy_checkpoint._patched_part: the part's untouched rows kept by keyed.anti over the part and the staged touched
+    keys, the touched keys' rows read from the copy by key) of a 250,000-row part with 25,000 keys touched, within 2x
+    the bare work of the same patch: the part decoded, the touched keys' keyed read of the copy, the part's untouched
+    rows by DuckDB's own ANTI JOIN to the keys, put together and encoded as a part."""
+    table = FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)
+    per = _PART_ROWS // _STATES
+    states = [f"S{s:02d}" for s in range(_STATES) for _ in range(per)]
+    geos = [g for _ in range(_STATES) for g in range(per)]
+    # the copy after the change: half the touched keys changed in place, half added past the part's rows
+    changed = _PART_TOUCHED // 2
+    step = _PART_ROWS // changed
+    touched = [(states[i * step], geos[i * step]) for i in range(changed)]
+    added = [(f"S{(i % _STATES):02d}", per + i) for i in range(_PART_TOUCHED - changed)]
+    changed_at = set(touched)
+    before = pa.table(
+        {
+            "state": pa.array(states, pa.string()),
+            "geo_id": pa.array(geos, pa.int64()),
+            "votes": pa.array([1] * len(states), pa.int64()),
+        }
+    )
+    after = pa.table(
+        {
+            "state": pa.array(states + [s for s, _ in added], pa.string()),
+            "geo_id": pa.array(geos + [g for _, g in added], pa.int64()),
+            "votes": pa.array(
+                [2 if key in changed_at else 1 for key in zip(states, geos, strict=True)] + [2] * len(added),
+                pa.int64(),
+            ),
+        }
+    )
+    backend = _backend()
+    stage = f"{STAGE_PREFIX}{_TABLE}__rows"
+    stamp = [1]
+
+    def put(rows: Any) -> None:
+        backend.stage_rows(stage, _TABLE, rows, _KEY)
+        backend.apply_staged(
+            [StagedChange(table=_TABLE, key=_KEY, rows=stage, whole=True, whole_kind="cold_start")], mark=stamp[0]
+        )
+
+    @contextmanager
+    def read() -> Iterator[Any]:
+        with backend.read_snapshot() as cursor:
+            yield cursor, stamp[0], {_TABLE: f"inc:{stamp[0]}"}
+
+    put(before)
+    store, pointers = _Store(), _Pointers()
+    checkpoints = CopyCheckpoints(
+        name="patch",
+        tables=[table],
+        backend=backend,
+        store=store,
+        pointers=pointers,
+        retire=store.retire,
+        owner="a",
+        part_rows=_PART_ROWS,
+    )
+    first = await checkpoints.write(read)
+    assert first is not None
+    [(name, _, _)] = first.tables[_TABLE].parts
+    part = store.objects[name]
+    stamp[0] = 2
+    put(after)
+    keys = [(s, str(g)) for s, g in touched + added]
+    bound = [[s for s, _ in keys], [g for _, g in keys]]
+    pk_unnest, pk_join = unnest_key_join(_KEY, [table.key_cast(column) for column in _KEY])
+
+    def bare_patch() -> None:
+        old = ipc.open_stream(part).read_all()
+        with backend.read_snapshot() as cursor:
+            # the keys bound through Arrow, as the patch binds them (run_bound: a list bound as Python values is
+            # probed value by value, 100x the read itself at 25,000 keys)
+            fresh = run_bound(
+                cursor,
+                f"SELECT t.* FROM {_TABLE} AS t JOIN (SELECT {pk_unnest}) AS k ON {pk_join}",  # noqa: S608
+                bound,
+                lambda result: result.fetch_arrow_table(),
+            )
+            # the untouched rows by DuckDB's own ANTI JOIN to the unnested keys: the filter a patch cannot skip, in
+            # its barest form (a plain read back of the part, 6 ms here, leaves it out; the anti join is ~30 ms of
+            # either side's ~60 ms)
+            cursor.register("part", old)
+            try:
+                held = run_bound(
+                    cursor,
+                    f"SELECT t.* FROM part AS t ANTI JOIN (SELECT {pk_unnest}) AS k ON {pk_join}",  # noqa: S608
+                    bound,
+                    lambda result: result.fetch_arrow_table(),
+                )
+            finally:
+                cursor.unregister("part")
+        rows = pa.concat_tables([held, fresh.cast(held.schema)])
+        sink = pa.BufferOutputStream()
+        with ipc.new_stream(sink, rows.schema, options=ipc.IpcWriteOptions(compression="zstd")) as writer:
+            writer.write_table(rows)
+
+    async def bare() -> None:
+        await asyncio.to_thread(bare_patch)
+
+    async def patched() -> None:
+        # each run patches the newest part by the same keys: the same rows read and written every time
+        stamp[0] += 1
+        checkpoints.applied(len(keys), {_TABLE: frozenset()}, {_TABLE: keys})
+        written = await checkpoints.write(read)
+        assert written is not None and written.rows == _PART_ROWS + _PART_TOUCHED - changed
+
+    baseline = await best_seconds(bare)
+    took = await best_seconds(patched)
+    print(
+        f"patched part of {_PART_ROWS} rows, {_PART_TOUCHED} keys touched {took:.3f} s, bare patch "
+        f"{baseline:.3f} s, {took / baseline:.2f}x"
+    )
+    problem = budget_problem(f"a checkpoint write patching a {_PART_ROWS}-row part", took, baseline)
     assert problem is None, problem

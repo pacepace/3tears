@@ -28,15 +28,24 @@ from threetears.interfaces.keyed.filters import (
     narrowing,
     quote_identifier,
     relation,
+    renumbered,
     selected_column,
 )
 from threetears.interfaces.keyed.keys import stated_literals
 from threetears.interfaces.keyed.page import Sort, order_by_terms
+from threetears.interfaces.keyed.steps import Step
 
-__all__ = ["Nearest", "TextRank", "read_by_statement", "read_nearest_statement", "read_row_statement"]
+__all__ = [
+    "Nearest",
+    "TextRank",
+    "read_by_statement",
+    "read_nearest_statement",
+    "read_row_beside_statement",
+    "read_row_statement",
+]
 
 
-def _sql(
+def _clauses(
     table: str | Derived,
     by: Mapping[str, Any],
     columns: Sequence[str | Selected] | None,
@@ -45,8 +54,8 @@ def _sql(
     where: Sequence[Fragment] = (),
     order: Sequence[Sort] = (),
     also: str = "",
-) -> tuple[str, list[Any]]:
-    """the statement and its parameters.
+) -> tuple[str, str, str, list[Any]]:
+    """a point read's select list, conditions and tail, and its parameters: the statement but its ``FROM``.
 
     :param table: the table, a TRUSTED identifier (``schema.table`` quoted a segment at a time)
     :ptype table: str
@@ -67,8 +76,8 @@ def _sql(
     :param also: a TRUSTED select-list item after the columns (a nearest read's similarity), naming placeholders past
         the pins' and guards'; none when empty
     :ptype also: str
-    :return: the statement, and its parameters
-    :rtype: tuple[str, list[Any]]
+    :return: the select list, the conditions ANDed, the tail (order, limit, lock), and the parameters
+    :rtype: tuple[str, str, str, list[Any]]
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
     if not by:
@@ -88,7 +97,49 @@ def _sql(
         + (" LIMIT 1" if limit else "")
         + ("" if lock is None else lock.of("t"))
     )
-    return f"SELECT {selected} FROM {relation(table, 't')} WHERE {' AND '.join(conditions)}{tail}", params
+    return selected, " AND ".join(conditions), tail, params
+
+
+def _sql(
+    table: str | Derived,
+    by: Mapping[str, Any],
+    columns: Sequence[str | Selected] | None,
+    limit: bool,
+    lock: Lock | None = None,
+    where: Sequence[Fragment] = (),
+    order: Sequence[Sort] = (),
+    also: str = "",
+) -> tuple[str, list[Any]]:
+    """the statement and its parameters, as :func:`_clauses` takes them.
+
+    :return: the statement, and its parameters
+    :rtype: tuple[str, list[Any]]
+    :raises ValueError: when nothing is pinned, or ``columns`` is empty
+    """
+    selected, conditions, tail, params = _clauses(table, by, columns, limit, lock, where, order, also)
+    return f"SELECT {selected} FROM {relation(table, 't')} WHERE {conditions}{tail}", params
+
+
+def _beside_sql(
+    table: str | Derived,
+    beside: Derived,
+    by: Mapping[str, Any],
+    columns: Sequence[str | Selected] | None,
+    lock: Lock | None,
+    where: Sequence[Fragment],
+) -> tuple[str, list[Any]]:
+    """the first row's read (:func:`_sql`, ``LIMIT 1``) with a table-less derived row read beside it (``b``), its
+    values taken before the select list runs.
+
+    :return: the statement, and its parameters
+    :rtype: tuple[str, list[Any]]
+    :raises ValueError: when nothing is pinned, or ``columns`` is empty
+    """
+    selected, conditions, tail, params = _clauses(table, by, columns, True, lock, where)
+    return (
+        f"SELECT {selected} FROM {relation(beside, 'b')} CROSS JOIN {relation(table, 't')} WHERE {conditions}{tail}",
+        params,
+    )
 
 
 def read_by_statement(
@@ -133,6 +184,7 @@ def read_row_statement(
     columns: Sequence[str | Selected] | None = None,
     lock: Lock | None = None,
     where: Sequence[Fragment] = (),
+    beside: Derived | None = None,
 ) -> tuple[str, list[Any]]:
     """the statement reading the first row of ``table`` the pinned columns name (``LIMIT 1``), and its binds: what
     ``threetears.core.keyed.read_row`` (and ``read_value``, of one column) sends.
@@ -147,11 +199,68 @@ def read_row_statement(
     :ptype lock: Lock | None
     :param where: as :func:`read_by_statement` takes them
     :ptype where: Sequence[Fragment]
+    :param beside: a TRUSTED table-less derived row (``SELECT current_setting(...) AS was ... OFFSET 0``) read beside
+        the table's row, as ``FROM (<beside>) AS b CROSS JOIN <table> AS t``, its columns selectable as ``b.<column>``
+        (:class:`Selected`): its values are taken before the select list runs, so a value read there is the one from
+        before a ``set_config`` the select list makes. None reads the table alone
+    :ptype beside: Derived | None
     :return: the statement, and its binds
     :rtype: tuple[str, list[Any]]
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
+    if beside is not None:
+        return _beside_sql(table, beside, by, columns, lock, where)
     return _sql(table, by, columns, limit=True, lock=lock, where=where)
+
+
+def read_row_beside_statement(
+    table: str,
+    *,
+    by: Mapping[str, Any],
+    columns: Sequence[str | Selected],
+    beside: Step,
+    limit: int,
+    present: str,
+) -> tuple[str, list[Any]]:
+    """the statement reading the first row of ``table`` the pins name (``r``, as :func:`read_row_statement` reads it)
+    and, beside it, up to ``limit`` rows of a step that reads that row's columns (``r."col"``): one statement, so one
+    round trip and one snapshot for the row and the rows it decides. What ``threetears.core.keyed.read_row_beside``
+    sends::
+
+        SELECT r.*, s.* FROM (<the row's read>) AS r
+          LEFT JOIN LATERAL (SELECT TRUE AS "<present>", b.* FROM (<beside>) AS b LIMIT $n) AS s ON TRUE
+
+    A row with no step row comes back once, ``present`` and every step column NULL; no row comes back when the pins
+    name none.
+
+    :param table: the table, a TRUSTED identifier (``schema.table`` quoted a segment at a time)
+    :ptype table: str
+    :param by: its pins, as :func:`read_by_statement` takes them; at least one
+    :ptype by: Mapping[str, Any]
+    :param columns: the row's columns, as :func:`read_by_statement` takes them; each one the step reads among them
+    :ptype columns: Sequence[str | Selected]
+    :param beside: the step, its conditions on the row written ``r."col"`` (a correlated read, each leg a keyed read
+        of its own relation: :mod:`threetears.core.keyed.steps`)
+    :ptype beside: Step
+    :param limit: the most step rows read
+    :ptype limit: int
+    :param present: the name of the column that is TRUE on a step row (NULL on the row alone), a TRUSTED identifier
+    :ptype present: str
+    :return: the statement, and its binds: the pins', the step's, then ``limit``
+    :rtype: tuple[str, list[Any]]
+    :raises ValueError: when nothing is pinned, or for a limit under one row
+    """
+    if isinstance(limit, bool) or limit < 1:
+        raise ValueError(f"a read beside a row reads at least one row of its step, not {limit!r}")
+    row, params = _sql(table, by, columns, limit=True)
+    step = renumbered(Fragment(beside.sql, beside.params), len(params))
+    params += list(beside.params)
+    params.append(limit)
+    return (
+        f"SELECT r.*, s.* FROM ({row}) AS r LEFT JOIN LATERAL (SELECT TRUE AS {quote_identifier(present)}, b.* "
+        f"FROM ({step}) AS b LIMIT ${len(params)}) AS s ON TRUE",
+        params,
+    )
 
 
 #: the names a nearest read's wrapper uses: the distance it re-sorts by, and the whole row (every column)

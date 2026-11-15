@@ -788,3 +788,24 @@ def test_a_nearest_rows_read_is_judged_as_its_distance_order_under_its_limit(sch
         ),
         schema,
     ) == [[("non-key-where", "docs")]]
+
+
+def test_a_row_read_beside_a_derived_row_judges_that_derived_row_on_its_own_text(schema: SchemaCatalog) -> None:
+    """Flips if read_row's ``beside=`` derived row is trusted without its own text being judged: a table-less one
+    (the planner settings as they were) adds nothing, one reading a table whole is that whole read."""
+    settings = "Derived(\"SELECT current_setting('enable_sort') AS sort OFFSET 0\")"
+    assert _judged(f'read_row(c, "fence", by={{"signal": s}}, beside={settings})', schema) == [[], []]
+    whole = 'Derived("SELECT name FROM unindexed")'
+    judged = _judged(f'read_row(c, "fence", by={{"signal": s}}, beside={whole})', schema)
+    assert judged[0] == [] and judged[1], judged
+
+
+def test_a_row_read_beside_a_step_is_judged_by_its_pins(schema: SchemaCatalog) -> None:
+    """Flips if read_row_beside (a point read and a step correlated to its row, one statement) is not judged as the
+    point read its pins make, or a read of it pinning nothing passes; its step is judged where it is built."""
+    assert _judged(
+        'read_row_beside(c, "fence", by={"signal": s}, columns=["run_id"], beside=step, limit=n, present="p")', schema
+    ) == [[]]
+    assert _judged(
+        'read_row_beside(c, "unindexed", by={"name": s}, columns=["run_id"], beside=step, limit=n, present="p")', schema
+    ) == [[("non-key-where", "unindexed")]]

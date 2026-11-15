@@ -58,6 +58,7 @@ from threetears.core.declared import whole_read
 from threetears.core import keyed
 from threetears.core.keyed import InlineDuckDB, WholeReads, run_inline
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange
+from threetears.core.cache.duckdb_binds import run_bound
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join
 
 if TYPE_CHECKING:
@@ -1343,10 +1344,15 @@ def _patched_part(cursor: Any, table: FollowedTable, old: Any, keys: Sequence[Se
     :rtype: pyarrow.Table
     """
     pk_unnest, pk_join = unnest_key_join(table.key, [table.key_cast(column) for column in table.key])
-    fresh = cursor.execute(
+    # the keys bound through Arrow (run_bound): bound as Python lists, DuckDB probes each value, and 25,000 touched
+    # keys of a 250,000-row part took 22.7 s to read against 0.17 s through Arrow (DuckDB 1.5.6, 2026-11-15; the
+    # patch's real-size budget: test_copy_follower_whole_reads_live.py::test_checkpoint_patch_speed_at_real_size)
+    fresh = run_bound(
+        cursor,
         f"SELECT t.* FROM {quote_identifier(table.name)} AS t JOIN (SELECT {pk_unnest}) AS k ON {pk_join}",  # noqa: S608
         list(keys),
-    ).fetch_arrow_table()
+        lambda result: result.fetch_arrow_table(),
+    )
     if old is None:
         return fresh
     # the old part's rows no touched key names: keyed.anti over the part and the touched keys, each staged on the
