@@ -558,13 +558,12 @@ def blind_read_checks(
         own = [rating for rating in closed.ratings if closed.reviewed.get(rating.id) == reviewer]
         mine = family(reviewer)
         reviewer_sample = samples.get((reviewer, "reference"))
+
+        def sampled(dim: str, sample: SampleKind | None = reviewer_sample) -> SampleKind | None:
+            return sample
+
         for key, criterion, check in _judge_against(
-            own,
-            results,
-            against="model",
-            read_id=read.id,
-            sample_of=lambda dim, sampled=reviewer_sample: sampled,
-            rated_by="agent",
+            own, results, against="model", read_id=read.id, sample_of=sampled, rated_by="agent"
         ):
             names = set(judge_models) | ({key.judge_model} if key.judge_model is not None else set())
             if ({reviewer} | served.get(reviewer, set())) & names:
@@ -647,14 +646,14 @@ def _reviewers_against_people(
         given: dict[str, dict[bool, int]] = {}
         for verdict in answer.verdicts:
             given.setdefault(verdict.dim, {})[arm_of[verdict.slot] in candidate] = verdict.score
-        for dim, both in given.items():
+        for name, both in given.items():
             if len(both) != 2:
                 continue
             difference = both[True] - both[False]
             if answer.rater_kind == "person":
-                person_differences.setdefault((answer.item, dim), []).append(difference)
+                person_differences.setdefault((answer.item, name), []).append(difference)
             else:
-                model_differences[(answer.rater, answer.item, dim)] = difference
+                model_differences[(answer.rater, answer.item, name)] = difference
     random_people = all(rating.id in closed.random for rating in people)
     checks: list[Check] = []
     for reviewer in reviewers:
