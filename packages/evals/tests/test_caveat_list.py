@@ -548,6 +548,20 @@ def test_too_few_cases_gate_is_lifted_by_a_declared_look_sized_to_the_floor_from
     assert (unknown.declared_look, unknown.planned_cases, unknown.unsized) == (True, None, "no_count")
 
 
+def test_a_campaign_too_small_to_read_is_gated_with_the_fewest_cases_an_arm_holds_and_planned_to_the_floor() -> None:
+    bundle = _messy(unfinished=False)
+    (aspect,) = bundle.aspects
+    boards = [board.model_copy(update={"usable_cases": 3 + index}) for index, board in enumerate(aspect.scoreboard)]
+    small = bundle.model_copy(update={"aspects": [aspect.model_copy(update={"scoreboard": boards})]})
+
+    value = report_input(small).first_screen
+
+    assert value is not None and value.gate is not None
+    assert (value.gate.rule, value.gate.fewest_cases) == ("too_small", 3)
+    (step,) = value.steps
+    assert (step.remedy, step.declared_look, step.planned_cases) == ("add_cases", True, 2)
+
+
 @pytest.mark.parametrize("remedied", get_args(Remedy))
 def test_only_a_step_that_adds_cases_is_a_look_and_one_that_spends_is_priced(remedied: Remedy) -> None:
     for step in _steps_of(remedied):

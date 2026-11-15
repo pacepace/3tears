@@ -890,8 +890,8 @@ def gate_of(bundle: CampaignBundle) -> Gate | None:
     rule = min((held for _aspect, held in rules), key=order.index)
     runs: dict[str, GateRun] = {}
     if rule == "too_small":
-        held = [board.usable_cases for aspect, found in rules if found == rule for board in aspect.scoreboard]
-        return Gate(rule=rule, fewest_cases=min(held) if held else None)
+        counts = [board.usable_cases for aspect, found in rules if found == rule for board in aspect.scoreboard]
+        return Gate(rule=rule, fewest_cases=min(counts) if counts else None)
     if rule == "unfinished":
         for aspect, held in rules:
             if held != rule:
