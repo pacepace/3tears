@@ -32,7 +32,6 @@ from threetears.core.testing.kv import FakeNatsClient
 
 from threetears.core.data.migrations.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.data.migrations.session import ConnectionSession
-from threetears.core.collections import write_marks as write_marks_module
 from threetears.core.collections.write_marks import (
     MARK_FUNCTION,
     WRITE_MARK_TRIGGER,
@@ -425,7 +424,7 @@ async def test_a_writer_that_dies_between_its_advance_and_the_delete_leaves_mark
 
 
 async def test_the_queue_gauges_count_to_the_cap_and_age_the_lowest_id(
-    schemas: tuple[asyncpg.Pool, str, str], monkeypatch: pytest.MonkeyPatch
+    schemas: tuple[asyncpg.Pool, str, str],
 ) -> None:
     """the gauges' read: the marks counted along the id to the cap, and the age of the first committed mark (the
     lowest id), never the min over an unordered sample."""
@@ -442,7 +441,10 @@ async def test_the_queue_gauges_count_to_the_cap_and_age_the_lowest_id(
     state = await observe_write_marks(pool, marks_schema=platform)
     assert (state.pending, state.at_least) == (10, False)
     assert 3500 < state.oldest_age_seconds < 3700
-    monkeypatch.setattr(write_marks_module, "_OBSERVE_CAP", 4)
+    # past the gauges' cap (10,000): counted to the cap, "at least", and still the first mark's age
+    await pool.execute(
+        f"INSERT INTO {platform}.{WRITE_MARKS_TABLE} (table_name) SELECT $1 FROM generate_series(1, 10000)", _TABLE
+    )
     capped = await observe_write_marks(pool, marks_schema=platform)
-    assert (capped.pending, capped.at_least) == (4, True)
+    assert (capped.pending, capped.at_least) == (10_000, True)
     assert 3500 < capped.oldest_age_seconds < 3700

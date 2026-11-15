@@ -283,9 +283,9 @@ class ScanCache:
                 },
                 "key",
             )
-            self._l1.upsert_many(
-                _DEPS_TABLE, [{"dep_table": table, "key": key.as_string()} for table in token.depends_on], _DEPS_KEY
-            )
+            # a row a dependency (a scan names a few tables); a process-local cache's own index, no L3 row
+            for table in token.depends_on:
+                self._l1.upsert(_DEPS_TABLE, {"dep_table": table, "key": key.as_string()}, _DEPS_KEY)
             stored = True
         return stored
 
