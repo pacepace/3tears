@@ -108,6 +108,6 @@ def test_a_run_where_every_agent_fails_says_so_on_its_first_line_and_in_its_cens
         assert any(line.startswith(f"  {name}: 0 of 1 trials, 95% range 0.00 to ") for line in said), said
     assert any("cannot show" in line for line in said)
     (run_dir,) = [path for path in tmp_path.iterdir() if path.is_dir()]
-    assert (run_dir / "census.txt").read_text(encoding="utf-8").splitlines() == said[
-        said.index(next(line for line in said if line.startswith("what 1 run(s) can say"))) :
-    ][:6]
+    written = (run_dir / "census.txt").read_text(encoding="utf-8").splitlines()
+    start = said.index("what 1 run(s) can say:")
+    assert written == said[start : start + len(written)] and len(written) == 8, "the census, as printed"

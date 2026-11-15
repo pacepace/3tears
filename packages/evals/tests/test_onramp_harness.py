@@ -197,7 +197,8 @@ def test_the_stuck_point_is_the_longest_run_of_failing_turns_and_the_message_tha
         _step(6, "run", False, command="python -m threetears.evals e.py", first_error="again"),
         _step(7, "run", True, command="python -m threetears.evals e.py"),
     ]
-    assert stuck_point(steps) == {"from_turn": 3, "to_turn": 6, "failed_turns": 3, "opened_by": "opened it"}
+    # The ls at turn 2 is the agent looking around, not a way out: only the door working at turn 7 ends the span.
+    assert stuck_point(steps) == {"from_turn": 1, "to_turn": 6, "failed_turns": 4, "opened_by": "first"}
     assert stuck_point([_step(1, "run", True, command="ls")]) is None
 
 
@@ -319,12 +320,13 @@ async def test_the_live_brain_is_priced_by_the_package_and_held_to_its_cap(tmp_p
     model = TIERS["cheap"].model(None, api_key="scripted", http=http, catalogue=Catalogue(http=http))
     sandbox = _isolated(tmp_path)
     try:
-        run = await attempt(sandbox, ModelBrain(model), Caps(cost_usd=0.004))
+        run = await attempt(sandbox, ModelBrain(model), Caps(cost_usd=0.01))
     finally:
         await http.aclose()
     assert run.stopped == "cap" and sent, "it ran turns, then stopped before one that could pass the cap"
-    spent = run.spent()
-    assert spent is not None and spent == pytest.approx(0.00014 * len(sent)) and spent <= 0.004
+    spent, charged = run.spent(), run.charged()
+    assert spent is not None and spent == pytest.approx(0.00014 * len(sent)) and spent <= 0.01
+    assert charged == spent and all(usage.ceiling_usd for usage in run.usages), "each call was bounded before it went"
     assert run.tokens("input_tokens") == 1000 * len(sent)
     assert all("temperature" not in body for body in sent)
 

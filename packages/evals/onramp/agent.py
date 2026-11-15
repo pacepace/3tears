@@ -148,7 +148,8 @@ class ModelBrain:
             completion.input_tokens,
             completion.output_tokens,
             completion.cost_usd,
-            maybe_billed_sends=completion.maybe_billed_sends,
+            # A replayed call was never sent, and its completion counts no resends.
+            maybe_billed_sends=getattr(completion, "maybe_billed_sends", 0),
         )
         if completion.stop_reason != "end_turn":
             return Turn(None, usage, f"the reply stopped short ({completion.stop_reason})")
@@ -299,7 +300,9 @@ async def _turns(sandbox: Sandbox, brain: Brain, caps: Caps, system: str, run: A
         bound: float | None = None
         if caps.cost_usd is not None:
             bound, charged = await brain.ceiling(system, user), run.charged()
-            if bound is None or charged is None or charged + BILLED_SENDS_AT_MOST * bound > caps.cost_usd:
+            # A turn the provider reported no price for stops the run too: what the rest would cost is unknowable.
+            unpriced = run.spent() is None
+            if bound is None or charged is None or unpriced or charged + BILLED_SENDS_AT_MOST * bound > caps.cost_usd:
                 run.stopped = "cap"
                 return
         try:
