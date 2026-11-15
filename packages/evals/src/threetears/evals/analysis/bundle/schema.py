@@ -4008,7 +4008,9 @@ FINGERPRINT_PREFIX: Final[str] = EVIDENCE_FINGERPRINT_PREFIX
 #: significant figures. Computed for what was stored under it, and for a bundle that carries no manifest.
 _V2_PREFIX: Final[str] = "v2:"
 
-#: The bundle's fields a version 2 fingerprint reads: the fields of bundle shape 66 on the day version 3 landed, less
+#: The bundle's fields a version 2 fingerprint reads: the fields of bundle shape 66 on the day version 3 landed (the
+#: last build that stored a ``v2:`` fingerprint; ``tests/fixtures/hot_path_oracle/fingerprints_v2.json`` pins what it
+#: computed), less
 #: :data:`_NOT_EVIDENCE`. **Frozen.** A field the bundle gains later is not added here, so an additive change to the
 #: bundle moves no stored ``v2:`` fingerprint and no ``v2:`` comparison of a bundle assembled afresh.
 _V2_FIELDS: Final[frozenset[str]] = frozenset(
@@ -4111,12 +4113,7 @@ _V2_FIELDS: Final[frozenset[str]] = frozenset(
 #: Field names added, since the freeze, INSIDE a value one of :data:`_V2_FIELDS` holds (a new field of a comparison, a
 #: scoreboard row, a cell), which a version 2 pre-image leaves out at every depth. A change that adds such a field
 #: names it here; a name any shape-66 document already uses at any depth cannot be listed.
-_ADDED_SINCE_V2: Final[frozenset[str]] = frozenset(
-    {
-        # `RunSummary.ended_because` (#1173): why a run that did not complete ended, written only for such a run.
-        "ended_because",
-    }
-)
+_ADDED_SINCE_V2: Final[frozenset[str]] = frozenset()
 
 
 def known_fingerprint(fingerprint: str) -> bool:

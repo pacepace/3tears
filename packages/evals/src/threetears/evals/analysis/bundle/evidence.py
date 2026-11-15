@@ -115,7 +115,9 @@ from threetears.evals.schema.models import (
     EvalCaseStratum,
     EvalRun,
     JudgeCutShort,
+    MeasureAttestation,
     MeasureDeclaration,
+    MeasureRemeasure,
     RunCompleteness,
     RunDisclosure,
     VariationCounts,
@@ -387,6 +389,17 @@ _BUDGET_STOP: Final[Mapping[str, Any]] = dict.fromkeys(
     _AS_STORED,
 )
 
+#: A host's statement of what a run's measures counted, for a run that recorded none.
+_ATTESTATION: Final[Mapping[str, Any]] = dict.fromkeys(("attested_at", "attested_by", "definitions"), _AS_STORED)
+_ATTESTATION_NOT: Final[Mapping[str, str]] = {
+    "note": "the host's prose for why it knows; the definitions are the evidence"
+}
+
+#: One re-measure of a run: the definitions it held before and after, and what was read again.
+_REMEASURE: Final[Mapping[str, Any]] = dict.fromkeys(
+    ("remeasured_at", "completed_at", "was", "now", "reread", "results_reread"), _AS_STORED
+)
+
 #: A member run's evidence, as stored: everything the run was launched with and how it ended.
 _RUN: Final[Mapping[str, Any]] = {
     **dict.fromkeys(
@@ -471,6 +484,7 @@ _RUN: Final[Mapping[str, Any]] = {
             "world",
             "apparatus_settings",
             "scope",
+            "measure_definitions",
         ),
         _AS_STORED,
     ),
@@ -479,6 +493,11 @@ _RUN: Final[Mapping[str, Any]] = {
     "budget_stops": _Each(_BUDGET_STOP),
     # Why a lost run ended is what a page opens on for it; when and under which lease is the engine's bookkeeping.
     "lost": {"cause": _AS_STORED},
+    # What each of the host's measures counted (#1160): as recorded at launch, and as a host's attestation or a
+    # re-measure moved it afterwards, which decides which runs pool. None of the three on a run that recorded none.
+    "measure_definitions": _AS_STORED,
+    "measure_attestation": _ATTESTATION,
+    "measure_remeasures": _Each(_REMEASURE),
 }
 
 #: The stored fields of a run that are not evidence, each with why.
@@ -586,6 +605,8 @@ _MEASURE: Final[Mapping[str, Any]] = dict.fromkeys(
         "attribution_scope",
         "subject_spend",
         "transferability_class",
+        "definition_revision",
+        "shapes_run",
     ),
     _AS_STORED,
 )
@@ -662,6 +683,8 @@ _census(AsyncDelivery, _DELIVERY, {**_PRICING, "summary": "prose the delivery re
 _census(AsyncExternalSpend, _EXTERNAL_SPEND)
 _census(JudgeCutShort, _CUT_SHORT)
 _census(EvalRun, _RUN, _RUN_NOT)
+_census(MeasureAttestation, _ATTESTATION, _ATTESTATION_NOT)
+_census(MeasureRemeasure, _REMEASURE)
 _census(SubjectSnapshot, _SUBJECT, _SUBJECT_NOT)
 _census(SweepableValue, _LEVEL, _LEVEL_NOT)
 _census(VariationCounts, _RUN["variation_counts"])

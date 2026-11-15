@@ -61,7 +61,14 @@ from threetears.evals.kernel.result_reading import ResultReading, ScoreReading
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema.hashing import UnhashableContentError, input_digest, input_json, round_figures
 from threetears.evals.run.ratings import rate_result
-from threetears.evals.schema.models import EvalResult, EvalRun, EvalTestCase, RunCompleteness
+from threetears.evals.schema.models import (
+    EvalResult,
+    EvalRun,
+    EvalTestCase,
+    MeasureAttestation,
+    MeasureRemeasure,
+    RunCompleteness,
+)
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
@@ -599,31 +606,20 @@ def test_a_fingerprint_stored_under_version_2_is_reproduced_through_like(name: s
         assert aspect.fingerprint().startswith("v3:")
 
 
-def _without_key(node: Any, key: str) -> Any:
-    if isinstance(node, dict):
-        return {name: _without_key(value, key) for name, value in node.items() if name != key}
-    if isinstance(node, list):
-        return [_without_key(value, key) for value in node]
-    return node
+def test_a_field_the_bundle_gains_after_version_2_is_no_part_of_a_version_2_fingerprint() -> None:
+    """The version 2 pre-image is frozen to the bundle's fields as the last build that stored ``v2:`` held them: the
+    manifest, and any top-level field the bundle gains, leave a ``v2:`` fingerprint where it was."""
+    document = _aspect(*_corpus_host()).to_dict()
 
-
-def test_a_field_the_bundle_gained_since_version_2_is_no_part_of_a_version_2_fingerprint() -> None:
-    """The version 2 pre-image is frozen: ``RunSummary.ended_because`` (#1173) joined the bundle after the last
-    ``v2:`` fingerprint a host stored, so a ``v2:`` record over a run that did not complete still matches. The same
-    holds for the manifest itself and for any top-level field the bundle gains."""
-    host, campaign = _corpus_host()
-    run = host.storage.load_eval_run(sorted(campaign.run_ids)[0], campaign.scope_id)
-    assert run is not None
-    host.storage.save_eval_run(run.model_copy(update={"status": "cancelled", "cancellation_reason": "stopped by hand"}))
-    document = _aspect(host, campaign).to_dict()
-    assert "ended_because" in json.dumps(document), "the cancelled run's summary must say why it ended"
-
-    as_stored_then = _without_key(document, "ended_because")
-
-    assert evidence_digest(document, like="v2:") == evidence_digest(as_stored_then, like="v2:")
     grown = {**document, "a_field_added_later": {"anything": 1.5}}
+
     assert evidence_digest(grown, like="v2:") == evidence_digest(document, like="v2:")
+    assert evidence_digest(_stored_under_v2_document(document)) == evidence_digest(document, like="v2:")
     assert evidence_digest(grown) == evidence_digest(document)
+
+
+def _stored_under_v2_document(document: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in document.items() if key != "evidence"}
 
 
 def _stored_under_v2(bundle: AnalysisContextBundle) -> dict[str, Any]:
@@ -1151,3 +1147,82 @@ def test_a_version_2_record_at_high_degrees_of_freedom_is_matched_only_with_the_
     # Without the put-back (a document carrying no manifest is read as stored, its g untouched) it does not match.
     without_put_back = {k: v for k, v in assembled_now.items() if k != "evidence"}
     assert evidence_digest(without_put_back) != recorded
+
+
+# =============================================================================
+# What a run's measures counted is evidence (#1160)
+# =============================================================================
+
+
+def _attested(run: EvalRun, digest: str, *, note: str | None = None) -> EvalRun:
+    """``run`` as a host's attestation leaves it: its measures' definitions stated, and the entry that says so."""
+    definitions = {"field_accuracy": digest}
+    return run.model_copy(
+        update={
+            "measure_definitions": definitions,
+            "measure_attestation": MeasureAttestation(
+                attested_at="2026-11-14T00:00:00+00:00", attested_by="ops", definitions=definitions, note=note
+            ),
+        }
+    )
+
+
+def test_a_run_that_recorded_no_measure_definitions_hashes_as_it_did_before_they_existed() -> None:
+    """A run launched before definitions were recorded carries none of the three fields, and its evidence names none:
+    it is the evidence of a run that recorded them, less those fields and nothing else."""
+    host, campaign = _corpus_host()
+    recorded = host.storage.load_eval_run(sorted(campaign.run_ids)[0], campaign.scope_id)
+    assert recorded is not None and recorded.measure_definitions
+    assert recorded.measure_attestation is None and not recorded.measure_remeasures
+    unrecorded = recorded.model_copy(update={"measure_definitions": None})
+
+    evidence = run_evidence(unrecorded)
+
+    assert not {"measure_definitions", "measure_attestation", "measure_remeasures"} & set(evidence)
+    assert evidence == {key: value for key, value in run_evidence(recorded).items() if key != "measure_definitions"}
+
+
+def test_a_run_attested_or_re_measured_under_another_definition_is_other_evidence() -> None:
+    host, campaign = _corpus_host()
+    run = host.storage.load_eval_run(sorted(campaign.run_ids)[0], campaign.scope_id)
+    assert run is not None
+    one, other = _attested(run, "a" * 64), _attested(run, "b" * 64)
+    remeasured = one.model_copy(
+        update={
+            "measure_definitions": {"field_accuracy": "b" * 64},
+            "measure_remeasures": [
+                MeasureRemeasure(
+                    remeasured_at="2026-11-14T01:00:00+00:00",
+                    completed_at="2026-11-14T01:05:00+00:00",
+                    was={"field_accuracy": "a" * 64},
+                    now={"field_accuracy": "b" * 64},
+                    reread=["field_accuracy"],
+                    results_reread=36,
+                )
+            ],
+        }
+    )
+
+    digests = [input_digest(run_evidence(each)) for each in (run, one, other, remeasured)]
+
+    assert len(set(digests)) == 4
+    assert run_evidence(_attested(run, "a" * 64, note="said another way")) == run_evidence(one), "a note is prose"
+
+
+def test_every_member_attested_moves_the_fingerprint_and_only_the_runs() -> None:
+    host, campaign = _corpus_host()
+    before = _aspect(host, campaign)
+
+    def attest_all(digest: str) -> AnalysisContextBundle:
+        for run_id in campaign.run_ids:
+            run = host.storage.load_eval_run(run_id, campaign.scope_id)
+            assert run is not None
+            host.storage.save_eval_run(_attested(run, digest))
+        return _aspect(host, campaign)
+
+    one = attest_all("a" * 64)
+    other = attest_all("b" * 64)
+
+    assert _moved(before, one) == {"runs"}
+    assert _moved(one, other) == {"runs"}
+    assert len({before.fingerprint(), one.fingerprint(), other.fingerprint()}) == 3
