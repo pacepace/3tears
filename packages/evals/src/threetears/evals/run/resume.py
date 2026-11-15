@@ -127,6 +127,9 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
         "measure_definitions",
         "measure_attestation",
         "measure_remeasures",
+        # A host's statement of the model that answered: it names the results it covers, so the cells a take-up
+        # writes are not covered by it and their silence, if any, stays a silence.
+        "served_model_attestation",
         # Held by its outcome, never its number: the take-up's launch re-proves the run's own goal checks under the
         # proof rules in force (``goal_check_proofs``, pinned), so a rules change that proves them as the run's own
         # proofs did is taken up. The run then reads as proved under the newer rules, and each holding records the
@@ -324,6 +327,32 @@ def _shown(value: Any) -> str:
     """A value as a refusal names it: a long digest cut to its head."""
     text = repr(value)
     return text if len(text) <= 40 else f"{text[:37]}..."
+
+
+def _take_up_unrecorded_notice(stored: EvalRun, fresh: EvalRun) -> str | None:
+    """What a take-up of a run stored before runs recorded measure definitions keeps unrecorded, said as it is taken up.
+
+    Such a run is taken up and stays unrecorded: the take-up stamps nothing on it, so its cells written now, which a
+    fresh client answers and which name their served model, join a run whose definitions nothing records. Where its
+    results hold a host measure it pools with nothing until its host states the definitions or re-measures it. Its
+    cells written before the take-up keep whatever their responses named, and a silence among them stays a silence
+    until its host states the model.
+
+    :param stored: The run as stored.
+    :ptype stored: EvalRun
+    :param fresh: The run the take-up's launch assembled.
+    :ptype fresh: EvalRun
+    :return: The notice, or ``None`` where the run records what the launch would.
+    :rtype: str | None
+    """
+    if stored.measure_definitions is not None or not fresh.measure_definitions:
+        return None
+    return (
+        f"run '{stored.id}' is taken up and stays unrecorded on identity coordinate measure_definition: it was stored "
+        "before runs recorded the definitions of their host's measures, and a take-up stamps none, so where its "
+        "results hold a host measure it pools with no other run; its host states the definitions it ran under "
+        "(runs_attest, coordinate measure_definition) or re-measures it (run_remeasure)"
+    )
 
 
 def _resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profile: HostProfile) -> list[str]:
@@ -566,6 +595,9 @@ class RunResumption:
                 f"{'; '.join(differences)}",
                 remedy=remedy,
             )
+        if notice := _take_up_unrecorded_notice(stored, fresh):
+            # Said as the run is taken up, never left to a campaign over it that will not compare.
+            log.warning("%s", notice)
         first = RunLifetime(
             holder=stored.lease.holder if stored.lease is not None else None,
             epoch=self.epoch - 1,

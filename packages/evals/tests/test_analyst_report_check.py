@@ -481,7 +481,16 @@ def _served(tool: MountedTool) -> list[str]:
 #: its line to the tool's description and its help page; no other action's text moved.
 #: The evals tool moved again when the out-of-run ledger gained the purpose ``reviewer`` (a model's reading of a blind
 #: read's sheet; core v15.19): spend_list's purpose filter lists it. Nothing else it serves moved.
-_EVALS_BYTES = "8d87d33721480c08d204e5e31eef098518329dbc073ef03468aa9e072b97aed2"
+#: The evals tool moved again when runs_attest replaced runs_attest_definitions (#1187): one action states either
+#: coordinate of stored runs, their measure definitions or their served model, with a ``coordinate`` and a
+#: ``served_model`` parameter and one result shape. No other action's text moved.
+#: The evals tool moved again when runs_attest's ``coordinate`` came to be the closed set of attestable coordinates
+#: (``AttestableCoordinate``: measure_definition, served_model), where its schema had listed template and rig too
+#: (#1187). No other action's text moved.
+#: The evals tool moved again when runs_attest's help came to say what a served-model statement does (#1187): it is
+#: recorded on the run with the results whose candidate rows named no model, read through, and rewrites no row; the
+#: help had said it was written to each such row. No other action's text moved.
+_EVALS_BYTES = "e200708cd13925547d09e07078b9a0ed2d46ba4c0202f3c70da9f984b5ae4e19"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).

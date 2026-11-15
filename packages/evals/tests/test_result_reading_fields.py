@@ -1599,6 +1599,8 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "usage[].cost_usd",
             }
         ),
+        # The regression watch reads host_measures (#1187): a history step between runs read under different definitions,
+        # or none recorded where a result holds a host measure, is a boundary with no verdict across it.
         "regressed": frozenset(
             {
                 "async_deliveries",
@@ -1610,7 +1612,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "goal_state_outcomes",
                 "goal_state_outcomes[].expression",
                 "goal_state_outcomes[].passed",
-                "host_measures",
                 "judge_cut_short",
                 "judge_model",
                 "judge_repeats[].judge_config_ids",

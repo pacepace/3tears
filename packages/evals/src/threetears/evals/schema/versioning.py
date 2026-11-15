@@ -459,7 +459,15 @@ CORE_SCHEMA_VERSION: int = 15
 #:   strings alone, so every label key is what it was. An older build reads such evidence without it, and a re-judge
 #:   there keys its calls by their prompts, as it did.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 20
+#: - **v15.21** — a host's statement of the model that answered a run's candidate calls is recorded:
+#:   ``EvalRun.served_model_attestation`` (default None: never attested, or stored before the field existed) holds
+#:   who stated it, when, the model and the results it covers (``result_ids``: those whose candidate rows named no
+#:   model when it was made), written by the ``runs_attest`` action. No usage row is rewritten: a reading that pools by
+#:   answering model reads those rows through it. Left out of the document when unset, so a run never attested is
+#:   stored as before. In no identity, key or digest. An older build reads the run's rows as they were recorded and
+#:   pools none of them on the statement, which is what the rows say.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 21
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
