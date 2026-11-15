@@ -17,6 +17,7 @@ test below builds a caveat list by hand and reads the typed value back: none rea
 from __future__ import annotations
 
 import ast
+import json
 import random
 from itertools import pairwise
 from pathlib import Path
@@ -27,11 +28,12 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import first_screen as first_screen_module
 from threetears.evals.schema import reading_states
-from threetears.evals.analysis.caveats import CLASS_OF_KIND, from_legacy, remedy
+from threetears.evals.analysis.caveats import CLASS_OF_KIND, caveat_list, from_legacy, remedy, screen
 from threetears.evals.analysis.checks import Check
 from threetears.evals.analysis.first_screen import RANKS, REASONS_SHOWN, first_screen, subsumed
-from threetears.evals.analysis.report.call import Caveat
-from threetears.evals.analysis.report_input import CallRead, CaveatEntry, FirstScreen, Gate, GateRun
+from threetears.evals.analysis.report_input import CallRead, CaveatEntry, FirstScreen, Gate, GateRun, ReportInput
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 READING = "support/helpfulness"
 OTHER = "support/accuracy"
@@ -117,6 +119,18 @@ def test_r3a_a_withheld_reading_silences_a_caveat_scoped_only_to_it() -> None:
     assert shown([only_here, two_readings, split]).reasons == [split.id, two_readings.id]
 
 
+def test_r3a_a_reading_withheld_on_one_arm_silences_only_what_is_scoped_to_that_arm() -> None:
+    """An arm read per answering model withholds that arm's reading: a caveat on the same reading of that arm is
+    silenced, and one on the reading of every arm (repeated looks at the aspect's test) stands."""
+    split = withheld(READING, "split", "served_model", arms=["candidate-b"])
+    same_arm = judge("judge_uncalibrated:b", readings=[READING], arms=["candidate-b"])
+    every_arm = caveat("looks", readings=[READING])
+
+    marked = {entry.id: entry.subsumed_by for entry in subsumed([split, same_arm, every_arm])}
+
+    assert marked == {split.id: None, same_arm.id: split.id, every_arm.id: None}
+
+
 def test_r3b_a_reading_set_aside_for_a_cause_is_one_reason_and_the_cause_is_not_listed_again() -> None:
     aside = set_aside(READING, "instrument_unchecked")
     cause = judge("judge_unchecked:helpfulness", reason="instrument_unchecked", readings=[READING])
@@ -145,18 +159,38 @@ def test_r3c_identical_arms_that_separated_silence_every_instrument_caveat_on_th
 
 
 @pytest.mark.parametrize("people_first", [True, False])
-def test_r3d_a_check_against_people_silences_the_check_against_a_model_on_the_same_criterion(
+def test_r3d_a_deciding_check_against_people_silences_the_check_against_a_model_on_the_same_criterion(
     people_first: bool,
 ) -> None:
-    people = judge("check:kappa:people", against="people", criterion="kappa")
-    model = judge("check:kappa:model", against="model", criterion="kappa")
-    other = judge("check:lean:model", against="model", criterion="lean")
+    people = judge("check:kappa:people", against="people", criterion="kappa", check="not_met")
+    model = judge("check:kappa:model", against="model", criterion="kappa", check="met")
+    other = judge("check:lean:model", against="model", criterion="lean", check="met")
     order = [people, model, other] if people_first else [other, model, people]
 
     value = shown(order)
 
     assert value.reasons == [people.id, other.id]
     assert {entry.id: entry.subsumed_by for entry in subsumed(order)}[model.id] == people.id
+
+
+@pytest.mark.parametrize("result", ["undecided", "insufficient", None])
+def test_r3d_a_check_against_people_that_does_not_decide_silences_nothing(result: str | None) -> None:
+    """A people check that is undecided or insufficient does not speak for the judge, which then reads as checked
+    against a model."""
+    people = judge("check:kappa:people", against="people", criterion="kappa", check=result)
+    model = judge("check:kappa:model", against="model", criterion="kappa", check="met")
+
+    assert {entry.id: entry.subsumed_by for entry in subsumed([people, model])}[model.id] is None
+    assert model.id in shown([people, model]).reasons
+
+
+def test_r3d_a_met_check_against_people_is_said_one_step_down_and_still_silences_the_model() -> None:
+    people = judge("check:kappa:people", against="people", criterion="kappa", check="met", reach="method")
+    model = judge("check:kappa:model", against="model", criterion="kappa", check="met")
+
+    value = shown([people, model])
+
+    assert value.reasons == [] and value.open_report_caveats == 0
 
 
 def one_of_each_class() -> list[CaveatEntry]:
@@ -541,25 +575,21 @@ def test_a_caveat_s_state_reason_and_coordinate_belong_together() -> None:
     assert CaveatEntry.model_validate(entry.model_dump(mode="json", by_alias=True)) == entry
 
 
-def test_caveats_of_the_earlier_shape_become_entries_with_the_same_ids_and_their_kind_s_class() -> None:
-    legacy = [
-        Caveat("late:margin", "late", "report"),
-        Caveat("judge_uncalibrated", "judge_uncalibrated", "report"),
-        Caveat("confound:tools", "confound", "scoped"),
-        Caveat("latency", "latency", "method"),
-        Caveat("analyst:flag", "analyst", "report"),
-        Caveat("unsettled:support", "unsettled", "report"),
-        Caveat("unsettled:billing", "unsettled", "scoped"),
-    ]
+def test_a_stored_input_s_caveats_become_entries_with_the_same_ids_and_their_kind_s_class() -> None:
+    """A stored input carries no list; the legacy raisers give it one on read, each entry its kind's class, no state
+    (absent reads counted), and a class E entry deciding exactly where it reaches the whole report."""
+    stored = ReportInput.model_validate(
+        json.loads((FIXTURES / "report_inputs" / "r5" / "input.json").read_text(encoding="utf-8"))
+    )
 
-    entries = from_legacy(legacy)
+    entries = from_legacy(stored)
 
-    assert [(entry.id, entry.kind, entry.reach) for entry in entries] == [(c.id, c.kind, c.reach) for c in legacy]
-    assert [entry.cls for entry in entries] == ["B", "C", "B", None, None, "E", "E"]
-    assert all(entry.state is None and entry.reason is None for entry in entries), "absent reads counted"
-    assert [entry.deciding for entry in entries[-2:]] == [True, False], "report reach is where the call turns on it"
-    assert shown(entries).reasons == ["late:margin", "judge_uncalibrated", "unsettled:support"]
-    assert shown(entries).remainder == 1
+    assert stored.caveat_list is None and entries
+    assert [entry.cls for entry in entries] == [CLASS_OF_KIND.get(entry.kind) for entry in entries]
+    assert {"late", "short_run"} <= {entry.kind for entry in entries}
+    assert all(entry.state is None or entry.kind == "latency" for entry in entries), "absent reads counted"
+    assert all(entry.deciding == (entry.cls == "E" and entry.reach == "report") for entry in entries)
+    assert screen(stored, caveat_list(stored)).reasons == shown(caveat_list(stored), called_arms=["September"]).reasons
 
 
 # --- the function reads no kind, no name and no prose ---------------------------------------------------------------
@@ -572,7 +602,7 @@ def _closed_words() -> set[str]:
         }
 
     words = set().union(*(strings(getattr(reading_states, name)) for name in reading_states.__all__))
-    return words | strings(Check.model_fields["against"].annotation)
+    return words | strings(Check.model_fields["against"].annotation) | strings(Check.model_fields["result"].annotation)
 
 
 def test_the_function_s_module_imports_only_the_closed_sets_and_the_input_s_shapes() -> None:
