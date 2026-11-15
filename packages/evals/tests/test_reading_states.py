@@ -363,8 +363,9 @@ def test_every_mapped_vocabulary_is_mapped_word_for_word() -> None:
 #: vocabulary leaves it the day its last reader reads the shared state instead (a stored spelling stays, read through
 #: the table), and this count falls with it. It never rises: a new way of saying "not counted" is a member of the
 #: shared set, never a vocabulary mapped onto it. 37 when the ratchet started (S5a-2), and 37 after it: the call
-#: sites that chunk moved onto the shared state read no mapped vocabulary to decide whether a reading counts.
-MAPPED_VOCABULARIES_IN_USE = 37
+#: sites that chunk moved onto the shared state read no mapped vocabulary to decide whether a reading counts. 36 since
+#: B1: ``PredictionPoweredReading.unavailable_reason``, a sentence, became ``state``, a shared state and reason.
+MAPPED_VOCABULARIES_IN_USE = 36
 
 
 def test_the_mapped_vocabularies_still_in_use_only_fall() -> None:
