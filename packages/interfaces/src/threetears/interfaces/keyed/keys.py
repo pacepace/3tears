@@ -75,7 +75,6 @@ __all__ = [
     "not_null_guards",
     "partial_predicate",
     "stated_literals",
-    "stated_predicate",
 ]
 
 
@@ -269,7 +268,7 @@ class DeclaredIndex:
     :ivar descending: the columns it sorts descending
     :ivar primary: whether it is the table's primary key (the planner's own choice; never hinted)
     :ivar stated: a partial index's predicate as the ``(column, text)`` pairs it names (``WHERE status = 'proposed'``,
-        :func:`stated_predicate`): it serves only a read pinning each column to exactly that text; empty for a whole
+        :func:`partial_predicate`): it serves only a read pinning each column to exactly that text; empty for a whole
         index
     :ivar guarded: the columns a partial index's predicate holds ``IS NOT NULL`` (``WHERE alias IS NOT NULL``,
         :func:`partial_predicate`): it serves only a read whose own guards state exactly that of each; empty for none
@@ -389,24 +388,6 @@ def register_partial_predicates(table: str, predicates: Iterable[str]) -> None:
             stated = (relation, found.group(1).lower(), found.group(2).replace("''", "'"))
             if stated not in _STATED:
                 _STATED.append(stated)
-
-
-def stated_predicate(where: str) -> frozenset[tuple[str, str]] | None:
-    """a partial index's predicate as the ``(column, text)`` pairs it names, when it is nothing but ``column = 'text'``
-    conjuncts (``status = 'proposed'``); None for any other predicate, which no keyed read is judged to state.
-
-    :param where: the predicate, as declared
-    :ptype where: str
-    :return: the pairs, or None
-    :rtype: frozenset[tuple[str, str]] | None
-    """
-    pairs: set[tuple[str, str]] = set()
-    for conjunct in re.split(r"\s+AND\s+", where, flags=re.IGNORECASE):
-        found = _STATED_EQUALITY.fullmatch(conjunct)
-        if found is None:
-            return None
-        pairs.add((found.group(1).lower(), found.group(2).replace("''", "'")))
-    return frozenset(pairs) or None
 
 
 def _states(index: DeclaredIndex, by: Mapping[Any, Any], guarded: frozenset[str] = frozenset()) -> bool:

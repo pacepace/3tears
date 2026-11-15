@@ -109,7 +109,6 @@ def register(runner: MigrationRunner, *, held_contract: bool = False) -> Package
 
 __all__ = [
     "PACKAGE_NAME",
-    "add_conversation_created_index",
     "align_context_items_shape",
     "create_context_items_table",
     "datetime_to_datetimetz",

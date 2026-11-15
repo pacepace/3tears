@@ -91,29 +91,16 @@ def _row(seed: Seeded) -> Mapping[str, Any]:
 
 
 @pytest.mark.parametrize("prefix", ["story-1:", "", "story-1:é"])
-async def test_the_prefix_s_conversations_are_the_statement_s(
-    conn: asyncpg.Connection, monkeypatch: pytest.MonkeyPatch, prefix: str
-) -> None:
+async def test_the_prefix_s_conversations_are_the_statement_s(conn: asyncpg.Connection, prefix: str) -> None:
     """Flips if the conversations a prefix lists are not the ones ``left(...) = $3`` listed, or not newest first: a
     ref that only begins like it, a NULL ref, another channel's or agent's, one missed."""
     agent = AGENTS[0]
-    built: list[dict[str, Any]] = []
-    coerce = getattr(ConversationsCollection, "_coerce_row")  # noqa: B009 - the row each entity is built from
-
-    def keep(self: ConversationsCollection, row: dict[str, Any]) -> dict[str, Any]:
-        coerced = coerce(self, row)
-        built.append(dict(row))
-        return coerced
-
-    monkeypatch.setattr(ConversationsCollection, "_coerce_row", keep)
 
     async def helper(c: asyncpg.Connection) -> list[dict[str, Any]]:
-        built.clear()
         registry = CollectionRegistry()
         registry.configure(l3_pool=c)
         collection = ConversationsCollection(registry, DefaultCoreConfig(), c)
-        await collection.find_by_ref_prefix(agent, "web", prefix)
-        return list(built)
+        return [entity.to_dict() for entity in await collection.find_by_ref_prefix(agent, "web", prefix)]
 
     await assert_same_results(
         conn,

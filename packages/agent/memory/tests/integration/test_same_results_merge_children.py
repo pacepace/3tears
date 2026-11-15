@@ -20,7 +20,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
-from threetears.agent.memory.merge import _delete_locked, _lock_colliding
+from threetears.agent.memory.merge import delete_colliding_memories, lock_colliding_memories
 from threetears.core.keyed import KeyBatch, read_keyed
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
@@ -172,7 +172,7 @@ async def test_the_collision_lock_names_the_predicate_s_memories(conn: asyncpg.C
         row=_named_memory,
         old_sql=_LOCK_SQL,
         params=[USER, _MASTER, agent],
-        helper=lambda c: _lock_colliding(c, from_user_id=USER, to_user_id=_MASTER, agent_id=agent),
+        helper=lambda c: lock_colliding_memories(c, from_user_id=USER, to_user_id=_MASTER, agent_id=agent),
         related=_masters,
         page_size=PAGE,
     )
@@ -190,7 +190,9 @@ async def test_the_collision_delete_removes_the_predicate_s_locked_memories(conn
         row=_named_memory,
         old_sql=_DELETE_SQL,
         params=[USER, _MASTER, agent, [agent] * len(named), named],
-        helper=lambda c: _delete_locked(c, from_user_id=USER, to_user_id=_MASTER, agent_id=agent, memory_ids=named),
+        helper=lambda c: delete_colliding_memories(
+            c, from_user_id=USER, to_user_id=_MASTER, agent_id=agent, memory_ids=named
+        ),
         related=_masters,
         state_sql="SELECT memory_id, agent_id, user_id, alias FROM memories",
         page_size=PAGE,

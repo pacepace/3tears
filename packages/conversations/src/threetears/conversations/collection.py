@@ -25,8 +25,7 @@ from uuid import UUID
 from threetears.conversations.entity import Conversation
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.keyed import Count, Fragment, Sort, aggregate_keyed, read_by
-from threetears.interfaces.keyed import prefix_conditions
+from threetears.core.keyed import Count, Fragment, Sort, aggregate_keyed, prefix_conditions, read_by
 
 if TYPE_CHECKING:
     from threetears.conversations.buffer import ConversationWriteBuffer

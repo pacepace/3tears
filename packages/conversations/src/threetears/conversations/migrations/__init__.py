@@ -179,7 +179,6 @@ def register(runner: MigrationRunner, *, held_contract: bool = False) -> Package
 
 __all__ = [
     "PACKAGE_NAME",
-    "add_ref_prefix_index",
     "add_conversation_language_column",
     "add_conversation_parent",
     "add_folder_referential_integrity",

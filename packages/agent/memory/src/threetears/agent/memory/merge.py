@@ -107,7 +107,7 @@ class MemoryRepointResult:
         return merged
 
 
-async def _lock_colliding(conn: Any, *, from_user_id: UUID, to_user_id: UUID, agent_id: UUID) -> list[Any]:
+async def lock_colliding_memories(conn: Any, *, from_user_id: UUID, to_user_id: UUID, agent_id: UUID) -> list[Any]:
     """lock the source's memories whose alias the master already holds under the agent, ``FOR UPDATE``.
 
     :param conn: asyncpg transaction connection bound to the agent schema
@@ -143,7 +143,7 @@ async def _lock_colliding(conn: Any, *, from_user_id: UUID, to_user_id: UUID, ag
     )
 
 
-async def _delete_locked(
+async def delete_colliding_memories(
     conn: Any, *, from_user_id: UUID, to_user_id: UUID, agent_id: UUID, memory_ids: list[Any]
 ) -> list[dict[str, Any]]:
     """delete exactly the locked memories, the collision guard re-checked as the hand-written DELETE re-checked it.
@@ -156,7 +156,7 @@ async def _delete_locked(
     :ptype to_user_id: UUID
     :param agent_id: the agent the schema holds
     :ptype agent_id: UUID
-    :param memory_ids: the memories :func:`_lock_colliding` locked
+    :param memory_ids: the memories :func:`lock_colliding_memories` locked
     :ptype memory_ids: list[Any]
     :return: the deleted memories' ``agent_id`` and ``memory_id``
     :rtype: list[dict[str, Any]]
@@ -219,7 +219,7 @@ async def _delete_alias_collisions(
     """
     result = MemoryRepointResult()
     removed = result.removed
-    locked = await _lock_colliding(conn, from_user_id=from_user_id, to_user_id=to_user_id, agent_id=agent_id)
+    locked = await lock_colliding_memories(conn, from_user_id=from_user_id, to_user_id=to_user_id, agent_id=agent_id)
     if not locked:
         return result
     # every child read by key: the colliding memories (or their media) are all the schema's agent's, so each read pins
@@ -278,7 +278,7 @@ async def _delete_alias_collisions(
     }
     removed["memory_consolidations"] = list(edges)
 
-    deleted = await _delete_locked(
+    deleted = await delete_colliding_memories(
         conn, from_user_id=from_user_id, to_user_id=to_user_id, agent_id=agent_id, memory_ids=[key for (key,) in named]
     )
     removed["memories"] = [(row["agent_id"], row["memory_id"]) for row in deleted]
