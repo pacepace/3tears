@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a built report input carries the structure facts the code page states, and a parity guard holds the rest
+
+**Added:** a report input built from a campaign's bundle fills the optional structure fields (all left out where
+unset, so a stored input reads and digests as it did): a contrast's `baseline` and `baseline_n_cases` (the control's
+mean over the cases its test read, which the delta is a change from), its `family` (`<aspect>/<n>`, its family's place
+in `contrast_families`) and, where its delta is not the difference of the two arms' stated figures, `delta_note`
+`paired_cases`; a figure's `spread` (the standard deviation of its cases' means) and, where every case read one value,
+`no_variation`; a figure with no interval its `state`, not available, `too_few` or `no_variation`; a reading its
+`flip_margin` and an aspect `margin_informative`; and an arm whose name code computed its `spelling`, the levers its
+name was spelled from, each with its level. A bundle's numeric measure summary carries `spread` and `no_variation`.
+
+**Changed:** a page reads an arm's computed name from its spelling, lever by lever, and never from the name's text:
+`report.words.reader_arm_name` is removed, replaced by `spelled_arm_name`. An input frozen before arms carried their
+spelling prints each name as it was frozen. A name spelled from several levers whose empty text level is read as
+`no <lever>` no longer keeps the digest or number that told it from another arm; the page's tag tells such arms apart.
+
+**Added:** `tests/test_both_pages_state_one_figure.py`, the parity guard: every figure a campaign's code page issues,
+by measure, kind and role, resolves from the report input built from the same bundle, with an allowance naming each
+figure the input does not yet carry and why.
+
 ### evals: a recorded judge call over a report page is keyed by what the page was rendered from, not by its words
 
 **Changed:** a word the package prints differently on a report writer's page, or in its computed facts, no longer

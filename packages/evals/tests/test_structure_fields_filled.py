@@ -32,7 +32,7 @@ from typing import Any
 import pytest
 
 from packages.evals.tests.factories import fixture_variant_key, make_campaign, make_eval_result, make_eval_run
-from packages.evals.tests.test_hot_path_oracle import WITH_BUNDLES, subject
+from packages.evals.tests.test_hot_path_oracle import WITH_BUNDLES, Goldens, subject
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
@@ -44,7 +44,7 @@ from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.host import SHARED_CORE, HostProfile, MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.schema import EvalResult, GoalStateOutcome, LatencyMetrics
-from threetears.evals.schema.hashing import round_figures
+from threetears.evals.schema.hashing import identity_json, round_figures
 from threetears.evals.storage import InMemoryDocumentStore
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -278,6 +278,23 @@ def test_an_arm_code_named_carries_its_spelling_and_one_a_person_named_none(name
         frozen = bundle.arm_spellings.get(key)
         assert list(spelling) == (frozen.levers if frozen is not None else list(spelling)), "in the name's order"
         assert frozen is not None or len(spelling) == 1
+
+
+# --- what moves and what does not -----------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", WITH_BUNDLES)
+def test_no_fingerprint_and_no_frame_moves(name: str) -> None:
+    """The fields filled here are no evidence: each aspect's fingerprint, the campaign's frame and its fingerprint are
+    their goldens', and every page is the hot-path oracle's (``test_every_report_read_body_is_unchanged``). An aspect's
+    bundle document gains its numeric summaries' spread, which the oracle's ``bundle:<aspect>`` goldens hold whole."""
+    bundle, _ = _built(name)
+    goldens = Goldens(name)
+    for aspect in bundle.aspects:
+        goldens.check(f"fingerprint:{aspect.aspect}", aspect.fingerprint())
+    goldens.check("frame", identity_json(bundle.frame()))
+    goldens.check("campaign_fingerprint", bundle.fingerprint())
+    goldens.assert_unchanged()
 
 
 # --- every frozen input still verifies -----------------------------------------------------------------------------

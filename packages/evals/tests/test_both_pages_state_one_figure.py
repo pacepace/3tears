@@ -210,8 +210,109 @@ class Gap:
     role: str
 
 
-#: Each figure the code page states that the input does not yet hold, with what holds it apart.
-ALLOWANCE: dict[Gap, str] = {}
+#: Why a figure the code page states is not yet in the input. None is a structure field the report input was shaped
+#: for (a contrast's baseline, a figure's spread, an arm's cost, a reading's flip margin: those resolve); each is a
+#: figure the input has no field for, worked out by a code page's part at render time.
+GAP_REASONS: dict[str, str] = {
+    "readings_table": (
+        "an aspect page's readings table: each stratum's figure on a measure, and each figure's standard error beside "
+        "its mean; the input's strata carry judged dimensions only and a measure's figure no standard error (#1142 U4)"
+    ),
+    "judged_interval": (
+        "a judged dimension's own interval on a contrast's row, worked out of its standard error when the page is read "
+        "(references.resolve_reading); the bundle's judged reading stores none to copy"
+    ),
+    "declared_margin": "a measure's declared materiality threshold, named beside an immaterial change",
+    "pass_k": "each arm's pass^k figure; the input's pass_k states its depth and its sentences, never the figure",
+    "aggregate": "the campaign aggregate's equal-weight pass rate across aspects, computed by the code page's lens",
+    "outcome_share": "the share of an arm's trials in each outcome on the scoreboard's bar",
+    "across_aspects": "the scorecard's change in pass rate across every aspect, computed by the code page",
+}
+
+#: Each figure the code page states that the input does not yet hold, by campaign, measure, kind and role, with why
+#: (:data:`GAP_REASONS`).
+ALLOWANCE: dict[Gap, str] = {
+    Gap("scaled", "goal_state:state.ticket.status == 'resolved'", "measure", "half_width"): "readings_table",
+    Gap("scaled", "goal_state:state.ticket.status == 'resolved'", "measure", "level"): "readings_table",
+    Gap("scaled", "__outcome__", "judged", "interval"): "judged_interval",
+    Gap("scaled", "__transcript__", "judged", "interval"): "judged_interval",
+    Gap("scaled", "candidate_s", "measure", "half_width"): "readings_table",
+    Gap("scaled", "candidate_s", "measure", "level"): "readings_table",
+    Gap("scaled", "cost_per_document_usd", "measure", "declared"): "declared_margin",
+    Gap("scaled", "cost_per_document_usd", "measure", "half_width"): "readings_table",
+    Gap("scaled", "cost_per_document_usd", "measure", "level"): "readings_table",
+    Gap("scaled", "cost_usd", "measure", "half_width"): "readings_table",
+    Gap("scaled", "cost_usd", "measure", "level"): "readings_table",
+    Gap("scaled", "field_accuracy", "measure", "half_width"): "readings_table",
+    Gap("scaled", "field_accuracy", "measure", "level"): "readings_table",
+    Gap("scaled", "field_count_error", "measure", "half_width"): "readings_table",
+    Gap("scaled", "field_count_error", "measure", "level"): "readings_table",
+    Gap("scaled", "fields_stripped", "measure", "half_width"): "readings_table",
+    Gap("scaled", "fields_stripped", "measure", "level"): "readings_table",
+    Gap("scaled", "goal_state:state.refund.amount <= state.order.total", "measure", "half_width"): "readings_table",
+    Gap("scaled", "goal_state:state.refund.amount <= state.order.total", "measure", "level"): "readings_table",
+    Gap("scaled", "goal_state:state.ticket.tags.length >= 1", "measure", "half_width"): "readings_table",
+    Gap("scaled", "goal_state:state.ticket.tags.length >= 1", "measure", "level"): "readings_table",
+    Gap("scaled", "judge_s", "measure", "half_width"): "readings_table",
+    Gap("scaled", "judge_s", "measure", "level"): "readings_table",
+    Gap("scaled", "manual_review_rate", "measure", "half_width"): "readings_table",
+    Gap("scaled", "manual_review_rate", "measure", "level"): "readings_table",
+    Gap("scaled", "p95_extract_ms", "measure", "half_width"): "readings_table",
+    Gap("scaled", "p95_extract_ms", "measure", "level"): "readings_table",
+    Gap("scaled", "passed", "trial", "column"): "pass_k",
+    Gap("scaled", "passed", "trial", "interval"): "aggregate",
+    Gap("scaled", "passed", "trial", "pass_k"): "pass_k",
+    Gap("scaled", "passed", "trial", "share"): "outcome_share",
+    Gap("scaled", "production_replicating_cost", "measure", "half_width"): "readings_table",
+    Gap("scaled", "production_replicating_cost", "measure", "level"): "readings_table",
+    Gap("scaled", "reply.accuracy", "judged", "interval"): "judged_interval",
+    Gap("scaled", "reply.grounding", "judged", "interval"): "judged_interval",
+    Gap(
+        "scaled_two_aspects", "goal_state:state.ticket.status == 'resolved'", "measure", "half_width"
+    ): "readings_table",
+    Gap("scaled_two_aspects", "goal_state:state.ticket.status == 'resolved'", "measure", "level"): "readings_table",
+    Gap("scaled_two_aspects", "__outcome__", "judged", "interval"): "judged_interval",
+    Gap("scaled_two_aspects", "__transcript__", "judged", "interval"): "judged_interval",
+    Gap("scaled_two_aspects", "candidate_s", "measure", "half_width"): "readings_table",
+    Gap("scaled_two_aspects", "candidate_s", "measure", "level"): "readings_table",
+    Gap("scaled_two_aspects", "cost_per_document_usd", "measure", "declared"): "declared_margin",
+    Gap("scaled_two_aspects", "cost_per_document_usd", "measure", "half_width"): "readings_table",
+    Gap("scaled_two_aspects", "cost_per_document_usd", "measure", "level"): "readings_table",
+    Gap("scaled_two_aspects", "cost_usd", "measure", "half_width"): "readings_table",
+    Gap("scaled_two_aspects", "cost_usd", "measure", "level"): "readings_table",
+    Gap("scaled_two_aspects", "field_accuracy", "measure", "half_width"): "readings_table",
+    Gap("scaled_two_aspects", "field_accuracy", "measure", "level"): "readings_table",
+    Gap("scaled_two_aspects", "field_count_error", "measure", "half_width"): "readings_table",
+    Gap("scaled_two_aspects", "field_count_error", "measure", "level"): "readings_table",
+    Gap("scaled_two_aspects", "fields_stripped", "measure", "half_width"): "readings_table",
+    Gap("scaled_two_aspects", "fields_stripped", "measure", "level"): "readings_table",
+    Gap(
+        "scaled_two_aspects", "goal_state:state.refund.amount <= state.order.total", "measure", "half_width"
+    ): "readings_table",
+    Gap(
+        "scaled_two_aspects", "goal_state:state.refund.amount <= state.order.total", "measure", "level"
+    ): "readings_table",
+    Gap("scaled_two_aspects", "goal_state:state.ticket.tags.length >= 1", "measure", "half_width"): "readings_table",
+    Gap("scaled_two_aspects", "goal_state:state.ticket.tags.length >= 1", "measure", "level"): "readings_table",
+    Gap("scaled_two_aspects", "judge_s", "measure", "half_width"): "readings_table",
+    Gap("scaled_two_aspects", "judge_s", "measure", "level"): "readings_table",
+    Gap("scaled_two_aspects", "manual_review_rate", "measure", "half_width"): "readings_table",
+    Gap("scaled_two_aspects", "manual_review_rate", "measure", "level"): "readings_table",
+    Gap("scaled_two_aspects", "p95_extract_ms", "measure", "half_width"): "readings_table",
+    Gap("scaled_two_aspects", "p95_extract_ms", "measure", "level"): "readings_table",
+    Gap("scaled_two_aspects", "passed", "trial", "change"): "across_aspects",
+    Gap("scaled_two_aspects", "passed", "trial", "column"): "pass_k",
+    Gap("scaled_two_aspects", "passed", "trial", "interval"): "aggregate",
+    Gap("scaled_two_aspects", "passed", "trial", "level"): "aggregate",
+    Gap("scaled_two_aspects", "passed", "trial", "pass_k"): "pass_k",
+    Gap("scaled_two_aspects", "passed", "trial", "share"): "outcome_share",
+    Gap("scaled_two_aspects", "production_replicating_cost", "measure", "half_width"): "readings_table",
+    Gap("scaled_two_aspects", "production_replicating_cost", "measure", "level"): "readings_table",
+    Gap("scaled_two_aspects", "reply.accuracy", "judged", "interval"): "judged_interval",
+    Gap("scaled_two_aspects", "reply.grounding", "judged", "interval"): "judged_interval",
+    Gap("toyhost", "passed", "trial", "column"): "pass_k",
+    Gap("toyhost", "passed", "trial", "pass_k"): "pass_k",
+}
 
 
 def _forms_of_the_code_page(name: str) -> Iterator[PageForms]:
@@ -250,6 +351,11 @@ def gaps_of(name: str) -> set[Gap]:
             if not resolves(held.get((entry.measure, kind)), entry.role, entry.value):
                 found.add(Gap(name, entry.measure, kind, entry.role))
     return found
+
+
+def test_every_allowed_gap_has_a_stated_reason() -> None:
+    assert set(ALLOWANCE.values()) <= set(GAP_REASONS), sorted(set(ALLOWANCE.values()) - set(GAP_REASONS))
+    assert set(GAP_REASONS) <= set(ALLOWANCE.values()), "a reason no gap holds is slack"
 
 
 @pytest.mark.parametrize("name", WITH_BUNDLES)
