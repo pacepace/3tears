@@ -157,6 +157,7 @@ from typing import Any, Final, TypeVar
 import asyncpg
 
 from threetears.core.sql_fragments import FilterValue
+from threetears.core.declared import whole_read
 from threetears.core.fingerprint import postgres_fingerprint_sql
 from threetears.core.utils.pg_pool_kwargs import (
     PoolStartupTimeoutError,
@@ -1621,7 +1622,17 @@ class AsyncpgDriver(Driver):
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
         filters, values = build_equality_filter(where)
-        sql = translate_placeholders(postgres_fingerprint_sql(relation, key, filters), "asyncpg")
+        # the warehouse reads the relation whole and answers one row: the fingerprint is that aggregate, by design
+        sql = translate_placeholders(
+            whole_read(
+                postgres_fingerprint_sql(relation, key, filters),
+                kind="unbounded_by_warehouse",
+                reason="a client's warehouse relation fingerprinted for a change probe: it keeps no change record of ours, and the count and key digest are one aggregate the warehouse answers in one row",
+                ruling="Pace 2026-11-12: unbounded_by_warehouse; coordinator 2026-11-14: a driver's fingerprint of a datasource relation takes it (our speed bar is our side, not the warehouse's)",
+                proof="packages/datasources/tests/unit/test_fingerprint_reach.py::test_a_fingerprint_is_read_only_by_a_driver_over_its_datasources_warehouse_relation",
+            ),
+            "asyncpg",
+        )
         record = await self._acquire_and_run(lambda conn: conn.fetchrow(sql, *values))
         return RelationFingerprint(row_count=int(record["row_count"]), digest=str(record["digest"]))
 
@@ -1657,7 +1668,17 @@ class AsyncpgDriver(Driver):
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
         filters, values = build_filter(where, where_in)
-        sql = translate_placeholders(postgres_fingerprint_sql(relation, key, filters, group_by=group_by), "asyncpg")
+        # the warehouse reads the relation whole and answers a row a group: the fingerprints are that aggregate
+        sql = translate_placeholders(
+            whole_read(
+                postgres_fingerprint_sql(relation, key, filters, group_by=group_by),
+                kind="unbounded_by_warehouse",
+                reason="a client's warehouse relation fingerprinted for a change probe: it keeps no change record of ours, and the count and key digest are one aggregate the warehouse answers in one row",
+                ruling="Pace 2026-11-12: unbounded_by_warehouse; coordinator 2026-11-14: a driver's fingerprint of a datasource relation takes it (our speed bar is our side, not the warehouse's)",
+                proof="packages/datasources/tests/unit/test_fingerprint_reach.py::test_a_fingerprint_is_read_only_by_a_driver_over_its_datasources_warehouse_relation",
+            ),
+            "asyncpg",
+        )
         records = await self._acquire_and_run(lambda conn: conn.fetch(sql, *values))
         return {
             (None if r["g"] is None else str(r["g"])): RelationFingerprint(
