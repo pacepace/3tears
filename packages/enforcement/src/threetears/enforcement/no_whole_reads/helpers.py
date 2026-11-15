@@ -545,11 +545,16 @@ def _read_nearest(call: ast.Call) -> list[str]:
     ordered by the distance from a bound vector under its ``LIMIT``, as an approximate-nearest-neighbour index on the
     column answers it. A ``nearest=`` the walk cannot read (not a literal ``Nearest(...)`` or ``TextRank(...)``) is
     judged by its pins alone, unordered, as the read pinning them. A ``TextRank(...)`` orders by the rank of a text
-    query, best first, which no index serves: the read is judged by its pins under that order. Its ``joins=``, each
-    joined table's keyed batch, as :func:`_read_by_joined` judges them."""
+    query, best first, which no index serves: the read is judged by its pins under that order; a ``PatternCount(...)``
+    by how many of its bound patterns a row matches, best first, likewise. Its ``joins=``, each joined table's keyed
+    batch, as :func:`_read_by_joined` judges them (a pattern count's ``LEFT`` joins, inside its one statement, read
+    each joined table by the columns it is joined on, as a batch of them does)."""
     (statement, *own) = _read_by(call)
     joins = _joined_statements(call) if _argument(call, "joins", None) is not None else []
     node = _argument(call, "nearest", None)
+    if isinstance(node, ast.Call) and _name(node) == "PatternCount":
+        place = 1 + max((int(found) for found in re.findall(r"\$(\d+)", statement)), default=0)
+        return [f"{statement} ORDER BY pattern_count(${place}) DESC LIMIT ${place + 1}", *own, *joins]
     if not (isinstance(node, ast.Call) and _name(node) in {"Nearest", "TextRank"}):
         return [statement, *own, *joins]
     column = _text(_argument(node, "column", 0), "nearest")
@@ -873,11 +878,44 @@ def _keyed_relation(node: ast.expr | None, argument: str, *, by_key: bool) -> tu
     return _relation(node, argument)
 
 
+#: a derived relation that is one table's rows under one filter, as written: ``(SELECT * FROM <table> WHERE <c>)``
+_FILTERED_TABLE: Final[re.Pattern[str]] = re.compile(r"\(SELECT \* FROM ([\w\".]+) WHERE (.+)\)", re.DOTALL)
+
+#: words that make a derived relation more than one table's filtered rows (a join, a grouping, a cut, a set operation)
+_NOT_FILTERED: Final[re.Pattern[str]] = re.compile(
+    r"\b(JOIN|GROUP|HAVING|LIMIT|OFFSET|UNION|EXCEPT|INTERSECT|DISTINCT|ORDER|WINDOW|OVER)\b|\bFROM\b.*\bFROM\b|,",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _pulled_up(relation: str) -> tuple[str, list[str]]:
+    """a derived relation that is one table's rows under one filter (``(SELECT * FROM t WHERE c)``) as the planner
+    reads it: the table, its filter ANDed into the reading statement's (PostgreSQL pulls such a subquery up), so the
+    read is judged against the table's keys and indexes with every condition it states -- a partial index's predicate
+    the outer read names included. Anything else stays the derived relation it is, with no condition of its own.
+
+    WHY (2026-11-15, hub use-the-helper): the broker's readiness counts read each knowledge table through its anchored
+    shadow (``(SELECT * FROM playbook_entries WHERE <clamp> AND datasource_id = ANY($a))``) and count its
+    ``status = 'active'`` rows by ``datasource_id``: one read of ``playbook_entries_active_by_datasource`` (v172) once
+    pulled up, which the derived relation alone hid (the index's purpose read "unused").
+    """
+    matched = _FILTERED_TABLE.fullmatch(relation.strip())
+    if (
+        matched is None
+        or _NOT_FILTERED.search(matched.group(2))
+        or matched.group(2).count("(") != matched.group(2).count(")")
+    ):
+        return relation, []
+    return matched.group(1), [f"({matched.group(2)})"]
+
+
 def _count_of(relation: str, column: str, call: ast.Call, *, values: bool, own: ast.expr | None = None) -> str:
     """a grouped count's statement; ``column`` as the statement spells it (quoted, or a run-time interpolation);
-    ``own``: the relation's own pins (``counts_by_relations``' ``pins=`` for its label), ANDed after the rest."""
+    ``own``: the relation's own pins (``counts_by_relations``' ``pins=`` for its label), ANDed after the rest; a
+    derived relation of one table's filtered rows read pulled up (:func:`_pulled_up`)."""
+    relation, inner = _pulled_up(relation)
     pinned, place = _conditions(_by(_argument(call, "by", None)))
-    conditions = [*pinned]
+    conditions = [*inner, *pinned]
     if values:
         conditions.append(f"{column} = ANY(${place})")
         place += 1

@@ -6923,6 +6923,83 @@ def test_a_template_over_a_map_the_walk_cannot_read_is_judged_as_written(tmp_pat
         assert {symbol for _, symbol in found} == {"unknown-schema __schema__.__table__"}, found
 
 
+#: a module counting through its own rendered templates: ``render`` is the declared renderer, ``other`` is not
+_RENDERED_COUNTS = """
+    from threetears.core.keyed import AnyOf, Derived, Fragment, counts_by_relations
+
+    def render(template, name, plan):
+        return plan[name]
+
+    def other(template, name, plan):
+        return plan[name]
+
+    async def counted(conn, plan, binds, anchors, text, name):
+        return await counts_by_relations(
+            conn,
+            {"docs": Derived(RELATION_DOCS, binds), "bare": Derived(render(OWNER_ONLY, "bare", plan), binds)},
+            column="source_id",
+            values=AnyOf(anchors),
+            where=(Fragment("source_id IS NOT NULL"),),
+        )
+"""
+
+
+@pytest.mark.parametrize(
+    ("docs", "renderer", "unseen"),
+    [
+        ('render(ANCHOR_ONLY, "docs", plan)', "render", False),
+        ("text", "render", True),
+        ('other(ANCHOR_ONLY, "docs", plan)', "render", True),
+        ('render(UNDECLARED, "docs", plan)', "render", True),
+        ("render(ANCHOR_ONLY, name, plan)", "render", True),
+        ('render(ANCHOR_ONLY, "docs", plan)', None, True),
+        ('render(ANCHOR_ONLY, "docs", plan)', "missing", True),
+    ],
+    ids=[
+        "declared-renderer",
+        "run-time-text",
+        "other-function",
+        "undeclared-template",
+        "run-time-entry",
+        "no-renderer",
+        "renderer-not-defined",
+    ],
+)
+def test_a_derived_relation_rendered_from_a_declared_template_is_judged_as_its_instances(
+    tmp_path: Path, docs: str, renderer: str | None, unseen: bool
+) -> None:
+    """Flips if a keyed helper reading ``Derived(<renderer>(...), binds)`` -- the module's declared renderer of its
+    declared templates (the hub broker's readiness counts through its anchored shadow) -- stays unseen, or if a
+    ``Derived`` over an arbitrary run-time text, another function's text, a template the declaration does not name,
+    an entry named at run time, or a renderer the declaration does not name or the module does not define is let
+    through instead of standing as ``unknown-predicate``."""
+    injection = _SCOPE_INJECTION + _RENDERED_COUNTS.replace("RELATION_DOCS", docs)
+    if renderer is not None:
+        injection = injection.replace(
+            'columns={_OWNER: "owner_column", _ANCHOR: "anchor_column"},\n    )',
+            f'columns={{_OWNER: "owner_column", _ANCHOR: "anchor_column"}},\n        renderer="{renderer}",\n    )',
+        )
+        assert f'renderer="{renderer}"' in injection
+    found = _symbols(
+        _config(
+            tmp_path,
+            {
+                "scoping/__init__.py": "",
+                "scoping/tables.py": _SCOPED_TABLES,
+                "scoping/maps.py": _SCOPED_MAP,
+                "scoping/injection.py": injection,
+            },
+        )
+    )
+    counted = {symbol for where, symbol in found if "counted" in where}
+    assert ("unknown-predicate counts_by_relations(tables)" in counted) is unseen, found
+    if not unseen:
+        # the count over each instance is judged as the helper's statement, the instance pulled up into it: keyed
+        # where the instance is (docs by its anchor), and not where it is not (bare's owner clamp leads no key of
+        # it); the instance on its own is judged where its template is written (the module's findings), not again
+        assert counted == {"whole-aggregate __schema__.bare"}, found
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [

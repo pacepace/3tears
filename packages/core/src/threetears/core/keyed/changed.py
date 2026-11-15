@@ -834,7 +834,7 @@ async def _group_hash_rows(
         # fenced, each row is hashed once below the aggregate. Every dialect here accepts it; the answer is the same.
         sql = (
             f"SELECT {outer}, {items} FROM (SELECT {inner}, "
-            f"{row_hash_sql(hash_columns, dialect, alias='t', encoding=HashEncoding.HEX)} AS h FROM {_filters.relation(relation, 't')}{filtered}"
+            f"{row_hash_sql(hash_columns, dialect, alias='t', encoding=HashEncoding.HEX)} AS h FROM {_filters.relation(relation, 't', params)}{filtered}"
             f" OFFSET 0) AS s GROUP BY {grouped} ORDER BY {ordered} LIMIT {page}"
         )
         rows = await sent_by(conn).fetch(sql, *params)

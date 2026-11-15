@@ -8,13 +8,20 @@ once per entry that fills every column sentinel it holds, the sentinels replaced
 
 A template the declaration does not name, a map the walk cannot read, or a template no entry fills is judged as
 written: its table is a sentinel, ``unknown-schema``. Nothing is let through unjudged.
+
+A declaration naming a ``renderer`` (the module's function rendering a template, filled from the map, into SQL text)
+lets a keyed helper written in the module read a rendered template as a derived relation,
+``Derived(<renderer>(<template>, "<table>", ...), params)``: the walk reads that relation as the template's instance
+for that entry (:meth:`SentinelTemplates.rendered`), so the helper's read over it is judged, as is the instance on its
+own. A ``Derived`` over any other run-time text, or a renderer call not naming a declared template and an entry as
+literals, stays unseen.
 """
 
 from __future__ import annotations
 
 import ast
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 
 __all__ = ["SentinelTemplates", "declared_templates"]
 
@@ -31,12 +38,36 @@ class SentinelTemplates:
     :ivar columns: each column sentinel onto the keyword of an entry that fills it
     :ivar entries: each entry's table and its keywords' values (a column name, or None), in the map's order; empty
         when the map could not be read
+    :ivar renderer: the module's function rendering a template into SQL text, or None
+    :ivar texts: each declared template's text, by its name, where the walk could read it
     """
 
     templates: frozenset[str]
     table: str
     columns: Mapping[str, str]
     entries: tuple[tuple[str, Mapping[str, str | None]], ...]
+    renderer: str | None = None
+    texts: Mapping[str, str] = field(default_factory=dict)
+
+    def rendered(self, template: str, table: str) -> str | None:
+        """the text the renderer answers for ``template`` filled with the map's entry ``table``
+        (``<renderer>(<template>, "<table>", ...)``): the template's instance for that entry. None when there is no
+        renderer, the template is not declared or its text was not read, or the entry is not in the map or does not
+        fill every column sentinel the template holds.
+
+        :param template: the declared template's module-level name
+        :ptype template: str
+        :param table: the map entry's table
+        :ptype table: str
+        :return: the instance, or None
+        :rtype: str | None
+        """
+        text = self.texts.get(template) if self.renderer is not None and template in self.templates else None
+        if text is None:
+            return None
+        entry = [(name, values) for name, values in self.entries if name == table]
+        made = SentinelTemplates(self.templates, self.table, self.columns, tuple(entry)).instances(text)
+        return made[0] if made else None
 
     def instances(self, text: str) -> list[str] | None:
         """``text`` once per entry that fills every column sentinel it holds, the sentinels replaced; None when it is
@@ -123,8 +154,46 @@ def _map_entries(
     return ()
 
 
+def _template_texts(
+    tree: ast.Module,
+    names: frozenset[str],
+    own: Mapping[str, str],
+    text_of: Callable[[ast.expr, Mapping[str, str]], str | None] | None,
+) -> dict[str, str]:
+    """each declared template's text: the string a module-level name is bound to, or the string a one-argument call
+    is handed (``_parse_template(f"SELECT ...")``), as ``text_of`` reads it in the module's scope.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param names: the declared templates' names
+    :ptype names: frozenset[str]
+    :param own: the module's names bound to strings
+    :ptype own: Mapping[str, str]
+    :param text_of: how the walk reads a string expression's text; none read when None
+    :ptype text_of: Callable[[ast.expr, Mapping[str, str]], str | None] | None
+    :return: name onto text, for each template read
+    :rtype: dict[str, str]
+    """
+    texts: dict[str, str] = {}
+    if text_of is None:
+        return texts
+    for statement in tree.body:
+        target = statement.targets[0] if isinstance(statement, ast.Assign) and len(statement.targets) == 1 else None
+        if not (isinstance(target, ast.Name) and target.id in names) or not isinstance(statement, ast.Assign):
+            continue
+        value = statement.value
+        if isinstance(value, ast.Call) and len(value.args) == 1 and not value.keywords:
+            value = value.args[0]
+        text = text_of(value, own)
+        if text is not None:
+            texts[target.id] = text
+    return texts
+
+
 def declared_templates(
-    modules: Sequence[tuple[str, ast.Module]], strings: Mapping[str, Mapping[str, str]]
+    modules: Sequence[tuple[str, ast.Module]],
+    strings: Mapping[str, Mapping[str, str]],
+    text_of: Callable[[ast.expr, Mapping[str, str]], str | None] | None = None,
 ) -> dict[str, SentinelTemplates]:
     """every module's :func:`~threetears.core.declared.sentinel_templates` declaration, by its path.
 
@@ -132,6 +201,9 @@ def declared_templates(
     :ptype modules: Sequence[tuple[str, ast.Module]]
     :param strings: each module's names bound to strings, by its path
     :ptype strings: Mapping[str, Mapping[str, str]]
+    :param text_of: how the walk reads a string expression's text in a scope, for a declaration naming a renderer
+        (its templates' texts); None reads none
+    :ptype text_of: Callable[[ast.expr, Mapping[str, str]], str | None] | None
     :return: the declarations
     :rtype: dict[str, SentinelTemplates]
     """
@@ -159,10 +231,19 @@ def declared_templates(
                     sentinel, keyword = _string(key, own), _string(value, own)
                     if sentinel is not None and keyword is not None:
                         pairs[sentinel] = keyword
+            declared = frozenset(name for name in names if name is not None)
+            renderer = _string(given.get("renderer"), own)
+            if renderer is not None and not any(
+                isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == renderer for node in tree.body
+            ):
+                # a renderer the module does not define is no renderer: its Derived reads stay unseen
+                renderer = None
             found[path] = SentinelTemplates(
-                templates=frozenset(name for name in names if name is not None),
+                templates=declared,
                 table=table,
                 columns=pairs,
                 entries=_map_entries(tables, modules),
+                renderer=renderer,
+                texts=_template_texts(tree, declared, own, text_of) if renderer is not None else {},
             )
     return found

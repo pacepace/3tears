@@ -396,5 +396,7 @@ async def any_rows(
         params += list(fragment.params)
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     selected = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
-    rows = await sent_by(conn).fetch(f"SELECT {selected} FROM {relation(table, 't')}{clause} LIMIT {limit}", *params)
+    rows = await sent_by(conn).fetch(
+        f"SELECT {selected} FROM {relation(table, 't', params)}{clause} LIMIT {limit}", *params
+    )
     return [dict(row) for row in rows]

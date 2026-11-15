@@ -118,7 +118,14 @@ def whole_read(
 _SENTINEL_SHAPE: Final = ("__", "__")
 
 
-def sentinel_templates(*, templates: tuple[str, ...], table: str, tables: str, columns: Mapping[str, str]) -> None:
+def sentinel_templates(
+    *,
+    templates: tuple[str, ...],
+    table: str,
+    tables: str,
+    columns: Mapping[str, str],
+    renderer: str | None = None,
+) -> None:
     """declare, at module level, that SQL templates of this module read a table chosen from a closed map: each holds
     ``table`` (a sentinel, ``"__table__"``) where the table goes and each of ``columns``' sentinels where that
     entry's column goes, filled at run time only from the map named by ``tables``.
@@ -144,10 +151,16 @@ def sentinel_templates(*, templates: tuple[str, ...], table: str, tables: str, c
     :ptype tables: str
     :param columns: each column sentinel onto the keyword of the map's entries that fills it
     :ptype columns: Mapping[str, str]
+    :param renderer: the module-level function of this module that renders one of these templates, filled from the
+        map, into SQL text: a keyed helper reading ``Derived(<renderer>(...), params)`` written in this module reads
+        one of the templates, so the rule judges that relation as each template's instances (and the helper's read
+        over it) rather than as a run-time text it cannot see. Any other run-time ``Derived`` text stays unseen. None
+        when the module hands no template to a helper
+    :ptype renderer: str | None
     :return: nothing
     :rtype: None
-    :raises ValueError: when no template is named, a sentinel is not ``__name__``-shaped, or ``tables`` is not a
-        dotted path to a name
+    :raises ValueError: when no template is named, a sentinel is not ``__name__``-shaped, ``tables`` is not a
+        dotted path to a name, or ``renderer`` is not a name
     """
     if not templates or not all(isinstance(name, str) and name for name in templates):
         raise ValueError("sentinel_templates names at least one template, each a module-level name")
@@ -158,3 +171,5 @@ def sentinel_templates(*, templates: tuple[str, ...], table: str, tables: str, c
             raise ValueError(f"a sentinel is spelled __name__, got {sentinel!r}")
     if tables.count(".") < 1 or not all(part.isidentifier() for part in tables.split(".")):
         raise ValueError(f"tables is the map's dotted path (package.module.NAME), got {tables!r}")
+    if renderer is not None and not renderer.isidentifier():
+        raise ValueError(f"renderer is a module-level function's name, got {renderer!r}")

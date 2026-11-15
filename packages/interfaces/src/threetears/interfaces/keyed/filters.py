@@ -96,28 +96,56 @@ class AnyOf:
 class Derived:
     """a derived relation a keyed helper reads from: a TRUSTED ``SELECT`` written by its caller, read as
     ``FROM (<sql>) AS <alias>`` (a warehouse's per-family long relation). The no-whole-reads rule judges its text on
-    its own, where it is written.
+    its own, where it is written; a ``sql`` made at run time is judged only as the rendering of a declared template
+    (:func:`threetears.core.declared.sentinel_templates`' ``renderer=``), else it stays unseen.
 
-    :param sql: the ``SELECT``, with no parameters of its own
+    Its parameters are numbered from ``$1`` as written, and renumbered into the statement that reads it exactly as a
+    :class:`Fragment`'s are (:func:`relation`): bound after every parameter the statement binds before the relation is
+    named. A helper that cannot place them refuses the relation (:func:`relation` with no parameter list).
+
+    WHY (hub use-the-helper, 2026-11-15): the broker's knowledge readiness counts read THROUGH its anchored shadow, a
+    template the broker renders with the customer and the agent's anchors bound (``... WHERE (customer_id IS NULL OR
+    customer_id = $1) AND datasource_id = ANY($2)``). Restating that clamp as the count's own ``where=`` was ruled out
+    (it restates the rule the shadow is); the shadow itself, its binds carried here, is the relation counted.
+
+    :param sql: the ``SELECT``, its placeholders numbered from ``$1``
     :ptype sql: str
+    :param params: its parameters, ``$1`` first; none for a select with no placeholder
+    :ptype params: tuple[Any, ...]
     """
 
     sql: str
+    params: tuple[Any, ...] = ()
 
 
-def relation(table: str | Derived, alias: str) -> str:
+def relation(table: str | Derived, alias: str, params: list[Any] | None = None) -> str:
     """how a helper names the relation it reads: a table quoted segment by segment (``schema.table`` as
     ``"schema"."table"``), or a derived relation in parentheses, either under ``alias``.
+
+    A derived relation's parameters are bound after those already in ``params`` (appended to it, its placeholders
+    renumbered past them, as :func:`renumbered` moves a fragment's), so a helper names the relation once it has bound
+    every parameter its own text numbers, and binds nothing after it but by ``len(params)``.
 
     :param table: a TRUSTED table name, or a :class:`Derived` relation
     :ptype table: str | Derived
     :param alias: the alias the statement reads it by
     :ptype alias: str
+    :param params: the statement's parameters so far, which a derived relation's are appended to; None for a helper
+        that binds none of a relation's (a derived relation with parameters is then refused)
+    :ptype params: list[Any] | None
     :return: ``<relation> AS <alias>``
     :rtype: str
+    :raises ValueError: when a derived relation binds parameters and the helper hands no list to bind them in, or
+        names a placeholder it binds no parameter for
     """
     if isinstance(table, Derived):
-        return f"({table.sql}) AS {alias}"
+        if not table.params:
+            return f"({table.sql}) AS {alias}"
+        if params is None:
+            raise ValueError("a derived relation binding parameters is read only by a helper that binds them")
+        text = renumbered(Fragment(table.sql, table.params), len(params))
+        params.extend(table.params)
+        return f"({text}) AS {alias}"
     return f"{quoted_table(table)} AS {alias}"
 
 
