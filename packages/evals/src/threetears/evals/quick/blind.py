@@ -943,8 +943,8 @@ def _reviewer_clause(
         if check.lean_interval is not None:
             seen += f" [{_figure(check.lean_interval[0])}, {_figure(check.lean_interval[1])}]"
         return (
-            f"{words}: not decided: {seen}, is at or past {bar}, so cases leaning as these did would never show it "
-            "inside the bar and no count is given: more cases decide it only if they lean less"
+            f"{words}: not decided: {seen}, is at or past {bar}, so no count is given: more cases decide it either "
+            "way, shown inside the bar if they lean less, shown to lean if they lean as these did"
         )
     said = (
         f"a lean toward either arm up to {_figure(check.lean_bound)} is not ruled out ({bar})"

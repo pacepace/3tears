@@ -763,10 +763,10 @@ def test_the_undecided_line_says_a_lean_at_or_past_the_bar_is_not_decided_and_wh
     low, high = own.lean_interval
     assert (
         f"lean 0.33 over 9 case(s) read on both arms: not decided: the lean seen, 0.33 [{low:.2f}, {high:.2f}], is at "
-        "or past the bar of 0.10, so cases leaning as these did would never show it inside the bar and no count is "
-        "given: more cases decide it only if they lean less"
+        "or past the bar of 0.10, so no count is given: more cases decide it either way, shown inside the bar if they "
+        "lean less, shown to lean if they lean as these did"
     ) in printed
-    assert "fails" not in printed and "more than" not in printed
+    assert "fails" not in printed and "more than" not in printed and "only if" not in printed
 
 
 def test_the_undecided_line_states_the_bound_the_test_reached_not_the_half_width() -> None:

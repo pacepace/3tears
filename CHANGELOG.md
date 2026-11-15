@@ -25,7 +25,8 @@ one about 40% of the time at 105 and 98% at 260. Shown to lean over 10 cases or 
 the lean seen is inside the bar, a projection: if further cases lean as these did, about how many in all would show
 it inside (`pair_items_needed`, or `pair_items_needed_above` past the search); a fresh sample of that size may not. A
 lean seen at the bar or past it carries no count, since none would show it inside: the print says it is not decided,
-with the lean seen, and that more cases decide it only if they lean less. The print labels the count a projection and says where the read holds fewer cases than it takes.
+with the lean seen, and that more cases decide it either way, shown inside the bar if they lean less, shown to lean
+(over 10 cases or more) if they lean as these did. The print labels the count a projection and says where the read holds fewer cases than it takes.
 `analysis.checks.speaking_check` says which check speaks for a judge: people's once decided, else a decided check
 against a model not shown below the bar against people, else none. A check is one of three kinds
 (`analysis.JudgeCheck`, `ReviewerCheck` and `RigCheck`, the A/A check a contrast's `aa` and a bundle's `checks` hold;
