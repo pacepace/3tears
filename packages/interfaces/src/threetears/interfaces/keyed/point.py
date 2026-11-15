@@ -16,6 +16,7 @@ on its own connection.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import re
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -271,6 +272,9 @@ _NEAREST_ROW: Final = "_nearest_row"
 
 #: pgvector's distance operators: L2, cosine, inner product (negated), L1
 _DISTANCES: Final[frozenset[str]] = frozenset({"<->", "<=>", "<#>", "<+>"})
+#: a text search configuration's name, plain or schema-qualified (``english``, ``pg_catalog.simple``): what
+#: :class:`TextRank` writes into its statement as a literal, so nothing else may reach it
+_CONFIGURATION: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?")
 
 
 @dataclass(frozen=True)
@@ -329,7 +333,9 @@ class TextRank:
     :ptype text: Any
     :param rank: the name each row carries its rank under
     :ptype rank: str
-    :param config: the text search configuration, a TRUSTED identifier
+    :param config: the text search configuration's name, plain or schema-qualified; written into the statement as a
+        literal, so anything else (a quote, a space, a third part) is refused here, before any statement is written
+        (a caller's language, conversations' ``search(query_language=...)``, passes through it)
     :ptype config: str
     :param then: the order rows tied on the rank come in, after it (:func:`then_terms`: a column named as text,
         ascending, or a :class:`Sort`, ``Sort("last_used_at", descending=True, nulls="last")``), ending in the key so
@@ -343,6 +349,10 @@ class TextRank:
     rank: str = "fts_rank"
     config: str = "english"
     then: tuple[str | Sort, ...] = ()
+
+    def __post_init__(self) -> None:
+        if _CONFIGURATION.fullmatch(self.config) is None:
+            raise ValueError(f"a text search configuration is named by an identifier, got {self.config!r}")
 
     def distance(self, place: int) -> str:
         """the row ``t``'s rank against the query bound at ``$place``, the expression a ranked read orders by

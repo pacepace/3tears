@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -210,6 +211,17 @@ async def test_conv_agent_user_created(world: tuple[asyncpg.Connection, uuid.UUI
         plan = await explain_statement(conn, sql, *args)
         assert any(plan_uses_index(plan, index) for index in _USER_INDEXES), plan.plan
         assert plan.rows_scanned <= _ROWS_PER_USER, plan
+    # search: the user's conversations matched and ranked best first. The rank names no index, so the read is the
+    # user's slice by its pins, matched and sorted: only the user's rows, through an index led by (agent_id, user_id)
+    collection, asked = _captured_collection()
+    await collection.search(
+        agent, user, "kerning OR moon", offset=2, date_field="updated", date_after=datetime(2000, 1, 1, tzinfo=UTC)
+    )
+    (sql, args), *rest = asked.asked
+    assert not rest, asked.asked
+    plan = await explain_statement(conn, sql, *args)
+    assert any(plan_uses_index(plan, index) for index in _USER_INDEXES), plan.plan
+    assert plan.rows_scanned <= _ROWS_PER_USER, plan
 
 
 #: the indexes led by find_by_user's pins (agent_id, user_id): the first declares the read

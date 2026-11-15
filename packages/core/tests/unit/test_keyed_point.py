@@ -271,6 +271,24 @@ async def test_a_text_ranked_read_orders_by_the_rank_best_first_under_its_limit(
     assert params == ("a", "u", "red apples", "red apples", 3)
 
 
+@pytest.mark.parametrize("config", ["english", "pg_catalog.simple", "Spanish_2"])
+def test_a_text_rank_takes_a_configuration_named_as_an_identifier(config: str) -> None:
+    """Flips if a text search configuration named as a plain or schema-qualified identifier is refused: the rank
+    writes it as a literal, and every such name is a safe one."""
+    assert config in TextRank("search_vector", "x", config=config).distance(1)
+
+
+@pytest.mark.parametrize(
+    "config",
+    ["english', $1)) OR TRUE OR (('", "english; DROP TABLE t", "", "a.b.c", "1english", "english'", 'en"glish'],
+)
+def test_a_text_rank_refuses_a_configuration_that_is_not_an_identifier(config: str) -> None:
+    """Flips if a configuration that is not an identifier reaches the statement: the rank writes it as a literal
+    (``websearch_to_tsquery('<config>', $n)``), so a caller's language with a quote in it would be SQL."""
+    with pytest.raises(ValueError, match="text search configuration"):
+        TextRank("search_vector", "x", config=config)
+
+
 async def test_a_text_ranked_read_breaks_rank_ties_by_its_then_terms() -> None:
     """Flips if a ``TextRank``'s ``then`` terms are not ordered after the rank, each in its own direction with its NULLs
     where it says (a hand-written ``ORDER BY fts_rank DESC, last_used_at DESC NULLS LAST, date_created DESC, id``):

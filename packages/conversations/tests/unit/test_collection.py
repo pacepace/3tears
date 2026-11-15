@@ -353,26 +353,18 @@ class TestSearch:
         sql, *params = pg.fetch.call_args.args
         assert "websearch_to_tsquery" in sql
         assert "ts_rank_cd" in sql
-        assert "search_vector @@" in sql
         # a filter, not a GIN index scan: YugabyteDB refuses the OR / NOT a user types
-        assert "(search_vector @@ websearch_to_tsquery($6::regconfig, $3)) IS TRUE" in sql
-        assert "agent_id = $1" in sql
-        assert "user_id = $2" in sql
-        # v006: the FTS config is passed as the $6 bind param cast to
-        # regconfig so the trigger and the query agree on language.
-        assert "$6::regconfig" in sql
-        # status != 'closed' excluded by default (shifted to $7 now
-        # that $6 carries the language).
-        assert "status != $7" in sql
-        # Bound params (positional): (agent_id, user_id, query, limit,
-        # offset, query_language, "closed")
-        assert params[0] == agent_id
-        assert params[1] == user_id
-        assert params[2] == "kerning argument"
-        assert params[3] == 10
-        assert params[4] == 0
-        assert params[5] == "english"  # default query_language
-        assert params[6] == "closed"
+        assert "((search_vector @@ websearch_to_tsquery($3::regconfig, $4)) IS TRUE)" in sql
+        assert 't."agent_id" = $1' in sql
+        assert 't."user_id" = $2' in sql
+        # v006: the match takes the FTS config as a bind cast to regconfig, so the trigger and the query agree on
+        # language; the rank names it as a literal (refused unless an identifier)
+        assert "websearch_to_tsquery('english', $6)" in sql
+        # status != 'closed' excluded by default
+        assert "(status != $5)" in sql
+        # the page: the first limit + offset rows, the offset sliced off after
+        assert sql.endswith("LIMIT $7")
+        assert params == [agent_id, user_id, "english", "kerning argument", "closed", "kerning argument", 10]
 
     async def test_include_closed_widens_scope(self) -> None:
         """``include_closed=True`` drops the status filter from the SQL."""
@@ -390,16 +382,17 @@ class TestSearch:
 
         sql, *params = pg.fetch.call_args.args
         assert "status !=" not in sql
-        # 6 bound params: agent_id, user_id, query, limit, offset, query_language.
+        # 6 bound params: agent_id, user_id, language, query (match), query (rank), limit + offset.
         # No "closed" sentinel (include_closed widens the scope).
         assert len(params) == 6
-        assert params[5] == "english"
+        assert "closed" not in params
+        assert params[2] == "english"
 
     async def test_query_language_passed_through_to_sql(self) -> None:
         """v006: callers in polyglot products pass query_language so
         the tsquery tokenizer matches the conversation's stored
         tsvector tokenization. The parameter flows through to the
-        $6 bind."""
+        match's regconfig bind and the rank's configuration."""
         pg = _make_pg_mock()
         pg.fetch = AsyncMock(return_value=[])
         collection = ConversationsCollection.__new__(ConversationsCollection)
@@ -413,18 +406,19 @@ class TestSearch:
         )
 
         sql, *params = pg.fetch.call_args.args
-        # Language flows through as a bind, not interpolated -- a typo
-        # surfaces as a postgres error, never a wrong-tokenization
-        # silent match.
-        assert "$6::regconfig" in sql
-        assert params[5] == "spanish"
+        # The match binds the language -- a typo surfaces as a postgres error, never a wrong-tokenization silent
+        # match; the rank names the same configuration
+        assert "$3::regconfig" in sql
+        assert params[2] == "spanish"
+        assert "websearch_to_tsquery('spanish', $" in sql
 
     async def test_select_projects_rank_for_ordering(self) -> None:
         """The SELECT projects ``ts_rank_cd(...) AS rank`` so the ORDER
-        BY can sort by relevance. ``rank`` is stripped before entity
-        construction (exercised in the integration test that runs the
-        full migration); this unit test just pins the SQL shape so a
-        future refactor doesn't break the relevance-ordered semantics."""
+        BY can sort by relevance, then recency, then the key. ``rank`` is
+        stripped before entity construction (exercised in the
+        integration test that runs the full migration); this unit test
+        pins the SQL shape so a future refactor doesn't break the
+        relevance-ordered semantics."""
         pg = _make_pg_mock()
         pg.fetch = AsyncMock(return_value=[])
         collection = ConversationsCollection.__new__(ConversationsCollection)
@@ -437,14 +431,13 @@ class TestSearch:
         )
 
         sql, *_ = pg.fetch.call_args.args
-        assert "ts_rank_cd(search_vector," in sql
-        assert "AS rank" in sql
-        assert "ORDER BY rank DESC" in sql
+        rank = "ts_rank_cd(t.\"search_vector\", websearch_to_tsquery('english', $6))"
+        assert f'{rank} AS "rank"' in sql
+        assert f'ORDER BY {rank} DESC, t."date_updated" DESC, t."conversation_id" LIMIT $7' in sql
 
     async def test_date_bounds_default_field_is_created(self) -> None:
         """``date_after`` / ``date_before`` default to filtering
-        ``date_created`` as appended binds, leaving the fixed $1..$6 slots
-        and the $4/$5 LIMIT/OFFSET binds intact."""
+        ``date_created``, bound after the status sentinel."""
         pg = _make_pg_mock()
         pg.fetch = AsyncMock(return_value=[])
         collection = ConversationsCollection.__new__(ConversationsCollection)
@@ -456,20 +449,21 @@ class TestSearch:
             agent_id=uuid7(),
             user_id=uuid7(),
             query="moon colony",
+            limit=10,
+            offset=5,
             date_after=after,
             date_before=before,
         )
 
         sql, *params = pg.fetch.call_args.args
-        # Default exclude-closed keeps status at $7; the date bounds
-        # append from $8.
-        assert "status != $7" in sql
-        assert "date_created >= $8" in sql
-        assert "date_created <= $9" in sql
-        # LIMIT/OFFSET stay positionally bound to $4/$5.
-        assert "LIMIT $4 OFFSET $5" in sql
-        assert params[7] == after
-        assert params[8] == before
+        assert "(status != $5)" in sql
+        assert "(date_created >= $6)" in sql
+        assert "(date_created <= $7)" in sql
+        # the offset's rows are read and sliced off: LIMIT limit + offset
+        assert sql.endswith("LIMIT $9")
+        assert params[5] == after
+        assert params[6] == before
+        assert params[8] == 15
 
     async def test_date_field_updated_filters_date_updated(self) -> None:
         """``date_field='updated'`` filters the ``date_updated`` column."""
@@ -488,7 +482,7 @@ class TestSearch:
         )
 
         sql, *_ = pg.fetch.call_args.args
-        assert "date_updated >= $8" in sql
+        assert "(date_updated >= $6)" in sql
         assert "date_created >=" not in sql
 
     async def test_invalid_date_field_raises(self) -> None:
@@ -509,9 +503,24 @@ class TestSearch:
             )
         pg.fetch.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "language", ["english', $1)) OR TRUE OR (('", "english; DROP TABLE conversations", "english'", ""]
+    )
+    async def test_an_injected_language_is_refused(self, language: str) -> None:
+        """A ``query_language`` that is not a configuration's name (an identifier) raises before touching the DB:
+        the rank writes the language into the statement as a literal, so a quote in it would be SQL."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        with pytest.raises(ValueError, match="text search configuration"):
+            await collection.search(agent_id=uuid7(), user_id=uuid7(), query="x", query_language=language)
+        pg.fetch.assert_not_called()
+
     async def test_only_lower_bound_emits_single_predicate(self) -> None:
         """Passing only ``date_after`` emits just the lower-bound
-        predicate; ``include_closed=True`` frees $7 for the date bind."""
+        predicate; ``include_closed=True`` frees $5 for the date bind."""
         pg = _make_pg_mock()
         pg.fetch = AsyncMock(return_value=[])
         collection = ConversationsCollection.__new__(ConversationsCollection)
@@ -528,9 +537,9 @@ class TestSearch:
 
         sql, *params = pg.fetch.call_args.args
         assert "status !=" not in sql
-        assert "date_created >= $7" in sql
+        assert "(date_created >= $5)" in sql
         assert "date_created <=" not in sql
-        assert params[6] == after
+        assert params[4] == after
 
     async def test_no_date_bounds_omit_predicates(self) -> None:
         """No date filters -> no ``date_created`` range predicates."""

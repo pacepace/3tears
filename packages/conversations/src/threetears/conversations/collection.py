@@ -25,7 +25,16 @@ from uuid import UUID
 from threetears.conversations.entity import Conversation
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.keyed import Count, Fragment, Sort, aggregate_keyed, prefix_conditions, read_by
+from threetears.core.keyed import (
+    Count,
+    Fragment,
+    Sort,
+    TextRank,
+    aggregate_keyed,
+    prefix_conditions,
+    read_by,
+    read_nearest,
+)
 
 if TYPE_CHECKING:
     from threetears.conversations.buffer import ConversationWriteBuffer
@@ -202,7 +211,9 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                     "src/aibots/hub/admin/conversations.py::fetch_conversation_page; "
                     "packages/core/src/threetears/core/collections/merge.py::repoint_user_rows; "
                     "packages/conversations/src/threetears/conversations/collection.py::"
-                    "ConversationsCollection.find_by_user"
+                    "ConversationsCollection.find_by_user; "
+                    "packages/conversations/src/threetears/conversations/collection.py::"
+                    "ConversationsCollection.search"
                 ),
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_user_created",
                 reason="conversations carries twelve indexes: one user's conversations by creation date",
@@ -410,8 +421,8 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         delegates to postgres' ``search_vector @@ websearch_to_tsquery``
         on the ``conversations.search_vector`` column populated by the
         v005 trigger. results come from L3 ordered by ``ts_rank_cd``
-        descending (most relevant first) with ``date_updated`` desc as
-        a stable secondary order.
+        descending (most relevant first), then ``date_updated`` desc, then
+        the conversation's id, so the order (and a page) is total.
 
         the FTS query uses ``websearch_to_tsquery`` (not
         ``plainto_tsquery`` or ``to_tsquery``) so user-typed input
@@ -460,9 +471,12 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             caller passes the user's preferred language; matches
             against same-language rows are precise, cross-language
             matches are tokenized differently and may degrade in
-            quality but don't crash. The parameter is intentionally
-            not validated against ``pg_ts_config`` here -- a typo
-            surfaces as a clean postgres error rather than a silent
+            quality but don't crash. It must be a configuration's name
+            (an identifier, plain or schema-qualified): the rank writes
+            it into the statement as a literal, so anything else raises
+            ``ValueError`` before the DB is touched. It is not checked
+            against ``pg_ts_config`` -- a misspelt name surfaces as a
+            clean postgres error rather than a silent
             wrong-tokenization match
         :ptype query_language: str
         :param date_field: which timestamp the date bounds filter on --
@@ -489,31 +503,14 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         if not query or not query.strip():
             return []
 
-        # $1..$6 are fixed (agent/user/query/limit/offset/language); $4 and
-        # $5 stay positionally bound to LIMIT/OFFSET in the SQL below.
-        # Optional predicates (status, date bounds) append params from $7
-        # on, so the query scales without re-numbering the fixed slots.
-        params: list[Any] = [
-            agent_id,
-            user_id,
-            query,
-            limit,
-            offset,
-            query_language,
+        # The match is a filter, not a GIN index scan: the user types OR / NOT here, and YugabyteDB's GIN index refuses
+        # any query needing more than one required entry (threetears.core.data.gin). The language stays a bind there;
+        # the rank (TextRank) writes it as a literal, so TextRank refuses one that is not a configuration's name.
+        where = [
+            Fragment(gin_filter("search_vector @@ websearch_to_tsquery($1::regconfig, $2)"), (query_language, query)),
         ]
-        predicates = [
-            "agent_id = $1",
-            "user_id = $2",
-            # a filter, not a GIN index scan: the user types OR / NOT here, and
-            # YugabyteDB's GIN index refuses any query needing more than one
-            # required entry (threetears.core.data.gin).
-            gin_filter("search_vector @@ websearch_to_tsquery($6::regconfig, $3)"),
-        ]
-        next_param = 7
         if not include_closed:
-            predicates.append(f"status != ${next_param}")
-            params.append("closed")
-            next_param += 1
+            where.append(Fragment("status != $1", ("closed",)))
         # Date bounds apply to whichever timestamp the caller chose:
         # ``"created"`` (when the conversation started) or ``"updated"``
         # (last activity). The column name is selected from a fixed map,
@@ -524,23 +521,37 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             msg = f"date_field must be one of {sorted(_SEARCH_DATE_COLUMNS)}; got {date_field!r}"
             raise ValueError(msg)
         if date_after is not None:
-            predicates.append(f"{date_column} >= ${next_param}")
-            params.append(date_after)
-            next_param += 1
+            where.append(Fragment(f"{date_column} >= $1", (date_after,)))
         if date_before is not None:
-            predicates.append(f"{date_column} <= ${next_param}")
-            params.append(date_before)
-            next_param += 1
+            where.append(Fragment(f"{date_column} <= $1", (date_before,)))
 
-        where_clause = " AND ".join(predicates)
-        rows = await self.required_l3_pool.fetch(
-            "SELECT *, ts_rank_cd(search_vector, websearch_to_tsquery($6::regconfig, $3)) AS rank "
-            "FROM conversations "
-            f"WHERE {where_clause}"
-            " ORDER BY rank DESC, date_updated DESC "
-            "LIMIT $4 OFFSET $5",
-            *params,
-        )
+        # One user's conversations under one agent (idx_conv_agent_user_created's leading pins), the matches ranked best
+        # first. The rank names no index: the user's slice is read by its pins and sorted, as the hand-written
+        # ``ORDER BY rank DESC, date_updated DESC LIMIT $4 OFFSET $5`` sorted it. Ties on (rank, date_updated) came in
+        # the engine's order; they now come in the key's (conversation_id), so a page boundary is stable. The offset
+        # is the first ``offset`` rows of the ranked ``limit + offset``, sliced off here: what OFFSET skipped.
+        # WHY one ranked statement, as before (use-the-helper / no-whole-reads, C5 2026-11-15): the same plan as the
+        # hand-written one, so the same cost. Measured interleaved, 25 runs a query (one user holding 20,000 of an
+        # agent's 100,000 conversations, four queries incl. OR / NOT and offsets 0-40): PostgreSQL 0.99-1.03x the old
+        # statement (15-30 ms), YugabyteDB 1.00-1.01x (63-81 ms); scratchpad c5/speed-postgres.txt, speed-yugabyte.txt.
+        # Equivalence with the old statement on both engines: tests/integration/test_same_results_search.py.
+        rows = (
+            await read_nearest(
+                self.required_l3_pool,
+                "conversations",
+                by={"agent_id": agent_id, "user_id": user_id},
+                nearest=TextRank(
+                    "search_vector",
+                    query,
+                    rank="rank",
+                    config=query_language,
+                    then=(Sort("date_updated", descending=True), "conversation_id"),
+                ),
+                limit=limit + offset,
+                where=where,
+                records=True,
+            )
+        )[offset:]
         entities: list[Conversation] = []
         for row in rows:
             data = self._coerce_row(dict(row))
