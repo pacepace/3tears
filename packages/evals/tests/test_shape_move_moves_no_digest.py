@@ -118,7 +118,9 @@ FILLED_LOOKS = "looks"
 def _without_looks(document: dict[str, Any]) -> dict[str, Any]:
     """An input's or a bundle's document with each aspect's filled looks set apart."""
     if "aspects" in document:
-        aspects = [{key: value for key, value in aspect.items() if key != FILLED_LOOKS} for aspect in document["aspects"]]
+        aspects = [
+            {key: value for key, value in aspect.items() if key != FILLED_LOOKS} for aspect in document["aspects"]
+        ]
         return {**document, "aspects": aspects}
     if "reading_scope" in document:
         scope = {key: value for key, value in document["reading_scope"].items() if key != FILLED_LOOKS}

@@ -164,7 +164,9 @@ def _bundle(
                         host_measures={"field_accuracy": round(value, 6), "fields_stripped": 5.0},
                         scored_at=(began + timedelta(seconds=case_index)).isoformat(),
                         judge_rescores=[
-                            JudgeRescore(dims=["extract.d"], prior_judge_error="cut off", judge_model="judge", cost_usd=None)
+                            JudgeRescore(
+                                dims=["extract.d"], prior_judge_error="cut off", judge_model="judge", cost_usd=None
+                            )
                             for _ in range(rescores if side == 0 and case_index == cases[0] else 0)
                         ],
                     )

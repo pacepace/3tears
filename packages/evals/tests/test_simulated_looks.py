@@ -97,9 +97,7 @@ def _growing_repeats(cases: int = 20, looks: int = 3) -> Draw:
 
 def _rate_shares(rng: random.Random, n: int, *, broken: float = 0.0, trials: int = 3, p: float = 0.8) -> list[float]:
     """Per-case shares of ``trials`` trials passed at ``p``, a case broken outright with chance ``broken``."""
-    return [
-        0.0 if rng.random() < broken else sum(rng.random() < p for _ in range(trials)) / trials for _ in range(n)
-    ]
+    return [0.0 if rng.random() < broken else sum(rng.random() < p for _ in range(trials)) / trials for _ in range(n)]
 
 
 def _mean_separates(look: Look, alpha: float) -> bool:
@@ -170,9 +168,7 @@ def test_repeats_growing_on_fixed_cases_under_a_plan_hold_alpha() -> None:
 def test_a_pass_rate_on_its_bounded_interval_under_a_plan_holds_alpha() -> None:
     def draw(rng: random.Random) -> list[Look]:
         control, candidate = _rate_shares(rng, 60), _rate_shares(rng, 60)
-        return [
-            ({f"c{i}": control[i] for i in range(n)}, {f"c{i}": candidate[i] for i in range(n)}) for n in _sizes(3)
-        ]
+        return [({f"c{i}": control[i] for i in range(n)}, {f"c{i}": candidate[i] for i in range(n)}) for n in _sizes(3)]
 
     declared = _first_separation_rate(draw, _rate_separates, looks_alpha(3), seed="rate")
     undeclared = _first_separation_rate(draw, _rate_separates, SIGNIFICANCE_ALPHA, seed="rate")
