@@ -147,6 +147,10 @@ _KEYED_FRAGMENT_TEXT: Final[str] = "__keyed_fragment__ = $9"
 #: being applied, never a data table
 TRANSIENT_PRODUCED: Final[str] = "__transient_produced__"
 
+#: the helpers whose ``order`` is the key they walk: a run-time order there is the declared key (``pk``) when it flows
+#: from a declared key source, as a batch's run-time columns are
+_KEY_WALKS: Final[frozenset[str]] = frozenset({"keyset_page", "keyset_rows", "count_at_most", "holds_any"})
+
 #: the most combinations of resolved parameter values a keyed helper call is judged under; past it, unresolved
 _MAX_PARAMETER_COMBINATIONS: Final[int] = 16
 
@@ -1911,6 +1915,31 @@ def _closed(value: ast.expr) -> bool:
     )
 
 
+def _leading_part(node: ast.expr) -> bool:
+    """whether every part of a declared key ``node`` takes is a leading one: the key whole, ``key[0]`` or ``key[:n]``;
+    ``key[1]`` or ``key[1:]`` names columns past its lead, which no index of the key reads by.
+
+    :param node: the expression a key's columns flow through
+    :ptype node: ast.expr
+    :return: whether it keeps the key's lead
+    :rtype: bool
+    """
+    for found in ast.walk(node):
+        if not isinstance(found, ast.Subscript):
+            continue
+        part = found.slice
+        if isinstance(part, ast.Constant) and part.value == 0:
+            continue
+        if (
+            isinstance(part, ast.Slice)
+            and part.step is None
+            and (part.lower is None or (isinstance(part.lower, ast.Constant) and part.lower.value == 0))
+        ):
+            continue
+        return False
+    return True
+
+
 class _ModuleWalk(ast.NodeVisitor):
     """walks one module, recording hits and the calls that may reach a whole-read function."""
 
@@ -3508,6 +3537,8 @@ class _ModuleWalk(ast.NodeVisitor):
                     arg=k.arg,
                     value=self._key_pins(literal(k.value))
                     if k.arg == "by"
+                    else self._key_order(literal(k.value))
+                    if k.arg == "order" and _final(node) in _KEY_WALKS
                     else tables(literal(k.value))
                     if mapped and k.arg == "tables"
                     else labels(k.value)
@@ -4583,7 +4614,53 @@ class _ModuleWalk(ast.NodeVisitor):
         """
         if isinstance(columns, ast.Constant | ast.Tuple | ast.List):
             return columns
-        return ast.Name(id="pk" if self._key_sourced(columns) else "unsourced", ctx=ast.Load())
+        return ast.Name(
+            id="pk" if self._key_sourced(columns) and self._keeps_lead(columns) else "unsourced", ctx=ast.Load()
+        )
+
+    def _key_order(self, order: ast.expr) -> ast.expr:
+        """a page's or probe's ``order`` named at run time (``order=tuple(key)``, ``tuple(Sort(n) for n in key)``), as
+        :meth:`_key_column` judges a key's columns: ``pk`` (the key) when it flows from a declared key source; any
+        other stays as written (a literal sort, a module mapping's entry the walk resolves, else unseen).
+
+        :param order: the ``order`` argument, as the walk reads it
+        :ptype order: ast.expr
+        :return: it, a run-time order judged
+        :rtype: ast.expr
+        """
+        if isinstance(order, ast.Tuple | ast.List) or not self._key_sourced(order):
+            # a literal sort, or one the walk resolves otherwise (a module mapping's entry): as written
+            return order
+        # the key, or its leading part (``key[:n]``); a part past its lead (``key[1:]``) walks no index of the key
+        return ast.Name(id="pk" if self._keeps_lead(order) else "unsourced", ctx=ast.Load())
+
+    def _keeps_lead(self, node: ast.expr) -> bool:
+        """:func:`_leading_part` of ``node``, a local followed to every value the enclosing function binds it to
+        (``order = tuple(Sort(n) for n in key[1:])``).
+
+        :param node: the expression
+        :ptype node: ast.expr
+        :return: whether it keeps the key's lead
+        :rtype: bool
+        """
+        if not _leading_part(node):
+            return False
+        if not isinstance(node, ast.Name) or not self._function_nodes:
+            return True
+        # every value the enclosing function binds the local to keeps the lead
+        for found in ast.walk(self._function_nodes[-1]):
+            targets = (
+                found.targets
+                if isinstance(found, ast.Assign)
+                else [found.target]
+                if isinstance(found, ast.AnnAssign | ast.AugAssign)
+                else []
+            )
+            value = getattr(found, "value", None)
+            if value is not None and any(isinstance(t, ast.Name) and t.id == node.id for t in targets):
+                if not _leading_part(value):
+                    return False
+        return True
 
     def _key_pins(self, by: ast.expr) -> ast.expr:
         """a ``by`` whose columns are named at run time (``{pk_column: i}``, ``dict(zip(columns, key))``,
