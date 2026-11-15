@@ -824,6 +824,70 @@ def test_a_ring_empty_or_restore_declaration_covers_the_ring_alone(tmp_path: Pat
     assert any(" in read_ring: " in finding for finding in findings), findings
 
 
+_RING_VACUUM = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.declared import whole_read
+
+    ITEMS = TableSchema(name="items", primary_key="id", columns=[])
+
+    def note_table(index):
+        return f"threetears_change_notes_{index}"
+
+    async def vacuum_slot(conn, schema, index):
+        return await whole_read(
+            conn.execute(f"VACUUM {schema}.{note_table(index)}"),
+            kind="RING_KIND",
+            reason="an emptied ring slot's dead notes are vacuumed before the ring may switch back into it",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_vacuum_slot_entry",
+            speed="tests/test_backup.py::test_vacuum_slot_speed",
+        )
+
+    async def vacuum_items(conn):
+        return await whole_read(
+            conn.execute("VACUUM items"),
+            kind="RING_KIND",
+            reason="an emptied ring slot's dead notes are vacuumed before the ring may switch back into it",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_vacuum_items_entry",
+            speed="tests/test_backup.py::test_vacuum_items_speed",
+        )
+
+    async def analyze_slot(conn, schema, index):
+        return await whole_read(
+            conn.execute(f"ANALYZE {schema}.{note_table(index)}"),
+            kind="RING_KIND",
+            reason="an emptied ring slot's dead notes are vacuumed before the ring may switch back into it",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_analyze_slot_entry",
+            speed="tests/test_backup.py::test_analyze_slot_speed",
+        )
+
+    async def vacuum_bare(conn, schema, index):
+        await conn.execute(f"VACUUM {schema}.{note_table(index)}")
+"""
+
+
+@pytest.mark.parametrize(("kind", "passes"), [("ring_empty", True), ("drain", False), ("restore", False)])
+def test_a_ring_empty_admits_the_vacuum_of_an_emptied_ring_slot(tmp_path: Path, kind: str, passes: bool) -> None:
+    """Flips if the VACUUM of an emptied change-note ring slot (on Postgres, before the ring may switch back into it:
+    Pace 2026-11-15) is still reported once declared ring_empty, if another kind (a drain, a restore) lets it through,
+    if ring_empty lets through a VACUUM of another table or an ANALYZE of the slot, or if an undeclared VACUUM passes."""
+    proofs = _PROOFS + textwrap.indent(
+        "".join(
+            f"\ndef test_{name}_entry():\n    assert {name}\n\ndef test_{name}_speed():\n    budget_problem({name})\n"
+            for name in ("vacuum_slot", "vacuum_items", "analyze_slot")
+        ),
+        "    ",
+    )
+    findings = _findings(tmp_path, {"ring.py": _RING_VACUUM.replace("RING_KIND", kind)}, proofs)
+    slot = [finding for finding in findings if "vacuum_slot" in finding]
+    assert (slot == []) is passes, findings
+    assert any("in vacuum_items: whole-maintenance" in finding for finding in findings), findings
+    assert any("in analyze_slot: whole-maintenance" in finding for finding in findings), findings
+    assert any("in vacuum_bare: whole-maintenance" in finding for finding in findings), findings
+
+
 _EMPTIED = """
     from threetears.core.collections.schema_backed import TableSchema
     from threetears.core.declared import whole_read

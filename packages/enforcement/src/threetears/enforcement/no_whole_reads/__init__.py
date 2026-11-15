@@ -913,10 +913,14 @@ class _Declared:
 #: a statement deleting, past any leading planner hint
 _LEADING_DELETE: Final = re.compile(r"^\s*(?:/\*.*?\*/\s*)?DELETE\b", re.IGNORECASE | re.DOTALL)
 
+#: a plain ``VACUUM`` (no ``FULL``, no ``ANALYZE``) of one table: the one maintenance a ``ring_empty`` may hold
+_PLAIN_VACUUM: Final = re.compile(r"^\s*VACUUM\s+(?!\(|FULL\b|ANALYZE\b|VERBOSE\b|FREEZE\b)", re.IGNORECASE)
+
 
 def _over_the_ring(kind: str, hit: WholeReadHit) -> bool:
     """whether a ring kind's hit is over a change-note ring slot alone (Pace 2026-11-14): a ``ring_empty`` a DELETE of
-    one, a ``restore`` a read of the ring's slots, never any other table's.
+    one, or (Pace 2026-11-15) the plain VACUUM of one on Postgres; a ``restore`` a read of the ring's slots, never any
+    other table's.
 
     :param kind: the declared kind
     :ptype kind: str
@@ -928,6 +932,8 @@ def _over_the_ring(kind: str, hit: WholeReadHit) -> bool:
     table = hit.symbol.split(" ", 1)[-1]
     if RING_NOTE_TABLE.search(table) is None:
         return False
+    if hit.kind == "whole-maintenance":
+        return kind == "ring_empty" and _PLAIN_VACUUM.match(hit.statement) is not None
     deletes = _LEADING_DELETE.match(hit.statement) is not None
     return deletes if kind == "ring_empty" else not deletes
 
