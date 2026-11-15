@@ -2049,6 +2049,21 @@ class DuckDBBackend:
         for entity_id in entity_ids:
             self.delete_by_id(table, entity_id, primary_key)
 
+    def delete_many_by_id_across(self, deletes: Sequence[tuple[str, Sequence[Any], KeyColumn | KeyColumns]]) -> None:
+        """delete many rows by primary key from several tables, through :meth:`delete_many_by_id` table by table.
+
+        Not atomic, as :meth:`delete_many_by_id` is not: a failure partway leaves the rows before it deleted, and
+        raises unchanged.
+
+        :param deletes: each table, its pk values (or tuples of them in declared column order) and its pk column or
+            columns; a table naming nothing deletes nothing
+        :ptype deletes: Sequence[tuple[str, Sequence[Any], KeyColumn | KeyColumns]]
+        :return: nothing
+        :rtype: None
+        """
+        for table, entity_ids, primary_key in deletes:
+            self.delete_many_by_id(table, entity_ids, primary_key)
+
     def execute_arrow(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
         """run a query and answer its rows as one Arrow table, never one Python object a row.
 

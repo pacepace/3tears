@@ -52,6 +52,8 @@ from sqlalchemy import Column, MetaData, String, Table, Text
 from threetears.observe import get_logger
 
 from threetears.core.backends.schema_sql import json_default
+from threetears.core import keyed
+from threetears.core.keyed import Sort, inline_l1, run_inline
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -72,6 +74,22 @@ _scan_cache_table = Table(
     Column("depends_on", Text, nullable=False),
     Column("payload", Text, nullable=False),
 )
+
+#: each stored entry's dependencies, one row a (table, entry): an eviction reads the entries of its table by this key
+#: (2026-11-14, no-whole-reads drive). It read every entry of ``collection_scan_cache`` and kept those whose JSON list
+#: named the table, on every broadcast this pod hears; now it reads only the evicted table's own rows, by key
+_DEPS_TABLE = "collection_scan_cache_deps"
+_DEPS_KEY = ("dep_table", "key")
+
+_scan_cache_deps_table = Table(
+    _DEPS_TABLE,
+    SCAN_CACHE_METADATA,
+    Column("dep_table", String, primary_key=True),
+    Column("key", String, primary_key=True),
+)
+
+#: the entries one statement of an eviction reads (``keyset_rows``' page)
+_DEPS_PAGE = 1_000
 
 
 def _never_trusted(_tables: Sequence[str]) -> bool:
@@ -170,7 +188,9 @@ class ScanCache:
         # reach it through `drop_for_table` -- its own writes via `publish_invalidation`,
         # everyone else's via the listener -- so a local count sees all of them.
         self._evictions: dict[str, int] = {}
-        if self._l1 is not None and not self._l1.has_table("collection_scan_cache"):
+        if self._l1 is not None and not (
+            self._l1.has_table("collection_scan_cache") and self._l1.has_table(_DEPS_TABLE)
+        ):
             self._l1.initialize(SCAN_CACHE_METADATA)
 
     def get(self, key: ScanCacheKey) -> list[dict[str, Any]] | None:
@@ -263,6 +283,9 @@ class ScanCache:
                 },
                 "key",
             )
+            self._l1.upsert_many(
+                _DEPS_TABLE, [{"dep_table": table, "key": key.as_string()} for table in token.depends_on], _DEPS_KEY
+            )
             stored = True
         return stored
 
@@ -283,10 +306,28 @@ class ScanCache:
         """
         self._evictions[table] = self._evictions.get(table, 0) + 1
         dropped = 0
-        if self._l1 is not None and self._l1.has_table("collection_scan_cache"):
-            rows = self._l1.execute_query("SELECT key, depends_on FROM collection_scan_cache")
-            keys = [row["key"] for row in rows if table in json.loads(row["depends_on"])]
+        if self._l1 is not None and self._l1.has_table(_DEPS_TABLE):
+            # the table's entries, by the dependency key (``dep_table`` leads it), never every entry
+            keys = [
+                row["key"]
+                for row in run_inline(
+                    keyed.keyset_rows(
+                        inline_l1(self._l1),
+                        _DEPS_TABLE,
+                        columns=["key"],
+                        by={"dep_table": table},
+                        order=[Sort("key", cast=None)],
+                        page=_DEPS_PAGE,
+                    )
+                )
+            ]
+            # each entry's dependency rows go with it, so no row is left naming an entry that is gone
+            entries = self._l1.select_batch("collection_scan_cache", keys, "key", columns=["key", "depends_on"])
+            links = {(table, key) for key in keys}
+            links |= {(dep, entry["key"]) for entry in entries for dep in json.loads(entry["depends_on"])}
             # one write for every entry: the SQLite L1 locks and commits once, not once an entry
-            self._l1.delete_many_by_id("collection_scan_cache", keys, "key")
-            dropped = len(keys)
+            self._l1.delete_many_by_id_across(
+                [("collection_scan_cache", keys, "key"), (_DEPS_TABLE, sorted(links), _DEPS_KEY)]
+            )
+            dropped = len(entries)
         return dropped
