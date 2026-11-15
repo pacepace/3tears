@@ -33,6 +33,7 @@ from typing import Any, Final, NamedTuple
 
 from threetears.evals.analysis.blind_read import PREFERENCE_MIN_ITEMS, blind_sheet, exact_sign_test_p
 from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.words import judged_heading
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA
 from threetears.evals.kernel import CALIBRATION_MIN_AGREEMENT, CALIBRATION_MIN_RESULTS
 from threetears.evals.kernel.authored import strict_response_format
@@ -874,9 +875,9 @@ def _agreement_clause(reading: BlindAgreement) -> str:
     if table is not None and (failed := table.both_fail + table.rater_fail_judge_pass):
         caught = f"; the judge failed {table.both_fail} of the {failed} answers {who} failed"
     if reading.kappa is None:
-        return (
-            f"{counted}  kappa undefined: {who} and the judge gave every answer the same verdict; read further{caught}"
-        )
+        # Reading further is a person's next step; a model has read every case it was asked.
+        further = "; read further" if person else ""
+        return f"{counted}  kappa undefined: {who} and the judge gave every answer the same verdict{further}{caught}"
     figure = f"kappa {_figure(reading.kappa)}"
     if reading.lower is not None and reading.upper is not None:
         figure += f" [{_figure(reading.lower)}, {_figure(reading.upper)}]"
@@ -1023,32 +1024,39 @@ def judge_lines(
         ]
     assert report is not None  # samples or loose labels come from a closed read
     people = [sample for sample in samples if sample.rater_kind == "person"]
-    lines = [f"judge: {_sample_words(sample, several=len(people) > 1)}" for sample in samples]
+    several = len(people) > 1
+    # Each model's read heads its own lines, below the people's, so no reading sits under another reader's count.
+    models = [sample for sample in samples if sample.rater_kind != "person"]
+    lines = [f"judge: {_sample_words(sample, several=several)}" for sample in people]
     if loose:
         lines.append(
             f"judge: {loose} label(s) in {labels_name} are not on this run's draw (the answers changed since, or it is "
             "an older sheet): kept, each paired with the same output, and not drawn at random"
         )
     lines += not_read
-    width = max((len(reading.dim) for reading in report.agreement), default=0)
+    # A dimension is named as every surface names it (``answer grounded (judged)``), never by its stored id.
+    width = max((len(judged_heading(reading.dim)) for reading in report.agreement), default=0)
     by_person = [reading for reading in report.agreement if reading.anchor == "person"]
-    lines += [f"  {reading.dim.ljust(width)}  {_agreement_clause(reading)}" for reading in by_person]
+    lines += [f"  {judged_heading(reading.dim).ljust(width)}  {_agreement_clause(reading)}" for reading in by_person]
     reviewers = dict.fromkeys(reading.anchor_names[0] for reading in report.agreement if reading.anchor == "reference")
     for reviewer in reviewers:
+        lines += [f"judge: {_sample_words(sample, several=several)}" for sample in models if sample.rater == reviewer]
         own = [r for r in report.agreement if r.anchor == "reference" and r.anchor_names[0] == reviewer]
         checked = [check for check in report.reviewer_checks if check.reviewer == reviewer]
         against = "" if checked else ", not yet against people"
         lines += under(
             f"{'beside it, ' if by_person else ''}checked against {_who('reference', reviewer)}{against}:", "  "
         )
-        lines += [f"    {reading.dim.ljust(width)}  {_agreement_clause(reading)}" for reading in own]
+        lines += [f"    {judged_heading(reading.dim).ljust(width)}  {_agreement_clause(reading)}" for reading in own]
         if any(reading.shares_family for reading in own):
             lines += under(
                 f"{reviewer} and the judge are one provider's models: a lean they share would not show here", "    "
             )
         for check in checked:
             kappa = "kappa undefined" if check.kappa is None else f"kappa {_figure(check.kappa)}"
-            lines += under(f"{reviewer} against people on {check.dim}: {check.outputs} outputs, {kappa}", "    ")
+            on = judged_heading(check.dim)
+            lines += under(f"{reviewer} against people on {on}: {check.outputs} outputs, {kappa}", "    ")
+    lines += [f"judge: {_sample_words(sample, several=several)}" for sample in models if sample.rater not in reviewers]
     for reviewer, reason in ((reviewer, reason) for reviewer, why in report.not_checked.items() for reason in why):
         lines += under(f"not checked against {_who('reference', reviewer)}: {reason}", "  ")
     lines += reviews

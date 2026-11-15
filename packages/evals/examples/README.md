@@ -107,39 +107,50 @@ the email beside the reply (`case_material`). The judge is another family than t
 (`deepseek/deepseek-v4-flash`) on purpose: a model tends to rate its own output higher, and judging with the runner's
 own model prints the self-judging warning under the scores, a warning no quiet print drops.
 
-**A judge is a model too, so check that it is right, two ways.** Its four `Example`s are hard negatives in pairs, one
-that must fail and one that looks like it and must pass. The run grades each one twice, through the same call it
-grades the replies with, and the recorded judge gets all four right:
+**A judge is a model too, so check that it is right.** Its four `Example`s are hard negatives in pairs, one that must
+fail and one that looks like it and must pass. The run grades each one twice, through the same call it grades the
+replies with, and the recorded judge gets all four right:
 
 ```text
 judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00086 over 8 call(s))
 ```
 
-A miss would print under it, with what the judge gave and what it must get. But the judge also passes all 40 replies
-on all three dimensions, and read a few, you will find claims the policy never makes: telling four written pairs
-apart is not grading the run's replies right. That takes a person's labels on the replies, and the run says they are
-missing in the line it never quiets:
+Telling four written pairs apart is not grading the run's replies right, and the judge passes all 40 on all three
+dimensions. Two blind reads of the same 20 replies check that. Each reader answered
+[`blind_read.html`](2-replies/blind_read.html), which shows each reply with its email and no verdict:
 
-```text
-judge: 0 of 20 cases read blind: judge uncalibrated (labels.csv is not there yet); next step: open the blind_read.html the report writes, answer its cases from the top, and save its labels as labels.csv
-```
+| Read | Whose | Where |
+|---|---|---|
+| A person's | Brooks's | [`labels.csv`](2-replies/labels.csv), from `Judge(labels=...)` |
+| A model's | `claude-fable-5-2`'s | `recordings/reader.jsonl`, from `Judge(reviewer=...)` |
 
-Calibrating it is yours to do; no person's labels ship with the rung.
-1. Run it. The report directory (`.evals/reports/replies/`) holds `blind_read.html`: the replies one at a time in
-   a random order, each with the email it answers, and no judge verdict on the page.
-   [`blind_read.html`](2-replies/blind_read.html) beside the example is that file, as the recorded run wrote it
-   ([`blind_read.csv`](2-replies/blind_read.csv) is the same order as rows, for a spreadsheet).
-2. Open it and answer from the top. Press **Download labels.csv** and save the file beside `replies.py`. What you
-   answered from the top is a random sample; answers out of order are not drawn at random, and the run says so. The
-   page holds one reply per email, 20 in all, which is also the fewest that can check the judge: read them all.
-3. Run it again. `Judge(labels="labels.csv")` reads your labels back, pairs each with the judge's score of the same
-   reply (by its fingerprint, so a replayed run draws the same order and pairs), and prints how far you read and,
-   per dimension, the results paired, κ with its bounds, and the evidence tier it earns. Below 20 results the tier
-   says the judge is not yet calibrated; reword a rubric dimension and its labels no longer pair.
+The run prints the judge against each read, apart and never pooled; a person's read earns a tier, a model's never
+does ([the print](../docs/ladder.md#rung-2-a-judge-checked-against-a-person)). Replies failed, of 20:
 
-Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017) and 128 judge calls on
-`google/gemini-2.5-flash-lite` ($0.0159, 8 of them on the examples), the runner's and the judge's in recordings of
-their own (`recordings/replies.jsonl`, `recordings/judge.jsonl`).
+| Dimension | Brooks | `claude-fable-5-2` | The judge |
+|---|---|---|---|
+| grounded | 2 | 10 | 0 |
+| answers | 2 | 0 | 0 |
+| safe | 0 | 1 | 0 |
+
+The judge failed none of the replies either reader failed, and the readers disagree with each other (κ 0.00 on every
+dimension). `tighter_eval` rewords `grounded` after the model's read, and the same judge model grades the same
+replies with it. New words are a new question: Brooks's labels do not pair with them, so the model reads them again.
+The judge then failed 1 of the 11 replies the model failed (κ 0.08), still below the bar of 0.60.
+
+**Your own judge needs your own read.** Both reads pair with these recorded replies and these words only: re-record
+the replies or reword a dimension, and neither pairs. To read your run:
+
+1. Run it. The report directory (`.evals/reports/<name>/`) holds `blind_read.html`, the replies in a random order
+   with no verdict ([`blind_read.csv`](2-replies/blind_read.csv) is the same order as rows, for a spreadsheet).
+2. Answer it from the top, press **Download labels.csv**, and save the file where `Judge(labels=...)` names. What you
+   answered from the top is a random sample; 20 results per dimension is the floor of the calibrated tier.
+3. Run it again. The print shows the judge against you, and against any `reviewer=` model beside it, apart.
+
+Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017); 128 judge calls on `google/gemini-2.5-flash-lite`
+($0.0159, 8 of them on the examples) and 40 on the tighter wording ($0.0049); 20 reader calls on `claude-fable-5-2`
+($0.6387) and 20 on the tighter wording ($0.5223). Each model's calls are in a recording of their own under
+`recordings/`.
 
 ### Rung 3a: two prompts compared, `3-invoices/compare.py`
 
@@ -397,6 +408,10 @@ RECORD=1 python -m threetears.evals 4-booking/agent.py     # 4-booking/recording
 The grid's high-effort recording is made without `RECORD=1`: delete `invoices-high.jsonl` and run `grid.py` with the
 key set, and only the missing file is recorded live while the low-effort cells replay. `RECORD=1` would record
 `invoices.jsonl` afresh too, and pay for it again.
+
+Rung 2's model reads are recorded the same way: delete `reader.jsonl` or `reader_tighter.jsonl` and run with
+`ANTHROPIC_API_KEY` set. `RECORD=1` records the replies afresh, and neither read, Brooks's or the model's, pairs with
+new replies.
 
 Rung 5 records differently: with `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY` set, and no `RECORD=1`, it
 records whatever is missing and replays the rest ([`5-writer/recordings/README.md`](5-writer/recordings/README.md)).

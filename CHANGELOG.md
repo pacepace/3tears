@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: rung 2 ships calibrated, against a person's read and a model's
+
+**Changed:** `examples/2-replies/` no longer ships a judge nobody checked (owner ruling, 2026-11-15: every shipped
+example with a judge ships calibrated). Two blind reads of its 20 recorded replies ship beside it and print apart,
+never pooled: a person's labels (`labels.csv`, Brooks's whole read) and a model's (`Judge(reviewer=...)` on
+`claude-fable-5-2`, recorded). The recorded judge failed none of the replies either reader failed. A second eval,
+`tighter_eval`, rewords `grounded` and is measured against the model's read of the new words: still below the bar. A
+model reader's `kappa undefined` line no longer ends "read further", which is a person's next step, and each model's
+read heads its own block in the print, below the people's, instead of sitting between a person's count and their
+lines.
+
 ### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
 
 **Changed:** a declared name of `3tears-evals` is public only when it is admitted (owner ruling, 2026-11-15): someone

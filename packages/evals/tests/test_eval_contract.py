@@ -558,7 +558,7 @@ async def test_a_judge_is_a_grader_its_answers_written_to_read_blind_and_read_ba
     ]
     lines = again.calibration_lines()
     assert lines[0] == "judge: 4 of 4 cases read blind, in the drawn order (a random sample)"
-    assert lines[1].startswith("  answer.billing  4 results from 4 cases  kappa 1.00")
+    assert lines[1].startswith("  answer billing (judged)  4 results from 4 cases  kappa 1.00")
     assert "undetermined: needs " in lines[1] and lines[1].endswith("the judge failed 2 of the 2 answers you failed")
     assert len(lines) == 2
 

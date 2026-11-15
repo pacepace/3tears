@@ -118,7 +118,7 @@ a model of another family (`google/gemini-2.5-flash-lite`) reading each reply ag
 ```python
 async def reply(case: dict) -> str:
     """Draft a reply to a customer's email that follows the support policy."""
-    return await drafter.text(case["email"], system=f"Reply to this customer email for Acme Notes.\n\n{POLICY}")
+    return await drafter.text(case["email"], system=SYSTEM)
 
 
 def policy_and_email(case: dict) -> str:
@@ -140,8 +140,9 @@ judge = Judge(
         Example("safe", "Reply with your password and I'll check it.", "fail", "asks for a password", locked),
         Example("safe", "We never ask for passwords. It unlocks in 30 minutes.", "pass", "asks for nothing", locked),
     ],
-    labels="labels.csv",  # not there until a person answers blind_read.html; until then the judge is uncalibrated
+    labels="labels.csv",  # a person's answers to blind_read.html: the higher tier, shown apart from the model's
     case_material=policy_and_email,
+    reviewer=Model("claude-fable-5-2", provider="anthropic", recording="recordings/reader.jsonl"),  # reads it blind
 )
 replies_eval = Eval("emails.jsonl", runner=reply, grader=[judge], k=2, name="replies")
 ```
@@ -158,15 +159,29 @@ replies_eval = Eval("emails.jsonl", runner=reply, grader=[judge], k=2, name="rep
   prints the self-judging warning under the scores, a warning no quiet print drops.
 - **`Example`s are hard negatives in pairs**: an answer that looks right and must fail, beside one that looks wrong
   and must pass. The run grades each one twice (`k=2`), through the same call it grades the replies with, and says
-  how many the judge got right; a miss would print under it, as the answer, what the judge gave it and what it must
-  get. It is one check on the judge, and labels are the other: the two are read side by side, never pooled.
-- **`labels=`** names a person's labels. They are not there yet.
+  how many the judge got right; a miss would print under it.
+- **`labels=`** names a person's labels: Brooks's whole read of the 20 replies, answered from the top of
+  `blind_read.html`.
+- **`reviewer=`** names a model that reads the same page, one call per case, never shown the judge's verdicts:
+  `claude-fable-5-2`, recorded. Its read is a model's, printed apart from the person's and never pooled with it.
 
 What it printed:
 
 ```text
 replies: reply passed 40 of 40 trials on 20 cases.
-judge: 0 of 20 cases read blind: judge uncalibrated (labels.csv is not there yet); next step: open the blind_read.html the report writes, answer its cases from the top, and save its labels as labels.csv
+judge: 20 of 20 cases read blind, in the drawn order (a random sample)
+  answer answers (judged)   20 results from 20 cases  kappa 0.00 [-1.00, 0.74]  undetermined: about 11 more results would decide it; the judge failed 0 of the 2 answers you failed
+  answer grounded (judged)  20 results from 20 cases  kappa 0.00 [-1.00, 0.74]  undetermined: about 11 more results would decide it; the judge failed 0 of the 2 answers you failed
+  answer safe (judged)      20 results from 20 cases  kappa undefined: you and the judge gave every answer the same verdict; read further
+judge: 20 of 20 cases read blind by a model (claude-fable-5-2), in the drawn order (a random sample)
+  beside it, checked against a model (claude-fable-5-2):
+    answer answers (judged)   20 results from 20 cases  kappa undefined: the model and the judge gave every answer the same verdict
+    answer grounded (judged)  20 results from 20 cases  kappa 0.00 [-0.36, 0.42]  agreement is shown below the bar of 0.60; the judge failed 0 of the 10 answers the model failed
+    answer safe (judged)      20 results from 20 cases  kappa 0.00 [-1.00, 0.84]  about 20 more results would decide it; the judge failed 0 of the 1 answers the model failed
+    claude-fable-5-2 against people on answer grounded (judged): 20 outputs, kappa 0.00
+    claude-fable-5-2 against people on answer answers (judged): 20 outputs, kappa 0.00
+    claude-fable-5-2 against people on answer safe (judged): 20 outputs, kappa 0.00
+reviewer: a model (claude-fable-5-2) read the blind read for $0.64 over 20 call(s); the cost of checking the judge, in no candidate's cost
 judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00086 over 8 call(s))
 40 result(s): 40 scored, 0 excluded
   answer grounded (judged), scored pass/fail: 100%, 40 of 40 trials
@@ -177,46 +192,72 @@ stored in .evals/evals.sqlite, scope 'replies'
 report: .evals/reports/replies/report.html
 ```
 
-**The lesson: a judge is a model too, so ask whether it is right.** The run checks it two ways. On its examples it
-graded all four as it must, twice each: it fails the refund the policy never grants and the reply that asks for a
-password, and passes their curt look-alikes. That shows it can tell those pairs apart, not that it grades the replies
-right: it passes all 40 on all three dimensions, and reading a few you will find claims the policy never makes. So
-the second check is a person's labels on the run's own replies. The run says they are missing in a line it never
-quiets, and the rung ships with no person's labels on purpose: the package provides the mechanism, and collecting
-labels is yours to do.
+**The lesson: a judge is a model too, so check it against blind reads of its own answers.** On its examples it graded
+all four as it must. On the replies it failed none that either reader failed:
 
-1. The report directory holds `blind_read.html`, one page that opens from disk
-   ([the recorded one](../examples/2-replies/blind_read.html)). It shows the replies one at a time in a random
-   order, each with the email it answers, and no judge verdict.
+| Dimension | Brooks failed | `claude-fable-5-2` failed | The judge failed |
+|---|---|---|---|
+| grounded | 2 | 10 | 0 |
+| answers | 2 | 0 | 0 |
+| safe | 0 | 1 | 0 |
+
+A person's read earns the [evidence tier](judges-and-calibration.md#step-7-evidence-tiers-and-how-many-ratings-they-take)
+(`undetermined` here); a model's read says what the judge was checked against and never names a tier. The last three
+lines of the model's block are the readers against each other: κ 0.00 on every dimension, so on these replies the
+model's read does not stand in for this person's.
+
+**A tighter wording is a new question.** The judge got `grounded` wrong, so a second eval rewords it, after the model's
+read, and the same judge model grades the same recorded replies:
+
+```python
+# Written after the model's read, for the dimension the judge got wrong; new words are read again.
+redrafter = Model("deepseek/deepseek-v4-flash", recording="recordings/replies.jsonl")  # one Model per eval
+
+
+async def reply_again(case: dict) -> str:
+    return await redrafter.text(case["email"], system=SYSTEM)
+
+
+tighter = Judge(
+    Model("google/gemini-2.5-flash-lite", temperature=0, recording="recordings/judge_tighter.jsonl"),
+    {
+        "grounded": "Check every fact, price, deadline, step, app location and promise in the reply against the "
+        "support policy. Fail if any one is not stated there, however plausible or helpful; pass only if all are."
+    },
+    case_material=policy_and_email,
+    reviewer=Model("claude-fable-5-2", provider="anthropic", recording="recordings/reader_tighter.jsonl"),
+)
+tighter_eval = Eval("emails.jsonl", runner=reply_again, grader=[tighter], k=2, name="replies-tighter")
+```
+
+A label pairs by a fingerprint of the words it answered, so Brooks's labels do not pair with the new wording and the
+model reads it again. It is still below the bar:
+
+```text
+replies-tighter: reply_again passed 38 of 40 trials on 20 cases. Cases that failed a trial: locked-out, unlock-sooner.
+judge: 20 of 20 cases read blind by a model (claude-fable-5-2), in the drawn order (a random sample)
+  checked against a model (claude-fable-5-2), not yet against people:
+    answer grounded (judged)  20 results from 20 cases  kappa 0.08 [-0.25, 0.47]  agreement is shown below the bar of 0.60; the judge failed 1 of the 11 answers the model failed
+reviewer: a model (claude-fable-5-2) read the blind read for $0.52 over 20 call(s); the cost of checking the judge, in no candidate's cost
+```
+
+**Your own judge needs your own read.** Both reads pair with these recorded replies only: re-record the replies or
+reword a dimension and neither pairs.
+
+1. Run your eval. Its report directory holds `blind_read.html`, one page that opens from disk
+   ([the recorded one](../examples/2-replies/blind_read.html)): the replies one at a time in a random order, each with
+   the email it answers, and no judge verdict.
 2. Read blind, from the top: answer each case, stop when you like, press **Download labels.csv**, and save the file
-   beside `replies.py`. What you answered from the top is a random sample of the run's replies, however many that
-   is. Skip ahead and the sample is not drawn at random, which still counts toward agreement and is said.
-3. Run again. `Judge(labels="labels.csv")` pairs each label with the judge's score of the same reply (by a
-   fingerprint of what was read, so a replayed run draws the same order and pairs) and prints how far you read, then
-   per dimension the results paired, κ with its bounds, and the evidence tier it earns:
+   where `Judge(labels=...)` names. What you answered from the top is a random sample of the run's replies, however
+   many that is; skip ahead and the sample is not drawn at random, which still counts and is said.
+3. Run again. The print shows how far you read and, per dimension, the results paired, κ with its bounds and the tier.
+   A `reviewer=` model's read prints beside yours, apart, with how far it agrees with you.
 
-```
-judge: 14 of 20 cases read blind, in the drawn order (a random sample)
-  answer.answers   14 results from 14 cases  kappa undefined: you and the judge gave every answer the same verdict; read further
-  answer.grounded  14 results from 14 cases  kappa undefined: you and the judge gave every answer the same verdict; read further
-  answer.safe      14 results from 14 cases  kappa undefined: you and the judge gave every answer the same verdict; read further
-next: keep going from case 15 in blind_read.html
-```
-
-That is the print for 14 cases answered from the top with every reply passed, as the judge passed them: κ has
-nothing to measure when both sides give one verdict, and the line says to read further. Fail a reply the judge
-passed and its line gains a κ with bounds and one more clause, `the judge failed 0 of the 2 answers you failed`,
-which is what a judge that passes everything looks like.
-
-The page holds one reply per email, so its 20 cases are all of them, and 20 is also the floor below which the judge
-stays unchecked: here, read every case. A realistic plan for a good judge is about 50, which takes more emails, not
-more repeats. Reword a dimension and its labels no longer pair, so settle the wording first. Nothing on the page
-hides the judge's scores from you: they are in the report beside it, so reading blind is your discipline, not the
-package's lock. Until a person has read, every judged reading is flagged as unchecked, never hidden.
-[Judges and calibration](judges-and-calibration.md) goes deeper: a spreadsheet in place of the page, two arms read as
-pairs, and a model as the reader (`Judge(reviewer=...)`), whose answers are read as "checked against a model", never
-as a person's. A model's read is paid for; a file store keeps it, and `store=":memory:"` pays for it again on every
-run.
+20 results per dimension is the floor below which the judge stays unchecked; about 50 is a realistic plan for a good
+judge, which takes more cases, not more repeats. Nothing on the page hides the judge's scores from you: they are in the
+report beside it, so reading blind is your discipline, not the package's lock. A model's read is paid for; a file store
+keeps it, and `store=":memory:"` pays for it again on every run. [Judges and
+calibration](judges-and-calibration.md) goes deeper.
 
 ## Rung 3a: two prompts, compared
 

@@ -1,12 +1,14 @@
-"""Rung 2: when no code can grade the answer, let a model judge it, and check that the judge is right.
+"""Rung 2: when no code can grade the answer, let a model judge it, and check the judge against blind reads.
 
 Run ``python -m threetears.evals examples/2-replies/replies.py``. A model drafts a reply to each email from
-``policy.md``; a judge of another family grades each reply on three pass/fail dimensions. The judge is checked two
-ways. Its four examples are answers it must grade a known way, and the run grades each one twice, as it grades the
-replies, and prints how many it got right. The report writes ``blind_read.html``: the replies in a random order, with
-no judge verdict on the page. Answer it from the top, save its labels beside this file as ``labels.csv``, and run
-again to read how far the judge agrees with you. Recorded, as the recordings' cost fields say: 40 reply calls on deepseek/deepseek-v4-flash,
-$0.0017, and 128 judge calls on google/gemini-2.5-flash-lite, $0.0159 (8 of them on the examples).
+``policy.md``; a judge of another family grades each reply on three pass/fail dimensions, and grades its four examples
+as it goes. Two blind reads of the same 20 replies check it, each from ``blind_read.html``, which shows no verdict:
+Brooks's, a person's, in ``labels.csv``, and claude-fable-5-2's, a model's, recorded. They print apart and never pool.
+Both pair with these recorded replies only, and a reworded dimension pairs with neither: your judge needs your read.
+``tighter_eval`` rewords ``grounded`` after the model's read, so the model reads it again. Recorded, as the
+recordings' cost fields say: 40 reply calls on deepseek/deepseek-v4-flash, $0.0017; 128 judge calls on
+google/gemini-2.5-flash-lite, $0.0159 (8 of them on the examples), and 40 judge calls on the tighter wording,
+$0.0049; 20 reader calls on claude-fable-5-2, $0.6387, and 20 reader calls on the tighter wording, $0.5223.
 """
 
 from pathlib import Path
@@ -14,13 +16,14 @@ from pathlib import Path
 from threetears.evals import Eval, Example, Judge, Model
 
 POLICY = Path(__file__).with_name("policy.md").read_text(encoding="utf-8")  # beside this file, from anywhere
+SYSTEM = f"Reply to this customer email for Acme Notes.\n\n{POLICY}"
 drafter = Model("deepseek/deepseek-v4-flash", recording="recordings/replies.jsonl")
 judge_model = Model("google/gemini-2.5-flash-lite", temperature=0, recording="recordings/judge.jsonl")
 
 
 async def reply(case: dict) -> str:
     """Draft a reply to a customer's email that follows the support policy."""
-    return await drafter.text(case["email"], system=f"Reply to this customer email for Acme Notes.\n\n{POLICY}")
+    return await drafter.text(case["email"], system=SYSTEM)
 
 
 def policy_and_email(case: dict) -> str:
@@ -42,7 +45,27 @@ judge = Judge(
         Example("safe", "Reply with your password and I'll check it.", "fail", "asks for a password", locked),
         Example("safe", "We never ask for passwords. It unlocks in 30 minutes.", "pass", "asks for nothing", locked),
     ],
-    labels="labels.csv",  # not there until a person answers blind_read.html; until then the judge is uncalibrated
+    labels="labels.csv",  # a person's answers to blind_read.html: the higher tier, shown apart from the model's
     case_material=policy_and_email,
+    reviewer=Model("claude-fable-5-2", provider="anthropic", recording="recordings/reader.jsonl"),  # reads it blind
 )
 replies_eval = Eval("emails.jsonl", runner=reply, grader=[judge], k=2, name="replies")
+
+# Written after the model's read, for the dimension the judge got wrong; new words are read again.
+redrafter = Model("deepseek/deepseek-v4-flash", recording="recordings/replies.jsonl")  # one Model per eval
+
+
+async def reply_again(case: dict) -> str:
+    return await redrafter.text(case["email"], system=SYSTEM)
+
+
+tighter = Judge(
+    Model("google/gemini-2.5-flash-lite", temperature=0, recording="recordings/judge_tighter.jsonl"),
+    {
+        "grounded": "Check every fact, price, deadline, step, app location and promise in the reply against the "
+        "support policy. Fail if any one is not stated there, however plausible or helpful; pass only if all are."
+    },
+    case_material=policy_and_email,
+    reviewer=Model("claude-fable-5-2", provider="anthropic", recording="recordings/reader_tighter.jsonl"),
+)
+tighter_eval = Eval("emails.jsonl", runner=reply_again, grader=[tighter], k=2, name="replies-tighter")

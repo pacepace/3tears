@@ -726,7 +726,9 @@ def test_a_person_s_reading_decides_once_it_is_decided_and_the_anchor_is_measure
     assert (check.reviewer, check.dim, check.outputs, check.exact_agreement) == (reviewer, GROUNDED.name, 6, 1.0)
     lines = judge_lines(few.read, labels_name="labels.csv", labels_there=True)
     assert f"  beside it, checked against a model ({reviewer}):" in lines
-    assert any(line.startswith(f"    {reviewer} against people on answer.grounded: 6 outputs") for line in lines)
+    assert any(
+        line.startswith(f"    {reviewer} against people on answer grounded (judged): 6 outputs") for line in lines
+    )
     # A whole person read decides it, whatever the reference says.
     full = close_blind_read(
         _with(read, [*reference, *(_answer(read, n, scores=scores(n)) for n in range(24))]), results
