@@ -81,6 +81,77 @@ imports against this map:
 
 Discodon's production code imports none of these. Nothing stored changes.
 
+### evals: the one caveat list is filled and the first screen computed, with a typed next step per reason (#1192)
+
+**Added:** what S5a-1's shape was for, still rendering nothing. No page, print line, golden or recording moved; a
+report input built from a bundle now carries `caveat_list` and `first_screen`.
+
+- Every source of caveats raises typed entries into the one list (`analysis/caveats.py`): what the input's `caveats`
+  part states (the same ids as before, for every fixture), what it implies, every reading, contrast, pair and figure
+  in a state other than counted, a judge's checks, looks taken past their plan, and what only the bundle holds (an
+  arm read per answering model, an arm holding several cells of one rig, results with no ordered time, request
+  settings not confirmed). A stored input with no list is given one on read.
+- The builder attaches the first-screen value: the gate (setup, an unfinished run or too few cases, with the runs
+  it names), at most three ranked reasons and the count past them, the call, and `steps`: what would change each
+  reason, one per reason shown, as a typed `RemedyStep`: a remedy kind; the catalogue action that takes it, each
+  call of it named and typed as the action's own parameters, and the parameters left to the taker (`needs`); for
+  more evidence, a planned size read from the figure it would settle, against the rule and the interval that lift its
+  caveat (the new cases a design needs for that two-sided interval to clear its line at least four times in five at
+  today's estimate, or, below the floor where an interval is stated, the cases that reach it), launched as exactly
+  that many new cases (`n_variations`); a step with no size states why (`unsized`) and makes no call; and the action
+  that prices a step that spends. A step that launches runs is the whole act, in order (`then`): the launch, its runs
+  joined to the campaign that reads them (`campaign_runs_add`, since a launched run joins none), and for a re-run the
+  runs it replaces taken out (`campaign_runs_remove`); what only an earlier call returns is named, not filled
+  (`after`: the run ids job_poll names once the launch starts, the control's among them, the created campaign). The
+  launch repeats the arms' set-up: the template, subject, models, repeats, latency declaration and schedule their
+  runs were launched with are filled from the bundle where it holds one value, every other setting that defines an
+  arm is named to be set as those runs were launched (`as_launched`, with the case set for a re-run and the case
+  writer for a generating launch), and each call says which arms it runs (`call_arms`). A step ships a sequence only
+  where following it through the real actions on a fixture campaign does what it says
+  (`test_caveat_steps_driven.py`): more cases on arms that differ only in their model, a re-run that holds an
+  apparatus confound's dimension at one value on every call (`alike`) with the control re-run beside it, and a
+  confirmation. A re-run with no sequence driven to lift it makes no call (`no_action`: `lift_not_shown`): one whose
+  fault no launch parameter sets (an answering model the provider split, a rig, recording, a replay, a confound no
+  setting holds alike), and the serial re-run of cases run at once, which a launch can ask for (`measure_latency`)
+  but which has not been driven. What following a step cannot guarantee is stated, typed (`limits`): an arm that
+  moved beyond its model would run in a launch call of its own whose new cases the control does not run, so it gains
+  no pair (`unpaired_arms`, naming each). A step whose caveat reads a contrast (an unsettled result) launches no such
+  arm, and where no arm it names is left beside the control, as in an A/B of two prompts on one model, it makes no
+  call (`lift_not_shown`) and states no size; a confirmation launches it and names it; a gate's or a figure's step
+  reads each arm's own cases and names none. The reading holds no template's axes, so new cases are
+  new only on an axis a model writes (`axis_may_not_generate`); a confirmation leaves this report's caveat raised
+  (`this_report_stays_flagged`). A late criterion or a pick among many is confirmed on unseen cases in a new
+  campaign: `campaign_create` first with its criteria and floors, then the launch of that many new cases, its runs
+  joined to it and its control named from them as soon as they start, before any result is scored, or the new
+  campaign reads its control late (`control_may_read_late`); the size is stated, and a pick's marked too small
+  (`size_bias`). A step that adds cases says it is one more look at its readings
+  (`declared_look`); nothing counts looks yet, so a reading taken after it is read at its full level, and adding cases
+  and reading again even once errs more often than that level says. Every one of the sixteen reasons, and every kind
+  the first screen can show, has the act that addresses it (a judge below its bar is replaced, raters who disagree
+  sharpen the criterion, every case reading alike takes more cases, with no size it can promise); where no act the
+  engine takes can close a caveat, the step says why (`no_action`): a percentile's point estimate gains no interval
+  from more cases; an analyst's own kind or a method-only kind takes `no_action`, saying which.
+- Caveat ids are unique by construction: a typed caveat adds its reason, then its coordinate, where its reading holds
+  another in the same state; one stated id on several parts (a late floor under one key on two aspects, a short run
+  on two arms) is one caveat naming every part, where the second part was dropped before; and two raisers that raise
+  different caveats under one id are refused rather than one kept.
+- A check against people silences a check against a model on its criterion only where its result decides (met or
+  not met). A reading withheld on one arm silences only what is scoped to that arm.
+- The decision read is on the numbers side: `analysis/answer.py` (standing, survivors, dominance, materiality),
+  `analysis/criteria.py` (a gate's status per arm), `analysis/costs.py` (the one cost rule) and
+  `analysis/per_input.py`; `analysis/report/call.py` keeps its names, each a read of the list or of `answer`.
+- `ResultCondition.judging`'s `set_aside` is `not_asked`; a condition handed back under the old spelling reads as
+  the new one.
+
+**For hosts:** neither `caveat_list` nor `first_screen` is in `report_input_digest`: no stored or built digest, and
+no snapshot id, moves. Durable minor 17.2 adds `SweptAxis.ordered`, `AspectDesign.planned_looks`,
+`EvalCampaign.volume_per_month` and `CampaignCall.made_by`, `model`, `on_behalf_of` and `evidence_fingerprint`, each
+optional and written only when set: deploy this build to every reader before a campaign sets one. Thirteen new
+provisional names, the types the campaign bundle's new in-memory fields hold: `threetears.evals.analysis` exports
+`CaveatEntry`, `FirstScreen`, `Gate`, `GateRun`, `CallRead`, `RemedyStep`, `Remedy`, `StepArgument`,
+`UnsizedReason` and `NoActionReason`; `threetears.evals.schema`
+exports `CaveatClass`, `CaveatReach` and `Maker`.
+
 ### evals: a recorded judge call over a report page is keyed by what the page was rendered from, not by its words
 
 **Changed:** a word the package prints differently on a report writer's page, or in its computed facts, no longer

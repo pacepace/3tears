@@ -32,7 +32,8 @@ import threetears.evals
 from packages.evals.tests.reading_state_vocabularies import NOT_ABOUT_A_READING, aliases, discovered
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, FamilyComparison, RunSummary
 from threetears.evals.analysis.campaign_readings import AnswerSplit, CampaignReadings
-from threetears.evals.analysis.caveats import CLASS_OF_KIND, REMEDY_OF_REASON, Remedy
+from threetears.evals.analysis.caveats import CLASS_OF_KIND, REMEDY_OF_REASON
+from threetears.evals.analysis.report_input import Remedy
 from threetears.evals.analysis.checks import Check, Corrected, Rescore
 from threetears.evals.schema.reading_states import (
     REASONS_OF,
@@ -50,9 +51,9 @@ from threetears.evals.schema.reading_states import (
 )
 from threetears.evals.analysis.report_input import Contrast, Stat
 from threetears.evals.analysis.run_ending import StoppedShort, stopped_short
-from threetears.evals.analysis.state_words import JUDGING_SET_ASIDE, STATE_WORDS, StateWord, state_word
+from threetears.evals.analysis.state_words import JUDGING_NOT_ASKED, STATE_WORDS, StateWord, state_word
 from threetears.evals.kernel.evidence_tiers import CriterionState
-from threetears.evals.kernel.result_condition import JudgingState
+from threetears.evals.kernel.result_condition import JudgingState, ResultCondition
 from threetears.evals.kernel.surface import PredictionPoweredReading
 
 SOURCE = Path(threetears.evals.__file__).resolve().parent
@@ -360,6 +361,25 @@ def test_every_mapped_vocabulary_is_mapped_word_for_word() -> None:
     assert len(STATE_WORDS) == sum(len(words) for words in in_code.values()), "a word is mapped twice"
 
 
+#: How many mapped vocabularies the package still spells in live code (issue #1197). The table is a debt register: a
+#: vocabulary leaves it the day its last reader reads the shared state instead (a stored spelling stays, read through
+#: the table), and this count falls with it. It never rises: a new way of saying "not counted" is a member of the
+#: shared set, never a vocabulary mapped onto it. 37 when the ratchet started (S5a-2), and 37 after it: the call
+#: sites that chunk moved onto the shared state read no mapped vocabulary to decide whether a reading counts.
+MAPPED_VOCABULARIES_IN_USE = 37
+
+
+def test_the_mapped_vocabularies_still_in_use_only_fall() -> None:
+    in_code = {_short(name) for name in {**aliases(), **discovered()}} | {
+        name for name, words in NAMED_WORDS.items() if words
+    }
+    live = set(_mapped()) & in_code
+
+    assert len(live) <= MAPPED_VOCABULARIES_IN_USE, "a mapped vocabulary was added: read the shared state instead"
+    assert len(live) == MAPPED_VOCABULARIES_IN_USE, "a mapped vocabulary was retired: lower the count to match"
+    assert set(_mapped()) == live, "a vocabulary gone from the code keeps rows only for spellings a store holds"
+
+
 def test_the_vocabularies_the_review_named_are_each_mapped() -> None:
     assert {
         "VerdictReason",
@@ -402,14 +422,17 @@ def test_the_words_for_trials_the_rig_lost_are_one_reason_that_takes_no_coordina
     assert "ruling_needed" not in StateWord._fields, "every mapped word has a truthful reason, or says why it has none"
 
 
-def test_the_judging_state_that_collides_with_set_aside_is_mapped_as_a_trial_s_fact_until_it_is_renamed() -> None:
-    """``JudgingState.set_aside`` is judging skipped under a cost cap, and no reading set aside. While the stored word
-    stands, its row says so; the day it is renamed, this fails until the row is the new word's."""
-    assert "set_aside" in get_args(JudgingState), "the stored word was renamed: move its row to the new word"
-    assert "set_aside" in get_args(ReadingState)
-    row = state_word("JudgingState", "set_aside")
-    assert row.state is None and row.reason is None and row.note == JUDGING_SET_ASIDE
-    assert "not_asked" in row.note
+def test_the_judging_state_no_longer_spells_a_reading_state_and_its_earlier_spelling_reads_as_its_new_one() -> None:
+    """``JudgingState.set_aside`` was judging skipped under a cost cap, and no reading set aside. It is ``not_asked``
+    now: its row is the new word's, a condition handed back under the old one reads as the new, and the one closed set
+    outside the shared one still spelling a reading state is the remainder's ``withheld``."""
+    assert "set_aside" not in get_args(JudgingState) and "not_asked" in get_args(JudgingState)
+    row = state_word("JudgingState", "not_asked")
+    assert row.state is None and row.reason is None and row.note == JUDGING_NOT_ASKED
+    assert (
+        ResultCondition.model_validate({"termination": "completed", "judging": "set_aside", "scoring": "ok"}).judging
+        == "not_asked"
+    )
     colliding = sorted(
         f"{name}:{word}"
         for name, words in aliases().items()
@@ -418,7 +441,6 @@ def test_the_judging_state_that_collides_with_set_aside_is_mapped_as_a_trial_s_f
     )
     assert colliding == [
         "analysis/remainder.py:RemainderState:withheld",
-        "kernel/result_condition.py:JudgingState:set_aside",
     ], "a closed set outside the shared one spells a reading state: map it, and say what it means there"
 
 
@@ -461,7 +483,9 @@ def test_every_reason_has_a_remedy_and_every_remedy_closes_something() -> None:
     assert set(REMEDY_OF_REASON) == set(
         get_args(SetAsideReason) + get_args(WithheldReason) + get_args(NotAvailableReason)
     )
-    assert set(REMEDY_OF_REASON.values()) | {"declare_looks"} == set(get_args(Remedy))
+    # The kinds' remedies close the rest; test_caveat_list holds that every remedy closes some caveat.
+    assert set(REMEDY_OF_REASON.values()) < set(get_args(Remedy))
+    assert "no_action" not in REMEDY_OF_REASON.values()
     assert Reason == SetAsideReason | WithheldReason | NotAvailableReason
 
 

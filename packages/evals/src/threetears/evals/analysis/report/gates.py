@@ -49,8 +49,7 @@ per is that measure's, never the page's cost basis.
 
 from __future__ import annotations
 
-import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -59,15 +58,10 @@ from threetears.evals.analysis.report.keys.names import reader_name
 from threetears.evals.analysis.report.keys.reads import criterion_ruler
 from threetears.evals.analysis.report.keys.resolve import format_figure, held_kind, resolve
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report.per_input import kept_for
+from threetears.evals.analysis.per_input import kept_for
+from threetears.evals.analysis.criteria import CriterionRead, CriterionStatus, GateStatus, criterion_reads
 from threetears.evals.analysis.report_input import Criterion, ReportInput
-from threetears.evals.analysis.report_margins import (
-    CriterionFigure,
-    CriterionPlace,
-    criterion_figures,
-    criterion_place,
-    criterion_places,
-)
+from threetears.evals.analysis.report_margins import CriterionFigure
 
 __all__ = [
     "GateCheck",
@@ -78,12 +72,6 @@ __all__ = [
     "routing_picks",
     "task_costs",
 ]
-
-#: An arm's status against the gates: every figure passes, one sits borderline and none fails, or one fails.
-GateStatus = Literal["pass", "borderline", "fail"]
-
-#: The criterion kinds that gate an option.
-_GATING = frozenset({"gate", "guardrail"})
 
 #: The scales whose interval ends read in points beside their figure (``90% ±4.4``).
 _RATE_SCALES = frozenset({"share", "percent", "points"})
@@ -136,19 +124,6 @@ class GateFinding:
     reason: str
 
 
-def _applies(criterion: Criterion, task: str | None, cell: str | None, only: str | None) -> bool:
-    """Whether a check narrowed to ``task`` or ``cell`` (neither: unnarrowed), and to the criterion ``only`` (None: to
-    none), reads ``criterion``."""
-    if criterion.kind not in _GATING or only not in (None, criterion.id):
-        return False
-    place: CriterionPlace = criterion_place(criterion)
-    if task is not None:
-        return place == "task" and criterion.task in (None, task)
-    if cell is not None:
-        return place == "cell"
-    return True
-
-
 def _cell_words(report_input: ReportInput, cell_id: str) -> str:
     cell = report_input.cells[cell_id]
     matrix = report_input.target_matrix
@@ -173,14 +148,6 @@ def _placed(report_input: ReportInput, reason: str, task: str | None, cell: str 
 _MONEY_SCALES = frozenset({"usd", "usd_per_1k", "usd_per_1m"})
 
 
-def _interval(figure: CriterionFigure) -> tuple[float, float] | None:
-    if figure.ci is not None:
-        return figure.ci
-    if figure.half_width is not None:
-        return figure.value - figure.half_width, figure.value + figure.half_width
-    return None
-
-
 def _spread(line: Figure, figure: CriterionFigure, forms: PageForms) -> str:
     """The figure's interval as a reason states it after the figure: ``±4.4``, ``interval 85.6 to 94.4%``, or ``derived
     interval 89.8 to 90.4%`` where code derived it from the cells (the figure's ``derived``)."""
@@ -192,26 +159,24 @@ def _spread(line: Figure, figure: CriterionFigure, forms: PageForms) -> str:
     return "±" + format_figure(width, ("pts", "abs") if line.scale in _RATE_SCALES else (), forms=forms)
 
 
-def _read(
+#: A figure's status as its finding words it, for a figure that holds a value and does not pass.
+_FOUND: dict[CriterionStatus, Literal["fail", "borderline"]] = {"fail": "fail", "borderline": "borderline"}
+
+
+def _reason(
     report_input: ReportInput,
     criterion: Criterion,
     figure: CriterionFigure,
+    status: Literal["fail", "borderline"],
     line: Figure,
-    forms_of: Callable[[], PageForms],
-) -> tuple[GateStatus, str]:
-    """One figure against its criterion's line: its status, and the reason it would give, in the page's forms
-    (``forms_of``, asked for only where a reason is given)."""
+    forms: PageForms,
+) -> str:
+    """The reason one figure gives for its status against its criterion's line (``fail`` or ``borderline``, as
+    :func:`~threetears.evals.analysis.criteria.criterion_reads` read it), in the page's forms."""
     name = (
         criterion.statistic if criterion.statistic != "mean" else reader_name("criterion", criterion.id, report_input)
     )
     threshold = float(criterion.threshold)
-    higher = criterion.direction == "higher_is_better"
-    meets = figure.value >= threshold if higher else figure.value <= threshold
-    interval = _interval(figure)
-    borderline = interval is not None and not (interval[0] >= threshold if higher else interval[1] <= threshold)
-    if meets and not borderline:
-        return "pass", ""
-    forms = forms_of()
     if line.scale in _MONEY_SCALES:
         # Money on the one owner's ruler (#993): both figures in its form, its count named once, in the criterion's
         # name (its own count replaced), never a per-1,000 mark. Each amount is a figure of what the criterion reads.
@@ -222,20 +187,20 @@ def _read(
         def spelled(amount: float) -> str:
             return forms.money_on(ruler, amount, measure=criterion.measure, kind=kind).text
 
-        if not meets:
-            return "fail", f"{name} {spelled(figure.value)} {_MISSED[criterion.direction]} {spelled(threshold)}"
+        if status == "fail":
+            return f"{name} {spelled(figure.value)} {_MISSED[criterion.direction]} {spelled(threshold)}"
         # Borderline: the figure's interval made it so, its stated ends or its half-width either side.
         if figure.ci is not None:
             words = "derived interval " if figure.derived else "interval "
             spread = f", {words}{spelled(figure.ci[0])}–{spelled(figure.ci[1])}"
         else:
             spread = f" ±{spelled(float(figure.half_width or 0))}"
-        return "borderline", f"{name} {spelled(figure.value)}{spread}"
+        return f"{name} {spelled(figure.value)}{spread}"
     stated = format_figure(replace(line, value=figure.value), forms=forms)
-    if not meets:
-        return "fail", f"{name} {stated} {_MISSED[criterion.direction]} {format_figure(line, forms=forms)}"
+    if status == "fail":
+        return f"{name} {stated} {_MISSED[criterion.direction]} {format_figure(line, forms=forms)}"
     separator = ", " if figure.ci is not None else " "
-    return "borderline", f"{name} {stated}{separator}{_spread(line, figure, forms)}"
+    return f"{name} {stated}{separator}{_spread(line, figure, forms)}"
 
 
 def gate_findings(
@@ -271,14 +236,7 @@ def gate_findings(
     :raises ValueError: Both a task and a cell were named, a task, cell or gating criterion the input does not hold,
         or forms built from another input.
     """
-    if task is not None and cell is not None:
-        raise ValueError(f"a gate check reads one place at most; it was given task {task!r} and cell {cell!r}")
-    if task is not None and task not in {held.id for held in report_input.tasks}:
-        raise ValueError(f"the input holds no task {task!r}")
-    if cell is not None and cell not in report_input.cells:
-        raise ValueError(f"the input holds no cell {cell!r}")
-    if criterion is not None and criterion not in {held.id for held in report_input.criteria if held.kind in _GATING}:
-        raise ValueError(f"the input holds no gate or guardrail {criterion!r}")
+    reads: tuple[CriterionRead, ...] = criterion_reads(report_input, arm, task=task, cell=cell, criterion=criterion)
     if forms is not None:
         forms.checked(report_input)
     held_forms: list[PageForms] = [forms] if forms is not None else []
@@ -291,33 +249,24 @@ def gate_findings(
         return held_forms[0]
 
     narrowed = task is not None or cell is not None
+    criteria = {held.id: held for held in report_input.criteria}
+    lines: dict[str, Figure] = {}
     found: list[GateFinding] = []
-    for held in report_input.criteria:
-        if not _applies(held, task, cell, criterion):
+    for read in reads:
+        if read.status == "pass":
             continue
-        places = [
-            (at_task, at_cell)
-            for at_task, at_cell in criterion_places(report_input, held)
-            if (task is None or at_task == task) and (cell is None or at_cell == cell)
-        ]
-        no_figure = _NO_FIGURE_TEMPLATE.format(name=reader_name("criterion", held.id, report_input))
-        if not places:
-            found.append(GateFinding(held.id, "unknown", None, None, None, no_figure))
+        held = criteria[read.criterion]
+        if read.figure is None:
+            no_figure = _NO_FIGURE_TEMPLATE.format(name=reader_name("criterion", held.id, report_input))
+            reason = _placed(report_input, no_figure, read.task, read.cell, narrowed)
+            found.append(GateFinding(held.id, "unknown", read.task, read.cell, None, reason))
             continue
-        figures: dict[tuple[str | None, str | None], CriterionFigure] = {
-            (figure.task, figure.cell): figure for figure in criterion_figures(report_input, held, arm)
-        }
-        line = resolve(f"criteria.{held.id}.threshold", report_input)
-        for at_task, at_cell in places:
-            figure = figures.get((at_task, at_cell))
-            if figure is None or not math.isfinite(figure.value):
-                reason = _placed(report_input, no_figure, at_task, at_cell, narrowed)
-                found.append(GateFinding(held.id, "unknown", at_task, at_cell, None, reason))
-                continue
-            read, reason = _read(report_input, held, figure, line, forms_of)
-            if read != "pass":
-                placed = _placed(report_input, reason, at_task, at_cell, narrowed)
-                found.append(GateFinding(held.id, read, at_task, at_cell, figure, placed))
+        status = _FOUND[read.status]
+        if held.id not in lines:
+            lines[held.id] = resolve(f"criteria.{held.id}.threshold", report_input)
+        reason = _reason(report_input, held, read.figure, status, lines[held.id], forms_of())
+        placed = _placed(report_input, reason, read.task, read.cell, narrowed)
+        found.append(GateFinding(held.id, status, read.task, read.cell, read.figure, placed))
     return tuple(found)
 
 
@@ -355,7 +304,7 @@ def gate_check(
         # The page's own forms record every reason handed out, so a page's check is read on them, every time.
         return _checked(report_input, arm, task, cell, criterion, forms)
     # A check read off any page is pure in the input, which is frozen, so it is read once per input and place
-    # (:func:`~threetears.evals.analysis.report.per_input.kept_for`).
+    # (:func:`~threetears.evals.analysis.per_input.kept_for`).
     return kept_for(report_input).get(
         (gate_check, arm, task, cell, criterion), lambda: _checked(report_input, arm, task, cell, criterion, None)
     )

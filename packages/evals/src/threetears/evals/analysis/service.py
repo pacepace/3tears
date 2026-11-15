@@ -33,6 +33,7 @@ from threetears.evals.analysis.campaign_bundle import (
     build_campaign_bundle,
 )
 from threetears.evals.analysis.campaign_readings import campaign_readings
+from threetears.evals.analysis.caveats import call_read
 from threetears.evals.analysis.campaigns import campaign_arms_spelled
 from threetears.evals.analysis.generation_tally import GenerationTally
 from threetears.evals.analysis.bundle.schema import BundleInspection, known_fingerprint
@@ -879,7 +880,19 @@ def _assembled_campaign_bundle(
         # A run belongs to one aspect at most (the campaign refuses one held twice), so the aspects' counts add.
         summaries = [summary for bundle in bundles for summary in bundle.run_summaries]
         took_in(runs=len(summaries), results=sum(summary.n_results for summary in summaries))
-        return build_campaign_bundle(campaign, bundles, arms=arms, readings=readings, spellings=spellings)
+        bundle = build_campaign_bundle(campaign, bundles, arms=arms, readings=readings, spellings=spellings)
+        return _with_first_screen(bundle, campaign)
+
+
+def _with_first_screen(bundle: CampaignBundle, campaign: EvalCampaign) -> CampaignBundle:
+    """The bundle holding its caveat list and its first screen, read off the report input it builds, with the
+    campaign's call as of now: what the code page reads, so both pages print one value. A campaign with no arm yet
+    has no report input, and no first screen."""
+    if not bundle.arms and not any(aspect.variant_index for aspect in bundle.aspects):
+        return bundle
+    call = call_read(campaign.call, bundle) if campaign.call is not None else None
+    built = report_input(bundle, call=call)
+    return bundle.model_copy(update={"caveat_list": built.caveat_list, "first_screen": built.first_screen})
 
 
 def assemble_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignBundle:

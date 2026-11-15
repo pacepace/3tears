@@ -24,8 +24,11 @@ from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.schema.reading_states import (
     ArmIdentity,
+    CaveatClass,
+    CaveatReach,
     Coordinate,
     IdentityState,
+    Maker,
     ReadingState,
     Reason,
     SampleKind,
@@ -317,8 +320,11 @@ from threetears.evals.schema.versioning import (
 
 __all__ = [
     "ArmIdentity",
+    "CaveatClass",
+    "CaveatReach",
     "Coordinate",
     "IdentityState",
+    "Maker",
     "ReadingState",
     "Reason",
     "SampleKind",

@@ -49,17 +49,22 @@ def _docs_schema() -> dict[str, Any]:
 def _shape(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Every object and enum in ``schema``, by where it sits: ``.arms[]`` an array's items, ``.measures{}`` a map's
     values. An object gives its property names, its required set and whether it is closed; an enum its values (a
-    nullable enum's ``None`` dropped, since nullability is a type, not a value); a const its value."""
+    nullable enum's ``None`` dropped, since nullability is a type, not a value); a const its value. A definition that
+    holds itself (a step's calls that follow it) is walked once on a path and named where it recurs, as ``ref``."""
     defs = schema.get("$defs", {})
     found: dict[str, dict[str, Any]] = {}
 
-    def walk(node: Any, path: str) -> None:
+    def walk(node: Any, path: str, within: tuple[str, ...] = ()) -> None:
         if not isinstance(node, dict):
             return
         if "$ref" in node:
-            walk(defs[node["$ref"].removeprefix("#/$defs/")], path)
+            ref = node["$ref"].removeprefix("#/$defs/")
+            if ref in within:
+                found.setdefault(path, {})["ref"] = ref
+                return
+            walk(defs[ref], path, (*within, ref))
         for branch in node.get("anyOf", []):
-            walk(branch, path)
+            walk(branch, path, within)
         entry = found.setdefault(path, {})
         if "enum" in node:
             entry["enum"] = sorted(v for v in node["enum"] if v is not None)
@@ -70,11 +75,11 @@ def _shape(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
             entry["required"] = sorted(node.get("required", []))
             entry["closed"] = node.get("additionalProperties") is False
             for name, sub in node["properties"].items():
-                walk(sub, f"{path}.{name}")
+                walk(sub, f"{path}.{name}", within)
         if isinstance(node.get("items"), dict):
-            walk(node["items"], f"{path}[]")
+            walk(node["items"], f"{path}[]", within)
         if isinstance(node.get("additionalProperties"), dict):
-            walk(node["additionalProperties"], f"{path}{{}}")
+            walk(node["additionalProperties"], f"{path}{{}}", within)
 
     walk(schema, "")
     return {path: entry for path, entry in found.items() if entry}

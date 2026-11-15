@@ -25,6 +25,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.kernel.result_condition import (
     JudgingState,
+    ResultCondition,
     ResultOutcome,
     candidate_failure_cause,
     counted_goal_verdicts,
@@ -69,7 +70,7 @@ _JUDGING_STATES: dict[str, dict[str, object]] = {
     },
     "failed": {"judge_error": "judge timed out"},
     "not_attempted": {},
-    "set_aside": {
+    "not_asked": {
         "judge_error": "conversation.tone: not judged: the run's cost cap had too little left",
         "judging_set_aside": True,
     },
@@ -100,6 +101,17 @@ def test_every_judging_arm_has_a_disclosure():
     assert set(_JUDGING_STATES) == set(get_args(JudgingState)), "a judging arm has no case driving it"
     for arm, fields in _JUDGING_STATES.items():
         assert resolve_result_condition(_result(**fields)).judging == arm
+
+
+def test_a_condition_handed_back_under_the_judging_state_s_earlier_spelling_reads_as_its_new_one():
+    """``set_aside`` was judging the cost cap kept the judge from; the word is the shared reading state's now, so the
+    judging state is ``not_asked``, and a condition stored or handed back before the rename reads as it."""
+    condition = resolve_result_condition(_result(**_JUDGING_STATES["not_asked"]))
+    earlier = condition.model_dump(mode="json") | {"judging": "set_aside"}
+
+    assert ResultCondition.model_validate(earlier).judging == "not_asked"
+    assert condition.model_dump(mode="json")["judging"] == "not_asked"
+    assert "set_aside" not in get_args(JudgingState)
 
 
 def test_every_scoring_arm_has_a_disclosure():

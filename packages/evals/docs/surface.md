@@ -744,10 +744,10 @@ its line says. Issue #1199 adds the example.
 | State | Reason | Remedy |
 |---|---|---|
 | `set_aside` | `identical_arms_separated` | `repair_rig` |
-| `set_aside` | `instrument_below_bar` | `check_against_people` |
+| `set_aside` | `instrument_below_bar` | `replace_instrument` |
 | `set_aside` | `instrument_leans` | `replace_instrument` |
 | `set_aside` | `instrument_unchecked` | `check_against_people` |
-| `set_aside` | `people_disagree` | `replace_instrument` |
+| `set_aside` | `people_disagree` | `sharpen_criterion` |
 | `withheld` | `identity_unrecorded` | `remeasure_or_attest` |
 | `withheld` | `measured_under_concurrency` | `rerun_serially` |
 | `withheld` | `split` | `rerun_on_one_cell` |
