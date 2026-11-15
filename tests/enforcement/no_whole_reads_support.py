@@ -55,11 +55,11 @@ NO_WHOLE_READS_CONFIG = NoWholeReadsConfig(
         f"{_CORE}/collections/complete_copy.py",
         # a table's fingerprint, over the table its caller names
         f"{_CORE}/fingerprint.py",
-        # the warehouse readers: pages, partitions, exports and coverage over the table a datasource names
+        # the warehouse readers: pages, partitions and exports over the table a datasource names (the drivers' coverage
+        # aggregates are declared unbounded_by_warehouse where they are written, so base.py writes none it judges)
         "packages/datasources/src/threetears/datasources/partitioned_read.py",
         "packages/datasources/src/threetears/datasources/query_client.py",
         "packages/datasources/src/threetears/datasources/export_read.py",
-        "packages/datasources/src/threetears/datasources/drivers/base.py",
         # a bounded look (count to a cap, a few rows) over the warehouse table a binding names
         "packages/datasources/src/threetears/datasources/bounded_look.py",
     ),

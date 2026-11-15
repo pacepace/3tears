@@ -2453,7 +2453,9 @@ def _noted_time(micros: int) -> datetime:
     return _EPOCH + timedelta(microseconds=micros)
 
 
-def _noted_keys_sql(owner: str, slot: int, *, all_tenants: bool, every_tenant: bool = False) -> str:
+def _noted_keys_sql(
+    owner: str, slot: int, *, all_tenants: bool, every_tenant: bool = False, arrays: bool = False
+) -> str:
     """one ring note table's notes of a table and tenant in a bracket, after a time, in ``noted_at`` order.
 
     Answered from the ``(table_name, noted_at)`` index, which carries ``keys``, ``key_text``, ``columns`` and
@@ -2475,8 +2477,12 @@ def _noted_keys_sql(owner: str, slot: int, *, all_tenants: bool, every_tenant: b
     :ptype all_tenants: bool
     :param every_tenant: every tenant's notes of the table (``$2`` unused): an operator's check
     :ptype every_tenant: bool
+    :param arrays: answer each note's keys as their array where its key text cannot be split back into them
+        (:data:`_KEYS_UNLESS_SPLIT`); else its separators, ``cardinality(keys) - 1`` (:data:`_SEPARATORS`), which the
+        page checks against its key text's own and asks again in this form only when they differ
+    :ptype arrays: bool
     :return: the statement, answering ``noted`` (``noted_at`` in microseconds since the epoch, :data:`_NOTED_MICROS`),
-        ``keys``, ``columns``, ``bytes`` by position: ``$1`` table,
+        ``keys`` (or ``separators``), ``columns``, ``bytes`` by position: ``$1`` table,
         ``$2`` tenant (NULL for ``_all``), ``$3`` after (the last time read, or one microsecond before the bracket:
         both ends of the range are index conditions), ``$4`` until, ``$5`` the most notes (NULL for all), ``$6`` to
         ``$8`` the planner settings to put back (:data:`_RESTORED`)
@@ -2490,7 +2496,7 @@ def _noted_keys_sql(owner: str, slot: int, *, all_tenants: bool, every_tenant: b
     else:
         tenant = "tenant = $2::text"
     return (  # each interpolated piece is a fixed name this module builds
-        f"SELECT {_NOTED_MICROS} AS noted, {_KEYS_UNLESS_SPLIT} AS keys, columns, "
+        f"SELECT {_NOTED_MICROS} AS noted, {_KEYS_UNLESS_SPLIT if arrays else _SEPARATORS}, columns, "
         "char_length(key_text) + 7 * cardinality(keys) + 1 AS bytes, key_text "
         f"FROM {owner}.{quote_identifier(note_table(slot))} "  # noqa: S608
         f"WHERE table_name = $1 AND noted_at > $3 AND noted_at <= $4 AND {tenant} AND {_RESTORED} "
@@ -2554,8 +2560,20 @@ _RESTORED: Final = (
 #: note decodes in a fraction of an array's time)
 _KEYS_UNLESS_SPLIT: Final = (
     "CASE WHEN cardinality(keys) = 1 + char_length(key_text) - char_length(replace(key_text, chr(31), '')) "
-    "THEN NULL ELSE keys END"
+    "THEN NULL ELSE keys END AS keys"
 )
+
+#: a note's separators as its keys array says (``cardinality(keys) - 1``): the page counts its key text's own in C
+#: (``str.count``) and reads the notes again with :data:`_KEYS_UNLESS_SPLIT` only when one differs (a key value holding
+#: ``chr(31)``, rare). WHY: the database's own check, that CASE (its ``replace`` and the array it may answer), was a
+#: quarter of a 5,001-note page's read on YugabyteDB: 4.0 ms a page against 3.0 ms with this column, lane 1 under
+#: measure-lock (2026-11-15); the page's whole read had run at 1.61-1.93x of its 2x budget
+#: (test_noted_keys_page_live.py::TestACommitsKeysAreReadBackFromItsNotes::
+#: test_reading_every_page_keeps_within_twice_a_bare_read_of_the_same_notes)
+_SEPARATORS: Final = "cardinality(keys) - 1 AS separators"
+
+#: a note's key text's separators, counted in C
+_COUNT_SEPARATORS: Final = methodcaller("count", _KEY_SEPARATOR)
 
 #: a page's note's keys (NULL: split its key text), columns, bytes and key text, by their place in
 #: :func:`_noted_keys_sql`'s select list
@@ -2566,6 +2584,19 @@ _KEY_TEXT_AT: Final = itemgetter(4)
 
 #: a note's key text split back into its keys
 _SPLIT_KEYS: Final = methodcaller("split", _KEY_SEPARATOR)
+
+
+def _split_whole(notes: Sequence[Any]) -> bool:
+    """whether every note read with :data:`_SEPARATORS` splits its key text back into its keys: each holds a key text
+    (no whole-table note) whose separators are as many as its keys array says. Passes of C, no Python step a note.
+
+    :param notes: the notes, by :func:`_noted_keys_sql`'s positions
+    :ptype notes: Sequence[Any]
+    :return: whether they do
+    :rtype: bool
+    """
+    texts = list(map(_KEY_TEXT_AT, notes))
+    return None not in texts and list(map(_COUNT_SEPARATORS, texts)) == list(map(_KEYS_AT, notes))
 
 
 def _key_bytes(keys: Sequence[str], columns: Sequence[tuple[str, str | None]] = ()) -> int:
@@ -2764,7 +2795,7 @@ async def _noted_keys_read(
     def page(next_at: NotedKeysCursor | None) -> NotedKeysPage:
         return NotedKeysPage(keys=tuple(keys), columns=tuple(columns), whole_table=whole, next=next_at)
 
-    def take(notes: Sequence[Any], sizes: list[int | None], held: list[Any]) -> None:
+    def take(notes: Sequence[Any], sizes: list[int | None], held: list[Any], arrays: bool) -> None:
         # each note by position (_noted_keys_sql's select list): noted_at, keys, columns, bytes (NULL: whole table).
         # Passes of C (map, itemgetter), never a Python step a note: at 20,000 notes those were the larger part of
         # the read. A whole-table note or one with columns (few) takes the slower way
@@ -2773,14 +2804,15 @@ async def _noted_keys_read(
             whole = True
             notes = [note for note, size in zip(notes, sizes, strict=True) if size is not None]
             held = [each for each, size in zip(held, sizes, strict=True) if size is not None]
-        arrays = list(map(_KEYS_AT, notes))
-        if arrays.count(None) == len(arrays):
+        given = list(map(_KEYS_AT, notes)) if arrays else []
+        if given.count(None) == len(given):
+            # every note's key text splits back into its keys (the separators read checked it, _split_whole)
             keys.extend(map(tuple, map(_SPLIT_KEYS, map(_KEY_TEXT_AT, notes))))
         else:
             # a key value holding the separator (rare): that note's keys as their array
             keys.extend(
                 tuple(_SPLIT_KEYS(note[4]) if array is None else array)
-                for note, array in zip(notes, arrays, strict=True)
+                for note, array in zip(notes, given, strict=True)
             )
         if held.count(None) == len(held):
             columns.extend(held)
@@ -2793,7 +2825,17 @@ async def _noted_keys_read(
         # the time read up to, or a microsecond (the clock's grain) before the bracket: one range for the index
         after = start if start is not None else since - _CLOCK_GRAIN
         sql = _noted_keys_sql(owner, slot, all_tenants=tenant is None, every_tenant=every)
-        found = await notes(sql, table, tenant, after, until, left + 1)
+        arrays_sql = _noted_keys_sql(owner, slot, all_tenants=tenant is None, every_tenant=every, arrays=True)
+
+        async def read(*args: Any) -> tuple[Any, bool]:
+            # the notes with their separators; again with their keys' arrays only when a key text does not split
+            # back into its keys (_SEPARATORS), or a whole-table note is among them
+            found = await notes(sql, table, tenant, *args)
+            if _split_whole(found):
+                return found, False
+            return await notes(arrays_sql, table, tenant, *args), True
+
+        found, arrays = await read(after, until, left + 1)
         if not found:
             continue
         full = len(found) > left
@@ -2806,7 +2848,7 @@ async def _noted_keys_read(
                     # the page already holds the earlier table's notes: this table's first instant starts the next
                     return page(NotedKeysCursor(slot=slot, after=start))
                 # one instant's notes fill the page: read that instant whole, so continuing past it skips none
-                taken = await notes(sql, table, tenant, _noted_time(last) - _CLOCK_GRAIN, _noted_time(last), None)
+                taken, arrays = await read(_noted_time(last) - _CLOCK_GRAIN, _noted_time(last), None)
             else:
                 # end at a whole instant: the last instant's notes go to the next page
                 end = len(taken) - 1
@@ -2831,10 +2873,10 @@ async def _noted_keys_read(
         while index < len(taken):
             note = taken[index]
             if note[3] is not None and (index == 0 or taken[index - 1][0] < note[0]) and (keys or first_keyed < index):
-                take(taken[:index], sizes[:index], held[:index])
+                take(taken[:index], sizes[:index], held[:index], arrays)
                 return page(NotedKeysCursor(slot=slot, after=_noted_time(taken[index - 1][0]) if index else start))
             index += 1
-        take(taken, sizes, held)
+        take(taken, sizes, held, arrays)
         used = counted[-1]
         if full:
             return page(NotedKeysCursor(slot=slot, after=_noted_time(taken[-1][0])))

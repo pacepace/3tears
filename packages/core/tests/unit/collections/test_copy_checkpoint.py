@@ -327,6 +327,32 @@ async def test_a_table_whose_parts_do_not_read_back_is_left_out_and_every_other_
     assert loaded.backend.staged_stages() == []
 
 
+async def test_a_part_holding_a_key_twice_is_refused_by_the_copys_key_when_it_is_applied() -> None:
+    """Flips if a checkpoint part's rows (staged as holding each key once: they were written from the copy's keyed
+    table, so no last row of each key is looked for) load a key twice, or drop a row silently, when a part was
+    corrupted to hold one key twice: the copy's primary key refuses the apply."""
+    copy, _, store, pointers = await _written_world()
+    [name, *_] = _part_names(store, _VOTES)
+    part = ipc.open_stream(store.objects[name]).read_all()
+    doubled = pa.concat_tables([part, part.slice(0, 1)])
+    sink = pa.BufferOutputStream()
+    with ipc.new_stream(sink, doubled.schema) as writer:
+        writer.write_table(doubled)
+    store.objects[name] = sink.getvalue().to_pybytes()
+    fresh = _Copy()
+    staged = await _checkpoints(fresh, store, pointers, "b").stage()
+    # the manifest's row count no longer matches the part: the table is left out, read whole from L3
+    assert staged.missing == {_VOTES: COLD_START}
+    stage = f"{STAGE_PREFIX}{_VOTES}__rows"
+    fresh.backend.drop_stage(stage)
+    fresh.backend.stage_rows(stage, _VOTES, doubled, _VOTES_KEY, unique_keys=True)
+    with pytest.raises(duckdb.ConstraintException):
+        fresh.backend.apply_staged(
+            [StagedChange(table=_VOTES, key=_VOTES_KEY, rows=stage, whole=True, whole_kind="cold_start")], mark=1
+        )
+    assert fresh.held(_VOTES) == []
+
+
 async def test_a_table_the_newest_cannot_give_loads_from_the_previous_checkpoint_with_its_mark() -> None:
     copy, checkpoints, store, pointers = await _written_world()
     first_votes = copy.held(_VOTES)

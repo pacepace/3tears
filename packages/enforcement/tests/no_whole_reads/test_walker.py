@@ -7573,3 +7573,30 @@ def test_a_cascade_loop_stays_unknown_when_one_construction_is_not_literal(tmp_p
         """,
     )
     assert any(re.search(r" in _children: unknown-\S+ ", finding) for finding in found), found
+
+
+_JOINED_SELECT_LIST = """
+def quote_identifier(name):
+    return name
+
+
+def coverage_sql(schema, table, columns):
+    qualified = f"{quote_identifier(schema)}.{quote_identifier(table)}"
+    selects = ["COUNT(*) AS total_rows"]
+    selects.extend(f"COUNT(NULLIF({quote_identifier(col)}, 0)) AS nz_{i}" for i, col in enumerate(columns))
+    return f"SELECT {', '.join(selects)} FROM {qualified}"
+
+
+class Driver:
+    async def coverage(self, schema, table, columns):
+        return await self.fetch(coverage_sql(schema, table, columns))
+"""
+
+
+def test_a_select_list_joined_from_a_local_list_is_read_as_its_items(tmp_path: Path) -> None:
+    """Flips if a select list a builder joins from a local list (``", ".join(selects)``, its items a list literal and
+    what ``extend`` / ``append`` add) hides an aggregate it holds: the coverage builder's ``COUNT(*)`` over a whole
+    relation read as a plain select of ``{}``, so neither it nor its caller was named."""
+    found = _symbols(_config(tmp_path, {"coverage.py": _JOINED_SELECT_LIST}))
+    assert ("coverage_sql", "whole-aggregate {}.{}") in found, sorted(found)
+    assert ("Driver.coverage", "calls-whole-read coverage_sql") in found, sorted(found)
