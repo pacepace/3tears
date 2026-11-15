@@ -6,6 +6,30 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a newcomer's wiring mistakes are refused with the fix named, not scored as 0%
+
+**Changed:** a field grader that no answer of any arm carries is refused once the arms have run (exit 2 at the file
+door), naming the fields the answers do carry: `no answer has a field 'label', so its grader could score none of them;
+the answers carry category: grade the field they carry, or have the runner return 'label'`. It used to score every
+case 0% and exit 0. Answers that are all `None` say to return the answer; answers that hold no fields say which
+shapes do. An arm whose answers lack a field another arm's carry is still the product failing, and scored.
+
+**Changed:** `Eval(...)` refuses, before anything runs, a runner that cannot be called with one case (a world's agent
+with a case and its tools), a function grader that cannot take `(case, out)`, and a case a field grader other than
+the classifier cannot read a label from. Each names the signature to declare, or the fields the case carries. The
+first used to score 0% and exit 0, the others to fail the run after the runner had answered every case.
+
+**Changed:** a field is read off any object answer as `out.<field>`, so a dataclass answer is graded by its field; it
+used to read as no label.
+
+**Changed:** `python -m threetears.evals --help`, and the command with no argument, open with the file door
+(`python -m threetears.evals FILE.py`, rung 1's example); a first argument that is neither an eval file nor a command
+is refused naming both. A model with no key and no recording names `recording=` as the way to run without one, and an
+eval of several arms with no name names `name=` or a cases file, not an example from another app.
+
+**For hosts:** nothing to do. A run that was scoring a field no answer carried now stops with exit 2; its runs stay
+stored, and no campaign is filed for it.
+
 ### evals: a recorded judge call over a report page is keyed by what the page was rendered from, not by its words
 
 **Changed:** a word the package prints differently on a report writer's page, or in its computed facts, no longer

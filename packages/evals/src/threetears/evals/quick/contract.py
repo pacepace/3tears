@@ -295,8 +295,10 @@ class Eval:
         :raises ValueError: A blank question, a margin that is no share strictly between 0 and 1 or one with no
             question, no cases, an unreadable case file, a runner of no known form, a mapping with no arm or a
             blank arm name, arms naming ``k=v`` factors unlike one another, arms on two worlds, no grader or one of no
-            known form, an expression grader with no world with state to read, or several arms with no name and no
-            cases file to name the eval by.
+            known form, an expression grader with no world with state to read, several arms with no name and no
+            cases file to name the eval by, a runner that cannot be called with a case (a world's agent with a case
+            and its tools), a function grader that cannot take ``(case, out)``, or a case a field grader other than
+            the classifier cannot read a label from.
         """
         if question is not None and not question.strip():
             raise ValueError("an eval's question is filed on its campaign, and this one is blank")
@@ -462,7 +464,8 @@ class Eval:
         :return: The result: every arm's summary, the campaign and its report.
         :rtype: Result
         :raises ValueError: ``store`` beside ``host``; a host that does not declare what the eval's graders read; or
-            anything the cases, the runner or the graders refuse, before anything runs.
+            anything the cases, the runner or the graders refuse, before anything runs. Once the arms have run, a field
+            grader whose field no answer of any arm carried (its runs stay stored; no campaign is filed).
         :raises ValidationFailedError: The launch refused, or the host refuses the campaign's declaration.
         """
         # Its arms, its judge and every task they start read as this one run, so a replay serving one of its calls
