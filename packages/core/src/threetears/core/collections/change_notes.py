@@ -102,8 +102,17 @@ import asyncio
 import json
 import time
 from bisect import bisect_right
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, nullcontext
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterable,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Mapping,
+    Sequence,
+)
+from contextlib import AbstractAsyncContextManager, aclosing, nullcontext
 from dataclasses import dataclass, field
 from itertools import accumulate
 from operator import itemgetter, methodcaller
@@ -114,6 +123,7 @@ import asyncpg
 from pydantic import TypeAdapter
 from threetears.nats.change_log import ChangeLogState
 from threetears.observe import contain, get_logger
+from threetears.observe.background import cancel_and_wait
 from threetears.observe.metrics import counter, gauge
 
 from threetears.core.collections.epoch_change import RESET_REASON, ChangedRow, EpochChange, check_whole_reach
@@ -1582,8 +1592,47 @@ class ChangeNoteKeeper:
         began = time.monotonic()
         state = await self._log.log_state()
         budget = None if state is None or not state.max_bytes else state.max_bytes * RESTORE_BUDGET_RATIO - state.bytes
-        total, bound = await self._count_since(ring, None)
-        chosen = await self._fitting(ring, lost, covered, budget, bound)
+        # WHY the sizing runs beside the stream (owner #101, 2026-11-14, test_change_note_restore_speed_live's
+        # over-bound case: each row noted twice puts the count's bound past the budget while the distinct rows fit):
+        # one after another the restore took the count 19 ms + the DISTINCT estimate 88 ms + the stream ~290 ms against
+        # ~158 ms of bare reads, 2.4x on PG (2.34x in o97's split). The count, and the estimate when the count's bound
+        # does not fit, now run on a second connection while the stream's own reads run, and the stream drops a
+        # repeated note in the database (DISTINCT ON, see _StreamedChanges._stream): 1.50-1.67x on PG; YugabyteDB
+        # 1.6-1.7x before the DISTINCT ON (the test's fixture, best of 5 interleaved). And
+        # :class:`_Gated` lets no change reach ``finish_restore`` until they rule: it holds the whole-table changes
+        # (one per table and tenant) and at most one keyed chunk, by when the stream's sorted read is done. A coverage
+        # that does not fit is refused before its first append, so an overflow never leaves a record in the new log
+        # (appending and undoing would leave the log's bytes spent, and the cut that follows would not fit). Only a
+        # pool with room for a second connection overlaps; a pool of one sizes first, as before (the stream holds the
+        # one connection, so a sizing waiting for it would wait for ever).
+        verdict: asyncio.Task[tuple[int, bool]] | None = None
+        if budget is not None and _room(self._pool) >= 2:
+            verdict = asyncio.create_task(self._sized(ring, budget))
+            chosen: tuple[int | None, datetime | None] | None = (covered, None)
+            total = 0
+        else:
+            total, bound = await self._count_since(ring, None)
+            chosen = await self._fitting(ring, lost, covered, budget, bound)
+        appended: int | None = None
+        changes: _StreamedChanges | None = None
+        try:
+            if verdict is not None:
+                changes = self._changes_since(ring, None)
+                try:
+                    appended = await self._log.finish_restore(
+                        _Gated(changes, verdict), incarnation=incarnation, lost=lost, covered_from=covered
+                    )
+                    total = verdict.result()[0]
+                except _CoverageOverflows:
+                    total = verdict.result()[0]
+                    # nothing was appended: the gate refused before the first change
+                    assert budget is not None  # narrow: a verdict is asked only under a budget
+                    chosen = await self._cut(ring, lost, covered, budget)
+                    changes = None
+        finally:
+            if verdict is not None and not verdict.done():
+                # the stream failed before the sizing ruled: stop it, so its connection goes back
+                await cancel_and_wait(verdict)
         if chosen is None:
             _RESTORES_REFUSED.inc()
             log.error(
@@ -1598,10 +1647,11 @@ class ChangeNoteKeeper:
             return None
         floor, since = chosen
         kept = total if since is None else (await self._count_since(ring, since))[0]
-        # streamed a page at a time, so the keeper's memory follows one change, not the coverage; should the log
-        # have grown past the estimate meanwhile, finish_restore stops unlabelled and the next pass sizes again
-        changes = self._changes_since(ring, since)
-        appended = await self._log.finish_restore(changes, incarnation=incarnation, lost=lost, covered_from=floor)
+        if changes is None:
+            # streamed a page at a time, so the keeper's memory follows one change, not the coverage; should the log
+            # have grown past the estimate meanwhile, finish_restore stops unlabelled and the next pass sizes again
+            changes = self._changes_since(ring, since)
+            appended = await self._log.finish_restore(changes, incarnation=incarnation, lost=lost, covered_from=floor)
         tables = changes.tables
         if kept < total:
             _RESTORES_TRUNCATED.inc()
@@ -1752,6 +1802,39 @@ class ChangeNoteKeeper:
         """
         if budget is None or bound <= budget or await self._estimate(ring, None) <= budget:
             return covered, None
+        return await self._cut(ring, lost, covered, budget)
+
+    async def _sized(self, ring: NoteRingState, budget: float) -> tuple[int, bool]:
+        """how many notes the coverage holds, and whether its records fit ``budget``: by the count's bound
+        (:meth:`_count_since`) when it fits, else by :meth:`_estimate` of the distinct rows.
+
+        :param ring: the ring
+        :ptype ring: NoteRingState
+        :param budget: the bytes the restore may take
+        :ptype budget: float
+        :return: ``(notes, fits)``
+        :rtype: tuple[int, bool]
+        """
+        total, bound = await self._count_since(ring, None)
+        return total, bound <= budget or await self._estimate(ring, None) <= budget
+
+    async def _cut(
+        self, ring: NoteRingState, lost: str, covered: int | None, budget: float
+    ) -> tuple[int | None, datetime | None] | None:
+        """the oldest-reaching part after a mark of the lost log whose records fit ``budget``: its floor and its cut
+        (:meth:`_fitting`, once the whole coverage is known not to fit).
+
+        :param ring: the ring
+        :ptype ring: NoteRingState
+        :param lost: the lost log's incarnation
+        :ptype lost: str
+        :param covered: the coverage's floor under it; ``None`` when it vouches for none
+        :ptype covered: int | None
+        :param budget: the bytes the restore may take
+        :ptype budget: float
+        :return: ``(floor, cut)``; ``None`` when not even the newest part fits
+        :rtype: tuple[int | None, datetime | None] | None
+        """
         lag = self._wait(ring) / 2
         marks = [(int(mark["seq"]), mark["at"] - lag) for mark in await self.marks_past(lost, covered)]
         low, high = 0, len(marks)
@@ -1919,6 +2002,65 @@ def _coverage_sql(owner: str, current: int, previous: int) -> str:
     )
 
 
+class _CoverageOverflows(Exception):
+    """the whole coverage's records do not fit the restore's budget: raised by :class:`_Gated` before its first
+    change, so ``finish_restore`` has appended nothing."""
+
+
+def _room(pool: Any) -> int:
+    """how many connections ``pool`` may hold at once (an ``asyncpg.Pool``'s ``max_size``); 1 when it does not say.
+
+    :param pool: the pool
+    :ptype pool: Any
+    :return: its bound
+    :rtype: int
+    """
+    size = getattr(pool, "get_max_size", None)
+    return int(size()) if callable(size) else 1
+
+
+class _Gated:
+    """a stream of changes that lets none through until ``sizing`` rules the whole coverage fits the budget.
+
+    While the ruling is pending it holds the whole-table changes (one per table and tenant, small) and at most one
+    keyed chunk, so the stream's reads run beside the estimate and memory still holds one chunk. A coverage ruled
+    too large raises :class:`_CoverageOverflows` before any change is yielded; the stream is closed either way.
+
+    :ivar tables: the tables streamed so far
+    """
+
+    def __init__(self, changes: _StreamedChanges, sizing: Awaitable[tuple[int, bool]]) -> None:
+        self._changes = changes
+        self._sizing = sizing
+
+    @property
+    def tables(self) -> int:
+        """the tables streamed so far.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._changes.tables
+
+    def __aiter__(self) -> AsyncIterator[NotedChange]:
+        return self._gate()
+
+    async def _gate(self) -> AsyncIterator[NotedChange]:
+        async with aclosing(self._changes.stream()) as stream:
+            held: list[NotedChange] = []
+            async for change in stream:
+                held.append(change)
+                if not change.whole_table:
+                    break
+            _notes, fits = await self._sizing
+            if not fits:
+                raise _CoverageOverflows
+            for change in held:
+                yield change
+            async for change in stream:
+                yield change
+
+
 class _StreamedChanges:
     """the coverage's notes folded into changes as a cursor reads them: whole tables first, then each table's
     distinct rows in chunks of :data:`_RESTORE_CHUNK_ROWS`, so memory holds one chunk.
@@ -1936,7 +2078,15 @@ class _StreamedChanges:
     def __aiter__(self) -> AsyncIterator[NotedChange]:
         return self._stream()
 
-    async def _stream(self) -> AsyncIterator[NotedChange]:
+    def stream(self) -> AsyncGenerator[NotedChange]:
+        """the changes, as a generator its reader can close (and so give the connection back) before its end.
+
+        :return: the generator
+        :rtype: AsyncGenerator[NotedChange]
+        """
+        return self._stream()
+
+    async def _stream(self) -> AsyncGenerator[NotedChange]:
         async with self._pool.acquire() as conn, conn.transaction():
             reaches: dict[tuple[str, str | None], list[Any]] = {}
             # the whole notes that cover their tenant's rows (a load's names only its prefixes): read here once, so
@@ -1973,13 +2123,18 @@ class _StreamedChanges:
             # Grouping needs only equal values next to each other, which any order gives, and byte order skips the
             # locale's comparisons. The fold below drops a row noted twice: equal keys are next to each other, and a
             # chunk is cut only where the key changes, so a restored change names each distinct row once, as before.
+            # WHY DISTINCT ON over that same order (owner #101, 2026-11-14, the same file's over-bound case, each row
+            # noted twice, PG 16 best of 5): the database drops a repeated note as it walks its own sort (a Unique over
+            # the sorted rows, no hash), so half the rows cross the wire and reach the fold: 190 ms -> 144 ms for the
+            # read alone; with every row noted once it costs nothing (196 vs 191 ms).
             cursor = await whole_read(
                 conn.cursor(
-                    f"SELECT table_name, tenant, key_text, keys, columns FROM {_coverage_sql(self._owner, self._current, self._previous)} n "  # noqa: S608 - trusted identifiers
+                    'SELECT DISTINCT ON (n.table_name COLLATE "C", n.tenant COLLATE "C", n.key_text COLLATE "C", n.columns) '
+                    f"table_name, tenant, key_text, keys, columns FROM {_coverage_sql(self._owner, self._current, self._previous)} n "  # noqa: S608 - trusted identifiers
                     "WHERE n.key_text IS NOT NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1) "
                     "AND NOT EXISTS (SELECT 1 FROM unnest($2::text[], $3::text[]) w(table_name, tenant) "
                     "WHERE w.table_name = n.table_name AND (w.tenant IS NULL OR w.tenant = n.tenant)) "
-                    'ORDER BY n.table_name COLLATE "C", n.tenant COLLATE "C", n.key_text COLLATE "C"',
+                    'ORDER BY n.table_name COLLATE "C", n.tenant COLLATE "C", n.key_text COLLATE "C", n.columns',
                     self._since,
                     [noted for noted, _ in covering],
                     [tenant for _, tenant in covering],
