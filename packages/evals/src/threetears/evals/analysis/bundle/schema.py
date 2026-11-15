@@ -33,6 +33,8 @@ from threetears.evals.kernel.evidence_tiers import (
     JudgeEvidenceTier,
 )
 from threetears.evals.analysis.judge_drift import JudgeDrift
+from threetears.evals.analysis.checks import Check, Corrected, Looks, Rescore
+from threetears.evals.schema.reading_states import ArmIdentity, StateOf
 from threetears.evals.analysis.cells import (
     CELL_MODEL_VERSION,
     Cell,
@@ -568,6 +570,13 @@ class DesignArm(EvalDocumentModel):
             "when neither applies."
         ),
     )
+    # Left out of the document when unset, so a bundle assembled before the field existed serializes, and is
+    # fingerprinted, as it did.
+    identity: ArmIdentity | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Whether the arm is one thing, a state per coordinate; none where not read.",
+    )
 
 
 class RealizedDesign(EvalDocumentModel):
@@ -953,6 +962,13 @@ class JudgedArm(EvalDocumentModel):
             "`min_labelled` rated observations. None when no person rated any counted observation here."
         ),
     )
+    # Left out of the document when unset, so a bundle assembled before the field existed serializes, and is
+    # fingerprinted, as it did.
+    rescore: Rescore | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The judge checked against itself on this arm: how much a second scoring of one reply moves.",
+    )
 
 
 class JudgedMeasure(EvalDocumentModel):
@@ -1003,6 +1019,13 @@ class JudgedMeasure(EvalDocumentModel):
             "agreement, kappa and its bounds (`inter_judge_agreement`), beside the scores it qualifies. Empty when no "
             "second judge was asked: agreement between judges is then unmeasured, not perfect."
         ),
+    )
+    # Left out of the document when unset, so a bundle assembled before the field existed serializes, and is
+    # fingerprinted, as it did.
+    checks: list[Check] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The judge's checks: what it was checked against, on what sample, with what result.",
     )
 
 
@@ -1980,6 +2003,43 @@ class FamilyComparison(EvalDocumentModel):
             "applies."
         ),
     )
+    # Every field below is left out of the document when unset, so a comparison assembled before it existed
+    # serializes, and is fingerprinted, as it did.
+    state: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The contrast's state where it is not counted, with its reason; none reads counted.",
+    )
+    baseline: float | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The control's mean over the cases the test paired: what `delta` is a change from.",
+    )
+    baseline_n_cases: int | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The cases that baseline is the mean of.",
+    )
+    family: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The family the comparison was corrected in, by id.",
+    )
+    delta_note: Literal["paired_cases", "adjusted"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why `delta` is not the difference of the two means beside it, where it is not.",
+    )
+    corrected: Corrected | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The contrast as what its judge was checked against would read it: a check's result, never a second verdict.",
+    )
+    rescore_share: tuple[float, float] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The share of the contrast's variance that is the judge's re-score noise, low then high.",
+    )
 
 
 class ComparisonFamily(EvalDocumentModel):
@@ -2257,6 +2317,13 @@ class ReadingScope(EvalDocumentModel):
             "exploratory, and, when the aspect declared no design at all (`declared` null), that its design was "
             "inferred from the runs. None when a question is asked, where the two lists above carry the label."
         ),
+    )
+    # Left out of the document when unset, so a bundle assembled before the field existed serializes, and is
+    # fingerprinted, as it did.
+    looks: Looks | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="How often the aspect's test was looked at, against how often it planned to be.",
     )
 
 
@@ -3856,6 +3923,13 @@ class AnalysisContextBundle(EvalDocumentModel):
             "the analysis's archived state at assembly, so un-archiving the analysis restores its insights. "
             "Empty is the ordinary case."
         ),
+    )
+    # Left out of the document while empty, so a bundle assembled before the field existed serializes, and is
+    # fingerprinted, as it did.
+    checks: list[Check] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The checks of the rig: identical arms read on the same reading.",
     )
     # Left out of the document while unset, so a bundle assembled before the manifest existed is that shape byte for
     # byte. No part of the version 2 pre-image (`_V2_FIELDS`), and the whole of version 3's.

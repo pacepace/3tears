@@ -20,8 +20,8 @@ from threetears.evals.analysis.analyst.snapshot import analyst_input
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TrialRow
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report_input import Example, ReportInput
-from threetears.evals.analysis.report.input_build import EXAMPLE_EXCERPT_CHARS, report_input
-from threetears.evals.analysis.report.words import trial_dimension
+from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS, report_input
+from threetears.evals.analysis.style import trial_dimension
 
 SNAPSHOT = "report-snapshot:" + "0" * 32
 

@@ -103,6 +103,7 @@ from threetears.evals.analysis.bundle.schema import (
 )
 from threetears.evals.analysis.aspects import AspectDeclaration, AspectView, aspect_view, aspect_views
 from threetears.evals.analysis.campaign_bundle import ArmSpelling, CampaignBundle
+from threetears.evals.analysis.checks import Check, Corrected, Looks, Rescore
 from threetears.evals.analysis.campaign_readings import (
     AggregateFigure,
     AggregateWeighting,
@@ -450,6 +451,11 @@ from threetears.evals.analysis.summary import (
 )
 
 __all__ = [
+    # The shapes of a check, which a bundle's fields hold.
+    "Check",
+    "Corrected",
+    "Looks",
+    "Rescore",
     # A campaign read one aspect at a time, and the shapes of what code reads off it across aspects.
     "AggregateFigure",
     "AggregateWeighting",

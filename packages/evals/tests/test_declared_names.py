@@ -39,7 +39,7 @@ from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis.campaigns import create_campaign, update_campaign
 from threetears.evals.analysis.judge_profiles import judged_criteria
 from threetears.evals.analysis.cells import CELL_MODEL_VERSION
-from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name, legend, measure_name_of
+from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name, legend
 from threetears.evals.analysis.report.serialize_html import campaign_report_html
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.words import reason_words
@@ -68,6 +68,7 @@ from threetears.evals.run.rejudge import judged_template
 from threetears.evals.schema.hashing import identity_json
 from threetears.evals.schema.models import EvalTemplate, GoalStateOutcome, RoleUsage
 from threetears.evals.schema.versioning import DURABLE_SCHEMA_MINOR, DURABLE_SCHEMA_VERSION
+from threetears.evals.analysis.style import measure_name_of
 from packages.evals.tests.campaign_support import ASKED_AT, ASSEMBLED_AT, QUESTION
 from packages.evals.tests.factories import (
     fixture_variant_key,

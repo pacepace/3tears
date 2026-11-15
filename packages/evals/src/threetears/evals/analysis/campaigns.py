@@ -1850,7 +1850,7 @@ def campaign_arms_spelled(
     later replaces them whole. An arm spelled from several levers comes with its spelling
     (:class:`~threetears.evals.analysis.campaign_bundle.ArmSpelling`: each lever by id and its level), which the
     campaign bundle carries and a page prints the arm by, each lever by its stored name
-    (:func:`~threetears.evals.analysis.report.words.printed_arm_labels`), so renaming a lever moves no label and no
+    (:func:`~threetears.evals.analysis.style.printed_arm_labels`), so renaming a lever moves no label and no
     fingerprint, and no page reads a label's text back.
 
     **A derived label is not an identity.** It is read over the variants the runs carry now, so a variant joining

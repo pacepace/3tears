@@ -57,10 +57,22 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from threetears.evals.analysis.checks import Check, Corrected, Looks
+from threetears.evals.schema.reading_states import (
+    ArmIdentity,
+    CaveatClass,
+    CaveatReach,
+    Coordinate,
+    Maker,
+    ReadingState,
+    Reason,
+    StateOf,
+    check_state,
+)
 from threetears.evals.kernel.host.bars import PassCriterion
 from threetears.evals.schema.hashing import bytes_digest
 
@@ -125,6 +137,27 @@ class Arm(_Part):
     )
     reasoning_ratio: Number | None = Field(default=None, description="The share of output spent reasoning.")
     description: str | None = Field(default=None, description="What kind of candidate the arm is, in a few words.")
+    # The four below are left out of the document when unset, so an input built before they existed digests as it did.
+    arm_id: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The id that names the arm apart from its label; names one cell where the arm is split.",
+    )
+    cell: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The one cell the arm id names, where the arm is split over several.",
+    )
+    spelling: dict[str, SettingValue] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The levers code spelled the arm's computed name from, each with its level, in order.",
+    )
+    identity: ArmIdentity | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Whether the arm is one thing, a state per coordinate.",
+    )
 
 
 class Precision(_Part):
@@ -162,6 +195,17 @@ class Reading(_Part):
     confirmatory: bool | None = Field(default=None, description="Whether the reading answers the asked question.")
     why: str | None = Field(default=None, description="Why, in one plain sentence.")
     precision: Precision | None = Field(default=None, description="What limits the interval.")
+    # The two below are left out of the document when unset, so an input built before they existed digests as it did.
+    state: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The reading's state where it is not counted, with its reason; none reads counted.",
+    )
+    flip_margin: Number | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The margin at which the reading would read the other way, in points.",
+    )
 
 
 class Depth(_Part):
@@ -278,6 +322,12 @@ class ScoreboardRow(_Part):
         description="How the arm's cost was priced: its price sources, serving providers and priced calls; none where "
         "the input does not say.",
     )
+    # Left out of the document when unset, so an input built before the field existed digests as it did.
+    cost: Stat | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The arm's one cost reading, the fallback from cost per reply decided once.",
+    )
 
 
 class PairRead(_Part):
@@ -294,6 +344,12 @@ class PairRead(_Part):
     cases: tuple[int, int] | None = Field(default=None, description="Each arm's usable cases.")
     why: str | None = Field(default=None, description="Why, in one plain sentence.")
     precision: Precision | None = Field(default=None, description="What limits the interval.")
+    # Left out of the document when unset, so an input built before the field existed digests as it did.
+    state: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The pair's state where it is not counted, with its reason; none reads counted.",
+    )
 
 
 class PassRule(_Part):
@@ -363,6 +419,17 @@ class Aspect(_Part):
         exclude_if=lambda value: value is None,
         description="How a trial on the aspect passes: its criteria, threshold, counted dimensions and checks; none "
         "where the input does not say.",
+    )
+    # The two below are left out of the document when unset, so an input built before they existed digests as it did.
+    margin_informative: bool | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Whether any margin a reader could plausibly hold changes a reading on the aspect.",
+    )
+    looks: Looks | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="How often the aspect's test was looked at, against how often it planned to be.",
     )
 
 
@@ -447,6 +514,22 @@ class Stat(_Part):
     p95: Number | None = Field(default=None, description="The 95th percentile.")
     change: Number | None = Field(default=None, description="The arm minus the control, where only that is given.")
     shares: list[Number] | None = Field(default=None, description="The share in each of the measure's bins, percent.")
+    # The three below are left out of the document when unset, so an input built before they existed digests as it did.
+    spread: Number | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The spread of the arm's per-case values, in the measure's units.",
+    )
+    no_variation: Number | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The one value every case took, where the cases did not vary.",
+    )
+    state: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The interval's state where it is not counted, with its reason; none reads counted.",
+    )
 
 
 class Level(_Part):
@@ -501,6 +584,12 @@ class Judged(_Part):
     agreement: Number | None = Field(default=None, description="The judge's agreement with those ratings.")
     level: str | None = Field(default=None, description="The confidence level of the intervals per_arm carries.")
     per_arm: dict[str, Stat] = Field(default_factory=dict, description="Each arm's mean, by arm.")
+    # Left out of the document while empty, so an input built before the field existed digests as it did.
+    checks: list[Check] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The judge's checks: what it was checked against, on what sample, with what result.",
+    )
     by_aspect: dict[str, dict[str, Stat]] = Field(
         default_factory=dict,
         description="Each other aspect's figures, by aspect then arm; per_arm is the lead aspect's (the first asked, "
@@ -549,6 +638,43 @@ class Contrast(_Part):
         default=None,
         exclude_if=lambda value: value is None,
         description="The arms' correlation across the paired cases: how much pairing narrowed the interval.",
+    )
+    # Every field below is left out of the document when unset, so an input built before it existed digests as it did.
+    # The typed state is `state`: `reason` above is the pipeline's sentence, which a stored input carries.
+    state: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The contrast's state where it is not counted, with its reason; none reads counted.",
+    )
+    baseline: Number | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The control's mean over the cases the test paired: what the delta is a change from.",
+    )
+    baseline_n_cases: int | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The cases that baseline is the mean of.",
+    )
+    family: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The family the contrast was corrected in, by id.",
+    )
+    delta_note: Literal["paired_cases", "adjusted"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the delta is not the difference of the two means printed beside it, where it is not.",
+    )
+    corrected: Corrected | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The contrast as what its judge was checked against would read it: a check's result, never a second verdict.",
+    )
+    aa: Check | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The A/A check covering the contrast: identical arms read on the same reading.",
     )
 
 
@@ -776,6 +902,12 @@ class Factor(_Part):
     id: str = Field(description="The factor's id, as configs and settings key it.")
     name: str | None = Field(default=None, description="What a reader calls it.")
     levels: list[Level] = Field(min_length=1, description="Its levels, in order.")
+    # Left out of the document while False, so an input built before the field existed digests as it did.
+    ordered: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Whether the levels are points on one scale, so a line may be drawn across them.",
+    )
 
 
 class Config(_Part):
@@ -827,6 +959,140 @@ class HumanPreference(_Part):
     arm: str = Field(description="The arm rated against it.")
     n: int = Field(description="Rated items.")
     rows: list[PreferenceRow] = Field(min_length=1, description="The preference in each slice.")
+    # The five below are left out of the document when unset, so an input built before they existed digests as it did.
+    read_id: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The blind read the ratings come from.",
+    )
+    person: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Who rated, where the read records it.",
+    )
+    test: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The test the preference was read by.",
+    )
+    p: Number | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Its p.",
+    )
+    verdict: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The contrast verdict it comes to.",
+    )
+
+
+#: The states that change the answer: what a class A caveat is raised by.
+_CHANGES_THE_ANSWER = frozenset({"set_aside", "withheld"})
+
+
+class CaveatEntry(_Part):
+    """One row of the one caveat list: a qualification of the answer, typed so code ranks it without reading a word.
+
+    Every first-screen qualification is one of these. ``against`` and ``criterion`` say what a caveat about an
+    instrument's check was checked against and on which criterion, which is what lets a check against people silence a
+    check against a model, and what ranks a judge checked against a model only.
+    """
+
+    id: str = Field(description="The caveat's stable id, as a report document names it.")
+    kind: str = Field(description="The id's kind, which decides its class.")
+    cls: CaveatClass | None = Field(
+        default=None, alias="class", description="What it does to the answer, A to E; none for a method-reach kind."
+    )
+    reach: CaveatReach = Field(description="report, scoped or method.")
+    state: ReadingState | None = Field(default=None, description="The non-counted state that raised it, where one did.")
+    reason: Reason | None = Field(default=None, description="That state's reason, or the reason a check is not met.")
+    coordinate: Coordinate | None = Field(
+        default=None, description="The coordinate a split or an unrecorded identity names."
+    )
+    arms: list[str] = Field(default_factory=list, description="The arm ids it touches; empty for all.")
+    readings: list[str] = Field(
+        default_factory=list,
+        description="The readings it is scoped to, each '<aspect>/<measure>'; empty for the whole report.",
+    )
+    asked: bool = Field(default=False, description="Whether any of its readings is on an asked aspect.")
+    deciding: bool = Field(
+        default=False,
+        description="Whether the answer turns on a reading it names: a class E caveat reaches the first screen only "
+        "where it does.",
+    )
+    immaterial: bool | None = Field(
+        default=None, description="True once code proved it changes no answer; none where code cannot say."
+    )
+    subsumed_by: str | None = Field(default=None, description="The caveat that silences it, by id.")
+    against: Literal["people", "model"] | None = Field(
+        default=None, description="For a caveat about an instrument's check: what the instrument was checked against."
+    )
+    criterion: str | None = Field(default=None, description="For such a caveat: the criterion the check decides.")
+    same_family: bool = Field(
+        default=False, description="For a check against a model: whether the model is of a candidate's family."
+    )
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _belongs_together(self) -> Self:
+        if self.state is not None:
+            check_state(self.state, self.reason, self.coordinate)
+        if self.cls == "A" and self.state not in _CHANGES_THE_ANSWER:
+            raise ValueError("a class A caveat is a reading set aside or withheld, and carries that state")
+        return self
+
+
+class GateRun(_Part):
+    """One run a gate names."""
+
+    run: str = Field(description="The run's id.")
+    status: str = Field(description="Its stored status.")
+    ended_because: str | None = Field(
+        default=None, description="Why it ended, in its record's own words; never one of the shared reasons."
+    )
+
+
+class Gate(_Part):
+    """What stops a campaign from being read at all; a campaign that can be read has none."""
+
+    rule: Literal["setup", "unfinished", "too_small"] = Field(description="Which rule stopped the read.")
+    runs: list[GateRun] = Field(default_factory=list, description="The runs the rule names.")
+    waiting: int = Field(default=0, ge=0, description="The open report-wide caveats waiting below the gate.")
+
+
+class CallRead(_Part):
+    """The call on a campaign, as of the freeze: the arm decided, who decided, and what has moved since."""
+
+    arm: str = Field(description="The decided arm's id.")
+    made_by: Maker | None = Field(default=None, description="A person or a model; none where the call recorded none.")
+    model: str | None = Field(default=None, description="The model that made it, by id.")
+    on_behalf_of: str | None = Field(default=None, description="Who a model made it for.")
+    runs_joined_since: int | None = Field(default=None, description="Runs that joined the evidence after the call.")
+    identity_changed: bool | None = Field(
+        default=None, description="Whether the evidence's fingerprint differs from the one the call was read against."
+    )
+
+
+class FirstScreen(_Part):
+    """What a report's first screen holds beside the answer, in four fixed slots, as typed values and no text.
+
+    The gate (can this be read at all), the trust slot's reasons (at most three caveats, ranked, with the count past
+    them), and the call. The answer slot holds no field: it is the verdicts and warnings the input already carries.
+    Computed by one function over the caveat list
+    (:func:`~threetears.evals.analysis.first_screen.first_screen`), and left out of the input's digest, since it is a
+    function of the rest of the input and of a call that may be made after the freeze.
+    """
+
+    gate: Gate | None = Field(default=None, description="What stopped the read; none when the campaign can be read.")
+    reasons: list[str] = Field(default_factory=list, max_length=3, description="The ranked caveats shown, by id.")
+    remainder: int = Field(default=0, ge=0, description="The eligible caveats past the three shown.")
+    open_report_caveats: int = Field(default=0, ge=0, description="Every open report-wide caveat, shown or not.")
+    called_arms: list[str] = Field(
+        default_factory=list, description="The arms code's own read of the options calls: what ranks a caveat on them."
+    )
+    call: CallRead | None = Field(default=None, description="The call, where one was made.")
 
 
 class ReportInput(_Part):
@@ -894,6 +1160,21 @@ class ReportInput(_Part):
         description="The rig each run was measured with, for each run that recorded one past a serial run pinning and "
         "declaring nothing; none where no run did, or the bundle carried none.",
     )
+    # The two below are left out of the document when unset, so an input built before they existed digests as it did.
+    caveat_list: list[CaveatEntry] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Every qualification of the answer, each once, typed; none on an input built before the list.",
+    )
+    first_screen: FirstScreen | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The first screen's slots, as shown when the input was frozen; never part of the input's digest.",
+    )
+
+
+#: The one key of the document no digest reads: a function of the rest of the input and of a call made later.
+_OUTSIDE_THE_DIGEST = "first_screen"
 
 
 def report_input_digest(report_input: ReportInput) -> str:
@@ -918,5 +1199,6 @@ def report_input_document_digest(document: Mapping[str, Any]) -> str:
     :return: A 64-character lowercase hex digest.
     :rtype: str
     """
+    document = {key: value for key, value in document.items() if key != _OUTSIDE_THE_DIGEST}
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return bytes_digest(canonical.encode("utf-8"))

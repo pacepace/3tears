@@ -51,7 +51,7 @@ from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaigns import set_campaign_control
 from threetears.evals.analysis.floors import floor_subject
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
-from threetears.evals.analysis.report.words import input_arm_tags, printed_arm_labels, reader_arm_labels
+from threetears.evals.analysis.report.words import input_arm_tags, reader_arm_labels
 from threetears.evals.analysis.service import analysis_report, assemble_campaign_bundle, campaign_report
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
 from threetears.evals.kernel.declaration import Floor, RateDrop
@@ -59,6 +59,7 @@ from threetears.evals.kernel import MetricDescriptor
 from threetears.evals.kernel.host import EvalHost, HostProfile, MeasureRegistry, SweepableRegistry
 from threetears.evals.schema import IntervalScale, SweepableValue
 from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.analysis.style import printed_arm_labels
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import (
     analysed_aspect,

@@ -59,7 +59,7 @@ from threetears.evals.analysis.report.parts.look import arm_token
 from threetears.evals.analysis.report.svg import interval_glyph_svg
 from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report.input_build import report_input
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.kernel.numbers import MoneyForm, money_form
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding

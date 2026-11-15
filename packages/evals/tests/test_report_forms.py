@@ -36,7 +36,7 @@ import pytest
 from threetears.evals.analysis import campaign_report, service
 from threetears.evals.analysis.report.campaign.page import build_campaign_report_in_aspect_forms
 from threetears.evals.analysis.analyst.snapshot import frozen_input
-from threetears.evals.analysis.report.input_build import report_input
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import AggregateFigure, CampaignReadings
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart

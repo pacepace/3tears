@@ -1,6 +1,6 @@
 """Every place a campaign's page names a goal check names it by a name, never its expression: the display name its
 template declares (``EvalTemplate.goal_check_names``), else ``Goal check``, numbered where an aspect reads several,
-through the one door (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`,
+through the one door (:func:`~threetears.evals.analysis.style.measure_name_of`,
 ``AnalysisContextBundle.check_name``, ``AnalysisContextBundle.named_checks``, ``AspectNames.check_names``). The owner
 ruled it on 2026-11-07, reversing the rule that printed an unnamed check by its whole expression.
 

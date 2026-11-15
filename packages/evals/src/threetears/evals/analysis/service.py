@@ -38,7 +38,7 @@ from threetears.evals.analysis.generation_tally import GenerationTally
 from threetears.evals.analysis.bundle.schema import BundleInspection, known_fingerprint
 from threetears.evals.analysis.report import CampaignReport, Verdict
 from threetears.evals.analysis.report.keys.names import input_check_name
-from threetears.evals.analysis.report.input_build import report_input
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.metrics import goal_check_measure
 from threetears.evals.analysis.report.model import ReportBlock, TrialDetail
 from threetears.evals.analysis.report.aspect.method import IN_THE_WRITTEN_REPORT
@@ -52,7 +52,6 @@ from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.verdict import unfinished_line
 from threetears.evals.analysis.report.words import (
     campaign_arm_tags,
-    declared_arm_names,
     reader_arm_labels,
     reader_arms,
 )
@@ -84,6 +83,7 @@ from threetears.evals.kernel.remedies import (
     FIND_CAMPAIGN,
     FIND_RUN,
 )
+from threetears.evals.analysis.style import declared_arm_names
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
