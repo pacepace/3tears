@@ -1,19 +1,22 @@
-"""A function grader that returns a bool is the author saying pass or fail, so it is a check wherever it is read.
+"""A function grader is a check unless its author declares it grades a number, and what it returns is held to that.
 
-Its False fails the case it is on: in the first line's count of cases passed, in the misses below it, in what a
-comparison's gate reads, and in ONE printed form, a pass rate with its count, whether its return is annotated
-``-> bool`` or not. A grader whose bool the package cannot tell from its code before it runs is stopped at its first
-answer, naming the fix, never landed as a score no case can fail.
+Its kind is read from its declaration alone, never its source: annotated ``-> bool``, a check; annotated as a number
+(``-> float``, ``-> int``) or given a range, a number; neither, a check, since the grader a newcomer writes first
+returns a bool. A check's False fails the case it is on: in the first line's count of cases passed, in the misses below
+it, in what a comparison's gate reads, and in ONE printed form, a pass rate with its count. A value the declaration
+contradicts (0.25 from a check, False from a number) fails the run at the first such answer, naming the declaration to
+write: never a dropped cell that shrinks the count. Where no grader is a check, the first line states no pass count.
 """
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable, Mapping
 from typing import Any
 
 import pytest
 
-from threetears.evals import Eval
+from threetears.evals import Eval, grader
 from threetears.evals.kernel.scoring import failed_checks, measure_catalog_of
 from threetears.evals.quick.one_call import callable_host, scorer_measure
 from threetears.evals.run import list_results, list_runs
@@ -46,7 +49,7 @@ def right_annotated(case: Mapping[str, Any], out: Any) -> bool:
     return bool(out == case["want"])
 
 
-def closeness(case, out):
+def closeness(case: Mapping[str, Any], out: Any) -> float:
     return 0.5 if out == case["want"] else 0.25
 
 
@@ -77,10 +80,11 @@ async def test_a_bool_grader_that_passed_every_case_says_so() -> None:
     assert exit_code == 0
 
 
-async def test_a_numeric_grader_alone_is_a_score_no_case_fails_and_prints_its_mean() -> None:
+async def test_a_numeric_grader_alone_states_no_pass_count_and_prints_its_mean() -> None:
     lines, exit_code = await _lines(classify, [closeness])
 
-    assert lines[0] == "classify: classify passed 3 of 3 cases."
+    # Re-pinned deliberately (Critic B-3): it read "classify passed 3 of 3 cases.", a count no grader judged.
+    assert lines[0] == "classify: classify ran 3 of 3 cases; no grader here says pass or fail."
     assert "  Closeness score: mean 0.3333 (3 trials, min 0.25, max 0.5)" in lines
     assert exit_code == 0
 
@@ -106,15 +110,51 @@ async def test_a_bool_grader_prints_one_form_annotated_or_not() -> None:
     assert [line.replace("Right annotated score", "Right score") for line in annotated[1:4]] == bare[1:4]
 
 
-async def test_a_bool_from_a_grader_whose_code_does_not_say_pass_or_fail_is_stopped_naming_the_fix() -> None:
-    result = await Eval(CASES, classify, [starts], k=1).run(store=":memory:")
+async def test_a_bool_from_a_call_with_no_annotation_is_a_check() -> None:
+    lines, exit_code = await _lines(classify, [starts])
+
+    assert lines[0] == "classify: classify passed 1 of 3 cases. Cases that failed a trial: b, c."
+    assert exit_code == 0
+
+
+def unannotated_number(case, out):
+    return 0.5 if out == case["want"] else 0.25
+
+
+def both_kinds(case, out):
+    return 0.5 if out == case["want"] else False
+
+
+def number_returning_a_bool(case: Mapping[str, Any], out: Any) -> float:
+    return out == case["want"]
+
+
+def ranged_returning_a_bool(case, out):
+    return out == case["want"]
+
+
+@pytest.mark.parametrize(
+    ("graders", "fix"),
+    [
+        ([unannotated_number], "def unannotated_number(case, out) -> float or grader(unannotated_number, range="),
+        ([both_kinds], "def both_kinds(case, out) -> float or grader(both_kinds, range="),
+        ([right, both_kinds], "def both_kinds(case, out) -> float or grader(both_kinds, range="),
+        ([number_returning_a_bool], "annotate it def number_returning_a_bool(case, out) -> bool to grade pass or fail"),
+        (
+            [grader(ranged_returning_a_bool, range=(0, 5))],
+            "it is given a range, so its False would read as a low score, never as a failed case",
+        ),
+    ],
+    ids=["a number from a check", "both kinds", "beside a check", "a bool from -> float", "a bool from a range"],
+)
+async def test_a_value_its_declaration_contradicts_fails_the_run_naming_the_fix(graders: list[Any], fix: str) -> None:
+    result = await Eval(CASES, classify, graders, k=1).run(store=":memory:")
 
     first = result.render().splitlines()[0]
+    # The run does not complete with a pass count over the cells left: it fails, naming the declaration to write.
+    assert first.startswith("classify: the run failed, so there is no verdict: the grader ")
+    assert fix in first
     assert "passed" not in first
-    assert result.summary.n_scored == 0 and result.summary.n_excluded == 3
-    assert (
-        "annotate it def starts(case, out) -> bool, or return float(...) to grade a number" in result.summary.errors[0]
-    )
     assert result.exit_code() == 1
 
 
@@ -151,13 +191,8 @@ async def test_a_result_stored_as_a_number_reads_back_as_a_check_through_the_boo
     stored = off_loop(list_results, host.storage, run.id, "kept")
     catalog = measure_catalog_of(stored, host.profile.measures)
     assert sorted(len(failed_checks(result, catalog)) for result in stored) == [0, 1, 1]
-
-
-def nested_number(case, out):
-    def size(value):
-        return len(value)
-
-    return size(out) > 0
+    assert run.measure_definitions is not None
+    assert run.measure_definitions["right"] != host.profile.measures.definition_digests()["right"]
 
 
 def no_return(case, out):
@@ -168,36 +203,91 @@ def a_count(case, out):
     return 1 if out == case["want"] else 0
 
 
-def sometimes_a_number(case, out):
-    if out is None:
-        return 0.0
-    return out == case["want"]
-
-
-def either_way(case, out):
-    return (out == case["want"] and not out.isupper()) if out else isinstance(out, str)
-
-
 def a_float(case: Mapping[str, Any], out: Any) -> float:
     return 1.0
 
 
+def an_int(case: Mapping[str, Any], out: Any) -> int:
+    return 1
+
+
+def either(case: Mapping[str, Any], out: Any) -> bool | float:
+    return 1.0
+
+
+def anything(case: Mapping[str, Any], out: Any) -> Any:
+    return True
+
+
+@functools.wraps(right_annotated)
+def decorated(case: Any, out: Any) -> Any:
+    return right_annotated(case, out)
+
+
+@functools.cache
+def cached(case: str, out: str) -> float:
+    return 1.0
+
+
+def _made_without_source(text: str) -> Callable[..., Any]:
+    """A grader defined by exec, with no __future__ import: no source to read, and its annotation evaluated lazily, so
+    a name nothing defines is a forward reference."""
+    namespace: dict[str, Any] = {}
+    # dont_inherit: this module's postponed annotations would otherwise turn every annotation into a string.
+    exec(compile(text, "<made>", "exec", dont_inherit=True), namespace)
+    made: Callable[..., Any] = namespace["made"]
+    return made
+
+
 @pytest.mark.parametrize(
-    ("grader", "pass_fail"),
+    ("graders", "pass_fail"),
     [
         (right, True),
         (right_annotated, True),
-        (nested_number, True),
-        (either_way, True),
+        (starts, True),
+        (no_return, True),
+        (a_count, True),
+        (anything, True),
+        (decorated, True),
         (closeness, False),
-        (starts, False),
-        (no_return, False),
-        (a_count, False),
-        (sometimes_a_number, False),
         (a_float, False),
+        (an_int, False),
+        (either, False),
+        (cached, False),
+        (_made_without_source("def made(case, out) -> bool:\n    return True\n"), True),
+        (_made_without_source("def made(case, out):\n    return 0.5\n"), True),
+        (_made_without_source("def made(case, out) -> 'bool':\n    return True\n"), True),
+        (_made_without_source("def made(case, out) -> 'float':\n    return 1.0\n"), False),
+        (_made_without_source("def made(case, out) -> Undefined:\n    return 1.0\n"), True),
+        (_made_without_source("def made(case, out) -> float | Undefined:\n    return 1.0\n"), False),
+        (_made_without_source("def made(case, out) -> bool | None:\n    return True\n"), True),
+    ],
+    ids=[
+        "no annotation, a comparison",
+        "-> bool",
+        "no annotation, a call",
+        "no annotation, no return",
+        "no annotation, 1 or 0",
+        "-> Any",
+        "wraps-decorated, the wrapped -> bool",
+        "-> float",
+        "-> float again",
+        "-> int",
+        "-> bool | float",
+        "functools.cache over -> float",
+        "no source, -> bool",
+        "no source, no annotation",
+        "a string 'bool'",
+        "a string 'float'",
+        "an unresolvable name",
+        "a union with an unresolvable name",
+        "bool or None",
     ],
 )
-def test_a_grader_is_a_pass_fail_when_its_annotation_or_every_return_says_bool(
-    grader: Callable[..., Any], pass_fail: bool
-) -> None:
-    assert scorer_measure(grader).pass_fail is pass_fail
+def test_a_grader_is_a_check_unless_it_declares_a_number(graders: Callable[..., Any], pass_fail: bool) -> None:
+    assert scorer_measure(graders).pass_fail is pass_fail
+
+
+def test_a_range_declares_a_number_and_a_bool_annotation_outranks_it() -> None:
+    assert scorer_measure(right, value_range=(1.0, 5.0)).pass_fail is False
+    assert scorer_measure(right_annotated, value_range=(1.0, 5.0)).pass_fail is True

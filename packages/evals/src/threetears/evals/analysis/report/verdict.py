@@ -31,6 +31,11 @@ After the decision, each arm
 is the subject of its figures and the interval says what it allows (:func:`interval_words`), never its level, which
 the table's header states. Each measure and guardrail is named as the page names it, and a cost is never the lead
 (:func:`_is_cost`).
+
+**No pass count where nothing graded can fail a trial.** An arm whose aspect declares no check and no judged dimension
+that counts (:func:`_holds_a_check`, read off the measure catalog, never the eval's kind) states how many it ran and
+that no grader says pass or fail: ``classify ran 3 of 3 cases; no grader here says pass or fail.`` Its readings carry
+the means.
 """
 
 from __future__ import annotations
@@ -50,7 +55,13 @@ from threetears.evals.analysis.completeness import SETUP_GATE_SHARE, lost_share,
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import cannot_tell_apart, measure_name
 from threetears.evals.analysis.report.words import PASS_RATE, comparison_words, judged_heading
-from threetears.evals.kernel.metrics import ACCURACY_MEASURE, METRIC_DESCRIPTORS
+from threetears.evals.kernel.metrics import (
+    ACCURACY_MEASURE,
+    MATCH_MEASURE,
+    METRIC_DESCRIPTORS,
+    RUBRIC_FAMILY,
+    goal_check_of,
+)
 from threetears.evals.kernel.result_condition import CandidateFailureCause, ExclusionCause
 
 if TYPE_CHECKING:
@@ -548,7 +559,7 @@ def verdict_line(
         return unfinished
     if len(boards) == 1:
         (board,) = boards
-        result = f"{_one_arm(board, arm)}."
+        result = f"{_one_arm(board, arm, graded=_holds_a_check(bundle))}."
         return VerdictLine(
             rule="one_arm", text=result + _missed_cases(bundle, case_name or (lambda case: case)), lead=result
         )
@@ -650,11 +661,29 @@ def _undecided(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
     return cannot_tell_apart(others, arm(key))
 
 
-def _one_arm(board: ArmScoreboard, arm: Callable[[str], str]) -> str:
-    """One arm's pass rate as the count it is computed over (:func:`passed_clause`)."""
+def _one_arm(board: ArmScoreboard, arm: Callable[[str], str], *, graded: bool) -> str:
+    """One arm's pass rate as the count it is computed over (:func:`passed_clause`); where nothing graded can fail a
+    trial (``graded`` False), how many it ran and that no grader says pass or fail, with no pass count, which would
+    count trials nothing judged: its readings carry what was measured."""
     if not board.usable:
         return f"{arm(board.variant_key)} ran {board.ran} trials, all lost to the test setup"
+    if not graded:
+        if board.ran == board.cases:
+            ran = f"{arm(board.variant_key)} ran {board.usable} of {board.ran} cases"
+        else:
+            ran = f"{arm(board.variant_key)} ran {board.usable} of {board.ran} trials on {board.usable_cases} cases"
+        return f"{ran}; no grader here says pass or fail"
     return passed_clause(arm(board.variant_key), board.passed, board.usable, board.usable_cases)
+
+
+def _holds_a_check(bundle: AnalysisContextBundle) -> bool:
+    """Whether anything the aspect grades can fail a trial, by what its measure catalog declares: a goal check, a
+    label match or a measure declared a check (``MetricDescriptor.is_check``), or a judged dimension that counts. Never
+    by the eval's kind: a measure no trial can fail on (a number) decides no pass."""
+    return any(
+        goal_check_of(name) is not None or name == MATCH_MEASURE or descriptor.is_check
+        for name, descriptor in bundle.measure_catalog.items()
+    ) or any(measure.family == RUBRIC_FAMILY and measure.axis == "capability" for measure in bundle.judged_measures)
 
 
 #: How many missed cases one arm's line names before it counts the rest.

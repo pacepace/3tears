@@ -530,8 +530,8 @@ runs at 24 cases, and within 0.1 in 16 of 20 runs at 100. Below that the row rea
 claims nothing. A measure with a margin and no declared range
 is not tested for equivalence at all, since no test of a mean holds 5% without one: its rows never read
 `equivalent`, and the report names the measure once with the remedy, declare `value_range`. On the quick
-path a scorer returning a bool is on 0 to 1 already, and one returning a number takes its range beside its
-margin (`grader(rating, margin=0.5, range=(1, 5))`); a margin on it without one is refused
+path a scorer that declares no number (annotated `-> bool`, or not annotated) is a check on 0 to 1 already, and
+one annotated `-> float` or `-> int` takes its range beside its margin (`grader(rating, margin=0.5, range=(1, 5))`); a margin on it without one is refused
 when the eval is built. The p is corrected in the same Holm family as the separations, with the multiplier capped at the number of
 compared rows (Shaffer's refinement: a difference cannot be both zero and at least the margin), so the
 chance that any verdict in the family is wrong stays at 5%.

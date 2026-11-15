@@ -2,8 +2,10 @@
 
 An :class:`~threetears.evals.quick.contract.Eval`'s ``grader`` is one grader or a list of them, each one of:
 
-- **A function** ``(case, out) -> bool | float``. Its ``__name__`` names its measure and the first line of its
-  docstring describes it; higher is better, and one returning a bool is a pass/fail on 0 to 1, a check its case fails.
+- **A function** ``(case, out)``. Its ``__name__`` names its measure and the first line of its docstring describes
+  it; higher is better. It is a check, a pass/fail on 0 to 1 whose False fails its case, unless it declares a number:
+  annotated ``-> float`` or ``-> int``, or given a range (``grader(f, range=(1, 5))``). A value its declaration
+  contradicts (0.25 from a check, a bool from a number) fails the run, naming the declaration to write.
 - **A field name** (``"category"``): the answer's ``category`` (``out.category`` on a pydantic model,
   ``out["category"]`` on a mapping, the answer itself when it is a plain value) against the case's ``category``. A
   field is graded as a label: the first field listed is the run's classifier, so the run carries its confusion

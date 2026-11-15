@@ -556,8 +556,8 @@ rendered from. See [reading a comparison](reading-reports.md#reading-a-compariso
 
 #### Miss
 A trial the pass rule failed: the runner failed outright (it raised, say), or a goal check failed, the label was
-wrong, a check the host declares fell on its wrong side (on the quick path, a grader returning a bool, guarded or
-not), or a judged capability dimension scored under the bar. A grader that is no check is never a miss, whatever it returns, and an
+wrong, a check the host declares fell on its wrong side (on the quick path, a grader that declares no number, annotated
+`-> bool` or not annotated, guarded or not), or a judged capability dimension scored under the bar. A grader that is no check is never a miss, whatever it returns, and an
 excluded result never is. `summary.misses()` lists them, each with its reason; [rung 1](ladder.md#rung-1-your-own-function) says how
 to read them.
 
