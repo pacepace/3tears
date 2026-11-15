@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
+
+**Changed:** a declared name of `3tears-evals` is public only when it is admitted (owner ruling, 2026-11-15): someone
+outside the package needs it, production code or a shipped example uses it, it is the one way to do its thing, a name
+a user types is taught on a rung or a page, and its meaning can be promised. `tests/test_api_tiers.py` checks what code
+can: every received shape is reached through a signature or a docstring, two near-duplicate shapes say why both
+exist, and a typed name is taught. The per-kind ceilings and budgets are gone; `docs/surface.md` reports the totals
+by kind as a trend. The adopter's goals stay as tests: a first eval needs 2 names, rungs 0 to 3 need 5.
+
+**Changed:** a protocol the engine implements and hands a host (a cell's sink, a delivery's recorder, a store area
+the engine's own storage satisfies) is kind `received`, not `bound`: no host must implement it. `quick.measure` is
+`bound`, a factory whose measure a host registers. `Answer` and `Log` are typed names taught on a page rather than a
+rung (`docs/cost-and-budgets.md`, `docs/concepts.md`). The reach walk now reads what a module imports only for type
+checking and the classes a docstring names, so 6 shapes it called unreached are reached.
+
+**Removed:** five names no host needs, from their public roots: `kernel.CassetteStore`, `kernel.DefinitionStore`,
+`kernel.RunRecordStore`, `schema.sent_settings_of` and `analysis.lint_prose`. The engine still uses each inside;
+`MIGRATIONS.toml` records each with its port.
+
+**For hosts:** check your imports against the five removed names. Type a store parameter with `EvalStorage`, or
+with `RunStore`, `ResultStore` or `JobStore`, which stay; read a completion's sent settings with
+`getattr(completion, "sent_settings", None)`. Nothing else moves, and nothing stored changes.
+
 ### evals: a recorded judge call over a report page is keyed by what the page was rendered from, not by its words
 
 **Changed:** a word the package prints differently on a report writer's page, or in its computed facts, no longer

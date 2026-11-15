@@ -722,9 +722,6 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.run.load_seed_corpus",
         "threetears.evals.kernel.RunStore",
         "threetears.evals.kernel.ResultStore",
-        "threetears.evals.kernel.RunRecordStore",
-        "threetears.evals.kernel.DefinitionStore",
-        "threetears.evals.kernel.CassetteStore",
         "threetears.evals.kernel.JobStore",
         "threetears.evals.analysis.READ_TIER_ROW_BUDGET",
         "threetears.evals.schema.JUDGE_WORDING_CHANGE_SENTENCE",
@@ -759,7 +756,6 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # The reader of a completion's optional `sent_settings`: what a host whose client reports what each request
         # carried tests its completion type against, beside the conformance check, and what it and every other reader
         # of a completion's members raise on a completion that breaks the protocol, which a host's suite catches.
-        "threetears.evals.schema.sent_settings_of",
         "threetears.evals.schema.CompletionProtocolDefect",
         # Recorded completions in CI is a pattern a host uses: record its real client once, replay it in its suite.
         "threetears.evals.testing.RecordedCompletions",
@@ -928,8 +924,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
 
 #: The rest of the declared surface: every public name beyond :data:`HOST_CONTRACT` that a reader is told about, by
 #: ``root.name``. Each moves only with a ``MIGRATIONS.toml`` record, never shimmed. With the host contract it is what
-#: ``docs/reference.md`` documents and ``docs/surface.md`` maps by kind and rung, and each kind is held under its ceiling
-#: (``surface_kinds.KIND_CEILINGS``).
+#: ``docs/reference.md`` documents and ``docs/surface.md`` maps by kind and rung, and each name is admitted by the
+#: criteria ``surface_kinds.admission_problems`` checks.
 #:
 #: The ruling is what someone is shown or already binds: every name a topic guide, the README, an example or the
 #: courier host (``tests/fixtures/courierhost/``) imports (``tests/test_api_tiers.py`` holds it) or a shipped page
@@ -960,7 +956,6 @@ STABLE: frozenset[str] = frozenset(
         # What a `Result` hands back when it is read case by case, verdict by verdict, or label by label.
         "threetears.evals.analysis.Verdict",
         # How a report speaks: the prose lint every rendered sentence is held to.
-        "threetears.evals.analysis.lint_prose",
         # Rung 2: judges and calibration. Repeating, re-judging and rating a judge's results, and the agreement, drift,
         # evidence-tier and profile readings over them, as `docs/judges-and-calibration.md` runs them.
         "threetears.evals.analysis.inter_judge_agreement",

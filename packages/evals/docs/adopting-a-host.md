@@ -559,7 +559,7 @@ calls were sent with, the simulator's included) and on each out-of-run spend row
 - **`None`, or no attribute at all, is "my client does not say".** Nothing fails: the engine records the call as
   unverified and says so, and never refuses a call, a score or a run for it. It is not a `CompletionResult` property,
   so a completion without it still passes `check_completion_conformance`; a value of any other type is refused
-  (`CompletionProtocolDefect`, from `sent_settings_of` in `threetears.evals.schema`, the engine's one reader of it).
+  (`CompletionProtocolDefect`, from the engine's one reader of it).
   A client built with no output cap cannot report one, since `max_tokens` is required, and reports `None`.
 
 **Never fail a call for a setting, and drop enforcement last.** A client of your own keeps the rule the shipped
@@ -895,9 +895,9 @@ def test_my_async_store_conforms(case: StoreConformanceCase) -> None:
 ```
 
 The engine reads and writes through `EvalStorage`, built over that one store. Its consumers name the
-area they touch rather than the whole of it — `RunStore`, `ResultStore`, `RunRecordStore`,
-`DefinitionStore`, `CassetteStore` and `JobStore` (in `threetears.evals.kernel`) — so a function
-typed `DefinitionStore` cannot reach a run, and a test of one hands it only that area.
+area they touch rather than the whole of it — `RunStore`, `ResultStore` and `JobStore` among them
+(in `threetears.evals.kernel`) — so a function typed `ResultStore` cannot reach a template, and a
+test of one hands it only that area.
 
 **Watch the read tier's size.** The lenses that read a whole scope — `pivot` and `export_results` (and the
 `scope_pivot` / `scope_export` operations over them) — project and aggregate every result in Python on each
@@ -1314,8 +1314,13 @@ release, on:
   below a root. Such a name is promised nothing: it may change or move in any release, and the
   [reference](reference.md#public-api) does not list it.
 
-The first two tiers are the declared surface, about 500 names, mapped by role and rung in [the surface](surface.md),
-and each is one kind: typed in an eval, bound by a host, invoked, received or for tests. A declared
+The first two tiers are the declared surface, mapped by role and rung in [the surface](surface.md), and each is one
+kind: typed in an eval, bound by a host, invoked, received or for tests. A name is declared by criteria, never to meet
+a count. Someone outside the package needs it: you type it, a host implements, passes or calls it, an agent invokes
+it, or it is a shape one of those is handed. Production code or a shipped example uses it, and a test alone does not
+count. It is the one way to do its thing. A name you type is taught on a rung or a page. Its meaning can be promised;
+otherwise it is provisional. A name that fails one is demoted, and the totals by kind are reported on the surface
+page as a trend, not a budget. A declared
 name stays declared while something outside the package imports it, a shipped page teaches it or a declared
 signature reaches it, or while it is a port you implement, a version constant or a one-minor shim, or a stable name
 only a known host's tests import, until that host accepts that it may move (the rules, in full: the comment on

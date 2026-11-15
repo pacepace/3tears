@@ -428,7 +428,6 @@ from threetears.evals.analysis.style import (
     StyleViolation,
     check_names,
     humanize,
-    lint_prose,
 )
 from threetears.evals.schema.models import DECLARED_NAME_CHARS
 from threetears.evals.analysis.summary import (
@@ -516,7 +515,6 @@ __all__ = [
     "HumanizeKind",
     "StyleViolation",
     "humanize",
-    "lint_prose",
     "frontier_text",
     "OutOfRunSpendReport",
     "OutOfRunSpendTotals",

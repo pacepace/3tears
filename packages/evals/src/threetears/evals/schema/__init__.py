@@ -65,7 +65,6 @@ from threetears.evals.schema.completion import (
     JSON_OBJECT_RESPONSE_FORMAT,
     ModelListing,
     StopReason,
-    sent_settings_of,
 )
 from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.schema.goal_grammar import DSLError, extract_paths, referenced_actions, ExtractedPaths
@@ -589,7 +588,6 @@ __all__ = [
     "omit_paths",
     "order_and_page",
     "page_by_doc_type",
-    "sent_settings_of",
     "referenced_actions",
     "refuse_on_event_loop",
     "takes_after",

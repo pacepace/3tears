@@ -89,8 +89,6 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`label_key_of(evidence: JudgeEvidence, dim: RubricDim | str) -> LabelKey`
 - **`nested_schemas`** · *host contract* · function · Every schema written directly inside `schema`, in declaration order.
   <br>`nested_schemas(schema: Mapping[str, Any]) -> Iterator[NestedSchema]`
-- **`sent_settings_of`** · *host contract* · function · What the request that produced `completion` actually carried, as its client reports it, or `None`.
-  <br>`sent_settings_of(completion: object) -> ClientRequestSettings | None`
 - **`utc_now_iso`** · function · Return the current UTC time in ISO-8601 format.
   <br>`utc_now_iso() -> str`
 
@@ -269,14 +267,12 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`CandidatePreparationFailed`** · *host contract* · exception · A candidate could not be built, and the cell is cleanly excluded rather than scored.
 - **`CandidateTelemetry`** · *host contract* · model · What one candidate's execution cost, and the windows nothing else timed.
 - **`CappedCompletion`** · *host contract* · class · One cell's view of a completion client: every call's cost counted in the cell's spend as it returns.
-- **`CassetteStore`** · *host contract* · protocol · The recordings a capture run made and a replay run is served.
 - **`CellCassettes`** · *host contract* · protocol · One cell's handle on its run's cassette lane, as the kind driving that cell sees it.
 - **`CellSink`** · *host contract* · protocol · One cell's record of where it stands, as the kind driving that cell reports into it.
 - **`CellSpanWindow`** · *host contract* · protocol · One cell's two tracing windows, as the kind driving that cell sees them.
 - **`ConflictError`** · *host contract* · exception · State conflict (status 409).
 - **`ControlDeclaration`** · model · What held still, stated — because an absent control is a fact, not a null.
 - **`CostLower`** · *host contract* · model · A clause of a floor: the arm must cost less per reply than the control.
-- **`DefinitionStore`** · *host contract* · protocol · What runs are launched FROM: templates, their test cases, rubric dimensions and judge configs.
 - **`DeliveryRecorder`** · protocol · Captures one asynchronous tool's background work for one cell.
 - **`DeliveryReplay`** · protocol · Serves one asynchronous tool's recorded work for one cell.
 - **`DeliverySeam`** · protocol · One asynchronous tool of a kind, as the cassette lane records and replays its background work.
@@ -305,7 +301,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`ReplayedDelivery`** · dataclass · One recorded piece of background work, served in place of running it.
 - **`ResultStore`** · *host contract* · protocol · The cells a run recorded: each `EvalResult` and the `EvalTrace` beside it.
 - **`RoleUsageLedger`** · dataclass · Accumulates one role's LLM spend across every call it makes in a cell.
-- **`RunRecordStore`** · *host contract* · protocol · A run together with its cells: for an operation that reads one and rewrites the other.
 - **`RunStore`** · *host contract* · protocol · The eval runs of a scope: their documents, listings, stamps, archive flag and boot scan.
 - **`SeedPrompt`** · dataclass · Where one shipped default lives, so a host can register it by import.
 - **`SeedSection`** · dataclass · One section of a seeded prompt template.
@@ -597,8 +592,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings`
 - **`judge_self_agreement`** · function · Pair each repeated score with the first score it repeated, and read agreement the way calibration does.
   <br>`judge_self_agreement(results: Iterable[ResultView]) -> JudgeSelfAgreement`
-- **`lint_prose`** · function · Every rule `text` breaks.
-  <br>`lint_prose(text: str, *, question: str | None = None, header: bool = False) -> list[StyleViolation]`
 - **`read_judge_temperatures`** · function · Read a judge temperature comparison's answers into per-dimension variance and self-agreement, side by side.
   <br>`read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatureComparison`
 - **`report_html`** · *host contract* · function · Render a report as one standalone HTML page whose one script is the kit's, or, `static`, with none.

@@ -21,13 +21,14 @@
 # shims in R4), 18 port-host-implements, 13 protocol-engine-provides, 0 unreached. Since (R5, 2026-11-06): the 24
 # discodon-tests-only names, and CampaignBundle and testing.ReaderSample, which only their signatures reached, are
 # provisional, so 0 discodon-tests-only.
+# Since (V, 2026-11-15): CassetteStore, DefinitionStore and RunRecordStore were demoted, since no declared operation
+# takes or returns them, so 10 protocol-engine-provides; those are kind received (scripts/surface_kinds.py reads
+# this ledger for who implements each declared protocol).
 threetears.evals.kernel.ActionSeam | port-host-implements
 threetears.evals.kernel.CandidateKind | port-host-implements
-threetears.evals.kernel.CassetteStore | protocol-engine-provides
 threetears.evals.kernel.CellCassettes | protocol-engine-provides
 threetears.evals.kernel.CellSink | protocol-engine-provides
 threetears.evals.kernel.CellSpanWindow | protocol-engine-provides
-threetears.evals.kernel.DefinitionStore | protocol-engine-provides
 threetears.evals.kernel.DeliveryRecorder | protocol-engine-provides
 threetears.evals.kernel.DeliveryReplay | protocol-engine-provides
 threetears.evals.kernel.DeliverySeam | port-host-implements
@@ -35,7 +36,6 @@ threetears.evals.kernel.DeliveryTicket | protocol-engine-provides
 threetears.evals.kernel.JobStore | protocol-engine-provides
 threetears.evals.kernel.Recordable | port-host-implements
 threetears.evals.kernel.ResultStore | protocol-engine-provides
-threetears.evals.kernel.RunRecordStore | protocol-engine-provides
 threetears.evals.kernel.RunStore | protocol-engine-provides
 threetears.evals.kernel.host.CompletionClients | port-host-implements
 threetears.evals.kernel.host.TemplateCaseFields | protocol-engine-provides

@@ -31,13 +31,12 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `harness.Writer`: One arm of a writer eval: the model that writes, the skill it starts from, and its reasoning effort.
 - `harness.WriterEval`: The report writer, measured: arms of `Writer` over portable writer cases, replayed from recordings.
 
-### Written in an eval, taught on no rung (3)
+### Written in an eval, taught on a page rather than a rung (2)
 
-- `Answer`: What a candidate returns to report its own spend beside its answer.
-- `Log`: A runner whose outputs an app pushed to a JSONL file, and the call that pushes one.
-- `quick.measure`: Declare the measure a function computes, on the function: `@measure(higher_is_better=True, ...)`.
+- `Answer`: What a candidate returns to report its own spend beside its answer. Taught in [cost-and-budgets](cost-and-budgets.md).
+- `Log`: A runner whose outputs an app pushed to a JSONL file, and the call that pushes one. Taught in [concepts](concepts.md).
 
-## The host's contract: 107 names a host implements or hands the engine
+## The host's contract: 94 names a host implements or hands the engine
 
 ### Ports a host implements (18)
 
@@ -60,22 +59,6 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `run.KindFactory`: Builds the candidate kind for one cell.
 - `providers.Pricer`: What a call is billed at, as the host knows it: the port a `Model` is handed (`pricer=`), or `AnthropicPublishedRates` by default (the module docstring says when).
 
-### Protocols the engine provides (13)
-
-- `kernel.CassetteStore`: The recordings a capture run made and a replay run is served.
-- `kernel.CellCassettes`: One cell's handle on its run's cassette lane, as the kind driving that cell sees it.
-- `kernel.CellSink`: One cell's record of where it stands, as the kind driving that cell reports into it.
-- `kernel.CellSpanWindow`: One cell's two tracing windows, as the kind driving that cell sees them.
-- `kernel.DefinitionStore`: What runs are launched FROM: templates, their test cases, rubric dimensions and judge configs.
-- `kernel.DeliveryRecorder`: Captures one asynchronous tool's background work for one cell.
-- `kernel.DeliveryReplay`: Serves one asynchronous tool's recorded work for one cell.
-- `kernel.DeliveryTicket`: One piece of background work being captured, from its start to however it ends.
-- `kernel.JobStore`: The run document's read-modify-write: what the job manager persists a run's status through.
-- `kernel.ResultStore`: The cells a run recorded: each `EvalResult` and the `EvalTrace` beside it.
-- `kernel.RunRecordStore`: A run together with its cells: for an operation that reads one and rewrites the other.
-- `kernel.RunStore`: The eval runs of a scope: their documents, listings, stamps, archive flag and boot scan.
-- `kernel.host.TemplateCaseFields`: What a host's check over a template case reads of it: the fields of a seed corpus's `threetears.evals.run.SeedTemplateCase`, which is what the check is handed.
-
 ### What a host builds and hands the engine (76)
 
 - `schema.CellTrace`: What one cell's tracing yielded — filled by the sink, read by the engine.
@@ -86,7 +69,6 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `kernel.default_job_timeout`: Enforce a job budget with `asyncio.timeout` and nothing else.
 - `kernel.EvalStorage`: Storage for eval documents over one document store.
 - `kernel.JobLeases`: The leases one process holds on its jobs' records, and the task that renews them.
-- `kernel.ReplayedDelivery`: One recorded piece of background work, served in place of running it.
 - `kernel.RoleUsageLedger`: Accumulates one role's LLM spend across every call it makes in a cell.
 - `kernel.ToolWrap`: What the action seam is handed: maps the candidate's tools, by name, to the tools it should use — each declared recorded tool wrapped for the cassette run, every other one unchanged.
 - `kernel.withhold_failure_detail`: Describe a failure by its class and nothing else — the safe default.
@@ -128,6 +110,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `storage.SqliteDocumentStore`: A `DocumentStore` over one SQLite file.
 - `quick.HostCommand`: A subcommand a host adds beside the engine's own, mounted by `run_cli` under the same program.
 - `quick.HostFactory`: What names the host the commands work in: called once, with no arguments, per invocation.
+- `quick.measure`: Declare the measure a function computes, on the function: `@measure(higher_is_better=True, ...)`.
 - `ops.AnalysisGeneration`: How this host generates an analysis as a background job: the report writer, on the host's model and budget.
 - `ops.AnalystLimits`: What the analyst's rounds are held to, so every draft and revision ends within bounded calls and bounces.
 - `ops.EditorLimits`: What each review round is held to, so every review ends within a bounded number of calls.
@@ -155,28 +138,53 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `providers.describe_failure`: What the engine may know of a call through the client that raised: the host's `failure_describer`.
 - `providers.Model`: the same as `Model`.
 
-## Operations: 80 names called to make the engine act
+## Operations: 115 names a host or an agent calls
 
-### `kernel` (2)
+### `threetears.evals` (1)
 
+- `surface_tier`: A public name's stability tier in the installed build, by `root.name`.
+
+### `schema` (9)
+
+- `schema.bind_cell_identity`: Make `identity` the answer of `current_cell_identity` for the extent of the block.
+- `schema.check_after`: Return `DocumentStore.by_doc_type`'s `after` checked, as a pair — the calls every implementation refuses.
+- `schema.current_cell_identity`: Return the cell the calling task is working for, or `None` outside any cell.
+- `schema.field_in_values`: Return `field_in` checked and each field's values with repeats dropped — the meaning of `field_in`.
+- `schema.is_builtin_judge_config_id`: Whether a recorded judge config id names a built-in prompt rather than a versioned `JudgeConfig`.
+- `schema.judge_config_of`: The `JudgeConfig` a recorded judge config id names, or `None` when it names none.
+- `schema.label_key_of`: The label key of one judgement: `evidence` read on `dim`.
+- `schema.nested_schemas`: Every schema written directly inside `schema`, in declaration order.
+- `schema.utc_now_iso`: Return the current UTC time in ISO-8601 format.
+
+### `kernel` (9)
+
+- `kernel.confusion_cell`: The value a classification reports under `confusion_cell`: `expected → predicted`.
+- `kernel.extract_json`: Extract a JSON object from provider output.
+- `kernel.extract_json_array`: Extract a JSON array from provider output, handling markdown code blocks.
 - `kernel.failed_call_output`: A cell's output for a model call that failed, routed by whose failure it was.
+- `kernel.fold_phase_timings`: Fold one delivery's carried phase timings into a result's accumulator, and say what could not be folded.
+- `kernel.production_replicating_cost`: Observed cost of the roles a production deployment would also pay for.
 - `kernel.prompt_drift`: Read a stored copy of a catalogue prompt against the package's shipped default.
+- `kernel.seed_digest`: The canonical digest of a seed's content: what a host records when it seeds a slot from it.
+- `kernel.strict_response_format`: The strict `json_schema` directive that asks a provider for exactly `schema`'s shape.
 
 ### `kernel.host` (1)
 
 - `kernel.host.check_seed`: Walk a world seed against the registry: every write it would make, checked, or the first refusal.
 
-### `run` (36)
+### `run` (41)
 
 - `run.admit_template`: Every refusal a template meets before it is first written, in `create_template`'s order.
 - `run.assert_preconditions`: Assert at t=0 that the world this template presumes actually holds.
 - `run.build_judge_service`: Build the `JudgeService` for a run, with its judge attribution.
+- `run.corpus_digests`: The digest of every definition of a corpus, by its key: what a seed of it records.
 - `run.create_template`: Create and persist a template from an authoring definition.
 - `run.definition_drift`: Read every definition of a seed corpus against its scope's stored one.
 - `run.delete_run`: Delete a run, the results it owns, and its campaign memberships.
 - `run.drive_conversation`: Run `driver`'s conversation from its first turn until it stops on a structural signal.
 - `run.estimate_judge_repeat`: Price repeating a run's judge scores against the cap it would be held to, and make no call.
 - `run.execute_run`: Execute an entire `EvalRun` end-to-end.
+- `run.fold_metered_cell`: Fold one cell's action-seam tally into the external role's rows.
 - `run.freeze_judge_cases`: Freeze (output, criterion, labels) cases from stored judged results, or written by hand, into a judge template.
 - `run.get_result_trace`: Load one result's trace payload, or `None` when it stored none.
 - `run.get_run`: Load an eval run by id within its scope, whole.
@@ -188,8 +196,10 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `run.list_results`: List every result for one eval run within its scope, read a page at a time in the store's order.
 - `run.list_runs`: List eval runs in a scope, optionally filtered by status.
 - `run.load_seed_corpus`: Read a corpus off disk, constructing each document through its model in `scope_id`.
+- `run.metered_cell_tally`: One cell's slice of the run's metered-call tally, or `None` when nothing counted.
 - `run.mint_case_set`: Store the next version of the case set `name`: version 1 for a new name, else one past the latest.
 - `run.plan_judge`: The judges one arm of `template` will be scored by, resolved as `build_judge_service` resolves them — building nothing.
+- `run.precondition_failure_text`: One line naming what was presumed and what the world held instead.
 - `run.price_subject_call_floor`: A floor under a subject arm's largest judge or simulator call, for its `LaunchableKind.price_largest_call`.
 - `run.quote_launch`: What `start_run` with the same arguments would make of its arms' prices — read-only.
 - `run.rate_result`: Record one rater's score for one judged dimension of one result — a person's, or an agent's.
@@ -197,6 +207,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `run.require_candidate_model`: The model `request`'s arm runs on — the one it named, or the kind's role default — or the refusal.
 - `run.reset_definitions`: Write the corpus's content for the named definitions, each as a new revision or record, never in place.
 - `run.resolve_judge_pin`: The run-level judge pin an arm is scored under: the launch's, or the role default stepped off a candidate.
+- `run.run_blocking`: Run `fn(*args, **kwargs)` on `executor` and await its result.
 - `run.run_job_work`: Write the work's record, leased, and run the work to its end in the caller's own frame.
 - `run.run_judge_llm`: Run an LLM judge call against a set of criteria and parse the response.
 - `run.second_judge_work`: Admit a second judge's pass over a finished run — every call priced and admitted, none made — as work to run.
@@ -205,22 +216,29 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `run.sweep_abandoned_runs`: Write lost every run left not ended by a process that has gone, in the scopes the host names.
 - `run.update_template`: Apply a partial update to a template and persist it.
 
-### `analysis` (14)
+### `analysis` (21)
 
 - `analysis.assemble_context_bundle`: Assemble the closed context bundle for a campaign's runs.
 - `analysis.campaign_report`: The campaign's page — THE answer to "what is this campaign's report", for every caller and every campaign.
+- `analysis.check_names`: The name a page gives each of an aspect's goal checks, by expression: the display name `declared` gives it, else what it tests (`_check_subject`) with `check` after it (`Refund amount check`), else `GOAL_CHECK`.
 - `analysis.create_campaign`: Create and persist a campaign: one question, its arms, its aspects and its floors.
+- `analysis.dollars_text`: Spend as a person reads it: two significant figures, and dollars and cents from ten cents up.
+- `analysis.format_number`: Spell a number for a reader, the same way on every analysis surface.
 - `analysis.frontier`: Rank each subject's variants on quality x cost x latency, cheapest above bar.
 - `analysis.gate_verdicts`: Gate a report's typed verdicts: fail on the outcomes named, and never pass one the evidence left undecided.
+- `analysis.host_declarations_digest`: sha256 of the host declarations that partition observations — derived, so no host has a counter to forget.
+- `analysis.humanize`: An identifier as a reader is shown it after its first mention.
 - `analysis.inspect_campaign_bundle`: Assemble one aspect's context bundle of a campaign and return it, without generating.
 - `analysis.inter_judge_agreement`: Pair each second judge's score with the first score it answers, and read agreement the way calibration does.
 - `analysis.judge_agreement`: Pair each rating with the judge's score on its dimension, on its result or the same output, and read agreement.
 - `analysis.judge_drift`: Read how far each dimension's scores moved from the run's judge to a second judge on the same evidence.
 - `analysis.judge_evidence_tiers`: Decide the evidence tier of every judge's readings on every dimension, from the two agreements.
+- `analysis.judge_key`: The judge behind `result`'s score on `dim`, or None when it holds no score there.
 - `analysis.judge_kind_readings`: Pool a judge campaign's trials into agreement with the labels, self-agreement and parse validity, per judge and criterion.
 - `analysis.judge_self_agreement`: Pair each repeated score with the first score it repeated, and read agreement the way calibration does.
 - `analysis.read_judge_temperatures`: Read a judge temperature comparison's answers into per-dimension variance and self-agreement, side by side.
 - `analysis.report_html`: Render a report as one standalone HTML page whose one script is the kit's, or, `static`, with none.
+- `analysis.tier_sentence`: One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
 
 ### `gen` (3)
 
@@ -256,46 +274,12 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `ops.start_paid_call`: Start a host action's one paid model call: admitted against its cap in the call, made in a job.
 - `ops.templates_list`: The scope's templates, each with its revision: a reset template's older revisions are archived, so the active listing shows each name once, at the revision a launch by name runs.
 
-### `negotiation` (2)
+### `negotiation` (8)
 
-- `negotiation.closest_settings`: What to send for `asked`: the closest settings `facts` say the model accepts, and why each one moved.
-- `negotiation.negotiate`: Send the closest settings the model is known to take; on a recognised refusal, learn it and send again.
-
-### Helpers: 37 that repeat a step of the engine's
-
-- `surface_tier`: A public name's stability tier in the installed build, by `root.name`.
-- `schema.bind_cell_identity`: Make `identity` the answer of `current_cell_identity` for the extent of the block.
-- `schema.check_after`: Return `DocumentStore.by_doc_type`'s `after` checked, as a pair — the calls every implementation refuses.
-- `schema.current_cell_identity`: Return the cell the calling task is working for, or `None` outside any cell.
-- `schema.field_in_values`: Return `field_in` checked and each field's values with repeats dropped — the meaning of `field_in`.
-- `schema.is_builtin_judge_config_id`: Whether a recorded judge config id names a built-in prompt rather than a versioned `JudgeConfig`.
-- `schema.judge_config_of`: The `JudgeConfig` a recorded judge config id names, or `None` when it names none.
-- `schema.label_key_of`: The label key of one judgement: `evidence` read on `dim`.
-- `schema.nested_schemas`: Every schema written directly inside `schema`, in declaration order.
-- `schema.sent_settings_of`: What the request that produced `completion` actually carried, as its client reports it, or `None`.
-- `schema.utc_now_iso`: Return the current UTC time in ISO-8601 format.
-- `kernel.confusion_cell`: The value a classification reports under `confusion_cell`: `expected → predicted`.
-- `kernel.extract_json`: Extract a JSON object from provider output.
-- `kernel.extract_json_array`: Extract a JSON array from provider output, handling markdown code blocks.
-- `kernel.fold_phase_timings`: Fold one delivery's carried phase timings into a result's accumulator, and say what could not be folded.
-- `kernel.production_replicating_cost`: Observed cost of the roles a production deployment would also pay for.
-- `kernel.seed_digest`: The canonical digest of a seed's content: what a host records when it seeds a slot from it.
-- `kernel.strict_response_format`: The strict `json_schema` directive that asks a provider for exactly `schema`'s shape.
-- `run.corpus_digests`: The digest of every definition of a corpus, by its key: what a seed of it records.
-- `run.fold_metered_cell`: Fold one cell's action-seam tally into the external role's rows.
-- `run.metered_cell_tally`: One cell's slice of the run's metered-call tally, or `None` when nothing counted.
-- `run.precondition_failure_text`: One line naming what was presumed and what the world held instead.
-- `run.run_blocking`: Run `fn(*args, **kwargs)` on `executor` and await its result.
-- `analysis.check_names`: The name a page gives each of an aspect's goal checks, by expression: the display name `declared` gives it, else what it tests (`_check_subject`) with `check` after it (`Refund amount check`), else `GOAL_CHECK`.
-- `analysis.dollars_text`: Spend as a person reads it: two significant figures, and dollars and cents from ten cents up.
-- `analysis.format_number`: Spell a number for a reader, the same way on every analysis surface.
-- `analysis.host_declarations_digest`: sha256 of the host declarations that partition observations — derived, so no host has a counter to forget.
-- `analysis.humanize`: An identifier as a reader is shown it after its first mention.
-- `analysis.judge_key`: The judge behind `result`'s score on `dim`, or None when it holds no score there.
-- `analysis.lint_prose`: Every rule `text` breaks.
-- `analysis.tier_sentence`: One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
 - `negotiation.anthropic_thinking`: The `thinking` an Anthropic request carries for `sent`, or `None` for none.
+- `negotiation.closest_settings`: What to send for `asked`: the closest settings `facts` say the model accepts, and why each one moved.
 - `negotiation.facts_from_router_catalogue`: The facts a router's catalogue row states of a model: each parameter it does not list, as not taken.
+- `negotiation.negotiate`: Send the closest settings the model is known to take; on a recognised refusal, learn it and send again.
 - `negotiation.read_anthropic_refusal`: Whether Anthropic's answer refuses a request for a setting it carried, which, and in what words.
 - `negotiation.read_openai_refusal`: Whether OpenAI's answer refuses a request for a setting it carried, which, and in what words.
 - `negotiation.read_router_refusal`: Whether OpenRouter's answer refuses a request for a setting it carried, which, and in what words.
@@ -419,9 +403,10 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 
 - `capability_gap`: Note a capability you needed and no tool gave, or a result that looks wrong, and the workaround you go on with.
 
-## A host's own tests: 16 kits, recorders and guards
+## A host's own tests: 17 kits, recorders and guards
 
 - `kernel.host.check_world_conformance`: Run every obligation this registry's declarations imply, against the host's own handles.
+- `run.FidelityContract`: One shared construction path and the callers required to reach it.
 - `testing.check_completion_conformance`: Fail, naming the attribute, when a host's completion does not carry what eval reads off it.
 - `testing.check_refusal_negotiation`: Fail, naming each mistake, unless the client answers a router's refusals in order and reports what was served.
 - `testing.CompletionGuard`: The kit's watch on a host's completion clients: what was asked outside a job, and how often inside one.
@@ -438,9 +423,22 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `actions.ConformanceSample`: One launch a host can run end to end, which the engine's spend actions' happy paths build on.
 - `actions.ConformanceStage`: What a `HappyPath` is handed: the host the kit built, the caller, and the host's sample launch.
 
-## Shapes: 249 values a reader is handed
+## Shapes: 259 values a reader is handed
 
-### Runs, results and traces (25)
+### Protocols the engine implements and hands a host (10)
+
+- `kernel.CellCassettes`: One cell's handle on its run's cassette lane, as the kind driving that cell sees it.
+- `kernel.CellSink`: One cell's record of where it stands, as the kind driving that cell reports into it.
+- `kernel.CellSpanWindow`: One cell's two tracing windows, as the kind driving that cell sees them.
+- `kernel.DeliveryRecorder`: Captures one asynchronous tool's background work for one cell.
+- `kernel.DeliveryReplay`: Serves one asynchronous tool's recorded work for one cell.
+- `kernel.DeliveryTicket`: One piece of background work being captured, from its start to however it ends.
+- `kernel.JobStore`: The run document's read-modify-write: what the job manager persists a run's status through.
+- `kernel.ResultStore`: The cells a run recorded: each `EvalResult` and the `EvalTrace` beside it.
+- `kernel.RunStore`: The eval runs of a scope: their documents, listings, stamps, archive flag and boot scan.
+- `kernel.host.TemplateCaseFields`: What a host's check over a template case reads of it: the fields of a seed corpus's `threetears.evals.run.SeedTemplateCase`, which is what the check is handed.
+
+### Runs, results and traces (26)
 
 - `Result`: What an eval ran — one arm, or every arm of a comparison — and what its campaign's report says.
 - `schema.AsyncDelivery`: One piece of background work the candidate started: acknowledged at once, delivered later.
@@ -455,6 +453,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `kernel.CandidateOutput`: What one candidate produced, as everything below the dispatch sees it.
 - `kernel.CandidateTelemetry`: What one candidate's execution cost, and the windows nothing else timed.
 - `kernel.OutOfRunBudget`: The cap one out-of-run unit of work is held to, and the ledger its calls are written to.
+- `kernel.ReplayedDelivery`: One recorded piece of background work, served in place of running it.
 - `kernel.VariantConfig`: The A/B'd stack one cell runs, as every kind alike receives it.
 - `run.AbandonedRunSweepReport`: Outcome of one reclaim of runs left non-terminal by a process that has gone (`sweep_abandoned_runs`).
 - `run.CandidateTurn`: One candidate-side response captured by the kind and fed back into the simulator.
@@ -663,10 +662,9 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `transports.fastmcp.CallTimedOut`: A call outlived the call timeout and was stopped before its action finished.
 - `providers.ProviderError`: A request the provider refused or failed: who, the HTTP status, and the provider's own message.
 
-### Other (2)
+### Other (1)
 
 - `RootExtra`: What one optional public root needs installed before it imports: the extra, and the modules it brings.
-- `run.FidelityContract`: One shared construction path and the callers required to reach it.
 
 ### Constants (60)
 
@@ -754,41 +752,31 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 | `not_available` | `too_few` | `add_cases` |
 | `not_available` | `trials_lost` | `repair_rig` |
 
-## Findings: 10 shapes to resolve
-
-### Reached by no declared signature (8)
-
-- `schema.StoreCalledOnEventLoop`
-- `kernel.CandidateKindDefect`
-- `kernel.ProviderRefusedError`
-- `run.Ceilings`
-- `run.FidelityContract`
-- `run.JudgeRepeatReport`
-- `providers.Completion`
-- `providers.PriceSource`
-
-### Near-duplicate shapes (2)
+## Near-duplicate shapes: 2, each saying why both exist
 
 - `schema.AsyncExternalSpend` and `schema.ExternalSpend`
 - `schema.ClientRequestSettings` and `negotiation.WireSettings`
 
 ## The counts
 
-| Kind | Who meets it | Names | Budget | Ceiling |
-|---|---|---|---|---|
-| `typed` | a newcomer writes it in an eval file | 14 | 25 | 25 |
-| `bound` | a host implements it or hands it to the engine | 107 | 100 | 107 |
-| `invoked` | an operation called by name to make the engine do something, from host code or as an action | 117 | 110 | 117 |
-| `received` | a value someone is handed and reads | 249 | none | none |
-| `tests` | a kit, recorder or guard a host runs in its own tests | 16 | 16 | 16 |
-| all | | 503 | | |
+A name is public when it meets the admission criteria, not to meet a number: these counts are reported each
+wave as a trend. The goals are the adopter's, a first eval's names and rung 3's.
 
-| Typed names | Names | Budget |
+| Kind | Who meets it | Names |
 |---|---|---|
-| A first eval (rungs 0 and 1) | 2 | 8 |
-| Through rung 3 | 5 | 12 |
-| The whole ladder | 11 | 25 |
-| Taught on no rung | 3 | 0 |
+| `typed` | a newcomer writes it in an eval file | 13 |
+| `bound` | a host implements it or hands it to the engine | 94 |
+| `invoked` | an operation called by name to make the engine do something, from host code or as an action | 115 |
+| `received` | a value someone is handed and reads | 259 |
+| `tests` | a kit, recorder or guard a host runs in its own tests | 17 |
+| all | | 498 |
+
+| Typed names | Names | Goal |
+|---|---|---|
+| A first eval (rungs 0 and 1) | 2 | 2 |
+| Through rung 3 | 5 | 5 |
+| The whole ladder | 11 | |
+| Taught on a page rather than a rung | 2 | |
 
 The hold-back ledger, [`tests/fixtures/declared_holdbacks.txt`](../tests/fixtures/declared_holdbacks.txt),
 lists every declared name the tree alone does not hold; `tests/test_declared_holdbacks.py` holds it.
@@ -797,7 +785,7 @@ lists every declared name the tree alone does not hold; `tests/test_declared_hol
 |---|---|---|
 | `discodon-tests-only` | Discodon's tests import it, and nothing else imports, names or reaches it | 0 |
 | `port-host-implements` | A protocol a host implements and hands the engine | 18 |
-| `protocol-engine-provides` | A protocol the engine implements and hands a host, or its storage satisfies | 13 |
+| `protocol-engine-provides` | A protocol the engine implements and hands a host, or its storage satisfies | 10 |
 | `unreached` | Nothing | 0 |
 
 Generated by `uv run python packages/evals/scripts/generate_surface.py`: change a docstring or `scripts/surface_kinds.py`, never this page.

@@ -53,8 +53,9 @@ def test_the_page_opens_with_the_first_eval_and_ends_with_the_counts() -> None:
     first = page.index(f"### Your first eval: these {load_script('surface_kinds.py').typed_through(1)}")
     assert first < 10
     assert page[first + 2].startswith("- `Eval`: ")
-    assert page.index("## The counts") > page.index("## Findings: 10 shapes to resolve")
-    assert not any("Ceiling" in line for line in page[:40])
+    assert page.index("## The counts") > page.index("## Near-duplicate shapes: 2, each saying why both exist")
+    # The totals are reported as a trend, never held to a number: no budget or ceiling column anywhere.
+    assert not any("Ceiling" in line or "Budget" in line for line in page)
 
 
 def test_the_agent_file_is_short_true_and_sufficient() -> None:

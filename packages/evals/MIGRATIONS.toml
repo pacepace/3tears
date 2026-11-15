@@ -441,6 +441,36 @@ it derives each dimension's checks from its declared shape (obligations). Port: 
 dimension's verdicts on WorldConformanceReport.for_dimension.
 """
 
+[[release.change]]
+from = "threetears.evals.kernel"
+to = "removed"
+names = ["CassetteStore", "DefinitionStore", "RunRecordStore"]
+why = """
+Demoted by the 2026-11-15 owner ruling that a public name is admitted by criteria, not by a count: no declared
+operation takes or returns any of them, so no host is handed one or must implement one. The engine implements all
+three with its own storage and keeps using them inside. To type a store parameter, the areas the engine's operations
+still name stay. Port: threetears.evals.kernel.EvalStorage, or threetears.evals.kernel.RunStore, ResultStore or JobStore
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["sent_settings_of"]
+why = """
+Demoted by the 2026-11-15 owner ruling: it is the engine's own reader of a completion's sent_settings, and no host
+calls it. A value of the wrong type is still refused when the engine reads it. Port: getattr(completion,
+"sent_settings", None)
+"""
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "removed"
+names = ["lint_prose"]
+why = """
+Demoted by the 2026-11-15 owner ruling: it holds the sentences the package's own code writes to the report style
+rules, and no host or page calls it. The rules still hold every rendered sentence.
+"""
+
 [[release]]
 version = "0.95.0"
 since = "v0.94.0"
