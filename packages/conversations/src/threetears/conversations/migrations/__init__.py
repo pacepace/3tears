@@ -128,6 +128,7 @@ from threetears.conversations.migrations.v013_folder_and_ref_indexes import (
 from threetears.conversations.migrations.v014_contract_unread_indexes_dropped import (
     drop_unread_conversation_indexes,
 )
+from threetears.conversations.migrations.v015_ref_prefix_index import add_ref_prefix_index
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -171,6 +172,7 @@ def register(runner: MigrationRunner, *, held_contract: bool = False) -> Package
     pkg.version(13)(add_folder_and_ref_indexes)
     if held_contract:
         pkg.version(14)(drop_unread_conversation_indexes)
+    pkg.version(15)(add_ref_prefix_index)
     runner.register(pkg)
     return pkg
 

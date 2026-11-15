@@ -157,20 +157,21 @@ class TestRegisterConversationsMigrations:
         unique + conversation->folder FK ON DELETE SET NULL), v010
         (drop the search_vector GIN index), v011 (the conversation's
         parent: type + id, both-or-neither check, index), v012 (the
-        listing's six sort indexes), v013 (the folder and ref indexes)."""
+        listing's six sort indexes), v013 (the folder and ref indexes), v015 (the ref-prefix index); v014, the held
+        contract step, only when asked."""
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}
+        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15}
 
     async def test_apply_runs_thirteen_versions_then_idempotent(self) -> None:
-        """apply records v1..v13 and re-running is a no-op."""
+        """apply records v1..v13 and v15 and re-running is a no-op."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_for_agent_schema(store)
-        assert first_count == 13
+        assert first_count == 14
         assert store.migrations_table_created is True
-        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15]
         second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 

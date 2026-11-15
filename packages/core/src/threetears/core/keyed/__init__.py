@@ -66,6 +66,7 @@ from threetears.core.keyed._filters import (
     by_conditions,
     clause_guards,
     narrowing,
+    prefix_conditions,
     renumbered,
     selected_column,
 )
@@ -212,6 +213,7 @@ __all__ = [
     "Derived",
     "Dialect",
     "Fragment",
+    "prefix_conditions",
     "Increment",
     "InlineDuckDB",
     "inline_l1",

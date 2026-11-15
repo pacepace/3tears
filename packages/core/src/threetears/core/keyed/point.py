@@ -124,7 +124,7 @@ async def read_by(
     """
     sql, params = read_by_statement(table, by=by, columns=columns, lock=lock, where=where, order=order)
     # on YugabyteDB, a read names the declared index that serves its pins and order (unordered: binds the most pins)
-    sql = (await yugabyte_index_hint(conn, table, by, order)) + sql
+    sql = (await yugabyte_index_hint(conn, table, by, order, where=where)) + sql
     rows = list(await sent_by(conn).fetch(sql, *params))
     return rows if records else [dict(row) for row in rows]
 

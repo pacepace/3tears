@@ -267,3 +267,20 @@ async def test_conv_agent_ref_created(world: tuple[asyncpg.Connection, uuid.UUID
     assert not rest, asked.asked
     plan = await explain_statement(conn, sql, *args)
     assert plan_uses_index(plan, "idx_conv_agent_ref_created"), plan.plan
+
+
+async def test_conv_agent_ref_c(world: tuple[asyncpg.Connection, uuid.UUID, uuid.UUID]) -> None:
+    """Flips if the conversations whose ref starts with a prefix on a channel stop reading idx_conv_agent_ref_c as a
+    code-point range (they would read every conversation of the agent's channel and filter)."""
+    conn, _agent, _user = world
+    agent = await conn.fetchval("SELECT agent_id FROM conversations WHERE conversation_ref = 'ref-12' LIMIT 1")
+    # the real connection answers which engine it is, so the read is spelled (and hinted) for it; nothing else runs
+    captured = CapturedL3(real=conn, passes=lambda _sql: False)
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=captured)
+    collection = ConversationsCollection(registry, DefaultCoreConfig(), captured)
+    await collection.find_by_ref_prefix(agent, "web", "ref-12")
+    (sql, args), *rest = [(sql, args) for sql, args in captured.asked if '"conversations"' in sql]
+    assert not rest, captured.asked
+    plan = await explain_statement(conn, sql, *args)
+    assert plan_uses_index(plan, "idx_conv_agent_ref_c"), plan.plan

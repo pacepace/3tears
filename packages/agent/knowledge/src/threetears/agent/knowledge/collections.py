@@ -11,12 +11,12 @@ vectors separately via the bounded :meth:`fetch_embeddings` read (the
 
 Both collections are built entirely from 3tears primitives:
 :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection`,
-:func:`threetears.agent.acl.three_scope_visibility_clause` (the SAME shared
-visibility clause the hub runs), and the ``threetears.knowledge`` snapshot / scope
-types. The only bespoke queries are :meth:`list_visible_to_user` (an
-rbac-visibility filtered list, evaluated SQL-side) and :meth:`list_own_drafts`
-(the author-private draft read); both bypass the by-pk L1/L2 caches because they
-are cross-table JOINs the by-pk Collection abstraction cannot express.
+:func:`threetears.agent.acl.visible_rows` (the SAME three-scope read rule
+the hub's own listings read by), and the ``threetears.knowledge`` snapshot / scope
+types. The only bespoke reads are :meth:`list_visible_to_user` (an
+rbac-visibility filtered list, read by key) and :meth:`list_own_drafts`
+(the author-private draft read); both bypass the by-pk L1/L2 caches: neither is a
+read of one row by its primary key.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import json
 from typing import Any
 from uuid import UUID
 
-from threetears.agent.acl import ACCESS_TABLES, three_scope_visibility_clause
+from threetears.agent.acl import ACCESS_TABLES, visible_rows
 from threetears.core.collections.generation import WRITE_GENERATION
 from threetears.core.collections.scan_cache import ScanCacheKey
 from threetears.core.collections.schema_backed import (
@@ -40,7 +40,7 @@ from threetears.core.collections.schema_backed import (
     SchemaBackedCollection,
     TableSchema,
 )
-from threetears.core.keyed import KeyBatch, Selected, Sort, read_by, read_keyed, with_options
+from threetears.core.keyed import Fragment, KeyBatch, Selected, Sort, read_by, read_joined, read_keyed, with_options
 from threetears.knowledge import (
     ConceptSnapshot,
     EntrySnapshot,
@@ -113,6 +113,107 @@ def _as_uuid(value: Any) -> UUID | None:
     else:
         result = UUID(str(value))
     return result
+
+
+# WHY the visible listings read through visible_rows: the listing admitted each row through a correlated ``EXISTS`` over
+# the caller's grants (three_scope_visibility_clause), run for every row of the table it scanned. The caller's knowledge
+# customers are now read once, by the caller's memberships through the grants' own indexes, and the rows a page at a
+# time through the hub's ``<table>_visible_by_customer (customer_id, date_created, id)`` (hub v177): a platform row, or
+# one of those customers, and never another user's own -- the three-scope read rule (D10), as the hub's own listings
+# read it. Over the ``system.platform.rbac`` proxy pool, each statement clamped to the conversation's customer
+# (broker-isolation-task-01). Equivalence: tests/integration/test_same_results_visible.py; plans: test_index_plans.py.
+
+#: the order a visible listing reads in: oldest first, the ``id`` key breaking ties (the hub's ``OLDEST_FIRST``)
+_OLDEST_FIRST: tuple[Sort, ...] = (Sort("date_created", cast="timestamptz"), Sort("id", cast="uuid"))
+
+
+#: the columns an entry snapshot is built from, and the listing's order
+_ENTRY_VISIBLE_COLUMNS: tuple[str, ...] = (
+    "id",
+    "customer_id",
+    "user_id",
+    "origin_entry_id",
+    "title",
+    "body",
+    "tags",
+    "datasource_id",
+    "always_inject",
+    "date_created",
+)
+
+#: the columns a concept snapshot is built from, and the listing's order; its bound table's name is joined after
+_CONCEPT_VISIBLE_COLUMNS: tuple[str, ...] = (
+    "id",
+    "customer_id",
+    "user_id",
+    "origin_concept_id",
+    "name",
+    "aliases",
+    "definition",
+    "datasource_id",
+    "datasource_table_id",
+    "sql_fragment",
+    "caveats",
+    "tags",
+    "always_inject",
+    "date_created",
+)
+
+
+async def _with_bound_tables(pool: Any, rows: list[dict[str, Any]], *, customer_scope: UUID) -> None:
+    """carry each concept's bound table's ``schema.table`` NAME (``bound_schema_name`` / ``bound_table_name``), None
+    where it binds none or the table is not read: the renderer emits the name, never the raw ``datasource_table_id``
+    the agent cannot resolve. One keyed read of ``datasource_tables`` by the ids the concepts hold, what the
+    hand-written ``LEFT JOIN datasource_tables dt ON dt.id = co.datasource_table_id`` read beside them.
+
+    :param pool: the rbac-read proxy pool
+    :ptype pool: Any
+    :param rows: the visible concepts, completed in place
+    :ptype rows: list[dict[str, Any]]
+    :param customer_scope: the conversation's customer the broker clamps the read to
+    :ptype customer_scope: UUID
+    """
+    bound = [row for row in rows if row["datasource_table_id"] is not None]
+    tables = (
+        await read_joined(
+            with_options(pool, customer_scope=customer_scope),
+            bound,
+            "datasource_tables",
+            on={"id": "datasource_table_id"},
+            columns=["id", "schema_name", "table_name"],
+            casts={"id": "uuid"},
+        )
+        if bound
+        else {}
+    )
+    for row in rows:
+        (table, *_) = tables.get((row["datasource_table_id"],), [None])
+        row["bound_schema_name"] = None if table is None else table["schema_name"]
+        row["bound_table_name"] = None if table is None else table["table_name"]
+
+
+def _active_anchored(datasource_id: UUID | None) -> list[Fragment]:
+    """a visible knowledge listing's own filters: ``status = 'active'`` (correction-harvest drafts stay out of
+    retrieval, KNW-06 / D5) and, given a datasource D, the rows anchored on D or on the platform datasource D's
+    ``origin_datasource_id`` links to (KNW-77: ``IN (D, P)``; a NULL origin leaves ``{D}``, an unlinked datasource
+    keeps the single-anchor behaviour).
+
+    :param datasource_id: the anchoring datasource, or None for every anchor
+    :ptype datasource_id: UUID | None
+    :return: the ``where=`` filters, each from ``$1``
+    :rtype: list[Fragment]
+    """
+    where = [Fragment("t.\"status\" = 'active'")]
+    if datasource_id is not None:
+        # the origin resolved in the same statement, a point read of the hub's ``datasources`` by its key on the
+        # same rbac-read proxy pool: a fresh per-call read, no module state
+        where.append(
+            Fragment(
+                't."datasource_id" IN ($1, (SELECT origin_datasource_id FROM datasources WHERE id = $1))',
+                (datasource_id,),
+            )
+        )
+    return where
 
 
 def _parse_vector_text(value: Any) -> list[float] | None:
@@ -344,6 +445,17 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
                 purpose="packages/agent/knowledge/src/threetears/agent/knowledge/collections.py::PlaybookEntryCollection.list_own_drafts",
                 plan_test="packages/agent/knowledge/tests/integration/test_index_plans.py::test_draft_owner_indexes",
             ),
+            # the hub's customer-led listing index (hub v177): a caller's visible entries, their customers' rows in
+            # (date_created, id) order, a page at a time
+            Index(
+                "playbook_entries_visible_by_customer",
+                "customer_id",
+                "date_created",
+                "id",
+                asc=("date_created", "id"),
+                purpose="packages/agent/knowledge/src/threetears/agent/knowledge/collections.py::PlaybookEntryCollection.list_visible_to_user",
+                plan_test="packages/agent/knowledge/tests/integration/test_index_plans.py::test_visible_by_customer_indexes",
+            ),
         ),
         cas_column="date_updated",
     )
@@ -375,13 +487,13 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
     ) -> list[EntrySnapshot]:
         """List caller-visible entries as merge snapshots, domain-filtered.
 
-        The trust boundary is the SQL itself: the WHERE clause admits a row iff
+        The trust boundary is the SQL itself: each page admits a row iff
         (a) it is platform-scope (``customer_id IS NULL``) OR its customer is one
         the caller's RBAC grants admit, AND (b) it is NOT a user-scope row owned by
-        a DIFFERENT user (``user_id IS NULL OR user_id = <caller>``) -- composed as
-        ONE fragment from the shared
-        :func:`threetears.agent.acl.three_scope_visibility_clause` (the SAME copy
-        the hub runs, D10), evaluated over the ``system.platform.rbac`` proxy pool.
+        a DIFFERENT user (``user_id IS NULL OR user_id = <caller>``) -- the
+        three-scope read rule (D10) as :func:`threetears.agent.acl.visible_rows`
+        reads it by key, over the ``system.platform.rbac``
+        proxy pool.
         Optional ``datasource_id`` narrows the result to the anchoring datasource;
         ``None`` returns every visible entry. When ``datasource_id`` is a CUSTOMER
         datasource D linked to a canonical platform-shared datasource P
@@ -391,9 +503,9 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
         private to D. ``status = 'active'`` excludes correction-harvest DRAFTS from
         retrieval (KNW-06 / D5).
 
-        Cache-bypass: rbac-visibility filtered list -- inherently a cross-table
-        JOIN against ``role_assignments`` / ``group_members`` the by-pk Collection
-        abstraction cannot express, so this reads through the proxy pool directly.
+        Cache-bypass: rbac-visibility filtered list -- the caller's grants, then the
+        rows they admit, which no by-pk Collection read expresses, so this reads
+        through the proxy pool directly.
 
         :param user_id: caller (conversation end-user) UUID
         :ptype user_id: UUID
@@ -408,37 +520,6 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
         """
         result: list[EntrySnapshot] = []
         if self.l3_pool is not None:
-            visibility_clause, params = three_scope_visibility_clause(
-                user_id=user_id,
-                customer_id_column="pe.customer_id",
-                user_id_column="pe.user_id",
-                scope_namespace_type="knowledge",
-                param_offset=1,
-            )
-            sql = (
-                "SELECT pe.id, pe.customer_id, pe.user_id, "
-                "pe.origin_entry_id, pe.title, pe.body, pe.tags, "
-                "pe.datasource_id, pe.always_inject "
-                "FROM playbook_entries pe "
-                f"WHERE ({visibility_clause}) "
-                "AND pe.status = 'active' "
-            )
-            if datasource_id is not None:
-                # KNW-77: gather across the origin link. the IN-set is {D, P}
-                # where P = D.origin_datasource_id (resolved by the correlated
-                # subquery over the hub's ``datasources`` on the same rbac-read proxy
-                # pool -- a fresh per-call read, no module state). a NULL origin
-                # yields {D}, so an unlinked datasource keeps the single-anchor
-                # behaviour.
-                params.append(datasource_id)
-                idx = len(params)
-                sql += (
-                    f" AND pe.datasource_id IN (${idx}, "
-                    f"(SELECT origin_datasource_id FROM datasources "
-                    f"WHERE id = ${idx}))"
-                )
-            sql += " ORDER BY pe.date_created ASC"
-
             cache = _scan_cache_for(self)
             cache_key = ScanCacheKey("playbook_entries", user_id, datasource_id, customer_scope)
             cached = None if cache is None else cache.get(cache_key)
@@ -447,8 +528,17 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
                 # flight makes put() refuse, instead of caching the pre-write rows where
                 # that eviction can no longer reach them.
                 token = None if cache is None else cache.begin_read(_ENTRY_SCAN_DEPENDS_ON)
-                fetched = await self.l3_pool.fetch(sql, *params, customer_scope=customer_scope)
-                cached = [dict(row) for row in fetched]
+                cached = await visible_rows(
+                    with_options(self.l3_pool, customer_scope=customer_scope),
+                    "playbook_entries",
+                    columns=_ENTRY_VISIBLE_COLUMNS,
+                    user_id=user_id,
+                    namespace_type="knowledge",
+                    customer_column="customer_id",
+                    user_column="user_id",
+                    order=_OLDEST_FIRST,
+                    where=_active_anchored(datasource_id),
+                )
                 if cache is not None and token is not None:
                     cache.put(cache_key, cached, token=token)
             for row in cached:
@@ -594,6 +684,17 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
                 purpose="packages/agent/knowledge/src/threetears/agent/knowledge/collections.py::ConceptCollection.list_own_drafts",
                 plan_test="packages/agent/knowledge/tests/integration/test_index_plans.py::test_draft_owner_indexes",
             ),
+            # the hub's customer-led listing index (hub v177): a caller's visible concepts, their customers' rows in
+            # (date_created, id) order, a page at a time
+            Index(
+                "concepts_visible_by_customer",
+                "customer_id",
+                "date_created",
+                "id",
+                asc=("date_created", "id"),
+                purpose="packages/agent/knowledge/src/threetears/agent/knowledge/collections.py::ConceptCollection.list_visible_to_user",
+                plan_test="packages/agent/knowledge/tests/integration/test_index_plans.py::test_visible_by_customer_indexes",
+            ),
         ),
         cas_column="date_updated",
     )
@@ -626,24 +727,24 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
     ) -> list[ConceptSnapshot]:
         """List caller-visible concepts as merge snapshots, domain-filtered.
 
-        The trust boundary is the SQL itself: the WHERE clause admits a row iff
+        The trust boundary is the SQL itself: each page admits a row iff
         (a) it is platform-scope OR its customer is one the caller's RBAC grants
-        admit, AND (b) it is NOT a user-scope row owned by a DIFFERENT user --
-        composed as ONE fragment from the shared
-        :func:`threetears.agent.acl.three_scope_visibility_clause` (D10), evaluated
-        over the ``system.platform.rbac`` proxy pool. Optional ``datasource_id``
+        admit, AND (b) it is NOT a user-scope row owned by a DIFFERENT user -- the
+        three-scope read rule (D10) as :func:`threetears.agent.acl.visible_rows`
+        reads it by key, over the ``system.platform.rbac``
+        proxy pool. Optional ``datasource_id``
         narrows to concepts anchored on a datasource; the finer
         ``datasource_table_id`` narrows to a single bound table. When
         ``datasource_id`` is a CUSTOMER datasource D linked to a platform-shared
         datasource P, the gather widens to ``datasource_id IN (D, P)`` (KNW-77). A
-        LEFT JOIN carries the bound table's ``schema.table`` NAME through with the
-        concept (the renderer emits the name, never the raw ``datasource_table_id``
+        keyed read of the bound tables (:func:`_with_bound_tables`) carries the bound
+        table's ``schema.table`` NAME through with the concept (the renderer emits the name, never the raw ``datasource_table_id``
         UUID the agent cannot resolve). ``status = 'active'`` excludes DRAFTS from
         retrieval (KNW-06 / D5).
 
-        Cache-bypass: rbac-visibility filtered list -- a cross-table JOIN the by-pk
-        Collection abstraction cannot express, so this reads through the proxy pool
-        directly.
+        Cache-bypass: rbac-visibility filtered list -- the caller's grants, then the
+        rows they admit, which no by-pk Collection read expresses, so this reads
+        through the proxy pool directly.
 
         :param user_id: caller (conversation end-user) UUID
         :ptype user_id: UUID
@@ -660,39 +761,6 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
         """
         result: list[ConceptSnapshot] = []
         if self.l3_pool is not None:
-            visibility_clause, params = three_scope_visibility_clause(
-                user_id=user_id,
-                customer_id_column="co.customer_id",
-                user_id_column="co.user_id",
-                scope_namespace_type="knowledge",
-                param_offset=1,
-            )
-            sql = (
-                "SELECT co.id, co.customer_id, co.user_id, "
-                "co.origin_concept_id, co.name, co.aliases, co.definition, "
-                "co.datasource_id, co.datasource_table_id, co.sql_fragment, "
-                "co.caveats, co.tags, co.always_inject, "
-                "dt.schema_name AS bound_schema_name, "
-                "dt.table_name AS bound_table_name "
-                "FROM concepts co "
-                "LEFT JOIN datasource_tables dt "
-                "ON dt.id = co.datasource_table_id "
-                f"WHERE ({visibility_clause}) "
-                "AND co.status = 'active' "
-            )
-            if datasource_id is not None:
-                params.append(datasource_id)
-                idx = len(params)
-                sql += (
-                    f" AND co.datasource_id IN (${idx}, "
-                    f"(SELECT origin_datasource_id FROM datasources "
-                    f"WHERE id = ${idx}))"
-                )
-            if datasource_table_id is not None:
-                params.append(datasource_table_id)
-                sql += f" AND co.datasource_table_id = ${len(params)}"
-            sql += " ORDER BY co.date_created ASC"
-
             cache = _scan_cache_for(self)
             cache_key = ScanCacheKey(
                 "concepts",
@@ -707,8 +775,21 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
                 # flight makes put() refuse, instead of caching the pre-write rows where
                 # that eviction can no longer reach them.
                 token = None if cache is None else cache.begin_read(_CONCEPT_SCAN_DEPENDS_ON)
-                fetched = await self.l3_pool.fetch(sql, *params, customer_scope=customer_scope)
-                cached = [dict(row) for row in fetched]
+                where = _active_anchored(datasource_id)
+                if datasource_table_id is not None:
+                    where.append(Fragment('t."datasource_table_id" = $1', (datasource_table_id,)))
+                cached = await visible_rows(
+                    with_options(self.l3_pool, customer_scope=customer_scope),
+                    "concepts",
+                    columns=_CONCEPT_VISIBLE_COLUMNS,
+                    user_id=user_id,
+                    namespace_type="knowledge",
+                    customer_column="customer_id",
+                    user_column="user_id",
+                    order=_OLDEST_FIRST,
+                    where=where,
+                )
+                await _with_bound_tables(self.l3_pool, cached, customer_scope=customer_scope)
                 if cache is not None and token is not None:
                     cache.put(cache_key, cached, token=token)
             for row in cached:

@@ -16,7 +16,7 @@ from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
 from threetears.interfaces.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
-from threetears.interfaces.keyed.keys import index_hint, serving_index
+from threetears.interfaces.keyed.keys import index_hint, not_null_guards, serving_index
 from threetears.interfaces.keyed.page import Sort
 from threetears.interfaces.keyed.filters import (
     IN_SUBQUERY,
@@ -186,7 +186,13 @@ def reads_l3(conn: Any) -> bool:
 
 
 async def yugabyte_index_hint(
-    conn: Any, table: Any, by: Mapping[str, Any], order: Sequence[Sort], *, alias: str = "t"
+    conn: Any,
+    table: Any,
+    by: Mapping[str, Any],
+    order: Sequence[Sort],
+    *,
+    alias: str = "t",
+    where: Sequence[Fragment] = (),
 ) -> str:
     """the hint a keyed read of ``table`` pinning ``by`` in ``order`` starts with on YugabyteDB: the declared index
     that serves it (:func:`~threetears.interfaces.keyed.keys.serving_index`), named to pg_hint_plan
@@ -207,10 +213,14 @@ async def yugabyte_index_hint(
     :ptype order: Sequence[Sort]
     :param alias: the alias the statement reads the table by (a keyed count reads it as ``r``)
     :ptype alias: str
+    :param where: the read's guards beside its pins: each ``<col> IS NOT NULL`` of them states that guard to a
+        ``col IS NOT NULL`` partial index (:func:`~threetears.interfaces.keyed.keys.not_null_guards`; WHY at
+        :func:`~threetears.interfaces.keyed.keys.partial_predicate`)
+    :ptype where: Sequence[Fragment]
     :return: the hint and a space, or the empty string
     :rtype: str
     """
-    index = serving_index(table, by, order)
+    index = serving_index(table, by, order, guarded=not_null_guards(fragment.sql for fragment in where))
     if index is None or index.primary or not reads_l3(conn):
         return ""
     return index_hint(index, alias) if await known_on_yugabyte(conn) else ""

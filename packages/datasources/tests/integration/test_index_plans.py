@@ -16,12 +16,17 @@ from collections.abc import AsyncIterator
 
 import asyncpg
 import pytest
+from sqlalchemy import MetaData
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.schema import CreateTable
 
 from threetears.core.collections.delete_cascade import read_delete_cascade
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.testing.plans import PlanRecorder, plan_uses_index
+from threetears.core.testing.captured import CapturedL3
+from threetears.core.testing.plans import PlanRecorder, explain_statement, plan_uses_index
 from threetears.datasources.collections import CapabilitySourceCollection, TableTemplateCollection
+from threetears.datasources.schema_priming import SchemaPrimingIntegration
 
 pytestmark = pytest.mark.integration
 
@@ -182,3 +187,52 @@ async def test_the_sweep_answers_the_active_ids_the_unkeyed_read_answered(source
                 uuid.uuid4(),
                 await sources.fetchval("SELECT max(date_created) FROM datasources"),
             )
+
+
+async def test_schema_priming_reads_its_names_through_the_unique_name_index(db_container: str) -> None:
+    """Flips if schema priming's name resolution (a set of names, ``status = 'active'``, the visibility guard) stops
+    reading idx_datasources_name, one row a name: hinted on YugabyteDB to the hub's status index it read every active
+    datasource and filtered (D8, 2026-11-15)."""
+    schema = f"dsprime_{uuid.uuid4().hex[:12]}"
+    conn = await asyncpg.connect(db_container)
+    try:
+        await conn.execute(f'CREATE SCHEMA "{schema}"')
+        await conn.execute(f'SET search_path TO "{schema}"')
+        table = CapabilitySourceCollection.schema.to_sqlalchemy_table(MetaData())
+        for column in table.columns:
+            column.server_default = None
+        await conn.execute(str(CreateTable(table).compile(dialect=postgresql.dialect())))  # type: ignore[no-untyped-call]
+        # the hub's status index (the one the hint named before)
+        await conn.execute("CREATE INDEX idx_datasources_status ON datasources (status)")
+        await conn.execute("CREATE TABLE datasource_customers (datasource_id uuid NOT NULL, customer_id uuid NOT NULL)")
+        columns = await conn.fetch(
+            "SELECT column_name, data_type FROM information_schema.columns"
+            " WHERE table_schema = current_schema() AND table_name = 'datasources' AND is_nullable = 'NO'"
+        )
+        by_type = {"uuid": "gen_random_uuid()", "boolean": "false", "jsonb": "'{}'::jsonb", "integer": "0"}
+        values = {"name": "'ds-' || g", "status": "CASE WHEN g % 50 = 0 THEN 'disabled' ELSE 'active' END"}
+        names = [c["column_name"] for c in columns]
+        exprs = [
+            values.get(name)
+            or ("now()" if c["data_type"].startswith("timestamp") else by_type.get(c["data_type"], "'v' || g"))
+            for name, c in zip(names, columns, strict=True)
+        ]
+        await conn.execute(
+            f"INSERT INTO datasources ({', '.join(names)}) SELECT {', '.join(exprs)} FROM generate_series(1, {_ROWS}) g"
+        )
+        await conn.execute("ANALYZE datasources")
+        # the real connection answers which engine it is, so the read is spelled (and hinted) for it; nothing else runs
+        captured = CapturedL3(real=conn, passes=lambda _sql: False)
+
+        class _Digests:
+            l3_pool = captured
+
+        priming = SchemaPrimingIntegration(_Digests(), customer_id=uuid.uuid4(), datasource_names=["ds-1", "ds-2"])
+        await priming.datasource_ids()
+        (sql, args), *rest = [(sql, args) for sql, args in captured.asked if '"datasources"' in sql]
+        assert not rest, captured.asked
+        plan = await explain_statement(conn, sql, *args)
+        assert plan_uses_index(plan, "idx_datasources_name"), plan.plan
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
