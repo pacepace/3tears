@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import json
 import threading
-import weakref
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -107,9 +106,11 @@ class _Dependents:
     it is exactly as current as the rows (no TTL, no count). The speed test is
     ``test_scan_cache_write_cost.py``.
 
-    Kept per L1 backend, not per :class:`ScanCache`: several registries in a process may share one backend, and a
-    store through one must unmark the table for an eviction through another. A table never marked (a new process,
-    a backend that already held rows) is read on its first eviction, as before.
+    Kept per :class:`ScanCache`, beside its eviction counts and on the same footing: one cache owns its backend's
+    scan tables (a registry's, :attr:`~threetears.core.collections.registry.CollectionRegistry.scan_cache`), and
+    the in-flight check in :meth:`ScanCache.put` already orders only that cache's reads against its own evictions.
+    A table never marked (a new cache over a backend that already held rows) is read on its first eviction, as
+    before.
 
     One lock orders a store against an eviction: a store's unmark-and-write and an eviction's read-delete-and-mark
     run whole, one at a time, so an eviction never marks a table clean past a row a store wrote while it read.
@@ -124,26 +125,6 @@ class _Dependents:
         """start knowing nothing clean: each table's first eviction reads it."""
         self.clean: set[str] = set()
         self.lock = threading.Lock()
-
-
-#: each L1 backend's :class:`_Dependents`, for as long as the backend lives
-_DEPENDENTS: weakref.WeakKeyDictionary[L1Backend, _Dependents] = weakref.WeakKeyDictionary()
-_DEPENDENTS_LOCK = threading.Lock()
-
-
-def _dependents_of(l1: L1Backend) -> _Dependents:
-    """the backend's dependents tracker, made on first use.
-
-    :param l1: the L1 backend
-    :ptype l1: L1Backend
-    :return: its tracker
-    :rtype: _Dependents
-    """
-    with _DEPENDENTS_LOCK:
-        tracker = _DEPENDENTS.get(l1)
-        if tracker is None:
-            tracker = _DEPENDENTS[l1] = _Dependents()
-    return tracker
 
 
 def _never_trusted(_tables: Sequence[str]) -> bool:
@@ -242,7 +223,7 @@ class ScanCache:
         # reach it through `drop_for_table` -- its own writes via `publish_invalidation`,
         # everyone else's via the listener -- so a local count sees all of them.
         self._evictions: dict[str, int] = {}
-        self._dependents = None if self._l1 is None else _dependents_of(self._l1)
+        self._dependents = None if self._l1 is None else _Dependents()
         if self._l1 is not None and not (
             self._l1.has_table("collection_scan_cache") and self._l1.has_table(_DEPS_TABLE)
         ):
