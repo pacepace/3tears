@@ -60,7 +60,11 @@ def _built(name: str) -> tuple[CampaignBundle, ReportInput]:
 # --- a contrast's paired baseline, its family and its note ---------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", WITH_BUNDLES)
+#: The hot-path campaigns that hold contrasts against a control: the toy host's and the courier's are choices.
+CONTRASTED = ("scaled", "scaled_two_aspects")
+
+
+@pytest.mark.parametrize("name", CONTRASTED)
 def test_every_contrast_carries_its_paired_baseline_and_the_family_it_was_corrected_in(name: str) -> None:
     bundle, built = _built(name)
     families = {
@@ -108,7 +112,7 @@ def _stated(built: ReportInput, kind: str | None, measure: str, aspect: str | No
     return None if stat is None or stat.mean is None else float(stat.mean)
 
 
-@pytest.mark.parametrize("name", WITH_BUNDLES)
+@pytest.mark.parametrize("name", CONTRASTED)
 def test_a_delta_carries_a_note_exactly_where_it_is_not_the_difference_of_the_arms_stated_figures(name: str) -> None:
     _, built = _built(name)
     for contrast in built.contrasts:
