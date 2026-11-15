@@ -396,19 +396,22 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
         """
         if self.l3_pool is None:
             return []
-        embedding_str = json.dumps(embedding)
         # cache-bypass: vector-distance search is not primary-key
         # addressable; the L1 row cache cannot serve it. ``embedding IS
         # NOT NULL`` guards the ``float(similarity)`` cast (``NULL <=>
-        # vector`` is NULL). Only OPEN wants are dedup candidates.
+        # vector`` is NULL). Only OPEN wants are dedup candidates (the
+        # status pin is written as its literal, 'open'). read_nearest
+        # re-sorts the rows by distance: a platform pool's HNSW scan runs
+        # in relaxed order (the comment at read_nearest_statement).
         rows = await read_nearest(
             self.l3_pool,
             "intentions",
             by={"agent_id": agent_id, "user_id": user_id, "status": IntentionStatus.OPEN.value},
             where=[Fragment("t.embedding IS NOT NULL", ())],
-            nearest=Nearest("embedding", embedding_str, similarity="similarity"),
+            nearest=Nearest("embedding", json.dumps(embedding), similarity="similarity"),
             limit=top_k,
             columns=("intention_id", "content", "salience"),
+            records=True,
         )
         return [
             {

@@ -15,6 +15,7 @@ Exercises against a real pgvector/pg16 container:
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -239,5 +240,85 @@ class TestIntentionsCollectionThreeTier:
 
             b_wants = await coll.find_by_user(user_b, agent_id=agent_id)
             assert [w.content for w in b_wants] == ["B: only"]
+        finally:
+            await pool.close()
+
+
+#: the hand-written dedup read ``find_similar_for_dedup`` sent before it moved onto ``read_nearest`` (2026-11-14)
+_OLD_DEDUP_SQL = (
+    "SELECT intention_id, content, salience, "
+    "1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity "
+    "FROM intentions "
+    "WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL "
+    "AND status = 'open' "
+    "ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector "
+    "LIMIT $4"
+)
+
+
+class TestFindSimilarForDedupSameResults:
+    """``find_similar_for_dedup`` answers what its hand-written statement answered."""
+
+    async def test_the_keyed_read_answers_the_old_statements_rows(self, applied_schema: tuple[str, str]) -> None:
+        """Flips if the dedup read stops pinning the agent, the user or the open status, lets a row with no embedding
+        in, orders other than nearest first, takes more than ``top_k``, or filters the threshold otherwise; checked
+        against the old statement's own answer over the same rows."""
+        url, schema = applied_schema
+        pool = await make_pool(url, schema)
+        try:
+            async with pool.acquire() as conn:
+                width = await conn.fetchval(
+                    "SELECT atttypmod FROM pg_attribute WHERE attrelid = 'intentions'::regclass AND attname = 'embedding'"
+                )
+
+            def vector(lean: float) -> str:
+                return "[" + ",".join(["1", str(lean), *["0"] * (width - 2)]) + "]"
+
+            agent_id, user_id = uuid.uuid4(), uuid.uuid4()
+            seeds: list[tuple[uuid.UUID, uuid.UUID, str, str | None]] = [
+                (agent_id, user_id, "open", vector(0.1 * i)) for i in range(8)
+            ]
+            seeds += [
+                (agent_id, user_id, "granted", vector(0.01)),  # another status, nearer than any open row
+                (agent_id, user_id, "open", None),  # no embedding
+                (agent_id, uuid.uuid4(), "open", vector(0.02)),  # another user, same agent
+                (uuid.uuid4(), user_id, "open", vector(0.03)),  # another agent, same user
+            ]
+            now = datetime.now(UTC)
+            async with pool.acquire() as conn:
+                for seed_agent, seed_user, status, embedding in seeds:
+                    await conn.execute(
+                        "INSERT INTO intentions (intention_id, agent_id, customer_id, user_id, status, content, "
+                        "embedding, salience, date_created, date_updated) "
+                        "VALUES ($1, $2, $3, $4, $5::intention_status, $6, $7::text::public.vector, 0.5, $8, $8)",
+                        uuid.uuid4(),
+                        seed_agent,
+                        uuid.uuid4(),
+                        seed_user,
+                        status,
+                        f"{status} {embedding is not None}",
+                        embedding,
+                        now,
+                    )
+            coll, _l1 = build_collection(pool, _InMemoryNatsBus())
+            query = [1.0, 0.0, *[0.0] * (width - 2)]
+            for top_k, threshold in ((4, 0.0), (8, 0.9), (20, 0.0), (0, 0.0)):
+                async with pool.acquire() as conn:
+                    old = await conn.fetch(_OLD_DEDUP_SQL, json.dumps(query), agent_id, user_id, top_k)
+                expected = [
+                    {
+                        "intention_id": row["intention_id"],
+                        "content": row["content"],
+                        "salience": float(row["salience"]),
+                        "similarity": float(row["similarity"]),
+                    }
+                    for row in old
+                    if float(row["similarity"]) >= threshold
+                ]
+                found = await coll.find_similar_for_dedup(
+                    user_id=user_id, agent_id=agent_id, embedding=query, top_k=top_k, threshold=threshold
+                )
+                assert found == expected
+                assert len(found) == {(4, 0.0): 4, (8, 0.9): 5, (20, 0.0): 8, (0, 0.0): 0}[(top_k, threshold)]
         finally:
             await pool.close()
