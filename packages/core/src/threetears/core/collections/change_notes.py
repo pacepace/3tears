@@ -2316,11 +2316,11 @@ def _noted_rows_step(schema: str, table: str, since: datetime) -> Step:
     :return: the step
     :rtype: Step
     """
-    covered = Fragment(
+    coverage = Fragment(
         "r.switch_no = 0 OR $1::timestamptz - make_interval(secs => r.wait_seconds / 2) >= r.previous_switched_at",
         (since,),
     )
-    noted = Fragment(
+    from_reach = Fragment(
         "t.table_name = $1 AND t.noted_at >= $2::timestamptz - make_interval(secs => r.wait_seconds / 2)",
         (table, since),
     )
@@ -2328,17 +2328,17 @@ def _noted_rows_step(schema: str, table: str, since: datetime) -> Step:
     first = scan(
         f"{schema}.{note_table(0)}",
         _NOTE_COLUMNS,
-        where=[Fragment(_SLOT_READ, (0, NOTE_RING_SIZE, since)), covered, noted],
+        where=[Fragment(_SLOT_READ, (0, NOTE_RING_SIZE, since)), coverage, from_reach],
     )
     second = scan(
         f"{schema}.{note_table(1)}",
         _NOTE_COLUMNS,
-        where=[Fragment(_SLOT_READ, (1, NOTE_RING_SIZE, since)), covered, noted],
+        where=[Fragment(_SLOT_READ, (1, NOTE_RING_SIZE, since)), coverage, from_reach],
     )
     third = scan(
         f"{schema}.{note_table(2)}",
         _NOTE_COLUMNS,
-        where=[Fragment(_SLOT_READ, (2, NOTE_RING_SIZE, since)), covered, noted],
+        where=[Fragment(_SLOT_READ, (2, NOTE_RING_SIZE, since)), coverage, from_reach],
     )
     return distinct(union(first, second, third, keep_all=True), _NOTE_COLUMNS)
 
@@ -2369,7 +2369,10 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     try:
         # the ring row and its notes in one statement (read_row_beside): one round trip, the ring and its notes read in
         # one snapshot, as the reconciler's ask of a marked table was made one statement for (364941102: on YugabyteDB
-        # 2.56 ms at 1M notes, 1.60x its bare read; the two-statement form it replaced answered the same in every case)
+        # 2.56 ms at 1M notes, 1.60x its bare read; the two-statement form it replaced answered the same in every case).
+        # Through the helper (2026-11-15) the plan is the hand-written one's, node for node (each slot a one-time
+        # filter over its (table_name, noted_at) index read); building the statement costs ~0.09 ms of Python a call.
+        # Its budget: test_noted_rows_scale_live (YugabyteDB, within 2x the bare read)
         found = await read_row_beside(
             pool,
             f"{notes_schema}.{RING_TABLE}",  # the helper quotes it a segment at a time
