@@ -49,6 +49,7 @@ from threetears.evals.analysis.report.build import (
 )
 from threetears.evals.analysis.report.campaign.page import build_campaign_report_in_aspect_forms
 from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.verdict import unfinished_line
 from threetears.evals.analysis.report.words import (
     campaign_arm_tags,
     declared_arm_names,
@@ -1633,6 +1634,35 @@ def campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[V
     return _code_only_page(host, _load_campaign(host.storage, campaign_id, scope_id)).verdicts
 
 
+def campaign_stopped_short(host: EvalHost, campaign_id: str, scope_id: str) -> list[str]:
+    """What stopped each run of the campaign that did not finish, as its code-only page opens with it over the
+    evidence assembled now, or nothing where every run completed — what a CI gate asks before it reads a verdict.
+
+    The one decision every surface asks (:func:`~threetears.evals.analysis.run_ending.stopped_short`), over each
+    aspect's evidence: a gate that passed a campaign holding an unfinished run would pass contrasts computed with that
+    run's partial results. Costs no model call.
+
+    :param host: The host whose store holds the campaign, and whose vocabulary its evidence is assembled in.
+    :ptype host: EvalHost
+    :param campaign_id: The campaign.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :return: One line per aspect holding an unfinished run, in the campaign's order, named by its aspect where the
+        campaign reads several; empty where every run completed.
+    :rtype: list[str]
+    :raises NotFoundError: No campaign with that id in the scope.
+    """
+    page = _code_only_page(host, _load_campaign(host.storage, campaign_id, scope_id))
+    labels = page.readings.arm_labels()
+    several = len(page.aspects) > 1
+    return [
+        f"On {fold.heading}: {line.text}" if several else line.text
+        for fold in page.aspects
+        if (line := unfinished_line(fold.report.bundle, lambda key: labels.get(key, key))) is not None
+    ]
+
+
 # ---------------------------------------------------------------------------
 # The person's call — recorded beside code's readings, never in place of them
 # ---------------------------------------------------------------------------
@@ -1922,6 +1952,7 @@ __all__ = [
     "require_evidence",
     "inspect_analysis_bundle",
     "campaign_report",
+    "campaign_stopped_short",
     "campaign_verdicts",
     "record_campaign_call",
     "inspect_campaign_bundle",

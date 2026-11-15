@@ -420,6 +420,10 @@ def _dispersion(
         # beside it. A reading with no case count recorded states none rather than its observations.
         if n_cases is None:
             return "unestimable"
+        if sem is not None:
+            # A standard error with no interval is a spend or a time on too few cases above zero: the spread is
+            # estimable and the interval that holds its level is not usable, which "unestimable" would misstate.
+            return f"{stats.SKEWED_INTERVAL_WITHHELD} ({n_cases} case{'' if n_cases == 1 else 's'})"
         return f"unestimable at {n_cases} case{'' if n_cases == 1 else 's'}"
     # A rate carries its interval and no standard error, and its interval is its spread: stated, never
     # reported as unestimable because the sem it does not have is absent.

@@ -1419,13 +1419,14 @@ class TrialBlock(_Block):
 
 #: What kind of verdict the first screen's line is, for a page that sets each kind apart: ``decided`` (a declared
 #: question settled it), ``open`` (too few cases, or no question was declared, so the line offers leads),
-#: ``failed`` (the test setup failed, so there is no verdict) and ``summary`` (one arm: a count, nothing to decide).
+#: ``failed`` (the test setup failed or a run did not finish, so there is no verdict) and ``summary`` (one arm: a count, nothing to decide).
 _VerdictTone = Literal["decided", "open", "failed", "summary"]
 
 #: Each verdict rule's tone, keyed by :data:`~threetears.evals.analysis.report.verdict.VerdictRule` — by name, so the
 #: model imports nothing from the builder that applies the rules.
 _VERDICT_TONES: dict[str, _VerdictTone] = {
     "setup": "failed",
+    "unfinished": "failed",
     "one_arm": "summary",
     "declared": "decided",
     "too_small": "open",

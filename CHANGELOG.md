@@ -46,6 +46,65 @@ measure definitions and still pool such runs. The comparison disclosure says so 
   definitions is left as it was (`Attested.already_attested`), and one attested with other definitions is refused. To read
   an old run under the current definition, wire `measure_rereader` and call `remeasure_run`.
   `packages/evals/MIGRATIONS.toml` has the detail.
+### evals: a run that did not finish never opens with a verdict, on any surface (#1173)
+
+**Changed:** a failed run's print opened on its failure with no verdict; its HTML and Markdown report, and every
+surface of a cancelled, budget-stopped or exhausted run, still opened with a verdict over the results recorded before
+the stop. Whether a reading may open with a verdict is now one decision (`analysis.run_ending.stopped_short`), read off
+each member run's stored status alone: only `completed` may. Every surface asks it and, where a run did not finish,
+opens on what stopped it, in the run's own words, and says there is no verdict:
+
+| Surface | Opens with |
+|---|---|
+| `Result.render()`, `WriterResult.render()` | `<name>: the run was cancelled, so there is no verdict: <reason>`, then how many results the readings cover |
+| An aspect's page (Markdown, HTML, JSON) | its verdict line, rule `unfinished`, tone `failed`: `<arm>'s run was stopped by its budget, so there is no verdict: <reason>.` |
+| A campaign's page | the same line, before code's lead on the aspects that finished and before a caller's own lead |
+| A written page (Markdown, HTML, text) | code's line first under the masthead, before the document's headline |
+| `analyses_list`, `campaigns_list` | `AnalysisLine.verdict` and `report.headline` lead with it; `outcome_short` reads `Did not finish`; `verdict_short` reads `No call` unless a person recorded one |
+| `evals gate` | prints the same line and exits 1, reading no verdict; it passed such a campaign before |
+
+On a page, the line then says what the readings under it are and what to do: `The readings below include the partial
+results recorded before the stop, so resume the run or leave it out of the campaign to read a verdict.` A campaign's
+contrasts still count an unfinished run's partial results beside every finished run's. In a campaign of several
+aspects only the aspect holding the run loses its verdict; the others keep their lead, after it.
+
+A run still `running` or `pending` when it is read (one interrupted and never taken up again) reads the same way. A
+failed run that recorded no error, which printed a verdict, prints none. A failed setup keeps its own line, which
+already states no verdict. Pages, inputs and listings over runs that all finished are unchanged.
+
+**For hosts:** a host that pins a page's first line, or shows `report.headline`, `outcome_short` or `verdict_short`,
+sees them move for a campaign holding a run that did not finish. A pipeline calling `evals gate` gets exit 1 for such
+a campaign, where it could get 0. To read a verdict, resume the run (`job_resume`) or take it out of the campaign: a
+code-only page and the gate read the evidence as it stands, so they follow at once. A written report is frozen over
+the evidence it was written from: once its unfinished run has finished or left the campaign, its listing line reads
+`needs_regeneration` (`FINISHED_SINCE`), `outcome_short` is null, and the report is generated again
+(`analysis_generate`) to read a verdict. `campaign_stopped_short(host, campaign_id, scope_id)` (new, provisional,
+`threetears.evals.analysis`) answers what the gate asks. A host branching on `VerdictLine.rule` or a verdict block's
+tone meets `unfinished` (tone `failed`). `RunSummary.ended_because`,
+`Caveats.unfinished` and `DocPage.stopped` are new, optional and left out of a document while unset, so nothing stored
+moves; `EvalSummary.ending` replaces `EvalSummary.failed_text`, which no release shipped.
+
+### evals: a mean cost or latency takes an interval that holds 95% on lognormal-like values
+
+**Changed:** the interval on the mean of a spend or a time (a `nonnegative` measure on the cost or latency axis,
+or in dollars, `ms` or `s`) is the union of the t interval over cases, clipped at zero, and a log-scale interval on the case means. The clipped t
+interval alone, labelled 95%, covered a lognormal mean 83% of the time at 10 cases and 91% at 50 (log-SD 1.0), and 72%
+at 10 cases at log-SD 1.5; the new interval covered at least 96% from 5 to 50 cases on the shapes tested: lognormal to log-SD 1.5, gamma,
+exponential, normal, repeated cases, a fifth of cases free (`tests/test_simulated_floored_mean.py`). **It does not
+hold where rare large cases dominate the cost**: with one case in ten 30 times the rest it is the t interval and
+covers as it does, about 40%, 66% and 89% at 5, 10 and 30 cases (pinned there as a strict xfail). It is wider, by about 1.4 times at 10 cases of moderate skew and several
+times on heavy skew, and **under five cases above zero no interval is stated**, every case free included, only the mean, and a bar
+proposal, a readings cell and an evidence row say why and that five cases above zero give one
+(`docs/measuring-soundly.md`, "Variance, k and how many cases"; limits in `docs/open-problems.md`). Measures on a
+declared range, counts, rates and differences between arms are unchanged.
+
+**Changed:** a launch estimate's detectable difference names its test (`paired t-test`) and marks each rate:
+`DetectableEffect.rate` (new, default false), and a rate's printed line says its bounded interval must exclude zero
+too, so a difference that size needs more cases. The figures themselves are unchanged.
+
+**For hosts:** a host pinning a report page, a bundle's `ci_low` / `ci_high` on a spend or a time, or the launch
+estimate's text updates its match; a reader of those intervals must accept none where the arm holds under five
+differing cases. Nothing stored changes shape.
 
 ### evals: a definitions reset fills the presentation names a template it leaves current lacks
 

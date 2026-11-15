@@ -5186,6 +5186,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.campaign_stopped_short": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.campaign_verdicts": {
       "kind": "function",
       "signature": "",
@@ -6636,6 +6641,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.RunEnding": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.RunLister": {
       "kind": "type alias",
       "signature": "",
@@ -6783,6 +6793,16 @@
     },
     "threetears.evals.analysis.SoundnessRefusal": {
       "kind": "exception",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.stopped_short": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.StoppedShort": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },

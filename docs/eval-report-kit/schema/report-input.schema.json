@@ -320,6 +320,11 @@
      "type": "array",
      "items": {"type": "string"},
      "description": "Observations recorded but not reported."
+    },
+    "unfinished": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "What stopped each run that did not finish, a sentence each in code's words, then what the readings cover: what a page opens with in place of a verdict. Empty where every run completed."
     }
    },
    "additionalProperties": false,

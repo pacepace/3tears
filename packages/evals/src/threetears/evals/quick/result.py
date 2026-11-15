@@ -87,6 +87,7 @@ from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.trials import trial_order
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
+from threetears.evals.analysis.run_ending import stopped_short
 from threetears.evals.analysis.summary import CaseResult, DimensionSummary, EvalSummary
 from threetears.evals.analysis.quantities import PERCENT
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor, reads_as_rate, reads_as_share
@@ -452,9 +453,10 @@ class Result:
 
         Quiet is the verdict, each arm's scoreboard and readings, the top misses and where the runs are stored. Never
         quieted: errors, exclusions and their causes, a run stopped short, unpriced spend, the self-judging warning,
-        and how the judge stands against people's labels. A failed run (a replay miss fails one) leads with its failure,
-        naming what failed, and prints no verdict: its readings follow, said to cover only the results recorded before
-        it failed.
+        and how the judge stands against people's labels. A run that did not finish (one that failed, as a replay miss
+        fails one, was cancelled, was stopped by its budget or its provider, or is still running) leads with what
+        stopped it and prints no verdict: its readings follow, said to cover only the results recorded before it
+        stopped.
 
         :param full: Every arm's whole summary and the whole report, Methods included, as Markdown.
         :ptype full: bool
@@ -476,7 +478,7 @@ class Result:
                 ]
             )
         one_arm = len(self.arms) == 1
-        lines = self._failed_lines() or [self._verdict_line()]
+        lines = self._stopped_lines() or [self._verdict_line()]
         # How far its judge can be trusted is read with the verdict: against people's labels, then on its examples.
         judged = self.calibration_lines() + (self.judge_examples.lines() if self.judge_examples is not None else [])
         if one_arm:
@@ -656,25 +658,28 @@ class Result:
         """
         return f"{self.name}: {self._verdict().text}"
 
-    def _failed_lines(self) -> list[str]:
-        """The first lines of a failed run's print, in place of its verdict; empty when no arm's run failed.
+    def _stopped_lines(self) -> list[str]:
+        """The first lines of the print of a run that did not finish, in place of its verdict; empty when every arm's
+        run completed.
 
-        Each failed arm's failure first, in the run's words (:attr:`EvalSummary.failed_text`: a replay miss names the
-        call its recording does not hold), then how many results the readings below it cover. A failed run prints no
-        verdict: the run ended at its failure (a replay miss fails it, owner ruling, #1162), so its results are
-        whichever cells happened to finish first, and a verdict over them is the reading the failure exists to stop.
+        Whether there is a verdict to open with is the one decision every surface asks
+        (:func:`~threetears.evals.analysis.run_ending.stopped_short`), here over each arm's run
+        (:attr:`EvalSummary.ending`). Each unfinished arm's ending first, in the run's words (a replay miss names the
+        call its recording does not hold; a cancel or a budget stop gives its reason), then how many results the
+        readings below it cover. Such a run prints no verdict: it ended where it stopped (a replay miss fails it, owner
+        ruling, #1162), so its results are whichever cells happened to finish first, and a verdict over them is the
+        reading the stop exists to prevent.
         """
-        failed = {arm: text for arm, summary in self.arms.items() if (text := summary.failed_text) is not None}
-        if not failed:
+        short = stopped_short(summary.ending for summary in self.arms.values())
+        if short is None:
             return []
-        lines = [
-            f"{self.name}: {'the run' if len(self.arms) == 1 else _shown_arm_name(arm)} failed, so there is no "
-            f"verdict: {one_line(text)}"
-            for arm, text in failed.items()
+        arm_of = {summary.run_id: arm for arm, summary in self.arms.items()}
+        one_arm = len(self.arms) == 1
+        said = short.sentences(lambda ending: "the run" if one_arm else _shown_arm_name(arm_of[ending.run_id]))
+        return [
+            *(f"{self.name}: {sentence}" for sentence in said),
+            short.covers(sum(summary.n_results for summary in self.arms.values())),
         ]
-        recorded = sum(summary.n_results for summary in self.arms.values())
-        lines.append(f"the readings below cover only the {recorded} result(s) recorded before it failed")
-        return lines
 
     def _verdict(self) -> VerdictLine:
         """The eval's verdict line, as its aspect's page opens with it, led on its graders' order."""

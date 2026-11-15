@@ -267,13 +267,15 @@ def _analysed(host: EvalHost, campaign_id: str) -> CampaignLine:
 #: at bundle shape 66: the shape-65 bundle the old pin was taken over, moved by
 #: ``fixtures/report_inputs/migrate_bundle_shape_66.py``, computes this one and is this build's bundle leaf for leaf,
 #: less ``lever_names``. It was re-pinned at campaign bundle shape 4 the same way as ``test_declared_names``'s: this
-#: build's bundle, read as the build before it fingerprinted a shape-3 frame, computes the old pin.
+#: build's bundle, read as the build before it fingerprinted a shape-3 frame, computes the old pin. It was re-pinned when
+#: a mean spend or time took the interval that holds its level on skewed data: the ends of those intervals moved, and
+#: the labels and every other figure did not.
 _FROZEN_LABELS = [
     "Read every invoice line twice an…endor's own wo…",
     "Read every invoice line once and…ndor's own wor…",
     "(none)",
 ]
-_FROZEN_FINGERPRINT = "v3:8c3c29f48b94b1c5366f8a54e55e77c5947f601b41720fb899aa7e04b54bd678"
+_FROZEN_FINGERPRINT = "v3:34142c7a0a2c00f07883d3b52de93d5402d5686d0a9286f60ef56b08bf3c45b4"
 
 
 def test_the_bundle_freezes_the_labels_and_fingerprint_it_froze_before() -> None:

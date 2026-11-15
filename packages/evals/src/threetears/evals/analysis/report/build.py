@@ -82,7 +82,7 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
     TrialDetail,
 )
-from threetears.evals.analysis.report.verdict import verdict_line
+from threetears.evals.analysis.report.verdict import bundle_stopped_short, unfinished_line, verdict_line
 from threetears.evals.analysis.report.words import input_arm_tags, reader_arm_labels
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.kernel.campaign import EvalAnalysis
@@ -270,19 +270,26 @@ class AnalysisLead(NamedTuple):
 
     :ivar caveats: What warns on the analysis's page, then its one caveat line on when its criteria were set, in the
         page's own words; empty with neither.
-    :ivar verdict: The verdict alone.
+    :ivar verdict: The verdict alone; over evidence with a run that did not finish, what stopped it, with no verdict
+        on the aspect it stopped.
+    :ivar stopped: Whether a run of the evidence did not finish
+        (:func:`~threetears.evals.analysis.report.verdict.bundle_stopped_short`), so :attr:`verdict` opens on what
+        stopped it and the line leads with it.
     """
 
     caveats: list[str]
     verdict: str
+    stopped: bool = False
 
     def line(self) -> str:
-        """The caveats, then the verdict, as one line: what an analysis is listed by (``AnalysisLine.verdict``).
+        """The caveats, then the verdict, as one line: what an analysis is listed by (``AnalysisLine.verdict``). Over
+        a run that did not finish, what stopped it leads and the caveats follow it: a broken floor read over the
+        results recorded before a run stopped is no opening.
 
         :return: The line.
         :rtype: str
         """
-        return " ".join([*self.caveats, self.verdict])
+        return " ".join([self.verdict, *self.caveats] if self.stopped else [*self.caveats, self.verdict])
 
 
 def analysis_lead(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = None) -> AnalysisLead:
@@ -321,8 +328,18 @@ def analysis_lead(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = Non
         *campaign_warnings(readings, names, forms=PageForms.off_page()),
         *timing_caveats(campaign.aspects, names),
     ]
+    stopped = [aspect for aspect in campaign.aspects if bundle_stopped_short(aspect) is not None]
     if len(analysis.aspects) > 1:
-        verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects], names)
+        # An aspect with a run that did not finish is listed by what stopped it, first, and never by a reading.
+        arm_labels = readings.arm_labels()
+        opened = [
+            f"{names(aspect.aspect)}: {line.text}"
+            for aspect in stopped
+            if (line := unfinished_line(aspect, lambda key: arm_labels.get(key, key))) is not None
+        ]
+        unfinished = {aspect.aspect for aspect in stopped}
+        finished = [aspect.label for aspect in analysis.aspects if aspect.label not in unfinished]
+        verdict = " ".join([*opened, *([campaign_verdict(readings, finished, names)] if finished else [])])
     else:
         aspect = campaign.aspects[0]
         declared = campaign.declaration.aspects[0]
@@ -333,7 +350,7 @@ def analysis_lead(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = Non
             # The aspect's page's forms, over its campaign's set of each measure, as the page itself reads them.
             forms=PageForms.of_aspects(campaign.aspects, readings)[aspect.aspect],
         ).text
-    return AnalysisLead(caveats=caveats, verdict=verdict)
+    return AnalysisLead(caveats=caveats, verdict=verdict, stopped=bool(stopped))
 
 
 def _page(
