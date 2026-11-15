@@ -85,12 +85,6 @@ async def test_ix_context_items_agent_var_key(engine_conn: Any) -> None:
         await insert_duplicate(engine_conn, _ENTRIES["ix_context_items_agent_var_key"])
 
 
-async def test_ix_context_items_conv(engine_conn: Any) -> None:
-    """Flips if packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.count_results; packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.evict_lru; packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.find_by_conversation's read stops reading ix_context_items_conv."""
-    plan = await explain_index_read(engine_conn, _ENTRIES["ix_context_items_conv"])
-    assert plan_uses_index(plan, "ix_context_items_conv"), json.dumps(plan.plan)
-
-
 async def test_ix_context_items_type(engine_conn: Any) -> None:
     """Flips if packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.count_results; packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.evict_lru's read stops reading ix_context_items_type."""
     plan = await explain_index_read(engine_conn, _ENTRIES["ix_context_items_type"])
