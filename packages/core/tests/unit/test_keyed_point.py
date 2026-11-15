@@ -17,9 +17,11 @@ import pytest
 from threetears.core.keyed import (
     AnyOf,
     Fragment,
+    Joined,
     Lock,
     Nearest,
     Sort,
+    TextRank,
     ThreadedDuckDB,
     read_by,
     read_nearest,
@@ -222,3 +224,98 @@ async def test_a_nearest_read_orders_by_the_distance_alone_under_its_limit() -> 
         Nearest("embedding", "[1]", operator="<>")
     with pytest.raises(ValueError, match="no fewer"):
         await read_nearest(conn, "memories", by={"agent_id": "a"}, nearest=Nearest("embedding", "[1]"), limit=-1)
+
+
+async def test_a_text_ranked_read_orders_by_the_rank_best_first_under_its_limit() -> None:
+    """Flips if ``read_nearest`` given a ``TextRank`` does not send its pins and guards, the rank under its name after
+    the columns, the order by that rank descending (best first, as ``ORDER BY fts_rank DESC`` read it) with the query
+    text bound once past them, and its LIMIT last."""
+    conn = _Sent()
+    await read_nearest(
+        conn,
+        "memories",
+        by={"agent_id": "a", "user_id": "u"},
+        nearest=TextRank("search_vector", "red apples"),
+        limit=3,
+        columns=("memory_id",),
+        where=[Fragment("(t.search_vector @@ websearch_to_tsquery('english', $1)) IS TRUE", ("red apples",))],
+    )
+    [(sql, params)] = conn.calls
+    rank = "ts_rank_cd(t.\"search_vector\", websearch_to_tsquery('english', $4))"
+    assert sql == (
+        f'SELECT t."memory_id", {rank} AS "fts_rank" FROM "memories" AS t WHERE t."agent_id" = $1 AND '
+        "t.\"user_id\" = $2 AND ((t.search_vector @@ websearch_to_tsquery('english', $3)) IS TRUE) "
+        f"ORDER BY {rank} DESC LIMIT $5"
+    )
+    assert params == ("a", "u", "red apples", "red apples", 3)
+
+
+class _Answering:
+    """answers each statement sent with the next of its scripted row lists, and keeps the statements."""
+
+    def __init__(self, *answers: list[dict[str, Any]]) -> None:
+        self.answers = list(answers)
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        self.calls.append((query, params))
+        return self.answers.pop(0)
+
+
+async def test_a_ranked_read_with_a_left_join_answers_the_joined_rows_in_rank_order_up_to_its_limit() -> None:
+    """Flips if a ranked read's ``LEFT`` join drops a row no parent matches, answers a row matching two parents other
+    than once for each in rank order, keeps more than ``limit`` joined rows (``ORDER BY ... LIMIT`` over the
+    hand-written join counts each copy), leaves the join column it read only to join on, or reads the parents other
+    than by one keyed batch of the ranked rows' values."""
+    conn = _Answering(
+        [
+            {"chunk_id": "c1", "agent_id": "a", "memory_id": "m1", "similarity": 0.9},
+            {"chunk_id": "c2", "agent_id": "a", "memory_id": "m2", "similarity": 0.8},
+            {"chunk_id": "c3", "agent_id": "a", "memory_id": "m3", "similarity": 0.7},
+        ],
+        [
+            {"agent_id": "a", "memory_id": "m1", "media_id": "f1"},
+            {"agent_id": "a", "memory_id": "m1", "media_id": "f2"},
+            {"agent_id": "a", "memory_id": "m3", "media_id": "f3"},
+        ],
+    )
+    rows = await read_nearest(
+        conn,
+        "memory_chunks",
+        by={"agent_id": "a", "user_id": "u"},
+        nearest=Nearest("embedding", "[1,0]", similarity="similarity"),
+        limit=3,
+        columns=("chunk_id", "agent_id"),
+        joins=[
+            Joined(
+                "media",
+                on={"agent_id": "agent_id", "memory_id": "memory_id"},
+                columns={"media_id": "media_id"},
+                left=True,
+                casts={"agent_id": "text", "memory_id": "text"},
+            )
+        ],
+    )
+    assert rows == [
+        {"chunk_id": "c1", "agent_id": "a", "similarity": 0.9, "media_id": "f1"},
+        {"chunk_id": "c1", "agent_id": "a", "similarity": 0.9, "media_id": "f2"},
+        {"chunk_id": "c2", "agent_id": "a", "similarity": 0.8, "media_id": None},
+    ]
+    assert all("memory_id" not in row for row in rows)
+    (ranked_sql, _), (joined_sql, _) = conn.calls
+    assert 't."memory_id"' in ranked_sql and "LIMIT" in ranked_sql
+    assert '"media"' in joined_sql
+
+
+async def test_a_ranked_read_joins_left_only() -> None:
+    """Flips if a ranked read takes an inner join: its rows would be dropped after the limit, where the hand-written
+    join dropped them before it."""
+    with pytest.raises(ValueError, match="LEFT only"):
+        await read_nearest(
+            _Sent(),
+            "media_content",
+            by={"agent_id": "a"},
+            nearest=Nearest("embedding", "[1]"),
+            limit=2,
+            joins=[Joined("media", on={"agent_id": "agent_id"}, columns={"m": "media_id"})],
+        )

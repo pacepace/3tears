@@ -35,6 +35,7 @@ from threetears.core.testing.captured import CapturedL3
 from threetears.core.testing.plans import StatementPlan, explain_statement, explain_write, plan_uses_index
 
 from .conftest import AsyncpgStore
+from .memory_same_results import Serial
 
 #: every test reads the one seeded schema (each plan is explained in a transaction rolled back), so the seed --
 #: thousands of 1024-wide vectors through three HNSW indexes -- is built once a module
@@ -284,6 +285,25 @@ async def _only_plan(world: _World, captured: CapturedL3) -> StatementPlan:
     return plan
 
 
+async def _plans_reading(world: _World, captured: CapturedL3, table: str) -> list[StatementPlan]:
+    """the plans of the statements ``captured`` recorded that read ``table`` as their own relation (``FROM "<table>"
+    AS t``): a read whose joined table is read by its own keyed batch sends one statement a table, each held to its
+    own index.
+
+    :param world: the seeded schema
+    :ptype world: _World
+    :param captured: the recording pool
+    :ptype captured: CapturedL3
+    :param table: the table
+    :ptype table: str
+    :return: their plans, in order; at least one
+    :rtype: list[StatementPlan]
+    """
+    plans = [plan for plan in await world.plans(captured) if f'FROM "{table}" AS t' in plan.sql]
+    assert plans, [sql[:80] for sql, _ in captured.asked]
+    return plans
+
+
 async def _collision_plans(world: _World) -> list[tuple[str, StatementPlan]]:
     """each statement a user merge's alias-collision step sends, with its plan: a source user of the world's agent
     whose every named memory the master names too, so the lock finds them all and each child is read by their keys.
@@ -512,8 +532,12 @@ async def test_memory_chunks_memory(world: _World) -> None:
         **owner,
     )
     await chunks.find_by_conversation_id(world.conversation, **owner)
+    # the chunks' own reads (their files and the conversation's memories are read by their own statements, each held
+    # to its index by test_media_memory_id and test_mem_conversation)
     missed = [
-        _shape(plan) for plan in await world.plans(captured) if not plan_uses_index(plan, "ix_memory_chunks_memory")
+        _shape(plan)
+        for plan in await _plans_reading(world, captured, "memory_chunks")
+        if not plan_uses_index(plan, "ix_memory_chunks_memory")
     ]
     # the chunks a user merge's alias collision cascades to, named before the delete
     missed += _collision_misses(await _collision_plans(world), 'FROM "memory_chunks"', "ix_memory_chunks_memory")
@@ -536,14 +560,15 @@ async def test_mem_conversation(world: _World) -> None:
     await world.chunks(captured).find_by_conversation_id(
         world.conversation, user_id=world.user, agent_id=world.agent, customer_id=world.customer
     )
-    plan = await _only_plan(world, captured)
+    (plan,) = await _plans_reading(world, captured, "memories")
     assert plan_uses_index(plan, "idx_mem_conversation"), _shape(plan)
 
 
 async def test_media_memory_id(world: _World) -> None:
     """Flips if a chunk's file, joined by its memory, or the files a user merge's alias collision cascades to, stop
     being found through ix_media_agent_memory."""
-    captured = CapturedL3()
+    # the reads run (the chunks found are what each read's files are read by), each statement in turn
+    captured = CapturedL3(real=Serial(world.conn))
     chunks = world.chunks(captured)
     await chunks.search_by_ids([world.chunk], world.user, agent_id=world.agent)
     await chunks.find_for_recall(chunk_id=world.chunk, user_id=world.user, agent_id=world.agent)
@@ -571,8 +596,11 @@ async def test_media_memory_id(world: _World) -> None:
         similarity_threshold=0.0,
         chunk_signal_weights=_CHUNK_WEIGHTS,
     )
+    # each read's files, by the chunks' memories (the chunks themselves are held to their own indexes above)
     missed = [
-        _shape(plan) for plan in await world.plans(captured) if not plan_uses_index(plan, "ix_media_agent_memory")
+        _shape(plan)
+        for plan in await _plans_reading(world, captured, "media")
+        if not plan_uses_index(plan, "ix_media_agent_memory")
     ]
     # the files a user merge's alias collision cascades to, locked before the delete
     missed += _collision_misses(await _collision_plans(world), 'FROM "media" AS t', "ix_media_agent_memory")
@@ -647,7 +675,10 @@ async def test_media_content_media_type(world: _World) -> None:
     )
     captured = CapturedL3()
     await world.contents(captured).search_by_ids([file], world.user, agent_id=world.agent)
-    plan = await _only_plan(world, captured)
+    # the read of the contents by file id (the read by content id goes by the unique content id)
+    (plan,) = [
+        plan for plan in await _plans_reading(world, captured, "media_content") if 't."media_id" = ANY' in plan.sql
+    ]
     assert plan_uses_index(plan, "ix_media_content_media_type"), _shape(plan)
     # the contents a user merge's alias collision cascades to, by their files
     missed = _collision_misses(await _collision_plans(world), 'FROM "media_content"', "ix_media_content_media_type")

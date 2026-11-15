@@ -247,7 +247,7 @@ class TestBuildScopeClause:
     """
 
     async def test_required_triple(self, permissive_memory_authorizer: MemoryAuthorizerDependencies) -> None:
-        """both legs emit the predicates in (agent, customer, user) order from $2, then the limit."""
+        """both legs pin the triple in (agent, customer, user) order from $1, and bind the limit last."""
         pool = _RecordingPool()
         registry, config = _registry(pool)
         user_id, agent_id, customer_id = uuid7(), uuid7(), uuid7()
@@ -258,13 +258,13 @@ class TestBuildScopeClause:
 
         assert len(pool.statements) == 2, "a vector leg and a keyword leg"
         for sql, params in pool.statements:
-            assert "WHERE agent_id = $2 AND customer_id = $3 AND user_id = $4" in sql
-            assert list(params[1:4]) == [agent_id, customer_id, user_id]
-            assert "LIMIT $5" in sql
-            assert params[4] == 7
+            assert 'WHERE t."agent_id" = $1 AND t."customer_id" = $2 AND t."user_id" = $3' in sql
+            assert list(params[0:3]) == [agent_id, customer_id, user_id]
+            assert sql.endswith(f"LIMIT ${len(params)}")
+            assert params[-1] == 7
 
     async def test_with_table_prefix(self) -> None:
-        """a joined search qualifies every scope predicate with its table alias."""
+        """a joined search pins the triple on its own rows (the file is read by key after it)."""
         pool = _RecordingPool()
         registry, config = _registry(pool)
         user_id, agent_id, customer_id = uuid7(), uuid7(), uuid7()
@@ -275,8 +275,8 @@ class TestBuildScopeClause:
 
         assert pool.statements
         for sql, params in pool.statements:
-            assert "mc.agent_id = $2 AND mc.customer_id = $3 AND mc.user_id = $4" in sql
-            assert list(params[1:4]) == [agent_id, customer_id, user_id]
+            assert 'WHERE t."agent_id" = $1 AND t."customer_id" = $2 AND t."user_id" = $3' in sql
+            assert list(params[0:3]) == [agent_id, customer_id, user_id]
 
     async def test_agent_id_required(self, permissive_memory_authorizer: MemoryAuthorizerDependencies) -> None:
         """omitting ``agent_id`` raises (no longer optional)."""
