@@ -199,7 +199,9 @@ class _Copy:
         self.backend.drop_stage(stage)
         self.backend.stage_rows(stage, table, rows, key)
         self.mark += 1
-        self.backend.apply_staged([StagedChange(table=table, key=key, rows=stage, whole=True)], mark=self.mark)
+        self.backend.apply_staged(
+            [StagedChange(table=table, key=key, rows=stage, whole=True, whole_kind="cold_start")], mark=self.mark
+        )
         self.marks[table] = mark
         self.stamps[self.mark] = (stamp, dict(self.marks))
 

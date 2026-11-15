@@ -342,6 +342,10 @@ class TestUpsertFiltersToTheRegisteredSchema:
         assert row["age"] == 30
 
 
+#: the scopes the partition tests read: a result's state, declared as a scope key beside the (race, county) key
+_STATE_SCOPES = {"results": (("state",),)}
+
+
 def _partitioned_backend() -> DuckDBBackend:
     metadata = MetaData()
     Table(
@@ -353,7 +357,7 @@ def _partitioned_backend() -> DuckDBBackend:
         Column("votes", Integer),
         Column("counted_at", DateTime(timezone=True)),
     )
-    backend = DuckDBBackend()
+    backend = DuckDBBackend(scope_keys=_STATE_SCOPES)
     backend.initialize(metadata)
     return backend
 
@@ -716,6 +720,74 @@ class TestPartitions:
         assert other.schema_digest("results") != _partitioned_backend().schema_digest("results")
 
 
+class TestAScopeIsReadByADeclaredKeysLead:
+    """a scope (export_partition, held_keys, replace_partitions) is read by the lead of a key the table declares: its
+    primary key's, or one the caller declares (``DuckDBBackend(scope_keys=...)``, a copy's keys such as the reports
+    pod's ``COPY_KEYS``, its ``"*"`` entry for every other table). Nothing else becomes a scope's key."""
+
+    def test_an_undeclared_scope_column_is_refused_by_every_scope_read_and_changes_nothing(self) -> None:
+        pa = pytest.importorskip("pyarrow")
+        from threetears.core.cache.duckdb import PartitionReplacement
+
+        metadata = MetaData()
+        Table(
+            "results",
+            metadata,
+            Column("race", String(64), primary_key=True),
+            Column("county", String(64), primary_key=True),
+            Column("state", String(8)),
+            Column("votes", Integer),
+            Column("counted_at", DateTime(timezone=True)),
+        )
+        backend = DuckDBBackend()
+        backend.initialize(metadata)
+        backend.upsert_many("results", [_result("r1", "c1", "TX", 1)], ("race", "county"))
+        probe = pa.table({"race": ["r1"], "county": ["c1"]})
+        # state, votes and county lead no key the table declares (county is its key's second column)
+        for column in ("state", "votes", "county", "nope"):
+            with pytest.raises(ValueError, match="leads no key"):
+                backend.export_partition("results", column, "TX", order_by=("race", "county"))
+            with pytest.raises(ValueError, match="leads no key"):
+                backend.held_keys("results", column, "TX", probe, key=("race", "county"))
+            with pytest.raises(ValueError, match="leads no key"):
+                backend.replace_partitions([PartitionReplacement(table="results", column=column, value="TX", rows=[])])
+        assert backend.execute_query("SELECT count(*) AS n FROM results") == [{"n": 1}]
+        # the primary key's lead is a scope key of its own
+        assert backend.scope_key("results", "race") == "race"
+        assert backend.export_partition("results", "race", "r1", order_by=("race", "county")).num_rows == 1
+
+    def test_a_copys_declared_keys_name_its_scope_columns_its_star_entry_for_every_other_table(self) -> None:
+        pytest.importorskip("pyarrow")
+        metadata = MetaData()
+        for name in ("county_scores", "lsf_held_runs"):
+            Table(
+                name,
+                metadata,
+                Column("state_code", String(8), primary_key=True),
+                Column("county_fips", String(8), primary_key=True),
+                Column("join_state_code", String(8)),
+                Column("state", String(8)),
+                Column("run_id", String(8)),
+            )
+        # the reports pod's COPY_KEYS shape: a named table's keys, and "*" for every table it does not name
+        copy_keys = {
+            "*": (("join_state_code",), ("state",), ("office_key",)),
+            "lsf_held_runs": (("join_state_code", "run_id"), ("state",)),
+        }
+        backend = DuckDBBackend(scope_keys=copy_keys)
+        backend.initialize(metadata)
+        assert backend.scope_key("county_scores", "join_state_code") == "join_state_code"
+        assert backend.scope_key("lsf_held_runs", "join_state_code") == "join_state_code"
+        assert (
+            backend.export_partition("county_scores", "join_state_code", "VA", order_by=("state_code",)).num_rows == 0
+        )
+        # a key's second column is no scope's lead, and a declared key the table lacks is no column of it
+        with pytest.raises(ValueError, match="leads no key"):
+            backend.scope_key("lsf_held_runs", "run_id")
+        with pytest.raises(ValueError, match="leads no key"):
+            backend.scope_key("county_scores", "office_key")
+
+
 class TestMemoryAnExportHolds:
     """an export's Arrow buffers are sized for its rows, and freed memory goes back to the OS."""
 
@@ -829,7 +901,7 @@ def _keyless_backend() -> DuckDBBackend:
         Column("votes", Integer),
         Column("counted_at", DateTime(timezone=True)),
     )
-    backend = DuckDBBackend(keyless=["results"])
+    backend = DuckDBBackend(keyless=["results"], scope_keys=_STATE_SCOPES)
     backend.initialize(metadata)
     return backend
 

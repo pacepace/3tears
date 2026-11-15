@@ -188,7 +188,9 @@ def _filled() -> DuckDBBackend:
     backend = _backend()
     stage = f"{STAGE_PREFIX}{_TABLE}__rows"
     backend.stage_rows(stage, _TABLE, _rows(), _KEY)
-    backend.apply_staged([StagedChange(table=_TABLE, key=_KEY, rows=stage, whole=True)], mark=1)
+    backend.apply_staged(
+        [StagedChange(table=_TABLE, key=_KEY, rows=stage, whole=True, whole_kind="cold_start")], mark=1
+    )
     return backend
 
 
@@ -216,7 +218,8 @@ def _reader(backend: DuckDBBackend) -> Any:
 async def test_stage_whole_speed_at_real_size(db: _Db) -> None:
     """a cold start, end to end (CopyFollower.warm and the catch-up that applies it): the whole read of the table from
     L3 declared in CopyFollower._stage_cold_start (and its twins _stage_schema_change and _stage_legacy_whole_record,
-    the same read), which CopyFollower._stage_whole stages, and the one apply, within 2x a bare keyset
+    the same read), which CopyFollower._stage_whole stages, and the one apply (DuckDBBackend.apply_staged, its declared
+    empty of the table and the rows' copy-in), within 2x a bare keyset
     read of the same pages and their copy-in to DuckDB (the work a cold start must do: the rows read, and held)."""
     types = rail_arrow_types(_COLUMNS)
     selected = ", ".join(types)

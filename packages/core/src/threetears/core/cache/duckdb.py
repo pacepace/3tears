@@ -26,7 +26,7 @@ from datetime import time as time_of_day
 from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal, get_args
 
 from sqlalchemy import Boolean, Date, DateTime, Float, Integer, LargeBinary, String, Text, Time
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
@@ -36,6 +36,7 @@ from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn, KeyColumns
 from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
 from threetears.core.cache.duckdb_binds import KEYS, run_bound, run_joined
+from threetears.core.declared import whole_read
 from threetears.core.cache.base import (
     build_select_clause,
     bulk_columns,
@@ -52,6 +53,7 @@ from threetears.observe import contain, get_logger
 
 __all__ = [
     "STAGE_PREFIX",
+    "WholeKind",
     "DuckDBBackend",
     "PartitionReplacement",
     "StagedChange",
@@ -124,6 +126,16 @@ STAGE_PREFIX: Final = "__stage__"
 _STAGE_MARK_TABLE: Final = "__staged_mark__"
 
 
+#: the declared whole reads (:func:`threetears.core.declared.whole_read`) a whole change is staged under: a table read
+#: whole at a cold start (a first start, from L3 or a checkpoint, or an operator's reset), a schema change, or a writer
+#: older than a rolling upgrade's whole record. The change carries the kind that staged it, so its apply empties the
+#: table under the same declaration (:meth:`DuckDBBackend.apply_staged`)
+WholeKind = Literal["cold_start", "schema_change", "rolling_upgrade"]
+
+#: :data:`WholeKind`'s values, for the run-time check
+_WHOLE_KINDS: Final[frozenset[str]] = frozenset(get_args(WholeKind))
+
+
 @dataclass(frozen=True, slots=True)
 class StagedChange:
     """one table's part of a change applied in one transaction (:meth:`DuckDBBackend.apply_staged`).
@@ -138,6 +150,8 @@ class StagedChange:
     :ivar keys: the staging table of the keys whose rows leave; None for none
     :ivar rows: the staging table of the rows that go in; None for none
     :ivar whole: every row of the table leaves first (a table read whole again)
+    :ivar whole_kind: for a whole change, the declared whole read that staged it (:data:`WholeKind`); None otherwise
+    :raises ValueError: when a whole change names no declared kind, or a change that is not whole names one
     """
 
     table: str
@@ -145,6 +159,16 @@ class StagedChange:
     keys: str | None = None
     rows: str | None = None
     whole: bool = False
+    whole_kind: WholeKind | None = None
+
+    def __post_init__(self) -> None:
+        if self.whole and self.whole_kind not in _WHOLE_KINDS:
+            raise ValueError(
+                f"a whole change of {self.table!r} names the declared whole read that staged it, one of "
+                f"{sorted(_WHOLE_KINDS)}; it named {self.whole_kind!r}"
+            )
+        if not self.whole and self.whole_kind is not None:
+            raise ValueError(f"a change of {self.table!r} that is not whole names no whole kind")
 
 
 #: whether this process has said pyarrow is missing (once is enough)
@@ -668,12 +692,28 @@ class DuckDBBackend:
     :ptype keyless: Collection[str]
     :param compressed: hold the tables compressed (above)
     :ptype compressed: bool
+    :param scope_keys: the keys the caller declares for its tables' scopes beyond each primary key, by table name, a
+        ``"*"`` entry for every other table (a copy's declared keys, such as the reports pod's ``COPY_KEYS``): a
+        scope column is the lead of one of these or of the table's primary key (:meth:`scope_key`)
+    :ptype scope_keys: Mapping[str, Sequence[Sequence[str]]]
     """
 
-    def __init__(self, *, keyless: Collection[str] = (), compressed: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        keyless: Collection[str] = (),
+        compressed: bool = False,
+        scope_keys: Mapping[str, Sequence[Sequence[str]]] | None = None,
+    ) -> None:
         if not _HAS_DUCKDB:
             raise ImportError("DuckDB backend requires the 'duckdb' package. Install with: pip install 3tears[duckdb]")
         self._keyless_names: frozenset[str] = frozenset(keyless)
+        #: the declared scope keys beyond each table's primary key (``"*"``: every other table's)
+        self._scope_keys: dict[str, tuple[tuple[str, ...], ...]] = {
+            name: tuple(tuple(key) for key in keys) for name, keys in (scope_keys or {}).items()
+        }
+        #: every table created, with its primary key's columns in key order (a key-less table's, the key kept for it)
+        self._primary_keys: dict[str, tuple[str, ...]] = {}
         #: every key-less table created, with the key this backend keeps for it
         self._keyless: dict[str, KeyColumns] = {}
         #: every table created, with the columns it holds NOT NULL (its primary key's)
@@ -833,6 +873,7 @@ class DuckDBBackend:
                 self._db.execute(self._generate_create_table(table))
                 self._schema_info[table.name] = {col.name: self._column_code(table.name, col) for col in table.columns}
                 self._not_null[table.name] = frozenset(col.name for col in table.columns if col.primary_key)
+                self._primary_keys[table.name] = tuple(col.name for col in table.primary_key.columns)
                 if table.name in self._keyless_names:
                     self._keyless[table.name] = tuple(col.name for col in table.columns if col.primary_key)
                 new_tables += 1
@@ -1192,6 +1233,46 @@ class DuckDBBackend:
             return f"{quote_identifier(column)} IS NULL", []
         return f"{quote_identifier(column)} = ?", [self.serialize_value(value, schema[column])]
 
+    def scope_key(self, table: str, column: str) -> KeyColumn:
+        """``column`` as the key ``table``'s scopes are read by: the lead of the table's primary key, or of a scope key
+        its caller declared (``scope_keys``, its ``"*"`` entry for a table it does not name). The one way a scope's
+        column becomes a key, so every scope read (:meth:`export_partition`, :meth:`held_keys`,
+        :meth:`replace_partitions`) binds a declared key's lead and never a column the declarations do not name.
+
+        :param table: a table this backend created
+        :ptype table: str
+        :param column: the scope column
+        :ptype column: str
+        :return: the column, a declared key's lead
+        :rtype: KeyColumn
+        :raises ValueError: when the table is unknown, or the column is none of its columns or leads none of its declared
+            keys
+        """
+        primary = self._primary_keys.get(table)
+        if primary is None:
+            raise ValueError(f"unknown table {table!r}: partitions are of tables this backend created")
+        declared = (primary, *self._scope_keys.get(table, self._scope_keys.get("*", ())))
+        if column not in self._schema_info[table] or not any(key and key[0] == column for key in declared):
+            raise ValueError(
+                f"{table}.{column} leads no key the table declares ({[list(key) for key in declared if key]}): a "
+                "scope is read by a declared key's lead (DuckDBBackend(scope_keys=...))"
+            )
+        return column
+
+    def _scope_value(self, table: str, column: KeyColumn, value: Any) -> list[Any]:
+        """a scope's value as its statement binds it: none for ``None`` (the statement pins the key ``IS NULL``).
+
+        :param table: the table
+        :ptype table: str
+        :param column: its scope key (:meth:`scope_key`)
+        :ptype column: KeyColumn
+        :param value: the scope's value
+        :ptype value: Any
+        :return: the parameters
+        :rtype: list[Any]
+        """
+        return [] if value is None else [self.serialize_value(value, self._schema_info[table][column])]
+
     def export_partition(self, table: str, column: str, value: Any, *, order_by: Sequence[str]) -> Any:
         """one scope of a table as an Arrow table, its rows in ``order_by`` order.
 
@@ -1210,11 +1291,16 @@ class DuckDBBackend:
         :rtype: pyarrow.Table
         :raises ValueError: when the table or column is unknown
         """
-        condition, params = self._partition_filter(table, column, value)
+        # the scope is read by a declared key's lead (scope_key), pinned in the statement itself
+        scope = self.scope_key(table, column)
+        params = self._scope_value(table, scope, value)
         order = ", ".join(quote_identifier(c) for c in order_by)
-        sql = f"SELECT * FROM {quote_identifier(table)} WHERE {condition}"  # noqa: S608
+        if value is None:
+            sql = f"SELECT * FROM {quote_identifier(table)} WHERE {quote_identifier(scope)} IS NULL"  # noqa: S608
+        else:
+            sql = f"SELECT * FROM {quote_identifier(table)} WHERE {quote_identifier(scope)} = ?"  # noqa: S608
         if order:
-            sql = f"SELECT * FROM {quote_identifier(table)} WHERE {condition} ORDER BY {order}"  # noqa: S608
+            sql = f"{sql} ORDER BY {order}"
         with self._db_lock:
             # read a piece at a time, so the export's buffers fit the scope without counting it first
             return _fetch_arrow_pieces(self._db.execute(sql, params))
@@ -1417,13 +1503,21 @@ class DuckDBBackend:
         """
         if arrow.num_rows == 0:
             return 0
-        condition, params = self._partition_filter(table, column, value)
+        # the scope is read by a declared key's lead (scope_key), pinned in the statement itself
+        scope = self.scope_key(table, column)
+        params = self._scope_value(table, scope, value)
         columns = ", ".join(quote_identifier(c) for c in key)
         joined = " AND ".join(f"held.{quote_identifier(c)} = probe.{quote_identifier(c)}" for c in key)
-        sql = (
-            f"SELECT count(*) FROM (SELECT {columns} FROM {quote_identifier(table)} WHERE {condition}) AS held "  # noqa: S608
-            f"JOIN _held_probe AS probe ON {joined}"
-        )
+        if value is None:
+            sql = (
+                f"SELECT count(*) FROM (SELECT {columns} FROM {quote_identifier(table)} "  # noqa: S608
+                f"WHERE {quote_identifier(scope)} IS NULL) AS held JOIN _held_probe AS probe ON {joined}"
+            )
+        else:
+            sql = (
+                f"SELECT count(*) FROM (SELECT {columns} FROM {quote_identifier(table)} "  # noqa: S608
+                f"WHERE {quote_identifier(scope)} = ?) AS held JOIN _held_probe AS probe ON {joined}"
+            )
         with self.read_snapshot() as cursor:
             cursor.register("_held_probe", arrow)
             try:
@@ -1446,16 +1540,24 @@ class DuckDBBackend:
         :rtype: int
         :raises ValueError: when a table or column is unknown; nothing changes
         """
-        filters = [self._partition_filter(r.table, r.column, r.value) for r in replacements]
+        # every scope is read by a declared key's lead (scope_key), all checked before anything changes
+        for replacement in replacements:
+            self.scope_key(replacement.table, replacement.column)
         written = 0
         with self._db_lock:
             committed = False
             self._db.execute("BEGIN TRANSACTION")
             try:
-                for replacement, (condition, params) in zip(replacements, filters, strict=True):
+                for replacement in replacements:
                     table = quote_identifier(replacement.table)
-                    if not replacement.append:
-                        self._db.execute(f"DELETE FROM {table} WHERE {condition}", params)  # noqa: S608
+                    scope = self.scope_key(replacement.table, replacement.column)
+                    if not replacement.append and replacement.value is None:
+                        self._db.execute(f"DELETE FROM {table} WHERE {quote_identifier(scope)} IS NULL")  # noqa: S608
+                    elif not replacement.append:
+                        self._db.execute(
+                            f"DELETE FROM {table} WHERE {quote_identifier(scope)} = ?",  # noqa: S608
+                            self._scope_value(replacement.table, scope, replacement.value),
+                        )
                     if replacement.arrow is not None and replacement.arrow.num_rows:
                         self._db.register("_partition_chunk", replacement.arrow)
                         try:
@@ -1657,12 +1759,13 @@ class DuckDBBackend:
         for change in changes:
             if change.table not in self._schema_info:
                 raise ValueError(f"unknown table {change.table!r}")
-        statements: list[str] = []
+        # each statement, or a table to empty whole under the declared kind its change carries (None for a statement)
+        statements: list[tuple[str | None, str]] = []
         stages: list[str] = []
         for change in changes:
             table = quote_identifier(change.table)
             if change.whole:
-                statements.append(f"DELETE FROM {table}")  # noqa: S608
+                statements.append((change.whole_kind, table))
                 if change.keys is not None:
                     stages.append(change.keys)
             elif change.keys is not None:
@@ -1670,11 +1773,11 @@ class DuckDBBackend:
                 pk_join = " AND ".join(
                     f"{table}.{quote_identifier(c)} = {keys}.{quote_identifier(c)}" for c in change.key
                 )
-                statements.append(f"DELETE FROM {table} USING {keys} WHERE {pk_join}")  # noqa: S608
+                statements.append((None, f"DELETE FROM {table} USING {keys} WHERE {pk_join}"))  # noqa: S608
                 stages.append(change.keys)
             if change.rows is not None:
                 rest = self._stage_rest(change.rows)
-                statements.append(f'INSERT INTO {table} BY NAME SELECT * FROM "{STAGE_PREFIX}{rest}"')  # noqa: S608
+                statements.append((None, f'INSERT INTO {table} BY NAME SELECT * FROM "{STAGE_PREFIX}{rest}"'))  # noqa: S608
                 stages.append(change.rows)
         written = 0
         with self._db_lock:
@@ -1683,7 +1786,43 @@ class DuckDBBackend:
             committed = False
             self._db.execute("BEGIN TRANSACTION")
             try:
-                for statement in statements:
+                for whole_kind, statement in statements:
+                    # a whole change's table is emptied before its complete rows go in: the in-process L1 copy is
+                    # replaced by what a cold start, a schema change or an older writer's whole record read (no keyed
+                    # form of "replace everything" exists). It is declared under the kind that staged the change,
+                    # which a StagedChange must carry to be whole (__post_init__); each kind is set only where the
+                    # follower or the checkpoint declares that whole read (the proof below)
+                    if whole_kind == "cold_start":
+                        whole_read(
+                            self._db.execute(f"DELETE FROM {statement}"),  # noqa: S608
+                            kind="cold_start",
+                            reason="a cold start's complete rows replace the in-process copy, so the table is emptied first",
+                            ruling="Pace 2026-11-12: the one full load is a true no-data cold start; coordinator 2026-11-14: its apply empties the L1 table under the same kind",
+                            proof="packages/core/tests/unit/collections/test_copy_follower.py::test_a_whole_change_carries_the_declared_kind_that_staged_it",
+                            speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
+                        )
+                        continue
+                    if whole_kind == "schema_change":
+                        whole_read(
+                            self._db.execute(f"DELETE FROM {statement}"),  # noqa: S608
+                            kind="schema_change",
+                            reason="a schema change's complete rows replace the in-process copy, so the table is emptied first",
+                            ruling="Pace 2026-11-12: a schema change reads whole; coordinator 2026-11-14: its apply empties the L1 table under the same kind",
+                            proof="packages/core/tests/unit/collections/test_copy_follower.py::test_a_whole_change_carries_the_declared_kind_that_staged_it",
+                            speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
+                        )
+                        continue
+                    if whole_kind == "rolling_upgrade":
+                        whole_read(
+                            self._db.execute(f"DELETE FROM {statement}"),  # noqa: S608
+                            kind="rolling_upgrade",
+                            reason="an older writer's whole record read mid-roll replaces the in-process copy, so the table is emptied first",
+                            until="0.96.0",
+                            ruling="Pace 2026-11-12: rolling_upgrade until 0.96.0; coordinator 2026-11-14: its apply empties the L1 table under the same kind",
+                            proof="packages/core/tests/unit/collections/test_copy_follower.py::test_a_whole_change_carries_the_declared_kind_that_staged_it",
+                            speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
+                        )
+                        continue
                     result = self._db.execute(statement)
                     if statement.startswith("INSERT"):
                         written += int(result.fetchone()[0])
