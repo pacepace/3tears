@@ -94,6 +94,9 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "read_past_marks",
         "read_packed",
         "literal_select",
+        # a relation's count and key digest, written for a driver to run (threetears.core.fingerprint)
+        "fingerprint_sql",
+        "postgres_fingerprint_sql",
         "delete_before",
         "delete_oldest",
         "delete_keyed",
@@ -576,6 +579,16 @@ def _literal_select(call: ast.Call) -> list[str]:
     pinned, place = _conditions(_by(_argument(call, "by", None)), alias="t")
     filtered, _ = _filters(call, place)
     return [f"SELECT * FROM {table} AS t{_where([*pinned, *filtered])}", *own]
+
+
+def _fingerprint(call: ast.Call) -> list[str]:
+    """a relation's count and key digest (``fingerprint_sql``, ``postgres_fingerprint_sql``): every row its
+    ``filters`` (a ``WHERE`` fragment written at run time) leave, so the whole relation with none, and a predicate the
+    walk cannot read with one."""
+    table, own = _relation(_argument(call, "relation", 0), "relation")
+    filters = _argument(call, "filters", 2)
+    whole = filters is None or (isinstance(filters, ast.Constant) and not filters.value)
+    return [f"SELECT count(*) FROM {table} AS t" + ("" if whole else " WHERE {}"), *own]
 
 
 def _visible(call: ast.Call) -> list[str]:
@@ -1278,6 +1291,8 @@ _SYNTHESIZERS: Final = {
     "read_past_marks": _read_past_marks,
     "read_packed": _read_packed,
     "literal_select": _literal_select,
+    "fingerprint_sql": _fingerprint,
+    "postgres_fingerprint_sql": _fingerprint,
     "delete_before": _delete_before,
     "delete_oldest": _delete_oldest,
     "delete_keyed": _keyed_write,
@@ -1346,6 +1361,8 @@ _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
         ),
         ("table", 0),
     ),
+    # a relation's count and key digest, the relation its first argument
+    **dict.fromkeys(("fingerprint_sql", "postgres_fingerprint_sql"), ("relation", 0)),
 }
 
 
