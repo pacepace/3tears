@@ -31,8 +31,8 @@ be stated the field's state is ``not_available`` with one reason of the shared s
 read the contrast, and otherwise rides beside the person's (``model_check``) so a lean it found is never lost.
 
 ``tests/test_simulated_people_corrected.py`` holds the estimator's coverage and the decision floor
-(:data:`PPI_DECISION_MIN_LABELLED_CASES`, the smallest number of labelled cases that met every bar, and at least 40:
-80).
+(:data:`PPI_DECISION_MIN_LABELLED_CASES`, the smallest number of labelled cases whose rows met every bar with two Monte
+Carlo standard errors to spare, and at least 40: 80).
 
 This module computes numbers and prints nothing.
 """
@@ -62,11 +62,15 @@ __all__ = ["corrected_reading", "counted_label", "pair_labels"]
 PPI_REPORT_MIN_LABELLED_CASES: Final = 20
 
 #: The fewest labelled cases a ``corrected`` check decides from. From :data:`PPI_REPORT_MIN_LABELLED_CASES` up to it
-#: the result is ``insufficient``, ``too_few``, its figures shown and moving nothing. A lean concentrated in a few cases
-#: or answers breaks fewer: a sample that met no leaning case has a rectifier near zero with little spread, and the
-#: corrected interval collapses toward the judge's own. The smallest number of labelled cases at which every bar of
-#: ``tests/test_simulated_people_corrected.py`` was met, and at least 40: at 40 and at 60 a judge giving a 5 to one
-#: candidate answer in twenty on a 1-to-5 scale was confirmed against people more often than the bar allows.
+#: the result is ``insufficient``, ``too_few``, its figures shown and moving nothing. One constant, not a rule computed
+#: from the data: the failure it guards, a lean concentrated in a few cases or answers that the sample never met (its
+#: rectifier near zero with little spread, the corrected interval collapsing toward the judge's own), cannot be seen in
+#: the sample. Its basis is ``tests/test_simulated_people_corrected.py``'s deciding rows, 16,000 replicates each: the
+#: smallest n at which every rare-lean row covers at least 93.5% and confirms a difference people do not see at most
+#: 3.5%, each with two Monte Carlo standard errors to spare. At 60 a judge giving a 5 to one candidate answer in twenty
+#: on 1 to 5 confirms 3.61% (SE 0.15). At 80 it confirms 2.93% (SE 0.13), about three standard errors above the nominal
+#: 2.5%: the interval still over-confirms under that lean, inside the bar only by the slack the bar allows. Read at 95%;
+#: production reads at the Holm step's level, 97.5% and up, where it confirms less.
 PPI_DECISION_MIN_LABELLED_CASES: Final = 80
 
 #: The largest share of a sample's answered items a reader may skip, on the criterion read, before the sample stops

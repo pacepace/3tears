@@ -3,27 +3,41 @@
 Each replicate draws a population of ``G`` cases, ``k`` judged answers per arm per case, a reader who sees the truth of
 one drawn answer per arm, and a random sample of ``n`` labelled cases. Every row reads its figures through
 :func:`~threetears.evals.analysis.people_corrected.corrected_reading`, the function the bundle's filler calls, which
-calls :func:`~threetears.evals.analysis.people_corrected.prediction_powered_difference`. 4,000 replicates a row; the bars
-were fixed before the run.
+calls :func:`~threetears.evals.analysis.people_corrected.prediction_powered_difference`. 4,000 replicates a row, and
+16,000 for the rows that decide the floor; the bars were fixed before the run.
 
 | Row | Judge | True people difference | Bar | Held |
 |---|---|---|---|---|
-| Level | Unbiased and noisy; biased equally in both arms; leaning to the candidate by about 0.15 | 0 | The corrected interval excludes 0 at most 6.5% | Every row of the grid |
+| Level | Unbiased and noisy; biased equally in both arms; leaning to the candidate by about 0.15 | 0 | The corrected interval excludes 0 at most 6.5%; unbiased from n = 40, covers at most 97.5% | Every row of the grid |
 | Coverage | Passes everything (a 5 on everything on 1 to 5) | 0.2 | Covers at least 93.5% | Every row of the grid |
-| A rare one-sided lean | Passes every failed candidate answer on 3%, 6%, 10% of cases near the ceiling; a 5 on 5% of candidate answers on 1 to 5; G = 100, k = 3 | 0 | Covers at least 93.5% from the decision floor | n = 80 and 100 (93.9% to 96% at 40 and 60); at n = 20 the 10% lean on pass/fail covers 91.9% (recorded) |
-| Confirmation | Every row above and the rare lean: the judge's own test reads improved and the corrected interval lies above zero (``met`` from the floor) | 0 | At most 3.5% at the decision floor | At n = 80 (the 1-to-5 rare lean: 3.2%). At 40 and 60 that row confirms 4.3% or more, so neither passed |
+| A rare one-sided lean (the deciding rows, 16,000 replicates) | Passes every failed candidate answer on 3%, 6%, 10% of cases near the ceiling; a 5 on 5% of candidate answers on 1 to 5; G = 100, k = 3 | 0 | Covers at least 93.5% and confirms at most 3.5%, each with two Monte Carlo standard errors to spare | n = 80 and 100, every row; at 60 the 1-to-5 row confirms 3.61% (table below) |
+| Confirmation | Every row above: the judge's own test reads improved and the corrected interval lies above zero (``met`` from the floor) | 0 | At most 3.5% at the decision floor | Every row at n = 80 |
+| Below the deciding rows | The rare lean | 0 | Fails a bar | n = 20: the 10% lean on pass/fail covers under 93.5%; n = 40: the 1-to-5 lean confirms over 3.5% |
 | Identical outputs on 20% of G | Unbiased | 0 and 0.2 | Covers at least 93.5% with the stratum rule | Both, both scales |
+| Outputs that vary across repeats, a fifth of cases identical on every repeat; G = 200, n = 60 | Unbiased | 0 and a shift toward each case's best output | Covers at least 93.5% when a coinciding draw is an ordinary pair; the rule that read it as the zero stratum fails | Both scales |
 | Content-following skips | Leaning; the reader skips items where it and the judge disagree | 0 | 5%: coverage recorded; 20%: ``not_available``, ``skipped_past_limit`` | Every replicate at 20% |
 | Lean test over five dimensions | Unbiased | no lean | Chance of any spurious lean recorded, at most ``1 - 0.95^5`` plus four standard errors | about 23% |
 | Labels drawn by a selection rule | The 10% rare lean; the reader labels the cases where it and the judge agree | 0 | Fails: coverage far below 93.5% (recorded) | about 22% |
-| A wrong variance | Unbiased; the rectifier's spread divided by G rather than n | 0 | Fails the coverage bar the shipped variance meets | about 75% against 95% |
+| A wrong variance, too narrow | Unbiased; the rectifier's spread divided by G rather than n | 0 | Fails the coverage bar the shipped variance meets | about 75% against 95% |
+| A wrong variance, too wide | Unbiased on 1 to 5, G = 100, n = 80; the judge's difference read as two independent arms (their covariance dropped) | 0 | Covers more than 97.5%, where the shipped one holds both bars | Both |
 
 **The decision floor** (:data:`~threetears.evals.analysis.people_corrected.PPI_DECISION_MIN_LABELLED_CASES`) is the
-smallest number of labelled cases at which every row met its bar: 80. At 40 and 60 the rare lean on 1 to 5 (a 5 on one
-candidate answer in twenty) confirmed a difference people do not see more often than the bar allows; at 20 the rare
-lean on pass/fail broke coverage, since a sample that met no leaning case corrects nothing. The 1-to-5 row sits close
-to its bar at 80 too: a lean concentrated in rare answers skews the rectifier, and its upper error falls only slowly
-with n.
+smallest n at which every deciding row, and every row at a larger n, covers at least 93.5% and confirms at most 3.5%
+with two Monte Carlo standard errors to spare, read off :data:`DECIDING` (16,000 replicates a row):
+
+| Row | n | Covers % (SE) | Confirms % | SE | Confirms + 2 SE | Bars |
+|---|---|---|---|---|---|---|
+| 1 to 5, 5% | 60 | 94.89 (0.17) | 3.61 | 0.15 | 3.90 | fails |
+| pass/fail, 3%, 6%, 10% | 60 | 95.23 to 95.36 | 1.93 to 2.13 | 0.11 | 2.15 to 2.36 | hold |
+| 1 to 5, 5% | 80 | 95.28 (0.17) | 2.93 | 0.13 | 3.20 | hold |
+| pass/fail, 3%, 6%, 10% | 80 | 95.03 to 95.33 | 1.90 to 2.25 | 0.11 to 0.12 | 2.12 to 2.48 | hold |
+| 1 to 5, 5% | 100 | 94.75 (0.18) | 2.89 | 0.13 | 3.15 | hold |
+| pass/fail, 3%, 6%, 10% | 100 | 94.99 to 95.58 | 2.23 to 2.59 | 0.12 to 0.13 | 2.46 to 2.84 | hold |
+
+So the floor is 80. Below it a rare lean on 1 to 5 (a 5 on one candidate answer in twenty) is confirmed against people
+more often than the bar allows. At 80 that row still confirms 2.93%, about three standard errors above the nominal
+2.5%: a lean concentrated in rare answers skews the rectifier, and the interval over-confirms under it, inside the bar
+only by the slack the bar allows.
 """
 
 from __future__ import annotations

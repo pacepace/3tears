@@ -8,24 +8,44 @@ packages (bumped in lock-step).
 
 ### evals: a judged contrast is checked against a blind read, and people's ratings correct a cell's mean only from a random sample
 
+Nothing in production calls `judged_contrasts_corrected` or supplies `drawn_at_random` yet: both wait for the host
+door that stores blind reads (chunk A2). Until then `corrected` is never filled, and a cell estimate from ratings of
+part of a cell reads `not_available`, `not_drawn_at_random`.
+
 **Added:** a separated judged contrast can carry one `corrected` field where a blind read covers its two cells
-(`judged_contrasts_corrected`, which the assembly calls with the stored blind reads once reads are stored): the contrast as the read's reader would see it, a check of its one verdict and never a second one. The judge's
+(`judged_contrasts_corrected`): a check of its one verdict, never a second verdict. The figure is the judge's
 difference over the read's cases plus the mean of reader minus judge over the labelled pair items
 (`analysis/people_corrected.py`), read at the level the contrast's own Holm step used. Its result is `met`
 (confirms), `not_met` with `people_disagree` (contradicts) or `instrument_leans` (the judge leans toward the arm the
-verdict favours), `undecided`, or `insufficient` with `too_few` from 20 labelled cases; it decides from 80, the
-smallest count at which every bar of `tests/test_simulated_people_corrected.py` held (at 40 and 60 a rare lean on 1 to 5 was confirmed too often). With fewer than 20, a sample not
-drawn at random, more than a tenth skipped, or an unrecorded coordinate, its state is `not_available` with that
-reason. `Corrected` gains an optional `reason` from the shared set.
+verdict favours), `undecided`, or `insufficient` with `too_few` from 20 labelled cases. It decides from 80
+(`PPI_DECISION_MIN_LABELLED_CASES`): the smallest count at which every rare-lean row of
+`tests/test_simulated_people_corrected.py`, at 16,000 replicates, covered at least 93.5% and confirmed at most 3.5%
+with two Monte Carlo standard errors to spare. At 60 a rare lean on 1 to 5 was confirmed 3.61% of the time, and at 80
+it still confirms 2.93%, above the nominal 2.5%. With fewer than 20, a sample not drawn at random, more than a tenth
+skipped, or an unrecorded coordinate, its state is `not_available` with that reason. `Corrected` gains an optional
+`reason` from the shared set.
+
+**Added:** a person's check is the field wherever a person read the contrast, and only a person's check decides. A
+model's check is carried beside it (`Corrected.model_check`, left out of the document while unset), so a lean the
+model found (`not_met`, `instrument_leans`) is never hidden by a person's check that is undecided or short of labels.
+With no person, the model's check is the field, and it never decides.
+
+**Added:** the zero stratum is the cases whose outputs are byte-identical across every repeat of both arms. A case
+whose outputs vary, where the two drawn outputs happen to coincide, is an ordinary labelled pair: the reader's
+difference is zero and the judge's is its own on the two results. Read as the zero stratum, such draws shrank the
+estimate toward zero.
 
 **Changed:** the prediction-powered estimate beside a cell's judged mean reads people's ratings only where they are a
 random sample (the first items of a blind read's drawn order) or rate every counted result of the cell. Ratings a
 person chose to give leave it `not_available`, `not_drawn_at_random`; the code-only report says "not drawn at random".
-`PredictionPoweredReading.unavailable_reason`, a sentence, is replaced by `state`, a shared state and reason.
+`PredictionPoweredReading.unavailable_reason`, a sentence, is replaced by `state`, a shared state and reason. Nothing
+stored changes: a frozen bundle or decision surface stored with the old key reads with it dropped and, where its
+estimate is missing, `not_available` with `too_few`, the only meaning the sentence had. No version moves.
 
-**For hosts:** a cell estimate that read ratings of part of a cell given outside a blind read now reads not
-available. Rate the whole cell, or ask for the ratings through a blind read answered from the top; the bundle reads a
-blind read's sample once reads are stored.
+**For hosts:** nothing stored needs regenerating. Code that read `PredictionPoweredReading.unavailable_reason` reads
+`state.reason` (`too_few` or `not_drawn_at_random`). A cell estimate that read ratings of part of a cell given
+outside a blind read now reads not available: rate the whole cell, or ask for the ratings through a blind read
+answered from the top. The bundle reads a blind read's sample once reads are stored.
 
 ### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
 
