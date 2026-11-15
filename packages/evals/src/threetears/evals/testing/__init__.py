@@ -1,6 +1,6 @@
 """What the engine ships for an adopter's own test suite: conformance kits a host runs against itself.
 
-It holds four kits and three checks. The store conformance kit: every rule of the
+It holds four kits and two checks. The store conformance kit: every rule of the
 :class:`~threetears.evals.schema.DocumentStore` port as a :class:`StoreConformanceCase`, collected
 in :data:`STORE_CONFORMANCE_CASES`. An adapter's test suite hands each case a fresh, empty store and
 parametrises over the tuple; a broken rule raises :class:`StoreConformanceFailure` naming the case and
@@ -27,11 +27,8 @@ refused naming the turn (:mod:`threetears.evals.testing.recorded_turns`). The ne
 three routers that refuse a host's own client (its temperature under enforcement; any enforced request; its output
 cap and effort word, naming what is taken), and raises :class:`NegotiationConformanceFailure` naming each mistake
 unless the client resends in order, reports what the served request carried, and remembers what it proved and
-nothing else (:mod:`threetears.evals.testing.negotiation_conformance`). The sheet check:
-:func:`check_sheet_renderer` renders a sample blind-read sheet with a host's renderer and raises
-:class:`SheetConformanceFailure` unless its items are shown in the drawn order, nothing unanswered comes before its
-``next``, and each pair's slots keep their drawn order (:mod:`threetears.evals.testing.sheet_conformance`). All of it
-is plain Python and imports no test runner. See :mod:`threetears.evals.testing.store_conformance` and
+nothing else (:mod:`threetears.evals.testing.negotiation_conformance`). All of it is plain Python and imports no
+test runner. See :mod:`threetears.evals.testing.store_conformance` and
 :mod:`threetears.evals.testing.reader_conformance` for an example under pytest.
 
 **This module is the package's public root.** A host imports from here and from no module below it,
@@ -78,7 +75,6 @@ from threetears.evals.testing.recorded_completions import (
     ReplayedCompletion,
 )
 from threetears.evals.testing.recorded_turns import RecordedTurns
-from threetears.evals.testing.sheet_conformance import SheetConformanceFailure, check_sheet_renderer
 from threetears.evals.testing.store_conformance import (
     STORE_CONFORMANCE_CASES,
     StoreConformanceCase,
@@ -112,9 +108,7 @@ __all__ = [
     "RecordedTurns",
     "RecordingRefused",
     "ReplayedCompletion",
-    "SheetConformanceFailure",
     "StoreConformanceCase",
     "StoreConformanceFailure",
     "check_completion_conformance",
-    "check_sheet_renderer",
 ]

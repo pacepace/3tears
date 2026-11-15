@@ -25,11 +25,9 @@ call stores the model and whom it acted for and reads back with both, in the cal
 person's call needs the host's attestation, as a person's answer does. A call that says neither is never read as a
 person's.
 
-**Added:** `threetears.evals.testing.check_sheet_renderer`, a check a host's page that renders a sheet runs in its tests:
-items in the drawn order from `next` on, slots as drawn.
-
 **For hosts:** to record a person's blind-read answer or a person's call through an action, build the host with
-`attests_person`; a host that renders the sheet on its own page runs `check_sheet_renderer` in its tests.
+`attests_person`. A host that renders the sheet on its own page keeps its order from `next` on and its slots as drawn;
+the courier example's `courier_sheet_page` and `courier_attests` show both.
 
 ### evals: a recorded judge call over a report page is keyed by what the page was rendered from, not by its words
 

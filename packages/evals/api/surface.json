@@ -228,8 +228,8 @@
     },
     "threetears.evals.schema.BlindSheet": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "BlindSheet(read_id: str, name: str, instructions: str, criteria: list[SheetCriterion], items: list[SheetItem], answered: list[str] = list(), next: str | None = None)",
+      "tier": "stable"
     },
     "threetears.evals.schema.BlindSlot": {
       "kind": "literal",
@@ -963,6 +963,11 @@
     },
     "threetears.evals.schema.LostField": {
       "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.Maker": {
+      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
@@ -7346,11 +7351,6 @@
       "signature": "check_refusal_negotiation(build_client: Callable[[RouterTransport], CompletionClient]) -> None",
       "tier": "host-contract"
     },
-    "threetears.evals.testing.check_sheet_renderer": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.testing.CompletionConformanceFailure": {
       "kind": "exception",
       "signature": "",
@@ -7465,11 +7465,6 @@
       "kind": "type alias",
       "signature": "Callable[[Mapping[str, object]], Awaitable[tuple[int, Mapping[str, object]]]]",
       "tier": "host-contract"
-    },
-    "threetears.evals.testing.SheetConformanceFailure": {
-      "kind": "exception",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.testing.STORE_CONFORMANCE_CASES": {
       "kind": "constant (tuple)",

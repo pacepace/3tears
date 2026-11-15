@@ -12,12 +12,9 @@ sheet's types, so this check renders a sheet built to expose each mistake and re
 - **slots as given** — an item's two outputs appear A then B as drawn, never re-sorted (the sample's B output sorts
   before its A output by text).
 
-Under pytest::
-
-    from threetears.evals.testing import check_sheet_renderer
-
-    def test_my_page_keeps_the_sheet() -> None:
-        check_sheet_renderer(my_render)
+The check is the engine's own today: the quick path's page and the courier example's page are proven by it
+(``tests/test_blind_read_door.py``). It is not exported from :mod:`threetears.evals.testing` until a host's own suite
+calls it, since a public name answers to a caller.
 
 **What it cannot see.** That the page shows nothing beyond the sheet, that a skip is recorded as an answer, or that
 nothing of other raters' answers reaches the page: a renderer is handed the sheet alone, and those are the page's

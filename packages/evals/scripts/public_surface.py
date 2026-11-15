@@ -991,6 +991,9 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.run.regrade",
         "threetears.evals.run.run_job_work",
         "threetears.evals.run.second_judge_work",
+        # What a host's page renders for a blind read (the blind_read_sheet action's result): the courier example
+        # renders it, and a host showing blind reads on its own page is handed it.
+        "threetears.evals.schema.BlindSheet",
         "threetears.evals.schema.CalibrationRating",
         "threetears.evals.schema.DEFAULT_JUDGE_TEMPERATURE",
         "threetears.evals.schema.RubricScore",

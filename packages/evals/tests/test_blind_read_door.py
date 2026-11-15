@@ -34,7 +34,7 @@ from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema import JudgedArtifact, JudgeEvidence, RubricDim, label_key_of
 from threetears.evals.schema.blind_read import BlindAnswer, BlindReview, BlindVerdict
 from threetears.evals.quick.blind import blind_read_html
-from threetears.evals.testing import SheetConformanceFailure, check_sheet_renderer
+from threetears.evals.testing.sheet_conformance import SheetConformanceFailure, check_sheet_renderer
 from packages.evals.tests.factories import make_eval_trace, make_rubric_dim
 from packages.evals.tests.fixtured_client import FixturedClient
 from packages.evals.tests.fixtures.courierhost import (

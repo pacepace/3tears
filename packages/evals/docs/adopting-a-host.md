@@ -1816,9 +1816,10 @@ test, which holds its level wherever the read stopped; while a read is open no p
 is declared when the read is drawn, never after, and one that is the judge's own model is refused there.
 
 **For hosts.** To take a person's answers through an action, supply `attests_person`; without it every answer is
-refused. If you show the sheet on a page of your own, keep its order and slots, and prove it in your tests with
-`threetears.evals.testing.check_sheet_renderer(your_render)`: the courier host's `courier_sheet_page` and
-`courier_attests` (in `packages/evals/tests/fixtures/courierhost`) are the smallest example of both. The reads are
+refused. If you show the sheet on a page of your own, keep its four rules: the items in the drawn order, `next`
+first; nothing but what the sheet carries; the slots A and B as given, never re-sorted; a skip is an answer. The
+courier host's `courier_sheet_page` and `courier_attests` (in `packages/evals/tests/fixtures/courierhost`) are the
+smallest example of both, and the engine's own sheet check proves that page and the quick path's. The reads are
 durable documents (`blind_read`), carried by a campaign's export.
 
 

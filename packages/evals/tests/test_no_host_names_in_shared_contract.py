@@ -405,6 +405,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # and stores a rating, in the engine's own words. Shared contract from the day it existed, and
     # scanned because the noun that would most plausibly arrive here is a host's name for its people.
     "run/ratings.py",
+    # A model reading a blind read's sheet, one call per item: the sheet's content and nothing of a host's, so the
+    # engine's own words from the day it existed.
+    "run/blind_review.py",
     # What a result scored, what a set of results scored together, and whether a run's loop
     # delivered the matrix it promised. It carries `CellSummary` with it — the bounded per-cell
     # record `summarize_completeness` counts. Shared contract from the day it existed rather than
