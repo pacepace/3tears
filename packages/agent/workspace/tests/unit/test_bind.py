@@ -294,7 +294,7 @@ def _build_harness(
     """assemble a fake bind environment wired against ``tmp_path``.
 
     seeds ``pool.conn.journal_max_by_path`` from ``initial_files`` so
-    ``_next_journal_version`` returns realistic prior+1 values. in
+    ``next_journal_version`` returns realistic prior+1 values. in
     production every head row has at least one matching journal row,
     so a fake harness claiming head version N without a journal entry
     at N would diverge from the real DB state.

@@ -54,6 +54,7 @@ __all__ = [
     "authorize_workspace",
     "authorize_workspace_file",
     "enrich_workspace_identity",
+    "next_journal_version",
     "raise_workspace_version",
     "resolve_ref",
     "resolve_workspace",
@@ -532,7 +533,7 @@ async def resolve_workspace(
     return result
 
 
-async def _next_journal_version(
+async def next_journal_version(
     conn: Any,
     workspace_id: UUID,
     relative_path: str,
@@ -706,7 +707,7 @@ async def write_file_atomic(
             # action while leaving the journal intact. a later re-create
             # at the same path would otherwise collide on the
             # (workspace_id, relative_path, version) unique constraint.
-            new_version = await _next_journal_version(conn, workspace.id, relative_path)
+            new_version = await next_journal_version(conn, workspace.id, relative_path)
             await conn.execute(
                 _INSERT_WORKSPACE_FILE_VERSION_SQL,
                 uuid7(),

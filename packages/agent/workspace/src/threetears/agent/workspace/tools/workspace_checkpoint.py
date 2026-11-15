@@ -41,7 +41,7 @@ from threetears.agent.workspace.tool_registry import register_tool_builder
 from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     WorkspaceNotFound,
-    _next_journal_version,
+    next_journal_version,
     resolve_workspace,
     authorize_workspace,
 )
@@ -183,7 +183,7 @@ class WorkspaceCheckpointTool(TearsTool):
                         # file_entity.version. rollback resolves by
                         # label, so the chosen number is purely an
                         # identifier.
-                        tag_version = await _next_journal_version(
+                        tag_version = await next_journal_version(
                             conn,
                             workspace.id,
                             file_entity.relative_path,

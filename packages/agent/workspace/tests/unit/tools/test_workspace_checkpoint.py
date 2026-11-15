@@ -109,7 +109,7 @@ class _FakeConnection(FakeAsyncpgConnection):
     executions: list[tuple[str, tuple[Any, ...], bool]] = field(default_factory=list)
     transactions: list[_FakeTransaction] = field(default_factory=list)
     transaction_open: bool = False
-    # per-path running max version so _next_journal_version returns a
+    # per-path running max version so next_journal_version returns a
     # monotonically increasing value inside a single test invocation.
     _journal_max_by_path: dict[str, int] = field(default_factory=dict)
 
@@ -129,7 +129,7 @@ class _FakeConnection(FakeAsyncpgConnection):
         return "INSERT 0 1"
 
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
-        """serve the ``_next_journal_version`` lookup from tracked state.
+        """serve the ``next_journal_version`` lookup from tracked state.
 
         the helper only issues a ``COALESCE(MAX(version), 0)`` select
         per-path; tests that exercise checkpoint don't issue any other

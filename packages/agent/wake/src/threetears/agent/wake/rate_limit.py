@@ -46,7 +46,6 @@ __all__ = [
     "check_active_schedule_cap",
     "check_fire_limits",
     "check_rate_limit",
-    "count_active",
     "create_schedule_serialized",
     "resume_schedule_serialized",
 ]
@@ -61,7 +60,7 @@ __all__ = [
 _UNPROTECTED = Fragment("NOT t.protected", ())
 
 
-async def count_active(conn: Any, agent_id: UUID, *, excluding: UUID | None = None) -> int:
+async def _count_active(conn: Any, agent_id: UUID, *, excluding: UUID | None = None) -> int:
     """An agent's unprotected active schedules, on ``conn`` (the caller's lock and transaction, when it holds them).
 
     The resume path counts EXCLUDING the schedule being (re)activated, so
@@ -407,7 +406,7 @@ async def check_active_schedule_cap(
     elif pool is not None:
         # cache-bypass: aggregate COUNT not pk-addressable, and a cap read from
         # cache is a cap that lets an extra schedule through.
-        count = await count_active(pool, agent_id)
+        count = await _count_active(pool, agent_id)
     else:
         return True
 
@@ -617,11 +616,11 @@ async def _refuse_at_cap(
     :ptype cap: int
     :param action: ``'create'`` or ``'resume'``, for the log line
     :ptype action: str
-    :param excluding: the schedule being resumed, left out of the count (:func:`count_active`)
+    :param excluding: the schedule being resumed, left out of the count (:func:`_count_active`)
     :ptype excluding: UUID | None
     :raises ScheduleCapExceeded: when ``count >= cap``
     """
-    count = await count_active(conn, agent_id, excluding=excluding)
+    count = await _count_active(conn, agent_id, excluding=excluding)
     if count >= cap:
         log.info(
             "rate-limit: active-schedule cap exceeded (serialized)",

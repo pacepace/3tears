@@ -211,8 +211,8 @@ async def test_wake_schedules_agent_status(conn: asyncpg.Connection) -> None:
     captured = CapturedL3()
     collections = _collections(captured)
     await collections.schedules.list_for_agent(agent)
-    await rate_limit.count_active(captured, agent)
-    await rate_limit.count_active(captured, agent, excluding=uuid.uuid4())
+    # the cap's count on create (the resume's adds one filter beside the same pins)
+    await rate_limit.check_active_schedule_cap(agent_id=agent, cap=10**6, pool=captured)
     statements = [*captured.asked, (rate_limit.COUNT_AGENT_FIRES_SQL, (agent, _NOW - timedelta(days=1), True))]
     for sql, args in statements:
         plan = await explain_statement(conn, sql, *args)

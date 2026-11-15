@@ -8,7 +8,7 @@ with the still-present first create on the
 ``(workspace_id, relative_path, version)`` unique index.
 
 the fix routes new-file version derivation through
-:func:`_next_journal_version`, which scans the journal. this test locks
+:func:`next_journal_version`, which scans the journal. this test locks
 that contract in: delete-then-recreate of the same path inside two
 sequential bind windows must emit monotonically increasing version
 numbers.
