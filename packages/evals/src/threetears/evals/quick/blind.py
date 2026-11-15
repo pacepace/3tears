@@ -42,6 +42,11 @@ from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel.text_block import under
 from threetears.evals.schema import (
     SCALES,
+    CalibrationRating,
+    EvalResult,
+    RubricScale,
+)
+from threetears.evals.schema.blind_read import (
     BlindAgreement,
     BlindAnswer,
     BlindPreference,
@@ -51,9 +56,6 @@ from threetears.evals.schema import (
     BlindSheet,
     BlindSample,
     BlindVerdict,
-    CalibrationRating,
-    EvalResult,
-    RubricScale,
 )
 
 log = get_logger(__name__)
@@ -1061,8 +1063,7 @@ def judge_lines(
     return lines
 
 
-#: What the quick result calls. The page, the sheet and their names are this module's own, reached through
-#: :func:`write_blind_read`.
+#: What the quick result calls.
 __all__ = [
     "REVIEWER_PURPOSE",
     "answer_sheet",
@@ -1070,5 +1071,4 @@ __all__ = [
     "keep_reviewed",
     "plan_review",
     "read_labels",
-    "write_blind_read",
 ]

@@ -49,12 +49,6 @@ from threetears.evals.quick.blind import (
     write_blind_read,
 )
 from threetears.evals.schema import (
-    BlindAnswer,
-    BlindArm,
-    BlindPreference,
-    BlindRead,
-    BlindReview,
-    BlindVerdict,
     EvalResult,
     JudgeEvidence,
     OutOfRunSpend,
@@ -62,6 +56,14 @@ from threetears.evals.schema import (
     RubricScore,
     StopReason,
     label_key_of,
+)
+from threetears.evals.schema.blind_read import (
+    BlindAnswer,
+    BlindArm,
+    BlindPreference,
+    BlindRead,
+    BlindReview,
+    BlindVerdict,
 )
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.report_kit_support import chromium_unavailable, rendered

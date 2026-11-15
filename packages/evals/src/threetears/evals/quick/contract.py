@@ -60,7 +60,7 @@ from threetears.evals.quick.one_call import (
 from threetears.evals.quick.result import (
     CREATED_BY,
     Result,
-    calibrations_of,
+    blind_reading,
     model_slug,
     coordinates,
     declare,
@@ -536,7 +536,8 @@ class Eval:
                 margin=self.margin,
                 measure_order=self.plan.readings,
             )
-            read, loose = read_blind(judge, host, keyed, control, scope_id, self.name)
+            read, _loose = read_blind(judge, host, keyed, control, scope_id, self.name)
+            drawn.extend([read.id] if read is not None else [])
             return with_judge_examples(
                 replace(
                     result,
@@ -544,21 +545,20 @@ class Eval:
                     fields=tuple(self.plan.fields),
                     judge=judge,
                     disclosures=disclosures,
-                    calibrations=calibrations_of(read),
-                    blind_read=read,
-                    loose_labels=loose,
+                    **blind_reading(judge, read, keyed),
                 ),
                 examples,
             )
 
         # Filing the campaign and reading its report and labels are store reads and writes, so they run off the loop.
+        drawn: list[str] = []
         result = await run_blocking(host.blocking_executor, declared)
-        if judge is not None and judge.reviewer is not None and result.blind_read is not None:
+        if judge is not None and judge.reviewer is not None and drawn:
             # A model answers the sheet a person would, once the read is drawn: held to what the eval's cap has left,
             # ledgered, and kept beside a file store so the same draw is not paid for twice.
             kept = None
             if store_file is not None:
-                kept = store_file.parent / "blind_reads" / f"{result.blind_read.id}.{model_slug(judge.reviewer)}.csv"
+                kept = store_file.parent / "blind_reads" / f"{drawn[0]}.{model_slug(judge.reviewer)}.csv"
             result = await result.reviewed_by(judge.reviewer, max_cost_usd=self.max_cost_usd, kept=kept)
         return result
 

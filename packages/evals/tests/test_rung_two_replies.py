@@ -22,6 +22,8 @@ import pytest
 
 from threetears.evals import Example, Judge
 from threetears.evals.quick.files import main
+from threetears.evals.quick.result import read_blind
+from packages.evals.tests.off_loop import off_loop
 from threetears.evals.testing import RecordedCompletions, RecordedPrompt
 from packages.evals.tests.example_loader import EXAMPLES
 from packages.evals.tests.report_support import page_violations
@@ -233,8 +235,9 @@ async def test_the_result_carries_the_read_and_each_standing(replies_dir: Path) 
 
     result = await module.replies_eval.run(store=":memory:")
 
-    read = result.blind_read
+    read, _ = off_loop(read_blind, result.judge, result.host, result.arms, result.control, result.scope_id, result.name)
     assert read is not None and read.report is not None
+    assert sorted(result.blind_read_files) == ["blind_read.csv", "blind_read.html"]
     assert (len(read.items), read.draw.population, read.draw.excluded) == (20, 20, {})
     assert [arm.role for arm in read.arms] == ["control"] and read.ask == ["verdicts"]
     (standing,) = read.report.samples

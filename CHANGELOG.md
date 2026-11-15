@@ -33,15 +33,16 @@ packages (bumped in lock-step).
 - Measured and recorded (`docs/open-problems.md`): two results of one case whose judge errors coincide award the
   tier to a judge at the bar up to 7% of the time against the 5% its bound claims. Every agreement line states its
   cases beside its results.
-- New, provisional: the `BlindRead` shapes and `BlindSheet` on `threetears.evals.schema`; `Result.blind_read`,
-  `Result.loose_labels` and `Result.reviews_kept`. `judge_agreement` and `person_scores_by_result` take `rated_by=`
+- No public name is added. `Result` gains three plain fields: `blind_read_files` (the two files' text, by file
+  name), `judge_read` (the judge lines the print says) and `reviews_kept` (where a model's answers are kept). The
+  blind read's own shapes stay the engine's. `judge_agreement` and `person_scores_by_result` take `rated_by=`
   (people by default).
 - Removed: `Result.to_label`. A `to_label.csv` filled in under an earlier version still reads as a labels file, and
   counts as not drawn at random.
 
 **For hosts:** no stored document changes shape and no action is added; the host door for blind reads is a later
 change. The out-of-run ledger gains the purpose `reviewer` at core v15.19: a build that lists purposes lists it.
-A host that read `Result.to_label` or the `to_label` key of `Result.write()` reads `Result.blind_read` and the
+A host that read `Result.to_label` or the `to_label` key of `Result.write()` reads `Result.blind_read_files` and the
 `blind_read` and `blind_read_csv` keys.
 ### evals: numbers never import presentation, with no exemption
 

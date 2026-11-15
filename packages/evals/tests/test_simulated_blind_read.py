@@ -29,14 +29,16 @@ from threetears.evals.analysis.blind_read import (
     sample_standing,
 )
 from threetears.evals.schema import (
-    BlindAnswer,
-    BlindArm,
-    BlindRead,
     EvalResult,
     JudgeEvidence,
     RubricDim,
     RubricScore,
     label_key_of,
+)
+from threetears.evals.schema.blind_read import (
+    BlindAnswer,
+    BlindArm,
+    BlindRead,
 )
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.simulation_support import at_most

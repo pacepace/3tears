@@ -71,7 +71,8 @@ from threetears.evals.kernel import (
     confusion_of,
 )
 from threetears.evals.analysis.blind_read import BlindClose, blind_sheet, close_blind_read, draw_blind_read
-from threetears.evals.schema import BlindAnswer, BlindArm, BlindRead, CalibrationRating, CompletionClient, EvalResult
+from threetears.evals.schema import CalibrationRating, CompletionClient, EvalResult
+from threetears.evals.schema.blind_read import BlindAnswer, BlindArm, BlindRead
 from threetears.evals.schema.models import DECLARED_NAME_CHARS
 from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
@@ -98,13 +99,16 @@ from threetears.evals.analysis.report.words import campaign_arm_tags, judged_hea
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
 from threetears.evals.kernel.out_of_run import OutOfRunBudget
 from threetears.evals.quick.blind import (
+    BLIND_READ_CSV,
+    BLIND_READ_HTML,
     REVIEWER_PURPOSE,
     answer_sheet,
+    blind_read_csv,
+    blind_read_html,
     judge_lines,
     keep_reviewed,
     plan_review,
     read_labels,
-    write_blind_read,
 )
 from threetears.evals.quick.judged import BorrowedJudgeClient, Judge, JudgeExamples, judge_client
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
@@ -241,11 +245,11 @@ class Result:
     :ivar judge_examples: How the judge graded its examples (``Judge(examples=...)``) in the run, each on every
         repeat, beside its agreement with the labels and never pooled into it; ``None`` with no judge, or a judge
         with no examples.
-    :ivar blind_read: The run's judged answers drawn for a blind read (one seeded random order, the control against
-        the first candidate where there are several arms), with the answers ``Judge(labels=...)`` names and what
-        they say of the judge in its ``report``; ``None`` with no judge, or no judged answer to show.
-    :ivar loose_labels: The people's labels in that file that are not on this run's draw (an older ``to_label.csv``,
-        another run's answers): each paired with the same output, and counted as not drawn at random.
+    :ivar blind_read_files: What a judged result writes for a blind read, by file name: ``blind_read.html`` (the
+        run's judged answers in one seeded random order, with no arm, run or judge score on the page) and
+        ``blind_read.csv`` (the same order as rows). Empty with no judge, or no judged answer to show.
+    :ivar judge_read: What the print says of the judge against whoever read it blind (:meth:`calibration_lines`),
+        line by line; empty for an unjudged eval.
     :ivar reviews_kept: The file a model reviewer's answers are kept in (:meth:`reviewed_by`), or ``None``.
     :ivar contrast_arms: The arm each row of the report's contrasts table tests, by name, row for row; ``None`` for a
         row no arm's variant matches.
@@ -273,8 +277,8 @@ class Result:
     disclosures: tuple[str, ...] = ()
     calibrations: tuple[JudgeCalibration, ...] = ()
     judge_examples: JudgeExamples | None = None
-    blind_read: BlindRead | None = field(default=None, repr=False, compare=False)
-    loose_labels: tuple[CalibrationRating, ...] = field(default=(), repr=False, compare=False)
+    blind_read_files: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
+    judge_read: tuple[str, ...] = field(default=(), repr=False, compare=False)
     reviews_kept: Path | None = field(default=None, repr=False, compare=False)
     contrast_arms: tuple[str | None, ...] = field(default=(), repr=False, compare=False)
     contrast_measures: tuple[str | None, ...] = field(default=(), repr=False, compare=False)
@@ -395,20 +399,7 @@ class Result:
     def calibration_lines(self) -> list[str]:
         """How the judge stands against whoever read its answers blind, as the quiet print says it; empty for an
         unjudged eval."""
-        judge = self.judge
-        if judge is None:
-            return []
-        report = self.blind_read.report if self.blind_read is not None else None
-        return judge_lines(
-            self.blind_read,
-            # The file by its name, never the path it was read from: a path is the machine's, not the reading's.
-            labels_name=None if judge.labels is None else judge.labels.name,
-            labels_there=judge.labels is not None and judge.labels.is_file(),
-            loose=report.other_ratings if report is not None else 0,
-            unread=report.unread if report is not None else (),
-            shown={arm: _shown_arm_name(arm) for arm in self.arms},
-            kept=None if self.reviews_kept is None else self.reviews_kept.name,
-        )
+        return list(self.judge_read)
 
     async def reviewed_by(
         self,
@@ -433,6 +424,10 @@ class Result:
         a later call over the same draw reads them back and asks only the cases the file does not hold. A reply that
         cannot be used leaves its case not answered, counted and said, and the rest are asked.
 
+        The read is drawn again from the stored answers, which draw the same order, and the labels file is read
+        again. A result carries one model's reading: a second call with another model replaces the first, unless
+        both are kept.
+
         :param model: The reviewer: a model id, a :class:`~threetears.evals.providers.Model`, or any completion
             client that names its model.
         :ptype model: str | CompletionClient
@@ -444,24 +439,27 @@ class Result:
         :rtype: Result
         :raises ValueError: A client naming no model, or an unjudged result or one with no judged answer to read.
         """
-        read = self.blind_read
         judge = self.judge
-        if judge is None or read is None:
+        if judge is None or not self.blind_read_files:
             raise ValueError("a model answers a judged result's blind read, and this result has none")
         client, name = judge_client(model)
         lent = BorrowedJudgeClient(client, model_name=name)
         kept_at = None if kept is None else Path(kept)
-        report = read.report
 
-        def recorded() -> tuple[list[EvalResult], list[BlindAnswer]]:
+        def recorded() -> tuple[BlindRead, tuple[CalibrationRating, ...], list[EvalResult], list[BlindAnswer]]:
+            drawn, outside = read_blind(judge, self.host, self.arms, self.control, self.scope_id, self.name)
+            if drawn is None:
+                raise ValueError("the stored answers no longer hold a judged answer to read blind")
             results = _results_of(self.host, self.arms, self.scope_id)
             if kept_at is None or not kept_at.is_file():
-                return results, []
+                return drawn, outside, results, []
             # Only answers on this very draw are read back: an answer to another draw is asked for again.
-            earlier = read_labels(kept_at, read, results).answers
-            return results, [answer for answer in earlier if (answer.rater, answer.rater_kind) == (name, "reference")]
+            earlier = read_labels(kept_at, drawn, results).answers
+            mine = [answer for answer in earlier if (answer.rater, answer.rater_kind) == (name, "reference")]
+            return drawn, outside, results, mine
 
-        results, earlier = await run_blocking(self.host.blocking_executor, recorded)
+        read, loose, results, earlier = await run_blocking(self.host.blocking_executor, recorded)
+        report = read.report
         have = {answer.item for answer in earlier}
         landed = [summary.total_cost_usd for summary in self.arms.values()]
         if self.judge_examples is not None and self.judge_examples.spend.calls:
@@ -507,13 +505,13 @@ class Result:
                     update={"answers": [*others, *earlier, *answers], "reviews": [*reviews, review], "report": None}
                 ),
                 results,
-                other_ratings=self.loose_labels,
+                other_ratings=loose,
                 unread=report.unread if report is not None else (),
                 judge_models=[judge.model],
             ).read
             if kept_at is not None:
                 keep_reviewed(kept_at, again, name)
-            return replace(self, blind_read=again, calibrations=calibrations_of(again), reviews_kept=kept_at)
+            return replace(self, reviews_kept=kept_at, **blind_reading(judge, again, self.arms, kept_at))
 
         return await run_blocking(self.host.blocking_executor, closed)
 
@@ -809,8 +807,12 @@ class Result:
         :rtype: dict[str, Path]
         """
         written = self.page.write(out_dir)
-        if self.blind_read is not None:
-            written.update(write_blind_read(Path(out_dir), self.blind_read))
+        for role, name in (("blind_read", BLIND_READ_HTML), ("blind_read_csv", BLIND_READ_CSV)):
+            if name in self.blind_read_files:
+                path = Path(out_dir) / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(self.blind_read_files[name], encoding="utf-8", newline="")
+                written[role] = path
         return written
 
     def exit_code(self) -> int:
@@ -1098,8 +1100,8 @@ class Result:
                     judge=self.judge,
                     disclosures=self.disclosures,
                     calibrations=self.calibrations,
-                    blind_read=self.blind_read,
-                    loose_labels=self.loose_labels,
+                    blind_read_files=self.blind_read_files,
+                    judge_read=self.judge_read,
                     reviews_kept=self.reviews_kept,
                 ),
                 self.judge_examples,
@@ -1390,6 +1392,44 @@ def model_slug(model: str | CompletionClient) -> str:
     return hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
 
 
+def blind_reading(
+    judge: Judge | None, read: BlindRead | None, arms: Mapping[str, EvalSummary], kept: Path | None = None
+) -> dict[str, Any]:
+    """What a result carries of its blind read, as plain values: the files it writes, the lines it prints, and the
+    judge's agreement with people. The read itself stays the engine's.
+
+    :param judge: The eval's judge, or ``None``.
+    :ptype judge: Judge | None
+    :param read: The run's blind read, closed over its labels, or ``None`` where there is no judged answer to show.
+    :ptype read: BlindRead | None
+    :param arms: Each arm's summary, by name: an arm is printed by the name every surface prints it by.
+    :ptype arms: Mapping[str, EvalSummary]
+    :param kept: The file a model reviewer's answers are kept in, or ``None``.
+    :ptype kept: Path | None
+    :return: The result's ``blind_read_files``, ``judge_read`` and ``calibrations``.
+    :rtype: dict[str, Any]
+    """
+    if judge is None:
+        return {"blind_read_files": {}, "judge_read": (), "calibrations": ()}
+    report = read.report if read is not None else None
+    lines = judge_lines(
+        read,
+        # The file by its name, never the path it was read from: a path is the machine's, not the reading's.
+        labels_name=None if judge.labels is None else judge.labels.name,
+        labels_there=judge.labels is not None and judge.labels.is_file(),
+        loose=report.other_ratings if report is not None else 0,
+        unread=report.unread if report is not None else (),
+        shown={arm: _shown_arm_name(arm) for arm in arms},
+        kept=None if kept is None else kept.name,
+    )
+    files = (
+        {}
+        if read is None
+        else {BLIND_READ_HTML: blind_read_html(blind_sheet(read)), BLIND_READ_CSV: blind_read_csv(read)}
+    )
+    return {"blind_read_files": files, "judge_read": tuple(lines), "calibrations": calibrations_of(read)}
+
+
 def calibrations_of(read: BlindRead | None) -> tuple[JudgeCalibration, ...]:
     """How the judge agrees with people's labels, per dimension, off a closed blind read's report.
 
@@ -1640,7 +1680,7 @@ __all__ = [
     "QUIET_MISSES",
     "JudgeCalibration",
     "Result",
-    "calibrations_of",
+    "blind_reading",
     "model_slug",
     "coordinates",
     "declare",
