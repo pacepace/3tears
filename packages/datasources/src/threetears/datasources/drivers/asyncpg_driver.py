@@ -886,6 +886,8 @@ class AsyncpgDriver(Driver):
                 max_size=cfg.pool_max_size,
                 command_timeout=cfg.command_timeout_seconds,
                 connect=self._connect_one,
+                # a datasource's database is not the platform's: it gets only the settings its config names
+                platform_settings=False,
                 **connect_kwargs,
                 **get_pg_pool_kwargs(),
             )

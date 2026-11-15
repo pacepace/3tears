@@ -41,8 +41,14 @@ connection, one ``bind`` and one ``init``, and a trigger added to the set reache
 usage::
 
     recycler = YugabytePoolRecycler(pool_name="hub_l3")
-    pool = await asyncpg.create_pool(dsn, init=recycler.init, **get_pg_pool_kwargs())
+    pool = await create_pool_with_startup_timeout(
+        dsn, pool_name="hub_l3", init=recycler.init, **get_pg_pool_kwargs()
+    )
     recycler.bind(pool)
+
+the pool starts through :func:`~threetears.core.utils.pg_pool_kwargs.create_pool_with_startup_timeout`, so its
+sessions carry the platform's startup settings (``PLATFORM_SERVER_SETTINGS``: the HNSW iterative scan, which
+YugabyteDB accepts only at startup, never as a ``SET``).
 
 a consumer composing its own ``init`` calls :func:`~threetears.core.collections.init_connection` and
 then :meth:`YugabytePoolRecycler.watch`.

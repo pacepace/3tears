@@ -34,6 +34,7 @@ from threetears.core.config import DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS, DEFAULT
 from threetears.core.utils.pg_pool_kwargs import (
     DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS,
     ENV_MAX_INACTIVE_LIFETIME,
+    PLATFORM_SERVER_SETTINGS,
     PoolStartupTimeoutError,
     create_pool_with_startup_timeout,
     get_pg_pool_kwargs,
@@ -1066,3 +1067,51 @@ class TestCreatePoolWithStartupTimeout:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert await silent_server.all_closed(within=2.0)
+
+
+class _Stop(Exception):
+    """a connect hook's own error: the wrapper neither retries nor wraps it, so a start ends at the first connect."""
+
+
+class TestPlatformServerSettings:
+    """every platform pool starts its sessions with the platform's settings under the caller's own."""
+
+    async def _settings_sent(self, **kwargs: object) -> object:
+        """the ``server_settings`` the first connect of a pool started with ``kwargs`` received."""
+        sent: list[object] = []
+
+        async def hook(*_args: object, **connect_kwargs: object) -> asyncpg.Connection:
+            sent.append(connect_kwargs.get("server_settings"))
+            raise _Stop
+
+        with pytest.raises(_Stop):
+            await create_pool_with_startup_timeout(
+                "postgresql://u:p@127.0.0.1:1/d", startup_timeout=2.0, min_size=1, max_size=1, connect=hook, **kwargs
+            )
+        return sent[0]
+
+    def test_the_platform_settings_are_the_hnsw_iterative_scan(self) -> None:
+        """Flips if the setting the nearest read's recall rests on leaves the platform's startup settings."""
+        assert PLATFORM_SERVER_SETTINGS == {"hnsw.iterative_scan": "relaxed_order"}
+
+    async def test_a_pool_with_no_settings_of_its_own_starts_with_the_platforms(self) -> None:
+        """Flips if a platform pool's sessions start without the HNSW iterative scan (a small owner beside a heavy one
+        then gets fewer nearest rows than it asked for)."""
+        assert await self._settings_sent() == PLATFORM_SERVER_SETTINGS
+
+    async def test_the_callers_settings_are_kept_and_win(self) -> None:
+        """Flips if the caller's search_path is dropped, or the platform's value overrides one the caller names."""
+        sent = await self._settings_sent(server_settings={"search_path": "s1", "hnsw.iterative_scan": "strict_order"})
+        assert sent == {"hnsw.iterative_scan": "strict_order", "search_path": "s1"}
+        assert await self._settings_sent(server_settings={"search_path": "s2"}) == {
+            **PLATFORM_SERVER_SETTINGS,
+            "search_path": "s2",
+        }
+
+    async def test_a_database_the_platform_does_not_own_gets_only_its_callers_settings(self) -> None:
+        """Flips if ``platform_settings=False`` still sends the platform's settings (a datasource behind a pooler may
+        refuse an unknown startup parameter)."""
+        assert await self._settings_sent(platform_settings=False) is None
+        assert await self._settings_sent(platform_settings=False, server_settings={"search_path": "s"}) == {
+            "search_path": "s"
+        }
