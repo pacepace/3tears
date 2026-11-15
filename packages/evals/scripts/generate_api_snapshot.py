@@ -14,7 +14,8 @@ The snapshot is every public root's ``__all__`` (the roots are ``threetears.eval
 surface is a diff in review rather than a surprise in an adopter's import. A name's tier is ``host-contract`` when
 ``public_surface.HOST_CONTRACT`` lists it, ``stable`` when ``public_surface.STABLE`` does and ``provisional``
 otherwise; those two lists are the one place it is declared. A provisional entry records no signature, since it
-promises none.
+promises none. The tier map the wheel ships also records each declared name's kind (``surface_kinds.py``), and
+nothing is written while a declared name has none.
 
 **What regenerating records, and what it refuses to.** A name added, or a kind, signature or tier changed, is
 recorded by regenerating: the diff is the record. A name that left a root (moved, renamed or removed) is not, when the
@@ -39,6 +40,7 @@ from public_surface import (
     Finding,
     SurfaceEntry,
     all_findings,
+    declared,
     installed_surface,
     load_migrations,
     load_reexports,
@@ -46,6 +48,7 @@ from public_surface import (
     render_snapshot,
     render_tier_map,
 )
+from surface_kinds import declared_kinds
 
 
 def write_snapshot(
@@ -54,8 +57,8 @@ def write_snapshot(
     path: Path = SNAPSHOT_PATH,
     tier_map_path: Path = TIER_MAP_PATH,
 ) -> bool:
-    """Write ``installed`` as the snapshot, and its tiers as the shipped tier map, unless a finding needs more than a
-    regeneration.
+    """Write ``installed`` as the snapshot, and its tiers and its declared names' kinds as the shipped tier map, unless
+    a finding needs more than a regeneration or a declared name has no kind to write.
 
     :param installed: The surface to record.
     :ptype installed: dict[str, SurfaceEntry]
@@ -65,14 +68,18 @@ def write_snapshot(
     :ptype path: Path
     :param tier_map_path: Where the tier map the wheel ships is written.
     :ptype tier_map_path: Path
-    :return: Whether they were written: ``False`` while any finding is one regenerating does not fix.
+    :return: Whether they were written: ``False`` while any finding is one regenerating does not fix, or while a
+        declared name has no kind (``surface_kinds.declared_kinds``).
     :rtype: bool
     """
     if any(not f.regenerating_fixes for f in findings):
         return False
+    kinds = declared_kinds(installed)
+    if any(declared(entry.tier) and name not in kinds.of for name, entry in installed.items()):
+        return False
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(render_snapshot(installed), encoding="utf-8")
-    tier_map_path.write_text(render_tier_map(installed), encoding="utf-8")
+    tier_map_path.write_text(render_tier_map(installed, kinds.of), encoding="utf-8")
     return True
 
 
@@ -85,19 +92,22 @@ def main(argv: list[str] | None = None) -> int:
     findings = all_findings(
         installed, load_snapshot(), load_migrations(MIGRATIONS_PATH), load_reexports(REEXPORTS_PATH)
     )
+    kinds = declared_kinds(installed)
     if args.check:
-        for finding in findings:
-            print(finding.problem, file=sys.stderr)
+        for problem in (*(finding.problem for finding in findings), *kinds.problems):
+            print(problem, file=sys.stderr)
         stale_tier_map = not TIER_MAP_PATH.exists() or TIER_MAP_PATH.read_text(encoding="utf-8") != render_tier_map(
-            installed
+            installed, kinds.of
         )
         if stale_tier_map:
-            print(f"{TIER_MAP_PATH} is not the installed surface's tiers: regenerate it", file=sys.stderr)
-        return 1 if findings or stale_tier_map else 0
+            print(f"{TIER_MAP_PATH} is not the installed surface's tiers and kinds: regenerate it", file=sys.stderr)
+        return 1 if findings or kinds.problems or stale_tier_map else 0
     if not write_snapshot(installed, findings):
         for finding in findings:
             if not finding.regenerating_fixes:
                 print(finding.problem, file=sys.stderr)
+        for problem in kinds.problems:
+            print(problem, file=sys.stderr)
         print(f"{SNAPSHOT_PATH} not written: resolve the findings above first.", file=sys.stderr)
         return 1
     print(f"wrote {SNAPSHOT_PATH} ({len(installed)} names; {len(findings)} differences recorded)")

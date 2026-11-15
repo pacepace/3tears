@@ -1,7 +1,7 @@
 """The hold-back ledger is held to the tree, so it cannot rot silently.
 
 A declared name stays declared while something imports it, a shipped page names it or a declared signature reaches
-it (``docs/surface.md`` states the rule). The ledger, ``tests/fixtures/declared_holdbacks.txt``, records the declared
+it (``docs/adopting-a-host.md`` states the rule). The ledger, ``tests/fixtures/declared_holdbacks.txt``, records the declared
 names whose reason the tree alone does not show, one ``<name> | <reason>`` per line:
 
 - ``discodon-tests-only``: Discodon's tests import it and nothing else does; no shipped page names it and no
@@ -18,7 +18,7 @@ names whose reason the tree alone does not show, one ``<name> | <reason>`` per l
 
 A page is read as :mod:`test_guide_names_are_declared` reads it, qualified, attributed and bare, and every word of its
 code blocks besides, without the lines that only list the declared names (the reference's entries and
-``docs/surface.md``'s rungs), since those name every declared name by construction. An import counts from a shipped
+``docs/surface.md``'s lines), since those name every declared name by construction. An import counts from a shipped
 page, an example, the courier host or another package's source; the toy host's alone does not
 (:mod:`test_api_tiers` says why). A declared signature reaches a name when the name is a word of another declared
 name's signature, of one of its public methods or properties, or of a ``:raises:`` line in their docstrings.
@@ -65,8 +65,9 @@ PROTOCOL_REASONS = (HOST_IMPLEMENTS, ENGINE_PROVIDES)
 _REFERENCE_ENTRY = re.compile(r"^- \*\*`[^`]+`\*\*", re.M)
 #: A reference entry's own signature, on the line under it.
 _REFERENCE_SIGNATURE = re.compile(r"^\s*<br>`.*$", re.M)
-#: One root's line on ``docs/surface.md``, which lists that root's declared names.
-_SURFACE_ROOT = re.compile(r"^- `[\w.]+`: .*$", re.M)
+#: A line on ``docs/surface.md`` that only lists declared names: a name and its docstring's first sentence, a name and
+#: its first spelling, or a finding naming one or two.
+_SURFACE_ROOT = re.compile(r"^- `[\w.]+`.*$", re.M)
 #: A fenced code block on a page.
 _FENCE = re.compile(r"^```.*?^```", re.M | re.S)
 #: An exception a docstring says a callable raises.

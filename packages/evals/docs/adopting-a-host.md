@@ -806,9 +806,10 @@ above it, an ordered read with a `limit` included.
 
 **Reading every page of a listing.** `runs_list` and `campaigns_list` (and their actions) return `next`, the cursor
 for the page after, and take it back as `cursor`: call again with `cursor=next` until `next` is `None`. The page is
-100 rows unless `limit` names another (1 to 1000 from Python, 1 to 200 through an action). The cursor is the
-package's own opaque string, bound to the filters it was read with; hand it through unchanged, beside the same
-filters. A `runs_list` page read with a `label` can list fewer runs than `limit` while `next` is set: the label filter
+100 rows unless `limit` names another (1 to 1000 from Python, 1 to 200 through an action); a REST route of your own
+states its limits from `LIST_PAGE_SIZE` and `LIST_PAGE_MAX` (`threetears.evals.ops`), the 100 and the 1000. The
+cursor is the package's own opaque string, bound to the filters it was read with; hand it through unchanged, beside
+the same filters. A `runs_list` page read with a `label` can list fewer runs than `limit` while `next` is set: the label filter
 runs after the read (the status and archive filters are in it), and `filtered` counts the runs it left out.
 
 **Narrowed and grouped reads are optional** (`ResultReadings`, provisional; `RESULT_READINGS_CONFORMANCE_CASES`
@@ -1313,11 +1314,12 @@ release, on:
   below a root. Such a name is promised nothing: it may change or move in any release, and the
   [reference](reference.md#public-api) does not list it.
 
-The first two tiers are the declared surface, about 500 names, mapped by rung in [the surface](surface.md). A declared
+The first two tiers are the declared surface, about 500 names, mapped by role and rung in [the surface](surface.md),
+and each is one kind: typed in an eval, bound by a host, invoked, received or for tests. A declared
 name stays declared while something outside the package imports it, a shipped page teaches it or a declared
 signature reaches it, or while it is a port you implement, a version constant or a one-minor shim, or a stable name
-only a known host's tests import, until that host accepts that it may move (the rules, in full:
-[the surface](surface.md)). Otherwise it is provisional; a name that goes provisional still imports, nothing warns,
+only a known host's tests import, until that host accepts that it may move (the rules, in full: the comment on
+`HOST_CONTRACT` in `packages/evals/scripts/public_surface.py`). Otherwise it is provisional; a name that goes provisional still imports, nothing warns,
 and `MIGRATIONS.toml` names it.
 `packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
 signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two
