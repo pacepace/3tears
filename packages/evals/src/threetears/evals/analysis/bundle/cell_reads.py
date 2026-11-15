@@ -430,7 +430,9 @@ def cell_arm_exclusions(results_by_cell: Mapping[CellKey, list[ResultView]]) -> 
     return arms
 
 
-def differential_exclusions(arms: Sequence[ArmExclusions]) -> list[DifferentialExclusion]:
+def differential_exclusions(
+    arms: Sequence[ArmExclusions], *, rigs: Mapping[str, str] | None = None
+) -> list[DifferentialExclusion]:
     """Every (arm, cause) where the cause took more than the threshold share of the arm's trials, beside the other arms.
 
     The threshold is :data:`~threetears.evals.kernel.result_condition.DIFFERENTIAL_EXCLUSION_SHARE`; the other arms
@@ -438,10 +440,28 @@ def differential_exclusions(arms: Sequence[ArmExclusions]) -> list[DifferentialE
 
     :param arms: The arms' exclusions (:func:`cell_arm_exclusions`).
     :ptype arms: Sequence[ArmExclusions]
+    :param rigs: Apparatus class id → the class of its rig alone, for each class split on the answering model
+        (:func:`~threetears.evals.analysis.cells.rig_of`); a class absent here is its own rig.
+    :ptype rigs: Mapping[str, str] | None
     :return: The flags, in the arms' order and then by cause; empty when no cause took more than the threshold anywhere.
     :rtype: list[DifferentialExclusion]
     """
     flags: list[DifferentialExclusion] = []
+    rig = rigs or {}
+
+    def beside(arm: ArmExclusions) -> list[ArmExclusions]:
+        """The other arms' cells under ``arm``'s rig, an arm holding several there (split on the model that answered
+        it) left out: its share is no one number."""
+        others = [
+            other
+            for other in arms
+            if rig.get(other.apparatus_class_id, other.apparatus_class_id)
+            == rig.get(arm.apparatus_class_id, arm.apparatus_class_id)
+            and other.variant_key != arm.variant_key
+        ]
+        held = Counter(other.variant_key for other in others)
+        return [other for other in others if held[other.variant_key] == 1]
+
     for arm in arms:
         for cause, n_excluded in sorted(arm.by_cause.items()):
             share = n_excluded / arm.n_trials
@@ -458,8 +478,7 @@ def differential_exclusions(arms: Sequence[ArmExclusions]) -> list[DifferentialE
                     threshold=DIFFERENTIAL_EXCLUSION_SHARE,
                     other_arms={
                         other.variant_key: (other.by_cause.get(cause, 0) / other.n_trials if other.n_trials else 0.0)
-                        for other in arms
-                        if other.apparatus_class_id == arm.apparatus_class_id and other.variant_key != arm.variant_key
+                        for other in beside(arm)
                     },
                 )
             )

@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a campaign's cells never pool two answering models, and an operator's judge case takes the next revision
+
+**Changed:** a campaign cell is one arm under one test setup answered by one candidate model (owner ruling,
+2026-10-23: no pooling by assumption; it replaces #684's "disclosed, not split" for campaign cells). Where an arm's
+results under one setup were answered by more than one model, or some by a model no response named, the arm holds a
+cell per answering model, each compared with the control under that setup on its own, and the bundle says why they
+stayed apart (`refused_merges` on `served_model:candidate`). An arm answered by one model throughout, or by none any
+response named, is one cell exactly as before. The arm-level readings (the scoreboard's counts, `arm_served_models`,
+the frontier, history and pivot lenses) still span the arm and disclose the mixture. Nothing is read for a split arm
+as a whole: the campaign's readings give it no row, floor status or pair on that aspect, the campaign page reads the
+aspect as not compared with one line naming the models, and the report input gives it no figure there and says why.
+
+**Changed:** `judge_case_author` and `judge_cases_freeze` adding a case to a judge template that already holds cases
+write the template's next revision, as a definitions reset does, carrying every case of the revision it supersedes.
+Runs of two revisions never pool, so a judge's runs before and after the write are never read as one battery. A write
+into a superseded revision is refused, naming the newest.
+
+**For hosts:** `Cell.rig_class_id` (new, optional, left out when unset) names the setup a split cell shares; pair an
+arm's cell with the control's by `rig_class_id or apparatus_class_id`, not by equal `apparatus_class_id`. Stored runs
+that stop pooling: within one arm and setup of a campaign, results whose candidate responses named different models,
+and those that named none beside those that named one. No host apparatus dimension may be named
+`served_model:candidate`. `CampaignReadings.answer_splits` (new, optional, left out when empty) names each arm read
+per model; a host that expects a row per candidate and aspect handles its absence there. After a judge-case write, read the receipt's `template_id` (with `revision`,
+`superseded_template_id`, `carried`, `stranded_case_sets`, all new): it is the template to launch and to write the
+next case into, and a case set left on the superseded revision needs its next version minted over `carried`'s
+copies. `freeze_judge_cases` writes in place unless called with `revise=True`.
+
 ### evals: a run that did not finish never opens with a verdict, on any surface (#1173)
 
 **Changed:** a failed run's print opened on its failure with no verdict; its HTML and Markdown report, and every

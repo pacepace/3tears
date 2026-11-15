@@ -1967,7 +1967,9 @@ negatives in place and no authoring tool of its own over `judge_case_author`. **
 into a judge template holding no cases yet** (one it creates in the same pass, or an empty one): a new case, or one
 whose words or verdict changed, for a template that already holds cases would change what its runs were measured
 against under the same id. It is no longer written beside the old ones. It is withheld and reported under
-`needs_reset` on every boot, with any case set listing it, until you reset the template (below).
+`needs_reset` on every boot, with any case set listing it, until you reset the template (below). An operator's own
+`judge_case_author` or `judge_cases_freeze` into such a template holds to the same rule: it writes the template's next
+revision and the case into that ([freezing cases](judges-and-calibration.md)).
 
 **A template's own cases seed with it.** A template whose stimuli you author as cases rather than variation axes (a
 scenario to play out, a set of inputs to classify) carries them in the corpus too: `load_seed_corpus` reads

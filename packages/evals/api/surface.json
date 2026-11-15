@@ -4118,7 +4118,7 @@
     },
     "threetears.evals.run.freeze_judge_cases": {
       "kind": "function",
-      "signature": "freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str] = (), scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None, from_labels: bool = False, authored: Sequence[AuthoredJudgeCase] = ()) -> JudgeCaseFreezeReport",
+      "signature": "freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str] = (), scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None, from_labels: bool = False, authored: Sequence[AuthoredJudgeCase] = (), revise: bool = False) -> JudgeCaseFreezeReport",
       "tier": "stable"
     },
     "threetears.evals.run.FrozenJudgeCase": {
@@ -5173,7 +5173,7 @@
     },
     "threetears.evals.analysis.CampaignReadings": {
       "kind": "model",
-      "signature": "CampaignReadings(campaign_id: str, alpha: float, control: str | None, control_label: str, aspects: list[str], readings: list[AspectReading], floors: list[FloorStatus], kind: CampaignKind = 'change', pairs: list[PairReading] = list(), bars: list[BarStatus] = list(), measures: list[MeasureReading] = list(), aggregate: CampaignAggregate | None = None)",
+      "signature": "CampaignReadings(campaign_id: str, alpha: float, control: str | None, control_label: str, aspects: list[str], readings: list[AspectReading], floors: list[FloorStatus], kind: CampaignKind = 'change', pairs: list[PairReading] = list(), bars: list[BarStatus] = list(), measures: list[MeasureReading] = list(), aggregate: CampaignAggregate | None = None, answer_splits: list[AnswerSplit] = list())",
       "tier": "stable"
     },
     "threetears.evals.analysis.CampaignReadStore": {

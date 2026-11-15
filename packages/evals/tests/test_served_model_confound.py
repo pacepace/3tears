@@ -2,12 +2,16 @@
 
 An arm is keyed by the model id its launch asked for, and a provider resolves a floating alias
 (``~vendor/model-latest``) on its side, so two runs of one alias months apart can be answered by different
-models and still pool as one arm. Only the response names the model that answered
+models under one key. Only the response names the model that answered
 (``RoleUsage.served_model``), so the bundle reads that:
 
 * each arm says which models answered it (``arm_served_models``): one, pooled, or not recorded;
-* a comparison whose runs had one requested id answered by more than one model names the
-  ``served_model:candidate`` confound, varied — within an arm or between two arms that asked for the same id;
+* an arm's cells never pool two answering models (owner ruling, 2026-10-23, no pooling by assumption): its results
+  under one rig stand in a cell per answering model, those whose responses named none apart from those that named
+  one, each compared with the control alone, and the bundle says why they did not pool;
+* a comparison ACROSS arms whose runs had one requested id answered by more than one model names the
+  ``served_model:candidate`` confound, varied — on the design's contrast and the coverage row of an arm that mixes
+  them, and between two arms that asked for the same id;
 * a comparison over a response that named no model names it undecided, never as a match with the alias;
 * two arms that asked for different ids and were answered by different models are the model lever, not a
   confound of it.
@@ -20,6 +24,7 @@ from collections.abc import Callable, Sequence
 
 from threetears.evals.analysis import (
     AnalysisContextBundle,
+    Cell,
     Confound,
     DisclosureBlock,
     assemble_context_bundle,
@@ -124,6 +129,17 @@ def _bundle(batches: Sequence[tuple[EvalRun, Served]], *, design: V15Design | No
     return assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
 
 
+def _alias_cells(bundle: AnalysisContextBundle) -> list[Cell]:
+    """The cells of every arm but the control, in the bundle's order."""
+    assert bundle.design.control_arm is not None
+    return [cell for cell in bundle.cells if cell.variant_key != bundle.design.control_arm.variant_key]
+
+
+def _alias_run(index: int) -> list[str]:
+    """The result ids of the alias arm's ``index``-th run in :func:`_alias_against_pinned`, sorted."""
+    return sorted(result.id for result in _results(_batch(_ALIAS, f"alias-{index}"), _served(None)))
+
+
 def _served_confounds(confounds: Sequence[Confound]) -> list[Confound]:
     return [confound for confound in confounds if confound.kind == "served_model"]
 
@@ -163,13 +179,42 @@ class TestTwoRunsOfOneAliasAnsweredByDifferentModels:
         (arm,) = self._bundle().design.contrasts
         assert _served_confounds(arm.mechanism_confounds) == [Confound(dimension=_CONFOUND, kind="served_model")]
 
-    def test_every_pairwise_comparison_names_it(self) -> None:
-        comparisons = [c for family in self._bundle().multiple_comparisons.families for c in family.comparisons]
+    def test_each_answering_model_is_a_cell_of_its_own(self) -> None:
+        """No pooling by assumption (owner, 2026-10-23): the alias arm's two runs never share a cell."""
+        bundle = self._bundle()
+        alias = _alias_cells(bundle)
+        assert [cell.n_observations for cell in alias] == [36, 36]
+        assert len({cell.apparatus_class_id for cell in alias}) == 2
+        # Each cell holds one run's results, and so one answering model.
+        assert sorted(cell.observation_ids for cell in alias) == sorted([_alias_run(0), _alias_run(1)])
+        # The control was answered by one model throughout: one cell, unsplit, under the rig the split cells name.
+        (control,) = [cell for cell in bundle.cells if cell.variant_key == bundle.design.control_arm.variant_key]
+        assert control.rig_class_id is None
+        assert {cell.rig_class_id for cell in alias} == {control.apparatus_class_id}
+
+    def test_the_bundle_says_why_the_two_cells_did_not_pool(self) -> None:
+        (refused,) = self._bundle().refused_merges
+        assert (refused.reason, refused.dimensions) == ("apparatus_differs", [_CONFOUND])
+
+    def test_no_comparison_pools_the_two_models(self) -> None:
+        """Each cell is read against the control alone, over its own run's cases, and neither names a mixture."""
+        bundle = self._bundle()
+        alias = {cell.apparatus_class_id: set(cell.observation_ids) for cell in _alias_cells(bundle)}
+        comparisons = [c for family in bundle.multiple_comparisons.families for c in family.comparisons]
         assert comparisons, "the fixture must produce comparisons, or this asserts nothing"
-        assert all(
-            _served_confounds(c.mechanism_confounds) == [Confound(dimension=_CONFOUND, kind="served_model")]
-            for c in comparisons
-        )
+        assert {c.contrast.apparatus_class_id for c in comparisons} == set(alias)
+        # Twelve cases a side: one run's, never the twenty-four trials per case the two runs would pool.
+        assert {c.contrast.n_cases for c in comparisons} == {12}
+        assert all(_served_confounds(c.mechanism_confounds) == [] for c in comparisons)
+        assert {c.contrast.apparatus_class_id for c in bundle.floor_contrasts} == set(alias)
+
+    def test_a_code_only_report_reads_the_arm_once_per_answering_model(self) -> None:
+        lines = report_markdown(
+            build_code_only_report(self._bundle(), assembled_at="2026-10-09T00:00:00+00:00")
+        ).splitlines()
+        rows = [line for line in lines if line.startswith("| Field accuracy | extractor-latest (test setup ")]
+        assert len(rows) == 4, "the contrast table and the statistics table, a row per answering model in each"
+        assert len(set(rows)) == 4
 
     def test_the_model_rows_comparison_names_it(self) -> None:
         assert _row(self._bundle(), "model") == [Confound(dimension=_CONFOUND, kind="served_model")]
@@ -184,7 +229,17 @@ class TestTwoRunsOfOneAliasAnsweredByDifferentModels:
 
 
 class TestOneAliasAnsweredByOneModel:
-    """The alias held still: nothing to disclose, and nothing confounded."""
+    """The alias held still: nothing to disclose, nothing confounded, and nothing split."""
+
+    def test_the_two_runs_pool_in_one_cell_under_the_rig_itself(self) -> None:
+        bundle = _alias_against_pinned([_served(_MARCH), _served(_MARCH)])
+        (alias,) = _alias_cells(bundle)
+        (control,) = [cell for cell in bundle.cells if cell.variant_key == bundle.design.control_arm.variant_key]
+        assert alias.n_observations == 72
+        assert alias.rig_class_id is None
+        assert alias.apparatus_class_id == control.apparatus_class_id
+        assert "rig_class_id" not in alias.to_dict()
+        assert bundle.refused_merges == []
 
     def test_no_confound_and_the_arm_reads_one(self) -> None:
         bundle = _alias_against_pinned([_served(_MARCH), _served(_MARCH)])
@@ -207,6 +262,88 @@ class TestAResponseNamingNoModelIsUnknownNotTheAlias:
         assert (alias.state, alias.served_models) == ("unrecorded", [_MARCH])
         # One run of two named its model on every result, the other on none.
         assert alias.n_unrecorded * 2 == alias.n_results
+
+    def test_the_unrecorded_run_joins_no_cell_with_the_run_that_named_its_model(self) -> None:
+        """A silence is never evidence of a match (owner, 2026-10-23)."""
+        bundle = _alias_against_pinned([_served(_MARCH), _served(None)])
+        alias = _alias_cells(bundle)
+        assert [cell.n_observations for cell in alias] == [36, 36]
+        silent = {tuple(cell.observation_ids): cell.unknown_dimensions for cell in alias}
+        assert silent == {tuple(_alias_run(0)): [], tuple(_alias_run(1)): [_CONFOUND]}
+        (refused,) = bundle.refused_merges
+        assert (refused.reason, refused.dimensions) == ("apparatus_unknown", [_CONFOUND])
+        # What recording the model would buy is stated, as for any unrecorded dimension.
+        (recording,) = bundle.next_experiments
+        assert (recording.dimension, recording.n_observations_now, recording.n_observations_if_recorded) == (
+            _CONFOUND,
+            36,
+            72,
+        )
+        comparisons = [c for family in bundle.multiple_comparisons.families for c in family.comparisons]
+        assert {c.contrast.apparatus_class_id for c in comparisons} == {cell.apparatus_class_id for cell in alias}
+        assert {c.contrast.n_cases for c in comparisons} == {12}
+
+    def test_two_unrecorded_runs_are_alike_in_what_they_did_not_say_and_stay_one_cell(self) -> None:
+        """As for any unrecorded dimension: identically silent observations pool, and the arm reads unrecorded."""
+        bundle = _alias_against_pinned([_served(None), _served(None)])
+        (alias,) = _alias_cells(bundle)
+        assert (alias.n_observations, alias.rig_class_id) == (72, None)
+        assert bundle.refused_merges == []
+
+
+class TestARunTheProviderMovedPartWayThrough:
+    """The split is by what answered each result, so one run can hold two cells."""
+
+    def test_its_results_are_read_apart_by_the_model_that_answered_each(self) -> None:
+        control = _batch(_PINNED, "control")
+        alias = _batch(_ALIAS, "alias")
+        moved = _bundle(
+            [
+                (control, _served(_PINNED)),
+                (alias, lambda result: _MARCH if result.test_case_id <= "doc-06" else _JUNE),
+            ],
+            design=_design(control, [_PINNED, _ALIAS]),
+        )
+        assert [cell.n_observations for cell in _alias_cells(moved)] == [18, 18]
+        assert {cell.n_cases for cell in _alias_cells(moved)} == {6}
+
+    def test_a_result_whose_candidate_made_no_call_stays_with_its_run(self) -> None:
+        """A result that failed before its call names no model and is no silence: it belongs with its run's cell."""
+        control = _batch(_PINNED, "control")
+        march, june = _batch(_ALIAS, "march"), _batch(_ALIAS, "june")
+
+        def uncalled(rows: list[EvalResult]) -> list[EvalResult]:
+            first = rows[0].model_copy(update={"usage": [row for row in rows[0].usage if row.role != "candidate"]})
+            return [first, *rows[1:]]
+
+        storage = ToyhostStorage(
+            [control, march, june],
+            {
+                control.id: _results(control, _served(_PINNED)),
+                march.id: uncalled(_results(march, _served(_MARCH))),
+                june.id: _results(june, _served(_JUNE)),
+            },
+        )
+        campaign = make_campaign(
+            id="0b6f2a54-3c1e-4d8a-9e27-5a1c7f3b2d61",
+            scope_id=TOYHOST_SCOPE,
+            name="served-model-no-call",
+            subject_id=TOYHOST_SUBJECT.subject_id,
+            subject_kind="extractor_config",
+            behavior="extract_invoice_fields",
+            template_id="",
+            run_ids=[control.id, march.id, june.id],
+            declared_design=_design(control, [_PINNED, _ALIAS]),
+            created_by="test:fixture",
+        )
+        bundle = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
+        cells = sorted(cell.observation_ids for cell in _alias_cells(bundle))
+        assert cells == sorted(
+            [
+                sorted(result.id for result in _results(march, _served(None))),
+                sorted(result.id for result in _results(june, _served(None))),
+            ]
+        )
 
     def test_a_stored_run_that_never_recorded_one_is_not_the_alias(self) -> None:
         bundle = _alias_against_pinned([_served(None)])

@@ -1073,6 +1073,89 @@ async def test_authored_cases_are_judged_and_read_out_as_labelled_cases_whose_la
     assert profile.label_agreement is not None and profile.label_agreement.results == 3
 
 
+async def test_an_operators_freeze_into_a_template_that_holds_cases_writes_its_next_revision() -> None:
+    """Runs before and after the freeze never share a revision whose cases differ: the freeze's cases, and the case
+    set it mints, are the next revision's, which carries the case the template held."""
+    from threetears.evals.ops import JudgeCaseAuthor, JudgeCasesFreeze, judge_case_author, judge_cases_freeze
+    from threetears.evals.run import mint_case_set
+
+    host = dataclasses.replace(toyhost_host(), attests_person=_vouches_for_itself)
+    source = await _judged_source(host)
+    template = _judge_template()
+    off_loop(host.storage.save_template, template)
+    held = off_loop(
+        judge_case_author,
+        host,
+        JudgeCaseAuthor(
+            template_id=template.id,
+            criterion_template_id=toyhost_judged_template().id,
+            criterion=FAITHFULNESS_DIM,
+            output=json.dumps({"invoice_number": "INV-0042"}),
+            case_material=_AUTHORED_INVOICE,
+            expected=1,
+            note="three of four fields missing is not faithful",
+        ),
+        TOYHOST_SCOPE,
+        collected_by=_AUTHOR,
+    )
+    assert (held.template_id, held.revision) == (template.id, None), "a template's first case is written in place"
+    (first,) = held.cases
+    for name in ("faithfulness", "left behind"):
+        off_loop(
+            lambda name=name: mint_case_set(
+                host.storage,
+                scope_id=TOYHOST_SCOPE,
+                name=name,
+                template_id=template.id,
+                test_case_ids=[first.test_case_id],
+            )
+        )
+    freeze = JudgeCasesFreeze(
+        template_id=template.id,
+        judged_run_ids=sorted({result.eval_run_id for result in source}),
+        criteria=[FAITHFULNESS_DIM],
+        into_case_set="faithfulness",
+    )
+
+    def revisions() -> list[tuple[int, bool]]:
+        records = host.storage.query_templates(TOYHOST_SCOPE, archived=None)
+        return sorted((t.revision, t.archived) for t in records if t.name == template.name)
+
+    # A freeze that will be refused writes no revision: every check runs before one is written.
+    with pytest.raises(ValidationFailedError, match="not results of the named runs"):
+        off_loop(
+            judge_cases_freeze,
+            host,
+            freeze.model_copy(update={"judged_result_ids": ["no-such-result"]}),
+            TOYHOST_SCOPE,
+        )
+    assert off_loop(revisions) == [(1, False)]
+
+    report = off_loop(judge_cases_freeze, host, freeze, TOYHOST_SCOPE)
+
+    assert off_loop(revisions) == [(1, True), (2, False)]
+    assert (report.revision, report.superseded_template_id) == (2, template.id)
+    assert report.template_id != template.id and len(report.cases) == len(source)
+    assert list(report.carried) == [first.test_case_id]
+    old = off_loop(host.storage.query_test_cases, TOYHOST_SCOPE, template_id=template.id)
+    assert [case.id for case in old] == [first.test_case_id], "the superseded revision keeps exactly what it held"
+    new = {case.id for case in off_loop(host.storage.query_test_cases, TOYHOST_SCOPE, template_id=report.template_id)}
+    assert new == {report.carried[first.test_case_id], *(case.test_case_id for case in report.cases)}
+    # The set the freeze was asked for lists the new revision's cases; the other still lists the superseded one's.
+    assert report.case_set is not None and (report.case_set.name, report.case_set.version) == ("faithfulness", 2)
+    minted = off_loop(host.storage.query_case_sets, TOYHOST_SCOPE, name="faithfulness")
+    newest = max(minted, key=lambda case_set: case_set.version)
+    assert newest.template_id == report.template_id
+    assert newest.test_case_ids == [case.test_case_id for case in report.cases]
+    assert len(report.stranded_case_sets) == 1 and "left behind" in report.stranded_case_sets[0]
+    # The same freeze into the new revision adds nothing, so it writes no third.
+    again = off_loop(
+        judge_cases_freeze, host, freeze.model_copy(update={"template_id": report.template_id}), TOYHOST_SCOPE
+    )
+    assert (again.revision, again.case_set) == (None, report.case_set)
+    assert off_loop(revisions) == [(1, True), (2, False)]
+
+
 async def test_authored_cases_freeze_beside_stored_ones_into_one_case_set() -> None:
     host = toyhost_host()
     source = await _judged_source(host)

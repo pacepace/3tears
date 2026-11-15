@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import Field
 
+from threetears.evals.analysis.cells import answer_split_variants
 from threetears.evals.analysis.bundle.schema import (
     FLOOR_COST_MEASURE,
     TRIAL_PASS_NAME,
@@ -882,6 +883,12 @@ def _cost_floor(readings: FloorReadings) -> tuple[FloorOutcome, FloorDecision]:
     return "unclear", FloorDecision(case="cost_unseparated")
 
 
+def _answer_split(bundle: AnalysisContextBundle, *arms: str) -> bool:
+    """Whether any of ``arms`` holds a cell per answering candidate model on the bundle's aspect."""
+    split = answer_split_variants(bundle.cells)
+    return any(arm in split for arm in arms)
+
+
 def _floor_contrast(
     bundle: AnalysisContextBundle, reading: str, name: str, control: str, candidate: str
 ) -> FloorContrast | None:
@@ -1022,11 +1029,14 @@ def floor_readings(
     :param check_names: Each goal check's display name by its expression, which every rate, reason and floor sentence
         on a check names it by; None names each by its expression.
     :ptype check_names: Mapping[str, str] | None
-    :return: The readings; no rate where either arm is off the scoreboard.
+    :return: The readings; no rate where either arm is off the scoreboard, or where either holds a cell per answering
+        model on this aspect (:func:`~threetears.evals.analysis.cells.answer_split_variants`): the arm has no one
+        contrast against the other, and its counts pool the models its cells keep apart, so nothing is read for the
+        arm and each cell's own contrast stands in the bundle.
     :rtype: FloorReadings
     """
     boards = {board.variant_key: board for board in bundle.scoreboard}
-    if control not in boards or candidate not in boards:
+    if control not in boards or candidate not in boards or _answer_split(bundle, control, candidate):
         return FloorReadings(rates=(), check_names=dict(check_names or {}))
     ours, theirs = boards[control], boards[candidate]
     lost_control, lost_candidate = sum(ours.lost.values()), sum(theirs.lost.values())
@@ -1166,11 +1176,11 @@ def aspect_pass_rate(
     :return: The rate, its bounded interval at ``confidence`` and the per-case shares it read (:class:`RateReading`),
         from the bundle's ``floor_contrasts`` whatever the family compares; its ``samples`` and ``interval`` None only
         where a side has fewer than two cases with a usable trial, or no control resolved. None where either arm is
-        off the scoreboard.
+        off the scoreboard, or holds a cell per answering model on this aspect (as :func:`floor_readings` withholds).
     :rtype: RateReading | None
     """
     boards = {board.variant_key: board for board in bundle.scoreboard}
-    if control not in boards or candidate not in boards:
+    if control not in boards or candidate not in boards or _answer_split(bundle, control, candidate):
         return None
     return _trials_rate(bundle, boards[control], boards[candidate], confidence=confidence)
 
