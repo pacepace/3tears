@@ -1856,14 +1856,17 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                 )
             # ``older_than`` narrows the read to the history (see the history pool below): the user's memories older
             # than the window, pinned by agent and user so the read is the one ix_memories_agent_user_date names, the
-            # customer and the date bound checked beside (b2bc83998: with the customer pinned beside them, YugabyteDB
-            # read the owner's every memory by idx_memories_agent_customer_user).
+            # date bound read off it, the customer checked after. b2bc83998 fenced the customer out (an OFFSET 0
+            # subquery): with it beside the pins, YugabyteDB read the owner's every memory by
+            # idx_memories_agent_customer_user. Here it is ``(...) IS TRUE``, the same rows (a WHERE keeps neither a NULL)
+            # as a predicate no index condition takes, as gin_filter keeps a predicate off an index
+            # (test_index_plans::test_memories_user_date holds the plan on both engines).
             return read_nearest(
                 self.l3_pool,
                 "memories",
                 by={"agent_id": agent_id, "user_id": user_id},
                 where=[
-                    Fragment("t.customer_id = $1 AND t.date_created < $2", (customer_id, older_than)),
+                    Fragment("(t.customer_id = $1) IS TRUE AND t.date_created < $2", (customer_id, older_than)),
                     Fragment("t.embedding IS NOT NULL", ()),
                     *narrowing,
                     Fragment(

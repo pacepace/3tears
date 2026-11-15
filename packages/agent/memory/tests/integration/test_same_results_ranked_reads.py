@@ -473,7 +473,12 @@ async def test_memory_ids_by_tags_gives_the_hand_written_ids(conn: asyncpg.Conne
         found = await _on(MemoriesCollection, c).find_ids_by_tags(
             agent_id=AGENTS[0], customer_id=CUSTOMER, user_id=USER, tags_any=("t1",)
         )
-        return [{"memory_id": memory_id} for memory_id in found]
+        # each id beside its date, read back, so the order is compared by the date it is sorted by (ties either way)
+        dated = {
+            row["memory_id"]: row["date_created"]
+            for row in await c.fetch("SELECT memory_id, date_created FROM memories")
+        }
+        return [{"memory_id": memory_id, "date_created": dated[memory_id]} for memory_id in found]
 
     await _same(
         conn,
@@ -483,8 +488,8 @@ async def test_memory_ids_by_tags_gives_the_hand_written_ids(conn: asyncpg.Conne
         " AND (tags ?| $4::text[]) IS TRUE ORDER BY date_created",
         [AGENTS[0], CUSTOMER, USER, ["t1"]],
         helper,
-        ["memory_id"],
-        ["memory_id"],
+        ["memory_id", "date_created"],
+        ["date_created"],
         limited=False,
     )
 
