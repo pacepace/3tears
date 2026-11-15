@@ -82,7 +82,7 @@ from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCal
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.analysis.report.blocks import TableBlock, bare_columns
 from threetears.evals.analysis.report.aspect.contrasts import contrast_evidence
-from threetears.evals.analysis.report.aspect.common import _case_namer
+from threetears.evals.analysis.report.aspect.common import case_namer
 from threetears.evals.analysis.report.verdict import (
     led_sentences,
     unfinished_line,
@@ -418,7 +418,7 @@ def _lead_blocks(
         # Every count above is over the graded trials: an arm with trials nothing graded says so beside them, as the
         # quick print's comparison line does (one owner, :func:`~threetears.evals.analysis.report.verdict.passed_clause`).
         labels = readings.arm_labels()
-        if ungraded := ungraded_sentences(report.bundle, lambda key: labels.get(key, key), _case_namer(report.bundle)):
+        if ungraded := ungraded_sentences(report.bundle, lambda key: labels.get(key, key), case_namer(report.bundle)):
             sentences.append(ungraded.strip())
 
     if not sentences:
@@ -456,7 +456,7 @@ def _measured_lead(aspect: Aspect, readings: CampaignReadings, bundle: AnalysisC
     figure every grader's reading makes together, as the aspect's printed line leads on its cases passed; none where
     no arm was measured there."""
     boards = {board.variant_key: board for board in bundle.scoreboard}
-    namer = _case_namer(bundle)
+    namer = case_namer(bundle)
     return [
         (figure, ungraded_sentence(pass_count(bundle, boards[reading.arm]), namer))
         for reading in readings.measures

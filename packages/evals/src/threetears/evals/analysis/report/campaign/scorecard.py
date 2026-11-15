@@ -96,7 +96,7 @@ from threetears.evals.analysis.report.model import (
 )
 from threetears.evals.analysis.bundle.trials import pass_count
 from threetears.evals.analysis.cells import unread_arms
-from threetears.evals.analysis.report.verdict import interval_words, passed_clause
+from threetears.evals.analysis.report.verdict import interval_words, not_graded_words, passed_clause
 from threetears.evals.analysis.report.keys.vocabulary import joint_guarantee
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.words import PASS_RATE, label_case, reason_words
@@ -1914,7 +1914,9 @@ def _measure_matrix(
                 cells["arm"] = TableCell(value=labels[arm])
             for key in measures:
                 found = [reading for reading in held if reading.measure == key]
-                cells[f"measure:{key}"] = _measure_cell(found, forms, rulers.get(key), counts=counts)
+                cells[f"measure:{key}"] = _measure_cell(
+                    found, forms, rulers.get(key), counts=counts, bundle=reports[aspect.label].bundle
+                )
             rows.append(cells)
     if len(arms) == 1:
         return _turned_matrix(
@@ -2010,6 +2012,7 @@ def _measure_cell(
     ruler: MoneyRuler | None = None,
     *,
     counts: Mapping[tuple[str, str, str], str] | None = None,
+    bundle: AnalysisContextBundle | None = None,
 ) -> TableCell:
     """One measure on one aspect: its value with its interval, a rate (a pass rate, an accuracy) in percent, money in
     its measure's one form on its ruler (``ruler``, per 1,000 replies as its header says), any other measure at its
@@ -2031,6 +2034,17 @@ def _measure_cell(
         if reading.passed is not None and reading.trials is not None
         else (counts or {}).get((reading.aspect, reading.arm, reading.measure))
     )
+    if (
+        reading.passed is not None
+        and bundle is not None
+        and count is not None
+        and not unread_arms(bundle.cells, reading.arm)
+    ):
+        # The pass rate is over the graded trials; the trials nothing graded are counted beside it, from the one owner
+        # the lead's count is said by, so the cell and the lead are one fact. Nothing beside a fully graded count.
+        board = next((board for board in bundle.scoreboard if board.variant_key == reading.arm), None)
+        if board is not None and (ungraded := not_graded_words(pass_count(bundle, board))):
+            count = f"{count}, {ungraded}"
     # Bare: a rate's head names its percent, and any other measure's head its name.
     if reading.interval is None:
         cell = TableCell(value=figure.held, value_text=figure.digits, flag=count)

@@ -23,6 +23,8 @@ import pytest
 from threetears.evals import Eval, grader
 from threetears.evals.analysis import campaign_report_markdown
 from threetears.evals.kernel.scoring import failed_checks, measure_catalog_of
+from threetears.evals.analysis.bundle.trials import PassCount
+from threetears.evals.analysis.report.verdict import ungraded_sentence
 from threetears.evals.quick import measure
 from threetears.evals.quick.one_call import callable_host, scorer_measure
 from threetears.evals.run import list_results, list_runs
@@ -523,6 +525,9 @@ async def test_a_comparison_says_beside_its_figures_how_many_of_each_arm_were_no
     assert "Of 7 trials each" in first
     assert " a's figures are over its graded trials: 3 of 10 were not graded. Not graded on a: c0, c1, c2 (" in first
     assert " b's figures are over its graded trials: 3 of 10 were not graded. Not graded on b: c0, c1, c2 (" in first
+    # The page's lead on the compared aspect says the same, from the same owner.
+    lead = next(line for line in campaign_report_markdown(result.page).splitlines() if "Of 7 trials each" in line)
+    assert "a's figures are over its graded trials: 3 of 10 were not graded. Not graded on a: c0, c1, c2 (" in lead
 
 
 @pytest.mark.expect_contained(TypeError, why="the grader raises on three cases on purpose: their cases are not graded")
@@ -559,3 +564,59 @@ async def test_two_arms_under_the_case_floor_with_no_check_count_every_case_that
         "few: Exploratory: b and a ran 5 cases each; no grader here says pass or fail; too few cases to call a "
         "difference. a's figures are over its graded trials: 1 of 5 was not graded."
     )
+
+
+@pytest.mark.expect_contained(TypeError, why="the grader raises on three cases on purpose: their cases are not graded")
+async def test_the_page_s_pass_rate_cell_counts_the_cases_not_graded_beside_its_graded_count() -> None:
+    result = await Eval(TEN, classify, [raises_on_three], k=1).run(store=":memory:")
+
+    page = campaign_report_markdown(result.page)
+    # One fact on one page: the cell's count over the graded cases carries the cases not graded, as the lead does.
+    assert "100% (7 of 7 cases, 3 not graded)" in page
+    graded, _ = await _lines(classify, [right_annotated])
+    assert "not graded" not in campaign_report_markdown(
+        (await Eval(CASES, classify, [right_annotated], k=1).run(store=":memory:")).page
+    )
+    assert graded[0] == "classify: classify passed 1 of 3 cases. Cases that failed a trial: b, c."
+
+
+def _count(
+    *, role: str | None, error: str | None, causes: tuple[str, ...] = (), cases: tuple[str, ...] = ()
+) -> PassCount:
+    return PassCount(
+        passed=7,
+        graded=8,
+        ran=10,
+        cases=10,
+        graded_cases=8,
+        ungraded_cases=cases,
+        ungraded_role=role,
+        ungraded_error=error,
+        ungraded_causes=causes,
+    )
+
+
+@pytest.mark.parametrize(
+    ("count", "said"),
+    [
+        (
+            _count(role="test setup", error="the grader right raised TypeError: x", cases=("c0",)),
+            " Not graded: c0 (`the grader right raised TypeError: x`).",
+        ),
+        (
+            _count(role="judge", error="__transcript__: LLM call failed: the reply is not JSON", cases=("c0",)),
+            " Not graded: c0 (the judge's call failed).",
+        ),
+        (
+            _count(role="test setup", error="apparatus: the provider declined the call", cases=("c0",)),
+            " Not graded: c0 (the test setup failed: `apparatus: the provider declined the call`).",
+        ),
+        (
+            _count(role=None, error=None, causes=("model_unserved",)),
+            " Not graded: because the provider does not serve the candidate's model",
+        ),
+    ],
+    ids=["the grader's own error", "a judge's call", "the setup's", "only the census's cause"],
+)
+def test_a_case_not_graded_says_whose_failure_it_was_in_the_recorded_words(count: PassCount, said: str) -> None:
+    assert ungraded_sentence(count, lambda case: case).startswith(said)

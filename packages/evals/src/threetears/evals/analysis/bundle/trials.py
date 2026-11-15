@@ -115,21 +115,22 @@ ERROR_ROLES: tuple[str, ...] = ("candidate", "test setup", "judge", "runner")
 _ROLE_BREAK = re.compile("; (?=(?:" + "|".join(map(re.escape, ERROR_ROLES)) + "): )")
 
 
-def first_recorded_error(error_words: str) -> str:
-    """The first error a trial's :attr:`~threetears.evals.analysis.bundle.schema.TrialRow.error_words` records, in its
-    own words: the role it was written under taken off, and the errors after it (often the same words under another
-    role) left out. Split only where a role opens, so an error that itself holds ``; `` is kept whole.
+def first_recorded_error(error_words: str) -> tuple[str | None, str]:
+    """The first error a trial's :attr:`~threetears.evals.analysis.bundle.schema.TrialRow.error_words` records: the
+    role it was written under (one of :data:`ERROR_ROLES`, or None where it names none) and its own words, the errors
+    after it (often the same words under another role) left out. Split only where a role opens, so an error that
+    itself holds ``; `` is kept whole.
 
     :param error_words: The trial's recorded errors, each under its role, as a trial row joins them.
     :ptype error_words: str
-    :return: The first error's words.
-    :rtype: str
+    :return: The first error's role and words.
+    :rtype: tuple[str | None, str]
     """
     first = _ROLE_BREAK.split(error_words, maxsplit=1)[0]
     for role in ERROR_ROLES:
         if first.startswith(f"{role}: "):
-            return first.removeprefix(f"{role}: ")
-    return first
+            return role, first.removeprefix(f"{role}: ")
+    return None, first
 
 
 @dataclass(frozen=True)
@@ -145,9 +146,13 @@ class PassCount:
     :ivar ran: Trials that ran.
     :ivar cases: Distinct cases that ran.
     :ivar graded_cases: Distinct cases with a graded trial.
-    :ivar ungraded_cases: The cases of the trials not graded, in the trials' order; empty where the bundle holds only
-        some of its trials (``trials_omitted``), though ``ran - graded`` still counts them.
-    :ivar ungraded_error: The first ungraded trial's recorded error, in its own words; None where none is held.
+    :ivar ungraded_cases: The cases of the trials not graded that the bundle holds, in the trials' order (a bundle
+        that holds only some trials keeps the lost ones first); ``ran - graded`` counts them all.
+    :ivar ungraded_role: The role the first held ungraded trial's error was recorded under (``judge``, ``test setup``,
+        ...); None where none is held, or it names none.
+    :ivar ungraded_error: That error, in its own words; None where none is held.
+    :ivar ungraded_causes: The census's causes of the trials not graded (``infra``, ``judge_truncated``, ...), the
+        most common first: what is said where no trial's own error is held.
     """
 
     passed: int
@@ -156,7 +161,9 @@ class PassCount:
     cases: int
     graded_cases: int
     ungraded_cases: tuple[str, ...]
+    ungraded_role: str | None
     ungraded_error: str | None
+    ungraded_causes: tuple[str, ...] = ()
 
     @property
     def ungraded(self) -> int:
@@ -174,12 +181,10 @@ def pass_count(bundle: AnalysisContextBundle, board: ArmScoreboard) -> PassCount
     :return: The count.
     :rtype: PassCount
     """
-    lost = (
-        []
-        if bundle.trials_omitted
-        else [trial for trial in bundle.trials if trial.arm == board.variant_key and trial.state == "lost"]
-    )
+    # Lost trials are kept first where a bundle holds only some trials, so the held ones are the lost ones it has.
+    lost = [trial for trial in bundle.trials if trial.arm == board.variant_key and trial.state == "lost"]
     recorded = next((trial.error_words for trial in lost if trial.error_words), None)
+    role, words = first_recorded_error(recorded) if recorded is not None else (None, None)
     return PassCount(
         passed=board.passed,
         graded=board.usable,
@@ -187,7 +192,9 @@ def pass_count(bundle: AnalysisContextBundle, board: ArmScoreboard) -> PassCount
         cases=board.cases,
         graded_cases=board.usable_cases,
         ungraded_cases=tuple(dict.fromkeys(trial.case_id for trial in lost)),
-        ungraded_error=None if recorded is None else first_recorded_error(recorded),
+        ungraded_role=role,
+        ungraded_error=words,
+        ungraded_causes=tuple(sorted(board.lost, key=lambda cause: (-board.lost[cause], cause))),
     )
 
 

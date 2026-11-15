@@ -410,11 +410,23 @@ def passed_clause(arm: str, count: PassCount) -> str:
     return f"{said}; {lost} trial{'' if lost == 1 else 's'} {were} not graded"
 
 
+#: Whose failure a recorded error was, by the role it was recorded under, as an ungraded trial's reason says it.
+_FAILED_ROLE_WORDS: Final[dict[str, str]] = {
+    "candidate": "the runner failed",
+    "test setup": "the test setup failed",
+    "judge": "the judge's call failed",
+    "runner": "the engine failed",
+}
+
+
 def ungraded_sentence(count: PassCount, case_name: Callable[[str], str], *, arm: str | None = None) -> str:
     """`` Not graded: c0, c1, c2 (`the grader right raised TypeError: ...`).`` — after :func:`passed_clause`, the
-    cases of the trials nothing graded, the first :data:`_MISSES_NAMED` by name and a count of the rest, and the first
-    one's recorded error in its own words, a sentence of its own so the count before it keeps its figures (``Not
-    graded on b:`` where ``arm`` names the arm among several); empty where none was lost, or none is named.
+    cases of the trials nothing graded, the first :data:`_MISSES_NAMED` by name and a count of the rest, and why, in
+    the words the run recorded and whose failure it was: a grader's own error as it reads (``the grader right
+    raised ...``), a judge's as ``the judge's call failed`` (its error names dimensions by stored ids no page prints),
+    any other with its role (``the test setup failed: ...``), and where no trial's error is held, the census's cause in
+    plain words. A sentence of its own so the count before it keeps its figures (``Not graded on
+    b:`` where ``arm`` names the arm among several); empty where none was lost.
 
     :param count: The arm's count.
     :ptype count: PassCount
@@ -425,14 +437,43 @@ def ungraded_sentence(count: PassCount, case_name: Callable[[str], str], *, arm:
     :return: The sentence, with a leading space and its closing stop, or empty.
     :rtype: str
     """
-    if not count.ungraded or not count.ungraded_cases:
+    if not count.ungraded:
         return ""
+    on = f" on {arm}" if arm is not None else ""
+    if count.ungraded_role == "judge":
+        # A judge's error names its dimensions by their stored ids, which no page prints: whose failure it was is said,
+        # and the error itself stays on the trial's own record.
+        why = _FAILED_ROLE_WORDS["judge"]
+    elif count.ungraded_error is not None:
+        grader_s = count.ungraded_role == "test setup" and count.ungraded_error.startswith("the grader ")
+        whose = "" if grader_s else f"{_FAILED_ROLE_WORDS.get(count.ungraded_role or '', 'it failed')}: "
+        why = f"{whose}`{count.ungraded_error}`"
+    elif count.ungraded_causes:
+        why = f"because {loss_words(count.ungraded_causes[0]).words}"
+    else:
+        return ""
+    if not count.ungraded_cases:
+        return f" Not graded{on}: {why}."
     cases = count.ungraded_cases
     shown = [case_name(case) or case for case in cases[:_MISSES_NAMED]]
     more = f", and {len(cases) - _MISSES_NAMED} more" if len(cases) > _MISSES_NAMED else ""
-    why = f" (`{count.ungraded_error}`)" if count.ungraded_error else ""
-    on = f" on {arm}" if arm is not None else ""
-    return f" Not graded{on}: {', '.join(shown)}{more}{why}."
+    return f" Not graded{on}: {', '.join(shown)}{more} ({why})."
+
+
+def not_graded_words(count: PassCount) -> str:
+    """``3 not graded``, or ``6 trials not graded`` where cases ran more than once: a cell's note beside a count over
+    the graded trials, from the same count as :func:`passed_clause`; empty where every trial was graded.
+
+    :param count: The arm's count.
+    :ptype count: PassCount
+    :return: The words, or empty.
+    :rtype: str
+    """
+    if not count.ungraded:
+        return ""
+    if count.ran == count.cases:
+        return f"{count.ungraded} not graded"
+    return f"{count.ungraded} trial{'' if count.ungraded == 1 else 's'} not graded"
 
 
 def ungraded_sentences(
@@ -1133,6 +1174,7 @@ __all__ = [
     "unfinished_line",
     "lost_share",
     "passed_clause",
+    "not_graded_words",
     "ungraded_sentence",
     "ungraded_sentences",
     "verdict_line",

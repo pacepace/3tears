@@ -37,7 +37,7 @@ from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report.aspect.common import (
     NO_STRATUM,
     _arm_names,
-    _case_namer,
+    case_namer,
     _cell_namer,
     _ChartLedger,
     _date,
@@ -408,7 +408,7 @@ def _page(
     verdict = verdict_line(
         bundle,
         arm,
-        case_name=_case_namer(bundle),
+        case_name=case_namer(bundle),
         verdicts=[*guardrails_read, *contrasts_read],
         order=measure_order,
         evidence=contrast_evidence(bundle, forms=forms),
