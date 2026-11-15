@@ -149,8 +149,8 @@ async def test_the_winner_read_gives_the_hand_written_row(conn: asyncpg.Connecti
     args = (_GROUPS[0], _ROLES[role], scope_type, namespace, "manual")
 
     async def helper(c: Any) -> list[Mapping[str, Any]]:
-        # reached in the method only on a lost insert race, so called directly
-        found = await _collection(c)._grant_winner(*args)  # noqa: SLF001
+        # reached in ensure_group_role_assignment only on a lost insert race, so called directly
+        found = await _collection(c).grant_winner(*args)
         return [] if found is None else [found]
 
     await assert_same_results(

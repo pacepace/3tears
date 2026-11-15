@@ -33,7 +33,7 @@ _ACL_READER_INDEXES_DDL: tuple[str, ...] = (
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_members_reverse\n"
     "CREATE INDEX IF NOT EXISTS idx_group_members_reverse ON group_members (member_type, member_id)",
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::GroupCollection.read_cascade; packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.load_for_groups; packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.ensure_group_role_assignment;"
-    " packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection._grant_winner;"
+    " packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.grant_winner;"
     " packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.delete_by_group_and_scope;"
     " packages/agent/acl/src/threetears/agent/acl/query_visibility.py::CALLER_VISIBLE_CUSTOMERS_SQL; packages/agent/acl/src/threetears/agent/acl/query_visibility.py::CALLER_VISIBLE_CUSTOMERS_OF_TYPE_SQL;"
     " packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.list_by_group;"

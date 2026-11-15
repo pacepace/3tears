@@ -1419,6 +1419,8 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             "list_by_scope_type",
             "backfill_customers",
             "ensure_group_role_assignment",
+            # the grant a lost ensure race left, read in either partition (the natural-key index spans both)
+            "grant_winner",
             "delete_by_group_and_scope",
             "delete_from_store",
             "save_entity",
@@ -1955,7 +1957,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             else:
                 # a concurrent ensure inserted the same grant between the lookup and
                 # this insert, and the deploying app's natural-key index absorbed ours
-                winner_row = await self._grant_winner(group_id, role_id, scope_type, scope_id, managed_by)
+                winner_row = await self.grant_winner(group_id, role_id, scope_type, scope_id, managed_by)
                 if winner_row is None:
                     raise RuntimeError(
                         f"role assignment ({group_id}, {role_id}, {scope_type}, {scope_id}, {managed_by}) was "
@@ -2017,7 +2019,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             written.extend(rows)
         return CustomerBackfillPage(read=plan.read, written=tuple(written), next_cursor=plan.next_cursor)
 
-    async def _grant_winner(
+    async def grant_winner(
         self, group_id: UUID, role_id: UUID, scope_type: str, scope_id: UUID | None, managed_by: str
     ) -> dict[str, Any] | None:
         """the grant a concurrent ensure won, in either scope (the natural-key index that absorbed the loser spans
