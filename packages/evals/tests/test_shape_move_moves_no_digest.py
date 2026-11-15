@@ -3,13 +3,14 @@
 The report input and the bundle gained every optional field the first-screen work fills later (a reading's state, the
 caveat list, the first-screen value, the shapes of a check), all unset. Contracts held here:
 
-- **Built fixtures digest as they did.** For each hot-path campaign whose bundle is the same on every platform, the
-  report input built from it (as a page reads it, and as an analyst's snapshot counts it) is the document it was
-  before the fields existed, by the digest of the whole document with its floats rounded as a fingerprint rounds them
-  (``fixtures/shape_move/input_digests.json``, written from the tree before the move). The bundles'
-  own fingerprints and every page are held by the hot-path oracle.
-- **A document with no new field set holds no new key.** No built input and no assembled bundle, on any hot-path
-  campaign, dumps a key the move added, at any depth: so it dumps byte for byte as it did.
+- **Built fixtures digest as they did, but for the structure fields.** For each hot-path campaign whose bundle is the
+  same on every platform, the report input built from it (as a page reads it, and as an analyst's snapshot counts it)
+  is the document it was before the fields existed, by the digest of the whole document with its floats rounded as a
+  fingerprint rounds them (``fixtures/shape_move/input_digests.json``, written from the tree before the move), once
+  the keys the builder fills since (:data:`FILLED`) are set apart. What they hold is held by
+  ``test_structure_fields_filled.py``. The bundles' own fingerprints and every page are held by the hot-path oracle.
+- **A document holds no new key but those filled.** No built input and no assembled bundle, on any hot-path
+  campaign, dumps a key the move added, at any depth, but the structure fields the builder and the bundle fill.
 - **A stored document reads as before.** Every stored report input fixture validates, carries none of the new
   fields, and digests as the model before the move digested it, whatever order its keys come in.
 - **The first-screen value is outside the digest**, set or not.
@@ -92,6 +93,35 @@ BUNDLE_KEYS = frozenset(
 )
 
 
+#: The keys of a built input the builder fills since the move, at any depth: each arm's spelling, a contrast's paired
+#: baseline, its family and why its delta is not the difference of the arms' figures, a figure's spread, its common
+#: value and the state of an interval it lacks, a reading's flip margin and whether an aspect's margin is informative.
+FILLED = frozenset(
+    {
+        "spelling",
+        "baseline",
+        "baseline_n_cases",
+        "family",
+        "delta_note",
+        "spread",
+        "no_variation",
+        "state",
+        "flip_margin",
+        "margin_informative",
+    }
+)
+
+#: The keys an assembled bundle's measure summaries fill since the move.
+BUNDLE_FILLED = frozenset({"spread", "no_variation"})
+
+
+def _without(node: Any, keys: frozenset[str]) -> Any:
+    """A JSON document with every one of ``keys`` taken out, at any depth."""
+    if isinstance(node, dict):
+        return {key: _without(value, keys) for key, value in node.items() if key not in keys}
+    return [_without(value, keys) for value in node] if isinstance(node, list) else node
+
+
 def _campaign(name: str) -> CampaignBundle:
     read = subject(name)
     return assemble_campaign_bundle(read.host, read.campaign_id, read.scope_id)
@@ -108,7 +138,7 @@ def _rounded_digest(built: ReportInput) -> str:
     """The digest of an input's whole document as a bundle's fingerprint reads one: every float rounded to twelve
     significant figures first (``identity_json``), since the last bits of a computed float differ between the
     platforms the suite runs on, and the pins are one file."""
-    document = built.model_dump(mode="json", by_alias=True)
+    document = _without(built.model_dump(mode="json", by_alias=True), FILLED)
     return hashlib.sha256(identity_json(document).encode("utf-8")).hexdigest()
 
 
@@ -157,11 +187,11 @@ def test_a_built_input_and_bundle_hold_no_key_the_move_added(name: str) -> None:
     bundle = _campaign(name)
     for built in (report_input(bundle), report_input(bundle, counted=True)):
         document = built.model_dump(mode="json", by_alias=True)
-        assert not _keys(document) & INPUT_KEYS, sorted(_keys(document) & INPUT_KEYS)
+        assert not _keys(document) & (INPUT_KEYS - FILLED), sorted(_keys(document) & (INPUT_KEYS - FILLED))
         assert not any("checks" in judged for judged in document["judged"].values())
     for aspect in bundle.aspects:
         held = _keys(aspect.to_dict())
-        assert not held & BUNDLE_KEYS, sorted(held & BUNDLE_KEYS)
+        assert not held & (BUNDLE_KEYS - BUNDLE_FILLED), sorted(held & (BUNDLE_KEYS - BUNDLE_FILLED))
         assert "checks" not in aspect.to_dict()
         assert not any("checks" in judged for judged in aspect.to_dict()["judged_measures"])
 

@@ -10,7 +10,7 @@ from threetears.evals.analysis.report.words import (
     arm_tags,
     aspect_stratum_key,
     given_name,
-    reader_arm_name,
+    spelled_arm_name,
     text_levers,
     told_apart,
 )
@@ -157,12 +157,13 @@ def _strata_names(report_input: ReportInput) -> dict[str, str]:
 
 
 def page_arm_names(report_input: ReportInput) -> dict[str, str]:
-    """The name a page prints for each arm, read at render time: its declared short name, else its alias read by
-    :func:`~threetears.evals.analysis.report.words.reader_arm_name` (a cut level by its lever, an empty text level
-    ``no system prompt``), told apart by its tag where two arms then read alike
-    (:func:`~threetears.evals.analysis.report.words.told_apart`), else its id. The input itself is never renamed: a
-    snapshot's id is its content's digest. The page, its blocks, the analyst's cited figures and the store gate all
-    read arms by these names.
+    """The name a page prints for each arm, read at render time: its declared short name, else its alias read from
+    how code spelled it (``Arm.spelling``, by :func:`~threetears.evals.analysis.report.words.spelled_arm_name`: a cut
+    level by its lever, an empty text level ``no system prompt``), told apart by its tag where two arms then read
+    alike (:func:`~threetears.evals.analysis.report.words.told_apart`), else its alias as it is, else its id. No name's
+    text is read back: an input frozen before arms carried their spelling prints each alias as it was frozen. The
+    input itself is never renamed: a snapshot's id is its content's digest. The page, its blocks, the analyst's cited
+    figures and the store gate all read arms by these names.
 
     The names are pure in the input, which is frozen, so they are read once per input
     (:func:`~threetears.evals.analysis.report.per_input.kept_for`); each caller gets its own copy.
@@ -184,8 +185,8 @@ def _page_arm_names(report_input: ReportInput) -> dict[str, str]:
     printed = {arm.id: printed_arm_name(arm) for arm in arms}
     names = {
         arm.id: printed[arm.id]
-        if arm.short_name
-        else reader_arm_name(printed[arm.id], arm.settings, text=text, declared=report_input.lever_names)
+        if arm.short_name or arm.spelling is None
+        else spelled_arm_name(printed[arm.id], arm.spelling, text=text, declared=report_input.lever_names)
         for arm in arms
     }
     return told_apart(names, tags, {key for key in names if names[key] != printed[key]})

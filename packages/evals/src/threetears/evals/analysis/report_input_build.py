@@ -57,10 +57,11 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import partial
 from typing import Any, Literal
 
-from threetears.evals.analysis.arms import writer_arms
+from threetears.evals.analysis.arms import distinguishing_axes, naming_levels, writer_arms
 from threetears.evals.analysis.bundle.caps import capped_text
 from threetears.evals.analysis.bundle.schema import (
     SEPARATED_VERDICTS,
+    TRIAL_PASS_NAME,
     AnalysisContextBundle,
     ArmPricing,
     FamilyComparison,
@@ -74,6 +75,7 @@ from threetears.evals.analysis.depth import REPEATS_FLOOR
 from threetears.evals.analysis.depth import Precision as BundlePrecision
 from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
 from threetears.evals.kernel.numbers import format_number
+from threetears.evals.schema.hashing import round_figures
 from threetears.evals.analysis.completeness import unfinished_opening
 from threetears.evals.analysis.report_input import (
     SHARE_UNIT,
@@ -106,6 +108,7 @@ from threetears.evals.analysis.report_input import (
     Reading,
     ReportInput,
     RequestSettings,
+    SettingValue,
     RunRig,
     ScoreboardRow,
     ShortRun,
@@ -113,6 +116,7 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Unanswered,
 )
+from threetears.evals.analysis.report_margins import flip_margin, margin_informative
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import (
     check_held,
@@ -134,9 +138,11 @@ from threetears.evals.kernel.metrics import (
     goal_check_of,
     reads_as_share,
 )
+from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.surface import CellFacts
+from threetears.evals.schema.reading_states import StateOf
 
-__all__ = ["report_input"]
+__all__ = ["arm_spellings", "report_input"]
 
 #: How many failed trials the input shows as examples, at most.
 EXAMPLES = 12
@@ -213,6 +219,45 @@ def report_input(
     return _Builder(bundle).build(
         provenance=provenance, examples=examples, per_slice=per_slice, excerpt=excerpt, counted=counted
     )
+
+
+def arm_spellings(bundle: CampaignBundle) -> dict[str, dict[str, SettingValue]]:
+    """How code spelled each arm whose name it computed, by variant key: the levers the name is spelled from, in its
+    order, each with its whole level, which is what a page reads the name from, lever by lever, and never its text.
+
+    An arm spelled from several levers is spelled as the campaign bundle froze it (``CampaignBundle.arm_spellings``);
+    one spelled from one level, by that level. An arm a person named has no spelling, nor one whose levels are
+    unavailable. A lever whose level the arm's index entry does not name holds the level as the name spells it.
+
+    :param bundle: The campaign's evidence.
+    :ptype bundle: CampaignBundle
+    :return: Variant key -> lever -> level, each spelled arm once per key that names it.
+    :rtype: dict[str, dict[str, SettingValue]]
+    """
+    given = {key for arm in bundle.declaration.arms for key in bundle.arm_keys(arm)}
+    entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
+    distinguishing = distinguishing_axes(list(entries.values()))
+    frozen = {
+        key: spelling
+        for arm in bundle.arms
+        if (spelling := bundle.arm_spellings.get(arm.variant_key)) is not None
+        for key in bundle.arm_keys(arm)
+    }
+    spelled: dict[str, dict[str, SettingValue]] = {}
+    for key, entry in entries.items():
+        if key in given:
+            continue
+        levels: dict[str, SettingValue] = {
+            level.axis_id: level.display for level in naming_levels(entry, distinguishing)
+        }
+        if key in frozen:
+            held = frozen[key]
+            spelled[key] = {
+                lever: levels.get(lever, level) for lever, level in zip(held.levers, held.levels, strict=True)
+            }
+        elif len(levels) == 1:
+            spelled[key] = levels
+    return spelled
 
 
 class _Builder:
@@ -317,6 +362,7 @@ class _Builder:
         seen: set[str] = set()
         roles = {key: arm.role for arm in bundle.arms for key in bundle.arm_keys(arm)}
         declared = declared_arm_names(bundle.arms)
+        spellings = arm_spellings(bundle)
         # The name each arm is printed by: a label a person gave as written, one code computed by the display rule.
         printed = printed_arm_labels(bundle)
         for key in [*(arm.variant_key for arm in bundle.arms), *entries]:
@@ -339,6 +385,8 @@ class _Builder:
                 settings.pop(CANDIDATE_MODEL_LEVER, None)
             # Only where declared, so a view dumping what was set carries no key for an arm naming none.
             declared_name: dict[str, Any] = {"short_name": declared[key]} if key in declared else {}
+            # Only where code computed the name, so an arm a person named carries no key.
+            spelled: dict[str, Any] = {"spelling": spellings[key]} if key in spellings else {}
             arms.append(
                 Arm(
                     id=label,
@@ -349,6 +397,7 @@ class _Builder:
                     settings={"model": model, **settings},
                     reasoning_ratio=ratios.get(label),
                     **declared_name,
+                    **spelled,
                 )
             )
         return arms
@@ -401,13 +450,16 @@ class _Builder:
             for subject in depth.subjects
             if subject.compared and subject.common_depth is not None
         ]
+        margin = declared.margin if declared is not None else None
+        readings = [self.reading(row) for row in self.bundle.readings.on_aspect(label)]
+        informative = margin_informative(margin, readings)
         return Aspect(
             id=label,
             name=aspect.short_name or label,
-            margin=declared.margin if declared is not None else None,
+            margin=margin,
             asked=aspect.question_declared,
             exploratory_measures=list(aspect.reading_scope.exploratory_measures),
-            readings=[self.reading(row) for row in self.bundle.readings.on_aspect(label)],
+            readings=readings,
             depth={
                 arm: Depth(
                     cases=held.cases,
@@ -420,6 +472,8 @@ class _Builder:
             pass_k=pass_k or None,
             pairs=[self.pair(pair) for pair in self.bundle.readings.pairs if pair.aspect == label],
             scoreboard=None if aspect is self.lead else self.scoreboard(aspect),
+            # Only where a margin is declared and read, so an aspect with none carries no key.
+            **({"margin_informative": informative} if informative is not None else {}),
             **_analyst_only(ANALYST_ASPECT_FIELDS, counted, lambda: self.how_trials_pass(aspect, depth)),
         )
 
@@ -460,8 +514,9 @@ class _Builder:
         )
 
     def reading(self, row: AspectReading) -> Reading:
-        """One candidate's reading on its aspect, as code read it."""
-        return Reading(
+        """One candidate's reading on its aspect, as code read it, with the margin it flips at where its interval
+        gives one (:func:`~threetears.evals.analysis.report_margins.flip_margin`)."""
+        read = Reading(
             arm=row.arm_label,
             reading=row.reading,
             change=row.change,
@@ -476,6 +531,8 @@ class _Builder:
             why=row.reason or None,
             precision=self.precision(row.precision),
         )
+        flip = flip_margin(read)
+        return read if flip is None else read.model_copy(update={"flip_margin": flip})
 
     def pair(self, pair: PairReading) -> PairRead:
         """Two arms of a choice on one aspect, as code read them."""
@@ -730,6 +787,7 @@ class _Builder:
                         n=summary.n,
                         n_cases=summary.n_independent,
                         p95=tail,
+                        **_spread_and_state(summary, point),
                     )
                     facts.setdefault(summary.name, self.measure_facts(aspect, summary.name))
             split = answer_split_variants(aspect.cells)
@@ -842,7 +900,8 @@ class _Builder:
         contrasts: list[Contrast] = []
         for aspect in self.bundle.aspects:
             rows: list[tuple[tuple[int, float], Contrast]] = []
-            for family in aspect.multiple_comparisons.families:
+            stated = self.stated_levels(aspect)
+            for position, family in enumerate(aspect.multiple_comparisons.families):
                 level = _level(family.interval_level)
                 for comparison in family.comparisons:
                     rows.append(
@@ -868,11 +927,52 @@ class _Builder:
                                 # reason would mint a new snapshot of unchanged evidence. A page rewords it.
                                 reason=comparison.untested_reason or comparison.not_separated_reason,
                                 **_analyst_only(ANALYST_CONTRAST_FIELDS, counted, partial(_test_counts, comparison)),
+                                **self.paired(comparison, family_id(aspect.aspect, position), stated),
                             ),
                         )
                     )
             contrasts.extend(contrast for _, contrast in sorted(rows, key=lambda row: row[0]))
         return contrasts
+
+    def paired(
+        self, comparison: FamilyComparison, family: str, stated: Mapping[tuple[str, str, str], float]
+    ) -> dict[str, Any]:
+        """What a contrast's delta is a change from, copied off its comparison: the control's mean over the cases the
+        test read and how many those were, the family it was corrected in, and, where the delta is not the difference
+        of the two arms' stated figures, why (``delta_note``). Each is left out where the comparison holds none."""
+        control, contrast = comparison.control, comparison.contrast
+        held: dict[str, Any] = {"family": family}
+        if control.mean is not None:
+            held |= {"baseline": control.mean, "baseline_n_cases": control.n_cases}
+        sides = [
+            (stated.get((comparison.reading, comparison.name, self.arm(side.variant_key))), side.mean)
+            for side in (control, contrast)
+        ]
+        # The test reads each case's mean over the cases both sides ran; an arm's stated figure is over all its
+        # trials. They differ where a side ran cases the other did not, or ran its cases unequally often.
+        if comparison.delta is not None and any(
+            figure is None or mean is None or round_figures(figure) != round_figures(mean) for figure, mean in sides
+        ):
+            held["delta_note"] = "paired_cases"
+        return held
+
+    def stated_levels(self, aspect: AnalysisContextBundle) -> dict[tuple[str, str, str], float]:
+        """Each arm's figure on each reading of one aspect as the input states it, by ``(kind, name, arm)``: a
+        measure's and a judged dimension's mean on the arm's cell (:meth:`cells`), and the pass rate over its usable
+        trials."""
+        stated: dict[tuple[str, str, str], float] = {}
+        for label, cell in self.cells(aspect).items():
+            for summary in cell.measures.measures:
+                point = summary.rate if summary.rate is not None else summary.mean
+                if point is not None:
+                    stated["measure", summary.name, label] = point
+            for reading in cell.judged:
+                if reading.mean is not None:
+                    stated["judged", reading.dimension, label] = reading.mean
+        for row in aspect.scoreboard:
+            if row.usable:
+                stated["trial", TRIAL_PASS_NAME, self.arm(row.variant_key)] = row.passed / row.usable
+        return stated
 
     def families(self) -> list[ContrastFamily]:
         """Every family of contrasts corrected together, with the level each of its intervals is read at."""
@@ -1114,6 +1214,22 @@ def _unit(facts: MetricDescriptor, grade: str | None) -> str | None:
     return SHARE_UNIT if grade is None and reads_as_share(facts) else facts.unit
 
 
+def _spread_and_state(summary: MeasureSummary, point: float | None) -> dict[str, Any]:
+    """What a cell's figure carries past its mean and interval, copied off its summary: the spread of its cases and the
+    one value they all took where they did not vary, and, for a figure with no interval, its state: not available,
+    because the cases did not vary or because too few cases carry one (a spend or a time states an interval from five
+    cases above zero). Each is left out where the summary holds none, so an input reads as before them."""
+    held: dict[str, Any] = {}
+    if summary.spread is not None:
+        held["spread"] = summary.spread
+    if summary.no_variation is not None:
+        held["no_variation"] = summary.no_variation
+    if point is not None and (summary.ci_low is None or summary.ci_high is None):
+        reason = "no_variation" if summary.no_variation is not None else "too_few"
+        held["state"] = StateOf(state="not_available", reason=reason)
+    return held
+
+
 def _analyst_only(declared: frozenset[str], counted: bool, fields: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     """The fields only an analyst's input states (``declared``, the input contract's one list of them): ``fields()``
     on an analyst's (``counted``) input, none on a planner's.
@@ -1161,6 +1277,20 @@ def _pass_rule_sentence(rule: PassRule) -> str:
     if len(held) == 1:
         return "A trial passes when its candidate did not fail: nothing else checks or judges it."
     return f"A trial passes when {', '.join(held[:-1])} and {held[-1]}."
+
+
+def family_id(aspect: str, position: int) -> str:
+    """A family of contrasts' id: its aspect and its place among the aspect's families, as the bundle orders them and
+    ``contrast_families`` lists them (``<aspect>/<n>``, from 0). A contrast names the family it was corrected in by it.
+
+    :param aspect: The aspect's label.
+    :ptype aspect: str
+    :param position: The family's place among the aspect's families, from 0.
+    :ptype position: int
+    :return: The id.
+    :rtype: str
+    """
+    return f"{aspect}/{position}"
 
 
 def _level(level: float | None) -> str | None:

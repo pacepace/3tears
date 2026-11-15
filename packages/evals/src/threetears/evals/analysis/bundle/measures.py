@@ -7,6 +7,8 @@ maps, keeps the measures the registry describes as reportable, and summarises ea
 
 from __future__ import annotations
 
+import math
+from statistics import stdev
 from array import array
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -1417,6 +1419,7 @@ def _measure_summary(
             "ci_high": None if interval is None else interval[1],
             # Below the band floor a chart draws the cases rather than the interval, so it needs them.
             "case_means": small_sample_case_means(observed, cases),
+            **_case_spread(observed, cases),
         }
     return MeasureSummary(
         name=descriptor.name,
@@ -1427,6 +1430,30 @@ def _measure_summary(
         n_independent=len(set(cases)),
         **shape,
     )
+
+
+def _case_spread(observed: Sequence[float], cases: Sequence[str]) -> dict[str, float]:
+    """How far a numeric measure's cases spread, over two cases or more: the standard deviation of the per-case means
+    (``spread``, a case's repeats one draw, as every interval here reads them), and, where every case's mean is one
+    value, that value (``no_variation``). Each is left out where it is not read: under two cases nothing is said of a
+    spread, and a spread of cases that vary states no common value.
+
+    :param observed: The observations.
+    :ptype observed: Sequence[float]
+    :param cases: Each observation's case, aligned with ``observed``.
+    :ptype cases: Sequence[str]
+    :return: ``spread`` and, where the cases did not vary, ``no_variation``; empty under two cases.
+    :rtype: dict[str, float]
+    """
+    sums: dict[str, list[float]] = {}
+    for value, case in zip(observed, cases, strict=True):
+        sums.setdefault(case, []).append(value)
+    means = [math.fsum(values) / len(values) for values in sums.values()]
+    if len(means) < 2:
+        return {}
+    if min(means) == max(means):
+        return {"spread": 0.0, "no_variation": means[0]}
+    return {"spread": stdev(means)}
 
 
 def negative_values_of(

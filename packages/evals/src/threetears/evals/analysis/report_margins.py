@@ -45,7 +45,7 @@ from returning, and nothing it clears changes the call.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -77,6 +77,7 @@ __all__ = [
     "criterion_unknowns",
     "flip_margin",
     "lead_aspect",
+    "margin_informative",
     "margins",
     "on_aspect",
     "surviving_arms",
@@ -165,9 +166,32 @@ def flip_margin(reading: Reading) -> float | None:
     :return: The flip margin, in points; None where the reading states no interval to read it on.
     :rtype: float | None
     """
+    if reading.flip_margin is not None:
+        return float(reading.flip_margin)
     if reading.within_interval is None:
         return None
     return max(0.0, -float(reading.within_interval[0]))
+
+
+def margin_informative(margin: float | None, readings: Sequence[Reading]) -> bool | None:
+    """Whether a declared margin could change a reading on its aspect (GENERATOR §3): a margin larger than twice the
+    worst drop any reading's interval allows (the largest :func:`flip_margin`) is one no plausible result could fail,
+    and so is any margin where no interval allows a drop at all. Upstream ask U6:
+    https://github.com/pacepace/3tears/issues/1142.
+
+    :param margin: The aspect's declared margin, in points; None for none.
+    :ptype margin: float | None
+    :param readings: The aspect's readings.
+    :ptype readings: Sequence[Reading]
+    :return: Whether the margin is informative; None where no margin is declared, or no reading states an interval
+        to read one on.
+    :rtype: bool | None
+    """
+    flips = [flip for reading in readings if (flip := flip_margin(reading)) is not None]
+    if margin is None or not flips:
+        return None
+    worst = max(flips)
+    return worst > 0 and float(margin) <= 2 * worst
 
 
 def _corrected_interval(

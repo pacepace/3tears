@@ -60,10 +60,11 @@ from threetears.evals.analysis.report.words import (
     campaign_arm_tags,
     input_arm_tags,
     reader_arm_labels,
-    reader_arm_name,
+    spelled_arm_name,
     told_apart,
 )
 from threetears.evals.analysis.report.fact_arms import fact_arms
+from threetears.evals.analysis.report.keys.names import page_arm_names, printed_arm_name
 from threetears.evals.analysis.report.doc_page.store import read_report_doc
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.host import EvalHost
@@ -536,29 +537,34 @@ def test_an_arm_a_person_labelled_is_listed_by_its_label() -> None:
     ), "the arm no one labelled reads one name in the headline and its caveats"
 
 
-def test_a_cut_level_two_settings_share_keeps_its_text_rather_than_take_one_lever_s_name() -> None:
-    """Two settings whose long values cut to one text both spell the name: the first matched lever named it, which
-    could print the wrong lever. Which one the name means cannot be told, so it keeps its level's text."""
+def test_a_cut_level_two_settings_share_is_named_by_the_lever_the_name_was_spelled_from() -> None:
+    """Two settings whose long values cut to one text: the name's spelling says which lever it was spelled from, so
+    the page names that lever, never whichever lever a match on the text found first."""
     shown = _PROMPTS[0][:59] + ELISION
     cut = _FROZEN_LABELS[0]
     text = frozenset({"system_prompt", "tool_prompt"})
-    levels = {"system_prompt": shown, "tool_prompt": shown}
-    assert reader_arm_name(cut, levels, text=text) == cut
-    assert reader_arm_name(cut, {"system_prompt": shown}, text=text) == "System prompt", "one alone is named"
+
+    assert spelled_arm_name(cut, {"tool_prompt": shown}, text=text) == "Tool prompt"
+    assert spelled_arm_name(cut, {"system_prompt": shown}, text=text) == "System prompt", "one alone is named"
 
 
 def test_an_empty_text_level_reads_no_lever_and_an_empty_number_keeps_its_placeholder() -> None:
     text = frozenset({"system_prompt"})
 
-    assert reader_arm_name("(none)", {"system_prompt": "(none)"}, text=text) == "no system prompt"
-    assert reader_arm_name("(none)", {"temperature": "(none)"}, text=text) == "(none)"
+    assert spelled_arm_name("(none)", {"system_prompt": "(none)"}, text=text) == "no system prompt"
+    assert spelled_arm_name("(none)", {"temperature": "(none)"}, text=text) == "(none)"
     shown = _PROMPTS[0][:59] + ELISION  # as the engine displays a long level, which a name then cuts again
     cut = _FROZEN_LABELS[0]
-    assert reader_arm_name(cut, {"system_prompt": shown}, text=text) == "System prompt"
-    assert reader_arm_name(f"{cut} (arm 0123456789ab)", {"system_prompt": shown}, text=text) == "System prompt", (
+    assert spelled_arm_name(cut, {"system_prompt": shown}, text=text) == "System prompt"
+    assert spelled_arm_name(f"{cut} (arm 0123456789ab)", {"system_prompt": shown}, text=text) == "System prompt", (
         "a tag, never a digest, tells two cut alike apart"
     )
-    assert reader_arm_name("v2", {"system_prompt": shown}, text=text) == "v2", "a given name is as given"
+    assert (
+        spelled_arm_name(
+            "Chunk tokens 256, system prompt (none)", {"chunk_tokens": "256", "system_prompt": "(none)"}, text=text
+        )
+        == "Chunk tokens 256, no system prompt"
+    ), "each lever of a name spelled from several is read by position"
     assert told_apart(
         {"a": "System prompt", "b": "System prompt", "c": "v1"}, {"a": "A", "b": "B", "c": "P"}, "ab"
     ) == {
@@ -566,6 +572,20 @@ def test_an_empty_text_level_reads_no_lever_and_an_empty_number_keeps_its_placeh
         "b": "System prompt (B)",
         "c": "v1",
     }
+
+
+def test_an_arm_with_no_spelling_prints_its_name_as_it_is_whatever_its_text() -> None:
+    """No arm's name is read back from its text: an input frozen before arms carried their spelling, or an arm a person
+    named, prints its alias as it was frozen, even one that reads like a cut level or a placeholder."""
+    host, _ = _prompt_host()
+    built = report_input(assemble_campaign_bundle(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE))
+    assert all(arm.spelling is not None for arm in built.arms), "every arm of the prompt campaign was computed"
+    frozen = built.model_copy(update={"arms": [arm.model_copy(update={"spelling": None}) for arm in built.arms]})
+
+    assert page_arm_names(frozen) == {arm.id: printed_arm_name(arm) for arm in frozen.arms}
+    assert set(page_arm_names(built).values()) != set(page_arm_names(frozen).values()), (
+        "the spelling, not the text, is what reads a cut level by its lever"
+    )
 
 
 # --- no raw figure key ---------------------------------------------------------------------------------------------
