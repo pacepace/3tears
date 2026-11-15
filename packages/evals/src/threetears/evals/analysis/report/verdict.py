@@ -46,7 +46,7 @@ from threetears.evals.analysis.bundle.schema import (
     FailCause,
 )
 from threetears.evals.analysis.quantities import is_money
-from threetears.evals.analysis.completeness import unfinished_opening
+from threetears.evals.analysis.completeness import SETUP_GATE_SHARE, lost_share, setup_failed, unfinished_opening
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import cannot_tell_apart, measure_name
 from threetears.evals.analysis.report.words import PASS_RATE, comparison_words, judged_heading
@@ -66,10 +66,6 @@ if TYPE_CHECKING:
 #: broken on a cost observed no lower. So a host's seed gate covers every template whose results are compared
 #: across arms, whatever its declared reading.
 MIN_CASES: Final = SMALL_N_BAND_FLOOR
-
-#: The share of an arm's trials whose loss to the test setup, alone or as the gap between two arms, means the run
-#: measured its setup rather than the models. A stand-in until a test across arms decides it.
-SETUP_GATE_SHARE: Final = 1 / 3
 
 #: Which rule decided the verdict line.
 VerdictRule = Literal["setup", "unfinished", "one_arm", "too_small", "declared", "exploratory"]
@@ -359,11 +355,6 @@ class VerdictLine:
     def __post_init__(self) -> None:
         if not self.lead:
             object.__setattr__(self, "lead", self.text)
-
-
-def lost_share(board: ArmScoreboard) -> float:
-    """The share of an arm's trials lost to the test setup; 0 for an arm that ran none."""
-    return sum(board.lost.values()) / board.ran if board.ran else 0.0
 
 
 def passed_clause(arm: str, passed: int, trials: int, cases: int) -> str:
@@ -812,14 +803,10 @@ def _guardrails_named(headings: Sequence[str]) -> str:
 
 def _setup_gate(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
     """The setup gate's sentences, or None when no arm lost too many trials and the arms lost alike."""
+    if not setup_failed(bundle):
+        return None
     boards = [board for board in bundle.scoreboard if board.ran]
-    if not boards:
-        return None
-    shares = [lost_share(board) for board in boards]
     over = [board for board in boards if lost_share(board) > SETUP_GATE_SHARE]
-    gap = max(shares) - min(shares) > SETUP_GATE_SHARE
-    if not over and not gap:
-        return None
     named = over or [max(boards, key=lost_share)]
     named = sorted(named, key=lambda board: (-lost_share(board), arm(board.variant_key)))
     exclusions = arm_exclusions(bundle)

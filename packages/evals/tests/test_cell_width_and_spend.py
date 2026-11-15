@@ -800,7 +800,7 @@ async def test_the_run_summary_names_a_case_the_cap_set_aside_as_not_judged_with
     assert case.outcome == "not_judged" and case.errors == [NOT_JUDGED_LINE]
     assert case.render().splitlines()[0].startswith("case the case (repeat 1, not judged): "), "in words"
     assert "re-judge it" in NOT_JUDGED_LINE
-    assert resolve_result_condition(result).judging == "set_aside"
+    assert resolve_result_condition(result).judging == "not_asked"
 
 
 @pytest.mark.parametrize("outcome", get_args(CaseOutcome))

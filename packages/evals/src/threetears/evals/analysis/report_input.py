@@ -73,6 +73,8 @@ from threetears.evals.schema.reading_states import (
     StateOf,
     check_state,
 )
+from threetears.evals.analysis.cells import NextExperiment
+from threetears.evals.kernel.evidence_tiers import CriterionState
 from threetears.evals.kernel.host.bars import PassCriterion
 from threetears.evals.schema.hashing import bytes_digest
 
@@ -1015,7 +1017,11 @@ class CaveatEntry(_Part):
         default_factory=list,
         description="The readings it is scoped to, each '<aspect>/<measure>'; empty for the whole report.",
     )
-    asked: bool = Field(default=False, description="Whether any of its readings is on an asked aspect.")
+    asked: bool = Field(
+        default=False,
+        description="Whether it touches an asked aspect: one of its readings is on one, or it is scoped to the whole "
+        "report and the report asks about one.",
+    )
     deciding: bool = Field(
         default=False,
         description="Whether the answer turns on a reading it names: a class E caveat reaches the first screen only "
@@ -1031,6 +1037,15 @@ class CaveatEntry(_Part):
     criterion: str | None = Field(default=None, description="For such a caveat: the criterion the check decides.")
     same_family: bool = Field(
         default=False, description="For a check against a model: whether the model is of a candidate's family."
+    )
+    check: CriterionState | None = Field(
+        default=None,
+        description="For a caveat about an instrument's check: the check's result. Only a result that decides (met or "
+        "not met) speaks for the instrument, so only such a check against people silences one against a model.",
+    )
+    runs: list[str] = Field(default_factory=list, description="The runs it is about, by id; empty for none named.")
+    cases: int | None = Field(
+        default=None, description="The cases the readings it names rest on, where one count says it."
     )
 
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
@@ -1075,6 +1090,69 @@ class CallRead(_Part):
     )
 
 
+#: The one act that would close a caveat, as a closed kind; ``nothing_to_do`` where the reading is the answer.
+Remedy = Literal[
+    "resume_or_rerun",
+    "rerun_on_one_cell",
+    "remeasure_or_attest",
+    "rerun_serially",
+    "check_against_people",
+    "replace_instrument",
+    "repair_rig",
+    "add_cases",
+    "record_and_rerun",
+    "run_live",
+    "draw_at_random",
+    "finish_read",
+    "declare_looks",
+    "nothing_to_do",
+]
+
+
+class RemedyStep(_Part):
+    """What would change one first-screen reason, or what stops a campaign being read: the one act that closes it, as
+    a value a person reads and an agent can take.
+
+    Where an action of the engine's catalogue takes the step, ``action`` names it and ``arguments`` fill it from the
+    caveat's own arms, runs and coordinate. Where the step is more evidence, ``planned_cases`` is its size, stated
+    before it runs and never "until it separates", and taking it is one more declared look at the readings it names.
+    A step that spends names the action that prices it first; code never takes a step.
+    """
+
+    remedy: Remedy = Field(description="What would close it.")
+    closes: str | None = Field(default=None, description="The caveat it closes, by id; none for the gate's.")
+    action: str | None = Field(
+        default=None, description="The catalogue action that takes it; none where a host or a person acts."
+    )
+    arguments: dict[str, str | list[str]] = Field(
+        default_factory=dict, description="The action's arguments, filled from what the caveat names."
+    )
+    planned_cases: int | None = Field(
+        default=None, ge=1, description="For more evidence: the cases to add per arm named, planned before it runs."
+    )
+    declared_look: bool = Field(
+        default=False, description="Whether taking it is one more look at the readings it names, declared as such."
+    )
+    results_needed: int | None = Field(
+        default=None, ge=1, description="For a check: how many more results it needs before it can decide."
+    )
+    recording: list[NextExperiment] = Field(
+        default_factory=list, description="What recording an unrecorded coordinate would pool, cell by cell."
+    )
+    spends: bool = Field(default=False, description="Whether it costs money to take.")
+    priced_by: str | None = Field(
+        default=None, description="For a step that spends: the catalogue action that prices it before it is taken."
+    )
+
+    @model_validator(mode="after")
+    def _priced_and_planned(self) -> Self:
+        if self.spends and self.priced_by is None:
+            raise ValueError("a step that spends names the action that prices it")
+        if self.declared_look and self.planned_cases is None:
+            raise ValueError("a step that is one more look states its planned size")
+        return self
+
+
 class FirstScreen(_Part):
     """What a report's first screen holds beside the answer, in four fixed slots, as typed values and no text.
 
@@ -1093,6 +1171,10 @@ class FirstScreen(_Part):
         default_factory=list, description="The arms code's own read of the options calls: what ranks a caveat on them."
     )
     call: CallRead | None = Field(default=None, description="The call, where one was made.")
+    steps: list[RemedyStep] = Field(
+        default_factory=list,
+        description="What would change each reason shown, in their order; under a gate, what would lift it.",
+    )
 
 
 class ReportInput(_Part):
