@@ -25,6 +25,7 @@ vocabulary: ``Eval(...).run(host=as_host([...], store=...), scope=...)``.
 from __future__ import annotations
 
 import csv
+import inspect
 import json
 import math
 import os
@@ -35,15 +36,15 @@ from functools import partial
 from pathlib import Path
 from typing import Any, TypeIs
 
-from threetears.evals.analysis.summary import EvalSummary
+from threetears.evals.analysis.summary import CaseResult, EvalSummary
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.eval_scope import eval_running
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.kernel import GuardrailMargin
+from threetears.evals.kernel import CONFUSION_CELL_MEASURE, GuardrailMargin, confusion_of
 from threetears.evals.kernel.host import CompletionClients, EvalHost
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, DocumentStore
 from threetears.evals.schema.models import utc_now_iso
-from threetears.evals.quick.graders import GraderPlan, expected_label, plan_graders
+from threetears.evals.quick.graders import UNUSABLE_ANSWER, GraderPlan, expected_label, plan_graders
 from threetears.evals.quick.levers import refuse_unusable_lever_names
 from threetears.evals.quick.logged import Log
 from threetears.evals.quick.one_call import (
@@ -191,6 +192,24 @@ def _refuse_an_unusable_runner(runner: Any, arm: str | None) -> None:
             f"{said} is a function (case) -> output, a world's runner (World(...)(agent)), a Log, or a mapping of "
             f"them; not {runner!r}"
         )
+    if isinstance(runner, Log):
+        return
+    # A runner that cannot take what it is called with raises on every case, which would read as the product failing.
+    called, handed, written = (
+        (runner.agent, "case, tools", "async def") if isinstance(runner, WorldRunner) else (runner, "case", "def")
+    )
+    try:
+        signature = inspect.signature(called)
+    except TypeError, ValueError:
+        return  # no signature to read (a builtin): it is called as it is
+    try:
+        signature.bind(*handed.split(", "))
+    except TypeError:
+        name = getattr(called, "__name__", None) or type(called).__name__
+        raise ValueError(
+            f"{said} {name}{signature} cannot be called as {name}({handed}), which is how each case is handed to it; "
+            f"declare it to take exactly that: {written} {name}({handed}): ..."
+        ) from None
 
 
 class Eval:
@@ -293,6 +312,7 @@ class Eval:
         self.control = next(iter(arms))
         self.world: World | None = next(iter(worlds.values()), None)
         self.plan: GraderPlan = plan_graders(grader)
+        _refuse_a_case_a_field_grader_cannot_read(self.plan, self.cases)
         if self.plan.goal_checks and (self.world is None or not self.world.stateful):
             raise ValueError(
                 f"the expression graders {', '.join(map(repr, self.plan.goal_checks))} read a world's state, and the "
@@ -302,7 +322,8 @@ class Eval:
         named = [arm for arm in arms if arm is not None]
         if not name and source is None and len(named) > 1:
             raise ValueError(
-                'name this eval (name="invoices"): its name is where its runs are kept, and a name built from its arms '
+                f'name this eval: pass name="..." (one that stays as the arms change), or give its cases as a file, '
+                "whose stem names it; its name is where its runs are kept, and a name built from its arms "
                 f"({', '.join(map(repr, named))}) would move them every time an arm changes"
             )
         self.name = (
@@ -490,6 +511,7 @@ class Eval:
             margins=self.plan.run_margins,
             measure_latency=self.measure_latency,
         )
+        _refuse_a_field_no_answer_carries(self.plan, self.cases, summaries, world=self.world is not None)
         examples = None
         if judge is not None and judge.examples and summaries[0].template_id is not None:
             # Graded once for the eval, after its arms, through the judge every arm's answers were graded by, each
@@ -590,6 +612,95 @@ def _landed_usd(summaries: Sequence[EvalSummary]) -> float | None:
                 return None
             landed.append(result.cost_usd)
     return math.fsum(landed)
+
+
+def _refuse_a_case_a_field_grader_cannot_read(plan: GraderPlan, cases: Sequence[Mapping[str, Any]]) -> None:
+    """Refuse, before anything runs, a case a field grader would raise on: one lacking the field, or holding no label.
+
+    The classifier's cases are refused as the run starts (each by its expected label); a field graded beside it would
+    otherwise raise on each such case only after the runner had answered it, excluding the cell as the rig's fault.
+
+    :raises ValueError: The first case a field other than the classifier cannot be graded on, naming it.
+    """
+    for name in plan.fields:
+        if name == plan.classifier:
+            continue
+        for index, case in enumerate(cases):
+            if name in case and case[name] is None:
+                continue  # expects the field absent
+            try:
+                expected_label(case, name)
+            except ValueError as unreadable:
+                fix = (
+                    ""
+                    if name in case
+                    else f"; it carries {', '.join(sorted(case))}: grade one of those, or give every case its {name!r} "
+                    "(null where the answer should carry none)"
+                )
+                raise ValueError(f"case {case.get('id', index)}: {unreadable}{fix}") from None
+
+
+def _refuse_a_field_no_answer_carries(
+    plan: GraderPlan, cases: Sequence[Mapping[str, Any]], summaries: Sequence[EvalSummary], *, world: bool
+) -> None:
+    """Refuse a field grader no answer of any arm carried its field for: the author's wiring, not the product's failing.
+
+    Every case would score 0 on it and the run exit 0: a measured 0% that reads as the app failing. Only answers the
+    runner returned count, and only where some case expects a value in the field (a case's ``null`` expects it
+    absent). An arm whose answers lack a field another arm's carry is the product's, scored as it is.
+
+    :raises ValueError: A field no answer carried, naming what the answers do carry.
+    """
+    answered = [
+        result
+        for summary in summaries
+        for result in summary.case_results or ()
+        if result.outcome in ("scored", "not_judged")
+    ]
+    answers = [
+        result.answer.get("answer") if world and isinstance(result.answer, dict) else result.answer
+        for result in answered
+    ]
+    for name in plan.fields:
+        if not answers or all(case.get(name) is None for case in cases):
+            continue
+        if any(
+            _carries(answer, result, name, classifier=name == plan.classifier)
+            for answer, result in zip(answers, answered, strict=True)
+        ):
+            continue
+        if carried := sorted({key for answer in answers if isinstance(answer, dict) for key in answer}):
+            shown = ", ".join(carried[:8]) + (f" and {len(carried) - 8} more" if len(carried) > 8 else "")
+            fix = f"the answers carry {shown}: grade the field they carry, or have the runner return {name!r}"
+        elif all(answer is None for answer in answers):
+            fix = "every answer was None: return the answer from the runner"
+        else:
+            first = next(answer for answer in answers if answer is not None)
+            shown = (
+                f"objects without it, such as {first[:80]}"
+                if isinstance(first, str)
+                else f"{type(first).__name__}s, which hold no fields"
+            )
+            fix = f"the answers are {shown}: return a dict, a pydantic model or a dataclass with {name!r}"
+        raise ValueError(f"no answer has a field {name!r}, so its grader could score none of them; {fix}")
+
+
+def _carries(answer: Any, result: CaseResult, name: str, *, classifier: bool) -> bool:
+    """Whether one stored answer carries field ``name``: an object holding it, or a plain value, its own label.
+
+    An answer JSON could not hold is stored as its ``repr``, a string like a plain value: the classifier's label tells
+    the two apart (a plain string that is not blank is always a label), and any other field's cannot, so it is given
+    the benefit.
+    """
+    if isinstance(answer, dict):
+        return name in answer
+    if answer is None or isinstance(answer, list):
+        return False
+    if isinstance(answer, str) and answer.strip() and classifier:
+        cell = result.scores.get(CONFUSION_CELL_MEASURE)
+        read = confusion_of(cell) if isinstance(cell, str) else None
+        return read is None or read[1] != UNUSABLE_ANSWER
+    return True
 
 
 def _refuse_undeclared_readings(host: EvalHost, plan: GraderPlan) -> None:

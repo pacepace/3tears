@@ -4,8 +4,9 @@ An :class:`~threetears.evals.quick.contract.Eval`'s ``grader`` is one grader or 
 
 - **A function** ``(case, out) -> bool | float``. Its ``__name__`` names its measure and the first line of its
   docstring describes it; higher is better, and one annotated ``-> bool`` is a pass/fail on 0 to 1.
-- **A field name** (``"category"``): the answer's ``category`` (``out.category`` on a pydantic model,
-  ``out["category"]`` on a mapping, the answer itself when it is a plain value) against the case's ``category``. A
+- **A field name** (``"category"``): the answer's ``category`` (``out["category"]`` on a mapping, the answer itself
+  when it is a plain value, ``out.category`` on anything else: a pydantic model, a dataclass) against the case's
+  ``category``. A
   field is graded as a label: the first field listed is the run's classifier, so the run carries its confusion
   matrix, each label's precision, recall and F1, and ``accuracy``
   (:attr:`~threetears.evals.analysis.EvalSummary.confusion`); every other field is a pass/fail of its own name, and
@@ -22,6 +23,7 @@ a numeric grade lies in (``range=``). Every grade is higher-is-better, so a guar
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 from collections.abc import Callable, Mapping, Sequence
@@ -160,7 +162,8 @@ def grader(
 
 
 def field_value(out: Any, name: str) -> Any:
-    """The answer's value of one field: an attribute of a pydantic model, a key of a mapping, or the answer itself.
+    """The answer's value of one field: a key of a mapping, the answer itself when it is a plain value, else the
+    answer's attribute of that name (a pydantic model's field, a dataclass's).
 
     :param out: The runner's answer; a world runner's is read through its ``answer``.
     :ptype out: Any
@@ -178,7 +181,8 @@ def field_value(out: Any, name: str) -> Any:
         return out.get(name, _MISSING)
     if out is None or isinstance(out, str | int | float | bool):
         return out
-    return _MISSING
+    # Any other object is read as out.<name> is: a dataclass's field, a named tuple's, an attribute.
+    return getattr(out, name, _MISSING)
 
 
 def label_text(value: Any) -> str | None:
@@ -278,6 +282,25 @@ class GraderPlan:
         return None if self.classifier_margin is None else {ACCURACY_MEASURE: self.classifier_margin}
 
 
+def _refuse_a_grader_that_cannot_take_its_arguments(target: Callable[..., Any], name: str) -> None:
+    """Refuse a function grader that cannot be called as ``name(case, out)``: it would raise on every answer, after the
+    runner had answered (and spent on) every case.
+
+    :raises ValueError: Its signature cannot bind two positional arguments.
+    """
+    try:
+        signature = inspect.signature(target)
+    except TypeError, ValueError:
+        return  # no signature to read (a builtin): it is called as it is
+    try:
+        signature.bind("case", "out")
+    except TypeError:
+        raise ValueError(
+            f"the grader {name}{signature} cannot be called as {name}(case, out), which is how each answer is handed to "
+            f"it; declare it to take exactly that: def {name}(case, out): ..."
+        ) from None
+
+
 def plan_graders(graders: Any) -> GraderPlan:
     """Sort an eval's ``grader`` slot into what reads each grader.
 
@@ -342,6 +365,7 @@ def plan_graders(graders: Any) -> GraderPlan:
                     f"a grader's __name__ names its measure, and {target!r} has none a measure can carry; write each "
                     "grader as a def"
                 )
+            _refuse_a_grader_that_cannot_take_its_arguments(target, name)
             seen.append(name)
         plan.scorers.append(target)
         name = target.__name__

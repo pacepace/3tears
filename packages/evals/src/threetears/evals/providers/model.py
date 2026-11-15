@@ -1203,7 +1203,13 @@ class Model:
         variable = KEY_VARIABLES[self.provider]
         keys = _KeyChain((("api_key=", api_key),)) if api_key else _keys_from_environment(variable)
         if keys is None:
-            where = f"; or record {self.recording} once with it set" if self.recording is not None else ""
+            # Each says how to run with no key too: a recording made once with one replays offline after.
+            where = (
+                f"; or record {self.recording} once with it set"
+                if self.recording is not None
+                else f'; or pass recording="recordings/{id.rsplit("/", 1)[-1]}.jsonl" and run once with it set, and '
+                "every run after replays that file with no key"
+            )
             raise ValueError(f"no key for {self.provider}: pass api_key= or set {variable}{where}")
         live = _Live(
             id,

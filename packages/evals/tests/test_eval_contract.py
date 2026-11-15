@@ -269,7 +269,10 @@ def test_several_arms_with_no_name_and_no_cases_file_are_refused(tmp_path: Path)
     """An eval's name is where its runs are kept. One built from its arms (``keywords vs crash-first``) would move
     them, and split the comparison's history, each time an arm is added, renamed or dropped, so it is never built."""
     arms = {"keywords": keywords, "crash-first": crash_first}
-    with pytest.raises(ValueError, match=r'^name this eval \(name="invoices"\): its name is where its runs are kept'):
+    # The refusal names both fixes: a stable name=, or a cases file whose stem names it.
+    with pytest.raises(
+        ValueError, match=r'^name this eval: pass name="\.\.\." .*or give its cases as a file, whose stem names it'
+    ):
         Eval(TICKETS, arms, ["label"])
     with pytest.raises(ValueError, match="'prompt=v1', 'prompt=v2'"):
         Eval(TICKETS, {"prompt=v1": keywords, "prompt=v2": crash_first}, ["label"])  # factors are arms too
