@@ -472,9 +472,9 @@ class _Builder:
             pass_k=pass_k or None,
             pairs=[self.pair(pair) for pair in self.bundle.readings.pairs if pair.aspect == label],
             scoreboard=None if aspect is self.lead else self.scoreboard(aspect),
-            # Only where a margin is declared and read, so an aspect with none carries no key.
-            **({"margin_informative": informative} if informative is not None else {}),
             **_analyst_only(ANALYST_ASPECT_FIELDS, counted, lambda: self.how_trials_pass(aspect, depth)),
+            # None where no margin is declared or read, which the aspect's document leaves out.
+            margin_informative=informative,
         )
 
     def how_trials_pass(self, aspect: AnalysisContextBundle, depth: AspectDepth) -> dict[str, Any]:
@@ -1225,8 +1225,9 @@ def _spread_and_state(summary: MeasureSummary, point: float | None) -> dict[str,
     if summary.no_variation is not None:
         held["no_variation"] = summary.no_variation
     if point is not None and (summary.ci_low is None or summary.ci_high is None):
-        reason = "no_variation" if summary.no_variation is not None else "too_few"
-        held["state"] = StateOf(state="not_available", reason=reason)
+        held["state"] = StateOf(
+            state="not_available", reason="no_variation" if summary.no_variation is not None else "too_few"
+        )
     return held
 
 
