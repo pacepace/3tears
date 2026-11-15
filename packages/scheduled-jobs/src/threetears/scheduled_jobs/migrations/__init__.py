@@ -98,7 +98,6 @@ def register(runner: MigrationRunner, *, held_contract: bool = False) -> Package
 __all__ = [
     "PACKAGE_NAME",
     "add_dispatching_fires_index",
-    "add_job_fires_time_key_index",
     "create_scheduled_jobs",
     "range_shard_next_fire_index",
     "register",
