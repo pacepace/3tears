@@ -23,6 +23,12 @@ NO_WHOLE_READS_CONFIG = NoWholeReadsConfig(
     ),
     # a copy follower's stages (STAGE_PREFIX) and its applied mark: the rows a change named, beside the copy
     transient_relations=r"^__stage",
+    # the views a shared Arrow version's mapping makes on a worker's own DuckDB connection, one a mapped table, under
+    # the table's own name (shared_arrow.MappedTables.connect): each is ``SELECT *`` of the Arrow the version holds, so
+    # it passes every key its table has, and reads nothing when made; what reads a view is judged where it runs, by the
+    # key its consumer declares for the copy relation (reports' COPY_KEYS). The mapping is handed tables of any key, so
+    # it declares none of its own
+    view_producers={"MappedTables.connect": ()},
     # the collections, caches and follower: load code, where even one key's count or fingerprint re-verifies by
     # scanning what the epoch already said
     verify_prefixes=(f"{_CORE}/collections/", f"{_CORE}/cache/"),
@@ -37,8 +43,8 @@ NO_WHOLE_READS_CONFIG = NoWholeReadsConfig(
     caller_judged_modules=(
         # the L3 storage layer: the backend and its statement builders, over the table each collection names
         f"{_CORE}/backends/",
-        # a collection's base and declared-table writer, over the table its subclass declares
-        f"{_CORE}/collections/base.py",
+        # a collection's declared-table writer, over the table its subclass declares (its base writes none of its
+        # own since its reads went through the keyed helpers, 2026-11-14)
         f"{_CORE}/collections/declared_table.py",
         # the change-note ring and the scope epochs: the epoch machinery every keyed read is told its keys by
         f"{_CORE}/collections/change_notes.py",
