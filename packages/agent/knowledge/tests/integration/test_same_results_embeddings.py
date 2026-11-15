@@ -133,3 +133,62 @@ async def test_the_vector_read_reads_what_the_statement_it_replaced_read(
         params=[list(_NAMED)],
         helper=helper,
     )
+
+
+_DRAFTER = uuid.uuid5(uuid.NAMESPACE_OID, "drafter")
+_DRAFT_STATUSES = ("draft", "active", "draft", "draft", "archived")
+
+
+def _drafted(row: Any) -> Any:
+    """``row``'s seed as one person's (every third another's), its status in turn, a turn count when not NULL, each
+    created at its own minute."""
+
+    def make(seed: Seeded) -> Mapping[str, Any]:
+        return {
+            **row(seed),
+            "user_id": uuid.uuid5(uuid.NAMESPACE_OID, "other") if seed.index % 3 == 2 else _DRAFTER,
+            "status": _DRAFT_STATUSES[seed.index % len(_DRAFT_STATUSES)],
+            "conversation_id": None if seed.null else uuid.uuid5(uuid.NAMESPACE_OID, "conversation"),
+            "turn_count": None if seed.null else seed.index,
+            # the order's column unique (it is not selected, so rows tied on it could not be told apart)
+            "date_created": _START + timedelta(minutes=seed.index),
+        }
+
+    return make
+
+
+@pytest.mark.parametrize(
+    ("collection", "row", "columns"),
+    [
+        (PlaybookEntryCollection, _entry, "id, title, body, datasource_id, conversation_id, turn_count"),
+        (ConceptCollection, _concept, "id, name, definition, datasource_id, conversation_id, turn_count"),
+    ],
+    ids=["playbook_entries", "concepts"],
+)
+async def test_own_drafts_read_what_the_statement_it_replaced_read(
+    conn: asyncpg.Connection, collection: Any, row: Any, columns: str
+) -> None:
+    """Flips if list_own_drafts' keyed read (the user and ``status = 'draft'`` pinned, by the own-drafts index,
+    through the proxy's customer scope) returns a row ``WHERE user_id = $1 AND status = 'draft' ORDER BY
+    date_created`` did not (another person's, an active one), misses one, orders them otherwise, or drops the scope."""
+    scope = uuid.uuid4()
+    table = collection.schema.name
+
+    async def helper(c: asyncpg.Connection) -> list[dict[str, Any]]:
+        proxy = _Proxy(c)
+        config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+        reading = collection(registry=CollectionRegistry(), config=config)
+        reading.l3_pool = proxy
+        await reading.list_own_drafts(_DRAFTER, customer_scope=scope)
+        assert set(proxy.scopes) <= {scope}
+        return proxy.rows
+
+    await assert_same_results(
+        conn,
+        table=table,
+        row=_drafted(row),
+        old_sql=f"SELECT {columns} FROM {table} WHERE user_id = $1 AND status = 'draft' ORDER BY date_created ASC",  # noqa: S608 - the test's table
+        params=[_DRAFTER],
+        helper=helper,
+        columns=[column.strip() for column in columns.split(",")],
+    )

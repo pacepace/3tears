@@ -282,21 +282,18 @@ class _Answering:
         return self.answers.pop(0)
 
 
-async def test_a_ranked_read_with_a_left_join_answers_the_joined_rows_in_rank_order_up_to_its_limit() -> None:
-    """Flips if a ranked read's ``LEFT`` join drops a row no parent matches, answers a row matching two parents other
-    than once for each in rank order, keeps more than ``limit`` joined rows (``ORDER BY ... LIMIT`` over the
-    hand-written join counts each copy), leaves the join column it read only to join on, or reads the parents other
-    than by one keyed batch of the ranked rows' values."""
+async def test_a_ranked_read_with_a_left_join_is_one_statement_joining_each_ranked_row_by_key() -> None:
+    """Flips if a ranked read's plain ``LEFT`` join is not sent as one statement: the ranked read as a
+    derived table, each row ``LEFT JOIN LATERAL``-ed to its parents by the join's columns
+    and pins, best first by the similarity it selects, under the same ``LIMIT`` (so a row matching two parents is answered once for
+    each, and the copies count against the limit, as ``ORDER BY ... LIMIT`` over the hand-written join counted them);
+    or if the column read only to join on is left in the rows. That the database answers this as the
+    hand-written join did is the memory package's same-results tests' (PostgreSQL and YugabyteDB)."""
     conn = _Answering(
         [
-            {"chunk_id": "c1", "agent_id": "a", "memory_id": "m1", "similarity": 0.9},
-            {"chunk_id": "c2", "agent_id": "a", "memory_id": "m2", "similarity": 0.8},
-            {"chunk_id": "c3", "agent_id": "a", "memory_id": "m3", "similarity": 0.7},
-        ],
-        [
-            {"agent_id": "a", "memory_id": "m1", "media_id": "f1"},
-            {"agent_id": "a", "memory_id": "m1", "media_id": "f2"},
-            {"agent_id": "a", "memory_id": "m3", "media_id": "f3"},
+            {"chunk_id": "c1", "agent_id": "a", "memory_id": "m1", "similarity": 0.9, "media_id": "f1"},
+            {"chunk_id": "c1", "agent_id": "a", "memory_id": "m1", "similarity": 0.9, "media_id": "f2"},
+            {"chunk_id": "c2", "agent_id": "a", "memory_id": "m2", "similarity": 0.8, "media_id": None},
         ],
     )
     rows = await read_nearest(
@@ -312,7 +309,7 @@ async def test_a_ranked_read_with_a_left_join_answers_the_joined_rows_in_rank_or
                 on={"agent_id": "agent_id", "memory_id": "memory_id"},
                 columns={"media_id": "media_id"},
                 left=True,
-                casts={"agent_id": "text", "memory_id": "text"},
+                by={"kind": "file"},
             )
         ],
     )
@@ -321,7 +318,56 @@ async def test_a_ranked_read_with_a_left_join_answers_the_joined_rows_in_rank_or
         {"chunk_id": "c1", "agent_id": "a", "similarity": 0.9, "media_id": "f2"},
         {"chunk_id": "c2", "agent_id": "a", "similarity": 0.8, "media_id": None},
     ]
-    assert all("memory_id" not in row for row in rows)
+    [(sql, params)] = conn.calls
+    distance = 't."embedding" OPERATOR(public.<=>) $3::text::public.vector'
+    ranked = (
+        'SELECT n."chunk_id", n."agent_id", n."memory_id", n."similarity" FROM (SELECT t."chunk_id", t."agent_id",'
+        f' t."memory_id", 1 - ({distance}) AS "similarity", {distance} AS "_nearest_distance" FROM "memory_chunks"'
+        f' AS t WHERE t."agent_id" = $1 AND t."user_id" = $2 ORDER BY {distance} LIMIT $4) AS n'
+        ' ORDER BY n."_nearest_distance"'
+    )
+    assert sql == (
+        f'SELECT r.*, j1."media_id" AS "media_id" FROM ({ranked}) AS r LEFT JOIN LATERAL (SELECT "media_id" FROM'
+        ' "media" AS j WHERE j."agent_id" = r."agent_id" AND j."memory_id" = r."memory_id" AND j."kind" = $5) AS j1'
+        ' ON TRUE ORDER BY r."similarity" DESC LIMIT $4'
+    )
+    assert params == ("a", "u", "[1,0]", 3, "file")
+
+
+async def test_a_ranked_read_with_a_counted_join_reads_its_parents_by_one_keyed_batch() -> None:
+    """Flips if a ranked read's counted join is not read as the ranked rows and then one keyed batch of the parents
+    (each row kept once beside its count), the shape a single joined statement does not take."""
+    conn = _Answering(
+        [
+            {"chunk_id": "c1", "agent_id": "a", "memory_id": "m1", "similarity": 0.9},
+            {"chunk_id": "c2", "agent_id": "a", "memory_id": "m2", "similarity": 0.8},
+        ],
+        [
+            {"agent_id": "a", "memory_id": "m1"},
+            {"agent_id": "a", "memory_id": "m1"},
+        ],
+    )
+    rows = await read_nearest(
+        conn,
+        "memory_chunks",
+        by={"agent_id": "a", "user_id": "u"},
+        nearest=Nearest("embedding", "[1,0]", similarity="similarity"),
+        limit=3,
+        columns=("chunk_id", "agent_id"),
+        joins=[
+            Joined(
+                "media",
+                on={"agent_id": "agent_id", "memory_id": "memory_id"},
+                columns={},
+                counts={"files": None},
+                casts={"agent_id": "text", "memory_id": "text"},
+            )
+        ],
+    )
+    assert rows == [
+        {"chunk_id": "c1", "agent_id": "a", "similarity": 0.9, "files": 2},
+        {"chunk_id": "c2", "agent_id": "a", "similarity": 0.8, "files": 0},
+    ]
     (ranked_sql, _), (joined_sql, _) = conn.calls
     assert 't."memory_id"' in ranked_sql and "LIMIT" in ranked_sql
     assert '"media"' in joined_sql
