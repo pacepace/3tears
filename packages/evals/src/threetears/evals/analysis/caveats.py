@@ -756,8 +756,8 @@ _PASSED = "passed"
 
 
 def _input_facts(report_input: ReportInput) -> Iterator[_Fact]:
-    """Every reading, pair, contrast and figure the input holds in a state, every arm not one cell, and every arm whose
-    scoreboard row on an aspect the cells keep apart (its typed ``state``: withheld, split, on the coordinate it
+    """Every reading, pair, contrast and figure the input holds in a state, every arm not one cell, and every arm the
+    cells keep apart on an aspect, read from its scoreboard row's typed ``state`` (withheld, split, on the coordinate it
     names), which a stored input carries as the built one does."""
     lead = report_input.aspects[0].id if report_input.aspects else ""
     for aspect in report_input.aspects:
