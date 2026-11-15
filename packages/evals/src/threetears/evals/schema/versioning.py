@@ -178,6 +178,8 @@ the document, so extending one is a major. Each, and why:
 - ``BudgetStop.currency`` — what a per-run ceiling counts; a stop in a currency an older build cannot name would be
   stated in a unit it cannot read, and its dollars and its calls are not one quantity.
 - ``RaterKind`` — calibration reads a person as ground truth.
+- ``Maker`` — whether a person or a model made a call; a reader states it, and a maker an older build cannot name
+  would be stated as neither.
 - ``OutOfRunOutcome`` — binary and complete.
 - ``SecondJudgeAskedBy`` — an unknown asker's pass would be pooled into the wrong agreement.
 - ``StopReason`` — the normalized provider contract, which already has a catch-all for output cut short by a

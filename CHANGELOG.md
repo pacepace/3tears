@@ -6,6 +6,37 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the one caveat list is filled and the first screen computed, with a typed next step per reason (#1192)
+
+**Added:** what S5a-1's shape was for, still rendering nothing. No page, print line, golden or recording moved; a
+report input built from a bundle now carries `caveat_list` and `first_screen`.
+
+- Every source of caveats raises typed entries into the one list (`analysis/caveats.py`): what the input's `caveats`
+  part states (the same ids as before, for every fixture), what it implies, every reading, contrast, pair and figure
+  in a state other than counted, a judge's checks, looks taken past their plan, and what only the bundle holds (an
+  arm read per answering model, an arm holding several cells of one rig, results with no ordered time, request
+  settings not confirmed). A stored input with no list is given one on read.
+- The builder attaches the first-screen value: the gate (setup, an unfinished run or too few cases, with the runs
+  it names), at most three ranked reasons and the count past them, the call, and `steps`: what would change each
+  reason as a typed `RemedyStep` (a remedy kind, the catalogue action that takes it and its arguments, a planned size
+  and a declared look for more evidence, and the action that prices a step that spends). Every one of the sixteen
+  reasons has exactly one remedy; `no_variation` is marked as the answer itself.
+- A check against people silences a check against a model on its criterion only where its result decides (met or
+  not met). A reading withheld on one arm silences only what is scoped to that arm.
+- The decision read is on the numbers side: `analysis/answer.py` (standing, survivors, dominance, materiality),
+  `analysis/criteria.py` (a gate's status per arm), `analysis/costs.py` (the one cost rule) and
+  `analysis/per_input.py`; `analysis/report/call.py` keeps its names, each a read of the list or of `answer`.
+- `ResultCondition.judging`'s `set_aside` is `not_asked`; a condition handed back under the old spelling reads as
+  the new one.
+
+**For hosts:** a report input built fresh digests differently from one built before (its `caveat_list`); a frozen
+snapshot keeps its digest. Durable minor 17.1 adds `SweptAxis.ordered`, `AspectDesign.planned_looks`,
+`EvalCampaign.volume_per_month` and `CampaignCall.made_by`, `model`, `on_behalf_of` and `evidence_fingerprint`, each
+optional and written only when set: deploy this build to every reader before a campaign sets one. Ten new
+provisional names, the types the campaign bundle's new in-memory fields hold: `threetears.evals.analysis` exports
+`CaveatEntry`, `FirstScreen`, `Gate`, `GateRun`, `CallRead`, `RemedyStep` and `Remedy`; `threetears.evals.schema`
+exports `CaveatClass`, `CaveatReach` and `Maker`.
+
 ### evals: one closed set of reading states, one caveat entry and one first-screen value, all unset
 
 **Added:** the shape every later first-screen change fills, with nothing filled yet. Nothing a report, a page, a
