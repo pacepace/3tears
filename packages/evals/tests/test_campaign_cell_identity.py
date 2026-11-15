@@ -34,7 +34,7 @@ from threetears.evals.ops import OpsHost
 from threetears.evals import Log
 from threetears.evals.run import attest_measure_definitions
 from threetears.evals.run.remeasure import attest_served_model
-from threetears.evals.schema import EvalResult, EvalRun, SweepableValue
+from threetears.evals.schema import EvalResult, EvalRun, LatencyMetrics, SweepableValue
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import (
@@ -482,3 +482,42 @@ def test_a_stored_report_over_unmoved_evidence_reads_as_current_across_the_cell_
     )
 
     assert (inspected.reproduces_generation, inspected.mismatch_cause) == (True, None)
+
+
+# =============================================================================
+# Every reader of the rig sees the definitions: divergences and the confound scans (R-3)
+# =============================================================================
+
+
+def test_a_divergence_is_never_tested_between_runs_read_under_two_definitions_and_the_scans_name_it() -> None:
+    """The divergence lens contrasts lever levels over cohorts of runs; under one definition it tests them, and where
+    the cohorts were read under two, or under none recorded, it tests nothing and counts the pair untested."""
+
+
+    def timed(model: str, salt: str, definitions: dict[str, str] | None, llm_ms: float) -> tuple[EvalRun, list[EvalResult]]:
+        """A batch whose wall-clock holds a model-call part, so the lens has a whole and a part to test."""
+        batch, results = _named(model, salt, definitions)
+        return batch, [
+            result.model_copy(
+                update={
+                    "latency": LatencyMetrics(
+                        total_ms=(result.latency.total_ms or 0.0) + llm_ms + index,
+                        llm_ms=llm_ms + 7 * (index % 5),
+                    )
+                }
+            )
+            for index, result in enumerate(results)
+            if result.latency is not None
+        ]
+
+    one = _bundle(_stored([timed(_CONTROL, "control", _NOW, 900.0), timed(_CANDIDATE, "a", _NOW, 4000.0)]))
+    assert one.divergences_tested > 0, "under one definition the lens tests the pair, or this asserts nothing"
+    assert _DEFINITIONS not in {confound.dimension for confound in one.apparatus_confounds}
+
+    for before in (_BEFORE, None):
+        two = _bundle(_stored([timed(_CONTROL, "control", before, 900.0), timed(_CANDIDATE, "a", _NOW, 4000.0)]))
+        assert two.divergences_tested == 0 and two.scope_divergences == [] and two.whole_swings == [], before
+        assert two.divergences_untested > 0, before
+        (scanned,) = [confound for confound in two.apparatus_confounds if confound.dimension == _DEFINITIONS]
+        assert scanned.status == ("undecided" if before is None else "varied"), before
+        assert _DEFINITIONS in two.confound_catalog, "the reason a reader judges it by is in the bundle"
