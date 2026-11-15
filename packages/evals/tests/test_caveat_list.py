@@ -1078,8 +1078,10 @@ def test_an_unsettled_reading_s_planned_cases_lift_it_at_least_four_times_in_fiv
     more often than four in five: a size, never a shortfall. The excess is bounded by the method: a spread read ``k``
     times too wide asks for about ``k**2`` times the cases, which a closing interval as many times wider clears in
     about ``Phi(z * k)`` of designs (``z`` the quantile of four in five). Today's interval is ``k = 1.40`` times the
-    normal one at the cases' own spread, so the fresh rate is held at most ``Phi(0.84 * 1.40) = 88.1%`` plus 2.5 points:
-    a size a third too large passes, a doubled one (about 99%) does not. (The one-sided size this replaced reached
+    normal one at the cases' own spread, so the fresh rate is held at most ``Phi(0.84 * 1.40) = 88.1%`` plus 2.5 points,
+    an approximate ceiling: the bounded interval's width is not exactly ``k`` times the normal one at the larger count,
+    and the part that shrinks with the count puts the true rate a little above ``Phi(z * k)``, which the 2.5 points
+    cover. A size a third too large passes, a doubled one (about 99%) does not. (The one-sided size this replaced reached
     80.6% and 82.0% here; the borderline simulation above, on a t interval, is the one that refuses it.) The plan is
     read from the nominal interval at its own level, never the gain interval at a corrected one, so a corrected gain
     level changes nothing; the step names the control, whose new cases pair with the candidates'."""
