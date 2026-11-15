@@ -25,9 +25,15 @@ checking and the classes a docstring names, so 6 shapes it called unreached are 
 `kernel.RunRecordStore`, `schema.sent_settings_of` and `analysis.lint_prose`. The engine still uses each inside;
 `MIGRATIONS.toml` records each with its port.
 
-**For hosts:** check your imports against the five removed names. Type a store parameter with `EvalStorage`, or
-with `RunStore`, `ResultStore` or `JobStore`, which stay; read a completion's sent settings with
-`getattr(completion, "sent_settings", None)`. Nothing else moves, and nothing stored changes.
+**For hosts:** a single cut-over, with no deprecated re-export: an import of a removed name fails at once. Check
+your imports against the five:
+
+- `kernel.CassetteStore`, `kernel.DefinitionStore`, `kernel.RunRecordStore`: use `kernel.EvalStorage`, or
+  `kernel.RunStore`, `kernel.ResultStore` or `kernel.JobStore`, which stay.
+- `schema.sent_settings_of`: use `getattr(completion, "sent_settings", None)`.
+- `analysis.lint_prose`: no replacement; no host imported it.
+
+Nothing else moves, and nothing stored changes.
 
 ### evals: a recorded judge call over a report page is keyed by what the page was rendered from, not by its words
 
