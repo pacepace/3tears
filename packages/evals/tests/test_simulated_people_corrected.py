@@ -41,12 +41,14 @@ from threetears.evals.analysis.people_corrected import (
     prediction_powered_difference,
 )
 from threetears.evals.analysis.stats import t_critical_two_sided
-from packages.evals.tests.simulation_support import at_most
+from packages.evals.tests.simulation_support import at_most, monte_carlo_se
 
 REPLICATES = 4_000
 LEVEL = 0.95
 EXCLUDES_AT_MOST = 0.065
 COVERS_AT_LEAST = 0.935
+#: The upper bar on a well-behaved row's coverage: an interval far wider than its level claims fails it.
+COVERS_AT_MOST = 0.975
 CONFIRMS_AT_MOST = 0.035
 
 Scale = Literal["pass_fail", "ordinal"]
@@ -213,11 +215,11 @@ class _Rates:
         return count / self.n
 
 
-def _row(seed: str, truth: float, **kwargs: object) -> _Rates:
+def _row(seed: str, truth: float, *, replicates: int = REPLICATES, **kwargs: object) -> _Rates:
     """Run one row through the shipped check."""
     rng = random.Random(seed)
     rates = _Rates()
-    for _ in range(REPLICATES):
+    for _ in range(replicates):
         drawn = _replicate(rng, **kwargs)  # type: ignore[arg-type]
         corrected = corrected_reading([drawn.labels], drawn.differences, direction=1, confidence=LEVEL)
         assert corrected is not None and corrected.interval is not None, corrected
@@ -257,6 +259,9 @@ def test_with_no_true_difference_the_corrected_interval_excludes_zero_at_most_si
         d=0.0,
     )
     assert rates.rate(rates.excluded) <= EXCLUDES_AT_MOST, rates.rate(rates.excluded)
+    if judge == "unbiased" and n >= 40:
+        # A well-behaved row: its interval is no wider than its level claims, so an over-wide variance fails here.
+        assert 1 - rates.rate(rates.excluded) <= COVERS_AT_MOST, 1 - rates.rate(rates.excluded)
     if n == PPI_DECISION_MIN_LABELLED_CASES:
         assert rates.rate(rates.confirmed) <= CONFIRMS_AT_MOST, rates.rate(rates.confirmed)
 
@@ -291,34 +296,77 @@ def test_a_judge_that_passes_everything_is_corrected_to_people_s_difference(
 
 _RARE = [("pass_fail", 0.03), ("pass_fail", 0.06), ("pass_fail", 0.10), ("ordinal", 0.05)]
 
+#: Replicates behind each deciding row: a Monte Carlo standard error of about 0.15 points at the confirmation bar.
+DECIDING_REPLICATES = 16_000
+
+#: The deciding rows, as the seeded simulation below measured them at :data:`DECIDING_REPLICATES` each:
+#: ``(scale, rare share, n) -> (replicates covering the truth, replicates confirming)``. Every row re-runs on the pool
+#: and must reproduce its counts exactly (``random.Random`` with a fixed string seed is the same on every platform), so
+#: the floor read off this table is the simulation's, never a number typed beside it.
+DECIDING: dict[tuple[Scale, float, int], tuple[int, int]] = {}
+
+
+def _passes(covered: int, confirmed: int, replicates: int = DECIDING_REPLICATES) -> bool:
+    """Whether a deciding row meets both bars with two Monte Carlo standard errors to spare."""
+    cover, confirm = covered / replicates, confirmed / replicates
+    return cover - 2 * monte_carlo_se(cover, replicates) >= COVERS_AT_LEAST and (
+        confirm + 2 * monte_carlo_se(confirm, replicates) <= CONFIRMS_AT_MOST
+    )
+
+
+def _deciding_row(scale: Scale, share: float, n: int) -> _Rates:
+    return _row(
+        f"decide|{scale}|{share}|{n}",
+        0.0,
+        replicates=DECIDING_REPLICATES,
+        scale=scale,
+        judge="rare",
+        population=100,
+        k=3,
+        n=n,
+        d=0.0,
+        rare=share,
+    )
+
 
 @pytest.mark.parametrize(("scale", "rare"), _RARE)
-@pytest.mark.parametrize("n", [80, 100])
-def test_a_rare_one_sided_lean_is_covered_and_never_confirmed_from_the_decision_floor(
-    scale: Scale, rare: float, n: int
-) -> None:
-    rates = _row(f"rare|{scale}|{rare}|{n}", 0.0, scale=scale, judge="rare", population=100, k=3, n=n, d=0.0, rare=rare)
-    assert rates.rate(rates.covered) >= COVERS_AT_LEAST, rates.rate(rates.covered)
-    if n == PPI_DECISION_MIN_LABELLED_CASES:
-        assert rates.rate(rates.confirmed) <= CONFIRMS_AT_MOST, rates.rate(rates.confirmed)
+@pytest.mark.parametrize("n", [60, 80, 100])
+def test_each_deciding_row_reproduces_its_counts(scale: Scale, rare: float, n: int) -> None:
+    rates = _deciding_row(scale, rare, n)
+    assert DECIDING.get((scale, rare, n)) == (rates.covered, rates.confirmed), (
+        scale,
+        rare,
+        n,
+        rates.covered,
+        rates.confirmed,
+    )
 
 
-def test_the_decision_floor_is_the_smallest_n_that_passed_and_at_least_forty() -> None:
-    """Each n below the floor fails a bar on the rare-lean rows, read with the seeds the rows above use: at 20 the
-    lean on pass/fail breaks coverage, at 40 and at 60 the lean on 1 to 5 is confirmed too often. From 80 every row
-    holds, so the floor is 80."""
+def test_the_decision_floor_is_the_smallest_n_whose_rows_all_pass_with_two_standard_errors_to_spare() -> None:
+    """The floor is read off :data:`DECIDING`: the smallest n at which every rare-lean row, and every row at a larger n,
+    covers at least 93.5% and confirms at most 3.5% with two Monte Carlo standard errors to spare. One constant, not a
+    rule computed from the data: the failure it guards (a rare lean the sample never met) cannot be seen in a sample."""
+    sizes = sorted({n for _, _, n in DECIDING})
+    passing = [
+        n
+        for n in sizes
+        if all(_passes(*DECIDING[(scale, share, size)]) for scale, share in _RARE for size in sizes if size >= n)
+    ]
+    assert passing, "no deciding n met both bars"
+    assert PPI_DECISION_MIN_LABELLED_CASES == max(40, passing[0])
 
-    def rare(scale: Scale, share: float, n: int) -> _Rates:
-        return _row(
-            f"rare|{scale}|{share}|{n}", 0.0, scale=scale, judge="rare", population=100, k=3, n=n, d=0.0, rare=share
-        )
 
-    at_twenty = rare("pass_fail", 0.10, 20)
+def test_below_the_deciding_rows_the_rare_lean_breaks_a_bar() -> None:
+    """At 20 the lean on pass/fail breaks coverage, and at 40 the lean on 1 to 5 is confirmed too often: neither is a
+    floor, whatever the deciding rows read."""
+    at_twenty = _row(
+        "rare|pass_fail|0.1|20", 0.0, scale="pass_fail", judge="rare", population=100, k=3, n=20, d=0.0, rare=0.10
+    )
     assert at_twenty.rate(at_twenty.covered) < COVERS_AT_LEAST, at_twenty.rate(at_twenty.covered)
-    for n in (40, 60):
-        below = rare("ordinal", 0.05, n)
-        assert below.rate(below.confirmed) > CONFIRMS_AT_MOST, (n, below.rate(below.confirmed))
-    assert PPI_DECISION_MIN_LABELLED_CASES == max(40, 80)
+    at_forty = _row(
+        "rare|ordinal|0.05|40", 0.0, scale="ordinal", judge="rare", population=100, k=3, n=40, d=0.0, rare=0.05
+    )
+    assert at_forty.rate(at_forty.confirmed) > CONFIRMS_AT_MOST, at_forty.rate(at_forty.confirmed)
 
 
 # --- identical outputs, skips, five dimensions, a selection rule and a wrong variance ------------------------------
@@ -418,3 +466,132 @@ def test_a_wrong_variance_fails_the_bar_the_shipped_one_meets() -> None:
         wrong += corrected.estimate - half <= 0.0 <= corrected.estimate + half
     assert right / REPLICATES >= COVERS_AT_LEAST, right / REPLICATES
     assert wrong / REPLICATES < COVERS_AT_LEAST, wrong / REPLICATES
+
+
+def test_dropping_the_covariance_between_arms_widens_the_interval_past_the_upper_bar() -> None:
+    """The judge's difference read as two independent arms: each arm's case means spread over the population, their
+    covariance left out. A case's two arms share its difficulty, so that variance is too large and the interval too
+    wide; the shipped one holds both bars on the same draws."""
+    rng = random.Random("arms-covariance")
+    right = wrong = 0
+    population, n = 100, 80
+    critical = t_critical_two_sided(LEVEL, n - 1)
+    for _ in range(REPLICATES):
+        drawn = _replicate(rng, scale="ordinal", judge="unbiased", population=population, k=3, n=n, d=0.0)
+        corrected = corrected_reading([drawn.labels], drawn.differences, direction=1, confidence=LEVEL)
+        assert corrected is not None and corrected.interval is not None and corrected.estimate is not None
+        low, high = corrected.interval
+        right += low <= 0.0 <= high
+        sem = (high - low) / 2 / critical
+        control = [math.fsum(one.judge_control) / 3 for one in drawn.cases.values()]
+        candidate = [math.fsum(one.judge_candidate) / 3 for one in drawn.cases.values()]
+        control_mean, candidate_mean = math.fsum(control) / population, math.fsum(candidate) / population
+        covariance = math.fsum(
+            (a - control_mean) * (b - candidate_mean) for a, b in zip(control, candidate, strict=True)
+        ) / (population - 1)
+        half = critical * math.sqrt(max(0.0, sem * sem + 2 * covariance / population))
+        wrong += corrected.estimate - half <= 0.0 <= corrected.estimate + half
+    assert COVERS_AT_LEAST <= right / REPLICATES <= COVERS_AT_MOST, right / REPLICATES
+    assert wrong / REPLICATES > COVERS_AT_MOST, wrong / REPLICATES
+
+
+# --- outputs that vary across repeats, whose drawn pair sometimes coincides ---------------------------------------
+
+
+def _varying_replicate(
+    rng: random.Random, *, scale: Scale, population: int, k: int, n: int, shift: float, drawn_rule: bool
+) -> tuple[float, dict[str, float], PairLabels]:
+    """One population whose cases hold a few distinct outputs, drawn per repeat, so a case's two drawn outputs
+    sometimes coincide while its outputs vary. A fifth of the cases hold one output only: identical on every repeat.
+
+    The control draws an output uniformly; the candidate draws the case's best with chance ``shift``, else uniformly.
+    The judge reads each output's truth with unbiased noise. ``drawn_rule`` labels as the rule before this one did: a
+    coinciding draw is the zero stratum. Otherwise the stratum is the cases identical on every repeat, and a coinciding
+    draw is a pair the reader sees no difference in, read against the judge's mean over the candidate's repeats of that
+    output less the control's drawn one, as ``pair_labels`` reads it.
+
+    :return: The population's true difference, the judge's case differences and the reader's labels.
+    """
+    differences: dict[str, float] = {}
+    truths: list[float] = []
+    drawn_same: set[str] = set()
+    every_same: set[str] = set()
+    pairs_all: dict[str, tuple[float, float]] = {}
+    for i in range(population):
+        name = f"c{i}"
+        size = 1 if rng.random() < 0.2 else 3
+        if scale == "pass_fail":
+            p = rng.uniform(0.3, 0.8)
+            outputs = [int(rng.random() < p) for _ in range(size)]
+        else:
+            base = rng.choice((2, 3, 4))
+            outputs = [_clip(base + rng.choice((-1, 0, 0, 1))) for _ in range(size)]
+        best = max(range(size), key=lambda j: outputs[j])
+        truths.append(shift * (outputs[best] - math.fsum(outputs) / size))
+
+        def judged(j: int) -> int:
+            if scale == "pass_fail":
+                return outputs[j] if rng.random() >= 0.1 else 1 - outputs[j]
+            noise = rng.random()
+            return _clip(outputs[j] + (-1 if noise < 0.15 else 1 if noise >= 0.85 else 0))
+
+        control = [rng.randrange(size) for _ in range(k)]
+        candidate = [best if rng.random() < shift else rng.randrange(size) for _ in range(k)]
+        read_control = [judged(j) for j in control]
+        read_candidate = [judged(j) for j in candidate]
+        differences[name] = (math.fsum(read_candidate) - math.fsum(read_control)) / k
+        if size == 1:
+            every_same.add(name)
+        if candidate[0] == control[0]:
+            drawn_same.add(name)
+            same = [score for j, score in zip(candidate, read_candidate, strict=True) if j == control[0]]
+            pairs_all[name] = (0.0, math.fsum(same) / len(same) - read_control[0])
+        else:
+            pairs_all[name] = (
+                float(outputs[candidate[0]] - outputs[control[0]]),
+                float(read_candidate[0] - read_control[0]),
+            )
+    identical = frozenset(drawn_same if drawn_rule else every_same)
+    chosen = rng.sample([name for name in differences if name not in identical], n)
+    labels = PairLabels(
+        against="people",
+        against_id=None,
+        read_id="sim",
+        sample="random",
+        answered=n,
+        skipped=0,
+        population=frozenset(differences),
+        identical=identical,
+        pairs={name: pairs_all[name] for name in chosen},
+    )
+    return math.fsum(truths) / population, differences, labels
+
+
+def _varying_coverage(seed: str, *, scale: Scale, shift: float, drawn_rule: bool) -> float:
+    rng = random.Random(seed)
+    covered = 0
+    for _ in range(REPLICATES):
+        truth, differences, labels = _varying_replicate(
+            rng, scale=scale, population=100, k=3, n=PPI_DECISION_MIN_LABELLED_CASES, shift=shift, drawn_rule=drawn_rule
+        )
+        corrected = corrected_reading([labels], differences, direction=1, confidence=LEVEL)
+        assert corrected is not None and corrected.interval is not None
+        covered += corrected.interval[0] <= truth <= corrected.interval[1]
+    return covered / REPLICATES
+
+
+@pytest.mark.parametrize("scale", ["pass_fail", "ordinal"])
+@pytest.mark.parametrize("shift", [0.0, 0.6])
+def test_outputs_that_vary_across_repeats_are_covered_when_a_coinciding_draw_is_an_ordinary_pair(
+    scale: Scale, shift: float
+) -> None:
+    coverage = _varying_coverage(f"varying|{scale}|{shift}", scale=scale, shift=shift, drawn_rule=False)
+    assert coverage >= COVERS_AT_LEAST, coverage
+
+
+@pytest.mark.parametrize("scale", ["pass_fail", "ordinal"])
+def test_a_coinciding_draw_read_as_the_zero_stratum_misses_a_real_difference(scale: Scale) -> None:
+    """The rule before: a case whose two drawn outputs coincided weighed in at zero, though its outputs vary and its
+    difference does not average zero. The estimate shrinks toward zero by the share of such draws."""
+    coverage = _varying_coverage(f"varying|{scale}|0.6", scale=scale, shift=0.6, drawn_rule=True)
+    assert coverage < COVERS_AT_LEAST, coverage

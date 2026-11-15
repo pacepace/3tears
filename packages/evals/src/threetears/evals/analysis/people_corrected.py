@@ -14,8 +14,11 @@ labelled cases ``L`` (a random sample of ``n``), ``Y_i`` is the reader's differe
 
 Its standard error is the case-clustered linearisation of
 :func:`~threetears.evals.analysis.stats.prediction_powered_mean`, which this calls rather than restates, read on t with
-``n - 1`` degrees of freedom. A case whose two drawn outputs are byte-identical is a known stratum: the reader's
-difference there is zero, so it is weighted in at its share of ``G`` and estimates nothing.
+``n - 1`` degrees of freedom. A case whose outputs are byte-identical across every repeat of both arms is a known
+stratum: the reader's difference there is zero, so it is weighted in at its share of ``G`` and estimates nothing. A
+case whose outputs vary across repeats is never in it, even where its two drawn outputs happen to coincide: that draw
+is an ordinary labelled pair, the reader's difference zero and the judge's its own on the two results, since the
+case's difference in expectation is not zero.
 
 **The check** (:func:`corrected_reading`) is one field on the contrast, ``corrected``: a result of the four
 :data:`~threetears.evals.kernel.evidence_tiers.CriterionState` values on the contrast's one verdict, never a second
@@ -24,7 +27,8 @@ verdict. ``met`` confirms it; ``not_met`` with ``people_disagree`` contradicts i
 nothing at the decision floor or above; ``insufficient`` with ``too_few`` holds figures below it. Where no figure can
 be stated the field's state is ``not_available`` with one reason of the shared set
 (:mod:`~threetears.evals.schema.reading_states`). Whether a check may move a decision is read off its labelled cases
-(:func:`decides`), never stored.
+(:func:`decides`), never stored, and only a person's check does: a model's check is the field only where no person
+read the contrast, and otherwise rides beside the person's (``model_check``) so a lean it found is never lost.
 
 ``tests/test_simulated_people_corrected.py`` holds the estimator's coverage and the decision floor
 (:data:`PPI_DECISION_MIN_LABELLED_CASES`, the smallest number of labelled cases that met every bar, and at least 40:
@@ -36,7 +40,7 @@ This module computes numbers and prints nothing.
 from __future__ import annotations
 
 import math
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Final, Literal, NamedTuple
 
 from threetears.evals.analysis.blind_read import sample_standing
@@ -46,7 +50,7 @@ from threetears.evals.kernel.evidence_tiers import CriterionState
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
 from threetears.evals.kernel.result_reading import ResultView
-from threetears.evals.schema.blind_read import BlindAnswer, BlindRaterKind, BlindRead
+from threetears.evals.schema.blind_read import BlindAnswer, BlindItem, BlindRaterKind, BlindRead
 from threetears.evals.schema.models import SCALES
 from threetears.evals.schema.reading_states import NotAvailableReason, Reason, SampleKind, StateOf
 
@@ -87,7 +91,7 @@ class PeopleCorrectedDifference(NamedTuple):
     :ivar lean_interval: The interval on the lean at the same confidence; None below two labelled cases.
     :ivar cases: The population's cases.
     :ivar labelled_cases: The labelled pair items.
-    :ivar identical_cases: The population's cases whose two drawn outputs were byte-identical.
+    :ivar identical_cases: The population's cases whose outputs were byte-identical across every repeat of both arms.
     """
 
     estimate: float
@@ -123,7 +127,7 @@ def prediction_powered_difference(
     :param labelled: For each labelled case, ``(Y_i, F^L_i)``: the reader's and the judge's candidate-minus-control
         difference on the two drawn outputs.
     :ptype labelled: Mapping[str, tuple[float, float]]
-    :param identical: The population's cases whose two drawn outputs were byte-identical.
+    :param identical: The population's cases whose outputs were byte-identical across every repeat of both arms.
     :ptype identical: Collection[str]
     :param confidence: The intervals' two-sided level.
     :ptype confidence: float
@@ -210,7 +214,7 @@ class PairLabels(NamedTuple):
     :ivar answered: The items the reader answered, skipped ones included.
     :ivar skipped: Of those, the items that gave no verdict on both outputs on this criterion.
     :ivar population: The read's cases on which both arms carry the judge's case mean.
-    :ivar identical: Of those, the cases whose two drawn outputs were byte-identical.
+    :ivar identical: Of those, the cases whose outputs were byte-identical across every repeat of both arms.
     :ivar pairs: Each labelled case's ``(Y_i, F^L_i)``, candidate minus control.
     """
 
@@ -263,7 +267,7 @@ def pair_labels(
     if any(output.result_id not in cells[output.arm] for item in read.items for output in item.outputs):
         return []
     population = frozenset(item.case_id for item in read.items if item.case_id in case_differences)
-    identical = frozenset(item.case_id for item in read.items if len(item.outputs) == 1) & population
+    identical = _identical_cases(cells.values(), dimension, population, judge_values)
     readers = sorted({(answer.rater, answer.rater_kind) for answer in read.answers})
     found: list[PairLabels] = []
     for rater, kind in readers:
@@ -275,19 +279,24 @@ def pair_labels(
         skipped = 0
         for item in read.items:
             answer = own.get(item.item)
-            if answer is None or len(item.outputs) != 2:
+            if answer is None or item.case_id in identical:
                 continue
             given = {verdict.slot: verdict.score for verdict in answer.verdicts if verdict.dim == dimension}
             if answer.skipped or set(given) != {output.slot for output in item.outputs}:
                 skipped += 1
                 continue
+            if item.case_id not in population:
+                continue
+            if len(item.outputs) == 1:
+                # The two drawn outputs coincided on a case whose outputs vary across repeats: a pair the reader sees
+                # no difference in, read against the judge's own on the two results.
+                coinciding = _coinciding(item, cells[candidate[0]], dimension, judge_values)
+                if coinciding is not None:
+                    pairs[item.case_id] = (0.0, coinciding)
+                continue
             by_arm = {output.arm: output for output in item.outputs}
             low, high = by_arm[control[0]], by_arm[candidate[0]]
-            if (
-                item.case_id not in population
-                or low.result_id not in judge_values
-                or high.result_id not in judge_values
-            ):
+            if low.result_id not in judge_values or high.result_id not in judge_values:
                 continue
             reader = counted_label(cells[candidate[0]][high.result_id], dimension, float(given[high.slot])) - (
                 counted_label(cells[control[0]][low.result_id], dimension, float(given[low.slot]))
@@ -308,6 +317,49 @@ def pair_labels(
             )
         )
     return found
+
+
+def _identical_cases(
+    cells: Iterable[Mapping[str, ResultView]],
+    dimension: str,
+    population: Collection[str],
+    judge_values: Mapping[str, float],
+) -> frozenset[str]:
+    """The cases of ``population`` whose every counted result, in both cells and on every repeat, judged one output.
+
+    A result whose score carries no output fingerprint cannot say, so its case is not in the stratum.
+    """
+    seen: dict[str, set[str | None]] = {}
+    for cell in cells:
+        for result in cell.values():
+            if result.test_case_id in population and result.id in judge_values:
+                score = result.judge_score(dimension)
+                seen.setdefault(result.test_case_id, set()).add(None if score is None else score.output_fingerprint)
+    return frozenset(case for case, outputs in seen.items() if len(outputs) == 1 and None not in outputs)
+
+
+def _coinciding(
+    item: BlindItem, candidate: Mapping[str, ResultView], dimension: str, judge_values: Mapping[str, float]
+) -> float | None:
+    """The judge's candidate-minus-control difference on an item whose two drawn outputs coincided.
+
+    The item shows the control's result; the candidate's drawn one is a result of the case judging the same output,
+    so the candidate's side is the judge's mean over those. None where either side has no counted score.
+    """
+    (shown,) = item.outputs
+    if shown.result_id not in judge_values:
+        return None
+    same = [
+        judge_values[result.id]
+        for result in candidate.values()
+        if result.test_case_id == item.case_id
+        and result.id in judge_values
+        and (score := result.judge_score(dimension)) is not None
+        and score.output_fingerprint == shown.output_fingerprint
+    ]
+    if not same:
+        return None
+    return math.fsum(same) / len(same) - judge_values[shown.result_id]
 
 
 def _against(kind: BlindRaterKind) -> Literal["people", "model"]:
@@ -336,9 +388,13 @@ def corrected_reading(
 ) -> Corrected | None:
     """The ``corrected`` check of one judged contrast's verdict, from the readers who labelled its criterion.
 
-    One reader's labels decide it. A reader whose labels state a figure goes before one whose do not, a person before
-    a model, and more labelled cases before fewer; the rest are ties, broken by the read and the reader. A person and
-    a model are never pooled, nor two readers.
+    A person's check is the field wherever a person labelled the criterion, whatever it reads: a model's read never
+    lifts a state a person's read is required for, so it never stands in for a person's check that cannot decide.
+    Where a model also labelled it, the model's check rides beside it (``Corrected.model_check``), so a lean the model
+    found is never hidden by a person's check that is undecided or short of labels. With no person, the model's check
+    is the field. Among readers of one kind, one whose labels state a figure goes before one whose do not, and more
+    labelled cases before fewer; the rest are ties, broken by the read and the reader. A person and a model are never
+    pooled, nor two readers.
 
     The result, where a figure is stated:
 
@@ -368,16 +424,37 @@ def corrected_reading(
     """
     if not labels:
         return None
-    reader = min(
-        labels,
-        key=lambda one: (
-            _unavailable(one) is not None,
-            one.against != "people",
-            -len(one.pairs),
-            one.read_id,
-            one.against_id or "",
-        ),
+    people = [one for one in labels if one.against == "people"]
+    models = [one for one in labels if one.against == "model"]
+    checks = {
+        kind: _check(
+            _first(readers), case_differences, direction=direction, confidence=confidence, state=contrast_state
+        )
+        for kind, readers in (("people", people), ("model", models))
+        if readers
+    }
+    if "people" not in checks:
+        return checks["model"]
+    return checks["people"].model_copy(update={"model_check": checks.get("model")})
+
+
+def _first(readers: Sequence[PairLabels]) -> PairLabels:
+    """The reader of one kind whose labels speak: one stating a figure, then the most labelled cases, then by id."""
+    return min(
+        readers,
+        key=lambda one: (_unavailable(one) is not None, -len(one.pairs), one.read_id, one.against_id or ""),
     )
+
+
+def _check(
+    reader: PairLabels,
+    case_differences: Mapping[str, float],
+    *,
+    direction: Literal[-1, 1],
+    confidence: float,
+    state: StateOf | None,
+) -> Corrected:
+    """One reader's check of the verdict: its figures and result, or the state that keeps them from being stated."""
     level = f"{format_number(100 * confidence)}%"
     named = Corrected(
         against=reader.against,
@@ -386,8 +463,8 @@ def corrected_reading(
         identical_cases=len(reader.identical),
         read_id=reader.read_id,
     )
-    if contrast_state is not None and contrast_state.reason == "identity_unrecorded":
-        unrecorded = StateOf(state="not_available", reason="identity_unrecorded", coordinate=contrast_state.coordinate)
+    if state is not None and state.reason == "identity_unrecorded":
+        unrecorded = StateOf(state="not_available", reason="identity_unrecorded", coordinate=state.coordinate)
         return named.model_copy(update={"state": unrecorded})
     if (reason := _unavailable(reader)) is not None:
         return named.model_copy(update={"state": StateOf(state="not_available", reason=reason)})
@@ -433,8 +510,12 @@ def _excludes_zero(interval: tuple[float, float], direction: int) -> bool:
 
 
 def decides(corrected: Corrected) -> bool:
-    """Whether a ``corrected`` check may move a decision: it states figures from at least
+    """Whether a ``corrected`` check may move a decision: a person's check stating figures from at least
     :data:`PPI_DECISION_MIN_LABELLED_CASES` labelled cases. Read off the field, never stored on it.
+
+    A model's check never decides, the field's or the one carried beside a person's (``model_check``): its coverage is
+    for the model's opinion, not people's. A lean it found (``not_met``, ``instrument_leans``) is a warning the reader
+    is shown, never a decision this reads.
 
     :param corrected: The check.
     :ptype corrected: Corrected
@@ -442,7 +523,8 @@ def decides(corrected: Corrected) -> bool:
     :rtype: bool
     """
     return (
-        corrected.state is None
+        corrected.against == "people"
+        and corrected.state is None
         and corrected.result is not None
         and (corrected.labelled_cases or 0) >= PPI_DECISION_MIN_LABELLED_CASES
     )

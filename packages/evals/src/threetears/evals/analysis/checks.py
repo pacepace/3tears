@@ -17,9 +17,9 @@ Nothing here computes: each shape is filled where its statistic is computed and 
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from threetears.evals.schema.reading_states import Coordinate, Reason, SampleKind, StateOf
 from threetears.evals.kernel.evidence_tiers import CriterionState
@@ -93,9 +93,28 @@ class Corrected(_Shape):
     lean_interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
     labelled_cases: int | None = Field(default=None, description="Cases both the judge and the other reader read.")
     identical_cases: int | None = Field(
-        default=None, description="The cases whose two drawn outputs were byte-identical, weighted in at zero."
+        default=None,
+        description="The cases whose outputs were byte-identical across every repeat of both arms, weighted in at zero.",
     )
     read_id: str | None = Field(default=None, description="The blind read the correction rests on.")
+    model_check: Corrected | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Where this is a person's check and a model also read the contrast: the model's check of the same "
+            "verdict, carried so a lean it found is never lost. It never decides and never lifts a state; the "
+            "person's check above is the one a decision reads."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _one_check_decides(self) -> Self:
+        """A model's check rides beside a person's only, and carries none of its own."""
+        if self.model_check is not None and (
+            self.against != "people" or self.model_check.against != "model" or self.model_check.model_check is not None
+        ):
+            raise ValueError("a model's check is carried beside a person's check only, and carries none of its own")
+        return self
 
 
 class Rescore(_Shape):

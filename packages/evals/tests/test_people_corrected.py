@@ -216,16 +216,70 @@ class TestTheOutcomes:
             state="not_available", reason="identity_unrecorded", coordinate="served_model"
         )
 
-    def test_a_person_is_read_before_a_model_and_a_stated_figure_before_none(self) -> None:
+    def test_a_person_s_check_is_the_field_and_a_model_s_rides_beside_it(self) -> None:
         pairs = OUTCOMES["met"][0]
         differences = {case: judge for case, (_, judge) in pairs.items()}
         model = _labels(pairs, against="model", read_id="read-m")
         person = _labels(dict(list(pairs.items())[:30]), read_id="read-p")
         chosen = corrected_reading([model, person], differences, direction=1, confidence=0.95)
-        assert chosen is not None and (chosen.against, chosen.read_id) == ("people", "read-p")
+        assert chosen is not None and (chosen.against, chosen.read_id, chosen.result) == (
+            "people",
+            "read-p",
+            "insufficient",
+        )
+        assert chosen.model_check is not None
+        assert (chosen.model_check.against, chosen.model_check.result) == ("model", "met")
+        assert not decides(chosen) and not decides(chosen.model_check)
+        # A person's sample that was not drawn at random is still the field: a model never stands in for it.
         unusable = _labels(pairs, sample="selected", read_id="read-s")
         chosen = corrected_reading([unusable, model], differences, direction=1, confidence=0.95)
-        assert chosen is not None and (chosen.against, chosen.against_id) == ("model", "sim/reviewer")
+        assert chosen is not None and chosen.against == "people"
+        assert chosen.state == StateOf(state="not_available", reason="not_drawn_at_random")
+        assert chosen.model_check is not None and chosen.model_check.against_id == "sim/reviewer"
+
+    def test_among_people_a_stated_figure_goes_first_then_more_labels(self) -> None:
+        pairs = OUTCOMES["met"][0]
+        differences = {case: judge for case, (_, judge) in pairs.items()}
+        fewer = _labels(dict(list(pairs.items())[:30]), read_id="read-a")
+        more = _labels(pairs, read_id="read-b")
+        unusable = _labels(pairs, sample="selected", read_id="read-0")
+        chosen = corrected_reading([fewer, unusable, more], differences, direction=1, confidence=0.95)
+        assert chosen is not None and (chosen.read_id, chosen.model_check) == ("read-b", None)
+
+    def test_a_model_s_lean_is_never_hidden_by_a_person_s_check_that_cannot_decide(self) -> None:
+        # A person with 30 labelled cases (insufficient) and a model with 80 that finds the judge leaning.
+        leaning = OUTCOMES["instrument_leans"][0]
+        differences = {case: judge for case, (_, judge) in leaning.items()}
+        person = _labels(dict(list(OUTCOMES["undecided"][0].items())[:30]), read_id="read-p")
+        model = _labels(leaning, against="model", read_id="read-m")
+        corrected = corrected_reading([person, model], differences, direction=1, confidence=0.95)
+        assert corrected is not None
+        assert (corrected.against, corrected.result, corrected.reason) == ("people", "insufficient", "too_few")
+        assert corrected.model_check is not None
+        assert (corrected.model_check.result, corrected.model_check.reason) == ("not_met", "instrument_leans")
+        assert corrected.model_check.labelled_cases == PPI_DECISION_MIN_LABELLED_CASES
+        # The contrast's eligibility is the person's check's alone.
+        assert not decides(corrected)
+
+    def test_a_model_alone_is_the_field_and_never_decides(self) -> None:
+        pairs = OUTCOMES["met"][0]
+        differences = {case: judge for case, (_, judge) in pairs.items()}
+        corrected = corrected_reading([_labels(pairs, against="model")], differences, direction=1, confidence=0.95)
+        assert corrected is not None
+        assert (corrected.against, corrected.result, corrected.model_check) == ("model", "met", None)
+        assert not decides(corrected)
+
+    def test_a_model_s_check_rides_beside_a_person_s_only_and_one_deep(self) -> None:
+        model = Corrected(against="model", against_id="sim/reviewer")
+        with pytest.raises(ValueError, match="beside a person's check only"):
+            Corrected(against="model", model_check=model)
+        with pytest.raises(ValueError, match="beside a person's check only"):
+            Corrected(against="people", model_check=Corrected(against="people"))
+        with pytest.raises(ValueError, match="beside a person's check only"):
+            Corrected(against="people", model_check=Corrected(against="model", model_check=model))
+        carried = Corrected(against="people", model_check=model)
+        assert Corrected.model_validate(carried.model_dump()) == carried
+        assert "model_check" not in Corrected(against="people").model_dump(exclude_none=False)
 
     def test_no_reader_no_field(self) -> None:
         assert corrected_reading([], {"a": 1.0}, direction=1, confidence=0.95) is None
@@ -416,6 +470,70 @@ class TestTheLabelsOfABlindRead:
             )
             == []
         )
+
+
+def _one(rid: str, run_id: str, case: str, artifact: str, score: int) -> tuple[EvalResult, JudgeEvidence]:
+    """One result judged on ``DIM`` over ``artifact``, with the evidence the judge read."""
+    read = JudgeEvidence(case_material=case, artifact=artifact)
+    key = label_key_of(read, DIM)
+    result = make_eval_result(
+        id=rid,
+        eval_run_id=run_id,
+        test_case_id=case,
+        rubric_scores=[
+            RubricScore(
+                dim=DIM.name,
+                score=score,
+                scale="pass_fail",
+                axis="capability",
+                served_model="sim/judge",
+                judge_temperature=0.0,
+                output_fingerprint=key.output_fingerprint,
+                criterion_fingerprint=key.criterion_fingerprint,
+            )
+        ],
+    )
+    return result, read
+
+
+class TestTheIdenticalStratum:
+    """Only a case whose outputs are byte-identical across every repeat of both arms is the zero stratum; a case whose
+    outputs vary, where the two drawn ones coincide, is an ordinary pair (``test_simulated_people_corrected.py``
+    holds the estimate over both)."""
+
+    def _read(self) -> tuple[list[PairLabels], list[EvalResult]]:
+        results, evidence, arms = _population(30)
+        # Identical on every repeat: the stratum. The judge reads the two copies apart, which the stratum ignores.
+        for result, read in (
+            _one("same-a", "run-a", "case-0100", "one answer", 0),
+            _one("same-b", "run-b", "case-0100", "one answer", 1),
+            # Varying across repeats: the candidate's second repeat answered otherwise and is not shown (no evidence
+            # stored), so the drawn pair coincides on "a shared answer" while the case's outputs differ.
+            _one("vary-a", "run-a", "case-0101", "a shared answer", 0),
+            _one("vary-b", "run-b", "case-0101", "a shared answer", 1),
+        ):
+            results.append(result)
+            evidence[result.id] = read
+        unshown, _ = _one("vary-b2", "run-b", "case-0101", "another answer", 0)
+        results.append(unshown)
+        read = draw_blind_read(
+            results, evidence, [DIM], arms, scope_id="sim", created_by="sim", created_at="t0", seed=7, planned_items=32
+        )
+        singles = {item.case_id for item in read.items if len(item.outputs) == 1}
+        assert singles == {"case-0100", "case-0101"}
+        answered = _answered(read, results, len(read.items))
+        return _labels_of(answered, results), results
+
+    def test_a_case_identical_on_every_repeat_is_the_stratum_and_labels_nothing(self) -> None:
+        (labels,), _ = self._read()
+        assert labels.identical == frozenset({"case-0100"})
+        assert "case-0100" not in labels.pairs
+
+    def test_a_coinciding_draw_over_varying_outputs_is_a_pair_the_reader_sees_no_difference_in(self) -> None:
+        (labels,), _ = self._read()
+        # Reader: zero, one output seen. Judge: the candidate's results over that output, less the control's.
+        assert labels.pairs["case-0101"] == (0.0, 1.0)
+        assert (labels.answered, labels.skipped, len(labels.pairs)) == (32, 0, 31)
 
 
 def _family(p_judged: float, p_other: float) -> MultipleComparisons:
