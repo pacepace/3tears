@@ -2,14 +2,15 @@
 
 :func:`variant_key_of_run` and :func:`_variant_key_of` read the variant key a run or result was stamped with,
 :func:`observations_of` turns a campaign's results into the observations the cell algebra pools,
-:func:`classify_apparatus` classifies each run's rig, and :func:`measure_definition_levels` reads the definitions of
-its host's measures each run's values were read under.
+:func:`classify_apparatus` classifies each run's rig, :func:`measure_definition_levels` reads the definitions of
+its host's measures each run's values were read under, and :func:`split_coordinates` says which coordinates of its
+identity one arm's results, read together, are split on, for the lenses that read results outside a campaign's cells.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
 from threetears.evals.analysis.cells import (
     MEASURE_DEFINITIONS_DIMENSION,
@@ -17,6 +18,14 @@ from threetears.evals.analysis.cells import (
     ApparatusClass,
     Observation,
     apparatus_class_of,
+    pool_observations,
+    split_on_served_model,
+)
+from threetears.evals.analysis.reporting import (
+    attested_served_models,
+    served_level,
+    served_reading,
+    through_attestation,
 )
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.host.profile import HostProfile
@@ -26,6 +35,7 @@ from threetears.evals.kernel.metrics import holds_host_measure
 from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.kernel.scoring import definitions_unrecorded, remeasure_unfinished
 from threetears.evals.schema.hashing import canonical_digest
+from threetears.evals.schema.reading_states import Coordinate
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun
@@ -105,6 +115,55 @@ def measure_definition_levels(
     said = set(levels.values())
     # One silent run beside nothing else separates nothing either: there is no other run to pool or contrast it with.
     return levels if len(said) > 1 or (None in said and len(levels) > 1) else {}
+
+
+def split_coordinates(runs: Sequence[EvalRun], results: Sequence[ResultView]) -> list[Coordinate]:
+    """The coordinates of its identity one arm's results, read together, are split on, as a campaign's cells split
+    them: what a lens that pools them into one figure, or reads a step between them, asks first.
+
+    Read through the cell algebra itself, never beside it: each run's rig is classified on the definitions of its
+    host's measures alone (:func:`measure_definition_levels`, :func:`classify_apparatus`), split on the model that
+    answered (:func:`~threetears.evals.analysis.cells.split_on_served_model`, a silence its host stated read through
+    the statement) and pooled (:func:`~threetears.evals.analysis.cells.pool_observations`), and the answer is its
+    cells' ``Cell.split_on``. So an unrecorded coordinate matches nothing, not even another run's silence, exactly
+    as it does in a campaign.
+
+    :param runs: The runs the results belong to; others are ignored.
+    :ptype runs: Sequence[EvalRun]
+    :param results: One arm's results: a contestant's, in one series point, one step or one pivot cell.
+    :ptype results: Sequence[ResultView]
+    :return: The coordinates split on, in the order :data:`~threetears.evals.schema.reading_states.Coordinate`
+        lists them; empty where the results are one cell on every coordinate the package reads.
+    :rtype: list[Coordinate]
+    """
+    results_by_run: dict[str, list[ResultView]] = {}
+    for result in results:
+        results_by_run.setdefault(result.eval_run_id, []).append(result)
+    held = [run for run in runs if run.id in results_by_run]
+    levels = measure_definition_levels(held, results_by_run)
+    classes = classify_apparatus(held, {MEASURE_DEFINITIONS_DIMENSION: levels} if levels else {})
+    attested = attested_served_models(held)
+    observations = [
+        Observation(
+            id=result.id,
+            scope_id=run.scope_id,
+            variant_key="arm",
+            apparatus_class_id=classes[run.id].apparatus_class_id,
+            apparatus_ref=run.id,
+        )
+        for run in held
+        for result in results_by_run[run.id]
+    ]
+    served = {
+        result.id: served_level(through_attestation(reading, attested.get(result.id)))
+        for result in results
+        if (reading := served_reading(result)) is not None
+    }
+    placed, by_class = split_on_served_model(
+        observations, {klass.apparatus_class_id: klass for klass in classes.values()}, served
+    )
+    cells, _refused, _next = pool_observations(placed, by_class)
+    return [coordinate for coordinate in get_args(Coordinate) if any(coordinate in cell.split_on for cell in cells)]
 
 
 def observations_of(
@@ -278,5 +337,6 @@ def variant_key_of_run(results: Sequence[ResultView]) -> str | None:
 __all__ = [
     "classify_apparatus",
     "observations_of",
+    "split_coordinates",
     "variant_key_of_run",
 ]

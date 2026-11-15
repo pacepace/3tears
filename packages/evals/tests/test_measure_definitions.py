@@ -247,7 +247,8 @@ async def test_runs_launched_under_two_definitions_of_one_measure_never_share_a_
     disclosure = grouped["measure_definition_disclosure"]
     assert FIELD_ACCURACY in disclosure and redefined.id in disclosure
     assert "pass^k and a campaign's cells keep them apart, and no contrast is read between them" in disclosure
-    assert "frontier's composite still pool them" in disclosure, "and names what still groups by contestant"
+    assert "a pivot withholds a cell that would pool them" in disclosure, "and how the lenses outside the cells read it"
+    assert "still pool" not in disclosure, "nothing pools them any more"
 
 
 async def test_runs_of_one_definition_carry_no_badge_and_no_disclosure() -> None:

@@ -7645,8 +7645,9 @@ def _short_run(status, completeness, *, subject_id="ent-maple", model="sonnet", 
             test_case_id=f"tc-{i}",
             model=model,
             # A production-replicating cost, so the frontier can name a verdict at all —
-            # a pick cannot be called cheapest on a cost nobody observed.
-            usage=[RoleUsage(role="candidate", cost_usd=0.01)],
+            # a pick cannot be called cheapest on a cost nobody observed. Its response names the model that
+            # answered, as a launch records it: two runs whose responses named none are never stepped between (#1187).
+            usage=[RoleUsage(role="candidate", cost_usd=0.01, served_model=model)],
         )
         for i in range(1, n_results + 1)
     ]

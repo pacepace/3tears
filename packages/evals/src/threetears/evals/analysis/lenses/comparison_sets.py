@@ -254,8 +254,10 @@ def measure_definition_disclosure(
     **What it says is kept apart is what is kept apart**: the frontier's pass^k cells, and a campaign's own cells,
     where a host measure's definition is a dimension of the rig
     (:data:`~threetears.evals.analysis.cells.MEASURE_DEFINITIONS_DIMENSION`), so such runs share no cell and no
-    contrast. The lenses that read runs outside a campaign's cells (history, pivot, the frontier's composite) group
-    by contestant still, and the sentence says so.
+    contrast; the lenses that read runs outside a campaign's cells keep them apart the same way
+    (:func:`~threetears.evals.analysis.bundle.observations.split_coordinates`): a history marks a boundary between
+    them, a pivot withholds a cell that would pool them, and the frontier's composite, cost and latency read its
+    headline pass^k cell.
 
     :param runs: One comparison group's runs.
     :ptype runs: Sequence[EvalRun]
@@ -290,9 +292,9 @@ def measure_definition_disclosure(
         sentences.append(
             f"The host defined {', '.join(moved)} in more than one way across these runs "
             f"(runs read under one definition together: {groups}), so their values are not one quantity. pass^k and "
-            "a campaign's cells keep them apart, and no contrast is read between them; history, a pivot and the "
-            f"frontier's composite still pool them, so read {', '.join(moved)} there as a mixture. A re-measure reads "
-            "a run again under the current definitions."
+            "a campaign's cells keep them apart, and no contrast is read between them; a history marks the change as "
+            "a boundary, a pivot withholds a cell that would pool them, and the frontier reads one definition's runs. "
+            "A re-measure reads a run again under the current definitions."
         )
     if silent:
         sentences.append(
@@ -368,8 +370,8 @@ def _served_model_group_reading(
         each = "; ".join(f"{model} ({_listed(run_ids)})" for model, run_ids in sorted(answered.items()))
         sentences.append(
             f"The runs that asked for {requested} were answered by more than one model ({each}), so their figures "
-            "are not one model's. A campaign's cells and pass^k keep them apart; history, a pivot and the "
-            "frontier's composite still pool them."
+            "are not one model's. A campaign's cells and pass^k keep them apart; a history marks the change as a "
+            "boundary, a pivot withholds a cell that would pool them, and the frontier reads one model's runs."
         )
     if silent:
         sentences.append(

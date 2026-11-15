@@ -79,6 +79,7 @@ from threetears.evals.analysis.depth import (
     model_pass_hat_k,
     pass_hat_k_over,
 )
+from threetears.evals.analysis.bundle.observations import split_coordinates
 from threetears.evals.analysis.reporting import (
     place_results,
     attested_served_models,
@@ -371,8 +372,8 @@ class PassHatKCellReading(EvalBaseModel):
     headline, never dropped. A headline that is itself a cell of one run, beside other cells kept out, carries the
     reason it pools with nothing (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_alone`), so the point says
     its pass^k rests on one run whose record is incomplete; a point of one cell keeps nothing out and says nothing of
-    its cells. The point's composite, cost and latency still pool every run of the variant
-    (:data:`PASS_HAT_K_CELL_READING`).
+    its cells. The point's composite, cost and latency read the headline cell's runs and every other run one cell with
+    them on the served model and the definitions of the host's measures (:data:`PASS_HAT_K_CELL_READING`).
     """
 
     run_ids: list[str]
@@ -394,14 +395,16 @@ class PassHatKCellReading(EvalBaseModel):
 
 #: What "kept out" covers, said once before a contestant's cell lines wherever they are shown (the frontier's text,
 #: the report page's run disclosures): the frontier's pass^k, its interval, its bar and its verdict leave a kept-out
-#: run out, its composite, cost and latency still count it, and a campaign's cells keep apart what they split on
-#: (the served model, and the rig, which holds each host measure's definition).
+#: run out, its composite, cost and latency leave it out where it is apart on the served model or a host measure's
+#: definition, and a campaign's cells keep apart what they split on (the served model, and the rig, which holds each
+#: host measure's definition).
 PASS_HAT_K_CELL_READING = (
     "An arm's frontier pass^k, with its interval, bar and verdict, reads its headline pass^k cell alone: one "
     "measurement context, template revision, definition of each host measure, apparatus provenance and served model, "
     "whatever cases each run covered "
     "and whenever it ran. A run of another such cell is named below with why and its own pass^k, and is kept out of "
-    "that headline: the frontier's composite, cost and latency for the arm still count it. A campaign's own cells, "
+    "that headline; the frontier's composite, cost and latency for the arm leave it out too where another model "
+    "answered it or another definition read it, or either went unrecorded, and count it otherwise. A campaign's own cells, "
     "and the tables and contrasts read from them, each hold one served model and one definition of each host "
     "measure: there a run answered by another model, or by one no response named, is read in a cell of its own, and "
     "a run read under another definition, or under none recorded, is under a test setup of its own and is compared "
@@ -592,7 +595,8 @@ class FrontierPoint(EvalBaseModel):
     # pass^k would price a k-attempt streak at one attempt's cost. ``None`` when
     # cost is unknown or pass^1 is zero (dividing by a zero pass rate is undefined,
     # not "infinitely expensive"). Both sides read the headline pass^k cell's runs, so its cost can
-    # differ from ``production_replicating_cost``, which pools every run of the variant.
+    # differ from ``production_replicating_cost``, which also reads runs one cell with them on the served model and
+    # the definitions of the host's measures.
     cost_per_acceptable_outcome: float | None = None
     #: What the runs behind ``production_replicating_cost`` set away from the subject's production configuration
     #: (#571), each run's own footing read off the host's sweepable declarations: the cost is what production would
@@ -667,12 +671,12 @@ class FrontierPoint(EvalBaseModel):
     #: point, so none leaves the counts unsaid.
     pass_hat_k_cells: list[PassHatKCellReading] = []
 
-    #: Which models the provider's responses named as having answered this contestant's candidate calls (#684):
-    #: ``one``, ``pooled`` — the contestant asked for one model id (a floating alias, say) and several models
-    #: answered, so every axis here is a mixture of them — or ``unrecorded``, where some response named none and
-    #: whether one model answered cannot be established. A contestant is keyed at launch, before any response
-    #: names a model, so the mixture is disclosed rather than split. ``None`` when no result's candidate made a
-    #: call.
+    #: Which models the provider's responses named as having answered this contestant's candidate calls across all
+    #: its runs (#684): ``one``, ``pooled`` — the contestant asked for one model id (a floating alias, say) and
+    #: several models answered — or ``unrecorded``, where some response named none and whether one model answered
+    #: cannot be established. No axis here mixes them: every axis reads the headline pass^k cell, or runs one cell
+    #: with it on the served model, and :attr:`pass_hat_k_cells` names what answered each cell. ``None`` when no
+    #: result's candidate made a call.
     served_models: ServedModelReading | None = None
 
     # Domination — a dominated point is grayed, never dropped: silently removing a
@@ -998,11 +1002,25 @@ def _frontier_point(
         pass_by_case.setdefault(test_case_id, []).append(estimate)
     pass_interval = case_rate_interval(unit_estimates, max_effective_n=unit_attempts / k) if unit_estimates else None
 
+    # composite, cost and latency read the headline cell's runs and every other run that is one cell with them on
+    # the coordinates a campaign's cells split on (split_coordinates): a run answered by another model, or read under
+    # another definition of a host measure, or with either unrecorded, is kept out of every axis the point is ranked
+    # on, never pooled into one of them, and is named beside it with its own pass^k.
+    axis_ids = headline_ids | {
+        run_id
+        for run_id in {r.eval_run_id for r in results} - headline_ids
+        if not split_coordinates(
+            [runs_by_id[held] for held in headline_ids | {run_id}],
+            [r for r in results if r.eval_run_id in headline_ids or r.eval_run_id == run_id],
+        )
+    }
+    axis_results = [r for r in results if r.eval_run_id in axis_ids]
+    #
     # composite — case-weighted mean of the 0-1 scores, dropping the nulls that
     # mark infra-excluded and no-rubric results (a candidate failure scores 0.0
     # and stays in, depressing the mean rather than vanishing).
     values_by_case: dict[str, list[float]] = {}
-    for result in results:
+    for result in axis_results:
         composite = result_composite(result)
         if composite is not None:
             values_by_case.setdefault(result.test_case_id, []).append(composite)
@@ -1042,7 +1060,7 @@ def _frontier_point(
                     candidate_kind=r.candidate_kind,
                 ),
             )
-            for r in results
+            for r in axis_results
             if delivered_a_turn(r)
         )
         if c is not None
@@ -1051,13 +1069,13 @@ def _frontier_point(
     observed_costs = [c for _, c in priced]
     n_cost = len(observed_costs)
     prod_cost = math.fsum(observed_costs) / n_cost if n_cost else None
-    cost_is_partial = 0 < n_cost < len(results)
+    cost_is_partial = 0 < n_cost < len(axis_results)
     # What that mean is made of. The frontier RANKS on cost, so a contestant whose run
     # priced its search calls against one whose run did not is a comparison of conventions
     # wearing the clothes of a comparison of configs — and nothing else on the point shows
     # it. Disclosed rather than corrected: which of the two is "right" depends on what the
     # operator is deciding, and the numbers are each honest about their own run.
-    cost_compositions = pooled_cost_compositions(results)
+    cost_compositions = pooled_cost_compositions(axis_results)
 
     # latency — total wall-clock ms over the results that harvested a total, MINUS the cells a
     # harness failure produced. The same predicate `compute_pass_hat_k` and `compute_dimension_summary`
@@ -1072,7 +1090,7 @@ def _frontier_point(
     # that long.
     timed = [
         (r.test_case_id, r.latency.total_ms)
-        for r in results
+        for r in axis_results
         if r.latency is not None and r.latency.total_ms is not None and delivered_a_turn(r)
     ]
     totals = [total for _, total in timed]
@@ -1081,7 +1099,7 @@ def _frontier_point(
 
     # cost / pass-probability — undefined when cost is unknown or nothing passed.
     # One attempt's mean cost over one attempt's pass probability, pass^1 — see the field. Both sides read the
-    # headline cell's runs: pass^1 is that cell's, so a cost over every run would divide one set by another.
+    # headline cell's runs: pass^1 is that cell's, so a cost over other runs would divide one set by another.
     headline_costs = [c for run_id, _, c in priced_by_run if run_id in headline_ids]
     headline_cost = math.fsum(headline_costs) / len(headline_costs) if headline_costs else None
     cost_per_acceptable_outcome = (headline_cost / pass_hat_1) if (headline_cost is not None and pass_hat_1) else None
@@ -1141,7 +1159,7 @@ def _frontier_point(
         n_cases_short_of_k=pooled["n_cases_short_of_k"],
         mean_composite=mean_composite,
         composite_sem=composite_sem,
-        composite_basis=pooled_composite_basis(results) if mean_composite is not None else None,
+        composite_basis=pooled_composite_basis(axis_results) if mean_composite is not None else None,
         n_composite_cases=len(values_by_case),
         production_replicating_cost=prod_cost,
         n_cost=n_cost,
@@ -1156,7 +1174,7 @@ def _frontier_point(
         mean_total_ms=mean_total_ms,
         n_latency=n_latency,
         n_no_turn=sum(
-            1 for r in results if classify_result(r) is ResultOutcome.CANDIDATE_FAIL and not delivered_a_turn(r)
+            1 for r in axis_results if classify_result(r) is ResultOutcome.CANDIDATE_FAIL and not delivered_a_turn(r)
         ),
         n_results=len(results),
         n_cases=len({r.test_case_id for r in results}),

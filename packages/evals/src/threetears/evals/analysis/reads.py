@@ -1043,6 +1043,10 @@ def pivot(
             # never describe different sets.
             completeness_disclosures=projection.completeness_disclosures,
             predicted_cost=estimate,
+            # What each cell's arms are read for a coordinate of their identity by: one arm's results answered by two
+            # models, or read under two definitions, withhold the cell rather than pool into one mean.
+            runs=all_runs,
+            results=results,
             profile=profile,
         )
     except PivotError as e:

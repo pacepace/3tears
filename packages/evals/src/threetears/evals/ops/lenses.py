@@ -1707,6 +1707,10 @@ def history_text(result: HistoryResult) -> str:
                 else f", {forms.lone(point.delta_from_baseline, signed=True, measure=result.metric).text} from baseline"
             )
             epoch = ", suite changed here" if point.epoch_boundary else ""
+            if point.split_on:
+                # A boundary the series is not read across: no verdict for the step, a fresh baseline after it.
+                apart = " and ".join(word.replace("_", " ") for word in point.split_on)
+                epoch += f", {apart} apart from the previous run here: no step is read across it"
             if point.epoch_boundary and (point.epoch_label or previous_label):
                 epoch += f" ({previous_label or 'no named case set'} to {point.epoch_label or 'no named case set'})"
             previous_label = point.epoch_label

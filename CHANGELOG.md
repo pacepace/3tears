@@ -28,7 +28,7 @@ arm's one cell.
 
 **Changed:** `CELL_MODEL_VERSION` is 15: one move for the served-model split, the measure-definition setup and the
 unrecorded-served-model rule. The frontier's cell sentence and the comparison set's disclosures say what a
-campaign's cells keep apart, and which readers still pool.
+campaign's cells keep apart.
 
 **Changed:** every reader of the test setup reads the definitions, not the cells alone: the confound scans name
 `measure_definitions` (`apparatus_confounds`, a coverage row's `confounded_by`), and the divergence lens tests no pair
@@ -57,8 +57,17 @@ changes nothing. A statement is evidence: it moves the fingerprint of every bund
 
 **Changed:** a comparison set reads the served model: `served_model_differs` where runs that asked for one model were
 answered by two, `context_incomplete` where a run's responses named no model and nothing was stated, and
-`served_model_disclosure` says which runs. History, a pivot and the frontier's composite, cost and latency still pool
-across both coordinates, and the disclosures say so.
+`served_model_disclosure` says which runs.
+
+**Changed:** the lenses that read runs outside a campaign's cells keep apart what the cells keep apart, read through
+the cells themselves (`split_coordinates`): runs answered by different models, or read under different definitions of
+a host measure, or with either unrecorded, never pool. A history marks such a change between two runs as a boundary
+(`SeriesPoint.split_on` and `state`, new, left out when empty): no regression verdict across it, a fresh baseline
+after it, and a run that is itself split has no value. A pivot cell where one arm's observations are apart is
+`withheld` (`PivotCell.split_on` and `state`), and no pooled column figure is read over it; `compute_pivot` takes the
+`runs` and `results` behind its rows. A frontier point's composite, cost, latency and cost per acceptable outcome read
+its headline pass^k cell, as its pass^k already did: a kept-out run is named with its own pass^k and counted in none
+of them.
 
 **Changed:** a run launched now records every coordinate of its identity, or says it did not. A replayed completion
 or writer turn whose recorded reply named no model is answered by its recording. Where the host's own code answered
