@@ -436,6 +436,18 @@ class L1Backend(Protocol):
         """
         ...
 
+    def delete_many_by_id_across(self, deletes: Sequence[tuple[str, Sequence[Any], str | tuple[str, ...]]]) -> None:
+        """delete many rows by primary key from several tables, as :meth:`delete_many_by_id` would table by table,
+        in one write where the backend writes in transactions (a cache entry and the rows that index it go together).
+
+        :param deletes: each table, its pk values (or tuples of them in declared column order) and its pk column or
+            columns; a table naming nothing deletes nothing
+        :ptype deletes: Sequence[tuple[str, Sequence[Any], str | tuple[str, ...]]]
+        :return: nothing
+        :rtype: None
+        """
+        ...
+
     def execute_query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         """Execute a generic SELECT query, returning list of row dicts."""
         ...

@@ -110,7 +110,11 @@ class _Queue(_Catalogue):
         if "current_ring" in query:
             return []
         if "count(*)" in query:
-            return [{"n": len(self.marks), "age": 1.0}]
+            # the gauges' bounded count (keyed.count_at_most): the marks, at most the bound it asks past
+            return [{"held": min(len(self.marks), int(args[-1]))}]
+        if "extract(epoch" in query:
+            # the gauges' oldest mark, the lowest id (keyed.keyset_page, one row)
+            return [{"id": min(self.marks), "age": 1.0}] if self.marks else []
         return [
             {"id": key, "table_name": table, "date_created": datetime.now(UTC)} for key, table in self.marks.items()
         ][: int(args[0])]

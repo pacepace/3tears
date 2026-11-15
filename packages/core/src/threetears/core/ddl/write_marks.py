@@ -34,9 +34,11 @@ _MARKS_TABLE_DDL: Final[str] = (
 )
 
 #: the queue's ``(table_name, id)`` index, ``{schema}`` its schema (quoted): written out whole with its declaration,
-#: so the hub's read of a commit's marks by table is judged keyed through it
+#: so the hub's read of a commit's marks by table, and a writer's of the marks its advance covers, are judged keyed
+#: through it
 _MARKS_INDEX_DDL: Final[str] = (
-    "-- purpose: src/aibots/hub/broker/proxy.py::QueryProxy._marks_for\n"
+    "-- purpose: src/aibots/hub/broker/proxy.py::QueryProxy._marks_for; "
+    "packages/core/src/threetears/core/collections/base.py::BaseCollection._marks_before_advance\n"
     "-- plan_test: packages/core/tests/integration/test_write_marks_by_table_live.py"
     "::test_a_commits_marks_are_read_through_the_table_index\n"
     'CREATE INDEX IF NOT EXISTS "collection_write_marks_table" ON {schema}."collection_write_marks" (table_name, id)'

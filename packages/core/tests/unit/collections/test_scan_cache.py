@@ -323,3 +323,28 @@ class TestDropIsOneL1Write:
         assert statements.count("BEGIN IMMEDIATE") == 1
         assert [cache.get(key) for key in keys] == [None] * len(keys)
         assert cache.get(kept) == _ROWS
+
+
+class TestDropReadsOnlyTheEvictedTablesEntries:
+    """an eviction reads its table's entries by the dependency key, never every entry of the cache."""
+
+    def test_the_drop_reads_by_the_dependency_key_and_leaves_no_index_row_behind(self, l1_statements: Any) -> None:
+        l1 = SQLiteBackend(db_name=f"scan-{uuid4().hex}")
+        cache = ScanCache(l1, trusted=lambda _tables: True)
+        both = ScanCacheKey("concepts", "user-1")
+        cache.put(both, _ROWS, token=cache.begin_read(("concepts", "role_assignments")))
+        kept = ScanCacheKey("conversations", "user-1")
+        cache.put(kept, _ROWS, token=cache.begin_read(("conversations",)))
+        statements = l1_statements(l1)
+
+        assert cache.drop_for_table("role_assignments") == 1
+
+        reads = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
+        assert reads, statements
+        # the deps by their leading key, then the entries found by their own key: nothing reads every entry
+        assert all('WHERE t."dep_table" =' in sql or 'WHERE "key" IN' in sql for sql in reads), reads
+        assert cache.get(both) is None and cache.get(kept) == _ROWS
+        left = l1.execute_query("SELECT dep_table, key FROM collection_scan_cache_deps ORDER BY dep_table")
+        assert left == [{"dep_table": "conversations", "key": kept.as_string()}], "the gone entry's rows went with it"
+        # the other table the entry depended on finds nothing left to drop
+        assert cache.drop_for_table("concepts") == 0

@@ -71,6 +71,8 @@ from threetears.core.ddl.write_marks import (
     write_mark_trigger_sql,
     write_marks_ddl,
 )
+from threetears.core import keyed
+from threetears.core.keyed import Selected, Sort
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.tenancy import TENANCY_UNDECLARED, schema_tenant
 
@@ -403,15 +405,24 @@ async def observe_write_marks(pool: SqlConnection, *, marks_schema: str) -> Queu
     :return: what it read
     :rtype: QueueState
     """
-    marks = f"{quote_identifier(marks_schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
-    rows = await pool.fetch(
-        "SELECT count(*) AS n, extract(epoch FROM now() - min(date_created)) AS age "
-        f"FROM (SELECT date_created FROM {marks} LIMIT $1) sample",
-        _OBSERVE_CAP + 1,
+    # the keyed helpers quote it a segment at a time
+    marks = f"{marks_schema}.{WRITE_MARKS_TABLE}"
+    # the count walks the id (the primary key) to the cap; the oldest mark is the lowest id (a BIGSERIAL, so the
+    # first committed), its age by the database's clock. One statement before (2026-11-14, no-whole-reads drive): the
+    # min of date_created over the cap's first rows in no order, so past the cap it was not the oldest mark's age
+    counted = await keyed.count_at_most(pool, marks, at_most=_OBSERVE_CAP, order=["id"])
+    oldest = await keyed.keyset_page(
+        pool,
+        marks,
+        columns=["id", Selected("extract(epoch FROM now() - t.date_created)", "age")],
+        by={},
+        order=[Sort("id", cast="bigint")],
+        limit=1,
     )
-    pending = int(rows[0]["n"]) if rows else 0
-    age = float(rows[0]["age"]) if rows and rows[0]["age"] is not None else 0.0
-    state = QueueState(pending=min(pending, _OBSERVE_CAP), at_least=pending > _OBSERVE_CAP, oldest_age_seconds=age)
+    age = oldest.rows[0]["age"] if oldest.rows else None
+    state = QueueState(
+        pending=counted.count, at_least=counted.more, oldest_age_seconds=0.0 if age is None else float(age)
+    )
     _PENDING.set(state.pending)
     _OLDEST_AGE.set(state.oldest_age_seconds)
     return state

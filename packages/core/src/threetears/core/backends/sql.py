@@ -1659,31 +1659,42 @@ class SqlL3Backend:
         await self._execute(schema_sql.build_delete_sql(schema), *coerced, conn=conn)
 
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
-        """Return rows matching the equality ``filters`` via a generated SELECT (all rows when empty).
+        """Return rows matching the equality ``filters`` (all rows when empty), read in pages of a declared key.
 
-        A table whose schema is registered is read in pages under the transport's row cap
-        (:attr:`rows_per_statement`), so a scan of more rows than the L3 rail answers a statement reads every one;
-        any other is one statement, which the rail refuses rather than cut when it matches more. The pages are in
-        the order of the declared index the filters lead (:meth:`TableSchema.keyset_order
-        <threetears.core.collections.schema_backed.TableSchema.keyset_order>`), so each reads about its own rows.
+        The table's schema must be registered (:meth:`register_schema`; a collection registers its own on
+        construction): the pages are in the order of the declared index the filters lead
+        (:meth:`TableSchema.keyset_order <threetears.core.collections.schema_backed.TableSchema.keyset_order>`), so
+        each reads about its own rows, under the transport's row cap (:attr:`rows_per_statement`), so a scan of more
+        rows than the L3 rail answers a statement reads every one. A transport that never cuts is paged at the rail's
+        cap all the same: one page a statement is the same read, and never one gulp of the table.
+
+        Why no unregistered form (2026-11-14, no-whole-reads drive): it was one ``SELECT *`` (with any ``WHERE``) over
+        a table whose key the store did not know, so nothing bounded it; no caller in 3tears, the hub or reports scans
+        an unregistered table through this store (the git stores answer :class:`DurableStoreCollection`'s scans).
+
+        :raises ValueError: when ``table``'s schema is not registered, or a filter names a column it does not hold
         """
         schema = self._schemas.get(table)
-        cap = self.rows_per_statement
-        if schema is not None and cap is not None and cap > 1:
-            order = schema.keyset_order(filters or {})
-            read = await read_keyset_pages(
-                self,
-                f"SELECT * FROM {_quote_ident(table)}",  # noqa: S608 - a registered schema's table
-                list(order),
-                where=dict(filters or {}),
-                page_size=cap - 1,
-                lead_array=schema.hashed_lead_array(order),
+        if schema is None:
+            raise ValueError(
+                f"SqlL3Backend.scan: {table!r} has no registered schema, so there is no key to read it by; "
+                "register its TableSchema first (register_schema)"
             )
-            return read.rows
-        if not filters:
-            return await self.fetch(f"SELECT * FROM {_quote_ident(table)}")
-        where, params = self._where(filters, start=1)
-        return await self.fetch(f"SELECT * FROM {_quote_ident(table)} WHERE {where}", *params)
+        unknown = [name for name in filters or {} if schema.get_column(name) is None]
+        if unknown:
+            raise ValueError(f"SqlL3Backend.scan: {table!r} has no column {unknown[0]!r} to filter on")
+        cap = self.rows_per_statement
+        order = schema.keyset_order(filters or {})
+        read = await read_keyset_pages(
+            self,
+            f"SELECT * FROM {_quote_ident(table)}",  # noqa: S608 - a registered schema's table
+            list(order),
+            where=dict(filters or {}),
+            # a page asks one row past its size to see the next page (keyset.py), so it stays under the cap
+            page_size=max((L3_RAIL_ROW_CAP if cap is None else cap) - 1, 1),
+            lead_array=schema.hashed_lead_array(order),
+        )
+        return read.rows
 
     # ── connection-aware execution helpers ──────────────────────────────────────────
     async def _execute(self, query: str, *params: Any, conn: Any = None) -> str:

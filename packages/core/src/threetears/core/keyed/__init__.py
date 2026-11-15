@@ -98,7 +98,7 @@ from threetears.core.keyed.counts import (
 from threetears.interfaces.keyed.counts import Count, Max, Min, Range, Sum
 from threetears.interfaces.keyed.point import Nearest, TextRank
 from threetears.core.keyed.deletes import SweptRows, delete_before, delete_oldest, update_before
-from threetears.core.keyed.inline import InlineDuckDB, InlineTransaction, run_inline
+from threetears.core.keyed.inline import InlineDuckDB, InlineTransaction, inline_l1, run_inline
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
 from threetears.core.keyed.literal import literal_select, literal_upsert
 from threetears.core.keyed.probes import access_probe_sql, probe_access
@@ -213,6 +213,7 @@ __all__ = [
     "Fragment",
     "Increment",
     "InlineDuckDB",
+    "inline_l1",
     "InlineTransaction",
     "DeclaredKey",
     "KeyBatch",

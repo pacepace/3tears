@@ -93,7 +93,11 @@ class _Queue:
             # no change-note ring in this database: a reconciled table is advanced whole, said and counted
             return []
         if "count(*)" in query:
-            return [{"n": len(self.marks), "age": 3.0 if self.marks else None}]
+            # the gauges' bounded count (keyed.count_at_most): the marks, at most the bound it asks past
+            return [{"held": min(len(self.marks), int(args[-1]))}]
+        if "extract(epoch" in query:
+            # the gauges' oldest mark, the lowest id (keyed.keyset_page, one row)
+            return [{"id": min(self.marks), "age": 3.0 if self.marks else None}] if self.marks else []
         # the drain's keyset page: the marks after the id ``$2``, in id order, ``$1`` at most
         assert "WHERE id > $2 ORDER BY id LIMIT $1" in query, query
         limit, after = int(args[0]), int(args[1])
