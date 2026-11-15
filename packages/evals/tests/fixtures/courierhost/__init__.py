@@ -22,7 +22,9 @@ What a product supplies, in the order it is written below:
 4. **Its profile**, assembling the three, plus how one observation resolves its levers.
 5. **Its candidate kind** — ``prepare`` seeds the world through the engine's seed walk, ``invoke``
    runs the candidate and reports its measures.
-6. **Its host** — the profile, a store, and the three services with no safe default.
+6. **Its host** — the profile, a store, and the three services with no safe default; and, since it shows blind reads
+   to its dispatchers, who it vouches for relaying a dispatcher's word (``courier_attests``) and its page for a
+   sheet (``courier_sheet_page``).
 
 Everything else — the trial loop, the stored documents, the bundle — is the engine's.
 
@@ -81,7 +83,7 @@ from threetears.evals.kernel.host import (
     WorldRegistry,
     default_cell_timeout,
 )
-from threetears.evals.schema import IntervalScale, SubjectSnapshot, SweepableValue
+from threetears.evals.schema import BlindSheet, IntervalScale, SubjectSnapshot, SweepableValue
 from threetears.evals.run import (
     KindWiring,
     LaunchHost,
@@ -321,8 +323,44 @@ class RoutePlannerKind:
 # --- 6. host, and one drive ------------------------------------------------------------------------
 
 
+#: The one caller the courier vouches for relaying a dispatcher's own word: its dispatch desk's page.
+COURIER_DISPATCH_DESK = "courier:dispatch-desk"
+
+
+def courier_attests(*, scope_id: str, caller: str, person: str) -> str | None:
+    """Whether the courier vouches that ``caller`` relays ``person``'s blind-read answer or campaign call.
+
+    Only its dispatch desk does, only in its depot's scope, and the courier names a dispatcher by their lower-cased
+    login, whatever spelling the desk sent: the name the engine records the answer under (``attests_person``).
+    """
+    if scope_id != COURIER_SCOPE or caller != COURIER_DISPATCH_DESK or not person.strip():
+        return None
+    return person.strip().lower()
+
+
+def courier_sheet_page(sheet: BlindSheet) -> str:
+    """The dispatch desk's page for a blind read: the sheet as text, from the item a dispatcher reads next.
+
+    What a host writes when it shows a blind read on its own page. Everything comes off the sheet (the
+    ``blind_read_sheet`` action), nothing is added to it, and an item a dispatcher already answered is not shown again;
+    the items keep the drawn order and each pair its drawn slots, which ``check_sheet_renderer`` holds it to.
+    """
+    lines = [sheet.name, sheet.instructions, ""]
+    for criterion in sheet.criteria:
+        answers = " / ".join(level.value for level in criterion.levels)
+        lines.append(f"{criterion.dim}: {criterion.question} ({answers})")
+    for item in sheet.items:
+        if item.item in sheet.answered:
+            continue
+        lines += ["", f"[{item.item}] {item.case_material}"]
+        lines += [f"  {output.slot}: {output.text}" for output in item.outputs]
+        if item.ask.preference:
+            lines.append("  Which is better: A, B, or tie?")
+    return "\n".join(lines)
+
+
 def courier_host() -> EvalHost:
-    """The courier as the engine receives it."""
+    """The courier as the engine receives it: it vouches for its dispatch desk relaying a dispatcher's word."""
     return EvalHost(
         profile=courier_profile(),
         storage=EvalStorage(InMemoryDocumentStore()),
@@ -330,6 +368,7 @@ def courier_host() -> EvalHost:
         trace_sink=None,
         blocking_executor=None,
         cell_timeout=default_cell_timeout,
+        attests_person=courier_attests,
     )
 
 
@@ -543,6 +582,7 @@ def courier_launch_host() -> LaunchHost:
 
 
 __all__ = [
+    "COURIER_DISPATCH_DESK",
     "COURIER_ID",
     "COURIER_KIND",
     "COURIER_MEASURES",
@@ -554,10 +594,12 @@ __all__ = [
     "RoutePlannerKind",
     "COURIER_SUBJECT",
     "COURIER_TEMPLATE_ID",
+    "courier_attests",
     "courier_cases",
     "courier_host",
     "courier_launch_host",
     "courier_run",
+    "courier_sheet_page",
     "courier_template",
     "courier_profile",
     "courier_world",

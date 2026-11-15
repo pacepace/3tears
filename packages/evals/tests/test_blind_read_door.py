@@ -37,6 +37,12 @@ from threetears.evals.quick.blind import blind_read_html
 from threetears.evals.testing import SheetConformanceFailure, check_sheet_renderer
 from packages.evals.tests.factories import make_eval_trace, make_rubric_dim
 from packages.evals.tests.fixtured_client import FixturedClient
+from packages.evals.tests.fixtures.courierhost import (
+    COURIER_DISPATCH_DESK,
+    COURIER_SCOPE,
+    courier_attests,
+    courier_sheet_page,
+)
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
@@ -486,3 +492,30 @@ def test_a_renderer_that_shows_from_next_on_keeps_the_sheet() -> None:
             if item.item not in sheet.answered
         )
     )
+
+
+# --- the courier example: a host's side of the door ------------------------------------------------------------
+
+
+def test_the_courier_s_sheet_page_keeps_the_sheet() -> None:
+    check_sheet_renderer(courier_sheet_page)
+
+
+async def test_the_courier_vouches_for_its_dispatch_desk_alone() -> None:
+    host, fixture, _ = _world()
+    line = await _pair_read(host, fixture)
+    read = off_loop(host.eval_host.storage.load_blind_read_with_etag, line["read_id"], TOYHOST_SCOPE)[0]
+    assert read is not None
+
+    assert courier_attests(scope_id=COURIER_SCOPE, caller=COURIER_DISPATCH_DESK, person=" Dana ") == "dana"
+    assert courier_attests(scope_id=COURIER_SCOPE, caller="agent:someone", person="dana") is None
+    assert courier_attests(scope_id=TOYHOST_SCOPE, caller=COURIER_DISPATCH_DESK, person="dana") is None
+    refused = await _call(
+        _with(host, attests_person=courier_attests),
+        "blind_read_answer",
+        read_id=read.id,
+        item=read.items[0].item,
+        person="dana",
+        skip=True,
+    )
+    assert refused.is_error and refused.refusal is not None and refused.refusal.status == 403, "not its scope or desk"

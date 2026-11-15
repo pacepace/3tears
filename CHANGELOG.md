@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a host's door onto the blind read, and a recorded call says whether a person or a model made it (#1178)
+
+**Added:** seven actions draw and run a blind read in a host. `blind_read_create` draws a seeded random order over a
+campaign's control and one candidate (or over runs of one arm) and stores it; it takes no seed, which is derived from
+the outputs, the arms and how many reads were drawn over them before (`earlier_reads`). `blind_read_sheet` serves what a
+rater sees: content, criteria and slots, and no arm, run, result or case id, judge score, label key or count of answers.
+`blind_read_answer` records a person's answer only when the host attests the caller relaying it for that person (403
+otherwise, nothing written). `blind_read_review` has the reviewer model the read declared when it was drawn answer the
+sheet, priced and admitted first, as a job; its answers enter the read only from inside that job. `blind_read_close`
+writes every answer as a rating (a person's as theirs, a model's as an agent's) and refuses later answers; a read closed
+before anyone answered every planned item reads its preference by the anytime test, valid wherever it stopped.
+`blind_read_get` and `blind_reads_list` read them back. A read is a new durable document (durable minor 17.2), carried
+by a campaign's export.
+
+**Added:** `campaign_record` takes `made_by` (`person` or `model`), `person`, `call_model` and `on_behalf_of`. A model's
+call stores the model and whom it acted for and reads back with both, in the call and in a campaign's listing; a
+person's call needs the host's attestation, as a person's answer does. A call that says neither is never read as a
+person's.
+
+**Added:** `threetears.evals.testing.check_sheet_renderer`, a check a host's page that renders a sheet runs in its tests:
+items in the drawn order from `next` on, slots as drawn.
+
+**For hosts:** to record a person's blind-read answer or a person's call through an action, build the host with
+`attests_person`; a host that renders the sheet on its own page runs `check_sheet_renderer` in its tests.
+
 ### evals: a recorded judge call over a report page is keyed by what the page was rendered from, not by its words
 
 **Changed:** a word the package prints differently on a report writer's page, or in its computed facts, no longer
