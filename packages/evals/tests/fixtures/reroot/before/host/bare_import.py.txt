@@ -1,0 +1,16 @@
+"""A bare import and attribute chains at the use sites."""
+
+import threetears.evals.kernel
+import threetears.evals.schema as schema
+
+
+def lease() -> float:
+    return schema.DEFAULT_JOB_LEASE_S
+
+
+def refuse() -> Exception:
+    return threetears.evals.kernel.EvalServiceError("refused")
+
+
+def kind() -> str:
+    return threetears.evals.kernel.JUDGE_KIND

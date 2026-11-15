@@ -1,0 +1,19 @@
+"""A module binding of a former root, read attribute by attribute."""
+
+from fastapi import APIRouter
+from threetears.evals import Eval, ops
+from threetears.evals.kernel import EvalServiceError
+
+router = APIRouter()
+
+
+@router.get("/runs")
+def runs(host: ops.OpsHost) -> object:
+    try:
+        return ops.runs_list(host, ops.LaunchArguments())
+    except EvalServiceError as refusal:
+        return Eval, refusal
+
+
+def record(host: ops.OpsHost, run_ids: list[str]) -> object:
+    return ops.judge_profiles_record(host, ops.JudgeProfilesRecord(judge_run_ids=run_ids))

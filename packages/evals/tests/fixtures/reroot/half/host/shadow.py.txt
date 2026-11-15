@@ -1,0 +1,9 @@
+"""A public function that shares its name with a submodule of the same root."""
+
+import threetears.evals.run.definition_drift as drift_module
+from threetears.evals.host import definition_drift
+from threetears.evals.analysis import judge_drift
+
+
+def check() -> object:
+    return definition_drift(drift_module.DRIFT_KINDS), judge_drift()

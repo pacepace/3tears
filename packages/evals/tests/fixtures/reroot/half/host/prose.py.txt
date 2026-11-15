@@ -1,0 +1,15 @@
+"""Prose that names the package: :class:`threetears.evals.ops.OpsHost` and
+:func:`~threetears.evals.run.drift.drift_kinds`, served from ``threetears.evals.shapes``."""
+
+from pydantic import BaseModel, Field
+
+
+class Section(BaseModel):
+    lease: float = Field(description="Seconds; the package's threetears.evals.shapes.DEFAULT_JOB_LEASE_S by default.")
+    """Mirrors ``threetears.evals.shapes.DEFAULT_JOB_LEASE_S``, so the import costs nothing."""
+
+    # The kinds come from threetears.evals.kernel.JUDGE_KIND; see threetears.evals.kernel.host.profile.
+
+
+def check(value: float) -> None:
+    assert value > 0, f"see threetears.evals.shapes.CampaignReport for {value}"

@@ -1,0 +1,45 @@
+# reroot-map 1
+# The test map: two epochs and every record type. Not the real map.
+# epoch a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 the re-root by role
+# epoch b2c3d4e5f60718293a4b5c6d7e8f901234567890 a later move
+# body-sha256 1091e95662a00a06d4be8b4b2e2b12e3bfa56c4736960f6513d3d6e558614c61
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.ops.OpsHost	threetears.evals.host.OpsHost	threetears.evals.ops.host.OpsHost
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.ops.LaunchArguments	threetears.evals.shapes.LaunchArguments	threetears.evals.ops.runs.LaunchArguments
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.ops.runs_list	threetears.evals.host.runs_list	threetears.evals.ops.runs.runs_list
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.ops.JudgeProfilesRecord	threetears.evals.shapes.JudgeProfilesRecord	threetears.evals.ops.judge_profiles.JudgeProfilesRecord
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.ops.judge_profiles_record	threetears.evals.host.judge_profiles_record	threetears.evals.ops.judge_profiles.judge_profiles_record
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.kernel.EvalServiceError	threetears.evals.host.EvalServiceError	threetears.evals.kernel.errors.EvalServiceError
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.kernel.ValidationFailedError	threetears.evals.host.ValidationFailedError	threetears.evals.kernel.errors.ValidationFailedError
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.kernel.JUDGE_KIND	threetears.evals.shapes.JUDGE_KIND	threetears.evals.kernel.judge.JUDGE_KIND
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.kernel.host.EvalHost	threetears.evals.host.EvalHost	threetears.evals.kernel.host.host.EvalHost
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.kernel.host.HostProfile	threetears.evals.host.HostProfile	threetears.evals.kernel.host.profile.HostProfile
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.schema.EvalRun	threetears.evals.shapes.EvalRun	threetears.evals.schema.models.EvalRun
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.schema.DEFAULT_JOB_LEASE_S	threetears.evals.shapes.DEFAULT_JOB_LEASE_S	threetears.evals.schema.jobs.DEFAULT_JOB_LEASE_S
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.run.definition_drift	threetears.evals.host.definition_drift	threetears.evals.run.drift.definition_drift
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.run.start_run	threetears.evals.testing.start_run	threetears.evals.run.launch.start_run
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.run.run_judge_llm	threetears.evals.host.run_judge_llm	threetears.evals.run.judge.run_judge_llm
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.gen.EVAL_PROPOSER_TEMPLATE_DEFAULT	threetears.evals.shapes.EVAL_PROPOSER_TEMPLATE_DEFAULT	threetears.evals.gen.templates.EVAL_PROPOSER_TEMPLATE_DEFAULT
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.gen.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT	threetears.evals.shapes.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT	threetears.evals.gen.templates.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.negotiation.BUDGET_SHARES	threetears.evals.shapes.BUDGET_SHARES	threetears.evals.negotiation.budget.BUDGET_SHARES
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.analysis.CampaignReport	threetears.evals.shapes.CampaignReport	threetears.evals.analysis.campaign.CampaignReport
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.analysis.judge_drift	threetears.evals.host.judge_drift	threetears.evals.analysis.judge_drift_read.judge_drift
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	name	threetears.evals.providers.PriceRefresh	threetears.evals.shapes.PriceRefresh	threetears.evals.providers.catalogue.PriceRefresh
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	renamed	threetears.evals.ROOT_EXTRAS	threetears.evals.EXTRAS	keyed by qualified name, not by root
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	renamed	threetears.evals.RootExtra	threetears.evals.Extra	one entry per qualified name
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	demoted	threetears.evals.ops.await_job	threetears.evals.ops.jobs.await_job	host.job_manager.wait_for(ids), or the job_poll action
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	demoted	threetears.evals.run.regrade	threetears.evals.run.regrading.regrade	the result_regrade action
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	left	threetears.evals.kernel.extract_json	threetears.evals.kernel.json_reply.extract_json	no public replacement: parse the reply with json.loads
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	root	threetears.evals.ops	threetears.evals.host,threetears.evals.shapes	
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	root	threetears.evals.kernel	threetears.evals.host,threetears.evals.shapes	
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	root	threetears.evals.kernel.host	threetears.evals.host	
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	root	threetears.evals.schema	threetears.evals.shapes	
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	root	threetears.evals.gen	threetears.evals.shapes	
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	root	threetears.evals.negotiation	threetears.evals.shapes	
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	root	threetears.evals.run	threetears.evals.host,threetears.evals.testing	
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	root	threetears.evals.analysis	threetears.evals.host,threetears.evals.shapes	
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	root	threetears.evals.providers	threetears.evals.shapes	
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	module	threetears.evals.run.definition_drift	threetears.evals.run.drift	
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	module	threetears.evals.run.regrade	threetears.evals.run.regrading	
+a1b2c3d4e5f60718293a4b5c6d7e8f9012345678	module	threetears.evals.analysis.judge_drift	threetears.evals.analysis.judge_drift_read	
+b2c3d4e5f60718293a4b5c6d7e8f901234567890	module	threetears.evals.ops.runs	threetears.evals.operations.runs	
+b2c3d4e5f60718293a4b5c6d7e8f901234567890	name	threetears.evals.shapes.PriceRefresh	threetears.models.PriceRefresh	

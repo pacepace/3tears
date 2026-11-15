@@ -1,0 +1,4 @@
+[evals]
+# the lease comes from threetears.evals.schema.DEFAULT_JOB_LEASE_S
+host = "threetears.evals.ops:OpsHost"
+builder = "threetears.evals.kernel.host.HostProfile"

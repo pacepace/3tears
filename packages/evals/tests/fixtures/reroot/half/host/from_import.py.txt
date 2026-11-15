@@ -1,0 +1,22 @@
+"""Split by target root, at module level; the names keep their order and aliases."""
+
+from pathlib import Path
+
+from threetears.evals.host import EvalServiceError, ValidationFailedError
+from threetears.evals.shapes import JUDGE_KIND as judge_kind
+from threetears.evals.ops import (
+    LaunchArguments,
+    OpsHost,
+    runs_list,
+)
+from threetears.evals.schema import DEFAULT_JOB_LEASE_S  # noqa: E402
+from threetears.evals.host import EvalHost, HostProfile
+from threetears.evals.analysis import service as analysis_service
+from threetears.evals import Eval
+
+
+def build(root: Path) -> OpsHost:
+    return OpsHost(root, EvalHost(), HostProfile(), Eval, analysis_service)
+
+
+__all__ = ["DEFAULT_JOB_LEASE_S", "EvalServiceError", "LaunchArguments", "ValidationFailedError", "judge_kind", "runs_list"]

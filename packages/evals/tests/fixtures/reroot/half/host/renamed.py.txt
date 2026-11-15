@@ -1,0 +1,7 @@
+"""A name whose spelling changes, and its uses."""
+
+from threetears.evals import EXTRAS, Extra
+
+
+def extras() -> dict[str, Extra]:
+    return dict(EXTRAS)

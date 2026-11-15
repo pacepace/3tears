@@ -1,0 +1,26 @@
+"""Imports at depth: under TYPE_CHECKING, in a function, in a try."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from threetears.evals.shapes import EvalRun
+    from threetears.evals.host import EvalServiceError
+
+try:
+    from threetears.models import PriceRefresh
+except ImportError:  # the providers extra is not installed
+    PriceRefresh = None
+
+
+def launch(run: EvalRun) -> None:
+    from threetears.evals.testing import start_run
+
+    start_run(run)
+
+
+def judge() -> EvalServiceError:
+    from threetears.evals.host import run_judge_llm  # the judge seam
+
+    return run_judge_llm()

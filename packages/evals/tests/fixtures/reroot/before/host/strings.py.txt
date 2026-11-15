@@ -1,0 +1,36 @@
+"""Module paths and qualified names held in strings."""
+
+import importlib
+import logging
+from unittest import mock
+
+from threetears.evals.gen import EvalPrompt
+
+LOG = logging.getLogger("threetears.evals.run.definition_drift")
+OWNER = dict(owner_module="threetears.evals.storage.routed")
+PROFILE_LOGGER = "threetears.evals.kernel.host.profile"
+
+EVAL_PROMPTS = (
+    EvalPrompt(
+        prompt_type="eval_proposer",
+        seed_module="threetears.evals.gen",
+        constant="EVAL_PROPOSER_TEMPLATE_DEFAULT",
+    ),
+    EvalPrompt(prompt_type="eval_boundary_gen", seed_module="threetears.evals.gen", constant="EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT"),
+)
+PROVISIONAL_NAME = ("threetears.evals.negotiation", "BUDGET_SHARES")
+
+
+def annotated(host: "threetears.evals.ops.OpsHost") -> None:
+    importlib.import_module("threetears.evals.analysis.judge_drift")
+    with mock.patch("threetears.evals.run.run_judge_llm"):
+        pass
+    with mock.patch("threetears.evals.ops.OpsHost.campaign_export_max_bytes", 1):
+        pass
+
+
+def test_setattr(monkeypatch) -> None:
+    monkeypatch.setattr("threetears.evals.kernel.host.EvalHost", None)
+    monkeypatch.setattr("threetears.evals.run.judge.MeteredCallLedger", None)
+    harness = "threetears.evals.ops:OpsHost"
+    return harness

@@ -1,0 +1,14 @@
+"""Forms the script reports instead of guessing."""
+
+import importlib
+
+import threetears.evals.schema
+from threetears.evals import kernel
+from threetears.evals.kernel import *
+
+
+def walk() -> object:
+    for mod_name in ("threetears.evals.schema", "threetears.evals.kernel"):
+        importlib.import_module(mod_name)
+    getattr(kernel, "EvalServiceError")
+    return __import__("threetears.evals.ops"), kernel.EvalServiceError

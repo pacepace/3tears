@@ -1,0 +1,17 @@
+# Adopting
+
+A host builds a `threetears.evals.kernel.host.EvalHost` and reads leases from `threetears.evals.schema`.
+
+```python
+from threetears.evals.ops import OpsHost, runs_list
+
+runs_list(OpsHost())
+```
+
+```text
+threetears.evals.ops.OpsHost stays a spelling in a text fence; prose token mode rewrites it.
+```
+
+```python
+>>> not python
+```

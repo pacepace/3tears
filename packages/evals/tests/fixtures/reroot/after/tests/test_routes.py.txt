@@ -1,0 +1,5 @@
+from threetears.evals.host import OpsHost
+
+
+def test_host() -> None:
+    assert OpsHost

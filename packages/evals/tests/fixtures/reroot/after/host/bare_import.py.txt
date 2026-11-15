@@ -1,0 +1,17 @@
+"""A bare import and attribute chains at the use sites."""
+
+import threetears.evals.host
+import threetears.evals.shapes
+from threetears.evals import shapes as evals_shapes
+
+
+def lease() -> float:
+    return evals_shapes.DEFAULT_JOB_LEASE_S
+
+
+def refuse() -> Exception:
+    return threetears.evals.host.EvalServiceError("refused")
+
+
+def kind() -> str:
+    return threetears.evals.shapes.JUDGE_KIND

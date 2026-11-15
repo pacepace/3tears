@@ -1,0 +1,9 @@
+"""The alias a module binding is rewritten through is already taken."""
+
+from threetears.evals import ops
+
+evals_host = "a local of the same name"
+
+
+def runs(host: object) -> object:
+    return ops.runs_list(host), evals_host

@@ -1,0 +1,10 @@
+"""Strings the script cannot rewrite safely."""
+
+SNIPPET = "from threetears.evals.ops import OpsHost\nOpsHost()\n"
+DRIFT_LOGGER = "threetears.evals.analysis.judge_drift"
+SPLIT = "threetears.evals." "ops.OpsHost"
+
+
+def doc() -> str:
+    """Every surface calls the package's typed operations (``threetears.evals.ops``)."""
+    return "threetears.evals.kernel"

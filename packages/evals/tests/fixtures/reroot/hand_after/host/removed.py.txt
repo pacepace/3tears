@@ -1,0 +1,22 @@
+"""Uses of removed names are reported with their replacement; the rest of the file is rewritten."""
+
+import threetears.evals.kernel
+from threetears.evals import ops
+from threetears.evals import host as evals_host
+from threetears.evals.host import OpsHost
+from threetears.evals.ops import await_job
+from threetears.evals.run import regrade
+from threetears.evals.testing import start_run
+
+
+def wait(host: OpsHost, ids: list[str]) -> object:
+    start_run(host)
+    regrade(host)
+    ops.await_job(host, ids)
+    with_patch = "threetears.evals.ops.await_job"
+    return threetears.evals.kernel.extract_json(with_patch), evals_host.runs_list(host)
+
+
+def describe() -> str:
+    """Waits with ``threetears.evals.ops.await_job``."""
+    return "see threetears.evals.kernel.extract_json"
