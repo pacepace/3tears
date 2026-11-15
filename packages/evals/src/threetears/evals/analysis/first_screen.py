@@ -11,10 +11,11 @@ The rules, each held by one test:
 - **Eligible.** A caveat is eligible when it reaches the whole report, code has not proved it immaterial, and no other
   caveat silences it. One that says precision is missing (class E) is eligible only where the answer turns on the
   reading it names; anywhere else it is stated in its table cell, one step down.
-- **Silenced** (:func:`subsumed`). A withheld reading silences every other caveat scoped only to it. A reading set
+- **Silenced** (:func:`subsumed`). A withheld reading silences every other caveat scoped only to it: to that reading
+  and to arms it is withheld on (a reading withheld on one arm leaves a caveat on the reading's every arm standing). A reading set
   aside for a cause silences a caveat stating that cause on the readings set aside. Identical arms that separated
-  silence every instrument caveat on that reading. A check against people silences a check against a model on the same
-  criterion.
+  silence every instrument caveat on that reading. A check against people whose result decides (met or not met)
+  silences a check against a model on the same criterion; one that is undecided or insufficient speaks for nothing.
 - **Ranked** (:data:`RANKS`). The order is data, eight ranks: evidence not whole, identical arms separated, identity
   unrecorded, a late criterion (and every other fact that makes the evidence not what it appears), a judge not
   checked, a judge checked against a model only, repeated looks, then few cases. A caveat no row places ranks last.
@@ -111,6 +112,9 @@ RANKS: Final[tuple[Rank, ...]] = (
     Rank(8, "few_cases", cls="E"),
 )
 
+#: The results of a check that decide: only these speak for the instrument they checked.
+_DECIDES: Final = frozenset({"met", "not_met"})
+
 #: Where a caveat no row places ranks: after every rank.
 _UNRANKED: Final = (max(row.rank for row in RANKS) + 1, 0)
 
@@ -142,25 +146,28 @@ def subsumed(caveats: Iterable[CaveatEntry]) -> list[CaveatEntry]:
     """
     held = list(caveats)
     by_id = sorted(held, key=lambda caveat: caveat.id)
-    withheld: dict[str, str] = {}
+    withheld: dict[str, tuple[str, frozenset[str]]] = {}
     set_aside: dict[tuple[str, Reason | None], str] = {}
     separated: dict[str, str] = {}
     people: dict[str, str] = {}
     for caveat in by_id:
         for reading in caveat.readings:
             if caveat.state == "withheld":
-                withheld.setdefault(reading, caveat.id)
+                withheld.setdefault(reading, (caveat.id, frozenset(caveat.arms)))
             if caveat.state == "set_aside":
                 set_aside.setdefault((reading, caveat.reason), caveat.id)
                 if caveat.reason == "identical_arms_separated":
                     separated.setdefault(reading, caveat.id)
-        if caveat.against == "people" and caveat.criterion is not None:
+        if caveat.against == "people" and caveat.criterion is not None and caveat.check in _DECIDES:
             people.setdefault(caveat.criterion, caveat.id)
 
     def silenced_by(caveat: CaveatEntry) -> str | None:
         readings = caveat.readings
         if caveat.state != "withheld" and len(readings) == 1 and readings[0] in withheld:
-            return withheld[readings[0]]
+            by, arms = withheld[readings[0]]
+            # Scoped only to it: on every arm it is withheld on, and the reading withheld on every arm or on these.
+            if not arms or (caveat.arms and set(caveat.arms) <= arms):
+                return by
         if caveat.state != "set_aside" and readings:
             if all((reading, caveat.reason) in set_aside for reading in readings):
                 return set_aside[readings[0], caveat.reason]

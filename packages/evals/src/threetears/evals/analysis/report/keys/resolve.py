@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final
 
+from threetears.evals.analysis.costs import PER_THOUSAND_FACTORS
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.quantities import PERCENT
@@ -23,7 +24,6 @@ from threetears.evals.analysis.report.keys.figure import (
     _DIGITS,
     _FILTERS,
     _KEY,
-    _PER_THOUSAND_FACTORS,
     _SCALE_COUNTS,
     _SPELLINGS,
     _UNIT_PHRASES,
@@ -56,7 +56,7 @@ from threetears.evals.analysis.report.keys.vocabulary import (
     _refuse,
 )
 from threetears.evals.analysis.report.keys.weakest import _COMPARISONS_SLOT
-from threetears.evals.analysis.report.per_input import kept_for
+from threetears.evals.analysis.per_input import kept_for
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import SHARE_UNIT, ReportInput
 from threetears.evals.kernel.numbers import CENT
@@ -349,9 +349,9 @@ def _resolved(key: str, report_input: ReportInput) -> Figure:
         return Figure(path=key, kind="arm", value=arm_id)
     reading = _one_reading(key, report_input)
     figure = reading.family.resolve(report_input, reading.values, key)
-    if figure.scale in _PER_THOUSAND_FACTORS and not figure.per:
+    if figure.scale in PER_THOUSAND_FACTORS and not figure.per:
         figure = replace(figure, per=_money_per(report_input, reading.values))
-    if figure.scale in _PER_THOUSAND_FACTORS and figure.kind in ("number", "interval"):
+    if figure.scale in PER_THOUSAND_FACTORS and figure.kind in ("number", "interval"):
         figure = replace(
             figure,
             amounts=_money_amounts(reading, figure, report_input),
@@ -359,7 +359,7 @@ def _resolved(key: str, report_input: ReportInput) -> Figure:
             reconciles=_beside_its_month(reading, figure, report_input),
         )
     if figure.kind in ("number", "interval") and (
-        figure.scale in _PER_THOUSAND_FACTORS or _family_word(reading) in _COST_RATIOS
+        figure.scale in PER_THOUSAND_FACTORS or _family_word(reading) in _COST_RATIOS
     ):
         figure = replace(figure, priced_in_part=_priced_in_part(reading, report_input))
     if figure.kind in ("number", "interval"):
@@ -590,7 +590,7 @@ def cost_arms(key: str, report_input: ReportInput) -> list[str]:
     if figure.kind not in ("number", "interval"):
         return []
     reading = _one_reading(key, report_input)
-    if figure.scale not in _PER_THOUSAND_FACTORS and _family_word(reading) not in _COST_RATIOS:
+    if figure.scale not in PER_THOUSAND_FACTORS and _family_word(reading) not in _COST_RATIOS:
         return []
     return _cost_arms_read(reading, report_input)
 
@@ -949,7 +949,7 @@ def _spell(
         text = forms.key_points(figure, hundred)
         return _Spelled(plus_signed(text, hundred) if spelling == "pts" and not absolute else text)
     if spelling in ("usd", "usd_per_1k"):
-        if figure.scale not in _PER_THOUSAND_FACTORS:
+        if figure.scale not in PER_THOUSAND_FACTORS:
             raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
         if spelling == "usd" and not _counted_under_a_cent(figure):
             return _Spelled(forms.key_money(figure, value, per=0, finer=finer, signed=signed)[0])
@@ -964,7 +964,7 @@ def _spell(
         # left unsaid reads as one per reply, a thousand or a million times what it is.
         return _Spelled(f"{amount} {words}")
     if spelling == "usd_whole":
-        if figure.scale not in _PER_THOUSAND_FACTORS:
+        if figure.scale not in PER_THOUSAND_FACTORS:
             raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
         if abs(value) < _WHOLE_DOLLARS_FROM:
             amount, floor = forms.key_refused_whole(figure, value, _WHOLE_DOLLARS_FROM, finer=finer, signed=signed)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from threetears.evals.analysis.report.keys.vocabulary import _criterion, _printed_stratum, _stratum, _task
-from threetears.evals.analysis.report.per_input import kept_for
+from threetears.evals.analysis.per_input import kept_for
 from threetears.evals.analysis.report.words import (
     arm_tags,
     aspect_stratum_key,
@@ -165,7 +165,7 @@ def page_arm_names(report_input: ReportInput) -> dict[str, str]:
     read arms by these names.
 
     The names are pure in the input, which is frozen, so they are read once per input
-    (:func:`~threetears.evals.analysis.report.per_input.kept_for`); each caller gets its own copy.
+    (:func:`~threetears.evals.analysis.per_input.kept_for`); each caller gets its own copy.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput

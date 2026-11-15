@@ -1,0 +1,1923 @@
+{
+ "built:courierhost": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "confound:served_model:candidate",
+    "confound",
+    "scoped"
+   ],
+   [
+    "apparatus:traffic_feed",
+    "apparatus",
+    "method"
+   ]
+  ]
+ },
+ "built:scaled": {
+  "called": [
+   "candidate-a"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "apparatus:grader_version",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:ocr_engine_version",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:document_language",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:handwriting_present",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:ingest_backlog",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:operator_corrections",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:payment_hold",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:scan_quality",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:supervisor_signoff",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:vendor_template",
+    "apparatus",
+    "method"
+   ],
+   [
+    "unreported:judge_temperature",
+    "unreported",
+    "method"
+   ]
+  ]
+ },
+ "built:scaled_two_aspects": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "apparatus:grader_version",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:ocr_engine_version",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:document_language",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:handwriting_present",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:ingest_backlog",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:operator_corrections",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:payment_hold",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:scan_quality",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:supervisor_signoff",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:vendor_template",
+    "apparatus",
+    "method"
+   ],
+   [
+    "unreported:judge_temperature",
+    "unreported",
+    "method"
+   ]
+  ]
+ },
+ "built:toyhost": {
+  "called": [
+   "256tok"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "unreported:orchestration_ms (llm_ms, tool_ms were not measured, so the parts cannot account for the whole.)",
+    "unreported",
+    "method"
+   ]
+  ]
+ },
+ "case:1-triage": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "case:2-replies": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "latency",
+    "latency",
+    "method"
+   ],
+   [
+    "unreported:judge_temperature",
+    "unreported",
+    "method"
+   ]
+  ]
+ },
+ "case:3-invoices": {
+  "called": [
+   "v1"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "confound:candidate",
+    "confound",
+    "scoped"
+   ]
+  ]
+ },
+ "case:4-booking": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "case:courierhost": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "confound:served_model:candidate",
+    "confound",
+    "scoped"
+   ],
+   [
+    "apparatus:traffic_feed",
+    "apparatus",
+    "method"
+   ]
+  ]
+ },
+ "case:discodon-1017-reasoning-effort-01a18d4d": {
+  "called": [
+   "low-effort"
+  ],
+  "immaterial": [
+   "late:floor:character/rate_drop/*",
+   "late:floor:queue discipline/rate_drop/*",
+   "late:margin"
+  ],
+  "implied": [],
+  "stated": [
+   [
+    "late:aspect",
+    "late",
+    "report"
+   ],
+   [
+    "late:control",
+    "late",
+    "report"
+   ],
+   [
+    "late:margin",
+    "late",
+    "report"
+   ],
+   [
+    "late:floor:character/rate_drop/*",
+    "late",
+    "report"
+   ],
+   [
+    "late:floor:character/cost_lower/*",
+    "late",
+    "report"
+   ],
+   [
+    "late:floor:queue discipline/rate_drop/*",
+    "late",
+    "report"
+   ],
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "confound:persona.reasoning_effort",
+    "confound",
+    "scoped"
+   ],
+   [
+    "confound:unverified_fold:resolved_reasoning_effort",
+    "confound",
+    "scoped"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "unsettled:queue discipline",
+    "unsettled",
+    "report"
+   ],
+   [
+    "unsettled:visible action",
+    "unsettled",
+    "report"
+   ],
+   [
+    "latency",
+    "latency",
+    "method"
+   ],
+   [
+    "unreported:input_tokens",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:llm_calls",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:output_tokens",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:top_up_never (declared boolean, recorded as a number; dropped, not pooled)",
+    "unreported",
+    "method"
+   ]
+  ]
+ },
+ "case:discodon-dj-character-01a1b3d4": {
+  "called": [],
+  "immaterial": [],
+  "implied": [],
+  "stated": [
+   [
+    "late:aspect",
+    "late",
+    "report"
+   ],
+   [
+    "late:control",
+    "late",
+    "report"
+   ],
+   [
+    "late:margin",
+    "late",
+    "report"
+   ],
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "unsettled:character",
+    "unsettled",
+    "scoped"
+   ],
+   [
+    "latency",
+    "latency",
+    "method"
+   ]
+  ]
+ },
+ "case:discodon-judge-shortlist-01a14544": {
+  "called": [
+   "mimo-v2.6-flash"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "late:control",
+    "late",
+    "report"
+   ]
+  ]
+ },
+ "case:discodon-kairo-directives-ab-01a16f8a": {
+  "called": [
+   "queue-wording + AI-lane directives"
+  ],
+  "immaterial": [],
+  "implied": [],
+  "stated": [
+   [
+    "late:aspect",
+    "late",
+    "report"
+   ],
+   [
+    "late:control",
+    "late",
+    "report"
+   ],
+   [
+    "late:margin",
+    "late",
+    "report"
+   ],
+   [
+    "late:floor:character adherence (v2)/rate_drop/*",
+    "late",
+    "report"
+   ],
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "confound:persona.directives",
+    "confound",
+    "scoped"
+   ],
+   [
+    "confound:unverified_fold:directives",
+    "confound",
+    "scoped"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "short_run:01a16fd1-25f8-7307-9bbf-9c65861240a7",
+    "short_run",
+    "report"
+   ],
+   [
+    "latency",
+    "latency",
+    "method"
+   ],
+   [
+    "unreported:input_tokens",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:llm_calls",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:output_tokens",
+    "unreported",
+    "method"
+   ]
+  ]
+ },
+ "case:discodon-kairo-models-pilot-01a18f50": {
+  "called": [
+   "1017"
+  ],
+  "immaterial": [
+   "late:floor:arrival/rate_drop/*",
+   "late:floor:character/rate_drop/*",
+   "late:margin"
+  ],
+  "implied": [],
+  "stated": [
+   [
+    "late:aspect",
+    "late",
+    "report"
+   ],
+   [
+    "late:control",
+    "late",
+    "report"
+   ],
+   [
+    "late:margin",
+    "late",
+    "report"
+   ],
+   [
+    "late:floor:character/rate_drop/*",
+    "late",
+    "report"
+   ],
+   [
+    "late:floor:arrival/rate_drop/*",
+    "late",
+    "report"
+   ],
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "confound:persona.provider_routing",
+    "confound",
+    "scoped"
+   ],
+   [
+    "confound:unverified_fold:resolved_provider_routing",
+    "confound",
+    "scoped"
+   ],
+   [
+    "confound:model",
+    "confound",
+    "scoped"
+   ],
+   [
+    "confound:observed:reasoning_ratio",
+    "confound",
+    "report"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "unsettled:character",
+    "unsettled",
+    "scoped"
+   ],
+   [
+    "unsettled:queue discipline",
+    "unsettled",
+    "scoped"
+   ],
+   [
+    "latency",
+    "latency",
+    "method"
+   ],
+   [
+    "unreported:input_tokens",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:llm_calls",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:output_tokens",
+    "unreported",
+    "method"
+   ]
+  ]
+ },
+ "case:discodon-kairo-persona-r1-01a16bd4": {
+  "called": [
+   "qwen3.8-flash"
+  ],
+  "immaterial": [
+   "late:floor:arrival greeting/rate_drop/*",
+   "late:floor:character adherence/rate_drop/*",
+   "late:floor:present listener not greeted as an arrival/rate_drop/*",
+   "late:margin"
+  ],
+  "implied": [
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "late:aspect",
+    "late",
+    "report"
+   ],
+   [
+    "late:control",
+    "late",
+    "report"
+   ],
+   [
+    "late:margin",
+    "late",
+    "report"
+   ],
+   [
+    "late:floor:present listener not greeted as an arrival/rate_drop/*",
+    "late",
+    "report"
+   ],
+   [
+    "late:floor:queue discipline/rate_drop/*",
+    "late",
+    "report"
+   ],
+   [
+    "late:floor:arrival greeting/rate_drop/*",
+    "late",
+    "report"
+   ],
+   [
+    "late:floor:character adherence/rate_drop/*",
+    "late",
+    "report"
+   ],
+   [
+    "late:floor:queue readiness/rate_drop/*",
+    "late",
+    "report"
+   ],
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "confound:observed:reasoning_ratio",
+    "confound",
+    "scoped"
+   ],
+   [
+    "confound:model",
+    "confound",
+    "scoped"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "short_run:01a16b63-bcaa-747e-ab5a-9fb4c69b45f5",
+    "short_run",
+    "scoped"
+   ],
+   [
+    "unsettled:queue discipline",
+    "unsettled",
+    "scoped"
+   ],
+   [
+    "unsettled:character adherence",
+    "unsettled",
+    "report"
+   ],
+   [
+    "unsettled:queue readiness",
+    "unsettled",
+    "report"
+   ],
+   [
+    "latency",
+    "latency",
+    "method"
+   ],
+   [
+    "unreported:input_tokens",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:llm_calls",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:output_tokens",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:top_up_never (declared boolean, recorded as a number; dropped, not pooled)",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:arrival_greeting_never (declared boolean, recorded as a number; dropped, not pooled)",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:arrival_music_never (declared boolean, recorded as a number; dropped, not pooled)",
+    "unreported",
+    "method"
+   ]
+  ]
+ },
+ "case:discodon-planted-effect-01a18b10": {
+  "called": [
+   "september"
+  ],
+  "immaterial": [
+   "late:floor:dj character/rate_drop/*",
+   "late:margin"
+  ],
+  "implied": [
+   [
+    "judge_partly_uncalibrated",
+    "judge_partly_uncalibrated",
+    "scoped"
+   ]
+  ],
+  "stated": [
+   [
+    "late:aspect",
+    "late",
+    "report"
+   ],
+   [
+    "late:control",
+    "late",
+    "report"
+   ],
+   [
+    "late:margin",
+    "late",
+    "report"
+   ],
+   [
+    "late:floor:dj character/rate_drop/*",
+    "late",
+    "report"
+   ],
+   [
+    "confound:persona.style",
+    "confound",
+    "scoped"
+   ],
+   [
+    "confound:persona.traits.extraversion",
+    "confound",
+    "scoped"
+   ],
+   [
+    "confound:unverified_fold:style",
+    "confound",
+    "scoped"
+   ],
+   [
+    "confound:unverified_fold:traits",
+    "confound",
+    "scoped"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "short_run:01a18b0e-ca43-72ae-8861-0a0467a1ac42",
+    "short_run",
+    "scoped"
+   ],
+   [
+    "latency",
+    "latency",
+    "method"
+   ],
+   [
+    "unreported:input_tokens",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:llm_calls",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:output_tokens",
+    "unreported",
+    "method"
+   ]
+  ]
+ },
+ "case:dow-forge": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "latency",
+    "latency",
+    "method"
+   ]
+  ]
+ },
+ "case:dow-router": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "case:dow-router-prompts": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "confound:candidate",
+    "confound",
+    "scoped"
+   ]
+  ]
+ },
+ "case:hot-path-scaled": {
+  "called": [
+   "candidate-a"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "apparatus:grader_version",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:ocr_engine_version",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:document_language",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:handwriting_present",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:ingest_backlog",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:operator_corrections",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:payment_hold",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:scan_quality",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:supervisor_signoff",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:vendor_template",
+    "apparatus",
+    "method"
+   ],
+   [
+    "unreported:judge_temperature",
+    "unreported",
+    "method"
+   ]
+  ]
+ },
+ "case:kairo-round-2": {
+  "called": [
+   "September"
+  ],
+  "immaterial": [
+   "late:floor:character adherence (v2)/rate_drop/*",
+   "late:margin"
+  ],
+  "implied": [],
+  "stated": [
+   [
+    "late:aspect",
+    "late",
+    "report"
+   ],
+   [
+    "late:control",
+    "late",
+    "report"
+   ],
+   [
+    "late:margin",
+    "late",
+    "report"
+   ],
+   [
+    "late:floor:character adherence (v2)/rate_drop/*",
+    "late",
+    "report"
+   ],
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "confound:observed:reasoning_ratio",
+    "confound",
+    "scoped"
+   ],
+   [
+    "confound:model",
+    "confound",
+    "scoped"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "short_run:01a170ab-d2da-750d-a1e3-f4b43716844d",
+    "short_run",
+    "scoped"
+   ],
+   [
+    "short_run:01a17121-6e85-732d-ab3a-cf86aed8cdc6",
+    "short_run",
+    "scoped"
+   ],
+   [
+    "latency",
+    "latency",
+    "method"
+   ],
+   [
+    "unreported:input_tokens",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:llm_calls",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:output_tokens",
+    "unreported",
+    "method"
+   ]
+  ]
+ },
+ "case:r1": {
+  "called": [
+   "atlas-m"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "judge_unstated",
+    "judge_unstated",
+    "report"
+   ],
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "point_estimate:p95",
+    "point_estimate",
+    "report"
+   ],
+   [
+    "borderline:trouble.resolves",
+    "borderline",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "case:r1-reading-only-bars": {
+  "called": [
+   "brisk-s"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "judge_unstated",
+    "judge_unstated",
+    "scoped"
+   ],
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "case:r1-without-its-gates": {
+  "called": [
+   "brisk-s"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "judge_unstated",
+    "judge_unstated",
+    "scoped"
+   ],
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "case:r2": {
+  "called": [
+   "brisk-s.low.r1"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "point_estimate:pass_rate",
+    "point_estimate",
+    "report"
+   ],
+   [
+    "point_estimate:p95",
+    "point_estimate",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "case:r2-with-its-gates-read-in-each-task": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "case:r2-with-one-gate": {
+  "called": [
+   "brisk-s.low.r1"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "point_estimate:pass_rate",
+    "point_estimate",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "case:r2-without-its-gates": {
+  "called": [
+   "nano-xs.off.r0"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "case:r3": {
+  "called": [
+   "brisk-s.few"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "point_estimate:p95",
+    "point_estimate",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "case:r3-without-its-configs": {
+  "called": [
+   "brisk-s.few"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "point_estimate:p95",
+    "point_estimate",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "case:r4": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "judge_unstated",
+    "judge_unstated",
+    "report"
+   ],
+   [
+    "point_estimate:facts",
+    "point_estimate",
+    "report"
+   ],
+   [
+    "point_estimate:specul",
+    "point_estimate",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "case:s1": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "apparatus:grader_version",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:ocr_engine_version",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_model",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_request_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:document_language",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:handwriting_present",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:ingest_backlog",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:operator_corrections",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:payment_hold",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:scan_quality",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:supervisor_signoff",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:vendor_template",
+    "apparatus",
+    "method"
+   ],
+   [
+    "unsettled:billing",
+    "unsettled",
+    "scoped"
+   ],
+   [
+    "unsettled:tone",
+    "unsettled",
+    "scoped"
+   ],
+   [
+    "unsettled:refunds",
+    "unsettled",
+    "scoped"
+   ]
+  ]
+ },
+ "case:s2": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "apparatus:grader_version",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:ocr_engine_version",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_model",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_request_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:document_language",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:handwriting_present",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:ingest_backlog",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:operator_corrections",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:payment_hold",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:scan_quality",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:supervisor_signoff",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:vendor_template",
+    "apparatus",
+    "method"
+   ],
+   [
+    "unreported:orchestration_ms (llm_ms, tool_ms were not measured, so the parts cannot account for the whole.)",
+    "unreported",
+    "method"
+   ]
+  ]
+ },
+ "case:s3": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "apparatus:grader_version",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:ocr_engine_version",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_model",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_request_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:document_language",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:handwriting_present",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:ingest_backlog",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:operator_corrections",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:payment_hold",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:scan_quality",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:supervisor_signoff",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:vendor_template",
+    "apparatus",
+    "method"
+   ],
+   [
+    "unreported:judge_temperature",
+    "unreported",
+    "method"
+   ]
+  ]
+ },
+ "case:s4": {
+  "called": [
+   "production"
+  ],
+  "immaterial": [],
+  "implied": [],
+  "stated": [
+   [
+    "apparatus:grader_version",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:ocr_engine_version",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_model",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_request_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:document_language",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:handwriting_present",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:ingest_backlog",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:operator_corrections",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:payment_hold",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:scan_quality",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:supervisor_signoff",
+    "apparatus",
+    "method"
+   ],
+   [
+    "apparatus:world:vendor_template",
+    "apparatus",
+    "method"
+   ]
+  ]
+ },
+ "case:toyhost": {
+  "called": [
+   "256tok"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "nothing_declared",
+    "nothing_declared",
+    "report"
+   ]
+  ],
+  "stated": [
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "unreported:orchestration_ms (llm_ms, tool_ms were not measured, so the parts cannot account for the whole.)",
+    "unreported",
+    "method"
+   ]
+  ]
+ },
+ "stored:report_inputs/r1/input.json": {
+  "called": [
+   "atlas-m"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "judge_unstated",
+    "judge_unstated",
+    "report"
+   ],
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "point_estimate:p95",
+    "point_estimate",
+    "report"
+   ],
+   [
+    "borderline:trouble.resolves",
+    "borderline",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "stored:report_inputs/r2/input.json": {
+  "called": [
+   "brisk-s.low.r1"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "point_estimate:pass_rate",
+    "point_estimate",
+    "report"
+   ],
+   [
+    "point_estimate:p95",
+    "point_estimate",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "stored:report_inputs/r3/input.json": {
+  "called": [
+   "brisk-s.few"
+  ],
+  "immaterial": [],
+  "implied": [
+   [
+    "no_control",
+    "no_control",
+    "report"
+   ],
+   [
+    "point_estimate:p95",
+    "point_estimate",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "stored:report_inputs/r4/input.json": {
+  "called": [],
+  "immaterial": [],
+  "implied": [
+   [
+    "judge_unstated",
+    "judge_unstated",
+    "report"
+   ],
+   [
+    "point_estimate:facts",
+    "point_estimate",
+    "report"
+   ],
+   [
+    "point_estimate:specul",
+    "point_estimate",
+    "report"
+   ],
+   [
+    "best_of_n",
+    "best_of_n",
+    "report"
+   ]
+  ],
+  "stated": []
+ },
+ "stored:report_inputs/r5/input.json": {
+  "called": [
+   "September"
+  ],
+  "immaterial": [
+   "late:floor:character adherence (v2)/rate_drop/*",
+   "late:margin"
+  ],
+  "implied": [],
+  "stated": [
+   [
+    "late:aspect",
+    "late",
+    "report"
+   ],
+   [
+    "late:control",
+    "late",
+    "report"
+   ],
+   [
+    "late:margin",
+    "late",
+    "report"
+   ],
+   [
+    "late:floor:character adherence (v2)/rate_drop/*",
+    "late",
+    "report"
+   ],
+   [
+    "judge_uncalibrated",
+    "judge_uncalibrated",
+    "report"
+   ],
+   [
+    "confound:observed:reasoning_ratio",
+    "confound",
+    "scoped"
+   ],
+   [
+    "confound:model",
+    "confound",
+    "scoped"
+   ],
+   [
+    "apparatus:simulator_sent_settings",
+    "apparatus",
+    "method"
+   ],
+   [
+    "short_run:01a170ab-d2da-750d-a1e3-f4b43716844d",
+    "short_run",
+    "scoped"
+   ],
+   [
+    "short_run:01a17121-6e85-732d-ab3a-cf86aed8cdc6",
+    "short_run",
+    "scoped"
+   ],
+   [
+    "latency",
+    "latency",
+    "method"
+   ],
+   [
+    "unreported:input_tokens",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:llm_calls",
+    "unreported",
+    "method"
+   ],
+   [
+    "unreported:output_tokens",
+    "unreported",
+    "method"
+   ]
+  ]
+ }
+}

@@ -38,7 +38,9 @@ rebuild it.
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
+
+from pydantic import field_validator
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.covariates import TRUNCATED_ROUNDS_KEY, TURN_BUDGET_ENDED_KEY
@@ -103,15 +105,20 @@ class ResultOutcome(str, Enum):
 #:   ``failed``         the judge ran and errored, producing nothing.
 #:   ``not_attempted``  no judge output and no judge error: no judge service, an empty
 #:                      transcript, or a cell that never reached judging.
-#:   ``set_aside``      the run's cost cap had too little left for the judging, so the judge was not asked on
-#:                      some or all of the dimensions (``EvalResult.judging_set_aside``); nothing errored.
+#:   ``not_asked``      the run's cost cap had too little left for the judging, so the judge was not asked on
+#:                      some or all of the dimensions (``EvalResult.judging_set_aside``); nothing errored. Spelled
+#:                      ``set_aside`` before the shared reading states took that word for a reading set aside: a
+#:                      condition handed back under the old spelling reads as ``not_asked``.
 #:
 #: Derived from the judge's own outputs, which is a real evidence trail rather than a
 #: correlate — a score exists only because a judge produced it. ``judge_model`` is
 #: deliberately not consulted: it is the run-level pin, present on cells that never
 #: reached a judge at all, and reading it as evidence of judging is one of the
 #: disagreeing predicates this module replaced.
-JudgingState = Literal["scored", "partial", "failed", "not_attempted", "set_aside"]
+JudgingState = Literal["scored", "partial", "failed", "not_attempted", "not_asked"]
+
+#: The judging state's earlier spellings, each read as the one it became.
+_JUDGING_RENAMED: Final[dict[str, JudgingState]] = {"set_aside": "not_asked"}
 
 #: Why a result is a candidate failure. ``model_failed``: a model the configuration runs
 #: failed, recorded in ``candidate_error``. ``turn_budget``: the host's turn budget ended one of
@@ -143,6 +150,18 @@ class ResultCondition(EvalBaseModel):
     #: The one sentence a surface must show, or ``None`` when the result is in no
     #: condition a reader needs warning about. Render it verbatim.
     disclosure: str | None = None
+
+    @field_validator("judging", mode="before")
+    @classmethod
+    def _judging_as_renamed(cls, value: object) -> object:
+        """Read a judging state handed back under an earlier spelling as the one it became.
+
+        :param value: The judging state as given.
+        :ptype value: object
+        :return: Its current spelling.
+        :rtype: object
+        """
+        return _JUDGING_RENAMED.get(value, value) if isinstance(value, str) else value
 
 
 def candidate_failure_cause(result: ResultView) -> CandidateFailureCause | None:
@@ -353,7 +372,7 @@ def _classify_judging(result: EvalResult) -> JudgingState:
     if result.judge_error and result.judging_set_aside:
         # The cost cap kept the judge from being asked: nothing errored, so a judge never asked is not one that failed,
         # whether or not it had answered on some dimensions first.
-        return "set_aside"
+        return "not_asked"
     if result.judge_error:
         return "partial" if scored else "failed"
     return "scored" if scored else "not_attempted"
@@ -463,7 +482,7 @@ _JUDGING_DISCLOSURE: dict[JudgingState, str | None] = {
     "not_attempted": "No judge produced output for this result, so it carries no scores.",
     "partial": "The judge errored partway: some dimensions were scored and some were not.",
     "failed": "The judge ran and errored, so this result carries no scores.",
-    "set_aside": (
+    "not_asked": (
         "The run's cost cap had too little left for this result's judging, so the judge was not asked on every"
         " dimension and the judged readings leave it out; a re-judge, or a launch with a higher cap, judges it."
     ),
