@@ -303,7 +303,7 @@ async def test_an_answer_json_cannot_hold_prints_cut_never_whole() -> None:
     # The refund is routed; every other ticket comes back with no queue, which no label can be read from. (Had no
     # answer routed one, the eval would be refused as wired to a field its answers lack.)
     async def as_dataclass(case: Mapping[str, Any]) -> Routing:
-        queue = "billing" if case.get("id") == "refund" else None
+        queue = "billing" if case["text"] == "refund please" else None
         return Routing(queue=queue, note="routed after reading " + "the whole ticket " * 20)
 
     result = await Eval(CASES, as_dataclass, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
@@ -319,7 +319,7 @@ async def test_an_answer_json_cannot_hold_prints_cut_never_whole() -> None:
 async def test_an_answer_without_the_graded_field_prints_a_short_compact_answer_without_its_id() -> None:
     # The refund carries its queue; the other two answers carry none.
     async def unlabelled(case: Mapping[str, Any]) -> dict[str, Any]:
-        return {"queue": "billing"} if case.get("id") == "refund" else {"id": "row-1", "note": "x" * 300}
+        return {"queue": "billing"} if case["text"] == "refund please" else {"id": "row-1", "note": "x" * 300}
 
     result = await Eval(CASES, unlabelled, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
     lines = _miss_lines(result.render())
