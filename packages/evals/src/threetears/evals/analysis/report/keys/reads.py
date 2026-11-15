@@ -7,13 +7,19 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 
+from threetears.evals.analysis.costs import (
+    PER_THOUSAND_FACTORS,
+    SCOREBOARD_COST,
+    cost_source,
+    costs_per_thousand,
+    with_reply_costs,
+)
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report.cost_unit import REPLIES, CostBasis, MoneyRuler, money_ruler, per_count, per_noun
 from threetears.evals.analysis.report.keys.figure import (
     DIRECTION_WORDS,
     Figure,
     Scale,
-    _PER_THOUSAND_FACTORS,
     _SCALE_COUNTS,
     _count,
     _listed,
@@ -497,115 +503,6 @@ def _pass_rate(report_input: ReportInput, values: tuple[str, ...], path: str) ->
     return replace(read, set_of=pass_rate_measure(report_input))
 
 
-def _cost_measures(report_input: ReportInput) -> tuple[list[str], list[str]]:
-    """The measures an arm's cost may be read from, in the order they are tried: each one alone of its kind.
-
-    First the measures read before the scoreboard: the one stated per 1,000 (``usd_per_1k``), per 1,000,000,
-    the one in dollars on the cost merit axis. Then the one dollar measure, in any of those units, where lower is
-    better, read after it.
-    """
-    measures = report_input.measures
-
-    def alone(keys: list[str]) -> list[str]:
-        return keys if len(keys) == 1 else []
-
-    first = [
-        *alone([key for key, m in measures.items() if m.unit == "usd_per_1k"]),
-        *alone([key for key, m in measures.items() if m.unit == "usd_per_1m"]),
-        *alone([key for key, m in measures.items() if m.unit == "usd" and m.merit_axis == "cost"]),
-    ]
-    lower = alone(
-        [key for key, m in measures.items() if m.unit in _PER_THOUSAND_FACTORS and m.higher_is_better is False]
-    )
-    return first, lower
-
-
-def _overall_cost(report_input: ReportInput, key: str) -> dict[str, float]:
-    measure = report_input.measures[key]
-    factor = _PER_THOUSAND_FACTORS[measure.unit or ""]
-    return {arm: stat.mean * factor for arm, stat in measure.per_arm.items() if stat.mean is not None}
-
-
-def _blended_cost(report_input: ReportInput, key: str) -> dict[str, float]:
-    """Each arm's cost on one measure blended over the tasks: its task figures weighted by each task's traffic share.
-
-    An arm is blended over the tasks that carry traffic and hold its figure, each weighted by its share of their
-    traffic, and left out where any of those figures is unstated.
-    """
-    factor = _PER_THOUSAND_FACTORS[report_input.measures[key].unit or ""]
-    blended: dict[str, float] = {}
-    for arm in report_input.arms:
-        parts = [
-            (float(task.share), task.per_arm[arm.id][key].mean)
-            for task in report_input.tasks
-            if task.share and arm.id in task.per_arm and key in task.per_arm[arm.id]
-        ]
-        means = [mean for _, mean in parts if mean is not None]
-        if parts and len(means) == len(parts):
-            total = sum(share for share, _ in parts)
-            blended[arm.id] = factor * sum(share * mean for (share, _), mean in zip(parts, means, strict=True)) / total
-    return blended
-
-
-#: The cost source that is the scoreboard's cost per reply, as :class:`CostBasis` names it.
-_SCOREBOARD_COST = "scoreboard"
-
-
-def _cost_source(report_input: ReportInput) -> tuple[str, dict[str, float]]:
-    """The first cost source that holds a figure, by name (a measure's key, or :data:`_SCOREBOARD_COST`), and each
-    arm's cost per 1,000 on it; ``("", {})`` where none does (:func:`_costs_per_thousand`'s order)."""
-    first, lower = _cost_measures(report_input)
-    sources = [(key, _overall_cost(report_input, key)) for key in first]
-    sources.append(
-        (
-            _SCOREBOARD_COST,
-            {
-                a: row.reply_cost_usd * 1000
-                for a, row in report_input.scoreboard.items()
-                if row.reply_cost_usd is not None
-            },
-        )
-    )
-    sources += [(key, _overall_cost(report_input, key)) for key in lower]
-    sources += [(key, _blended_cost(report_input, key)) for key in dict.fromkeys([*first, *lower])]
-    return next(((name, source) for name, source in sources if source), ("", {}))
-
-
-def _costs_per_thousand(report_input: ReportInput) -> dict[str, float]:
-    """Each arm's cost per 1,000 of what it counts, from the first source that holds one: the one rule a page and the
-    decision read cost by (``cost_per_1k.<arm>``).
-
-    The arms' overall figures on a measure stated per 1,000; else on one stated per 1,000,000, divided by 1,000; else
-    on the one dollar measure on the cost merit axis, times 1,000; else the scoreboard's cost per reply, times 1,000;
-    else the one dollar measure where lower is better. Where none of those states a figure, each measure in the same
-    order blended over the tasks by traffic share (:func:`_blended_cost`). What the count counts is
-    :func:`cost_basis`'s.
-    """
-    source, costs = _cost_source(report_input)
-    return _with_reply_costs(report_input, source, costs, report_input.scoreboard)
-
-
-def _with_reply_costs(
-    report_input: ReportInput, source: str, costs: dict[str, float], board: Mapping[str, ScoreboardRow]
-) -> dict[str, float]:
-    """``costs`` (a source's figures, per 1,000) with each arm the source lacks and a scoreboard's cost per reply
-    states, in that figure times 1,000.
-
-    A source can leave an arm out that the scoreboard states: the cost per reply is the same cost over the same count
-    where the source counts replies, so the arm is not left without a cost beside arms that carry one. Every table and
-    key reads an arm's cost here, so one arm states one cost. A source counting anything else takes no fallback.
-    """
-    if source == _SCOREBOARD_COST:
-        return costs
-    measure = report_input.measures.get(source)
-    if measure is None or per_noun(measure) != REPLIES:
-        return costs
-    return {
-        **{arm: row.reply_cost_usd * 1000 for arm, row in board.items() if row.reply_cost_usd is not None},
-        **costs,
-    }
-
-
 def cost_basis(report_input: ReportInput) -> CostBasis:
     """What the page's cost (``cost_per_1k.<arm>``) is per, read from the source it is read from.
 
@@ -615,8 +512,8 @@ def cost_basis(report_input: ReportInput) -> CostBasis:
         noun; empty where unstated, or where the input states no cost) and the source.
     :rtype: CostBasis
     """
-    source, _costs = _cost_source(report_input)
-    if source == _SCOREBOARD_COST:
+    source, _costs = cost_source(report_input)
+    if source == SCOREBOARD_COST:
         return CostBasis(noun=REPLIES, source=source)
     measure = report_input.measures.get(source)
     return CostBasis(noun=per_noun(measure) if measure is not None else "", source=source)
@@ -633,7 +530,7 @@ def cost_ruler(report_input: ReportInput) -> MoneyRuler:
     :rtype: MoneyRuler
     """
     return money_ruler(
-        _costs_per_thousand(report_input).values(),
+        costs_per_thousand(report_input).values(),
         per=1000,
         start=1000,
         reconciles=report_input.meta.volume_per_month is not None,
@@ -678,9 +575,9 @@ def aspect_costs_per_thousand(report_input: ReportInput, aspect_id: str | None) 
     :rtype: dict[str, float]
     """
     if aspect_id is None or aspect_id == lead_aspect(report_input):
-        return _costs_per_thousand(report_input)
-    source = _cost_source(report_input)[0]
-    if source == _SCOREBOARD_COST:
+        return costs_per_thousand(report_input)
+    source = cost_source(report_input)[0]
+    if source == SCOREBOARD_COST:
         return {
             arm: row.reply_cost_usd * 1000
             for arm, row in aspect_board(report_input, aspect_id).items()
@@ -689,11 +586,11 @@ def aspect_costs_per_thousand(report_input: ReportInput, aspect_id: str | None) 
     measure = report_input.measures.get(source)
     if measure is None:
         return {}
-    factor = _PER_THOUSAND_FACTORS[measure.unit or ""]
+    factor = PER_THOUSAND_FACTORS[measure.unit or ""]
     held = {
         arm: stat.mean * factor for arm, stat in measure.by_aspect.get(aspect_id, {}).items() if stat.mean is not None
     }
-    return _with_reply_costs(report_input, source, held, aspect_board(report_input, aspect_id))
+    return with_reply_costs(report_input, source, held, aspect_board(report_input, aspect_id))
 
 
 def cost_in_measure_unit(report_input: ReportInput, measure_key: str, per_thousand: float) -> float:
@@ -710,14 +607,14 @@ def cost_in_measure_unit(report_input: ReportInput, measure_key: str, per_thousa
     :rtype: float
     :raises KeyError: The key names no dollar measure.
     """
-    return per_thousand / _PER_THOUSAND_FACTORS[report_input.measures[measure_key].unit or ""]
+    return per_thousand / PER_THOUSAND_FACTORS[report_input.measures[measure_key].unit or ""]
 
 
 def _money_per(report_input: ReportInput, values: tuple[str, ...]) -> str:
     """What a money figure read by a path counts: the money measure the path names, else the page's cost basis."""
     for value in values:
         measure = report_input.measures.get(value)
-        if measure is not None and measure.unit in _PER_THOUSAND_FACTORS:
+        if measure is not None and measure.unit in PER_THOUSAND_FACTORS:
             return per_noun(measure)
     return cost_basis(report_input).noun
 
@@ -730,7 +627,7 @@ def _input_unit_phrases(report_input: ReportInput) -> set[str]:
 
 
 def _cost_per_1k(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
-    read = _number(path, _costs_per_thousand(report_input)[values[0]], "the cost", "usd_per_1k")
+    read = _number(path, costs_per_thousand(report_input)[values[0]], "the cost", "usd_per_1k")
     return replace(read, set_of=cost_measure(report_input))
 
 
@@ -1242,7 +1139,7 @@ def _criterion_arm_at(report_input: ReportInput, values: tuple[str, ...], path: 
 
 
 def _control_cost(report_input: ReportInput, path: str) -> tuple[dict[str, float], float]:
-    costs = _costs_per_thousand(report_input)
+    costs = costs_per_thousand(report_input)
     control = _control(report_input)
     if control is None or not costs.get(control.id):
         raise _refuse(path, "compares a cost with the control's, and the input holds no control cost")
@@ -1250,7 +1147,7 @@ def _control_cost(report_input: ReportInput, path: str) -> tuple[dict[str, float
 
 
 def _costed_candidates(report_input: ReportInput, _: tuple[str, ...]) -> list[str]:
-    costs = _costs_per_thousand(report_input)
+    costs = costs_per_thousand(report_input)
     return [arm for arm in _candidates(report_input) if arm in costs]
 
 

@@ -63,9 +63,11 @@ _SEED: Final = "a stored definition read against the seed corpus: an operator's 
 _MECHANISM: Final = "why a lever's mechanism went unchecked: a check that is insufficient, never a reading state"
 
 
-#: The collision: what ``JudgingState.set_aside`` is, which is no reading set aside.
-JUDGING_SET_ASIDE: Final = (
-    "judging skipped under a cost cap, a trial's fact: not_asked when next touched, never a reading set aside"
+#: What ``JudgingState.not_asked`` is: judging the cost cap kept the judge from, spelled ``set_aside`` before the
+#: shared reading state took that word, and read as ``not_asked`` when handed back under it.
+JUDGING_NOT_ASKED: Final = (
+    "judging skipped under a cost cap, a trial's fact; its earlier spelling set_aside reads as it, and is no reading "
+    "set aside"
 )
 
 _BAR: Final = ("cleared", "missed", "undecided")
@@ -214,14 +216,12 @@ STATE_WORDS: Final[tuple[StateWord, ...]] = (
     StateWord("RaterKind", "agent", note="who made a judgment: a model"),
     # A stored definition against the seed corpus.
     *_all("DefinitionState", _SEED, "current", "stale", "customized", "unknown", "absent"),
-    # How a result's judging went. One member collides with a reading state: ``set_aside`` here is judging skipped
-    # under a cost cap, one trial's fact, and has nothing to do with a reading set aside. The stored value is renamed
-    # ``not_asked`` when its code is next touched, and this row moves with it.
+    # How a result's judging went: one trial's fact each, no reading state.
     StateWord("JudgingState", "scored", note="a judged trial"),
     StateWord("JudgingState", "partial", note="a judged trial, some dimensions unscored"),
     StateWord("JudgingState", "failed", note=_LOST),
     StateWord("JudgingState", "not_attempted", note="a trial no judge was asked about"),
-    StateWord("JudgingState", "set_aside", note=JUDGING_SET_ASIDE),
+    StateWord("JudgingState", "not_asked", note=JUDGING_NOT_ASKED),
     # Latency read while cells ran at once.
     StateWord("AnalysisContextBundle", "latency_contended", "withheld", "measured_under_concurrency"),
     # The one free-text reason a stored reading holds for an absent figure.

@@ -1783,10 +1783,12 @@
    "properties": {
     "id": {
      "description": "The caveat's stable id, as a report document names it.",
+     "title": "Id",
      "type": "string"
     },
     "kind": {
      "description": "The id's kind, which decides its class.",
+     "title": "Kind",
      "type": "string"
     },
     "class": {
@@ -1805,7 +1807,9 @@
        "type": "null"
       }
      ],
-     "description": "What it does to the answer, A to E; none for a method-reach kind."
+     "default": null,
+     "description": "What it does to the answer, A to E; none for a method-reach kind.",
+     "title": "Class"
     },
     "reach": {
      "description": "report, scoped or method.",
@@ -1814,6 +1818,7 @@
       "scoped",
       "method"
      ],
+     "title": "Reach",
      "type": "string"
     },
     "state": {
@@ -1831,7 +1836,9 @@
        "type": "null"
       }
      ],
-     "description": "The non-counted state that raised it, where one did."
+     "default": null,
+     "description": "The non-counted state that raised it, where one did.",
+     "title": "State"
     },
     "reason": {
      "anyOf": [
@@ -1872,7 +1879,9 @@
        "type": "null"
       }
      ],
-     "description": "That state's reason, or the reason a check is not met."
+     "default": null,
+     "description": "That state's reason, or the reason a check is not met.",
+     "title": "Reason"
     },
     "coordinate": {
      "anyOf": [
@@ -1889,13 +1898,16 @@
        "type": "null"
       }
      ],
-     "description": "The coordinate a split or an unrecorded identity names."
+     "default": null,
+     "description": "The coordinate a split or an unrecorded identity names.",
+     "title": "Coordinate"
     },
     "arms": {
      "description": "The arm ids it touches; empty for all.",
      "items": {
       "type": "string"
      },
+     "title": "Arms",
      "type": "array"
     },
     "readings": {
@@ -1903,14 +1915,19 @@
      "items": {
       "type": "string"
      },
+     "title": "Readings",
      "type": "array"
     },
     "asked": {
-     "description": "Whether any of its readings is on an asked aspect.",
+     "default": false,
+     "description": "Whether it touches an asked aspect: one of its readings is on one, or it is scoped to the whole report and the report asks about one.",
+     "title": "Asked",
      "type": "boolean"
     },
     "deciding": {
+     "default": false,
      "description": "Whether the answer turns on a reading it names: a class E caveat reaches the first screen only where it does.",
+     "title": "Deciding",
      "type": "boolean"
     },
     "immaterial": {
@@ -1922,7 +1939,9 @@
        "type": "null"
       }
      ],
-     "description": "True once code proved it changes no answer; none where code cannot say."
+     "default": null,
+     "description": "True once code proved it changes no answer; none where code cannot say.",
+     "title": "Immaterial"
     },
     "subsumed_by": {
      "anyOf": [
@@ -1933,7 +1952,9 @@
        "type": "null"
       }
      ],
-     "description": "The caveat that silences it, by id."
+     "default": null,
+     "description": "The caveat that silences it, by id.",
+     "title": "Subsumed By"
     },
     "against": {
      "anyOf": [
@@ -1948,7 +1969,9 @@
        "type": "null"
       }
      ],
-     "description": "For a caveat about an instrument's check: what the instrument was checked against."
+     "default": null,
+     "description": "For a caveat about an instrument's check: what the instrument was checked against.",
+     "title": "Against"
     },
     "criterion": {
      "anyOf": [
@@ -1959,11 +1982,55 @@
        "type": "null"
       }
      ],
-     "description": "For such a caveat: the criterion the check decides."
+     "default": null,
+     "description": "For such a caveat: the criterion the check decides; for a gate cleared on a point estimate or a borderline figure: the gate, by id.",
+     "title": "Criterion"
     },
     "same_family": {
+     "default": false,
      "description": "For a check against a model: whether the model is of a candidate's family.",
+     "title": "Same Family",
      "type": "boolean"
+    },
+    "check": {
+     "anyOf": [
+      {
+       "enum": [
+        "met",
+        "not_met",
+        "undecided",
+        "insufficient"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For a caveat about an instrument's check: the check's result. Only a result that decides (met or not met) speaks for the instrument, so only such a check against people silences one against a model.",
+     "title": "Check"
+    },
+    "runs": {
+     "description": "The runs it is about, by id; empty for none named.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Runs",
+     "type": "array"
+    },
+    "cases": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The cases the readings it names rest on, where one count says it.",
+     "title": "Cases"
     }
    },
    "required": [
@@ -1971,6 +2038,7 @@
     "kind",
     "reach"
    ],
+   "title": "CaveatEntry",
    "type": "object"
   },
   "Check": {
@@ -2492,6 +2560,7 @@
        "type": "null"
       }
      ],
+     "default": null,
      "description": "What stopped the read; none when the campaign can be read."
     },
     "reasons": {
@@ -2500,16 +2569,21 @@
       "type": "string"
      },
      "maxItems": 3,
+     "title": "Reasons",
      "type": "array"
     },
     "remainder": {
+     "default": 0,
      "description": "The eligible caveats past the three shown.",
      "minimum": 0,
+     "title": "Remainder",
      "type": "integer"
     },
     "open_report_caveats": {
+     "default": 0,
      "description": "Every open report-wide caveat, shown or not.",
      "minimum": 0,
+     "title": "Open Report Caveats",
      "type": "integer"
     },
     "called_arms": {
@@ -2517,6 +2591,7 @@
      "items": {
       "type": "string"
      },
+     "title": "Called Arms",
      "type": "array"
     },
     "call": {
@@ -2528,9 +2603,19 @@
        "type": "null"
       }
      ],
+     "default": null,
      "description": "The call, where one was made."
+    },
+    "steps": {
+     "description": "What would change each reason shown, in their order; under a gate, what would lift it.",
+     "items": {
+      "$ref": "#/$defs/RemedyStep"
+     },
+     "title": "Steps",
+     "type": "array"
     }
    },
+   "title": "FirstScreen",
    "type": "object"
   },
   "Gate": {
@@ -2544,6 +2629,7 @@
       "unfinished",
       "too_small"
      ],
+     "title": "Rule",
      "type": "string"
     },
     "runs": {
@@ -2551,17 +2637,35 @@
      "items": {
       "$ref": "#/$defs/GateRun"
      },
+     "title": "Runs",
      "type": "array"
     },
+    "fewest_cases": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For too few cases: the fewest usable cases an arm read holds.",
+     "title": "Fewest Cases"
+    },
     "waiting": {
+     "default": 0,
      "description": "The open report-wide caveats waiting below the gate.",
      "minimum": 0,
+     "title": "Waiting",
      "type": "integer"
     }
    },
    "required": [
     "rule"
    ],
+   "title": "Gate",
    "type": "object"
   },
   "GateRun": {
@@ -2618,6 +2722,350 @@
    "required": [
     "taken"
    ],
+   "type": "object"
+  },
+  "NextExperiment": {
+   "additionalProperties": false,
+   "description": "What recording one dimension would buy, in pooled observations.\n\nBoth counts are :attr:`Cell.n_observations`, maxed or summed over the cells in question, and\nare named for it: a replication claim reads a run's ``k_runs``, never these.\n\nThe mitigation that keeps a conservative merge from being pure refusal. Generated\nmechanically — no model is asked — because it is arithmetic: these observations already\nshare a variant, and the only thing keeping them in separate cells is a dimension nobody\nwrote down. Recording it either merges them or proves they never should have merged, and\nboth answers are worth more than the current silence.",
+   "properties": {
+    "variant_key": {
+     "description": "The variant whose pooling is being held back.",
+     "minLength": 1,
+     "title": "Variant Key",
+     "type": "string"
+    },
+    "dimension": {
+     "description": "The unrecorded apparatus dimension.",
+     "minLength": 1,
+     "title": "Dimension",
+     "type": "string"
+    },
+    "n_observations_now": {
+     "description": "The largest `n_observations` among the cells this one recording would merge — the baseline the gain is measured against. Scoped to those cells rather than to the whole variant, because a variant-wide baseline would compare this merge's result against a cell it cannot reach and report a real gain as none.",
+     "minimum": 1,
+     "title": "N Observations Now",
+     "type": "integer"
+    },
+    "n_observations_if_recorded": {
+     "description": "The `n_observations` those cells reach together once the dimension is recorded AND turns out to agree. The optimistic branch, deliberately: the pessimistic one — they disagree and stay apart — needs no action, so the number worth showing is the one that says what is at stake.",
+     "minimum": 1,
+     "title": "N Observations If Recorded",
+     "type": "integer"
+    },
+    "observation_ids": {
+     "description": "The observations missing the dimension — where the recording has to happen, sorted.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Observation Ids",
+     "type": "array"
+    }
+   },
+   "required": [
+    "variant_key",
+    "dimension",
+    "n_observations_now",
+    "n_observations_if_recorded"
+   ],
+   "title": "NextExperiment",
+   "type": "object"
+  },
+  "RemedyStep": {
+   "additionalProperties": false,
+   "description": "What would change one first-screen reason, or what stops a campaign being read: the one act that closes it, as\na value a person reads and an agent can take.\n\nWhere an action of the engine's catalogue takes the step, ``action`` names it, ``calls`` holds each call of it the\nstep makes, every argument named and typed as the action's own parameters (a step that adds cases passes its\nplanned size as the count of new cases), and ``needs`` names the parameters the step cannot fill from what the\ncaveat holds, which the taker supplies to every call. A launch repeats the set-up of the arms it runs: what the\nreading holds of it is filled, and ``as_launched`` names the rest, each set as the arms' runs were launched, except\nthe dimensions ``alike`` names, held at one value on every call; ``call_arms`` says which arms each call runs.\nWhere one action's calls do not finish the act, ``then`` holds the calls that do, in order, each of the same\nshape: a launch's runs joined to the campaign it reads, the runs a re-run replaces taken out of it, and for a\nconfirmation the campaign created first; ``after`` names each argument that only an earlier call's result holds.\nA step ships a sequence only where following it, through the real actions on a fixture campaign, has been shown\nto do what it says; ``limits`` states, typed, what following it cannot guarantee, and a re-run no sequence has\nbeen shown to lift makes no call and says so (``no_action`` ``lift_not_shown``).\nWhere the step is more evidence, ``planned_cases`` is its size, read from the figure it would settle and stated\nbefore it runs, never \"until it separates\"; where no size can be read, ``unsized`` says why and the step makes no\ncall, so it is never taken open-ended. Where no action takes it, ``no_action`` says why. A step that spends names\nthe action that prices it first; code never takes a step.",
+   "properties": {
+    "remedy": {
+     "description": "What would close it.",
+     "enum": [
+      "resume_or_rerun",
+      "rerun_on_one_cell",
+      "remeasure_or_attest",
+      "rerun_serially",
+      "rerun_balanced",
+      "check_against_people",
+      "replace_instrument",
+      "sharpen_criterion",
+      "repair_rig",
+      "add_cases",
+      "confirm_on_fresh_cases",
+      "record_and_rerun",
+      "run_live",
+      "draw_at_random",
+      "finish_read",
+      "declare_looks",
+      "declare_criteria",
+      "name_control",
+      "no_action"
+     ],
+     "title": "Remedy",
+     "type": "string"
+    },
+    "closes": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The caveat it answers, by id; none for the gate's. A step whose first call is campaign_create closes nothing on this report: the caveat stays raised here, and the confirmation is read in the campaign it creates (limits: this_report_stays_flagged).",
+     "title": "Closes"
+    },
+    "action": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The catalogue action that takes it; none where a host or a person acts.",
+     "title": "Action"
+    },
+    "calls": {
+     "description": "Each call of the action the step makes, its arguments by the action's own parameter names; empty where no action takes it.",
+     "items": {
+      "additionalProperties": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "boolean"
+        },
+        {
+         "type": "integer"
+        },
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        }
+       ]
+      },
+      "type": "object"
+     },
+     "title": "Calls",
+     "type": "array"
+    },
+    "needs": {
+     "description": "The action's parameters no call fills, by its own names, which the taker supplies to every call.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Needs",
+     "type": "array"
+    },
+    "as_launched": {
+     "description": "For a launch: the parameters that set an arm up which the reading holds no value for, by the action's own names; the taker sets each as the runs of the arms it launches were launched, never to its default, or the new runs are not more of those arms. The one exception is a dimension alike names, which the taker sets to one value on every call.",
+     "items": {
+      "type": "string"
+     },
+     "title": "As Launched",
+     "type": "array"
+    },
+    "alike": {
+     "description": "For a re-run that balances a confound: each apparatus dimension the confound is in, by its apparatus_settings key, which the taker sets to one value on every call of the launch, never as each arm was launched: the arms then differ only in what is compared.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Alike",
+     "type": "array"
+    },
+    "call_arms": {
+     "description": "For a launch: the arms each call runs, by id, in the calls' order; empty where the reading does not hold the arms' runs.",
+     "items": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "title": "Call Arms",
+     "type": "array"
+    },
+    "after": {
+     "additionalProperties": {
+      "enum": [
+       "launched_runs",
+       "launched_control_run",
+       "created_campaign"
+      ],
+      "type": "string"
+     },
+     "description": "For a call that follows another of the step: each parameter only an earlier call's result holds, and which: launched_runs, the run ids job_poll names on the step's launch job once its runs start (run_ids); launched_control_run, the one of them the control arm's model ran, named as soon as job_poll names it and before any result is scored, or the campaign reads its control as named late; created_campaign, the id the step's campaign_create returned.",
+     "title": "After",
+     "type": "object"
+    },
+    "then": {
+     "description": "The calls that finish the act after this step's own, in order, each of one action and of this shape: the runs a launch makes joined to the campaign (campaign_runs_add), the runs a re-run replaces taken out (campaign_runs_remove), the control named in a new campaign (campaign_update). Empty on a call that follows another.",
+     "items": {
+      "$ref": "#/$defs/RemedyStep"
+     },
+     "title": "Then",
+     "type": "array"
+    },
+    "arms": {
+     "description": "The arms it is about, by id; empty for all.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Arms",
+     "type": "array"
+    },
+    "runs": {
+     "description": "The runs it is about, by id; empty for none named.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Runs",
+     "type": "array"
+    },
+    "planned_cases": {
+     "anyOf": [
+      {
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For more evidence: the cases to add per arm named (on fresh cases, the cases to run), read from the figure it would settle, planned before it runs, so that once the runs it launches are in the campaign that reads it, a design of that size clears the line the caveat is lifted by, on the interval it is lifted by, at least four times in five if the truth is today's estimate. It counts cases the launch keeps and did not reuse (limits: axis_may_not_generate), and holds only for arms launched in one call with the control (limits: unpaired_arms). For a step whose first call is campaign_create, the line is the one the created campaign reads, never this report's.",
+     "title": "Planned Cases"
+    },
+    "unsized": {
+     "anyOf": [
+      {
+       "enum": [
+        "no_interval",
+        "no_spread",
+        "on_the_line",
+        "no_count",
+        "nothing_to_settle"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For more evidence no size can be read for: why. Such a step makes no call.",
+     "title": "Unsized"
+    },
+    "size_bias": {
+     "anyOf": [
+      {
+       "const": "picked_best_of_n",
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Why the planned size is known to be too small, where it is: picked_best_of_n, read from the pick's own estimate, which reads high because the pick was the best of several, so fewer than four designs in five of that size clear.",
+     "title": "Size Bias"
+    },
+    "declared_look": {
+     "default": false,
+     "description": "Whether taking it reads the same readings again with the cases it adds: one more look at them, stated before it is taken. Nothing counts looks yet: the reading after it is read at its full level as if it were the first, so adding cases and reading again even once errs more often than that level says.",
+     "title": "Declared Look",
+     "type": "boolean"
+    },
+    "results_needed": {
+     "anyOf": [
+      {
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For a check: how many more results it needs before it can decide.",
+     "title": "Results Needed"
+    },
+    "recording": {
+     "description": "What recording an unrecorded coordinate would pool, cell by cell.",
+     "items": {
+      "$ref": "#/$defs/NextExperiment"
+     },
+     "title": "Recording",
+     "type": "array"
+    },
+    "spends": {
+     "default": false,
+     "description": "Whether it costs money to take.",
+     "title": "Spends",
+     "type": "boolean"
+    },
+    "priced_by": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For a step that spends: the catalogue action that prices it before it is taken.",
+     "title": "Priced By"
+    },
+    "no_action": {
+     "anyOf": [
+      {
+       "enum": [
+        "unclassed_kind",
+        "method_only",
+        "no_interval_to_gain",
+        "lift_not_shown"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Why no catalogue action takes it: for no_action, why no act closes it; for an act no one action takes, or no sequence has been shown to finish, why not.",
+     "title": "No Action"
+    },
+    "limits": {
+     "description": "What following the step as written cannot guarantee. unpaired_arms: an arm that differs from the control beyond its model would run in a launch call of its own, whose new cases the control does not run; a contrast pairs only the cases both sides ran, so such runs add no pair to it (unpaired_arms names each). A step whose caveat reads a contrast on this report launches no such arm, and makes no call where no arm it names is left beside the control (no_action lift_not_shown); a confirmation launches it, and the planned size does not hold for it. A gate or a figure reads each arm's own cases, so its step names none. axis_may_not_generate: n_variations writes unseen cases only on a template axis a model writes (llm); on an axis of stated values (enum, sample) a launch reuses stored cases with the same values and keeps fewer where they run out, and a kind that generates none refuses it. The reading holds no template's axes, so the cases are new only where the launch reports reused 0 and kept the planned count; for a confirmation, unseen cases on such an axis are authored first. this_report_stays_flagged: the caveat is read off this report's own results (a criterion set after them, a pick among them), which nothing added anywhere lifts; the confirmation is read in the campaign the step creates, and that reading is the one to trust. control_may_read_late: the control is named from a launched run, which exists only once the launch starts; named after the first result is scored, the created campaign reads its control as named late.",
+     "items": {
+      "enum": [
+       "unpaired_arms",
+       "axis_may_not_generate",
+       "this_report_stays_flagged",
+       "control_may_read_late"
+      ],
+      "type": "string"
+     },
+     "title": "Limits",
+     "type": "array"
+    },
+    "unpaired_arms": {
+     "description": "For limits unpaired_arms: the arms whose new cases no call of the control's runs, by id: launched in a call of their own on a confirmation, not launched on a step that reads this report's contrast.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Unpaired Arms",
+     "type": "array"
+    }
+   },
+   "required": [
+    "remedy"
+   ],
+   "title": "RemedyStep",
    "type": "object"
   },
   "StateOf": {
