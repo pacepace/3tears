@@ -20,7 +20,7 @@ from typing import Any
 import asyncpg
 import pytest
 
-from threetears.agent.audit import ANONYMIZED_MARKER, persist
+from threetears.agent.audit import ANONYMIZED_MARKER, anonymize_details, anonymize_ip
 from threetears.agent.audit.persist import anonymize_audit_rows, ensure_audit_events_table, prune_audit_events
 from threetears.core.keyed import AnyOf, Fragment, Selected, Sort, keyset_page
 from threetears.core.testing.same_results import Seeded, assert_same_results
@@ -109,8 +109,9 @@ async def _anonymize_by_hand(db: Any, actors: list[uuid.UUID], batch_size: int) 
             break
         for row in rows:
             matched += 1
-            details = persist._anonymize_stored(row["details"], event_type=row["event_type"])  # noqa: SLF001 - the rule the pass applies
-            address = persist.anonymize_ip(row["ip_address"])
+            # the seeds hold JSON objects, which the platform rule judges as anonymize_details does
+            details = json.dumps(anonymize_details(json.loads(row["details"]), event_type=row["event_type"]))
+            address = anonymize_ip(row["ip_address"])
             status = await db.execute(
                 "UPDATE audit_events SET details = $1::text::jsonb, ip_address = $2 WHERE id = $3 "
                 "AND (details IS DISTINCT FROM $1::text::jsonb OR ip_address IS DISTINCT FROM $2)",
