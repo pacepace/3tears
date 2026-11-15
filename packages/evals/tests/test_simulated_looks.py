@@ -23,8 +23,7 @@ to the bundle) at the level :func:`~threetears.evals.analysis.significance.looks
 needs its adjusted p under that level and its bounded interval at ``1 − level`` clear of zero, the bundle's rule for a
 rate; a floor's ``held`` is :func:`~threetears.evals.analysis.floors.read_floor` over a rate carrying the plan. That
 the bundle reads its family at α/L, and its floors under the plan, is held in ``test_looks.py``. The undeclared rows
-pin :data:`~threetears.evals.analysis.significance.UNPLANNED_FALSE_SEPARATION`, the rate a caveat on unplanned looks
-can state, and the reading the plan replaced is shown to fail its bar.
+pin the measured rate (:data:`UNPLANNED_FALSE_SEPARATION`), and the reading the plan replaced is shown to fail its bar.
 """
 
 from __future__ import annotations
@@ -35,7 +34,7 @@ from collections.abc import Callable, Sequence
 import pytest
 
 from threetears.evals.analysis.floors import FloorReadings, RateReading, read_floor
-from threetears.evals.analysis.significance import UNPLANNED_FALSE_SEPARATION, looks_alpha
+from threetears.evals.analysis.significance import looks_alpha
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
     SIGNIFICANCE_ALPHA,
@@ -47,6 +46,11 @@ from threetears.evals.kernel.declaration import Floor, RateDrop
 from packages.evals.tests.simulation_support import at_most, family_verdicts, within
 
 REPLICATES = 4000
+
+#: How often a test with no true difference separates at some look, read at α at every look and stopped at the first
+#: separation, by the looks taken: the mean of 20 to 60 cases on the t test, the cases added in equal batches, measured
+#: here at each row's seed. It only grows past the last count.
+UNPLANNED_FALSE_SEPARATION = {1: 0.05, 2: 0.097, 3: 0.112, 4: 0.125, 5: 0.129}
 #: A floor's one tail at the nominal level: how often a floor at its margin may be read held, at most.
 ONE_TAIL = (1 - INTERVAL_LEVEL) / 2
 
@@ -129,7 +133,8 @@ def _first_separation_rate(draw: Draw, separates: Callable[[Look, float], bool],
 
 @pytest.mark.parametrize("looks", sorted(UNPLANNED_FALSE_SEPARATION))
 def test_reading_at_alpha_at_every_look_errs_at_the_rate_the_caveat_states(looks: int) -> None:
-    """The undeclared rate, measured: it is what :data:`UNPLANNED_FALSE_SEPARATION` states for that count."""
+    """The undeclared rate, measured: it is what :data:`UNPLANNED_FALSE_SEPARATION` states for that count, and it grows
+    with every look."""
     rate = _first_separation_rate(
         _growing_cases(_sizes(looks)), _mean_separates, SIGNIFICANCE_ALPHA, seed=f"undeclared-{looks}"
     )

@@ -7,7 +7,7 @@ say what the test did and did not cover.
 **Looks.** A look is one more reading of a contrast after the data behind its verdict changed: one more chance for a
 test with no true difference behind it to separate, the same thing a family's size counts. Reading a test at α after
 every batch of new cases, and stopping at the first separation, errs far more often than α
-(:data:`UNPLANNED_FALSE_SEPARATION`), so a design may declare how many looks it plans
+(``tests/test_simulated_looks.py`` measures how much), so a design may declare how many looks it plans
 (``AspectDesign.planned_looks``): each of its ``L`` looks is then read at α/L (:func:`looks_alpha`, a union bound), and a
 claim that a drop stays within a margin at ``1 − (1 − level)/L`` (:func:`looks_confidence`), so the error the
 readings state holds over all ``L`` of them. Past ``L`` it does not, and nothing here pretends it does.
@@ -24,8 +24,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from datetime import datetime
-from types import MappingProxyType
-from typing import Final
 
 from threetears.evals.analysis.stats import PAIRED_TEST_NAME, SIGNIFICANCE_ALPHA, UNPAIRED_TEST_NAME
 from threetears.evals.kernel.numbers import format_number
@@ -295,15 +293,6 @@ def looks_taken(
     return 1 + later + sum(1 for at in changes if at > both) + passes
 
 
-#: The chance that a test with no true difference behind it separates at some look, read at α at every look and
-#: stopped at the first separation, by the looks taken: the mean of 20 to 60 cases on the t test, the cases added in
-#: equal batches, measured by ``tests/test_simulated_looks.py`` at its seed (which pins every value here). Past the
-#: last count it only grows.
-UNPLANNED_FALSE_SEPARATION: Final[Mapping[int, float]] = MappingProxyType(
-    {1: 0.05, 2: 0.097, 3: 0.112, 4: 0.125, 5: 0.129}
-)
-
-
 __all__ = [
     "cross_subject_disclosure",
     "format_significance",
@@ -319,5 +308,4 @@ __all__ = [
     "SIGNIFICANT_LABEL",
     "UNPAIRED_EFFECT_LABEL",
     "UNPAIRED_HEDGES_LABEL",
-    "UNPLANNED_FALSE_SEPARATION",
 ]

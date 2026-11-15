@@ -33,7 +33,6 @@ from threetears.evals.analysis.checks import Looks
 from threetears.evals.analysis.floors import FloorReadings, RateReading, read_floor
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.significance import (
-    UNPLANNED_FALSE_SEPARATION,
     looks_alpha,
     looks_confidence,
     looks_taken,
@@ -106,12 +105,6 @@ def test_a_plan_reads_each_look_at_alpha_over_its_looks_and_a_held_claim_at_its_
     assert looks_alpha(4) == pytest.approx(SIGNIFICANCE_ALPHA / 4)
     assert looks_confidence(INTERVAL_LEVEL, None) == looks_confidence(INTERVAL_LEVEL, 1) == INTERVAL_LEVEL
     assert looks_confidence(INTERVAL_LEVEL, 5) == pytest.approx(1 - (1 - INTERVAL_LEVEL) / 5)
-
-
-def test_the_unplanned_rate_grows_with_every_look_and_starts_at_alpha() -> None:
-    rates = [UNPLANNED_FALSE_SEPARATION[looks] for looks in sorted(UNPLANNED_FALSE_SEPARATION)]
-    assert rates[0] == SIGNIFICANCE_ALPHA
-    assert rates == sorted(rates) and len(set(rates)) == len(rates)
 
 
 # --- what the bundle says ----------------------------------------------------------------------------------------------
