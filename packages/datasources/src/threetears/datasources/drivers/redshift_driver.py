@@ -166,6 +166,7 @@ if TYPE_CHECKING:
     RedshiftCursor = Any
 
 from threetears.core.sql_fragments import FilterValue
+from threetears.core.declared import whole_read
 from threetears.core.fingerprint import fingerprint_sql, relation_key_expression
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers._redshift_connector_internals import connection_socket
@@ -2740,14 +2741,22 @@ class RedshiftDriver(Driver):
             cursor = conn.cursor()
             try:
                 booleans = known if known is not None else _read_boolean_columns(cursor, relation)
+                # the warehouse reads the relation whole and answers one row (a row a group): that aggregate is
+                # the fingerprint, by design
                 sql = translate_placeholders(
-                    fingerprint_sql(
-                        relation,
-                        key,
-                        filters,
-                        row_number=_REDSHIFT_ROW_NUMBER,
-                        group_by=group_by,
-                        boolean_columns=booleans,
+                    whole_read(
+                        fingerprint_sql(
+                            relation,
+                            key,
+                            filters,
+                            row_number=_REDSHIFT_ROW_NUMBER,
+                            group_by=group_by,
+                            boolean_columns=booleans,
+                        ),
+                        kind="unbounded_by_warehouse",
+                        reason="a client's warehouse relation fingerprinted for a change probe: it keeps no change record of ours, and the count and key digest are one aggregate the warehouse answers in one row",
+                        ruling="Pace 2026-11-12: unbounded_by_warehouse; coordinator 2026-11-14: a driver's fingerprint of a datasource relation takes it (our speed bar is our side, not the warehouse's)",
+                        proof="packages/datasources/tests/unit/test_fingerprint_reach.py::test_a_fingerprint_is_read_only_by_a_driver_over_its_datasources_warehouse_relation",
                     ),
                     "pyformat",
                 )
