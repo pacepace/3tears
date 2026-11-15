@@ -16,14 +16,19 @@ The contract this pins, the same as ``reset()``'s after the store has run, but f
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
 import uuid
+from pathlib import Path
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal
 
 import pytest
 from sqlalchemy import MetaData
+
+import threetears.core
 
 from threetears.core.backends.protocol import DurableStore, FileLoad, LoadFile, LoadResult
 from threetears.core.cache.sqlite import SQLiteBackend
@@ -641,3 +646,104 @@ async def test_a_failed_loads_epoch_still_names_its_prefixes_never_the_whole_tab
         await _load(pod)
     record = source.changes[("lsf_results", "inc:1")]
     assert record.prefixes == _PREFIXES
+
+
+# ----------------------------------------------------------------------
+# the ANALYZE after a load: a reload's only (SqlL3Backend.analyze's cold_start declaration)
+# ----------------------------------------------------------------------
+
+
+class _AnalyzingTableStore(_TableStore):
+    """a direct store that analyses (AnalyzingStore): it records each table it is asked to analyse, and who asked."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.analyzed: list[str] = []
+        self.askers: list[list[str]] = []
+
+    async def truncate(self, table: str, *, reason: str | None = None) -> None:
+        self.rows.clear()
+
+    async def analyze(self, table: str) -> None:
+        self.analyzed.append(table)
+        self.askers.append([frame.function for frame in inspect.stack()[1:3]])
+
+
+async def test_an_incremental_load_of_many_rows_is_never_analysed(bus: FakeNatsClient, source: _CountingSource) -> None:
+    """Flips if a load into a table that holds rows analyses it: YugabyteDB's ANALYZE reads about every row (10k rows
+    44 ms, 200k 132 ms, 1M 540 ms), so an incremental load must not pay for the whole table; auto-analyze keeps up."""
+    store = _AnalyzingTableStore()
+    pod = _Pod(bus, store, source=source)
+    assert await pod.results.load_files(_files(200_000, 200_000), columns=["id"], prefixes=_PREFIXES) == 400_000
+    assert await pod.results.load_files(_files(50_000), columns=["id"], connections=2, prefixes=_PREFIXES) == 50_000
+    assert store.analyzed == []
+
+
+async def test_a_reload_of_many_rows_is_analysed_once_after_its_last_request(
+    bus: FakeNatsClient, source: _CountingSource
+) -> None:
+    """Flips if a reload (the table emptied or new, then filled) is left unanalysed: its first reads plan blind
+    (157 ms against 0.4 ms analysed, b118)."""
+    store = _AnalyzingTableStore()
+    pod = _Pod(bus, store, source=source)
+    files = _files(*([10_000] * 6))
+    assert await pod.results.load_files(files, columns=["id"], connections=3, prefixes=_PREFIXES, reload=True) == 60_000
+    assert store.analyzed == ["lsf_results"]
+    assert len(store.loads) == 3
+
+
+async def test_a_reload_too_small_to_plan_blind_is_left_to_auto_analyze(
+    bus: FakeNatsClient, source: _CountingSource
+) -> None:
+    store = _AnalyzingTableStore()
+    pod = _Pod(bus, store, source=source)
+    assert await pod.results.load_files(_files(9_999), columns=["id"], prefixes=_PREFIXES, reload=True) == 9_999
+    assert store.analyzed == []
+
+
+async def test_a_reload_whose_analyse_fails_still_loads_drops_and_advances(
+    bus: FakeNatsClient, source: _CountingSource
+) -> None:
+    class _Refusing(_AnalyzingTableStore):
+        async def analyze(self, table: str) -> None:
+            raise DataLayerUnavailableError("analyse refused")
+
+    pod = _Pod(bus, _Refusing(), source=source)
+    assert await pod.results.load_files(_files(20_000), columns=["id"], prefixes=_PREFIXES, reload=True) == 20_000
+    assert source.counts["lsf_results"] == 1
+
+
+async def test_the_store_s_analyze_is_reached_only_from_a_reload(bus: FakeNatsClient, source: _CountingSource) -> None:
+    """the proof that SqlL3Backend.analyze's ANALYZE is reached only from a reload (what its cold_start declaration
+    names): every write, read, delete, catch-up,
+    reset and incremental load a pod makes leaves the store's analyze untouched; a reload (load_files(reload=True))
+    reaches it once, from load_files; nothing in the package source calls a store's analyze but load_files."""
+    store = _AnalyzingTableStore()
+    writer = _Pod(bus, store, source=source)
+    follower = _Pod(bus, store, source=source)
+    await follower.follow(source)
+    for n in range(3):
+        await _save(writer, f"k{n}", n)
+    await writer.results.ensure("k1")
+    await writer.results.delete("k0")
+    await follower.registry.catch_up_generation("lsf_results", await source.current("lsf_results"), changes=source)
+    await writer.results.load_files(_files(100_000), columns=["id"], prefixes=_PREFIXES)
+    await writer.results.reset()
+    assert store.analyzed == []
+    await writer.results.load_files(_files(100_000), columns=["id"], prefixes=_PREFIXES, reload=True)
+    assert store.analyzed == ["lsf_results"]
+    assert [asker[0] for asker in store.askers] == ["load_files"], store.askers
+
+    callers = []
+    source_root = Path(threetears.core.__file__).parent
+    for path in sorted(source_root.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for inner in ast.walk(node):
+                    if (
+                        isinstance(inner, ast.Call)
+                        and isinstance(inner.func, ast.Attribute)
+                        and inner.func.attr == "analyze"
+                    ):
+                        callers.append(f"{path.name}:{node.name}")
+    assert sorted(set(callers)) == ["schema_backed.py:load_files"], callers
