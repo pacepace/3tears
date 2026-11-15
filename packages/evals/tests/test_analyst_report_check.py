@@ -484,7 +484,10 @@ def _served(tool: MountedTool) -> list[str]:
 #: The evals tool moved again when runs_attest replaced runs_attest_definitions (#1187): one action states either
 #: coordinate of stored runs, their measure definitions or their served model, with a ``coordinate`` and a
 #: ``served_model`` parameter and one result shape. No other action's text moved.
-_EVALS_BYTES = "120a68df6fdeda43ecd799a7bb409ee7883b8cac6bf743b55e5adcbaab23707b"
+#: The evals tool moved again when runs_attest's ``coordinate`` came to be the closed set of attestable coordinates
+#: (``AttestableCoordinate``: measure_definition, served_model), where its schema had listed template and rig too
+#: (#1187). No other action's text moved.
+_EVALS_BYTES = "61d732ef9d42ea214393baa1905214987aa7d80a5ef57bb335185c527309cb55"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).

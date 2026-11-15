@@ -24,6 +24,7 @@ from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.schema.reading_states import (
     ArmIdentity,
+    AttestableCoordinate,
     Coordinate,
     IdentityState,
     ReadingState,
@@ -323,6 +324,7 @@ from threetears.evals.schema.versioning import (
 
 __all__ = [
     "ArmIdentity",
+    "AttestableCoordinate",
     "Coordinate",
     "IdentityState",
     "ReadingState",

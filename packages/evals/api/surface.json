@@ -136,6 +136,11 @@
       "signature": "AsyncStoreClock{now(self) -> datetime}",
       "tier": "host-contract"
     },
+    "threetears.evals.schema.AttestableCoordinate": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.attribution_state": {
       "kind": "function",
       "signature": "",
