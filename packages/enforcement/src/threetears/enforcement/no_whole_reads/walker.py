@@ -548,9 +548,18 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
     # the change-note ring's own upkeep (Pace 2026-11-14, as the 11-11 TRUNCATE ruling): emptying an idle ring slot
     # whole, a DELETE of that slot's notes and nothing else (RING_NOTE_TABLE guards the table). It only declares the
     # keeper's batched deletes; why they are batched and never TRUNCATE is measured and written above
-    # threetears.core.collections.change_notes.ChangeNoteKeeper.empty_slot
+    # threetears.core.collections.change_notes.ChangeNoteKeeper.empty_slot. And (Pace 2026-11-15) on Postgres the
+    # plain VACUUM of the slot just emptied, before the ring may switch back into it: a VACUUM of a ring slot alone,
+    # never an ANALYZE, never another table (_over_the_ring)
     "ring_empty": frozenset(
-        {"non-key-where", "whole-delete", "unknown-schema", "unknown-predicate", "calls-whole-read"}
+        {
+            "non-key-where",
+            "whole-delete",
+            "whole-maintenance",
+            "unknown-schema",
+            "unknown-predicate",
+            "calls-whole-read",
+        }
     ),
     # putting a lost change log back reads every note of the ring's coverage (its current and previous slots, named
     # at run time) and nothing else (RING_NOTE_TABLE guards the table)

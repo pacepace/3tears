@@ -10,7 +10,9 @@ A measurement, not a gate: it asserts only that every read answers right, and ru
 ``THREETEARS_MEASURE_REUSED_SLOT=1`` (it fills 393,216 notes, minutes on YugabyteDB). Run it under the measure lock
 through the integration runner; ``R1_OUT`` names a JSON file for the table, ``R1_LATER`` (seconds, comma-separated)
 measures again after each wait, ``R1_FILL`` changes the fill. Its result is recorded at the code, above
-``_CURRENT_COUNT_SECONDS`` in ``threetears.core.collections.change_notes``.
+``_CURRENT_COUNT_SECONDS`` in ``threetears.core.collections.change_notes``. Since the keeper vacuums an emptied slot
+on Postgres (Pace 2026-11-15), ``vacuum_s`` is that VACUUM's seconds; the result with it is recorded above
+``ChangeNoteKeeper._vacuum_emptied``.
 """
 
 from __future__ import annotations
@@ -61,6 +63,34 @@ class _NoLog:
         raise AssertionError(name)
 
 
+class _Timed:
+    """the keeper's pool, each statement it sends timed (the reused slot's VACUUM on Postgres, Pace 2026-11-15)."""
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+        self.took: list[tuple[str, float]] = []
+
+    async def fetch(self, query: str, *args: Any) -> list[Any]:
+        began = time.perf_counter()
+        try:
+            return await self._pool.fetch(query, *args)
+        finally:
+            self.took.append((query, time.perf_counter() - began))
+
+    async def execute(self, query: str, *args: Any) -> str:
+        began = time.perf_counter()
+        try:
+            return await self._pool.execute(query, *args)
+        finally:
+            self.took.append((query, time.perf_counter() - began))
+
+    def acquire(self) -> Any:
+        return self._pool.acquire()
+
+    async def fetchval(self, query: str, *args: Any) -> Any:
+        return await self._pool.fetchval(query, *args)
+
+
 @dataclass
 class _Slot:
     name: str
@@ -69,17 +99,18 @@ class _Slot:
     keeper: ChangeNoteKeeper
 
 
-async def _ring(url: str, name: str, *, fill: bool, night: datetime) -> tuple[_Slot, float]:
+async def _ring(url: str, name: str, *, fill: bool, night: datetime) -> tuple[_Slot, dict[str, float]]:
     schema = f"r1_{name}_{uuid.uuid4().hex[:6]}"
     pool = await asyncpg.create_pool(url, min_size=1, max_size=2, command_timeout=3600)
     assert pool is not None
     await pool.execute(f"CREATE SCHEMA {schema}")
     await install_note_ring(pool, schema)
+    timed = _Timed(pool)
     keeper = ChangeNoteKeeper(
-        pool, notes_schema=schema, log=_NoLog(), empty_pause=timedelta(0), empty_budget=timedelta(hours=2)
+        timed, notes_schema=schema, log=_NoLog(), empty_pause=timedelta(0), empty_budget=timedelta(hours=2)
     )
     notes = f"{schema}.{note_table(0)}"
-    emptied = 0.0
+    emptied: dict[str, float] = {}
     if fill:
         # the slot's last tenure: a switch's worth of notes, the same rows noted again and again through the night
         await pool.execute(
@@ -99,8 +130,9 @@ async def _ring(url: str, name: str, *, fill: bool, night: datetime) -> tuple[_S
         await pool.execute(f"ANALYZE {notes}")
         began = time.perf_counter()
         done, deleted = await keeper.empty_slot(0)
-        emptied = time.perf_counter() - began
+        emptied["emptied_s"] = round(time.perf_counter() - began, 3)
         assert done and deleted == _FILL + 2000
+        emptied["vacuum_s"] = round(sum(took for query, took in timed.took if query.startswith("VACUUM")), 3)
     return _Slot(name=name, schema=schema, pool=pool, keeper=keeper), emptied
 
 
@@ -230,7 +262,7 @@ async def slots(db_container: str) -> AsyncIterator[tuple[list[_Slot], dict[str,
         for name in ("fresh", "fresh2"):
             slot, _ = await _ring(db_container, name, fill=False, night=night)
             made.append(slot)
-        yield made, {"emptied_s": round(emptied, 2)}
+        yield made, emptied
     finally:
         for slot in made:
             await slot.pool.execute(f"DROP SCHEMA IF EXISTS {slot.schema} CASCADE")

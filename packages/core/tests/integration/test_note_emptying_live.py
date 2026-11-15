@@ -49,6 +49,38 @@ class _NoLog:
         raise AssertionError(f"an emptying reads no change log ({name})")
 
 
+class _Logged:
+    """the keeper's pool, every statement it sends recorded in order with its seconds (the query logger)."""
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+        self.sent: list[str] = []
+        self.took: list[float] = []
+
+    async def fetch(self, query: str, *args: Any) -> list[Any]:
+        self.sent.append(query)
+        began = time.perf_counter()
+        try:
+            return await self._pool.fetch(query, *args)
+        finally:
+            self.took.append(time.perf_counter() - began)
+
+    async def execute(self, query: str, *args: Any) -> str:
+        self.sent.append(query)
+        began = time.perf_counter()
+        try:
+            return await self._pool.execute(query, *args)
+        finally:
+            self.took.append(time.perf_counter() - began)
+
+    def acquire(self) -> Any:
+        raise AssertionError("an emptying shares no session")
+
+
+def _is_vacuum(query: str) -> bool:
+    return query.lstrip().upper().startswith("VACUUM")
+
+
 @pytest.fixture
 async def ring(db_container: str) -> AsyncIterator[_Ring]:
     """a ring whose idle table holds a night's notes."""
@@ -92,3 +124,81 @@ async def test_an_idle_table_is_emptied_once_each_note_within_twice_a_keyed_dele
         baseline = await plain_keyed_delete_seconds(conn, _NOTES, runs=1)
     problem = budget_problem(f"emptying {_NOTES:,} notes", took, baseline)
     assert problem is None, problem
+
+
+async def test_an_emptied_table_is_vacuumed_before_it_counts_as_empty_on_postgres_alone(ring: _Ring) -> None:
+    """Flips if, on Postgres, an emptying reports the table empty (what the keeper marks ``emptied`` on, the switch's
+    guard) before its VACUUM has run, or leaves the table's pages behind; or if a VACUUM is ever sent to YugabyteDB,
+    where it does nothing (Pace 2026-11-15; R1's reused-slot measurement, at ``_vacuum_emptied``)."""
+    logged = _Logged(ring.pool)
+    keeper = ChangeNoteKeeper(
+        logged,
+        notes_schema=ring.schema,
+        log=_NoLog(),
+        empty_pause=timedelta(0),
+        empty_budget=timedelta(hours=1),
+    )
+    assert await keeper.empty_slot(_IDLE) == (True, _NOTES)
+    vacuums = [query for query in logged.sent if _is_vacuum(query)]
+    async with ring.pool.acquire() as conn:
+        yugabyte = await on_yugabyte(conn)
+    if yugabyte:
+        assert vacuums == [], logged.sent
+        return
+    assert len(vacuums) == 1 and logged.sent[-1] == vacuums[0], logged.sent
+    # every note dead and vacuumed away: the vacuum gives the table's empty pages back
+    pages = await ring.pool.fetchval(
+        "SELECT pg_relation_size(c.oid) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = $1 AND c.relname = $2",
+        ring.schema,
+        note_table(_IDLE),
+    )
+    assert pages == 0, pages
+
+
+#: a slot's notes at its switch: the 64 MiB log's restore budget (75 %) over two, over 64 bytes a note
+_FULL_SLOT = 393_216
+
+
+async def test_an_emptied_full_slot_s_vacuum_costs_within_twice_a_bare_vacuum(db_container: str) -> None:
+    """Flips if the VACUUM the keeper sends after emptying a full slot on Postgres (``_vacuum_emptied``, Pace 2026-11-15)
+    costs over twice a bare VACUUM of a table of the slot's own shape holding as many deleted rows (a FULL, an ANALYZE
+    or a second pass would). The cost at a full slot is recorded at ``_vacuum_emptied``. Nothing to time on YugabyteDB,
+    where no VACUUM is sent."""
+    schema = f"vac_{uuid.uuid4().hex[:8]}"
+    pool = await asyncpg.create_pool(db_container, min_size=1, max_size=2, command_timeout=1200)
+    assert pool is not None
+    try:
+        async with pool.acquire() as conn:
+            if await on_yugabyte(conn):
+                return
+        await pool.execute(f"CREATE SCHEMA {schema}")
+        await install_note_ring(pool, schema)
+        slot = f"{schema}.{note_table(_IDLE)}"
+        fill = (
+            "INSERT INTO {} (table_name, keys, key_text) "
+            f"SELECT 'table_' || (g % 2000), ARRAY[g::text], g::text FROM generate_series(1, {_FULL_SLOT}) g"
+        )
+        await pool.execute(fill.format(slot))
+        logged = _Logged(pool)
+        keeper = ChangeNoteKeeper(
+            logged, notes_schema=schema, log=_NoLog(), empty_pause=timedelta(0), empty_budget=timedelta(hours=1)
+        )
+        assert await keeper.empty_slot(_IDLE) == (True, _FULL_SLOT)
+        took = sum(seconds for query, seconds in zip(logged.sent, logged.took, strict=True) if _is_vacuum(query))
+        # the bare operation: the slot's own shape (its indexes), as many rows deleted in one statement, vacuumed
+        plain = f"{schema}.plain_slot"
+        await pool.execute(f"CREATE TABLE {plain} (LIKE {slot} INCLUDING ALL)")
+        await pool.execute(fill.format(plain))
+        await pool.execute(f"DELETE FROM {plain}")
+        began = time.perf_counter()
+        await pool.execute(f"VACUUM {plain}")
+        baseline = time.perf_counter() - began
+        print(
+            f"vacuum of an emptied full slot ({_FULL_SLOT:,} notes): {took * 1000:.1f} ms, bare {baseline * 1000:.1f} ms"
+        )
+        problem = budget_problem(f"the vacuum of {_FULL_SLOT:,} emptied notes", took, baseline)
+        assert problem is None, problem
+    finally:
+        await pool.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        await pool.close()

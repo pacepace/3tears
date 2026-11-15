@@ -26,7 +26,8 @@ so a bulk raw-SQL write with one small epoch cannot pile notes behind the log's 
 the notes a page at a time, sized in the database, so the keeper's memory follows one page, not the
 coverage. When a switch is held up (its wait, an emptying) and the coverage outgrows the budget, the
 restore puts back its newest part instead (below). It
-empties the oldest with batched deletes (:meth:`ChangeNoteKeeper.empty_slot`), never ``TRUNCATE``. The ring
+empties the oldest with batched deletes (:meth:`ChangeNoteKeeper.empty_slot`), never ``TRUNCATE``, and on Postgres
+vacuums it before it counts as emptied. The ring
 row in L3 names the current table; only the keeper writes it, once per switch.
 
 **No save reads the ring row.** Each writing process keeps a cached copy of the current slot
@@ -420,6 +421,8 @@ _UNTRIGGERED = gauge(
 # tombstones' times. So the cost falls on the reads that walk the whole current slot: this count, every twentieth of
 # the fence, and a restore's coverage read. This histogram is that cost, by how long the slot has been current, so a
 # reused slot's debris shows as a first fence slower than the later ones (metrics only; no alert rule).
+# Since V1 (Pace 2026-11-15) the keeper vacuums an emptied slot on Postgres before the ring may switch back into it, and
+# the reused slot there reads as a fresh one (ChangeNoteKeeper._vacuum_emptied); YugabyteDB keeps its tombstones.
 _CURRENT_COUNT_SECONDS = histogram(
     "threetears_change_notes_current_count_seconds",
     description="seconds the keeper's count of the current note table took (a walk of the whole slot, debris "
@@ -1321,12 +1324,56 @@ class ChangeNoteKeeper:
             self._emptying_at = None
             return False, deleted
         self._emptying_at = None
+        if not self._yugabyte:
+            # before the slot counts as emptied (the ring may switch back into it only then): its dead notes vacuumed
+            await self._vacuum_emptied(table)
         _EMPTIED.inc()
         log.info(
             "a change-note table was emptied",
             extra={"extra_data": {"table": note_table(index), "deleted": deleted}},
         )
         return True, deleted
+
+    # WHY A VACUUM OF THE EMPTIED SLOT, ON POSTGRES ONLY (Pace 2026-11-15: "sounds like we need vacuum if you are running
+    # pg"). The batched deletes leave every note of the slot as a dead row (and dead index entries) until a vacuum. R1
+    # measured the ring switching back into such a slot (test_reused_note_slot_live.py; the numbers are above
+    # _CURRENT_COUNT_SECONDS): on Postgres 16 the keeper's count of the reused slot took 3.4x a fresh slot's at once
+    # and 1.5x five minutes later as autovacuum reached it, a full scan 3.2x / 2.0x. So the slot is vacuumed here,
+    # after its last delete and before empty_slot reports it empty: run_pass marks the ring row ``emptied`` only on
+    # that report, and never switches into a slot not so marked, so a switch never lands on an unvacuumed slot.
+    # - Plain VACUUM, never FULL: FULL rewrites the table under ACCESS EXCLUSIVE; the plain one takes SHARE UPDATE
+    #   EXCLUSIVE, which no note insert waits behind (and none can reach the idle slot anyway: empty_slot's docstring).
+    # - Through the pool, outside any transaction, as Postgres requires of VACUUM.
+    # - Measured with it (V1 2026-11-15, the same test on integ095-pg under measure-lock, load 3.9, trusted; S/v1/m4-pg):
+    #   at a full slot (393,216 notes + 2,000) the VACUUM took 104 ms of the emptying's 1.37 s. Right after it the
+    #   reused slot reads as a fresh one: the keeper's count 0.92x a fresh slot's (A/A gap 0.90x; it was 3.44x), a
+    #   full scan 1.01x (A/A 1.07x; it was 3.22x), the indexed reads 0.96x-1.03x. Three noisier runs said the same
+    #   (0.87x-1.06x). It runs once a slot, on the pass that finishes the walk: that pass's emptying (empty_budget,
+    #   1 s of deletes) takes about a tenth more, every other pass nothing. Its speed test holds it within twice a
+    #   bare VACUUM of a table of the slot's shape holding as many deleted rows.
+    # - Never on YugabyteDB: VACUUM is a no-op there (b118 answers it with the notice "VACUUM is a no-op statement since
+    #   YugabyteDB performs garbage collection of dead tuples automatically"). Its deleted notes are
+    #   tombstones only a compaction drops, and a compaction may not drop one younger than
+    #   timestamp_history_retention_interval_sec (900 s, the default on the local b118), nor runs on a table whose
+    #   reads see under auto_compact_percent_obsolete (99 %) obsolete keys; no SQL statement asks for a compaction.
+    #   R1 measured the reused slot there at 9.7x a fresh one's count (12.9x a full scan), unchanged 5 min later.
+    async def _vacuum_emptied(self, table: str) -> None:
+        """vacuum the ring slot just emptied (Postgres only; its caller, empty_slot, never calls it on YugabyteDB).
+
+        :param table: the qualified table, empty of notes
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        await whole_read(
+            self._pool.execute(f"VACUUM {table}"),  # noqa: S608 - trusted identifiers
+            kind="ring_empty",
+            reason="the ring slot just emptied is vacuumed (Postgres) before the ring may switch back into it",
+            ruling="Pace 2026-11-14: emptying a used-up change-notes ring table goes on the whole-drop list; "
+            "Pace 2026-11-15: and its VACUUM on Postgres",
+            proof="packages/core/tests/unit/collections/test_change_note_restore_reads.py::test_a_ring_slot_is_emptied_whole_only_when_idle",
+            speed="packages/core/tests/integration/test_note_emptying_live.py::test_an_emptied_full_slot_s_vacuum_costs_within_twice_a_bare_vacuum",
+        )
 
     # why batches, this walk and never TRUNCATE: the measured reasons above empty_slot; keep them as they are
     async def _delete_band(self, table: str, index: int) -> tuple[int, bool]:
