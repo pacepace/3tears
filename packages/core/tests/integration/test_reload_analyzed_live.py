@@ -3,9 +3,10 @@
 A reload truncates a table and loads it again. Until the table is analysed the planner has no row count for
 it, and YugabyteDB planned a read of a state's rows of some geographies (``state = $1 AND geo = ANY($2)``,
 the reports pod's ``held_in``) as a primary-key scan and a sort: 157 ms against 0.4 ms analysed (b118). A
-load of a reload's rows through a direct store now analyses the table after its last request (on the L3 rail
-the broker does). This reloads a table of 356,928 rows and judges that read's plan at once, with the shared
-plan check, on YugabyteDB; Postgres checks the rows.
+reload (``load_files(reload=True)``) through a direct store now analyses the table after its last request (on the
+L3 rail the broker does); no other load does. This reloads a table of 356,928 rows and judges that read's plan at
+once, with the shared plan check, on YugabyteDB; Postgres checks the rows. It also times a reload with its ANALYZE
+against the same reload left to auto-analyze, interleaved on the same database.
 
 Against the session ``db_container``; set ``THREETEARS_TEST_POSTGRES_URL`` to a YugabyteDB URL to run it there.
 """
@@ -42,6 +43,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
 from threetears.core.testing.plans import PlanRecorder, on_yugabyte, plan_problems
 
 pytestmark = pytest.mark.integration
@@ -151,6 +153,7 @@ async def test_a_reloaded_tables_first_read_of_some_geographies_plans_by_its_ind
         rows_per_transaction=20_000,
         # a load of many races names each office's key prefix: its epoch reaches those, never the table
         prefixes=[{"office_key": f"o{o}"} for o in range(1, 34)],
+        reload=True,
     )
 
     assert written == 356_928
@@ -169,3 +172,30 @@ async def test_a_reloaded_tables_first_read_of_some_geographies_plans_by_its_ind
         if await on_yugabyte(conn):
             problems = plan_problems(checked.plans, scan_ratio=1.1, together=True)
             assert not problems, problems
+
+
+async def test_a_reload_s_analyze_speed_at_real_size(pool: asyncpg.Pool, served: tuple[Path, str]) -> None:
+    """the speed test of SqlL3Backend.analyze, the one ANALYZE after a reload: a reload of 356,928 rows with its
+    ANALYZE within 2x the same reload left to auto-analyze (the bare load), interleaved on the same database. On a
+    local YugabyteDB 2026.1 the ANALYZE reads about every row (200k rows 132 ms, 1M 540 ms), a small share of the
+    load's own COPY."""
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=SqlL3Backend(pool))
+    collection = collection_for_schema(_SCHEMA, entity_class=_Row)(registry, DefaultCoreConfig(), None)
+    files = _files(served)
+    columns = ["office_key", "candidate", _GEO, _STATE, "votes"]
+    prefixes = [{"office_key": f"o{o}"} for o in range(1, 34)]
+
+    async def reload(*, analysed: bool) -> None:
+        await pool.execute("TRUNCATE results")
+        written = await collection.load_files(
+            files, columns=columns, rows_per_transaction=20_000, prefixes=prefixes, reload=analysed
+        )
+        assert written == 356_928
+
+    baseline, took = await best_seconds_interleaved(
+        partial(reload, analysed=False), partial(reload, analysed=True), runs=3
+    )
+    print(f"a reload of 356,928 rows analysed {took:.2f} s, left to auto-analyze {baseline:.2f} s")
+    problem = budget_problem("a reload of 356,928 rows and its ANALYZE (SqlL3Backend.analyze)", took, baseline)
+    assert problem is None, problem

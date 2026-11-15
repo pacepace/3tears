@@ -562,8 +562,9 @@ class LoadResult:
     files: tuple[FileLoad, ...]
 
 
-#: the rows a load writes to a table from which the table is analysed after it (:class:`AnalyzingStore`): a
-#: reload's, not ordinary writes, which auto-analyze keeps up with. The hub's broker asks the same of its loads
+#: the rows a reload (``SchemaBackedCollection.load_files(reload=True)``) writes to a table from which the table is
+#: analysed after it (:class:`AnalyzingStore`); a smaller reload, any other load and ordinary writes are left to the
+#: database's auto-analyze, which keeps up with them. The hub's broker asks the same of its loads
 ANALYZE_AFTER_ROWS: Final = 10_000
 
 

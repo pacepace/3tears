@@ -2811,6 +2811,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         timeout_ms: int | None = None,
         connections: int = 1,
         prefixes: Sequence[Mapping[str, Any]] | None = None,
+        reload: bool = False,
     ) -> int:
         """load the table in L3 from parquet files, then drop what every cache holds of it.
 
@@ -2846,6 +2847,12 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         request that fails stops the others (cancelled, then awaited, so none is left running), and the drop and the
         advance happen once, before the failure reaches the caller.
 
+        **A reload is analysed** (``reload=True``, said only by a caller refilling a table it emptied with
+        :meth:`reset`, or a new one): after its last request, a load of :data:`ANALYZE_AFTER_ROWS` rows or more has
+        its store refresh the table's planner statistics (:class:`~threetears.core.backends.protocol.AnalyzingStore`),
+        so its first reads plan by its indexes. Any other load, however large, is never analysed here: the database's
+        own auto-analyze keeps up with it.
+
         :param files: the files, in order
         :ptype files: Sequence[LoadFile]
         :param columns: the table's columns each file supplies
@@ -2865,6 +2872,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             None takes the one prefix the constants lead the key with. A load naming neither is refused: its epoch
             could name only the whole table
         :ptype prefixes: Sequence[Mapping[str, Any]] | None
+        :param reload: whether this load refills a table emptied (:meth:`reset`) or new: only such a load is analysed
+        :ptype reload: bool
         :return: the rows written
         :rtype: int
         :raises ValueError: when the collection has no durable store, its store cannot load files,
@@ -2921,8 +2930,18 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             # committed, and a reply lost or timed out may follow a load the broker finished
             await self._drop_and_advance_after_failure("load from files failed", exc, reach=reach)
             raise
-        if written >= ANALYZE_AFTER_ROWS and isinstance(store, AnalyzingStore):
-            # a reload's rows: the planner reads the table blind until it is analysed, once, after the last request
+        if reload and written >= ANALYZE_AFTER_ROWS and isinstance(store, AnalyzingStore):
+            # Only a reload is analysed here, once, after its last request (coordinator 2026-11-15, within Pace's
+            # 11-12 cold-start ruling). Why a reload at all (458a3c671): a table emptied and filled again keeps the
+            # statistics of what it held before (or none), so YugabyteDB planned its first reads blind -- a state's
+            # rows of some geographies took 157 ms on a primary-key scan and a sort, 0.4 ms once analysed
+            # (packages/core/tests/integration/test_reload_analyzed_live.py). Why only a reload: YugabyteDB's ANALYZE
+            # reads about every row (10k rows 44 ms, 200k 132 ms, 1M 540 ms, best of 3 on a local YugabyteDB 2026.1
+            # with block-based sampling, 2026-11-14), so analysing after every large load paid for the whole table on each
+            # incremental load too. What covers the other loads: the database's own auto-analyze -- YugabyteDB
+            # 2026.1's ysql_enable_auto_analyze (on in the local test YugabyteDB: threshold 50 rows + 10% of the
+            # table, a 10 s per-table cooldown) and Postgres's autovacuum (on: the same threshold and scale factor).
+            # A table already analysed keeps statistics close enough for an incremental load until it catches up.
             try:
                 await store.analyze(self.table_name)
             # prawduct:allow prawduct/broad-except -- the rows are loaded; stale statistics cost plans, not data
