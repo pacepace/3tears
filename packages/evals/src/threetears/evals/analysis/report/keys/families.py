@@ -4,6 +4,7 @@ them in, and the groups the grammar's pages show them in.
 
 from __future__ import annotations
 
+from threetears.evals.analysis.costs import costs_per_thousand
 from threetears.evals.analysis.report.keys.counts import (
     _BAR_FIELDS,
     _CELL_FIELDS,
@@ -144,7 +145,6 @@ from threetears.evals.analysis.report.keys.reads import (
     _contrasted,
     _control_field,
     _cost_per_1k,
-    _costs_per_thousand,
     _criterion_arm,
     _criterion_arm_at,
     _criterion_arms,
@@ -284,7 +284,7 @@ _FAMILIES: tuple[_Family, ...] = (
     ),
     _family_of(
         _Word("cost_per_1k"),
-        _keyed("<arm>", _costs_per_thousand),
+        _keyed("<arm>", costs_per_thousand),
         what="an arm's cost per 1,000 of what the cost counts (`per 1,000 conversations` where the cost measure's "
         "label counts conversations)",
         resolve=_cost_per_1k,
@@ -702,7 +702,7 @@ _FAMILIES: tuple[_Family, ...] = (
     ),
     _family_of(
         _Word("price"),
-        _keyed("<from>", _costs_per_thousand),
+        _keyed("<from>", costs_per_thousand),
         _Ids("<to>", _gain_arms),
         _Ids("<measure>", _gain_axes),
         _Statistic(_PRICE_FIELDS, "<field>"),
@@ -716,7 +716,7 @@ _FAMILIES: tuple[_Family, ...] = (
         derived=True,
         derived_note=_PRICE_NOTE,
         example="price.base.fast.v2.latency_ms.monthly_per_point",
-        compares=lambda ri, values: _gap_compares(ri, _costs_per_thousand(ri), values[-1]),
+        compares=lambda ri, values: _gap_compares(ri, costs_per_thousand(ri), values[-1]),
     ),
     _family_of(
         _Word("task"),
@@ -793,7 +793,7 @@ _FAMILIES: tuple[_Family, ...] = (
     ),
     _family_of(
         _Word("cost_per_month"),
-        _keyed("<arm>", _costs_per_thousand),
+        _keyed("<arm>", costs_per_thousand),
         what="an arm's cost per month at the declared monthly volume",
         resolve=_cost_per_month,
         derived=True,
@@ -975,7 +975,7 @@ _FAMILIES: tuple[_Family, ...] = (
     ),
     _family_of(
         _Word("cost.gap"),
-        _keyed("<arm>", _costs_per_thousand),
+        _keyed("<arm>", costs_per_thousand),
         _Ids("<arm>", _cost_gap_seconds),
         _Statistic(_COST_GAP_FIELDS, "<field>"),
         what="two arms' costs apart, the first's minus the second's: `per_1k` per 1,000 of what the cost counts, "
@@ -984,11 +984,11 @@ _FAMILIES: tuple[_Family, ...] = (
         resolve=_cost_gap,
         derived=True,
         example="cost.gap.fast.v2.base.multiple",
-        compares=lambda ri, values: _gap_compares(ri, _costs_per_thousand(ri), values[-1]),
+        compares=lambda ri, values: _gap_compares(ri, costs_per_thousand(ri), values[-1]),
     ),
     _family_of(
         _Word("cost.unreported"),
-        _keyed("<arm>", _costs_per_thousand),
+        _keyed("<arm>", costs_per_thousand),
         _Statistic(_UNREPORTED_FIELDS, "<field>"),
         what="an arm's cost where some of its trials report none: `missing` how many (trials run less the cost's "
         "observations), `free` the cost per 1,000 had each cost nothing (the least the mean over every trial can be), "

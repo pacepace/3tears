@@ -42,6 +42,7 @@ from pydantic import Field, TypeAdapter, computed_field, field_validator, model_
 from threetears.evals.kernel.numbers import spell_declared
 from threetears.evals.schema.campaign_upgrade import aware_instant
 from threetears.evals.schema.base import CoreShapeModel, EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.reading_states import Maker
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
 from threetears.evals.kernel.carried_measures import mechanism_measure_names, per_result_measure_names
@@ -134,6 +135,16 @@ class SweptAxis(EvalDocumentModel, CoreShapeModel):
     )
     rationale: str = Field(
         default="", description="Why this axis is in the campaign. Optional, and the first thing a reader wants."
+    )
+    ordered: bool = Field(
+        default=False,
+        # Written only when set, so an axis stating none is stored as it was before the field.
+        exclude_if=lambda value: not value,
+        description=(
+            "Whether the levels are points on one scale, in the order `values` lists them (a reasoning budget, a "
+            "sample size), so a reading may be drawn across them. False: the levels are kinds (two prompts, two "
+            "models), and no line joins them."
+        ),
     )
 
     @field_validator("reader_name")
@@ -709,6 +720,17 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
             "is refused when the design is declared."
         ),
     )
+    planned_looks: int | None = Field(
+        default=None,
+        ge=1,
+        # Written only when stated, so a design stating none is stored as it was before the field.
+        exclude_if=lambda looks: looks is None,
+        description=(
+            "How many times this aspect's contrasts are planned to be read, declared before the first: each read "
+            "after more runs join is one more look, and a test looked at more often than planned is read at a "
+            "looser level than it states. None = no plan stated."
+        ),
+    )
     measure_order: list[str] = Field(
         default_factory=list,
         # Written only when stated, so a design stating none is stored as it was before the field.
@@ -1215,6 +1237,28 @@ class CampaignCall(EvalDocumentModel, CoreShapeModel):
         ),
     )
     called_at: str = Field(default_factory=utc_now_iso, description="When the call was recorded (ISO-8601).")
+    # The four below are written only when set, so a call recording none is stored as it was before them, and reads
+    # as not recorded.
+    made_by: Maker | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Whether a person or a model made the call; None where the call recorded neither.",
+    )
+    model: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The model that made the call, by id, where a model made it.",
+    )
+    on_behalf_of: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Who a model made the call for, as the recording surface knows them.",
+    )
+    evidence_fingerprint: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The campaign bundle's fingerprint the call was read against, so a page can say it moved since.",
+    )
     called_by: str = Field(
         min_length=1,
         description="Who made the call, as the recording surface knows them. Server-owned, as `created_by` is.",
