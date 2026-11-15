@@ -95,6 +95,7 @@ from threetears.evals.analysis.answer import (
     judge_described,
     judged_dimensions,
     late_immaterial,
+    people_checks_too_thin,
     stated_uncalibrated,
     surviving_options,
     unsettled_arms,
@@ -471,10 +472,11 @@ def _entry(report_input: ReportInput, id: str, kind: str, reach: CaveatReach, **
 
 
 def _judge_uncalibrated(report_input: ReportInput) -> bool:
-    """Whether every judged dimension's judge is stated uncalibrated, from the input's stated tiers: the stored
-    caveat, read the way a stored input states it until a judge's checks are on the input."""
+    """Whether every judged dimension's judge is stated uncalibrated and no check states it: the stored caveat, read
+    the way a stored input states it. Where a check of a judge against people states it on any dimension, that
+    check's caveat owns the fact there (:func:`uncalibrated_judges`), so the report-wide caveat is not raised."""
     dimensions = judged_dimensions(report_input)
-    return bool(dimensions) and all(stated_uncalibrated(report_input, dimension) for dimension in dimensions)
+    return bool(dimensions) and len(uncalibrated_judges(report_input)) == len(dimensions)
 
 
 def from_legacy(report_input: ReportInput) -> list[CaveatEntry]:
@@ -631,7 +633,13 @@ def unstated_judges(report_input: ReportInput) -> tuple[str, ...]:
 
 
 def uncalibrated_judges(report_input: ReportInput) -> tuple[str, ...]:
-    """The judged dimensions whose judge the input states uncalibrated.
+    """The judged dimensions whose judge the input states uncalibrated and no check of it states so.
+
+    One fact, one caveat: that a judge has no passing check against people is said once. Where a check of the
+    dimension's judge against people states it (:func:`~threetears.evals.analysis.answer.people_checks_too_thin`),
+    that check's caveat (:func:`_checks`) owns the fact, carrying which check, what it reached and what it needs, and
+    the dimension is not among these; ``judge_uncalibrated`` and ``judge_partly_uncalibrated`` say only the rest. A
+    judge with no check of any kind is said by them, as its tier states it.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -639,7 +647,9 @@ def uncalibrated_judges(report_input: ReportInput) -> tuple[str, ...]:
     :rtype: tuple[str, ...]
     """
     return tuple(
-        dimension for dimension in judged_dimensions(report_input) if stated_uncalibrated(report_input, dimension)
+        dimension
+        for dimension in judged_dimensions(report_input)
+        if stated_uncalibrated(report_input, dimension) and not people_checks_too_thin(report_input, dimension)
     )
 
 

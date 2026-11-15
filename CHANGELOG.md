@@ -30,7 +30,11 @@ their union), each holding only its own fields, and names its `kind`.
 
 **Changed:** whether an improvement on a judged dimension is set aside is read from its judge's checks: set aside
 where the judge's check against people is too thin to decide and none of its checks is met. A report input that holds
-no check (stored before checks, or written by hand) is read by the tier it states, as before.
+no check (stored before checks, or written by hand) is read by the tier it states, as before. That a judge has no
+passing check against people is one caveat: where its check against people is too thin to decide, that check's caveat
+(`check:<dimension>:<criterion>:people`) says it, and `judge_uncalibrated` (or `judge_partly_uncalibrated`) says it
+only for the judged dimensions holding no such check, so it takes one first-screen slot, not two. A judge with no
+check of any kind is said by `judge_uncalibrated` as before.
 
 **Added:** `EvalHost.model_family` (optional): the host's word on which family a model is of; with none, the
 provider part of the id. A check against a model names the arms whose candidate is of its family, and whether the

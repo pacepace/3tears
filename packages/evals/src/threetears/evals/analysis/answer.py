@@ -120,6 +120,7 @@ __all__ = [
     "judge_described",
     "judged_dimensions",
     "late_immaterial",
+    "people_checks_too_thin",
     "separating_contrasts",
     "shown_better",
     "stated_uncalibrated",
@@ -197,8 +198,8 @@ def _stated_standing(report_input: ReportInput, dimension: str) -> tuple[bool, b
     whether it states either, and whether every one it states is undetermined or insufficient.
 
     The one place a decision reads the tier, for an input stored before checks were recorded or written by hand; an
-    input that holds checks is read by them (:func:`_unchecked`). ``tests/test_no_decision_reads_the_tier.py`` pins it
-    here, to go when such inputs are no longer read.
+    input that holds checks is read by them (:func:`people_checks_too_thin`).
+    ``tests/test_no_decision_reads_the_tier.py`` pins it here, to go when such inputs are no longer read.
     """
     judged = report_input.judged.get(dimension)
     stated = [report_input.caveats.judge_tiers.get(dimension)]
@@ -215,15 +216,28 @@ def _checks_of(report_input: ReportInput, dimension: str) -> list[JudgeCheck]:
     return [check for check in held if isinstance(check, JudgeCheck)]
 
 
-def _unchecked(checks: Sequence[JudgeCheck]) -> bool:
-    """Whether a judge on a dimension is checked by nothing: its check against people has too little to decide, and no
-    check of it is met. A judge checked and found short (a check ``not_met`` or ``undecided``) is checked."""
-    judges = dict.fromkeys(check.instrument for check in checks)
-    return any(
-        any(check.against == "people" and check.result == "insufficient" for check in mine)
-        and not any(check.result == "met" for check in mine)
-        for mine in ([check for check in checks if check.instrument == judge] for judge in judges)
-    )
+def people_checks_too_thin(report_input: ReportInput, dimension: str) -> list[JudgeCheck]:
+    """The checks against people that say a judge on one judged dimension is checked by nothing: a judge's check
+    against people too thin to decide, where no check of that judge is met. A judge checked and found short (a check
+    ``not_met`` or ``undecided``) is checked, and has none here.
+
+    The fact :func:`stated_uncalibrated` reads where the input holds checks, and the one each of these checks states as
+    its own caveat (:func:`~threetears.evals.analysis.caveats.from_states`), which the caveats keep as its one owner.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param dimension: The judged dimension, by key.
+    :ptype dimension: str
+    :return: The checks, in the input's order; empty where every judge on it is checked, or the input holds no check.
+    :rtype: list[JudgeCheck]
+    """
+    checks = _checks_of(report_input, dimension)
+    found: list[JudgeCheck] = []
+    for judge in dict.fromkeys(check.instrument for check in checks):
+        mine = [check for check in checks if check.instrument == judge]
+        if not any(check.result == "met" for check in mine):
+            found += [check for check in mine if check.against == "people" and check.result == "insufficient"]
+    return found
 
 
 def judge_described(report_input: ReportInput, dimension: str) -> bool:
@@ -261,7 +275,7 @@ def stated_uncalibrated(report_input: ReportInput, dimension: str) -> bool:
     """
     checks = _checks_of(report_input, dimension)
     if checks:
-        return _unchecked(checks)
+        return bool(people_checks_too_thin(report_input, dimension))
     return _stated_standing(report_input, dimension)[1]
 
 

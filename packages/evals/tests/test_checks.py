@@ -52,7 +52,8 @@ from threetears.evals.analysis.checks import (
     speaking_check,
     tier_checks,
 )
-from threetears.evals.analysis.report.call import shown_better
+from threetears.evals.analysis.caveats import raise_caveats
+from threetears.evals.analysis.report.call import implied_caveats, shown_better
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.stats import paired_equivalence
 from threetears.evals.kernel.evidence_tiers import CriterionState, tier_of
@@ -552,6 +553,52 @@ def test_an_improvement_is_set_aside_by_the_judge_s_checks_and_not_by_its_tier()
     # An input holding no check is read by the tier it states, as before checks were recorded.
     stated, arm = _r5_with([], tier="undetermined")
     assert not shown_better(stated, arm)
+
+
+def _r5_checked(checks: dict[str, list[dict[str, Any]]]) -> ReportInput:
+    """kairo's input, every judged dimension's judge stating ``undetermined``, the named dimensions holding ``checks``."""
+    data: dict[str, Any] = json.loads(_R5.read_text(encoding="utf-8"))
+    for dimension, held in checks.items():
+        data["judged"][dimension]["checks"] = held
+    return ReportInput.model_validate(data)
+
+
+def test_a_judge_with_no_passing_check_against_people_is_said_once_by_its_check() -> None:
+    """One fact, one caveat: a judge's check against people too thin to decide says the judge has no passing check
+    against people, with which check, what it reached and what it needs; the tier's caveat does not say it again."""
+    thin = [_judge("people", "insufficient", "too_few"), _judge("itself", "not_met", "instrument_below_bar")]
+    dimensions = ["__outcome__", "__transcript__", "persona.booth_stays_offstage", "persona.holds_character"]
+    every = _r5_checked({dimension: thin for dimension in dimensions})
+    raised = {entry.id: entry for entry in raise_caveats(every)}
+    people = [entry for entry in raised.values() if entry.kind == "check" and entry.against == "people"]
+    assert len(people) == len(dimensions)
+    assert all(entry.check == "insufficient" for entry in people)
+    assert not {"judge_uncalibrated", "judge_partly_uncalibrated"} & set(raised)
+    # The fact still decides: an improvement on such a judge is set aside, by its checks.
+    set_aside, arm = _r5_with(thin, tier="undetermined")
+    assert not shown_better(set_aside, arm)
+
+    # The same judge on the same dimension: a check on one dimension owns that dimension's fact only. The other three
+    # hold no check, so their judges are said by the tier's caveat, which is now partial and names exactly them.
+    one = _r5_checked({"__outcome__": thin})
+    raised = {entry.id: entry for entry in raise_caveats(one)}
+    assert "judge_uncalibrated" not in raised
+    assert any(entry.kind == "check" and entry.against == "people" for entry in raised.values())
+    (partly,) = [caveat for caveat in implied_caveats(one) if caveat.kind == "judge_partly_uncalibrated"]
+    assert partly.measures == tuple(dimensions[1:])
+
+
+def test_a_judge_with_no_check_of_any_kind_is_said_uncalibrated_by_its_tier_as_before() -> None:
+    stated = _r5_checked({})
+    raised = {entry.id for entry in raise_caveats(stated)}
+    assert "judge_uncalibrated" in raised
+    assert "judge_partly_uncalibrated" not in raised
+    assert not any(caveat_id.startswith("check:") for caveat_id in raised)
+    # A judge checked and found short is checked: neither its tier's caveat nor a thin check's says it is unchecked.
+    short = [_judge("people", "not_met", "instrument_below_bar"), _judge("itself", "insufficient", "too_few")]
+    dimensions = ["__outcome__", "__transcript__", "persona.booth_stays_offstage", "persona.holds_character"]
+    raised = {entry.id for entry in raise_caveats(_r5_checked({dimension: short for dimension in dimensions}))}
+    assert not {"judge_uncalibrated", "judge_partly_uncalibrated"} & raised
 
 
 # --- the tier stays what it was ---------------------------------------------------------------------------------------
