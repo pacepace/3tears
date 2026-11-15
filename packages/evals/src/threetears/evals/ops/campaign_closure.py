@@ -7,7 +7,7 @@ files. :func:`campaign_export` assembles them, read-only, from the host's store:
 - ``documents``: every stored document reachable from the campaign, verbatim as the store returns it (each keeps its
   ``id``, ``scope_id`` and ``doc_type``), each ``(doc_type, id)`` once, in ``(doc_type, id)`` order;
 - ``profile``: the host's declarations (:class:`ProfileDeclaration`), with ``host_declarations_digest``
-  (:func:`~threetears.evals.analysis.host_declarations_digest`, the digest every analysis bundle records) and
+  (:func:`~threetears.evals.analysis.bundle.schema.host_declarations_digest`, the digest every analysis bundle records) and
   ``built_by``, the ``module:callable`` the profile came from, as provenance: the mint checks the digest and never
   imports ``built_by``, since its operator names the factory;
 - ``manifest``: the documents that reasoned on the campaign (so a case withholds the notes they lead to), the count of
@@ -21,7 +21,7 @@ campaign minted it, because an analysis reads insights by subject; and the launc
 the campaign's runs are found by a whole-type scan, since a store compares scalar fields only (and a judge config's
 rubric dim by the dim's nested name, the same way). A run and a result record their judges in two forms under one field
 name: a run the bare config id it committed to, a result the configured judge's identity, ``<config id>@<sha12>``, read
-by the package's own reader (:func:`~threetears.evals.schema.judge_config_of`), or a built-in prompt's
+by the package's own reader (:func:`~threetears.evals.schema.models.judge_config_of`), or a built-in prompt's
 ``builtin:<sha12>``. A run's built-in dim has no key (``RunJudge.config_ids``); a ``builtin:`` value on a run names no
 config and is listed with the built-in identities, never refused. A value in the other document type's form, or one the reader refuses, is refused here, naming
 the document and the form its type records. The manifest states every rule (``closure_rules``), and the types no
@@ -59,7 +59,7 @@ from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from threetears.evals.analysis import host_declarations_digest
+from threetears.evals.analysis.bundle.schema import host_declarations_digest
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel import MeasureFamily, MetricDescriptor
 from threetears.evals.kernel.build_stamp import package_version
@@ -67,7 +67,8 @@ from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.storage import UnreadableRecordError
 from threetears.evals.kernel.host import Bar, EvalHost, HostProfile, PassThreshold
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN
-from threetears.evals.schema import DOC_TYPE_FACTS, is_builtin_judge_config_id, judge_config_of
+from threetears.evals.schema import DOC_TYPE_FACTS
+from threetears.evals.schema.models import is_builtin_judge_config_id, judge_config_of
 from threetears.evals.schema.hashing import canonical_digest, canonical_json
 from threetears.evals.kernel.analyst_gap import EvalAnalystGap
 from threetears.evals.kernel.campaign import (
