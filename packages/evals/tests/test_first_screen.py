@@ -4,10 +4,11 @@
 test below builds a caveat list by hand and reads the typed value back: none reads a word of a page.
 
 - R1 to R11: one test per rule of the function (eligible, gate, the four ways one caveat silences another, rank, touch,
-  id, cap, precision, call, count, stable).
-- The ranking is data (``RANKS``), in the statistician's order: evidence not whole, identical arms separated, identity
-  unrecorded, a late criterion, a judge not checked, a judge checked against a model only (a model of a candidate's
-  family first), repeated looks, a judge checked against a model that is itself checked, few cases.
+  id, cap, precision, call, count, stable). R8 is the constraint document's F8: it fails if the function stops
+  holding a class E caveat off the first screen where the answer does not turn on its reading.
+- The ranking is data (``RANKS``), the statistician's eight ranks exactly: evidence not whole (every withheld
+  reading), identical arms separated, identity unrecorded, a late criterion, a judge not checked, a judge checked
+  against a model only, repeated looks, few cases. Each adjacent pair is tested, and each tie rule inside a rank.
 - The information architecture's three worked campaigns (section 3.3) give the slot contents it states.
 - The function reads no eval kind, measure name or prose: its module imports only the closed sets and the input's
   shapes, and every string it compares is a member of a closed set.
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import random
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, get_args
 
@@ -163,7 +165,7 @@ def one_of_each_class() -> list[CaveatEntry]:
         caveat("late:margin"),
         judge("judge_uncalibrated"),
         caveat("looks"),
-        caveat("unsettled:support"),
+        caveat("unsettled:support", deciding=True),
         caveat("analyst:hunch"),
     ]
 
@@ -229,23 +231,39 @@ def test_r7_three_reasons_are_shown_and_the_rest_are_counted_never_dropped(count
         FirstScreen(reasons=["a", "b", "c", "d"])
 
 
-def test_r8_missing_precision_off_the_deciding_measure_is_scoped_so_it_is_never_a_reason() -> None:
-    """The raiser's rule, asserted on what a raiser hands in: class E is report-wide only where the answer turns on
-    the measure."""
-    cost = caveat(
-        "not_available:support/cost",
+def precision(reading: str, *, deciding: bool, reach: str = "report") -> CaveatEntry:
+    """A class E caveat: no interval can be computed on ``reading``."""
+    return caveat(
+        f"not_available:{reading}",
         "unsettled",
         state="not_available",
         reason="too_few",
-        readings=["support/cost"],
-        deciding=False,
-        reach="scoped",
+        readings=[reading],
+        deciding=deciding,
+        reach=reach,
     )
-    deciding = cost.model_copy(update={"id": "not_available:support/pass_rate", "deciding": True, "reach": "report"})
 
-    assert cost.cls == "E"
-    assert shown([cost]).reasons == [] and shown([cost]).open_report_caveats == 0
-    assert shown([cost, deciding]).reasons == [deciding.id]
+
+def test_r8_missing_precision_is_a_reason_only_on_the_measure_the_answer_turns_on() -> None:
+    """A cost interval that cannot be computed is a first-screen reason where the answer turns on cost, and is stated
+    in its table cell anywhere else, even if whoever raised it gave it the whole report's reach."""
+    off_the_answer = precision("support/cost", deciding=False)
+    on_the_answer = precision("support/pass_rate", deciding=True)
+    assert off_the_answer.cls == on_the_answer.cls == "E" and off_the_answer.reach == "report"
+
+    alone = shown([off_the_answer])
+    assert alone.reasons == [] and alone.remainder == 0 and alone.open_report_caveats == 0
+    both = shown([off_the_answer, on_the_answer])
+    assert both.reasons == [on_the_answer.id] and both.open_report_caveats == 1
+    assert shown([off_the_answer], gate=Gate(rule="too_small")).open_report_caveats == 0
+
+
+def test_r8_holds_for_class_e_alone() -> None:
+    """A caveat of any other class is a reason whether or not the answer turns on a reading it names."""
+    late = caveat("late:margin", deciding=False)
+    looks = caveat("looks", deciding=False)
+    assert shown([late, looks]).reasons == [late.id, looks.id]
+    assert shown([precision("support/cost", deciding=True, reach="scoped")]).reasons == [], "scoped is still scoped"
 
 
 @pytest.mark.parametrize("made_by", ["person", "model", None])
@@ -290,76 +308,134 @@ def test_r11_the_value_is_the_same_whatever_order_the_caveats_come_in() -> None:
 # --- the ranking --------------------------------------------------------------------------------------------------
 
 
-def the_statistician_s_order() -> list[CaveatEntry]:
-    """One caveat per row of the order, first to last, each on a reading of its own."""
-    return [
-        withheld("a/unfinished", "unfinished"),
-        withheld("a/split", "split", "served_model"),
-        set_aside("a/aa", "identical_arms_separated"),
-        withheld("a/identity", "identity_unrecorded", "measure_definition"),
-        caveat("late:looks"),
-        set_aside("a/people", "people_disagree"),
-        set_aside("a/leans", "instrument_leans"),
-        set_aside("a/below", "instrument_below_bar"),
-        set_aside("a/unchecked", "instrument_unchecked"),
-        judge("judge:no_check"),
-        judge("judge:model_same_family", against="model", same_family=True, against_checked=True),
-        judge("judge:model_unchecked", against="model"),
-        caveat("looks"),
-        judge("judge:model_checked", against="model", against_checked=True),
-        caveat("unsettled:few_cases"),
+#: The eight ranks, each as one caveat that takes it, on a reading of its own.
+EIGHT_RANKS: dict[str, Any] = {
+    "evidence_not_whole": lambda: withheld("a/unfinished", "unfinished"),
+    "identical_arms_separated": lambda: set_aside("a/aa", "identical_arms_separated"),
+    "identity_unrecorded": lambda: caveat(
+        "not_available:a/corrected",
+        "not_available",
+        cls="B",
+        state="not_available",
+        reason="identity_unrecorded",
+        coordinate="served_model",
+        readings=["a/corrected"],
+    ),
+    "late_criterion": lambda: caveat("late:looks"),
+    "judge_unchecked": lambda: judge("judge:no_check"),
+    "judge_checked_against_a_model_only": lambda: judge("judge:model", against="model"),
+    "repeated_looks": lambda: caveat("looks"),
+    "few_cases": lambda: precision("a/few", deciding=True),
+}
+
+
+def test_the_ranking_holds_exactly_the_statistician_s_eight_ranks_in_order() -> None:
+    names = list(dict.fromkeys(row.name for row in RANKS))
+    assert names == list(EIGHT_RANKS)
+    assert [next(row.rank for row in RANKS if row.name == name) for name in names] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert all(row.rank == next(r.rank for r in RANKS if r.name == row.name) for row in RANKS), "one name, one rank"
+    assert [row.rank for row in RANKS] == sorted(row.rank for row in RANKS)
+
+
+@pytest.mark.parametrize(("higher", "lower"), list(pairwise(EIGHT_RANKS)))
+def test_each_rank_comes_before_the_next(higher: str, lower: str) -> None:
+    first, second = EIGHT_RANKS[higher](), EIGHT_RANKS[lower]()
+    # The lower rank is given every tie-break in its favour: it is on a called arm, and its id sorts first.
+    second = second.model_copy(update={"id": f"a:{second.id}", "arms": ["called"]})
+    first = first.model_copy(update={"id": f"z:{first.id}", "arms": ["other"]})
+
+    assert next(row.name for row in RANKS if row.places(first)) == higher
+    assert next(row.name for row in RANKS if row.places(second)) == lower
+    assert shown([second, first], called_arms=["called"]).reasons == [first.id, second.id]
+
+
+def test_all_eight_ranks_together_come_back_in_order() -> None:
+    caveats = [make() for make in EIGHT_RANKS.values()]
+    for order in shuffles(caveats, count=20):
+        assert ranked(order) == [entry.id for entry in caveats]
+
+
+@pytest.mark.parametrize(
+    ("reason", "coordinate"),
+    [
+        ("unfinished", None),
+        ("split", "served_model"),
+        ("identity_unrecorded", "measure_definition"),
+        ("measured_under_concurrency", None),
+    ],
+)
+def test_every_withheld_reading_is_rank_one_whatever_withheld_it(reason: str, coordinate: str | None) -> None:
+    entry = withheld("a/r", reason, coordinate)
+    separated = set_aside("a/aa", "identical_arms_separated")
+
+    assert next(row for row in RANKS if row.places(entry)).rank == 1
+    assert shown([separated, entry]).reasons == [entry.id, separated.id]
+
+
+def test_within_rank_one_a_caveat_on_a_called_arm_comes_first() -> None:
+    """Rank 1 is one rank: what withheld a reading does not order it, the arm it touches does."""
+    unfinished_elsewhere = withheld("a/unfinished", "unfinished", arms=["other"])
+    split_on_called = withheld("a/split", "split", "served_model", arms=["called"])
+    unrecorded_on_called = withheld("a/identity", "identity_unrecorded", "rig", arms=["called"])
+
+    assert ranked([unfinished_elsewhere, split_on_called, unrecorded_on_called], called_arms=["called"]) == [
+        unrecorded_on_called.id,
+        split_on_called.id,
+        unfinished_elsewhere.id,
     ]
 
 
-def test_the_ranking_is_the_statistician_s_order() -> None:
-    expected = [entry.id for entry in the_statistician_s_order()]
-
-    for order in shuffles(the_statistician_s_order(), count=20):
-        assert ranked(order) == expected
-
-
-def test_the_ranking_names_its_rows_in_the_eight_rank_order() -> None:
-    names = list(dict.fromkeys(row.name for row in RANKS if row.name != "answer_changed"))
-    assert names == [
-        "evidence_not_whole",
-        "identical_arms_separated",
-        "identity_unrecorded",
-        "late_criterion",
-        "judge_unchecked",
-        "judge_checked_against_a_model_only",
-        "repeated_looks",
-        "judge_checked_against_a_checked_model",
-        "few_cases",
+def test_within_the_judge_unchecked_rank_the_reasons_come_in_the_order_one_is_stated() -> None:
+    """Rank 5's own order: people disagree, the judge leans, below its bar, unchecked, then a counted reading whose
+    judge has no check. It outranks the arm a caveat touches."""
+    in_order = [
+        set_aside("a/people", "people_disagree", arms=["other"]),
+        set_aside("a/leans", "instrument_leans", arms=["other"]),
+        set_aside("a/below", "instrument_below_bar", arms=["other"]),
+        set_aside("a/unchecked", "instrument_unchecked", arms=["other"]),
+        judge("judge:no_check", arms=["called"]),
     ]
+    assert {next(row for row in RANKS if row.places(entry)).rank for entry in in_order} == {5}
+
+    for order in shuffles(in_order, count=10):
+        assert ranked(order, called_arms=["called"]) == [entry.id for entry in in_order]
 
 
-def test_looks_stay_below_both_judge_rows_and_above_a_model_that_is_itself_checked() -> None:
+def test_within_the_model_only_rank_a_model_of_a_candidate_s_family_comes_first() -> None:
+    same_family = judge("judge:z_family", against="model", same_family=True, arms=["other"])
+    another_family = judge("judge:a_other", against="model", arms=["called"])
     looks = caveat("looks")
     unchecked = judge("judge:none")
-    model_only = judge("judge:model", against="model")
-    checked_model = judge("judge:model_checked", against="model", against_checked=True)
 
-    assert ranked([looks, checked_model, model_only, unchecked]) == [
+    assert {next(row for row in RANKS if row.places(entry)).rank for entry in (same_family, another_family)} == {6}
+    assert ranked([looks, another_family, same_family, unchecked], called_arms=["called"]) == [
         unchecked.id,
-        model_only.id,
+        same_family.id,
+        another_family.id,
         looks.id,
-        checked_model.id,
-    ]
+    ], "looks stay below both judge ranks"
 
 
-def test_every_reason_of_a_non_counted_state_is_placed_by_a_row_of_its_own() -> None:
-    """No set-aside or withheld caveat falls through to the row for an untyped change to the answer."""
-    for state in ("set_aside", "withheld"):
+def test_every_reason_of_a_non_counted_state_is_placed_by_a_rank() -> None:
+    kinds = {"set_aside": "set_aside", "withheld": "withheld", "not_available": "unsettled"}
+    for state, kind in kinds.items():
         for reason in sorted(reading_states.REASONS_OF[state]):
             entry = caveat(
                 f"{state}:r",
+                kind,
                 state=state,
                 reason=reason,
-                coordinate="served_model" if reason == "split" else None,
+                coordinate="served_model" if reason in ("split", "identity_unrecorded") else None,
                 readings=["a/r"],
             )
-            placed = next(row for row in RANKS if row.places(entry))
-            assert placed.name != "answer_changed", reason
+            assert any(row.places(entry) for row in RANKS), (state, reason)
+
+
+def test_a_class_a_caveat_carries_the_state_that_changed_the_answer() -> None:
+    with pytest.raises(ValidationError, match="set aside or withheld"):
+        caveat("set_aside:r", cls="A")
+    with pytest.raises(ValidationError, match="set aside or withheld"):
+        caveat("x", "late", cls="A", state="not_available", reason="too_few")
 
 
 # --- the three worked campaigns -----------------------------------------------------------------------------------
@@ -384,7 +460,7 @@ def test_a_stale_host_measure_called_by_a_model_opens_on_the_withheld_readings_a
         judge("judge_uncalibrated"),
         caveat("confound:tool_bound", arms=["candidate"]),
         caveat("short_run:run-7", arms=["runner-up"]),
-        caveat("unsettled:replies", arms=["candidate"]),
+        caveat("unsettled:replies", arms=["candidate"], deciding=True),
         host_measure,
     ]
     call = CallRead(arm="candidate", made_by="model", model="analyst-1", identity_changed=True)
@@ -454,14 +530,18 @@ def test_caveats_of_the_earlier_shape_become_entries_with_the_same_ids_and_their
         Caveat("confound:tools", "confound", "scoped"),
         Caveat("latency", "latency", "method"),
         Caveat("analyst:flag", "analyst", "report"),
+        Caveat("unsettled:support", "unsettled", "report"),
+        Caveat("unsettled:billing", "unsettled", "scoped"),
     ]
 
     entries = from_legacy(legacy)
 
     assert [(entry.id, entry.kind, entry.reach) for entry in entries] == [(c.id, c.kind, c.reach) for c in legacy]
-    assert [entry.cls for entry in entries] == ["B", "C", "B", None, None]
+    assert [entry.cls for entry in entries] == ["B", "C", "B", None, None, "E", "E"]
     assert all(entry.state is None and entry.reason is None for entry in entries), "absent reads counted"
-    assert shown(entries).reasons == ["late:margin", "judge_uncalibrated", "analyst:flag"]
+    assert [entry.deciding for entry in entries[-2:]] == [True, False], "report reach is where the call turns on it"
+    assert shown(entries).reasons == ["late:margin", "judge_uncalibrated", "unsettled:support"]
+    assert shown(entries).remainder == 1
 
 
 # --- the function reads no kind, no name and no prose ---------------------------------------------------------------

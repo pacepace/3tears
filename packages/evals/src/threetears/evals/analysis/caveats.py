@@ -30,7 +30,7 @@ __all__: list[str] = []
 #: analyst's own) has no class and ranks after every class.
 CLASS_OF_KIND: Final[Mapping[str, CaveatClass | None]] = MappingProxyType(
     {
-        # A: the answer was changed.
+        # A: the answer was changed. An entry of this class carries the state that changed it.
         "set_aside": "A",
         "withheld": "A",
         # B: the evidence is not what it appears.
@@ -138,7 +138,11 @@ def from_legacy(caveats: Iterable[_Legacy]) -> list[CaveatEntry]:
     :return: One entry per caveat.
     :rtype: list[CaveatEntry]
     """
-    return [
-        CaveatEntry(id=caveat.id, kind=caveat.kind, cls=CLASS_OF_KIND.get(caveat.kind), reach=caveat.reach)
-        for caveat in caveats
-    ]
+    entries = []
+    for caveat in caveats:
+        cls = CLASS_OF_KIND.get(caveat.kind)
+        # A caveat of the earlier shape that says precision is missing was given report reach only where it touches an
+        # arm the options call: that is the reading the answer turns on.
+        deciding = cls == "E" and caveat.reach == "report"
+        entries.append(CaveatEntry(id=caveat.id, kind=caveat.kind, cls=cls, reach=caveat.reach, deciding=deciding))
+    return entries

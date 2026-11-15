@@ -14,18 +14,22 @@ command line or an action prints changed, and no digest, fingerprint or golden m
 
 - `analysis/reading_states.py` holds the one closed set of states a reading or a contrast is in (`counted`,
   `set_aside`, `withheld`, `not_available`), the one closed set of reasons, an arm's identity state per coordinate
-  (`one`, `split`, `unrecorded`), and `check_state`, which refuses a reason outside its state's set.
-- `analysis/state_words.py` maps every earlier word for "this reading is not counted" onto them (54 words of 14
-  vocabularies), and a test holds that a word added to one of those vocabularies is mapped the day it lands. No call
-  site moved onto the shared words yet.
+  (`one`, `split`, `unrecorded`, on the served model, a measure's definition, the template and the rig), and
+  `check_state`, which refuses a reason outside its state's set and a split or an unrecorded identity that names no
+  coordinate.
+- `analysis/state_words.py` maps every earlier word for "this reading is not counted" onto them: 155 words of 37
+  vocabularies. A test finds the package's closed vocabularies by structure and holds that each is mapped there or
+  listed as no word about a reading, with why, so one added later is mapped or listed the day it lands. No call site
+  moved onto the shared words yet.
 - The report input gains, all optional and left out of the document when unset: a typed state on a reading, a
   contrast, a pair and an arm's figure (`state`); the one caveat list (`caveat_list`, each entry with its class,
   reach, state and reason); the first-screen value of four slots (`first_screen`, outside the input's digest); and
-  the fields the judge and structure work fills (`checks`, `corrected`, `aa`, `looks`, `blind_reads`, `preferences`,
-  `baseline`, `family`, `delta_note`, `spread`, `no_variation`, `ordered`, `flip_margin`, `margin_informative`,
-  `cost`, an arm's `arm_id`, `cell`, `spelling` and `identity`). The bundle gains the matching fields, unset.
-- `analysis/first_screen.py` holds `first_screen`, the one function that ranks caveats and applies the cap of three
-  reasons and a count, each rule held by one test (`tests/test_first_screen.py`). Nothing calls it yet.
+  the fields the judge and structure work fills (`checks`, `corrected`, `aa`, `looks`, `baseline`, `family`,
+  `delta_note`, `spread`, `no_variation`, `ordered`, `flip_margin`, `margin_informative`, `cost`, an arm's `arm_id`,
+  `cell`, `spelling` and `identity`). The bundle gains the matching fields, unset.
+- `analysis/first_screen.py` holds `first_screen`, the one function that ranks caveats in eight ranks and applies
+  the cap of three reasons and a count, each rule held by one test (`tests/test_first_screen.py`). Nothing calls it
+  yet.
 - The report input's builder is numbers: `analysis/report/input_build.py` is now `analysis/report_input_build.py`,
   and the names it read from the page moved down with it (`declared_arm_names`, `printed_arm_labels`,
   `trial_dimension` and `measure_name_of` to `analysis/style.py`; `bundle_stopped_short` to
@@ -33,9 +37,9 @@ command line or an action prints changed, and no digest, fingerprint or golden m
 
 **For hosts:** nothing, if you import from the public roots. A stored bundle or report input without the new fields
 reads as it did. An import written against a module below a root follows the moves above; none has a forwarding
-import. `threetears.evals.analysis` exports fifteen new provisional names, the types the bundle's new fields hold
-(`StateOf`, `ArmIdentity`, `Check`, `CheckSample`, `CheckFigures`, `Corrected`, `Preference`, `BlindRead`, `Rescore`,
-`Looks`, and the aliases `ReadingState`, `Reason`, `Coordinate`, `IdentityState`, `Maker`).
+import. `threetears.evals.analysis` exports ten new provisional names, the types the bundle's new fields hold: the
+shapes `StateOf`, `ArmIdentity`, `Check`, `Corrected`, `Rescore` and `Looks`, and the aliases `ReadingState`,
+`Reason`, `Coordinate` and `IdentityState`.
 
 ### evals: numbers never import presentation, with no exemption
 

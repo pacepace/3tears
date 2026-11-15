@@ -2,14 +2,15 @@
 
 Every instrument is checked: a check names an instrument, what it was checked against (people, a model, itself, or
 identical arms), on what sample, with one result (a
-:data:`~threetears.evals.kernel.evidence_tiers.CriterionState`). A blind read is the procedure that makes a check's
-sample sound; a preference is what a blind read's readers chose between two arms; a corrected reading is a check's
+:data:`~threetears.evals.kernel.evidence_tiers.CriterionState`). A corrected reading is a check's
 result carried onto one contrast; a re-score is the judge checked against itself; looks are how often a contrast's
 test was read against how often it planned to be.
 
 One class per shape, held by the bundle and the report input alike, so a fact has one spelling at both ends. Every
 field a shape declares is optional except what names it, and every state and reason is one of
 :mod:`~threetears.evals.analysis.reading_states`: no shape here carries a sentence saying why a figure is absent.
+
+A blind read's sample and what its readers preferred are the blind read's own shapes, and none is restated here.
 
 Nothing here computes: each shape is filled where its statistic is computed and copied through from there.
 """
@@ -20,10 +21,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from threetears.evals.analysis.reading_states import Maker, Reason, StateOf
+from threetears.evals.analysis.reading_states import Coordinate, Reason, StateOf
 from threetears.evals.kernel.evidence_tiers import CriterionState
 
-__all__ = ["BlindRead", "Check", "Corrected", "Looks", "Preference", "Rescore"]
+__all__ = ["Check", "Corrected", "Looks", "Rescore"]
 
 
 class _Shape(BaseModel):
@@ -53,6 +54,13 @@ class Check(_Shape):
     read_id: str | None = Field(default=None, description="The blind read the sample is, by id.")
     result: CriterionState = Field(description="met, not_met, undecided or insufficient.")
     reason: Reason | None = Field(default=None, description="Why the result is not met, where a shared reason says it.")
+    coordinate: Coordinate | None = Field(
+        default=None, description="The coordinate an unrecorded identity names, where that is the reason."
+    )
+    state: StateOf | None = Field(
+        default=None,
+        description="Where the check could not be made at all (both sides replayed a recording): not available, why.",
+    )
     kappa: float | None = Field(default=None, description="Agreement beyond chance.")
     kappa_interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
     lean: float | None = Field(default=None, description="The instrument's lean toward one arm.")
@@ -64,35 +72,6 @@ class Check(_Shape):
     p_adjusted: float | None = Field(default=None, description="Its adjusted p.")
     reading: str | None = Field(default=None, description="The reading a check of the rig covers.")
     covers_arms: list[str] = Field(default_factory=list, description="The arms a check of the rig covers.")
-
-
-class BlindRead(_Shape):
-    """One blind read of an aspect's items."""
-
-    read_id: str = Field(description="The read's id.")
-    made_by: Maker = Field(description="Whether a person or a model read it.")
-    sample: Literal["random", "selected", "none"] = Field(
-        description="Whether the items were drawn at random, chosen, or no sample stands behind the read."
-    )
-    answered: int | None = Field(default=None, description="Items the reader answered.")
-    skipped: int | None = Field(default=None, description="Items the reader skipped.")
-    planned_items: int | None = Field(default=None, description="The items the read planned.")
-
-
-class Preference(_Shape):
-    """What one blind read's reader preferred between the control and one candidate."""
-
-    read_id: str = Field(description="The blind read it comes from.")
-    made_by: Maker = Field(description="Whether a person or a model chose.")
-    candidate: str = Field(description="The candidate, by arm.")
-    non_tie_cases: int | None = Field(default=None, description="Cases where one side was preferred.")
-    for_candidate: int | None = Field(default=None, description="Of those, the cases preferring the candidate.")
-    ties: int | None = Field(default=None, description="Cases with no preference.")
-    share: float | None = Field(default=None, description="The share preferring the candidate.")
-    test: str | None = Field(default=None, description="The test the preference was read by.")
-    p: float | None = Field(default=None, description="Its p.")
-    verdict: str | None = Field(default=None, description="The contrast verdict it comes to.")
-    state: StateOf | None = Field(default=None, description="Its state where it is not counted.")
 
 
 class Corrected(_Shape):

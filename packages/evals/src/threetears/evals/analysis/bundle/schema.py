@@ -32,7 +32,7 @@ from threetears.evals.kernel.evidence_tiers import (
     JudgeEvidenceTier,
 )
 from threetears.evals.analysis.judge_drift import JudgeDrift
-from threetears.evals.analysis.checks import BlindRead, Check, Corrected, Looks, Preference, Rescore
+from threetears.evals.analysis.checks import Check, Corrected, Looks, Rescore
 from threetears.evals.analysis.reading_states import ArmIdentity, StateOf
 from threetears.evals.analysis.cells import (
     CELL_MODEL_VERSION,
@@ -3912,22 +3912,12 @@ class AnalysisContextBundle(EvalDocumentModel):
             "Empty is the ordinary case."
         ),
     )
-    # The three below are left out of the document while empty, so a bundle assembled before they existed
-    # serializes, and is fingerprinted, as it did.
+    # Left out of the document while empty, so a bundle assembled before the field existed serializes, and is
+    # fingerprinted, as it did.
     checks: list[Check] = Field(
         default_factory=list,
         exclude_if=lambda value: not value,
         description="The checks of the rig: identical arms read on the same reading.",
-    )
-    blind_reads: list[BlindRead] = Field(
-        default_factory=list,
-        exclude_if=lambda value: not value,
-        description="Each blind read of the aspect.",
-    )
-    preferences: list[Preference] = Field(
-        default_factory=list,
-        exclude_if=lambda value: not value,
-        description="What each blind read's reader preferred, per candidate.",
     )
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property

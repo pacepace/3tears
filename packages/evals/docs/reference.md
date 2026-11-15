@@ -1228,8 +1228,6 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `prior_insights_omitted` | `int` | `0` | Live prior insights the ledger holds that `prior_insights` does not carry: an older insight stating the same claim as a carried one, and every insight beyond the cap, oldest dropped first. |
 | `retracted_insights` | `dict[str, str]` | `{}` | Insight id → the archived analysis that minted it, for every insight the ledger held that is NOT in `prior_insights` because its analysis was archived as shown false. |
 | `checks` | `list[Check]` | `[]` | The checks of the rig: identical arms read on the same reading. |
-| `blind_reads` | `list[BlindRead]` | `[]` | Each blind read of the aspect. |
-| `preferences` | `list[Preference]` | `[]` | What each blind read's reader preferred, per candidate. |
 
 <a id="goal-checks"></a>
 ## The goal-check language

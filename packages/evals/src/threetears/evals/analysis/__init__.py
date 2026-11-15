@@ -102,19 +102,11 @@ from threetears.evals.analysis.bundle.schema import (
 )
 from threetears.evals.analysis.aspects import AspectDeclaration, AspectView, aspect_view, aspect_views
 from threetears.evals.analysis.campaign_bundle import ArmSpelling, CampaignBundle
-from threetears.evals.analysis.checks import (
-    BlindRead,
-    Check,
-    Corrected,
-    Looks,
-    Preference,
-    Rescore,
-)
+from threetears.evals.analysis.checks import Check, Corrected, Looks, Rescore
 from threetears.evals.analysis.reading_states import (
     ArmIdentity,
     Coordinate,
     IdentityState,
-    Maker,
     ReadingState,
     Reason,
     StateOf,
@@ -468,14 +460,11 @@ from threetears.evals.analysis.summary import (
 __all__ = [
     # The shared reading states and the shapes of a check, which a bundle's fields hold.
     "ArmIdentity",
-    "BlindRead",
     "Check",
     "Coordinate",
     "Corrected",
     "IdentityState",
     "Looks",
-    "Maker",
-    "Preference",
     "ReadingState",
     "Reason",
     "Rescore",

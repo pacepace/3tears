@@ -6,12 +6,14 @@ A reading or a contrast is in exactly one of four states. ``counted``: read, sho
 thing. ``not_available``: no figure can be computed. "Undecided" is not among them: it is a result of a counted
 reading, never a way of not counting. Below a reading a trial is lost, with its cause, which is no state of these.
 
-Each state but ``counted`` carries one reason from its own set (:data:`REASONS_OF`). Every part of the package that
+Each state but ``counted`` carries one reason from its own set (:data:`REASONS_OF`); one reason,
+``identity_unrecorded``, is in two. Every part of the package that
 says a reading is not counted says it with these words, checked by :func:`check_state`; a new way of not counting is a
 new member here and nowhere else.
 
 An arm's identity has one state per coordinate (:data:`IdentityState`): the arm holds ``one`` cell on it, is ``split``
-over several, or the coordinate is ``unrecorded``, which matches nothing.
+over several, or the coordinate is ``unrecorded``, which matches nothing. A reason that is about a coordinate names
+it.
 
 Nothing here reads an eval's kind, a campaign's shape or a measure's name, and the module imports nothing from the
 package: the bundle and the report input both hold these values, so neither is below the other here.
@@ -53,7 +55,10 @@ SetAsideReason = Literal[
 #: Why a reading is withheld: the evidence under it is not one whole thing.
 WithheldReason = Literal["unfinished", "split", "identity_unrecorded", "measured_under_concurrency"]
 
-#: Why no figure can be computed.
+#: Why no figure can be computed. ``identity_unrecorded`` is here as well as among the withheld reasons, and is the
+#: one reason two states share: a reading over runs with an unrecorded coordinate is withheld (its parts are shown one
+#: step down), and a figure that cannot be computed across such runs at all (a check's result carried onto a
+#: contrast) is not available. An unrecorded coordinate matches nothing in either.
 NotAvailableReason = Literal[
     "too_few",
     "no_variation",
@@ -61,6 +66,7 @@ NotAvailableReason = Literal[
     "replayed",
     "not_drawn_at_random",
     "skipped_past_limit",
+    "identity_unrecorded",
 ]
 
 #: Every reason a reading is not counted.
@@ -93,9 +99,9 @@ REASONS_OF: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
     }
 )
 
-#: The reasons that name a coordinate: ``split`` must, since a split is a split on something; an unrecorded identity
-#: may, where the reading knows which coordinate was not recorded.
-_NAMES_A_COORDINATE: Final[Mapping[str, bool]] = MappingProxyType({"split": True, "identity_unrecorded": False})
+#: The reasons that name a coordinate, and must: a split is a split on something, and an unrecorded identity is
+#: unrecorded on something, which is what its remedy turns on.
+_NAMES_A_COORDINATE: Final = frozenset({"split", "identity_unrecorded"})
 
 
 def check_state(state: str, reason: str | None, coordinate: str | None = None) -> None:
@@ -108,7 +114,8 @@ def check_state(state: str, reason: str | None, coordinate: str | None = None) -
     :param coordinate: The coordinate a ``split`` is on, or the one an unrecorded identity names; None otherwise.
     :ptype coordinate: str | None
     :raises ValueError: If the state is none of the four, ``counted`` carries a reason, another state carries none or
-        one of another state's, a ``split`` names no coordinate, or a reason that names none carries one.
+        one of another state's, a ``split`` or an unrecorded identity names no coordinate, or a reason that names none
+        carries one.
     """
     allowed = REASONS_OF.get(state)
     if allowed is None:
@@ -121,11 +128,10 @@ def check_state(state: str, reason: str | None, coordinate: str | None = None) -
         raise ValueError(
             f"a {state} reading carries one of its own reasons ({', '.join(sorted(allowed))}), not {reason!r}"
         )
-    required = _NAMES_A_COORDINATE.get(reason or "")
-    if required is None and coordinate is not None:
+    if reason not in _NAMES_A_COORDINATE and coordinate is not None:
         raise ValueError(f"the reason {reason!r} names no coordinate, and {coordinate!r} was given")
-    if required and coordinate is None:
-        raise ValueError("a split names the coordinate it is split on")
+    if reason in _NAMES_A_COORDINATE and coordinate is None:
+        raise ValueError(f"the reason {reason!r} names the coordinate it is about")
     if coordinate is not None and coordinate not in get_args(Coordinate):
         raise ValueError(f"{coordinate!r} is not a coordinate: one of {', '.join(get_args(Coordinate))}")
 
@@ -154,7 +160,8 @@ class StateOf(BaseModel):
 
 
 class ArmIdentity(BaseModel):
-    """Whether an arm is one thing, a state per coordinate; a coordinate left out was not read."""
+    """Whether an arm is one thing, a state per coordinate of :data:`Coordinate`; a coordinate left out was not
+    read."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -164,4 +171,10 @@ class ArmIdentity(BaseModel):
     measure_definition: dict[str, IdentityState] = Field(
         default_factory=dict,
         description="Whether each host measure's values were read under one definition, by measure.",
+    )
+    template: IdentityState | None = Field(
+        default=None, description="Whether the arm's runs ran one revision of one template."
+    )
+    rig: IdentityState | None = Field(
+        default=None, description="Whether the arm's runs were measured under one rig: one measurement context."
     )

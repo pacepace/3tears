@@ -335,20 +335,6 @@
       }
      ],
      "description": "How often the aspect's test was looked at, against how often it planned to be."
-    },
-    "blind_reads": {
-     "description": "Each blind read of the aspect.",
-     "items": {
-      "$ref": "#/$defs/BlindRead"
-     },
-     "type": "array"
-    },
-    "preferences": {
-     "description": "What each blind read's reader preferred, per candidate: one step down, never a first-screen fact.",
-     "items": {
-      "$ref": "#/$defs/Preference"
-     },
-     "type": "array"
     }
    },
    "additionalProperties": false,
@@ -1653,7 +1639,7 @@
   },
   "ArmIdentity": {
    "additionalProperties": false,
-   "description": "Whether an arm is one thing, a state per coordinate; a coordinate left out was not read.",
+   "description": "Whether an arm is one thing, a state per coordinate of :data:`Coordinate`; a coordinate left out was not\nread.",
    "properties": {
     "served_model": {
      "anyOf": [
@@ -1682,74 +1668,40 @@
      },
      "description": "Whether each host measure's values were read under one definition, by measure.",
      "type": "object"
+    },
+    "template": {
+     "anyOf": [
+      {
+       "enum": [
+        "one",
+        "split",
+        "unrecorded"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Whether the arm's runs ran one revision of one template."
+    },
+    "rig": {
+     "anyOf": [
+      {
+       "enum": [
+        "one",
+        "split",
+        "unrecorded"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Whether the arm's runs were measured under one rig: one measurement context."
     }
    },
-   "type": "object"
-  },
-  "BlindRead": {
-   "additionalProperties": false,
-   "description": "One blind read of an aspect's items.",
-   "properties": {
-    "read_id": {
-     "description": "The read's id.",
-     "type": "string"
-    },
-    "made_by": {
-     "description": "Whether a person or a model read it.",
-     "enum": [
-      "person",
-      "model"
-     ],
-     "type": "string"
-    },
-    "sample": {
-     "description": "Whether the items were drawn at random, chosen, or no sample stands behind the read.",
-     "enum": [
-      "random",
-      "selected",
-      "none"
-     ],
-     "type": "string"
-    },
-    "answered": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "Items the reader answered."
-    },
-    "skipped": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "Items the reader skipped."
-    },
-    "planned_items": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "The items the read planned."
-    }
-   },
-   "required": [
-    "read_id",
-    "made_by",
-    "sample"
-   ],
    "type": "object"
   },
   "CallRead": {
@@ -1909,7 +1861,8 @@
         "not_recorded",
         "replayed",
         "not_drawn_at_random",
-        "skipped_past_limit"
+        "skipped_past_limit",
+        "identity_unrecorded"
        ],
        "type": "string"
       },
@@ -1955,7 +1908,7 @@
      "type": "boolean"
     },
     "deciding": {
-     "description": "Whether the answer turns on a reading it names.",
+     "description": "Whether the answer turns on a reading it names: a class E caveat reaches the first screen only where it does.",
      "type": "boolean"
     },
     "immaterial": {
@@ -2008,10 +1961,6 @@
     },
     "same_family": {
      "description": "For a check against a model: whether the model is of a candidate's family.",
-     "type": "boolean"
-    },
-    "against_checked": {
-     "description": "For a check against a model: whether that model's own check against people is met.",
      "type": "boolean"
     }
    },
@@ -2167,7 +2116,8 @@
         "not_recorded",
         "replayed",
         "not_drawn_at_random",
-        "skipped_past_limit"
+        "skipped_past_limit",
+        "identity_unrecorded"
        ],
        "type": "string"
       },
@@ -2176,6 +2126,34 @@
       }
      ],
      "description": "Why the result is not met, where a shared reason says it."
+    },
+    "coordinate": {
+     "anyOf": [
+      {
+       "enum": [
+        "served_model",
+        "measure_definition",
+        "template",
+        "rig"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The coordinate an unrecorded identity names, where that is the reason."
+    },
+    "state": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/StateOf"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Where the check could not be made at all (both sides replayed a recording): not available, why."
     },
     "kappa": {
      "anyOf": [
@@ -2638,122 +2616,6 @@
    ],
    "type": "object"
   },
-  "Preference": {
-   "additionalProperties": false,
-   "description": "What one blind read's reader preferred between the control and one candidate.",
-   "properties": {
-    "read_id": {
-     "description": "The blind read it comes from.",
-     "type": "string"
-    },
-    "made_by": {
-     "description": "Whether a person or a model chose.",
-     "enum": [
-      "person",
-      "model"
-     ],
-     "type": "string"
-    },
-    "candidate": {
-     "description": "The candidate, by arm.",
-     "type": "string"
-    },
-    "non_tie_cases": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "Cases where one side was preferred."
-    },
-    "for_candidate": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "Of those, the cases preferring the candidate."
-    },
-    "ties": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "Cases with no preference."
-    },
-    "share": {
-     "anyOf": [
-      {
-       "type": "number"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "The share preferring the candidate."
-    },
-    "test": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "The test the preference was read by."
-    },
-    "p": {
-     "anyOf": [
-      {
-       "type": "number"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "Its p."
-    },
-    "verdict": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "The contrast verdict it comes to."
-    },
-    "state": {
-     "anyOf": [
-      {
-       "$ref": "#/$defs/StateOf"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "Its state where it is not counted."
-    }
-   },
-   "required": [
-    "read_id",
-    "made_by",
-    "candidate"
-   ],
-   "type": "object"
-  },
   "StateOf": {
    "additionalProperties": false,
    "description": "The state of one reading, contrast, interval or pair, where it is not simply counted.\n\nA holder with none reads ``counted``. The three fields are checked together (:func:`check_state`) when the value is\nbuilt and when a stored one is read, so no document holds a reason outside its state's set.",
@@ -2796,7 +2658,8 @@
         "not_recorded",
         "replayed",
         "not_drawn_at_random",
-        "skipped_past_limit"
+        "skipped_past_limit",
+        "identity_unrecorded"
        ],
        "type": "string"
       },

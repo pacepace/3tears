@@ -9,16 +9,17 @@ closed sets of :mod:`~threetears.evals.analysis.reading_states`.
 The rules, each held by one test:
 
 - **Eligible.** A caveat is eligible when it reaches the whole report, code has not proved it immaterial, and no other
-  caveat silences it.
+  caveat silences it. One that says precision is missing (class E) is eligible only where the answer turns on the
+  reading it names; anywhere else it is stated in its table cell, one step down.
 - **Silenced** (:func:`subsumed`). A withheld reading silences every other caveat scoped only to it. A reading set
   aside for a cause silences a caveat stating that cause on the readings set aside. Identical arms that separated
   silence every instrument caveat on that reading. A check against people silences a check against a model on the same
   criterion.
-- **Ranked** (:data:`RANKS`). The order is data: evidence not whole, identical arms separated, identity unrecorded, a
-  late criterion (and every other fact that makes the evidence not what it appears), a judge not checked, a judge
-  checked against a model only (a model of a candidate's family first), repeated looks, a judge checked against a
-  model that is itself checked, then few cases. A caveat no row places ranks last. Within a rank, a caveat on an asked
-  reading of an arm code's own read calls comes first, then by id.
+- **Ranked** (:data:`RANKS`). The order is data, eight ranks: evidence not whole, identical arms separated, identity
+  unrecorded, a late criterion (and every other fact that makes the evidence not what it appears), a judge not
+  checked, a judge checked against a model only, repeated looks, then few cases. A caveat no row places ranks last.
+  Within a rank the order is the rank's own where one was fixed with it (a model of a candidate's family first), then
+  a caveat on an asked reading of an arm code's own read calls, then by id.
 - **Capped.** Three reasons are shown; the rest are counted, never dropped.
 - **Gated.** A campaign that cannot be read shows no reason: the gate carries how many wait below it.
 - **The call** is copied through and is never a reason.
@@ -46,24 +47,27 @@ _ANY: Final = _Any()
 
 
 class Rank(NamedTuple):
-    """One row of the ranking: the facts of a caveat it places, each a closed-set word or left open.
+    """One row of the ranking: a rank, and the facts of a caveat it places, each a closed-set word or left open.
 
-    :ivar name: What the row is, for a test and a reviewer to name it by.
+    :ivar rank: The rank, 1 the most serious. Several rows may hold one rank.
+    :ivar name: What the rank is, for a test and a reviewer to name it by.
+    :ivar within: The row's place inside its rank, where the order inside the rank was fixed with it; rows of one rank
+        that share a place are told apart by the next keys.
     :ivar cls: The caveat's class, where the row asks for one.
     :ivar state: Its state.
     :ivar reason: Its reason.
     :ivar against: What its instrument was checked against: ``people``, ``model``, or None for nothing.
     :ivar same_family: Whether the model checked against is of a candidate's family.
-    :ivar against_checked: Whether the model checked against is itself checked against people.
     """
 
+    rank: int
     name: str
+    within: int = 0
     cls: CaveatClass | _Any = _ANY
     state: ReadingState | _Any = _ANY
     reason: Reason | _Any = _ANY
     against: str | None | _Any = _ANY
     same_family: bool | _Any = _ANY
-    against_checked: bool | _Any = _ANY
 
     def places(self, caveat: CaveatEntry) -> bool:
         """Whether every fact the row asks for is the caveat's."""
@@ -75,37 +79,51 @@ class Rank(NamedTuple):
                 (self.reason, caveat.reason),
                 (self.against, caveat.against),
                 (self.same_family, caveat.same_family),
-                (self.against_checked, caveat.against_checked),
             )
         )
 
 
-#: The ranking, most serious first; a caveat takes the first row that places it. The statistician's order
-#: (2026-11-14): looks stay below both judge rows at every look count, and above a model that is itself checked.
+#: The ranking: the statistician's eight ranks (2026-11-14), most serious first; a caveat takes the first row that
+#: places it, and one no row places ranks after all eight. Rank 1 is every withheld reading, whatever withheld it, so
+#: identity unrecorded is rank 3 only where it has not already withheld a reading. Looks stay below both judge ranks
+#: at every look count.
+#:
+#: **Ties.** Caveats of one rank are ordered by the row's place inside the rank (rank 5: the reason a reading was set
+#: aside, in the order one is stated where two apply, then a counted reading whose judge has no check; rank 6: a
+#: model of a candidate's family first), then by whether the caveat is on an asked reading of an arm code's own read
+#: calls, then by id.
 RANKS: Final[tuple[Rank, ...]] = (
-    Rank("evidence_not_whole", state="withheld", reason="unfinished"),
-    Rank("evidence_not_whole", state="withheld", reason="split"),
-    Rank("evidence_not_whole", state="withheld", reason="measured_under_concurrency"),
-    Rank("identical_arms_separated", reason="identical_arms_separated"),
-    Rank("identity_unrecorded", reason="identity_unrecorded"),
-    Rank("late_criterion", cls="B"),
-    Rank("judge_unchecked", state="set_aside", reason="people_disagree"),
-    Rank("judge_unchecked", state="set_aside", reason="instrument_leans"),
-    Rank("judge_unchecked", state="set_aside", reason="instrument_below_bar"),
-    Rank("judge_unchecked", state="set_aside", reason="instrument_unchecked"),
-    Rank("answer_changed", cls="A"),
-    Rank("judge_unchecked", cls="C", against=None),
-    Rank("judge_unchecked", cls="C", against="people"),
-    Rank("judge_checked_against_a_model_only", cls="C", against="model", same_family=True),
-    Rank("judge_checked_against_a_model_only", cls="C", against="model", against_checked=False),
-    Rank("repeated_looks", cls="D"),
-    Rank("judge_checked_against_a_checked_model", cls="C", against="model"),
-    Rank("few_cases", cls="E"),
+    Rank(1, "evidence_not_whole", state="withheld"),
+    Rank(2, "identical_arms_separated", reason="identical_arms_separated"),
+    Rank(3, "identity_unrecorded", reason="identity_unrecorded"),
+    Rank(4, "late_criterion", cls="B"),
+    Rank(5, "judge_unchecked", 0, state="set_aside", reason="people_disagree"),
+    Rank(5, "judge_unchecked", 1, state="set_aside", reason="instrument_leans"),
+    Rank(5, "judge_unchecked", 2, state="set_aside", reason="instrument_below_bar"),
+    Rank(5, "judge_unchecked", 3, state="set_aside", reason="instrument_unchecked"),
+    Rank(5, "judge_unchecked", 4, cls="C", against=None),
+    Rank(5, "judge_unchecked", 4, cls="C", against="people"),
+    Rank(6, "judge_checked_against_a_model_only", 0, cls="C", against="model", same_family=True),
+    Rank(6, "judge_checked_against_a_model_only", 1, cls="C", against="model"),
+    Rank(7, "repeated_looks", cls="D"),
+    Rank(8, "few_cases", cls="E"),
 )
 
+#: Where a caveat no row places ranks: after every rank.
+_UNRANKED: Final = (max(row.rank for row in RANKS) + 1, 0)
 
-def _rank(caveat: CaveatEntry) -> int:
-    return next((index for index, row in enumerate(RANKS) if row.places(caveat)), len(RANKS))
+
+def _rank(caveat: CaveatEntry) -> tuple[int, int]:
+    return next(((row.rank, row.within) for row in RANKS if row.places(caveat)), _UNRANKED)
+
+
+def _eligible(caveat: CaveatEntry) -> bool:
+    """Whether a caveat may be a first-screen reason: it reaches the whole report, code has not proved it immaterial,
+    nothing silences it, and, where what it says is that precision is missing (class E), the answer turns on the
+    reading it names."""
+    if caveat.reach != "report" or caveat.immaterial is True or caveat.subsumed_by is not None:
+        return False
+    return caveat.cls != "E" or caveat.deciding
 
 
 def subsumed(caveats: Iterable[CaveatEntry]) -> list[CaveatEntry]:
@@ -180,18 +198,11 @@ def first_screen(
     """
     called = set(called_arms)
 
-    def key(caveat: CaveatEntry) -> tuple[int, int, str]:
+    def key(caveat: CaveatEntry) -> tuple[int, int, int, str]:
         touches = caveat.asked and (not caveat.arms or bool(called.intersection(caveat.arms)))
-        return _rank(caveat), 0 if touches else 1, caveat.id
+        return *_rank(caveat), 0 if touches else 1, caveat.id
 
-    eligible = sorted(
-        (
-            caveat
-            for caveat in subsumed(caveats)
-            if caveat.reach == "report" and caveat.immaterial is not True and caveat.subsumed_by is None
-        ),
-        key=key,
-    )
+    eligible = sorted((caveat for caveat in subsumed(caveats) if _eligible(caveat)), key=key)
     shown = [] if gate is not None else [caveat.id for caveat in eligible[:REASONS_SHOWN]]
     return FirstScreen(
         gate=None if gate is None else gate.model_copy(update={"waiting": len(eligible)}),

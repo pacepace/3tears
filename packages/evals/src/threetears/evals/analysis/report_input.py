@@ -61,7 +61,7 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from threetears.evals.analysis.checks import BlindRead, Check, Corrected, Looks, Preference
+from threetears.evals.analysis.checks import Check, Corrected, Looks
 from threetears.evals.analysis.reading_states import (
     ArmIdentity,
     CaveatClass,
@@ -420,7 +420,7 @@ class Aspect(_Part):
         description="How a trial on the aspect passes: its criteria, threshold, counted dimensions and checks; none "
         "where the input does not say.",
     )
-    # The four below are left out of the document when unset, so an input built before they existed digests as it did.
+    # The two below are left out of the document when unset, so an input built before they existed digests as it did.
     margin_informative: bool | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -430,16 +430,6 @@ class Aspect(_Part):
         default=None,
         exclude_if=lambda value: value is None,
         description="How often the aspect's test was looked at, against how often it planned to be.",
-    )
-    blind_reads: list[BlindRead] = Field(
-        default_factory=list,
-        exclude_if=lambda value: not value,
-        description="Each blind read of the aspect.",
-    )
-    preferences: list[Preference] = Field(
-        default_factory=list,
-        exclude_if=lambda value: not value,
-        description="What each blind read's reader preferred, per candidate: one step down, never a first-screen fact.",
     )
 
 
@@ -997,6 +987,10 @@ class HumanPreference(_Part):
     )
 
 
+#: The states that change the answer: what a class A caveat is raised by.
+_CHANGES_THE_ANSWER = frozenset({"set_aside", "withheld"})
+
+
 class CaveatEntry(_Part):
     """One row of the one caveat list: a qualification of the answer, typed so code ranks it without reading a word.
 
@@ -1022,7 +1016,11 @@ class CaveatEntry(_Part):
         description="The readings it is scoped to, each '<aspect>/<measure>'; empty for the whole report.",
     )
     asked: bool = Field(default=False, description="Whether any of its readings is on an asked aspect.")
-    deciding: bool = Field(default=False, description="Whether the answer turns on a reading it names.")
+    deciding: bool = Field(
+        default=False,
+        description="Whether the answer turns on a reading it names: a class E caveat reaches the first screen only "
+        "where it does.",
+    )
     immaterial: bool | None = Field(
         default=None, description="True once code proved it changes no answer; none where code cannot say."
     )
@@ -1034,9 +1032,6 @@ class CaveatEntry(_Part):
     same_family: bool = Field(
         default=False, description="For a check against a model: whether the model is of a candidate's family."
     )
-    against_checked: bool = Field(
-        default=False, description="For a check against a model: whether that model's own check against people is met."
-    )
 
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
@@ -1044,6 +1039,8 @@ class CaveatEntry(_Part):
     def _belongs_together(self) -> Self:
         if self.state is not None:
             check_state(self.state, self.reason, self.coordinate)
+        if self.cls == "A" and self.state not in _CHANGES_THE_ANSWER:
+            raise ValueError("a class A caveat is a reading set aside or withheld, and carries that state")
         return self
 
 
