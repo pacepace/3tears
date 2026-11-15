@@ -41,8 +41,11 @@ def unpassed(result: Result) -> float:
 
 
 def read(result: Result) -> dict[str, Any]:
-    """The result's readings on the control arm: each measure's mean, and whether every arm's run finished."""
-    means = {measure.name: measure.mean for measure in result.arms[result.control].measures}
+    """The result's readings on the control arm: each measure's mean and the way the package states is better for it,
+    and whether every arm's run finished."""
+    measures = result.arms[result.control].measures
+    means = {measure.name: measure.mean for measure in measures}
+    higher = {measure.name: measure.higher_is_better for measure in measures}
     if "accuracy" in result.grader_readings and "match" in means:
         means.setdefault("accuracy", means["match"])
     return {
@@ -51,6 +54,10 @@ def read(result: Result) -> dict[str, Any]:
         "readings": list(result.grader_readings),
         "finished": all(summary.status == "completed" for summary in result.arms.values()),
         "means": {name: means.get(name) for name in result.grader_readings},
+        "higher_is_better": {
+            name: higher.get("match" if name == "accuracy" and name not in higher else name)
+            for name in result.grader_readings
+        },
     }
 
 

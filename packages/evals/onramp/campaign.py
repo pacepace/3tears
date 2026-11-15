@@ -5,6 +5,10 @@ more docs builds. ``--scripted`` runs the harness offline with the fixed transcr
 spends money, so it is refused unless ``ONRAMP_LIVE=1`` is set and ``--cap`` states the most it may spend; it quotes
 its cost before anything runs, and holds each run to its share of the cap.
 
+Every command an agent's run causes, and every re-run of its work, runs in a trial container with no network
+(:mod:`.isolation`). A run that cannot have one (no Docker, no image) is refused before anything is sent: there is no
+fallback to this machine. Only ``--scripted --host`` runs commands here, and only a fixed transcript ever does.
+
 Models follow the project's rules: the cheap tier first, through OpenRouter (``OPENROUTER_API_KEY``); Claude Haiku 5.5
 as the ceiling, only ever direct to Anthropic on ``ANTHROPIC_API_KEY``, never through OpenRouter, and no model is
 sent a temperature.
@@ -16,6 +20,7 @@ import argparse
 import asyncio
 import itertools
 import json
+import math
 import os
 import re
 import sys
@@ -38,7 +43,8 @@ from .agent import (
     parse_report,
     stuck_point,
 )
-from .checks import GRADERS, regrade
+from .checks import GRADERS, REGRADE_BUDGET_S, regrade
+from .isolation import IsolationUnavailable, unavailable
 from .sandbox import HERE, DocsBuild, Sandbox
 
 CASES = HERE / "apps.jsonl"
@@ -49,6 +55,11 @@ CONTROL_REF = "f9ab6f74d"
 LIVE_ENV = "ONRAMP_LIVE"
 #: The turn profile an expected cost assumes: turns a run, prompt tokens a turn, output tokens a turn.
 PROFILE = (25, 15_000, 1_500)
+#: The engine's budget for one cell (one agent run and its regrade), in seconds: ``DEFAULT_CELL_TIMEOUT_S`` in
+#: ``threetears.evals.run.runner``. ``Eval`` takes no other, so a run's wall cap and its regrade's fit inside it.
+CELL_BUDGET_S = 600.0
+#: Key variables whose fallbacks would let one call be resent on a second key after a drop, past the bound a run holds.
+FALLBACK_VARIABLES = ("OPENROUTER_API_KEY_FALLBACKS", "ANTHROPIC_API_KEY_FALLBACKS")
 
 Runner = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]  # Any: a case, and a trial's record
 
@@ -143,11 +154,20 @@ def quote(tier: Tier, *, runs: int, cap_usd: float | None) -> Quote:
 
 
 def live_refusal(environment: Mapping[str, str], cap_usd: float | None) -> str | None:
-    """Why a live run may not start, or ``None`` when it may."""
+    """Why a live run may not start, or ``None`` when it may. Reads which variables are set, never a value."""
     if environment.get(LIVE_ENV) != "1":
         return f"a live run spends money: set {LIVE_ENV}=1 to say it may"
     if cap_usd is None or cap_usd <= 0:
         return "a live run states the most it may spend: pass --cap DOLLARS"
+    if fallbacks := [name for name in FALLBACK_VARIABLES if name in environment]:
+        return f"a live run sends on one key, so its cap bounds what it is billed: unset {', '.join(fallbacks)}"
+    return None
+
+
+def isolation_refusal() -> str | None:
+    """Why no agent run may start here, or ``None``: every agent-driven command runs in a trial container."""
+    if (why := unavailable()) is not None:
+        return f"an agent's commands run only in a trial container, and none can run here: {why}"
     return None
 
 
@@ -165,10 +185,11 @@ def adopter(build: DocsBuild, brains: Callable[[Sandbox], Brain], *, workdir: Pa
         trial = workdir / slug(build.name) / f"{app}-{next(numbers)}"
         sandbox = Sandbox.create(trial / "app", app, build)
         brain = brains(sandbox)
-        run = await attempt(sandbox, brain, caps)
+        # Each step lands in steps.jsonl as it happens: a run the cell's budget cuts off keeps what it did there.
+        run = await attempt(sandbox, brain, caps, log=trial / "steps.jsonl")
         report, problem = parse_report(run.report)
         ran = commands(run.steps)
-        return {
+        record = {
             "app": app,
             "arm": build.name,
             "build": build.as_record(),
@@ -179,6 +200,8 @@ def adopter(build: DocsBuild, brains: Callable[[Sandbox], Brain], *, workdir: Pa
             "input_tokens": run.tokens("input_tokens"),
             "output_tokens": run.tokens("output_tokens"),
             "cost_usd": run.spent(),
+            "charged_usd": run.charged(),
+            "maybe_billed_sends": run.maybe_billed_sends(),
             "commands": ran,
             "errors_hit": errors_hit(run.steps),
             "pages_read": sandbox.pages,
@@ -189,6 +212,8 @@ def adopter(build: DocsBuild, brains: Callable[[Sandbox], Brain], *, workdir: Pa
             "sandbox": str(sandbox.root),
             "checks": await regrade(sandbox, trial, report, ran),
         }
+        (trial / "record.json").write_text(json.dumps(record, indent=1), encoding="utf-8")
+        return record
 
     return adopt
 
@@ -233,6 +258,11 @@ def _parser() -> argparse.ArgumentParser:
         choices=("succeeds", "stuck"),
         help="follow the fixed transcripts instead of asking a model: offline, and free",
     )
+    parser.add_argument(
+        "--host",
+        action="store_true",
+        help="with --scripted only: run the fixed transcripts' commands on this machine, not in a trial container",
+    )
     parser.add_argument("--tier", choices=sorted(TIERS), default="cheap")
     parser.add_argument("--k", type=int, default=3)
     parser.add_argument("--cap", type=float, default=None, metavar="DOLLARS", help="the most a live run may spend")
@@ -251,7 +281,10 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """The agent test's command line; the exit code is the eval door's, and 2 for a run refused before it began."""
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.host and not args.scripted:
+        parser.error("--host runs commands on this machine, which only the scripted agent may do: add --scripted")
     apps = [app for app in args.apps.split(",") if app]
     cases = len(apps) if apps else sum(1 for line in CASES.read_text(encoding="utf-8").splitlines() if line.strip())
     run_dir = args.workdir / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -261,8 +294,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.dry_run:
             return 0
         brains = scripted(None if args.scripted == "succeeds" else "stuck")
-        builds = _builds(wheels, args.workdir) or [DocsBuild.here("docs@here")]
-        arms = {build.name: adopter(build, brains, workdir=run_dir, caps=Caps()) for build in builds}
+        built: list[DocsBuild] | str
+        if args.host:
+            built = _host_builds(wheels, args.workdir) or [DocsBuild.here("docs@here")]
+        elif not wheels:
+            built = "a run in trial containers names its wheel (--arm NAME=WHEEL); --host runs this interpreter's"
+        else:
+            built = _isolated_builds(wheels, args.workdir)
+        if isinstance(built, str):
+            print(f"onramp-agent: {built}", file=sys.stderr)
+            return 2
+        arms = {build.name: adopter(build, brains, workdir=run_dir, caps=Caps()) for build in built}
         return _finish(onramp_eval(arms, k=args.k, max_cost_usd=None, apps=apps), run_dir)
     if not wheels:
         print("onramp-agent: name a docs build (--arm NAME=WHEEL), or run --scripted", file=sys.stderr)
@@ -281,8 +323,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not replay and (refusal := live_refusal(os.environ, args.cap)) is not None:
         print(f"onramp-agent: {refusal}", file=sys.stderr)
         return 2
+    # A replayed run's commands are a model's too: they run in trial containers like a live run's, or not at all.
+    built = _isolated_builds(wheels, args.workdir)
+    if isinstance(built, str):
+        print(f"onramp-agent: {built}", file=sys.stderr)
+        return 2
     arms: dict[str, Runner] = {}
-    for build in _builds(wheels, args.workdir):
+    for build in built:
         try:
             brain = ModelBrain(tier.model(recordings / f"{slug(build.name)}.jsonl"))
         except ValueError as unbuilt:  # a missing key, named
@@ -293,9 +340,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     return _finish(onramp_eval(arms, k=args.k, max_cost_usd=args.cap, apps=apps), run_dir)
 
 
-def _builds(wheels: Mapping[str, str], workdir: Path) -> list[DocsBuild]:
-    """Each wheel installed in an environment of its own under ``workdir``, as the arm it names."""
+def _host_builds(wheels: Mapping[str, str], workdir: Path) -> list[DocsBuild]:
+    """Each wheel installed in an environment of its own under ``workdir``, on this machine: for ``--host`` only."""
     return [DocsBuild.from_wheel(name, Path(wheel), workdir / "venvs") for name, wheel in wheels.items()]
+
+
+def _isolated_builds(wheels: Mapping[str, str], workdir: Path) -> list[DocsBuild] | str:
+    """Each wheel installed in a trial image, as the arm it names; or why that cannot be done here, which refuses
+    the run before anything is built or sent."""
+    if (refusal := isolation_refusal()) is not None:
+        return refusal
+    try:
+        return [DocsBuild.in_image(name, Path(wheel), workdir / "images") for name, wheel in wheels.items()]
+    except IsolationUnavailable as why:
+        return f"an agent's commands run only in a trial container, and none can run here: {why}"
 
 
 def _finish(ev: Eval, run_dir: Path) -> int:
@@ -313,5 +371,58 @@ def _finish(ev: Eval, run_dir: Path) -> int:
             print(
                 f"stuck: {row['arm']} {record['app']} turns {stuck['from_turn']}-{stuck['to_turn']}: {stuck['opened_by']}"
             )
+    print("\n".join(census(rows)))
+    for unfinished in sorted(path.parent for path in run_dir.glob("*/*/steps.jsonl")):
+        if not (unfinished / "record.json").is_file():
+            print(f"unfinished: {unfinished} (its steps.jsonl holds every step it took)")
     print(f"report: {written['html']}\ntrials: {run_dir / 'trials.jsonl'}")
     return result.exit_code()
+
+
+def clopper_pearson(passed: int, n: int, level: float = 0.95) -> tuple[float, float]:
+    """The exact (Clopper-Pearson) interval on a pass share from ``passed`` of ``n``: it covers the true share at
+    least ``level`` of the time, at every share and every ``n``."""
+    tail = (1 - level) / 2
+
+    def at_least(p: float) -> float:  # P(X >= passed) at share p
+        return 1 - sum(math.comb(n, i) * p**i * (1 - p) ** (n - i) for i in range(passed))
+
+    def at_most(p: float) -> float:  # P(X <= passed) at share p
+        return sum(math.comb(n, i) * p**i * (1 - p) ** (n - i) for i in range(passed + 1))
+
+    def solve(f: Callable[[float], float], rising: bool) -> float:
+        low, high = 0.0, 1.0
+        for _ in range(60):
+            middle = (low + high) / 2
+            if (f(middle) < tail) == rising:
+                low = middle
+            else:
+                high = middle
+        return (low + high) / 2
+
+    lower = 0.0 if passed == 0 else solve(at_least, rising=True)
+    upper = 1.0 if passed == n else solve(at_most, rising=False)
+    return lower, upper
+
+
+def census(rows: Sequence[Mapping[str, Any]]) -> list[str]:  # Any: a trial's stored row
+    """What this run can and cannot say: each check's tally with its exact 95% range, and the run's limits.
+
+    A handful of runs is a census of where agents get stuck and what they cost, not a rate: trials on one app share
+    the app, so the ranges are if anything too narrow, and a failure does not say whether the docs or the model failed.
+    """
+    lines = [f"what {len(rows)} run(s) can say:"]
+    for grader in GRADERS:
+        name = grader.__name__
+        n = sum(1 for row in rows if name in row["scores"])
+        passed = sum(1 for row in rows if row["scores"].get(name) == 1.0)
+        if n:
+            low, high = clopper_pearson(passed, n)
+            lines.append(f"  {name}: {passed} of {n} trials, 95% range {low:.2f} to {high:.2f}")
+    lines += [
+        "  it shows: whether the tier ever succeeds, where runs get stuck and on which message, and turns and cost",
+        "  per run.",
+        "  it cannot show: a success rate to rely on, a difference between apps (each has a few trials), or whether",
+        "  a failure belongs to the docs or to the model.",
+    ]
+    return lines

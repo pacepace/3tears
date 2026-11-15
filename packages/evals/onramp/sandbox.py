@@ -1,22 +1,23 @@
 """The docs build an agent works against, and the sandbox it works in: one app's directory and three tools.
 
-A :class:`DocsBuild` is one arm: an interpreter with ``3tears-evals`` installed, where the package lives, and the
-``llms.txt`` the build ships. A :class:`Sandbox` is a fresh copy of one app. The agent reads files in it or in the
-installed package, writes files in it, and runs ``python`` (so ``python -m threetears.evals``), ``ls`` and ``cat``,
-with no shell and an environment holding no key: a run the agent starts can spend nothing.
+A :class:`DocsBuild` is one arm: ``3tears-evals`` installed, where the package lives, and the ``llms.txt`` the build
+ships. For a measured run the build is installed in a trial image (:meth:`DocsBuild.in_image`) and every command runs
+in a container of it (:class:`~.isolation.Container`): no network, not root, nothing of this machine but the trial's
+own directory. A :class:`Sandbox` is a fresh copy of one app. The agent reads files in it or in the installed package,
+writes files in it, and runs ``python`` (so ``python -m threetears.evals``), ``ls`` and ``cat``, with no shell.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
-import os
 import shlex
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from .isolation import Container, HostRunner, Runner, copy_out_of_image, package_dir, trial_image
 
 HERE = Path(__file__).resolve().parent
 APPS = HERE / "apps"
@@ -43,6 +44,9 @@ class DocsBuild:
     :ivar package_dir: The installed ``threetears/evals`` directory.
     :ivar llms_txt: The build's ``llms.txt``: inside ``package_dir`` for a wheel.
     :ivar source: What it was built from, recorded on every run: a wheel and its digest, or this interpreter.
+    :ivar image: The trial image the build is installed in, whose containers run every command; ``None`` for a build
+        on this machine, which only the scripted agent may use. ``package_dir`` is then a copy of the image's.
+    :ivar image_package_dir: Where the package is inside the image: the path the agent is shown and its commands see.
     """
 
     name: str
@@ -50,6 +54,8 @@ class DocsBuild:
     package_dir: Path
     llms_txt: Path
     source: str
+    image: str | None = None
+    image_package_dir: Path | None = None
 
     @classmethod
     def here(cls, name: str) -> DocsBuild:
@@ -80,9 +86,47 @@ class DocsBuild:
         package_dir = Path(where.stdout.strip())
         return cls(name, python, package_dir, package_dir / "llms.txt", f"{wheel.name} sha256:{digest}")
 
-    def as_record(self) -> dict[str, str]:
+    @classmethod
+    def in_image(cls, name: str, wheel: Path, root: Path) -> DocsBuild:
+        """``wheel`` installed in a trial image (built at set-up when it is not there yet), its docs copied under
+        ``root`` for the agent's reads, which then read exactly what the image holds.
+
+        :raises ~.isolation.IsolationUnavailable: Docker is unavailable, or the image did not build.
+        """
+        digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+        image = trial_image(wheel)
+        inside = package_dir(image)
+        docs = root / f"docs-{image.rsplit(':', 1)[1]}"
+        if not docs.is_dir():
+            copy_out_of_image(image, inside, docs)
+        return cls(
+            name, Path(Container.python), docs, docs / "llms.txt", f"{wheel.name} sha256:{digest}", image, Path(inside)
+        )
+
+    @property
+    def shown_package_dir(self) -> Path:
+        """Where the agent is told the package is: where its commands find it."""
+        return self.image_package_dir or self.package_dir
+
+    @property
+    def shown_llms_txt(self) -> Path:
+        """Where the agent is told the build's ``llms.txt`` is."""
+        if self.image_package_dir is None:
+            return self.llms_txt
+        return self.image_package_dir / self.llms_txt.relative_to(self.package_dir)
+
+    def runner(self) -> Runner:
+        """Where this build's commands run: a container of its image, or this machine for a build with none."""
+        return HostRunner(self.python) if self.image is None else Container(self.image)
+
+    def as_record(self) -> dict[str, str | None]:
         """The build as a run records it."""
-        return {"name": self.name, "source": self.source, "package_dir": str(self.package_dir)}
+        return {
+            "name": self.name,
+            "source": self.source,
+            "package_dir": str(self.shown_package_dir),
+            "image": self.image,
+        }
 
 
 @dataclass(frozen=True)
@@ -120,12 +164,18 @@ def is_door(argv: list[str]) -> bool:
 
 
 class Sandbox:
-    """One app's directory, copied fresh, and the tools an agent works in it with."""
+    """One app's directory, copied fresh, and the tools an agent works in it with.
 
-    def __init__(self, root: Path, app: str, build: DocsBuild) -> None:
+    ``read``, ``write``, ``ls`` and ``cat`` are the harness's own file operations, held to the app's directory and the
+    installed package; every command (``python``) runs where :attr:`runner` puts it.
+    """
+
+    def __init__(self, root: Path, app: str, build: DocsBuild, runner: Runner | None = None) -> None:
         self.root = root.resolve()
         self.app = app
         self.build = build
+        #: Where every command runs: the build's (:meth:`DocsBuild.runner`) unless one is given.
+        self.runner = build.runner() if runner is None else runner
         #: Every file the agent wrote, relative to the root, in the order first written.
         self.written: list[str] = []
         #: Every read of the package's own files (``read`` or ``cat``): the turn, the page and the lines read.
@@ -134,23 +184,19 @@ class Sandbox:
         self.turn = 0
 
     @classmethod
-    def create(cls, root: Path, app: str, build: DocsBuild) -> Sandbox:
+    def create(cls, root: Path, app: str, build: DocsBuild, runner: Runner | None = None) -> Sandbox:
         """A fresh copy of ``apps/<app>`` at ``root``, which must not exist yet."""
         shutil.copytree(APPS / app, root, ignore=shutil.ignore_patterns("__pycache__"))
-        return cls(root, app, build)
-
-    def environment(self) -> dict[str, str]:
-        """What a command runs with: the build's interpreter first on ``PATH``, and nothing of this process's own."""
-        return {
-            "PATH": f"{self.build.python.parent}{os.pathsep}/usr/bin{os.pathsep}/bin",
-            "HOME": str(self.root),
-            "LANG": "C.UTF-8",
-            "PYTHONUTF8": "1",
-            "PYTHONDONTWRITEBYTECODE": "1",
-        }
+        return cls(root, app, build, runner)
 
     def readable(self, path: str) -> Path | None:
-        """``path`` resolved, when it is in the sandbox, the installed package or the build's ``llms.txt``."""
+        """``path`` resolved, when it is in the sandbox, the installed package or the build's ``llms.txt``.
+
+        A path in the image's package (the one the agent is shown) is read from the copy of it at ``package_dir``.
+        """
+        shown = self.build.image_package_dir
+        if shown is not None and Path(path).is_absolute() and Path(path).is_relative_to(shown):
+            path = str(self.build.package_dir / Path(path).relative_to(shown))
         target = (self.root / path).resolve()
         allowed = (self.root, self.build.package_dir)
         if target == self.build.llms_txt.resolve() or any(target.is_relative_to(base) for base in allowed):
@@ -205,28 +251,29 @@ class Sandbox:
             return self._ls(argv[1:])
         if argv[0] == "cat":
             return self._cat(argv[1:])
-        return await self.execute([str(self.build.python), *argv[1:]], cwd=self.root, door=is_door(argv))
+        return await self.execute([self.runner.python, *argv[1:]], cwd=self.root, door=is_door(argv))
 
-    async def execute(self, argv: list[str], *, cwd: Path, door: bool = False) -> Observation:
-        """Run ``argv`` in ``cwd`` with the sandbox's environment; its output shown with the sandbox's path as ``.``."""
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=cwd,
-            env=self.environment(),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            out, err = await asyncio.wait_for(process.communicate(), COMMAND_TIMEOUT_S)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-            why = f"timed out after {COMMAND_TIMEOUT_S:.0f}s"
+    async def execute(
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        door: bool = False,
+        timeout_s: float = COMMAND_TIMEOUT_S,
+        grading: bool = False,
+    ) -> Observation:
+        """Run ``argv`` in ``cwd`` where :attr:`runner` puts it; its output shown with its directory as ``.``.
+
+        ``argv[0]`` is the runner's interpreter (:attr:`~.isolation.Runner.python`). ``grading`` is the regrade's own
+        command, which alone may run ``rerun.py``.
+        """
+        ran = await self.runner.run(argv, cwd=cwd, timeout_s=min(timeout_s, COMMAND_TIMEOUT_S), grading=grading)
+        if ran.exit_code is None:
+            why = f"timed out after {min(timeout_s, COMMAND_TIMEOUT_S):.0f}s"
             return Observation(ok=False, text=why, first_error=why)
-        stdout = out.decode("utf-8", "replace").replace(str(cwd), ".")
-        stderr = err.decode("utf-8", "replace").replace(str(cwd), ".")
-        code = process.returncode if process.returncode is not None else -1
+        stdout = ran.stdout.replace(ran.cwd, ".")
+        stderr = ran.stderr.replace(ran.cwd, ".")
+        code = ran.exit_code
         first_error = next((line for line in stderr.splitlines() if line.strip()), "")
         text = _shown(f"exit {code}\n{stdout}" + (f"\n[stderr]\n{stderr}" if stderr.strip() else ""))
         ok = code in DOOR_EXITS_OK if door else code == 0

@@ -6,23 +6,34 @@ the event loop (``quick/one_call.py``), where three re-runs of an eval would sta
 
 - :func:`eval_runs`: the agent's eval file, run by the eval door in a fresh copy of the app, exits 0 or 4 and stores a
   run, and that run finished.
-- :func:`measures_the_app`: on the app's fixed twin its reading moves the right way on at least one measure, and a
-  runner that does nothing passes at most half its cases: the eval beats doing nothing.
+- :func:`measures_the_app`: on the app's fixed twin its reading moves the better way on at least one measure, the way
+  the package states is better for it (``higher_is_better``), and a runner that does nothing passes at most half its
+  cases: the eval beats doing nothing.
 - :func:`read_right`: the agent's report matches the run: the first line verbatim, the pass rate within half a point,
   and ``finished`` true exactly when the run finished.
+
+Every re-run is a command in the trial's container (:class:`~.isolation.Container`), as the agent's own were: the
+regrade runs what the agent wrote, so it runs it where the agent ran it, with no network, and it makes no model call.
+The whole regrade is held to :data:`REGRADE_BUDGET_S`.
+
+The graders return ``bool`` and say so in their annotation, which makes each a check: a trial one fails is failed, and
+the package's first line counts it (``scorer_measure`` in ``quick/one_call.py``).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shlex
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .sandbox import DOOR_EXITS_OK, HERE, Observation, Sandbox, is_door
+from .sandbox import DOOR_EXITS_OK, Observation, Sandbox, is_door
 
-RERUN = HERE / "rerun.py"
+#: The most the whole regrade of one trial may take, in seconds: with the agent's wall cap it fits the cell budget.
+REGRADE_BUDGET_S = 180.0
 #: How far the reported pass rate may be from the stored one: half a point.
 PASS_RATE_TOLERANCE = 0.005
 
@@ -52,29 +63,44 @@ def _reading(observation: Observation) -> dict[str, Any]:  # Any: rerun.py's JSO
 async def regrade(
     sandbox: Sandbox, trial: Path, report: Mapping[str, Any] | None, commands: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:  # Any: the facts the graders read
-    """Re-run the agent's eval three ways, in copies under ``trial``; the facts every grader reads."""
+    """Re-run the agent's eval three ways, in copies under ``trial``; the facts every grader reads.
+
+    A regrade past :data:`REGRADE_BUDGET_S` is cut off, and says so as its problem: every grader then fails it.
+    """
     eval_file = _eval_file(report, commands)
     if eval_file is None:
         return {"eval_file": None, "problem": "the agent named no eval file and ran none through the door"}
     if not (sandbox.root / eval_file).is_file():
         return {"eval_file": eval_file, "problem": f"{eval_file} is not in the app's directory"}
+    try:
+        async with asyncio.timeout(REGRADE_BUDGET_S):
+            return await _regrade(sandbox, trial, eval_file, commands, time.monotonic() + REGRADE_BUDGET_S)
+    except TimeoutError:
+        return {"eval_file": eval_file, "problem": f"the regrade ran past its {REGRADE_BUDGET_S:.0f}s budget"}
+
+
+async def _regrade(
+    sandbox: Sandbox, trial: Path, eval_file: str, commands: Sequence[Mapping[str, Any]], deadline: float
+) -> dict[str, Any]:  # Any: the facts the graders read
+    python, rerun = sandbox.runner.python, sandbox.runner.rerun
+
+    async def execute(argv: list[str], cwd: Path, *, door: bool = False) -> Observation:
+        left = max(1.0, deadline - time.monotonic())
+        return await sandbox.execute(argv, cwd=cwd, door=door, timeout_s=left, grading=True)
+
     left = sandbox.made()
     shipped = sandbox.grading_copy(trial / "regrade", twin=False, overlay=left)
-    door = await sandbox.execute(
-        [str(sandbox.build.python), "-m", "threetears.evals", eval_file], cwd=shipped, door=True
-    )
+    door = await execute([python, "-m", "threetears.evals", eval_file], shipped, door=True)
     printed = door.text.splitlines()[1:2]
-    buggy = _reading(
-        await sandbox.execute([str(sandbox.build.python), str(RERUN), eval_file, "--nothing"], cwd=shipped)
-    )
+    buggy = _reading(await execute([python, rerun, eval_file, "--nothing"], shipped))
     # The fixed twin, with what the agent wrote laid over it and every command it ran that made something run again,
     # so an output the app wrote (a log an eval reads) is the fixed app's.
     fixed_copy = sandbox.grading_copy(trial / "regrade-twin", twin=True, overlay=sandbox.written)
     for command in commands:
         argv = shlex.split(command["command"])
         if command["exit_code"] == 0 and argv[0] in ("python", "python3") and not is_door(argv):
-            await sandbox.execute([str(sandbox.build.python), *argv[1:]], cwd=fixed_copy)
-    fixed = _reading(await sandbox.execute([str(sandbox.build.python), str(RERUN), eval_file], cwd=fixed_copy))
+            await execute([python, *argv[1:]], fixed_copy)
+    fixed = _reading(await execute([python, rerun, eval_file], fixed_copy))
     return {
         "eval_file": eval_file,
         "door_exit": door.exit_code,
@@ -98,13 +124,25 @@ def eval_runs(case: dict[str, Any], out: dict[str, Any]) -> bool:
 
 
 def measures_the_app(case: dict[str, Any], out: dict[str, Any]) -> bool:
-    """On the app's fixed twin the eval reads better on some measure, and doing nothing passes at most half the cases."""
+    """On the app's fixed twin the eval reads better on some measure, and doing nothing passes at most half the cases.
+
+    Better is the way the package states for the measure (``higher_is_better``): up for a score, down for a count of
+    misses. A measure with no stated direction counts for neither.
+    """
     checks = out["checks"]
     if checks["problem"] or "refused" in checks["app"] or "refused" in checks["twin"]:
         return False
     app, twin = checks["app"]["means"], checks["twin"]["means"]
-    moved = any(app.get(name) is not None and twin.get(name) is not None and twin[name] > app[name] for name in app)
+    higher = checks["app"].get("higher_is_better", {})
+    moved = any(_better(higher.get(name), app.get(name), twin.get(name)) for name in app)
     return moved and checks["app"].get("nothing_unpassed", 0.0) >= 0.5
+
+
+def _better(higher_is_better: bool | None, app: float | None, twin: float | None) -> bool:
+    """Whether ``twin`` reads better than ``app`` on a measure whose better way is ``higher_is_better``."""
+    if higher_is_better is None or app is None or twin is None:
+        return False
+    return twin > app if higher_is_better else twin < app
 
 
 def read_right(case: dict[str, Any], out: dict[str, Any]) -> bool:
