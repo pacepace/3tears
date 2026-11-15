@@ -663,7 +663,8 @@ def _by_tenant(rows: Sequence[ChangedRow]) -> list[tuple[str | None, list[Change
 
 
 def _restored_records(changes: Sequence[NotedChange]) -> list[tuple[str, bytes]]:
-    """the records a restore of ``changes`` appends: per table its row runs within the record bound, or the whole table.
+    """the records a restore of ``changes`` appends: per table its row runs within the record bound (or the records
+    the keeper's worker already wrote of them), or the whole table.
 
     A whole-table record keeps the reach its notes named, as the writer's record named it: a load's key prefixes
     (one prefix also as the older ``partition``), or an operator's reset. Only notes naming no reach come back as the
@@ -689,6 +690,10 @@ def _restored_records(changes: Sequence[NotedChange]) -> list[tuple[str, bytes]]
             ]
         elif change.rows:
             bodies = [epoch_change_body(change.table, run) for run in changed_row_runs(change.table, change.rows)]
+        elif change.bodies:
+            # folded and written in the keeper's worker process (threetears.core.change_note_fold), each within the
+            # record bound: appended as they are, never decoded here
+            bodies = list(change.bodies)
         else:
             continue
         records.extend((generation_kv_key(change.table, change.tenant), body) for body in bodies)

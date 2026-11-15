@@ -2,9 +2,9 @@
 
 A restore reads every note of the coverage (the current and the previous ring tables): ``_count_since`` counts
 them and bounds their records' size, ``_estimate`` sizes the distinct rows in the database only when that bound does
-not fit the log, and ``_StreamedChanges._stream`` reads the whole-table notes and then the keyed ones, folded to the
-distinct rows (declared ``whole_read(kind="cold_start")``, Pace 2026-11-14; the proof that only a
-restore reaches them is ``tests/unit/collections/test_change_note_restore_reads.py``). This seeds the current table
+not fit the log, and ``_StreamedChanges._stream`` reads the whole-table notes and then the keyed ones
+(``_StreamedChanges._folded``: a ``COPY`` folded in the restore's worker process), folded to the distinct rows
+(declared ``whole_read(kind="cold_start")``, Pace 2026-11-14; the proof that only a restore reaches them is ``tests/unit/collections/test_change_note_restore_reads.py``). This seeds the current table
 with a night's notes, loses the log, and times the keeper's pass that restores it against the bare reads a restore
 needs on the same database: one count, one sized distinct read, and one read of every note.
 
@@ -12,6 +12,7 @@ Against the session ``db_container``; set ``THREETEARS_TEST_POSTGRES_URL`` to a 
 """
 
 from __future__ import annotations
+
 
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Sequence
@@ -23,8 +24,10 @@ import pytest
 from threetears.nats.change_log import ChangeLogState
 
 from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, ChangeNoteKeeper
+from threetears.core.collections.epoch_change import EpochChange
 from threetears.core.ddl.change_notes import RING_TABLE, note_table
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
+from threetears.core.testing.loop_lateness import turn_holds
 from threetears.core.testing.note_ring import install_note_ring
 
 pytestmark = pytest.mark.integration
@@ -57,6 +60,12 @@ class _LostLog:
         if not self.declared:
             return None
         return ChangeLogState(first_seq=0, last_seq=0, bytes=0, max_bytes=self.max_bytes, incarnation=_RESTORED)
+
+    async def epoch_at(self, seq: int) -> EpochChange | None:
+        raise AssertionError(f"a restore reads no record of the lost log ({seq})")
+
+    async def start_log(self) -> str:
+        raise AssertionError("a restore declares its log through begin_restore")
 
     async def begin_restore(self, lost: str) -> str | None:
         assert lost == _LOST
@@ -140,8 +149,8 @@ async def _sizes(ring: _Ring) -> tuple[int, int]:
 
 
 async def test_a_restore_reads_its_coverage_within_twice_the_bare_reads(ring: _Ring) -> None:
-    """Flips if the keeper's pass putting a lost log back (``_count_since``, ``_estimate`` and ``_stream`` over the
-    coverage) takes more than twice the bare count, sized distinct read and read of every note, or puts back other
+    """Flips if the keeper's pass putting a lost log back (``_count_since``, ``_estimate`` and ``_stream`` with its
+    keyed notes' ``_folded`` over the coverage) takes more than twice the bare count, sized distinct read and read of every note, or puts back other
     than one change per table's whole notes and per table's keyed ones."""
     notes = f"{ring.schema}.{note_table(0)}"
     ring_row = f"{ring.schema}.{RING_TABLE}"
@@ -256,3 +265,28 @@ async def test_a_coverage_that_fits_only_by_its_estimate_is_restored_whole_on_on
     """Flips if, on a pool of one connection (sized first), a restore whose distinct rows fit puts back other than
     the whole coverage, or deadlocks."""
     await _restored_whole(ring_twice_one_connection)
+
+
+#: the most one turn of the loop may hold it during a restore, in CPU: test_arrow_copy's bound for a turn
+_TURN_BUDGET = 0.001
+
+
+@pytest.mark.loop_timing
+async def test_a_restore_holds_the_loop_under_1_ms_a_turn(ring: _Ring) -> None:
+    """Flips if any one turn of the event loop during a restore of the 200,000-note ring holds it 1 ms of CPU or more:
+    the notes are read, folded and written into records off the loop (threetears.core.change_note_fold), and the loop
+    only moves bytes. Read as rows and folded on the loop it held 29.1 ms at worst on PG 16 and 22.8 ms on YugabyteDB
+    (p99 7.8 and 8.5 ms; L1, 2026-11-15). The first restore of a process spawns the worker (on a thread), so one runs
+    before the one measured."""
+    assert await _restore_into(ring, _LostLog()) == _RESTORED
+    log = _LostLog()
+    with turn_holds() as holds:
+        assert await _restore_into(ring, log) == _RESTORED
+    assert log.appended == _TABLES
+    cpu = sorted(held for held, _ in holds)
+    p99 = cpu[int(len(cpu) * 0.99)]
+    summary = (
+        f"{len(cpu)} turns, the longest {cpu[-1] * 1000:.2f} ms, p99 {p99 * 1000:.3f} ms; "
+        f"the longest five {sorted(holds)[-5:]}"
+    )
+    assert cpu[-1] < _TURN_BUDGET, summary

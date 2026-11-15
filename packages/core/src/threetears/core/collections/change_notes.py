@@ -115,19 +115,26 @@ from collections.abc import (
 )
 from contextlib import AbstractAsyncContextManager, aclosing, nullcontext
 from dataclasses import dataclass, field
-from itertools import accumulate
+from itertools import accumulate, groupby
 from operator import itemgetter, methodcaller
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 import asyncpg
-from pydantic import TypeAdapter
 from threetears.nats.change_log import ChangeLogState
 from threetears.observe import contain, get_logger
 from threetears.observe.background import cancel_and_wait
 from threetears.observe.metrics import counter, gauge, histogram
 
-from threetears.core.collections.epoch_change import RESET_REASON, ChangedRow, EpochChange, check_whole_reach
+from threetears.core.change_note_fold import FOLDER
+from threetears.core.collections.epoch_change import (
+    RESET_REASON,
+    ChangedRow,
+    EpochChange,
+    KeyedRecordForm,
+    check_whole_reach,
+    keyed_record_form,
+)
 from threetears.core.collections.generation import NotedTable, split_generation_token
 from threetears.core.collections.noted_keys import NotedKeysCursor, NotedKeysPage, NotedKeysReader
 from threetears.core.ddl.change_notes import (
@@ -319,15 +326,24 @@ _SCRUB_READS_AT_ONCE: Final = 64
 #: the separator a note's key columns are joined with to compare them in SQL: never in a key's text form
 _KEY_SEPARATOR: Final = "\x1f"
 
-#: notes read per round trip when a restore streams the coverage
-_RESTORE_PAGE: Final = 5000
+#: the bytes of keyed notes (``COPY`` CSV lines) a restore hands its worker at once (:mod:`threetears.core.
+#: change_note_fold`). WHY 1 MiB (L1, 2026-11-15): the loop copies each page once to hand it over (~0.1 ms a MiB), so
+#: a page well under a MiB keeps every turn far inside the loop's 1 ms; and a page is a few thousand notes, so the
+#: worker's fixed cost a page (the hand-off, the job, the claim) stays small beside the notes it folds
+_RESTORE_PAGE_BYTES: Final = 1 << 20
+
+#: the most keyed-note bytes the restore holds while its worker folds a page: the ``COPY`` waits past it
+_RESTORE_BUFFER_BYTES: Final = 4 * _RESTORE_PAGE_BYTES
 
 #: distinct rows of one table per change a restore streams: the most it holds at once (a chunk is cut only where the
 #: key changes, so a key noted with several invalidation columns may carry it a few past)
 _RESTORE_CHUNK_ROWS: Final = 5000
 
-#: a restored chunk's rows, validated as one list (:func:`_changed`)
-_CHANGED_ROWS: Final = TypeAdapter(list[ChangedRow])
+#: restored changes handed on between two turns of the loop when the reader takes them without waiting (a test's)
+_RESTORE_TURN_CHANGES: Final = 32
+
+#: a keyed record's form, for the restore's worker to assemble records in (:func:`keyed_record_form`)
+_KEYED_FORM: Final[KeyedRecordForm] = keyed_record_form()
 
 #: a restored row's bytes in its record beyond its key and columns, as the restore's estimate: generous,
 #: so a restore chosen to fit does fit
@@ -455,6 +471,8 @@ class NotedChange:
         reads each as a key range. Rows outside them come back as their own changes
     :ivar reason: for a whole-table change, the reason its notes named: only an operator's reset
         (:data:`~threetears.core.collections.epoch_change.RESET_REASON`), restored as a reset
+    :ivar bodies: for a keyed change folded in a worker process (:mod:`threetears.core.change_note_fold`), its rows'
+        records as the log stores them, each within the record bound; :attr:`rows` is then empty
     """
 
     table: str
@@ -463,9 +481,12 @@ class NotedChange:
     tenant: str | None = None
     prefixes: tuple[Mapping[str, str], ...] = ()
     reason: str | None = None
+    bodies: tuple[bytes, ...] = ()
 
     def __post_init__(self) -> None:
         check_whole_reach(self.prefixes or None, self.reason, whole_table=self.whole_table)
+        if self.bodies and (self.rows or self.whole_table):
+            raise ValueError("a change carrying its rows' records names no rows itself and is not whole-table")
 
 
 @runtime_checkable
@@ -2179,6 +2200,8 @@ class _StreamedChanges:
         self._current, self._previous = slots
         self._since = since
         self.tables = 0
+        #: the table the last keyed change streamed was of, so a table is counted once
+        self._last_table: str | None = None
 
     def __aiter__(self) -> AsyncIterator[NotedChange]:
         return self._stream()
@@ -2226,23 +2249,76 @@ class _StreamedChanges:
             # database's collation, took ~330 ms of the statement alone (a hash aggregate and a locale sort, both
             # spilling) against ~90 ms for the bare read of every note; this read sorted in byte order takes ~180 ms.
             # Grouping needs only equal values next to each other, which any order gives, and byte order skips the
-            # locale's comparisons. The fold below drops a row noted twice: equal keys are next to each other, and a
-            # chunk is cut only where the key changes, so a restored change names each distinct row once, as before.
+            # locale's comparisons. A chunk is cut only where the key changes, so a restored change names each
+            # distinct row once.
             # WHY DISTINCT ON over that same order (owner #101, 2026-11-14, the same file's over-bound case, each row
             # noted twice, PG 16 best of 5): the database drops a repeated note as it walks its own sort (a Unique over
             # the sorted rows, no hash), so half the rows cross the wire and reach the fold: 190 ms -> 144 ms for the
             # read alone; with every row noted once it costs nothing (196 vs 191 ms).
-            cursor = await whole_read(
-                conn.cursor(
+            # WHY COPY text folded in a worker process (L1, 2026-11-15, Pace: no CPU work in a serving process): read
+            # as rows and folded here, a restore held the event loop up to 29 ms a turn (see
+            # threetears.core.change_note_fold for the numbers); now the loop only moves the COPY's bytes and the
+            # records the worker hands back. Each value is written as JSON text, so a raw line end is always a note's
+            # end and a page is cut at its last one. The read itself is _folded's.
+            # closed with the stream: a reader stopping early (a coverage that does not fit) must see the COPY ended
+            # before the transaction ends (_folded's finally), never left to the collector
+            async with aclosing(
+                self._folded(conn, [noted for noted, _ in covering], [tenant for _, tenant in covering])
+            ) as folded:
+                async for change in folded:
+                    yield change
+
+    async def _folded(
+        self, conn: Any, covered: list[str], covered_tenants: list[str | None]
+    ) -> AsyncGenerator[NotedChange]:
+        """the coverage's keyed notes, folded into changes by the restore's worker process a page at a time.
+
+        The ``COPY`` streams into a buffer while the worker folds the page before: the loop moves bytes only. A
+        page's last chunk may go on in the next page, so the worker answers the bytes it folded and the rest is
+        handed again at the next page's front (:func:`~threetears.core.change_note_fold._fold_page`).
+
+        :param conn: the connection, inside the restore's transaction
+        :ptype conn: Any
+        :param covered: the tables a whole-table note covers (beside ``covered_tenants``): their rows are not read
+        :ptype covered: list[str]
+        :param covered_tenants: each one's tenant, ``None`` for every tenant
+        :ptype covered_tenants: list[str | None]
+        :return: the changes, in the read's order
+        :rtype: AsyncGenerator[NotedChange]
+        :raises GenerationUnavailableError: when a note cannot be folded
+        """
+        buffer = bytearray()
+        arrived = asyncio.Event()
+        room = asyncio.Event()
+        room.set()
+
+        dropping = False
+
+        async def sink(chunk: bytes) -> None:
+            if dropping:
+                return
+            buffer.extend(chunk)
+            arrived.set()
+            if len(buffer) >= _RESTORE_BUFFER_BYTES:
+                room.clear()
+                await room.wait()
+
+        copying = asyncio.ensure_future(
+            whole_read(
+                conn.copy_from_query(
                     'SELECT DISTINCT ON (n.table_name COLLATE "C", n.tenant COLLATE "C", n.key_text COLLATE "C", n.columns) '
-                    f"table_name, tenant, key_text, keys, columns FROM {_coverage_sql(self._owner, self._current, self._previous)} n "  # noqa: S608 - trusted identifiers
+                    "to_json(n.table_name)::text, to_json(n.tenant)::text, array_to_json(n.keys)::text, n.columns::text "
+                    f"FROM {_coverage_sql(self._owner, self._current, self._previous)} n "  # noqa: S608 - trusted identifiers
                     "WHERE n.key_text IS NOT NULL AND ($1::timestamptz IS NULL OR n.noted_at >= $1) "
                     "AND NOT EXISTS (SELECT 1 FROM unnest($2::text[], $3::text[]) w(table_name, tenant) "
                     "WHERE w.table_name = n.table_name AND (w.tenant IS NULL OR w.tenant = n.tenant)) "
                     'ORDER BY n.table_name COLLATE "C", n.tenant COLLATE "C", n.key_text COLLATE "C", n.columns',
                     self._since,
-                    [noted for noted, _ in covering],
-                    [tenant for _, tenant in covering],
+                    covered,
+                    covered_tenants,
+                    output=sink,
+                    format="csv",
+                    force_quote=True,
                 ),
                 kind="restore",
                 reason="a lost change log is put back from every note of the ring's coverage, its current and previous slots",
@@ -2250,36 +2326,80 @@ class _StreamedChanges:
                 proof="packages/core/tests/unit/collections/test_change_note_restore_reads.py::test_the_coverage_is_read_whole_only_by_a_restore",
                 speed="packages/core/tests/integration/test_change_note_restore_speed_live.py::test_a_restore_reads_its_coverage_within_twice_the_bare_reads",
             )
-            table: str | None = None
-            held_tenant: str | None = None
-            last: str | None = None
-            first: tuple[tuple[str, str | None], ...] = ()
-            others: set[tuple[tuple[str, str | None], ...]] | None = None
-            held: list[dict[str, Any]] = []
-            while batch := await cursor.fetch(_RESTORE_PAGE):
-                for noted, owner, key_text, keys, raw in batch:
-                    columns = () if raw is None else _columns_of(raw)
-                    if noted != table or owner != held_tenant:
-                        if held:
-                            yield _changed(table, held, held_tenant)
-                            held = []
-                        if noted != table:
-                            self.tables += 1
-                        table, held_tenant, last, first, others = noted, owner, key_text, columns, None
-                    elif key_text != last:
-                        if len(held) >= _RESTORE_CHUNK_ROWS:
-                            yield _changed(table, held, held_tenant)
-                            held = []
-                        last, first, others = key_text, columns, None
-                    elif columns == first or (others is not None and columns in others):
-                        continue  # the same row noted again
-                    elif others is None:
-                        others = {first, columns}
-                    else:
-                        others.add(columns)
-                    held.append({"ids": keys, "columns": dict(columns) if columns else None, "tenant": owner})
-            if held:
-                yield _changed(table, held, held_tenant)
+        )
+        copying.add_done_callback(lambda _done: arrived.set())
+        form = (
+            _KEYED_FORM.head,
+            _KEYED_FORM.middle,
+            _KEYED_FORM.tail,
+            _KEYED_FORM.row_head,
+            _KEYED_FORM.row_columns,
+            _KEYED_FORM.row_tail,
+        )
+        carried = b""
+        want = _RESTORE_PAGE_BYTES
+        try:
+            while True:
+                while not copying.done() and len(carried) + len(buffer) < want:
+                    arrived.clear()
+                    room.set()
+                    await arrived.wait()
+                done = copying.done()
+                if done:
+                    copying.result()
+                # a page of about the page's bytes, at a note's end, however much arrived meanwhile: what the loop
+                # copies at once stays small
+                room_left = max(want - len(carried), 1)
+                if done and len(buffer) <= room_left:
+                    cut = len(buffer)
+                else:
+                    cut = buffer.rfind(b"\n", 0, room_left) + 1 or buffer.rfind(b"\n") + 1
+                    if not cut:
+                        # one note longer than a page: wait for its end
+                        want = len(carried) + len(buffer) + _RESTORE_PAGE_BYTES
+                        continue
+                final = done and cut == len(buffer)
+                with memoryview(buffer) as view:
+                    page = b"".join((carried, view[:cut]))
+                del buffer[:cut]
+                room.set()
+                if not page:
+                    return
+                folded, records = await FOLDER.fold(
+                    page, final=final, form=form, chunk_rows=_RESTORE_CHUNK_ROWS, max_bytes=_KEYED_FORM.max_bytes
+                )
+                carried = page[folded:]
+                # a page holding no whole chunk yet is handed again with more: never the same page twice
+                want = max(_RESTORE_PAGE_BYTES, 2 * len(carried))
+                handed = 0
+                for _number, chunk in groupby(records, key=itemgetter(0)):
+                    held = list(chunk)
+                    _, table, tenant, _ = held[0]
+                    if table != self._last_table:
+                        self.tables += 1
+                        self._last_table = table
+                    yield NotedChange(table=table, tenant=tenant, bodies=tuple(body for *_, body in held))
+                    handed += 1
+                    if handed % _RESTORE_TURN_CHANGES == 0:
+                        # a reader that takes each change without waiting (none appends) still lets the loop turn
+                        await asyncio.sleep(0)
+                if final:
+                    return
+        finally:
+            if not copying.done():
+                # the reader stopped early (a coverage that does not fit): the COPY is read to its end and dropped,
+                # never cancelled -- a cancelled COPY leaves the connection mid-operation, and the transaction's end
+                # then fails ("another operation is in progress")
+                dropping = True
+                buffer.clear()
+                room.set()
+                try:
+                    await asyncio.shield(copying)
+                except asyncio.CancelledError:
+                    await cancel_and_wait(copying)
+                    raise
+                except Exception as exc:  # prawduct:allow prawduct/broad-except -- the reader already stopped; the COPY's own failure is only said
+                    contain(exc, log=log, what="a restore's dropped COPY of keyed notes failed", level="warning")
 
 
 def _whole_change(table: str, tenant: str | None, reaches: Sequence[Any]) -> NotedChange:
@@ -2321,26 +2441,6 @@ def _whole_change(table: str, tenant: str | None, reaches: Sequence[Any]) -> Not
     return NotedChange(
         table=table, tenant=tenant, whole_table=True, prefixes=tuple(dict(prefix) for prefix in sorted(prefixes))
     )
-
-
-def _changed(table: str | None, rows: list[dict[str, Any]], tenant: str | None) -> NotedChange:
-    """one table's folded rows of one tenant as a change, the rows validated as one list.
-
-    WHY one list (o97, 2026-11-14): a :class:`ChangedRow` built a row at a time costs ~0.7 us in pydantic, ~130 ms
-    of a 195,000-row restore; one ``validate_python`` of the chunk's list makes the same models, checked the same
-    way, in ~0.45 us a row.
-
-    :param table: the table (never ``None``: a change is made only once a row of it was read)
-    :ptype table: str | None
-    :param rows: each distinct row: its ``ids``, its invalidation ``columns`` and its ``tenant``
-    :ptype rows: list[dict[str, Any]]
-    :param tenant: the rows' tenant, ``None`` for ``_all``
-    :ptype tenant: str | None
-    :return: the change
-    :rtype: NotedChange
-    """
-    assert table is not None  # narrow: the stream makes a change only after reading a row of its table
-    return NotedChange(table=table, tenant=tenant, rows=tuple(_CHANGED_ROWS.validate_python(rows)))
 
 
 @dataclass(frozen=True, slots=True)
