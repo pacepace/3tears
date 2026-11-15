@@ -47,6 +47,100 @@ with it. A g shown at its four figures moves only where that error straddled the
   `campaign_bundle.fingerprint(like=stored)`, which answers the version 3 way (the frame, each aspect named by its
   `v2:` fingerprint); a campaign bundle frozen before the manifest answers `v3:` whatever is asked.
 - `AnalysisContextBundle` gains `evidence` (`EvidenceManifest`, optional, left out while unset); bundle shape stays 66.
+### evals: numbers never import presentation, with no exemption
+
+**Changed:** no module on the numbers side of `threetears.evals.analysis` (the statistics, the bundle, the lenses, the
+campaign's readings, the report input) imports a presentation module, by any route, and
+`tests/test_report_layer_direction.py` holds it with no list of exceptions. Nothing a report, a page, a command line
+or an action prints changed. What moved:
+
+- Reading a floor is numbers: `analysis/report/decision.py` is now `analysis/floors.py`. The two functions that word
+  a projection in a page's forms (`projected_cell`, `projection_note`) are in
+  `analysis/report/projection_words.py`.
+- A sentence held as words and typed figures (`Said`, `SaidFigure`) is numbers: `analysis/report/said.py` is now
+  `analysis/said.py`.
+- A judge's tier sentence is wording: `tier_sentence_in` moved from `analysis/agreement.py` to
+  `analysis/lens_text.py`, beside `tier_sentence`.
+- `judged_name` moved from `analysis/report/words.py` to `analysis/style.py`, beside `measure_name`.
+- A numbers module spells a fixed-form figure through `kernel/numbers.py` alone, as the engine's packages do, never
+  through `PageForms.off_page()`. Two fixed forms joined that module for it: `spell_share` (a share in whole percent)
+  and `spell_ledger_dollars` (a ledger's dollars, to four decimals); `PageForms.share` and `PageForms.money_ledger`
+  call them. `tests/test_one_owner_of_number_forms.py` holds the numbers side to that route on the engine's terms.
+
+**For hosts:** nothing, if you import from the public roots, whose names are unchanged. Each moved name has one
+home and no forwarding import, so an import written against a module below a root follows it: the floor names from
+`threetears.evals.analysis.floors`, `projected_cell` and `projection_note` from
+`threetears.evals.analysis.report.projection_words`, `Said` and `SaidFigure` from `threetears.evals.analysis.said`, `judged_name` from
+`threetears.evals.analysis.style`, `tier_sentence_in` from `threetears.evals.analysis.lens_text`.
+### evals: a campaign's cells never pool two answering models, and an operator's judge case takes the next revision
+
+**Changed:** a campaign cell is one arm under one test setup answered by one candidate model (owner ruling,
+2026-10-23: no pooling by assumption; it replaces #684's "disclosed, not split" for campaign cells). Where an arm's
+results under one setup were answered by more than one model, or some by a model no response named, the arm holds a
+cell per answering model, each compared with the control under that setup on its own, and the bundle says why they
+stayed apart (`refused_merges` on `served_model:candidate`). An arm answered by one model throughout, or by none any
+response named, is one cell exactly as before. The arm-level readings (the scoreboard's counts, `arm_served_models`,
+the frontier, history and pivot lenses) still span the arm and disclose the mixture. Nothing is read for a split arm
+as a whole: the campaign's readings give it no row, floor status or pair on that aspect, the campaign page reads the
+aspect as not compared with one line naming the models, and the report input gives it no figure there and says why.
+
+**Changed:** `judge_case_author` and `judge_cases_freeze` adding a case to a judge template that already holds cases
+write the template's next revision, as a definitions reset does, carrying every case of the revision it supersedes.
+Runs of two revisions never pool, so a judge's runs before and after the write are never read as one battery. A write
+into a superseded revision is refused, naming the newest.
+
+**For hosts:** `Cell.rig_class_id` (new, optional, left out when unset) names the setup a split cell shares; pair an
+arm's cell with the control's by `rig_class_id or apparatus_class_id`, not by equal `apparatus_class_id`. Stored runs
+that stop pooling: within one arm and setup of a campaign, results whose candidate responses named different models,
+and those that named none beside those that named one. No host apparatus dimension may be named
+`served_model:candidate`. `CampaignReadings.answer_splits` (new, optional, left out when empty) names each arm read
+per model, as an `AnswerSplit` (new, provisional, `threetears.evals.analysis`); a host that expects a row per candidate and aspect handles its absence there. After a judge-case write, read the receipt's `template_id` (with `revision`,
+`superseded_template_id`, `carried`, `stranded_case_sets`, all new): it is the template to launch and to write the
+next case into, and a case set left on the superseded revision needs its next version minted over `carried`'s
+copies. `freeze_judge_cases` writes in place unless called with `revise=True`.
+
+
+### evals: pass^k keeps runs read under two definitions of a host measure apart, and a stored run can be attested or re-measured (#1160)
+
+**Changed:** a run records the definition digest of every measure its host declares (`EvalRun.measure_definitions`),
+and the map is an additive component of its measurement context: composed into the context key only where it is
+non-empty, so `IDENTITY_VERSION` stays 25 and a run with no host measure keeps its key (core minor 15.18). In the
+frontier's pass^k, two runs that recorded different definitions are two cells (`other_measure_definition`), and a run
+whose results hold a host measure and that recorded none is a cell of its own (`no_recorded_measure_definitions`),
+pooling with no other run (owner ruling, 2026-11-14: a silence is never a match). A comparison set names both
+(`measure_definitions_differ`, `context_incomplete`, `measure_definition_disclosure`). A take-up of a run that recorded
+other definitions than the host's current ones is refused; one that recorded none is taken up and stays unrecorded.
+
+**Added:** two actions reach the doors below, `runs_attest_definitions` and `run_remeasure` (both `write`).
+`threetears.evals.run.attest_measure_definitions` records a host's statement of the definitions stored runs
+ran under (`EvalRun.measure_attestation`: who, when, what), touching no result and refusing a run that already records
+definitions. `threetears.evals.run.remeasure_run(host, run_id, scope_id, apply=False)` reads a stored run's host
+measures again from what its cells stored, through `HostProfile.measure_rereader`: each result keeps the values it
+held (`EvalResult.measure_rereads`), the run is marked (`EvalRun.measure_remeasures`) and joins the cell of the
+definitions it was read under. Nothing is interpolated: an unanswered stored value, a missing reader or a moved
+measure that declares `shapes_run` refuses the run before anything is written.
+
+**Not yet:** a campaign's own cells (variant by rig), and so its tables, composites, bars and history, do not read
+measure definitions and still pool such runs. The comparison disclosure says so on the page.
+
+**For hosts:**
+- *Marking a change:* raise `MetricDescriptor.definition_revision` (default 0) on a measure whenever its reading code
+  changes what it counts. A measure whose definition decides what a run does declares `shapes_run=True`.
+- *What moves a definition:* only the fields below. Editing a measure's `description`, reader name or prose,
+  `nonnegative` flag, better end, margin, merit axis or population moves nothing, and cuts no run off.
+- *How the digest is derived:* sha256 of the canonical JSON of the descriptor's `name`, `data_type`, `family`, `unit`,
+  `value_range`, `categories`, `formula`, `pass_fail`, `contained_by`, `definition_revision` and
+  `shapes_run` (read it with `MeasureRegistry.definition_digests()`). Names, descriptions and how a value is read move nothing.
+- *On upgrade:* nothing to migrate and no stored key moves. Stored runs whose results hold a host measure each stand
+  alone in pass^k until backfilled. A host that assembles runs itself sets
+  `measure_definitions=profile.measures.definition_digests()`.
+- *Backfilling old runs:* call `attest_measure_definitions(host, run_ids, scope_id, definitions, attested_by=...)`
+  with the digests of the descriptors as they were when those runs ran
+  (`MeasureRegistry(descriptors_then).definition_digests()`), and with today's for runs made since the change. It
+  reads no result or trace, takes any number of runs, and may be run twice: a run already attested with the same
+  definitions is left as it was (`Attested.already_attested`), and one attested with other definitions is refused. To read
+  an old run under the current definition, wire `measure_rereader` and call `remeasure_run`.
+  `packages/evals/MIGRATIONS.toml` has the detail.
 ### evals: a run that did not finish never opens with a verdict, on any surface (#1173)
 
 **Changed:** a failed run's print opened on its failure with no verdict; its HTML and Markdown report, and every
@@ -84,6 +178,28 @@ the evidence it was written from: once its unfinished run has finished or left t
 tone meets `unfinished` (tone `failed`). `RunSummary.ended_because`,
 `Caveats.unfinished` and `DocPage.stopped` are new, optional and left out of a document while unset, so nothing stored
 moves; `EvalSummary.ending` replaces `EvalSummary.failed_text`, which no release shipped.
+
+### evals: a mean cost or latency takes an interval that holds 95% on lognormal-like values
+
+**Changed:** the interval on the mean of a spend or a time (a `nonnegative` measure on the cost or latency axis,
+or in dollars, `ms` or `s`) is the union of the t interval over cases, clipped at zero, and a log-scale interval on the case means. The clipped t
+interval alone, labelled 95%, covered a lognormal mean 83% of the time at 10 cases and 91% at 50 (log-SD 1.0), and 72%
+at 10 cases at log-SD 1.5; the new interval covered at least 96% from 5 to 50 cases on the shapes tested: lognormal to log-SD 1.5, gamma,
+exponential, normal, repeated cases, a fifth of cases free (`tests/test_simulated_floored_mean.py`). **It does not
+hold where rare large cases dominate the cost**: with one case in ten 30 times the rest it is the t interval and
+covers as it does, about 40%, 66% and 89% at 5, 10 and 30 cases (pinned there as a strict xfail). It is wider, by about 1.4 times at 10 cases of moderate skew and several
+times on heavy skew, and **under five cases above zero no interval is stated**, every case free included, only the mean, and a bar
+proposal, a readings cell and an evidence row say why and that five cases above zero give one
+(`docs/measuring-soundly.md`, "Variance, k and how many cases"; limits in `docs/open-problems.md`). Measures on a
+declared range, counts, rates and differences between arms are unchanged.
+
+**Changed:** a launch estimate's detectable difference names its test (`paired t-test`) and marks each rate:
+`DetectableEffect.rate` (new, default false), and a rate's printed line says its bounded interval must exclude zero
+too, so a difference that size needs more cases. The figures themselves are unchanged.
+
+**For hosts:** a host pinning a report page, a bundle's `ci_low` / `ci_high` on a spend or a time, or the launch
+estimate's text updates its match; a reader of those intervals must accept none where the arm holds under five
+differing cases. Nothing stored changes shape.
 
 ### evals: a definitions reset fills the presentation names a template it leaves current lacks
 

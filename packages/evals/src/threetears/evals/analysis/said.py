@@ -2,7 +2,7 @@
 what it is.
 
 Three readings say sentences no page has spelled yet: a floor's statement and its reason
-(:func:`~threetears.evals.analysis.report.decision.read_floor`), a campaign row's reason
+(:func:`~threetears.evals.analysis.floors.read_floor`), a campaign row's reason
 (:func:`~threetears.evals.analysis.campaign_readings.reading_reason`), and the line a frontier point's pass^k cell
 reads with (:func:`~threetears.evals.analysis.lenses.frontier.pass_hat_k_cell_lines`). The form a figure prints in is
 its page's (one form per measure, :class:`~threetears.evals.analysis.report.forms.PageForms`), so each says its sentence

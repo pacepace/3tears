@@ -1891,7 +1891,7 @@ def test_two_cells_that_each_pool_differing_in_any_one_field_are_two_for_a_reaso
         "tuple[str, ...]": (("model-a",), ("model-b",)),
         "str | None": ("a", "b"),
     }
-    marks = {"recorded", "unresolved", "run_id", "served_unrecorded"}
+    marks = {"recorded", "unresolved", "run_id", "served_unrecorded", "definitions_unrecorded"}
     base = PassHatKCell(recorded=True)
     for field in dataclasses.fields(PassHatKCell):
         if field.name in marks:

@@ -17,7 +17,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.report.campaign.names import measure_name_of
-from threetears.evals.analysis.report.decision import control_cannot_show
+from threetears.evals.analysis.floors import control_cannot_show
 from threetears.evals.analysis.report.model import CampaignReport, TableBlock
 from threetears.evals.kernel.declaration import Floor, RateDrop
 from threetears.evals.kernel.errors import RefusedInput

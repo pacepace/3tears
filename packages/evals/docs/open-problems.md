@@ -58,6 +58,36 @@ a good arm, which is the lesser harm, and refusing every breach without a range 
 unbounded measure be adopted, so the t breach is kept and the gap recorded as a strict xfail in
 `tests/test_simulated_guardrails.py`. On a declared range the breach is the bounded test's, and holds its rate.
 
+### An interval on a mean cost is wide, and holds only up to the skew tested (accepted limit)
+
+No issue filed yet. The interval on the mean of a spend or a time is the
+union of the clipped t interval and a log-scale interval
+([measuring soundly](measuring-soundly.md#variance-k-and-how-many-cases)). Three limits come with it.
+
+- **No interval on a mean holds its level when the cost is dominated by rare large cases the sample may not
+  contain.** An agent that occasionally loops is that shape. The interval holds on lognormal-like values (tested:
+  lognormal to log-SD 1.5, gamma, exponential, normal). With one case in ten 30 times the rest it is the t interval
+  and covers as it does: 40%, 66%, 89% and 94% at 5, 10, 30 and 100 cases against the 95% it states
+  (`tests/test_simulated_floored_mean.py` pins it as a strict xfail). Nothing on the page says which shape the cases
+  have; a cost's maximum and p95 beside its mean are the reader's only sign.
+- **Cases all equal above zero state an interval of no width.** Ten identical cheap calls say nothing of a dear
+  one: where one case in ten is 30 times the rest, 59% of 5-case samples and 35% of 10-case samples hold only the
+  cheap kind. Every case at zero states no interval; this one was left as every equal sample reads.
+- **Off the lognormal with values near zero it stays wide.** On uniform or exponential values it is about three
+  times the t interval's width at 100 cases, and does not narrow to it.
+- **A case far below the rest widens the upper end.** The log scale reads spread in either direction as skew, so
+  one near-free case (a refusal, a cache hit) among ordinary ones gives an upper end well past what the mean could
+  reach. It errs wide, never narrow. A fix would read the spread from the upper tail alone; none is built.
+- **Under five cases above zero there is no interval**, where a t interval used to be stated. Bounds that
+  hold their level there span orders of magnitude. A readings cell, an evidence row and a bar proposal say so, and
+  that five cases above zero give one.
+
+**Three intervals beside it are still t intervals, and none is checked on skewed values.** A count's (tokens, turns,
+calls, findings), clipped at zero: counts are skewed too, and one that is zero on most cases has too few cases above
+zero for the log-scale reading, so it was left as it was. A difference between two arms on a spend or a time: it is
+paired, so most of the skew cancels within a case. And the launch estimate's fallback band for a history holding a
+zero cost, which says on the band that it assumes symmetric costs.
+
 ## Reporting
 
 ### Latency read under concurrency is withheld rather than reported with a flag
@@ -84,14 +114,6 @@ report's sandboxed frame. Open: how a reader conversation maps onto the framewor
 hosts build against, and whether a reader sees a question's cost before asking.
 
 ## Judging
-
-### An operator's new judge case joins the live revision
-
-Since `.30` the boot seed never adds a case to a judge template that already holds cases: the case waits for
-`reset_definitions`, which writes a new revision, and runs of two revisions never pool. An operator's own
-`judge_case_author` or `judge_cases_freeze` into such a template still adds to the revision in place, so runs of that
-judge template before and after the write share a revision id while their cases differ. Fix: an operator's write into
-a judge template that holds cases writes the next revision, as the reset does.
 
 ### A tier's bounds are conservative on a 1-5 scale
 

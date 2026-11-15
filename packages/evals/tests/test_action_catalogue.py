@@ -158,6 +158,8 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "campaign_archive": "write",
         "analysis_archive": "write",
         "result_regrade": "write",
+        "run_remeasure": "write",
+        "runs_attest_definitions": "write",
         "result_rate": "write",
         "result_rate_person": "write",
         "writer_case_archive": "write",

@@ -473,7 +473,13 @@ def _served(tool: MountedTool) -> list[str]:
 #: The evals tool moved again when runs_list and campaigns_list came to page by default (#1145; owner ruling
 #: 2026-11-14, a cursor with a default): each gained cursor and limit, its help a paging line, and its result next
 #: (and runs_list's filtered). Nothing else it serves moved.
-_EVALS_BYTES = "bd48f8b0426489a8867fa7fc580789941edff650eacd20b1eca2dc257a5ece91"
+#: The evals tool moved again when judge_case_author and judge_cases_freeze came to write a judge template's next
+#: revision for a case added to one that holds cases: each one's help says so, and their result gained revision,
+#: superseded_template_id, carried and stranded_case_sets. Nothing else it serves moved.
+#: The evals tool moved again when it gained two actions (#1160): run_remeasure and runs_attest_definitions, a host's
+#: doors to re-read a stored run's measures and to state the measure definitions stored runs ran under. Each adds
+#: its line to the tool's description and its help page; no other action's text moved.
+_EVALS_BYTES = "9ee7d750bd9813e870052bf1a8b2c6a3648d625c1f1a658eb63a45dc04fe3d40"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).

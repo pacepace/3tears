@@ -53,6 +53,7 @@ from threetears.evals.kernel.metrics import (
     describe_phase_timing,
     goal_check_measure,
     is_code_graded,
+    is_latency_measure,
     measure_value_misfit,
     summary_population,
     undeclarable_host_measures,
@@ -262,7 +263,9 @@ def _walked_fields(model: type[BaseModel]) -> tuple[str, ...]:
 #: of the judge's scores is a measurement of the JUDGE, read by ``judge_self_agreement``; walking
 #: it would pool a repeat's score as a second observation of the candidate's cell. A second judge's scores are the
 #: same: a measurement of the judges, read by ``inter_judge_agreement`` and ``judge_drift``.
-RECORD_CARRIERS: frozenset[str] = frozenset({"judge_rescores", "judge_repeats", "judge_seconds"})
+#: A re-read of the result's host measures keeps the values the cell wrote before it: the measurement is the value
+#: ``host_measures`` holds now, and walking the record would pool the superseded one beside it.
+RECORD_CARRIERS: frozenset[str] = frozenset({"judge_rescores", "judge_repeats", "judge_seconds", "measure_rereads"})
 
 
 def _carrier_fields() -> tuple[tuple[str, bool, tuple[str, ...]], ...]:
@@ -1320,6 +1323,20 @@ def _classifier_label_summaries(
     return derived
 
 
+#: The unit a spend is stated in.
+_MONEY_UNIT = "usd"
+
+
+def _reads_spend_or_time(descriptor: MetricDescriptor) -> bool:
+    """Whether a measure is a spend or a time: positive, with a long right tail, so the interval on its mean is the
+    one that holds its level on skewed values (:func:`~threetears.evals.analysis.stats.observed_mean_interval`).
+
+    A measure on the ``cost`` or ``latency`` merit axis, or stated in dollars or a unit of time whatever axis it
+    serves (a phase's wall-clock, a judge's spend). A count is not one: its interval stays the clipped t interval.
+    """
+    return descriptor.merit_axis == "cost" or descriptor.unit == _MONEY_UNIT or is_latency_measure(descriptor)
+
+
 def _measure_summary(
     descriptor: MetricDescriptor,
     values: list[float | str],
@@ -1369,7 +1386,11 @@ def _measure_summary(
         mean, numeric = _mean_and_sorted(observed)
         sem = clustered_standard_error(observed, cases)
         interval = observed_mean_interval(
-            observed, cases=cases, value_range=descriptor.value_range, floor=descriptor.interval_floor
+            observed,
+            cases=cases,
+            value_range=descriptor.value_range,
+            floor=descriptor.interval_floor,
+            skewed=_reads_spend_or_time(descriptor),
         )
         shape = {
             "mean": mean,

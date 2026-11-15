@@ -510,7 +510,7 @@ def test_a_scorecard_column_of_measured_figures_reads_at_one_precision() -> None
     # The control: 99.2345 is held at the measure's whole places, as its cell prints it.
     assert [row["value"].value for row in rows] == [99.0, 100.0]
     assert [row["value"].text for row in rows] == ["99", "100"]
-    assert rows[0]["interval"].text == "72 to 127", rows[0]["interval"].text
+    assert rows[0]["interval"].text == "72 to 250", rows[0]["interval"].text
     assert all(re.fullmatch(r"\d+ to \d+", row["interval"].text) for row in rows), [
         row["interval"].text for row in rows
     ]
