@@ -128,7 +128,14 @@ def test_the_thin_reads_are_the_list_s_stated_and_implied_entries_read_off_the_i
 
     assert [(caveat.id, caveat.reach) for caveat in [*report_caveats(held), *implied_caveats(held)]] == listed
     unjudged = held.model_copy(update={"judged": {}, "caveats": held.caveats.model_copy(update={"judge_tiers": {}})})
-    assert "judge_uncalibrated" in {caveat.id for caveat in report_caveats(held)}
+    # Its judge's check against people is too thin to decide: that check's caveat says the judge has no passing check
+    # against people, once; with no check held, the tier's caveat says it, as before checks were recorded.
+    unchecked = held.model_copy(
+        update={"judged": {key: judged.model_copy(update={"checks": []}) for key, judged in held.judged.items()}}
+    )
+    assert "judge_uncalibrated" not in {caveat.id for caveat in report_caveats(held)}
+    assert any(entry.against == "people" and entry.check == "insufficient" for entry in held.caveat_list)
+    assert "judge_uncalibrated" in {caveat.id for caveat in report_caveats(unchecked)}
     assert "judge_uncalibrated" not in {caveat.id for caveat in report_caveats(unjudged)}
     assert set(caveat_materiality(held)) == {caveat.id for caveat in report_caveats(held)}
 

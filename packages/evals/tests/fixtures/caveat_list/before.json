@@ -41,11 +41,6 @@
   ],
   "stated": [
    [
-    "judge_uncalibrated",
-    "judge_uncalibrated",
-    "report"
-   ],
-   [
     "apparatus:grader_version",
     "apparatus",
     "method"
@@ -118,11 +113,6 @@
    ]
   ],
   "stated": [
-   [
-    "judge_uncalibrated",
-    "judge_uncalibrated",
-    "report"
-   ],
    [
     "apparatus:grader_version",
     "apparatus",
@@ -203,11 +193,6 @@
    ]
   ],
   "stated": [
-   [
-    "judge_uncalibrated",
-    "judge_uncalibrated",
-    "report"
-   ],
    [
     "unreported:orchestration_ms (llm_ms, tool_ms were not measured, so the parts cannot account for the whole.)",
     "unreported",
