@@ -457,6 +457,8 @@ def _prediction_powered_text(
     """The prediction-powered estimate beside a judged mean: its value and interval, or why it is not available."""
     rated = f"{powered.n_labelled} rated by people"
     if powered.mean is None:
+        if powered.state is not None and powered.state.reason == "not_drawn_at_random":
+            return f"with people's ratings: not available ({rated}, not drawn at random)"
         return f"with people's ratings: not available ({rated}, under {powered.min_labelled})"
     rectifier = forms.in_unit(
         (powered.rectifier or 0.0) * ruler.factor,

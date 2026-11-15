@@ -80,6 +80,11 @@ class Corrected(_Shape):
     against: Literal["people", "model"] = Field(description="Whose reading corrects the judge's.")
     against_id: str | None = Field(default=None, description="The model, by id.")
     result: CriterionState | None = Field(default=None, description="Whether the corrected reading confirms.")
+    reason: Reason | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the result is not met, where a shared reason says it.",
+    )
     state: StateOf | None = Field(default=None, description="Its state where it is not counted.")
     estimate: float | None = Field(default=None, description="The corrected difference.")
     interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
@@ -87,7 +92,9 @@ class Corrected(_Shape):
     lean: float | None = Field(default=None, description="The judge's lean the correction removes.")
     lean_interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
     labelled_cases: int | None = Field(default=None, description="Cases both the judge and the other reader read.")
-    identical_cases: int | None = Field(default=None, description="Of those, the cases they read alike.")
+    identical_cases: int | None = Field(
+        default=None, description="The cases whose two drawn outputs were byte-identical, weighted in at zero."
+    )
     read_id: str | None = Field(default=None, description="The blind read the correction rests on.")
 
 

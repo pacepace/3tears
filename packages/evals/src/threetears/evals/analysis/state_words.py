@@ -224,8 +224,6 @@ STATE_WORDS: Final[tuple[StateWord, ...]] = (
     StateWord("JudgingState", "set_aside", note=JUDGING_SET_ASIDE),
     # Latency read while cells ran at once.
     StateWord("AnalysisContextBundle", "latency_contended", "withheld", "measured_under_concurrency"),
-    # The one free-text reason a stored reading holds for an absent figure.
-    StateWord("PredictionPoweredReading", "unavailable_reason", "not_available", note="a sentence today: " + _BY_CAUSE),
 )
 
 _BY_WORD: Final = {(row.vocabulary, row.word): row for row in STATE_WORDS}

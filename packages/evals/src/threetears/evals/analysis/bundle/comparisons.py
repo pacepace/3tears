@@ -8,11 +8,13 @@ family by Holm's method (:func:`_corrected_family`) and decides every guardrail 
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from itertools import batched
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from threetears.evals.analysis.contention import withhold_contended_latency
+from threetears.evals.analysis.people_corrected import corrected_reading, pair_labels
+from threetears.evals.schema.blind_read import BlindRead
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE
 from threetears.evals.analysis.reporting import (
@@ -987,6 +989,110 @@ def multiple_comparisons(
         _guardrails_of(guardrail_readings, checks),
         [contrast for contrast in floor_contrasts if contrast is not None],
     )
+
+
+def judged_contrasts_corrected(
+    comparisons: MultipleComparisons,
+    reads: Sequence[BlindRead],
+    results_by_cell: Mapping[CellKey, list[ResultView]],
+    records: list[ScoreRecord],
+) -> MultipleComparisons:
+    """Each judged contrast's ``corrected`` check, from the blind reads drawn over its two cells.
+
+    A judged contrast that separated (``improved`` or ``regressed``) carries one ``corrected`` field where some reader
+    labelled its dimension on a read over its control and candidate cells
+    (:func:`~threetears.evals.analysis.people_corrected.corrected_reading`): a check of its one verdict, never a
+    second. The corrected interval is read at the level the contrast's own Holm step used, so a confirmation is held
+    to the same family-wise error as the verdict it confirms. A contrast that did not separate has no direction to
+    confirm and carries none; nor does a contrast no read covers.
+
+    The judge's case means are read as the comparison read them: each case's mean over the cell's non-faulted
+    results' counted scores (:func:`~threetears.evals.analysis.bundle.cell_reads.judged_values`).
+
+    :param comparisons: The aspect's corrected families (:func:`multiple_comparisons`).
+    :ptype comparisons: MultipleComparisons
+    :param reads: The blind reads over the campaign's runs.
+    :ptype reads: Sequence[BlindRead]
+    :param results_by_cell: Each cell's results.
+    :ptype results_by_cell: Mapping[CellKey, list[ResultView]]
+    :param records: The assembly's score projection rows.
+    :ptype records: list[ScoreRecord]
+    :return: The families, each separated judged contrast a read covers carrying ``corrected``.
+    :rtype: MultipleComparisons
+    """
+    if not reads:
+        return comparisons
+    rows: dict[str, list[ScoreRecord]] = defaultdict(list)
+    for record in records:
+        rows[record.result_id].append(record)
+    families = []
+    for family in comparisons.families:
+        # The family's raw p's in the order its correction read them (:func:`_corrected_family`), each beside its
+        # comparison and whether it is the separation's, so a comparison's Holm step is the rank of its own.
+        raw = [
+            (index, separation, p)
+            for index, comparison in enumerate(family.comparisons)
+            for separation, p in ((True, comparison.p_raw), (False, comparison.equivalence_p_raw))
+            if p is not None
+        ]
+        ranked = sorted(range(len(raw)), key=lambda position: raw[position][2])
+        filled = []
+        for index, comparison in enumerate(family.comparisons):
+            if comparison.reading != "judged" or comparison.verdict not in ("improved", "regressed") or not comparison.delta:
+                filled.append(comparison)
+                continue
+            rank = next(r for r, position in enumerate(ranked) if raw[position][:2] == (index, True))
+            level = 1.0 - SIGNIFICANCE_ALPHA / min(len(raw) - rank, family.family_size)
+            filled.append(_corrected(comparison, reads, results_by_cell, rows, level))
+        families.append(family.model_copy(update={"comparisons": filled}))
+    return comparisons.model_copy(update={"families": families})
+
+
+def _corrected(
+    comparison: FamilyComparison,
+    reads: Sequence[BlindRead],
+    results_by_cell: Mapping[CellKey, list[ResultView]],
+    rows: Mapping[str, list[ScoreRecord]],
+    level: float,
+) -> FamilyComparison:
+    """One separated judged contrast with its ``corrected`` check, where a read covers it."""
+    dimension = comparison.name
+    sides = [
+        (cell.variant_key, cell.apparatus_class_id) for cell in (comparison.control, comparison.contrast)
+    ]
+    judge_values: dict[str, float] = {}
+    case_means: list[dict[str, float]] = []
+    for key in sides:
+        by_case: dict[str, list[float]] = defaultdict(list)
+        for result in non_faulted(results_by_cell.get(key, [])):
+            for scored, record in judged_values(rows.get(result.id, [])):
+                if scored == dimension and record.value is not None:
+                    judge_values[result.id] = float(record.value)
+                    by_case[result.test_case_id].append(float(record.value))
+        case_means.append({case: sum(values) / len(values) for case, values in by_case.items()})
+    differences = {case: case_means[1][case] - case_means[0][case] for case in case_means[0] if case in case_means[1]}
+    cells = [(key[0], {result.id: result for result in results_by_cell.get(key, [])}) for key in sides]
+    labels = [
+        one
+        for read in reads
+        for one in pair_labels(
+            read,
+            dimension,
+            control=cells[0],
+            candidate=cells[1],
+            judge_values=judge_values,
+            case_differences=differences,
+        )
+    ]
+    assert comparison.delta  # a separated contrast moved
+    corrected = corrected_reading(
+        labels,
+        differences,
+        direction=1 if comparison.delta > 0 else -1,
+        confidence=level,
+        contrast_state=comparison.state,
+    )
+    return comparison if corrected is None else comparison.model_copy(update={"corrected": corrected})
 
 
 def _rig(key: CellKey, rigs: Mapping[str, str] | None) -> str:

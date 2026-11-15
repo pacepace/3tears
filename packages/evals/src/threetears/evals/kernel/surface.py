@@ -42,6 +42,7 @@ from threetears.evals.kernel.metrics import (
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier
 from threetears.evals.schema.models import DimName, RubricAxis
+from threetears.evals.schema.reading_states import StateOf
 
 
 class PredictionPoweredReading(EvalDocumentModel):
@@ -73,7 +74,7 @@ class PredictionPoweredReading(EvalDocumentModel):
         default=None,
         description=(
             "The judge's mean plus the rectifier, on the dimension's own scale — the estimate of the mean people "
-            "would have given. None = not available: fewer than `min_labelled` labelled observations."
+            "would have given. None = not available, and `state` says why."
         ),
     )
     rectifier: float | None = Field(
@@ -92,15 +93,22 @@ class PredictionPoweredReading(EvalDocumentModel):
     )
     ci_low: float | None = Field(default=None, description="The interval's lower end at 95%; None where `sem` is.")
     ci_high: float | None = Field(default=None, description="The interval's upper end at 95%; None where `sem` is.")
-    unavailable_reason: str | None = Field(
-        default=None, description="Why `mean` is None, in a sentence to quote; None when it is stated."
+    state: StateOf | None = Field(
+        default=None,
+        description=(
+            "Why `mean` is None: `not_available`, with `not_drawn_at_random` where no rating here was given on a "
+            "random sample and the ratings do not cover the cell, or `too_few` below `min_labelled`. None when it is "
+            "stated."
+        ),
     )
 
     @model_validator(mode="after")
     def _stated_or_explained(self) -> PredictionPoweredReading:
-        """A missing estimate says why, and a stated one carries no reason."""
-        if (self.mean is None) == (self.unavailable_reason is None):
-            raise ValueError("exactly one of mean / unavailable_reason must be set")
+        """A missing estimate says why, in a shared reason, and a stated one carries none."""
+        if (self.mean is None) == (self.state is None):
+            raise ValueError("exactly one of mean / state must be set")
+        if self.state is not None and self.state.state != "not_available":
+            raise ValueError(f"a missing estimate is not_available, not {self.state.state}")
         return self
 
 

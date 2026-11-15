@@ -8,7 +8,7 @@ The populations the bars, comparisons and decision surface share — results the
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 
 from threetears.evals.analysis.agreement import (
     judge_key,
@@ -17,6 +17,7 @@ from threetears.evals.analysis.agreement import (
 from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier
 from threetears.evals.analysis.arms import surface_order
 from threetears.evals.analysis.cells import Cell
+from threetears.evals.analysis.people_corrected import counted_label
 from threetears.evals.analysis.reporting import (
     METRIC_OUTCOME,
     METRIC_SCORE,
@@ -36,7 +37,8 @@ from threetears.evals.kernel.declaration import (
 )
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import describe_rubric_dim
-from threetears.evals.schema.models import SCALES, rubric_dim_scale
+from threetears.evals.schema.models import rubric_dim_scale
+from threetears.evals.schema.reading_states import StateOf
 from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.kernel.result_condition import (
     DIFFERENTIAL_EXCLUSION_SHARE,
@@ -160,6 +162,7 @@ def judged_measures(
     *,
     tiers: list[JudgeEvidenceTier],
     person_scores: Mapping[tuple[str, str], Sequence[int]] | None = None,
+    drawn_at_random: Collection[tuple[str, str]] = frozenset(),
 ) -> list[JudgedMeasure]:
     """Summarise every judged dimension per cell, from the score projection assembly already holds.
 
@@ -182,6 +185,10 @@ def judged_measures(
         rated counted observation carries a prediction-powered estimate (:func:`_prediction_powered`); None
         reads as nobody rated anything.
     :ptype person_scores: Mapping[tuple[str, str], Sequence[int]] | None
+    :param drawn_at_random: The ``(result_id, dimension)`` labels in ``person_scores`` given on a random sample: a
+        person's answers to the first items of a blind read's drawn order. Only these, or a cell's every counted
+        observation, are read into an estimate (:func:`_prediction_powered`); empty reads as none drawn at random.
+    :ptype drawn_at_random: Collection[tuple[str, str]]
     :return: One entry per dimension scored anywhere, sorted by name.
     :rtype: list[JudgedMeasure]
     """
@@ -240,6 +247,7 @@ def judged_measures(
                         valued,
                         result_by_id,
                         person_scores or {},
+                        drawn_at_random,
                         value_range=descriptor.value_range,
                     ),
                 )
@@ -264,15 +272,20 @@ def _prediction_powered(
     valued: list[ScoreRecord],
     result_by_id: Mapping[str, ResultView],
     person_scores: Mapping[tuple[str, str], Sequence[int]],
+    drawn_at_random: Collection[tuple[str, str]],
     *,
     value_range: tuple[float, float] | None,
 ) -> PredictionPoweredReading | None:
     """One arm's judged mean re-estimated with people's ratings of its counted observations (#598).
 
-    Each counted observation a person rated is labelled with the people's mean score, COUNTED as the judge's score
-    is (:func:`~threetears.evals.kernel.result_condition.counted_score`): on a candidate failure the judge's score
-    counts the scale floor, so the person's does too, and the rectifier measures the judge where it was read, not a
-    disagreement about a turn the measure already floors.
+    **Only a random sample's ratings are read** (owner, 2026-11-14). The rectifier is unbiased for the judge's error
+    only when the rated observations are a random draw of the cell's: ratings a person chose to give follow content
+    (the striking answer is the one rated), and nothing in them says how. So the labels read are those given on the
+    first items of a blind read's drawn order (``drawn_at_random``), or every counted observation of the cell, which
+    is the population itself and selects nothing. Ratings that are neither leave the estimate ``not_available``,
+    ``not_drawn_at_random``. A model's rating is never here: ``person_scores`` holds people's alone.
+
+    Each rated observation is labelled with the people's mean score, counted as the judge's is (:func:`counted_label`).
 
     :param dimension: The judged dimension.
     :ptype dimension: str
@@ -282,43 +295,38 @@ def _prediction_powered(
     :ptype result_by_id: Mapping[str, ResultView]
     :param person_scores: People's scores per ``(result_id, dimension)``.
     :ptype person_scores: Mapping[tuple[str, str], Sequence[int]]
+    :param drawn_at_random: The labels among them given on a random sample.
+    :ptype drawn_at_random: Collection[tuple[str, str]]
     :param value_range: The dimension's scale, which the interval is clipped to.
     :ptype value_range: tuple[float, float] | None
-    :return: The estimate, its ``mean`` None with the reason below
-        :data:`~threetears.evals.analysis.stats.PPI_MIN_LABELLED_RESULTS` labelled observations; or None when no
+    :return: The estimate; its ``mean`` None with its state (``not_drawn_at_random``, or ``too_few`` below
+        :data:`~threetears.evals.analysis.stats.PPI_MIN_LABELLED_RESULTS` labelled observations); or None when no
         counted observation here was rated.
     :rtype: PredictionPoweredReading | None
     """
-    human: list[float | None] = []
-    for row in valued:
-        scores = person_scores.get((row.result_id, dimension))
-        if not scores:
-            human.append(None)
-            continue
-        result = result_by_id[row.result_id]
-        judged = result.judge_score(dimension)
-        if classify_result(result) is ResultOutcome.CANDIDATE_FAIL and judged is not None:
-            human.append(float(SCALES[judged.scale].scores[0]))
-        else:
-            human.append(sum(scores) / len(scores))
-    labelled = [row.test_case_id for row, label in zip(valued, human) if label is not None]
-    if not labelled:
+    rated = {
+        row.result_id: counted_label(result_by_id[row.result_id], dimension, sum(scores) / len(scores))
+        for row in valued
+        if (scores := person_scores.get((row.result_id, dimension)))
+    }
+    if not rated:
         return None
-    n_labelled, n_labelled_cases = len(labelled), len(set(labelled))
-    if n_labelled < PPI_MIN_LABELLED_RESULTS:
+    census = len(rated) == len(valued)
+    read = {result_id: label for result_id, label in rated.items() if census or (result_id, dimension) in drawn_at_random}
+    labelled = [row.test_case_id for row in valued if row.result_id in read]
+    n_labelled = len(labelled) if read else len(rated)
+    n_labelled_cases = len(set(labelled)) if read else len({row.test_case_id for row in valued if row.result_id in rated})
+    if not read or n_labelled < PPI_MIN_LABELLED_RESULTS:
         return PredictionPoweredReading(
             n_labelled=n_labelled,
             n_labelled_cases=n_labelled_cases,
             min_labelled=PPI_MIN_LABELLED_RESULTS,
-            unavailable_reason=(
-                f"not available: {n_labelled} of the counted scores here were rated by a person, under the "
-                f"{PPI_MIN_LABELLED_RESULTS} a prediction-powered estimate is stated from."
-            ),
+            state=StateOf(state="not_available", reason="too_few" if read else "not_drawn_at_random"),
         )
     estimate = prediction_powered_mean(
         [float(row.value) for row in valued if row.value is not None],
         [row.test_case_id for row in valued],
-        human,
+        [read.get(row.result_id) for row in valued],
         value_range=value_range,
     )
     assert estimate is not None  # some observation is labelled
@@ -539,6 +547,7 @@ def cell_strata(
     tiers: list[JudgeEvidenceTier],
     profile: HostProfile,
     person_scores: Mapping[tuple[str, str], Sequence[int]] | None = None,
+    drawn_at_random: Collection[tuple[str, str]] = frozenset(),
 ) -> dict[CellKey, list[StratumFacts]]:
     """Each cell read again per stratum of its cases — the same walk and transposition, over each stratum's results.
 
@@ -566,6 +575,8 @@ def cell_strata(
     :param person_scores: People's scores per ``(result_id, dimension)``, for each stratum's prediction-powered
         estimates; see :func:`judged_measures`.
     :ptype person_scores: Mapping[tuple[str, str], Sequence[int]] | None
+    :param drawn_at_random: The labels among them given on a random sample; see :func:`judged_measures`.
+    :ptype drawn_at_random: Collection[tuple[str, str]]
     :return: Each broken-down cell's strata — named strata in name order, then the undeclared one — keyed by the
         cell's coordinates.
     :rtype: dict[CellKey, list[StratumFacts]]
@@ -587,6 +598,7 @@ def cell_strata(
                 design,
                 tiers=tiers,
                 person_scores=person_scores,
+                drawn_at_random=drawn_at_random,
             )
         )
         for key, members in slice_by_cell.items():

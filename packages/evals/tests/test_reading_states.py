@@ -53,7 +53,6 @@ from threetears.evals.analysis.run_ending import StoppedShort, stopped_short
 from threetears.evals.analysis.state_words import JUDGING_SET_ASIDE, STATE_WORDS, StateWord, state_word
 from threetears.evals.kernel.evidence_tiers import CriterionState
 from threetears.evals.kernel.result_condition import JudgingState
-from threetears.evals.kernel.surface import PredictionPoweredReading
 
 SOURCE = Path(threetears.evals.__file__).resolve().parent
 
@@ -316,7 +315,6 @@ NAMED_WORDS: dict[str, set[str]] = {
     "StoppedShort": {stopped_short.__name__} if StoppedShort else set(),
     "RunSummary": {"ended_because"} & set(RunSummary.model_fields),
     "AnalysisContextBundle": {"latency_contended"} & set(AnalysisContextBundle.model_fields),
-    "PredictionPoweredReading": {"unavailable_reason"} & set(PredictionPoweredReading.model_fields),
 }
 
 
