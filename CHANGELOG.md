@@ -13,7 +13,7 @@ command line or an action prints changed, and no digest, fingerprint or golden m
 (`tests/test_shape_move_moves_no_digest.py`).
 
 - `analysis/reading_states.py` holds the one closed set of states a reading or a contrast is in (`counted`,
-  `set_aside`, `withheld`, `not_available`), the one closed set of reasons, an arm's identity state per coordinate
+  `set_aside`, `withheld`, `not_available`), the one closed set of sixteen reasons, an arm's identity state per coordinate
   (`one`, `split`, `unrecorded`, on the served model, a measure's definition, the template and the rig), and
   `check_state`, which refuses a reason outside its state's set and a split or an unrecorded identity that names no
   coordinate.

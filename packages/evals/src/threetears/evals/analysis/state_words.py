@@ -14,9 +14,6 @@ A row is one of three things:
   a result of a check, who made a judgment, or a word that collides with a state and is renamed when its code is next
   touched.
 
-A row marked ``ruling_needed`` is a word the shared reasons cannot yet say truthfully: its state is known, and no
-reason of the closed set is its cause. It is listed so the gap is decided, never filled with the nearest reason.
-
 ``tests/test_reading_states.py`` finds the package's closed vocabularies by structure (every closed set of words a
 stored bundle, report input, run or result can hold, and every one named as a state, a reason, a verdict or an
 outcome) and holds that each is mapped here, word for word, or listed there as no word about a reading, with why. So
@@ -43,7 +40,6 @@ class StateWord(NamedTuple):
     :ivar coordinate: The coordinate it names.
     :ivar identity: The identity state it is, where the word says whether an arm is one thing.
     :ivar note: What the word is where it is no state, or where its reason comes from.
-    :ivar ruling_needed: The state is known and no shared reason says its cause.
     """
 
     vocabulary: str
@@ -53,7 +49,6 @@ class StateWord(NamedTuple):
     coordinate: Coordinate | None = None
     identity: IdentityState | None = None
     note: str = ""
-    ruling_needed: bool = False
 
 
 _LOST: Final = "a lost trial's cause, below the reading: no reading state"
@@ -65,7 +60,6 @@ _TIER: Final = "a summary of a judge's checks, never an input to a decision: the
 _BY_CAUSE: Final = "too_few, no_variation or not_recorded, by its cause"
 _ITEM: Final = "why one item left a check's sample, below the check as a lost trial is below a reading"
 _SEED: Final = "a stored definition read against the seed corpus: an operator's drift read, no reading's identity"
-_LOST_TRIALS: Final = "the evidence is not whole because trials were lost, and no shared reason says lost trials"
 _MECHANISM: Final = "why a lever's mechanism went unchecked: a check that is insufficient, never a reading state"
 
 
@@ -132,7 +126,7 @@ STATE_WORDS: Final[tuple[StateWord, ...]] = (
     StateWord("StoppedShort", "stopped_short", "withheld", "unfinished"),
     StateWord("RunSummary", "ended_because", note="a run record's free text beside an unfinished gate: no reason"),
     # Which rule decided a page's verdict line. The first three are the first-screen gate's rules.
-    StateWord("VerdictRule", "setup", "withheld", note=_LOST_TRIALS, ruling_needed=True),
+    StateWord("VerdictRule", "setup", "withheld", "trials_lost"),
     StateWord("VerdictRule", "unfinished", "withheld", "unfinished"),
     StateWord("VerdictRule", "too_small", "not_available", "too_few"),
     StateWord("VerdictRule", "one_arm", "counted"),
@@ -190,8 +184,8 @@ STATE_WORDS: Final[tuple[StateWord, ...]] = (
     StateWord("MeasureState", "not_a_number", note="what kind of measure it is: described, with no figure to count"),
     StateWord("MeasureState", "in_confusion_matrix", note="what kind of measure it is: read in its own table"),
     StateWord("MeasureState", "not_carried", "not_available", "not_recorded"),
-    StateWord("MeasureState", "no_successful_results", "not_available", note=_LOST_TRIALS, ruling_needed=True),
-    StateWord("MeasureState", "all_excluded", "not_available", note=_LOST_TRIALS, ruling_needed=True),
+    StateWord("MeasureState", "no_successful_results", "not_available", "trials_lost"),
+    StateWord("MeasureState", "all_excluded", "not_available", "trials_lost"),
     # A lever's mechanism check.
     *_all("MechanismCheck.state", "a finding about a lever, or a check of it that is insufficient", *_MECHANISM_STATES),
     *_all(

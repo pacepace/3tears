@@ -87,6 +87,7 @@ REMEDY_OF_REASON: Final[Mapping[str, Remedy]] = MappingProxyType(
         "split": "rerun_on_one_cell",
         "identity_unrecorded": "remeasure_or_attest",
         "measured_under_concurrency": "rerun_serially",
+        "trials_lost": "repair_rig",
         "too_few": "add_cases",
         "no_variation": "add_cases",
         "not_recorded": "record_and_rerun",

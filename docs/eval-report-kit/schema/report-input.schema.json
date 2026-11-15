@@ -1850,7 +1850,8 @@
         "unfinished",
         "split",
         "identity_unrecorded",
-        "measured_under_concurrency"
+        "measured_under_concurrency",
+        "trials_lost"
        ],
        "type": "string"
       },
@@ -1862,7 +1863,8 @@
         "replayed",
         "not_drawn_at_random",
         "skipped_past_limit",
-        "identity_unrecorded"
+        "identity_unrecorded",
+        "trials_lost"
        ],
        "type": "string"
       },
@@ -2105,7 +2107,8 @@
         "unfinished",
         "split",
         "identity_unrecorded",
-        "measured_under_concurrency"
+        "measured_under_concurrency",
+        "trials_lost"
        ],
        "type": "string"
       },
@@ -2117,7 +2120,8 @@
         "replayed",
         "not_drawn_at_random",
         "skipped_past_limit",
-        "identity_unrecorded"
+        "identity_unrecorded",
+        "trials_lost"
        ],
        "type": "string"
       },
@@ -2647,7 +2651,8 @@
         "unfinished",
         "split",
         "identity_unrecorded",
-        "measured_under_concurrency"
+        "measured_under_concurrency",
+        "trials_lost"
        ],
        "type": "string"
       },
@@ -2659,7 +2664,8 @@
         "replayed",
         "not_drawn_at_random",
         "skipped_past_limit",
-        "identity_unrecorded"
+        "identity_unrecorded",
+        "trials_lost"
        ],
        "type": "string"
       },

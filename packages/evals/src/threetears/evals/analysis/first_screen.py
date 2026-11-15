@@ -84,7 +84,8 @@ class Rank(NamedTuple):
 
 
 #: The ranking: the statistician's eight ranks (2026-11-14), most serious first; a caveat takes the first row that
-#: places it, and one no row places ranks after all eight. Rank 1 is every withheld reading, whatever withheld it, so
+#: places it, and one no row places ranks after all eight. Rank 1 is every withheld reading, whatever withheld it, and
+#: every figure the rig lost the trials of, so
 #: identity unrecorded is rank 3 only where it has not already withheld a reading. Looks stay below both judge ranks
 #: at every look count.
 #:
@@ -94,6 +95,7 @@ class Rank(NamedTuple):
 #: calls, then by id.
 RANKS: Final[tuple[Rank, ...]] = (
     Rank(1, "evidence_not_whole", state="withheld"),
+    Rank(1, "evidence_not_whole", reason="trials_lost"),
     Rank(2, "identical_arms_separated", reason="identical_arms_separated"),
     Rank(3, "identity_unrecorded", reason="identity_unrecorded"),
     Rank(4, "late_criterion", cls="B"),

@@ -362,6 +362,7 @@ def test_all_eight_ranks_together_come_back_in_order() -> None:
         ("split", "served_model"),
         ("identity_unrecorded", "measure_definition"),
         ("measured_under_concurrency", None),
+        ("trials_lost", None),
     ],
 )
 def test_every_withheld_reading_is_rank_one_whatever_withheld_it(reason: str, coordinate: str | None) -> None:
@@ -370,6 +371,23 @@ def test_every_withheld_reading_is_rank_one_whatever_withheld_it(reason: str, co
 
     assert next(row for row in RANKS if row.places(entry)).rank == 1
     assert shown([separated, entry]).reasons == [entry.id, separated.id]
+
+
+def test_a_figure_the_rig_lost_the_trials_of_is_rank_one_too() -> None:
+    """Evidence that is not whole is rank 1 whether it withheld a reading or left a figure with nothing to compute."""
+    lost = caveat(
+        "not_available:a/on_time",
+        "unsettled",
+        state="not_available",
+        reason="trials_lost",
+        readings=["a/on_time"],
+        deciding=True,
+    )
+    separated = set_aside("a/aa", "identical_arms_separated")
+
+    assert next(row for row in RANKS if row.places(lost)).name == "evidence_not_whole"
+    assert shown([separated, lost]).reasons == [lost.id, separated.id]
+    assert remedy(lost) == "repair_rig"
 
 
 def test_within_rank_one_a_caveat_on_a_called_arm_comes_first() -> None:

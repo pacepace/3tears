@@ -6,8 +6,8 @@ A reading or a contrast is in exactly one of four states. ``counted``: read, sho
 thing. ``not_available``: no figure can be computed. "Undecided" is not among them: it is a result of a counted
 reading, never a way of not counting. Below a reading a trial is lost, with its cause, which is no state of these.
 
-Each state but ``counted`` carries one reason from its own set (:data:`REASONS_OF`); one reason,
-``identity_unrecorded``, is in two. Every part of the package that
+Each state but ``counted`` carries one reason from its own set (:data:`REASONS_OF`); two reasons,
+``identity_unrecorded`` and ``trials_lost``, are each in two. Every part of the package that
 says a reading is not counted says it with these words, checked by :func:`check_state`; a new way of not counting is a
 new member here and nowhere else.
 
@@ -52,13 +52,15 @@ SetAsideReason = Literal[
     "identical_arms_separated",
 ]
 
-#: Why a reading is withheld: the evidence under it is not one whole thing.
-WithheldReason = Literal["unfinished", "split", "identity_unrecorded", "measured_under_concurrency"]
+#: Why a reading is withheld: the evidence under it is not one whole thing. ``trials_lost``: the runs finished and
+#: the rig lost too many of their trials for what is left to be read as the arm's.
+WithheldReason = Literal["unfinished", "split", "identity_unrecorded", "measured_under_concurrency", "trials_lost"]
 
-#: Why no figure can be computed. ``identity_unrecorded`` is here as well as among the withheld reasons, and is the
-#: one reason two states share: a reading over runs with an unrecorded coordinate is withheld (its parts are shown one
-#: step down), and a figure that cannot be computed across such runs at all (a check's result carried onto a
-#: contrast) is not available. An unrecorded coordinate matches nothing in either.
+#: Why no figure can be computed. Two reasons are here as well as among the withheld reasons, the only two that two
+#: states share. ``identity_unrecorded``: a reading over runs with an unrecorded coordinate is withheld (its parts are
+#: shown one step down), and a figure that cannot be computed across such runs at all (a check's result carried onto a
+#: contrast) is not available; an unrecorded coordinate matches nothing in either. ``trials_lost``: a reading the rig
+#: lost too many trials of is withheld, and a figure every one of whose trials was lost is not available.
 NotAvailableReason = Literal[
     "too_few",
     "no_variation",
@@ -67,6 +69,7 @@ NotAvailableReason = Literal[
     "not_drawn_at_random",
     "skipped_past_limit",
     "identity_unrecorded",
+    "trials_lost",
 ]
 
 #: Every reason a reading is not counted.

@@ -50,7 +50,7 @@ from threetears.evals.analysis.reading_states import (
 )
 from threetears.evals.analysis.report_input import Contrast, Stat
 from threetears.evals.analysis.run_ending import StoppedShort, stopped_short
-from threetears.evals.analysis.state_words import JUDGING_SET_ASIDE, STATE_WORDS, state_word
+from threetears.evals.analysis.state_words import JUDGING_SET_ASIDE, STATE_WORDS, StateWord, state_word
 from threetears.evals.kernel.evidence_tiers import CriterionState
 from threetears.evals.kernel.result_condition import JudgingState
 from threetears.evals.kernel.surface import PredictionPoweredReading
@@ -67,7 +67,9 @@ ARCHITECTURE: dict[str, set[str]] = {
         "people_disagree",
         "identical_arms_separated",
     },
-    "withheld": {"unfinished", "split", "identity_unrecorded", "measured_under_concurrency"},
+    # ``trials_lost`` (ruled 2026-11-15): the rig lost the trials. No other reason is true of it: the run finished,
+    # the cases were not too few, and the figure was recorded as lost.
+    "withheld": {"unfinished", "split", "identity_unrecorded", "measured_under_concurrency", "trials_lost"},
     "not_available": {
         "too_few",
         "no_variation",
@@ -78,11 +80,15 @@ ARCHITECTURE: dict[str, set[str]] = {
         # The judges design (its sections 0.3 and 9.3) and the statistician's ruling S1: a check's result carried onto
         # a contrast cannot be computed across runs with an unrecorded coordinate.
         "identity_unrecorded",
+        "trials_lost",
     },
 }
 
-#: The one reason two states share.
+#: The reason about a coordinate that two states share.
 SHARED_REASON = "identity_unrecorded"
+
+#: The two reasons two states share, and the only two.
+SHARED_REASONS = ["identity_unrecorded", "trials_lost"]
 
 
 def _coordinate(reason: str) -> str | None:
@@ -101,11 +107,31 @@ def test_the_states_and_their_reasons_are_the_architecture_s() -> None:
     assert set(get_args(IdentityState)) == {"one", "split", "unrecorded"}
 
 
-def test_one_reason_belongs_to_two_states_and_no_other_does() -> None:
+def test_two_reasons_belong_to_two_states_and_no_other_does() -> None:
     every = [reason for reasons in ARCHITECTURE.values() for reason in reasons]
-    assert sorted(reason for reason in set(every) if every.count(reason) > 1) == [SHARED_REASON]
-    assert len(set(every)) == 15 and len(every) == 16
-    assert SHARED_REASON in ARCHITECTURE["withheld"] and SHARED_REASON in ARCHITECTURE["not_available"]
+    assert sorted(reason for reason in set(every) if every.count(reason) > 1) == SHARED_REASONS
+    assert len(set(every)) == 16 and len(every) == 18
+    assert all(
+        reason in ARCHITECTURE["withheld"] and reason in ARCHITECTURE["not_available"] for reason in SHARED_REASONS
+    )
+    assert sorted(set(every)) == [
+        "identical_arms_separated",
+        "identity_unrecorded",
+        "instrument_below_bar",
+        "instrument_leans",
+        "instrument_unchecked",
+        "measured_under_concurrency",
+        "no_variation",
+        "not_drawn_at_random",
+        "not_recorded",
+        "people_disagree",
+        "replayed",
+        "skipped_past_limit",
+        "split",
+        "too_few",
+        "trials_lost",
+        "unfinished",
+    ]
 
 
 @pytest.mark.parametrize(("state", "reason"), [(s, r) for s, reasons in ARCHITECTURE.items() for r in sorted(reasons)])
@@ -183,6 +209,8 @@ NEEDED_STATES: dict[str, tuple[str, str | None, str | None]] = {
     "a run whose definitions a host attested reads as recorded": ("counted", None, None),
     "a reading over a run that did not finish": ("withheld", "unfinished", None),
     "latency read while cells ran at once": ("withheld", "measured_under_concurrency", None),
+    "a finished run whose rig lost too many trials to read": ("withheld", "trials_lost", None),
+    "a measure every one of whose trials the rig lost": ("not_available", "trials_lost", None),
     "a cost interval over two to four cases": ("not_available", "too_few", None),
     "a cost interval where every case cost the same": ("not_available", "no_variation", None),
     "an improvement whose judge has no check": ("set_aside", "instrument_unchecked", None),
@@ -351,16 +379,27 @@ def test_the_vocabularies_the_review_named_are_each_mapped() -> None:
     } <= set(_mapped())
 
 
-def test_a_tier_is_no_reading_state_and_a_lost_trial_gate_waits_for_a_ruling() -> None:
+def test_a_tier_is_no_reading_state() -> None:
     tiers = [row for row in STATE_WORDS if row.vocabulary in ("JudgedEvidenceTier", "EvidenceTier")]
     assert len(tiers) == 10 and all(row.state is None and row.note for row in tiers)
-    setup = state_word("VerdictRule", "setup")
-    assert setup.state == "withheld" and setup.reason is None and setup.ruling_needed
-    assert sorted(f"{row.vocabulary}.{row.word}" for row in STATE_WORDS if row.ruling_needed) == [
-        "MeasureState.all_excluded",
-        "MeasureState.no_successful_results",
-        "VerdictRule.setup",
-    ]
+
+
+def test_the_words_for_trials_the_rig_lost_are_one_reason_that_takes_no_coordinate() -> None:
+    lost = {
+        f"{row.vocabulary}.{row.word}": (row.state, row.coordinate)
+        for row in STATE_WORDS
+        if row.reason == "trials_lost"
+    }
+    assert lost == {
+        "VerdictRule.setup": ("withheld", None),
+        "MeasureState.no_successful_results": ("not_available", None),
+        "MeasureState.all_excluded": ("not_available", None),
+    }
+    assert REMEDY_OF_REASON["trials_lost"] == "repair_rig"
+    for state in ("withheld", "not_available"):
+        with pytest.raises(ValueError, match="names no coordinate"):
+            check_state(state, "trials_lost", "rig")
+    assert "ruling_needed" not in StateWord._fields, "every mapped word has a truthful reason, or says why it has none"
 
 
 def test_the_judging_state_that_collides_with_set_aside_is_mapped_as_a_trial_s_fact_until_it_is_renamed() -> None:
@@ -389,12 +428,10 @@ def test_each_row_is_a_valid_state_or_says_what_the_word_is_instead(row: Any) ->
     if row.state is None:
         assert row.reason is None and row.coordinate is None and row.identity is None
         assert row.note, "a word that is no state says what it is"
-        assert not row.ruling_needed
         return
     if row.state != "counted" and row.reason is None:
         assert row.note, "a state whose reason the word does not fix says where the reason comes from"
         return
-    assert not row.ruling_needed, "a row with its reason needs no ruling"
     check_state(row.state, row.reason, row.coordinate)
     if row.identity is not None and row.state != "counted":
         assert row.coordinate is not None, "an identity state is a state of one coordinate"
