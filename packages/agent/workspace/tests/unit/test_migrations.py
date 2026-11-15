@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from threetears.core.testing.migrations import uncontended_ddl_lock_rows
 
+from threetears.agent.workspace.migrations.v006_history_key_indexes import add_history_key_indexes
 from threetears.agent.workspace.migrations import (
     PACKAGE_NAME,
     add_date_deleted_column,
@@ -121,27 +122,28 @@ def _joined_executed_sql(store: _FakeDataStore) -> str:
 class TestRegisterWorkspaceMigrations:
     """tests for the register factory and apply flow."""
 
-    async def test_register_returns_package_with_versions_one_through_five(self) -> None:
-        """register populates the PackageMigrations with versions 1-5.
+    async def test_register_returns_package_with_versions_one_through_six(self) -> None:
+        """register populates the PackageMigrations with versions 1-6.
 
         v0.8.0 shard 04.6 added v005 to rename bare-``id`` PK columns
-        to ``<entity>_id`` on all three workspace tables.
+        to ``<entity>_id`` on all three workspace tables; v006 indexes
+        the history in its order completed by the key.
         """
         runner = MigrationRunner()
         pkg = register(runner)
         assert pkg.name == PACKAGE_NAME
         assert pkg.scope == MigrationScope.AGENT
-        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5}
+        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 6}
 
     async def test_apply_runs_all_versions_then_idempotent(self) -> None:
-        """apply records v1-v5 in _schema_migrations and runs no second time."""
+        """apply records v1-v6 in _schema_migrations and runs no second time."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_for_agent_schema(store)
-        assert first_count == 5
+        assert first_count == 6
         assert store.migrations_table_created is True
-        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5]
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 6]
         second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 
@@ -265,6 +267,28 @@ class TestDirectMigrationFunction:
         await create_workspace_tables(store)  # type: ignore[arg-type]
         assert store.migrations_table_created is False
         assert store.migrations_rows == []
+
+
+class TestHistoryKeyIndexesMigration:
+    """v006: the two history indexes, in their order completed by the key, then v001's history index dropped."""
+
+    async def test_builds_both_indexes_before_dropping_the_covered_one(self) -> None:
+        """the covering index exists before v001's goes, so no moment has a workspace history read unindexed."""
+        store = _FakeDataStore()
+        await add_history_key_indexes(store)  # type: ignore[arg-type]
+        assert len(store.executed) == 3
+        built, path, dropped = (sql for sql, _ in store.executed)
+        assert re.search(
+            r"idx_workspace_file_versions_history_key ON workspace_file_versions "
+            r"\(workspace_id, date_created DESC, version_id DESC\)",
+            built,
+        )
+        assert re.search(
+            r"idx_workspace_file_versions_path_history ON workspace_file_versions "
+            r"\(workspace_id, relative_path, date_created DESC, version_id DESC\)",
+            path,
+        )
+        assert dropped == "DROP INDEX IF EXISTS idx_workspace_file_versions_history"
 
 
 class TestDatetimeToDatetimetzMigration:

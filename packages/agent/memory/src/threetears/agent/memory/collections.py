@@ -624,7 +624,6 @@ _NEWEST_FIRST = (Sort("date_created", descending=True),)
 #: longer holds: no search, dedup or dream reads it, and only a recall by its
 #: id still opens it. ``?`` is the GIN-indexed key test on the tags array.
 _NOT_RETRACTED = "NOT (COALESCE(tags, '[]'::jsonb) ? 'retracted')"
-_NOT_RETRACTED_M = "NOT (COALESCE(m.tags, '[]'::jsonb) ? 'retracted')"
 
 #: What a memory line is marked from, selected beside the memory by every read
 #: that shows one to an agent: its name, whether it is permanent, its tags
@@ -645,18 +644,31 @@ _MEMORY_MARK_COLUMNS = (
 _MEMORY_MARK_KEYS = ("alias", "evergreen", "tags", "superseded_by", "superseded_at", "corrected_by")
 
 #: the columns :meth:`MemoriesCollection.find_active_for_consolidation` loads for each candidate
-_CANDIDATE_COLUMNS = (
-    "m.memory_id, m.customer_id, m.user_id, m.conversation_id, m.type_memory, m.content, "
-    "m.embedding::text AS embedding, m.date_created, m.tags"
+_CANDIDATE_COLUMNS: tuple[str | Selected, ...] = (
+    "memory_id",
+    "customer_id",
+    "user_id",
+    "conversation_id",
+    "type_memory",
+    "content",
+    Selected("t.embedding::text", "embedding"),
+    "date_created",
+    "tags",
 )
 #: what every consolidation candidate also is, after its owner: not pinned, embedded, not superseded by a live gist,
-#: not retracted; oldest first
-_CANDIDATE_TAIL = (
-    "AND NOT m.evergreen AND m.embedding IS NOT NULL "
-    "AND (m.superseded_by IS NULL OR NOT EXISTS ("
-    "SELECT 1 FROM memories g WHERE g.agent_id = m.agent_id AND g.memory_id = m.superseded_by)) "
-    f"AND {_NOT_RETRACTED_M} ORDER BY m.date_created"
+#: not retracted
+_CANDIDATE_GUARDS: tuple[Fragment, ...] = (
+    Fragment("NOT t.evergreen", ()),
+    Fragment("t.embedding IS NOT NULL", ()),
+    Fragment(
+        "(t.superseded_by IS NULL OR NOT EXISTS ("
+        "SELECT 1 FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by))",
+        (),
+    ),
+    Fragment("NOT (COALESCE(t.tags, '[]'::jsonb) ? 'retracted')", ()),
 )
+#: oldest first, completed by the key (rows created at one instant come in one order on every read)
+_OLDEST_FIRST = (Sort("date_created"), Sort("memory_id"))
 
 #: A memory a live replacement stands in for. A replacement that is gone leaves
 #: its sources current again, as every other read here treats them.
@@ -2762,48 +2774,23 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         """
         if self.l3_pool is None:
             return []
-        # exact scope match, including the NULL grain (see docstring): a None argument narrows to IS NULL rather
-        # than dropping the filter. each grain's statement writes its owner out, so the read's key is in its own
-        # text; the owner's index (agent_id, customer_id, user_id) serves IS NULL as an equality.
+        # exact scope match, including the NULL grain (see docstring): read_by pins a None argument as IS NULL
+        # rather than dropping the filter, one statement whatever the grain (it was four hand-written ones, one per
+        # grain); the owner's index (agent_id, customer_id, user_id) serves IS NULL as an equality.
         # cache-bypass: a scope-scanned candidate load is not primary-key
-        # addressable, so the L1 row cache cannot serve it; keeping the SQL
-        # on the Collection preserves the single-entry-point contract.
+        # addressable, so the L1 row cache cannot serve it.
         # embedding::text so asyncpg decodes it on the no-codec L3 pool
         # (same cast as _MEMORIES_SELECTED); decode_vector parses the
         # bracketed text back to list[float] below. The self-healing
         # supersession filter is a NOT EXISTS against a live gist row.
-        params: list[object] = [agent_id]
-        if customer_id is None and user_id is None:
-            allowed = filter_clause(self.read_filter, "m.tags", params)
-            rows = await self.l3_pool.fetch(
-                f"SELECT {_CANDIDATE_COLUMNS} FROM memories m WHERE m.agent_id = $1{allowed} AND m.customer_id IS NULL"
-                f" AND m.user_id IS NULL {_CANDIDATE_TAIL}",
-                *params,
-            )
-        elif customer_id is None:
-            params.append(user_id)
-            allowed = filter_clause(self.read_filter, "m.tags", params)
-            rows = await self.l3_pool.fetch(
-                f"SELECT {_CANDIDATE_COLUMNS} FROM memories m WHERE m.agent_id = $1 AND m.customer_id IS NULL"
-                f" AND m.user_id = $2{allowed} {_CANDIDATE_TAIL}",
-                *params,
-            )
-        elif user_id is None:
-            params.append(customer_id)
-            allowed = filter_clause(self.read_filter, "m.tags", params)
-            rows = await self.l3_pool.fetch(
-                f"SELECT {_CANDIDATE_COLUMNS} FROM memories m WHERE m.agent_id = $1 AND m.customer_id = $2{allowed}"
-                f" AND m.user_id IS NULL {_CANDIDATE_TAIL}",
-                *params,
-            )
-        else:
-            params.extend((customer_id, user_id))
-            allowed = filter_clause(self.read_filter, "m.tags", params)
-            rows = await self.l3_pool.fetch(
-                f"SELECT {_CANDIDATE_COLUMNS} FROM memories m WHERE m.agent_id = $1 AND m.customer_id = $2"
-                f" AND m.user_id = $3{allowed} {_CANDIDATE_TAIL}",
-                *params,
-            )
+        rows = await read_by(
+            self.l3_pool,
+            "memories",
+            by={"agent_id": agent_id, "customer_id": customer_id, "user_id": user_id},
+            columns=_CANDIDATE_COLUMNS,
+            where=_CANDIDATE_GUARDS + clause_guards(filter_clause, self.read_filter, "t.tags"),
+            order=_OLDEST_FIRST,
+        )
         candidates: list[dict[str, Any]] = []
         for row in rows:
             data = dict(row)
@@ -4698,20 +4685,24 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         indexes=(
             # the ledger read: the refs one agent surfaced in a conversation, newest first (v034; it
             # replaced the conversation-wide (conversation_id, date_created) index). date_created is
-            # stored descending: YugabyteDB will not read an ascending one backwards for the newest first
+            # stored descending: YugabyteDB will not read an ascending one backwards for the newest first.
+            # v037: item_id DESC after it, the key completing the page's order in its direction, so a page
+            # walks the index rather than reading and sorting the agent's refs in the conversation (YugabyteDB
+            # has no incremental sort); it covers v034's index, dropped in the same step
             SchemaIndex(
-                "idx_conv_mem_refs_conversation_agent_date",
+                "idx_conv_mem_refs_conversation_agent_key",
                 "conversation_id",
                 "agent_id",
                 "date_created",
-                desc="date_created",
+                "item_id",
+                desc=("date_created", "item_id"),
                 purpose=(
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MemoryRefsCollection.find_by_conversation"
                 ),
                 plan_test=(
                     "packages/agent/memory/tests/integration/test_index_plans.py"
-                    "::test_conv_mem_refs_conversation_agent_date"
+                    "::test_conv_mem_refs_conversation_agent_key"
                 ),
             ),
         ),
@@ -4824,7 +4815,9 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
                     "agent_id",
                 ),
                 by={"conversation_id": conversation_id, "agent_id": agent_id},
-                order=[Sort("date_created", descending=True), Sort("item_id")],
+                # item_id runs the way date_created does: idx_conv_mem_refs_conversation_agent_key (v037) walks
+                # the page in this order; completed ascending it was read and sorted
+                order=[Sort("date_created", descending=True), Sort("item_id", descending=True)],
                 limit=limit,
                 records=True,
             )

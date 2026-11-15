@@ -459,8 +459,8 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
     # v0.8.0 hygiene enrichment: FK
     # ``workspace_id → workspaces.workspace_id ON DELETE CASCADE``
     # matches the v001 migration (renamed in v005). The history-
-    # lookup index ``idx_workspace_file_versions_history`` is the
-    # v001 migration's ``CREATE INDEX``.
+    # lookup indexes are v006's ``idx_workspace_file_versions_history_key``
+    # and ``idx_workspace_file_versions_path_history``.
     # v0.8.0 shard 04.6: bare-``id`` PK renamed to ``version_id``
     # (migration v005); FK target column on ``workspaces`` was
     # likewise renamed from ``id`` to ``workspace_id``.
@@ -490,10 +490,40 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
             ),
         ),
         indexes=(
+            # v006: a workspace's history newest first, completed by the key in the same direction, so YugabyteDB
+            # (no incremental sort) walks one page off the index rather than reading and sorting the workspace's
+            # whole journal. It covers v001's (workspace_id, date_created), dropped in the same migration.
             SchemaIndex(
-                "idx_workspace_file_versions_history",
+                "idx_workspace_file_versions_history_key",
                 "workspace_id",
                 "date_created",
+                "version_id",
+                desc=("date_created", "version_id"),
+                purpose=(
+                    "packages/agent/workspace/src/threetears/agent/workspace/collections.py"
+                    "::WorkspaceFileVersionCollection.find_by_workspace"
+                ),
+                plan_test="tests/integration/test_index_plans_keys.py::test_workspace_file_versions_history_key",
+            ),
+            # v006: one path's history in the same order. Not the UNIQUE (workspace_id, relative_path, version) by
+            # version DESC: ``version`` is the path's journal max + 1 inside the write's transaction, but
+            # ``date_created`` is the pod's clock read before that transaction (materialize.py, tools/helpers.py),
+            # so two writers of one path can commit version n + 1 with an earlier date_created than n; the order
+            # stays the one the tool has always shown. The workspace-wide index above walks the whole workspace's
+            # journal filtering the path (unbounded for a rarely written path in a busy workspace); the UNIQUE one
+            # reads and sorts every version of the path, which grows with every write.
+            SchemaIndex(
+                "idx_workspace_file_versions_path_history",
+                "workspace_id",
+                "relative_path",
+                "date_created",
+                "version_id",
+                desc=("date_created", "version_id"),
+                purpose=(
+                    "packages/agent/workspace/src/threetears/agent/workspace/collections.py"
+                    "::WorkspaceFileVersionCollection.find_by_workspace_and_path"
+                ),
+                plan_test="tests/integration/test_index_plans_keys.py::test_workspace_file_versions_path_history",
             ),
         ),
     )
@@ -546,8 +576,8 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
         fetches journal rows for workspace, newest-first, bounded by limit.
 
         backs ``threetears.workspace.history`` when no ``relative_path``
-        is supplied: one ``SELECT ... ORDER BY date_created DESC LIMIT N``
-        over the ``idx_workspace_file_versions_history`` index. hydrates
+        is supplied: one page ordered ``date_created DESC, version_id DESC``
+        off ``idx_workspace_file_versions_history_key`` (v006). hydrates
         into entities so the tool can surface metadata (action, label,
         actor, correlation, size) without re-loading content through a
         second query; callers filter the byte blob out of the response
@@ -566,7 +596,7 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
                 "workspace_file_versions",
                 columns=None,
                 by={"workspace_id": workspace_id},
-                order=[Sort("date_created", descending=True), Sort("version_id")],
+                order=[Sort("date_created", descending=True), Sort("version_id", descending=True)],
                 limit=limit,
                 records=True,
             )
@@ -603,7 +633,7 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
                 "workspace_file_versions",
                 columns=None,
                 by={"workspace_id": workspace_id, "relative_path": relative_path},
-                order=[Sort("date_created", descending=True), Sort("version_id")],
+                order=[Sort("date_created", descending=True), Sort("version_id", descending=True)],
                 limit=limit,
                 records=True,
             )

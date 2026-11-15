@@ -10,7 +10,7 @@ plan whether it found its rows through the index (:func:`threetears.core.testing
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping
 from typing import Any, TypedDict
 from unittest.mock import MagicMock
 
@@ -209,11 +209,13 @@ async def world(pg_url: str) -> AsyncIterator[_World]:
         agents,
     )
     # and one busy conversation: 3,000 refs, 1,000 by each agent (with 60 a conversation, reading them all by the
-    # pk and sorting is the cheaper plan, so only a busy one shows whether the agent's newest read their index)
+    # pk and sorting is the cheaper plan, so only a busy one shows whether the agent's newest read their index); a
+    # tenth of them share the newest instant, so the page's first rows are ordered by the key alone
     busy = uuid.uuid4()
     await conn.execute(
         "INSERT INTO conversation_memory_refs (conversation_id, item_id, item_type, short_desc, date_created,"
-        " date_updated, agent_id) SELECT $1, gen_random_uuid(), 'memory', 'a ref', now() - n * interval '1 second',"
+        " date_updated, agent_id) SELECT $1, gen_random_uuid(), 'memory', 'a ref',"
+        " CASE WHEN n % 10 = 0 THEN now() ELSE now() - n * interval '1 second' END,"
         " now(), ($2::uuid[])[1 + n % 3] FROM generate_series(1, 3000) n",
         busy,
         agents,
@@ -265,6 +267,16 @@ def _shape(plan: StatementPlan) -> str:
 
     walk(plan.plan, 0)
     return plan.sql[:300] + "\n" + "\n".join(lines)
+
+
+#: the ledger page the refs' plan test reads (a tenth of the busy conversation's refs tie, so its first rows tie)
+_REFS_PAGE = 20
+
+
+def _node_types(node: Mapping[str, Any]) -> Iterator[str]:
+    yield str(node.get("Node Type", ""))
+    for child in node.get("Plans", ()):
+        yield from _node_types(child)
 
 
 async def _only_plan(world: _World, captured: CapturedL3) -> StatementPlan:
@@ -612,13 +624,19 @@ async def test_memory_consolidations_source(world: _World) -> None:
     assert not missed, "\n\n".join(missed)
 
 
-async def test_conv_mem_refs_conversation_agent_date(world: _World) -> None:
+async def test_conv_mem_refs_conversation_agent_key(world: _World) -> None:
     """Flips if the newest refs one agent surfaced in a busy conversation stop reading
-    idx_conv_mem_refs_conversation_agent_date."""
+    idx_conv_mem_refs_conversation_agent_key in their page's order (``date_created DESC`` completed by ``item_id
+    DESC``), so the page reads and sorts the agent's refs in the conversation, or reads more than about its page
+    (v037: completed ascending, no index held the order and YugabyteDB, with no incremental sort, sorted them all)."""
     captured = CapturedL3()
-    await world.refs(captured).find_by_conversation(world.busy_conversation, world.agent)
+    await world.refs(captured).find_by_conversation(world.busy_conversation, world.agent, limit=_REFS_PAGE)
     plan = await _only_plan(world, captured)
-    assert plan_uses_index(plan, "idx_conv_mem_refs_conversation_agent_date"), _shape(plan)
+    assert plan_uses_index(plan, "idx_conv_mem_refs_conversation_agent_key"), _shape(plan)
+    assert not set(_node_types(plan.plan)) & {"Sort", "Incremental Sort"}, _shape(plan)
+    # the page with keyset_page's one row past it (whether a next page exists), from the index's first rows
+    assert plan.rows_returned == _REFS_PAGE + 1, _shape(plan)
+    assert plan.rows_scanned <= 2 * (_REFS_PAGE + 1), _shape(plan)
 
 
 async def test_media_content_media_type(world: _World) -> None:

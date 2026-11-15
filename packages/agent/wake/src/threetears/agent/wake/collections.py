@@ -654,7 +654,12 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             _SCHEDULES,
             columns=_SCHEDULE_INSERT_COLUMNS,
             by={"conversation_id": conversation_id},
-            order=[Sort("date_created", cast="timestamptz", descending=True), Sort("schedule_id", cast="uuid")],
+            # schedule_id runs the way date_created does: idx_wake_schedules_conv_created (v016) walks each page in
+            # this order; completed ascending, no index held it and every page read and sorted the conversation
+            order=[
+                Sort("date_created", cast="timestamptz", descending=True),
+                Sort("schedule_id", cast="uuid", descending=True),
+            ],
         )
         return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 

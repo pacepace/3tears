@@ -425,11 +425,13 @@ def _reference_conversation_memory_refs_table(metadata: sa.MetaData) -> sa.Table
         ),
         # v034 (0.95.0): the ledger's read of the refs one agent surfaced,
         # newest first, stored descending; it replaced the (conversation_id, date_created) index.
+        # v037: completed by item_id DESC, replacing v034's
         SAIndex(
-            "idx_conv_mem_refs_conversation_agent_date",
+            "idx_conv_mem_refs_conversation_agent_key",
             "conversation_id",
             "agent_id",
             sa_text("date_created DESC"),
+            sa_text("item_id DESC"),
         ),
     )
 

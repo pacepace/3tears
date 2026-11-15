@@ -28,6 +28,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.collections.scan_cache import ScanCache
+from threetears.interfaces.keyed import AnyOf, Sort, delete_keyed_statements, read_by_statement
 from threetears.core.testing.plans import (
     PlanRecorder,
     StatementPlan,
@@ -207,31 +208,67 @@ async def test_assignments_group_scope(conn: asyncpg.Connection) -> None:
             ), plan.plan
         else:
             assert plan.rows_scanned <= 2, plan
-    reads = {
-        "GRANT_WINNER_OF_GROUP_SQL": (
-            acl.GRANT_WINNER_OF_GROUP_SQL,
-            lambda scope, ns: (group, role, scope, ns, "manual"),
-        ),
-        "GRANTS_OF_GROUP_SCOPE_SQL": (
-            acl.GRANTS_OF_GROUP_SCOPE_SQL,
-            lambda scope, ns: ("platform", group, scope, ns, None),
-        ),
-        "DELETE_GRANTS_OF_GROUP_SCOPE_SQL": (
-            acl.DELETE_GRANTS_OF_GROUP_SCOPE_SQL,
-            lambda scope, ns: ("platform", group, scope, ns, "manual"),
-        ),
-    }
-    for name, (statement, params) in reads.items():
-        # a write is planned, never run
-        explain = explain_write if statement.lstrip().upper().startswith("DELETE") else explain_statement
-        async with _rolled_back(conn):
-            plan = await explain(conn, statement, *params("type_customer", None))
-        assert plan_uses_index(plan, "idx_role_assignments_group_scope"), (name, plan.plan)
-        async with _rolled_back(conn):
-            plan = await explain(conn, statement, *params("namespace", uuid.uuid4()))
-        assert plan_uses_index(plan, "idx_role_assignments_group_scope") or plan_uses_index(
-            plan, "uq_role_assignments_namespace_grant"
-        ), (f"{name} on a namespace", plan.plan)
+    # the winner read and a group's grants on one scope, read then deleted: the helpers' own statements
+    # (read_by_statement / delete_keyed_statements) with the pins each method sends, in both scopes. The namespace
+    # is the one every group holds a grant on: the namespace is a plain pin now (``= $n``, where the statements'
+    # IS NOT DISTINCT FROM could not seek), so on a namespace holding no grants PostgreSQL rightly reads the
+    # namespace's own index (idx_role_assignments_scope_namespace) and finds none
+    for scope, namespace, row_scope in (("all", None, "platform"), ("namespace", held_on, "customer")):
+        winner = {
+            "row_scope": AnyOf(("platform", "customer"), cast=None),
+            "group_id": group,
+            "role_id": role,
+            "scope_type": scope,
+            "scope_namespace_id": namespace,
+            "managed_by": "manual",
+        }
+        grants: dict[str, Any] = {
+            "row_scope": row_scope,
+            "group_id": group,
+            "scope_type": scope,
+            "scope_namespace_id": namespace,
+        }
+        statements = {
+            "the winner read": (
+                explain_statement,
+                read_by_statement(
+                    "role_assignments",
+                    by=winner,
+                    columns=("row_scope", "assignment_id", "date_granted"),
+                    order=(Sort("date_granted"), Sort("assignment_id")),
+                ),
+            ),
+            "the grants of any provenance": (
+                explain_statement,
+                read_by_statement("role_assignments", by=grants, columns=("assignment_id",)),
+            ),
+            "the manual grants": (
+                explain_statement,
+                read_by_statement(
+                    "role_assignments", by={**grants, "managed_by": "manual"}, columns=("assignment_id",)
+                ),
+            ),
+            "their delete": (
+                explain_write,
+                delete_keyed_statements("role_assignments", by=grants, returning=("assignment_id",))[0],
+            ),
+        }
+        for name, (explain, (sql, params)) in statements.items():
+            async with _rolled_back(conn):
+                plan = await explain(conn, sql, *params)
+            # or the scope's own natural-key unique index, led by the group too (partial on its scope type)
+            own = "uq_role_assignments_namespace_grant" if scope == "namespace" else "uq_role_assignments_all_grant"
+            assert plan_uses_index(plan, "idx_role_assignments_group_scope") or plan_uses_index(plan, own), (
+                f"{name} on scope {scope}",
+                _outline(plan.plan),
+            )
+
+
+def _outline(node: Mapping[str, Any]) -> str:
+    """a plan's nodes in one line, each with the index it reads: what a failing plan test shows."""
+    named = node.get("Index Name") or node.get("Relation Name") or ""
+    children = ", ".join(_outline(child) for child in node.get("Plans", ()))
+    return f"{node.get('Node Type')}({named})" + (f" > [{children}]" if children else "")
 
 
 async def test_namespaces_name(conn: asyncpg.Connection) -> None:

@@ -39,6 +39,8 @@ subclasses in ``3tears-agent-tools``):
   ``idx_webhook_subs_conv`` and ``idx_wake_fires_started_conversation`` (no read
   uses them) and validates v014's key: attached only with ``held_contract=True``
   (the test schemas now; every deployment from the release after v013's and v014's).
+- ``idx_wake_schedules_conv_created`` (v016) -- a conversation's schedules,
+  newest first, completed by the key: the conversation listing's pages.
 
 The package declares
 ``depends_on=("conversations", "agent_skills")`` because:
@@ -141,6 +143,9 @@ from threetears.agent.wake.migrations.v014_fire_schedule_conversation_fk import 
 from threetears.agent.wake.migrations.v015_contract_unread_indexes_dropped import (
     drop_unread_indexes_and_validate_fire_key,
 )
+from threetears.agent.wake.migrations.v016_conversation_listing_key_index import (
+    add_conversation_listing_index,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -186,6 +191,7 @@ def register(runner: MigrationRunner, *, held_contract: bool = False) -> Package
     pkg.version(14)(add_fire_schedule_conversation_fk)
     if held_contract:
         pkg.version(15)(drop_unread_indexes_and_validate_fire_key)
+    pkg.version(16)(add_conversation_listing_index)
     runner.register(pkg)
     return pkg
 
