@@ -15,6 +15,7 @@ from __future__ import annotations
 from functools import partial
 from typing import Any, Final
 
+from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.keyed._filters import binds_native_arrays
 
 __all__ = ["with_options"]
@@ -32,6 +33,19 @@ class _WithOptions:
         # asyncpg's own connection binds typed arrays natively; known by its type, which this wrapper is not
         self.binds_native_arrays = binds_native_arrays(conn)
 
+    async def answers_from_yugabyte(self) -> bool:
+        """whether the connection behind answers from YugabyteDB, asked of it
+        (:func:`~threetears.core.backends.dialect.known_on_yugabyte`, kept for it there): this wrapper sends no
+        ``SELECT version()``.
+
+        WHY: a wrapper is made a call, so asked as a reader of its own it sent ``version()`` on every wrapped read --
+        a round trip a read over a pool, and over the rail's proxy a statement its broker refuses (test_known_dialect).
+
+        :return: whether the database behind it is YugabyteDB
+        :rtype: bool
+        """
+        return await known_on_yugabyte(self._conn)
+
     def __getattr__(self, name: str) -> Any:
         found = getattr(self._conn, name)
         if name in _STATEMENT_METHODS:
@@ -43,8 +57,8 @@ def with_options(conn: Any, **options: Any) -> Any:
     """``conn``, its every statement sent with ``options`` as keyword arguments; ``conn`` itself when there are none.
 
     A statement method the connection lacks the wrapper lacks too, so a check of what the connection can do (an Arrow
-    reader's ``fetch_arrow``) answers for it as before. A reader asked whether it answers from YugabyteDB (a listing's
-    page) is asked once per wrapper: keep one wrapper for a run of pages.
+    reader's ``fetch_arrow``) answers for it as before. Asked whether it answers from YugabyteDB (a listing's page), the
+    wrapper answers for ``conn``, which is asked once.
 
     :param conn: a connection with asyncpg-shaped ``fetch`` / ``fetchrow`` / ``fetchval`` / ``execute`` /
         ``executemany`` (and ``fetch_arrow`` where it has one), each taking the keyword arguments given
