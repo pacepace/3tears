@@ -637,9 +637,17 @@ class TestEnsureGroupRoleAssignment:
     async def test_a_lost_race_answers_the_row_that_won(self) -> None:
         """the insert absorbed by the natural-key index: the winner is read back, created=False."""
         winner = uuid7()
+        rereads: list[tuple[Any, ...]] = []
+
+        async def fetch(sql: str, *args: Any) -> list[dict[str, Any]]:
+            # the natural-key read finds none held (nor a namespace customer); the winner read finds the winner
+            if '"date_granted"' in sql:
+                rereads.append((sql, *args))
+                return [{"row_scope": "platform", "assignment_id": winner, "date_granted": None}]
+            return []
+
         pool = AsyncMock()
-        pool.fetch.return_value = []  # the natural-key read finds none held (nor a namespace customer)
-        pool.fetchrow.side_effect = [{"row_scope": "platform", "assignment_id": winner}]
+        pool.fetch.side_effect = fetch
         pool.fetchval.side_effect = [None]
         coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         coll.invalidate_cache_many = AsyncMock()
@@ -652,9 +660,12 @@ class TestEnsureGroupRoleAssignment:
             managed_by="bootstrap",
         )
         assert (assignment_id, created) == (winner, False)
-        reread = pool.fetchrow.await_args_list[0]
-        assert reread.args[1:] == (group_id, role_id, "namespace", scope_id, "bootstrap")
-        assert "WHERE row_scope" not in reread.args[0]
+        (reread,) = rereads
+        sql, *args = reread
+        # the winner is read in either row scope (the natural-key index that absorbed ours spans both), by the grant
+        assert '"row_scope" = ANY($1' in sql, sql
+        assert args[1:] == [group_id, role_id, "namespace", scope_id, "bootstrap"]
+        assert sorted(args[0]) == ["customer", "platform"]
         # through the broker the absorbed insert still advanced the table: the winner is announced
         coll.invalidate_cache_many.assert_awaited_once_with([("platform", winner)], rows=[{"group_id": group_id}])
 
@@ -662,8 +673,7 @@ class TestEnsureGroupRoleAssignment:
     async def test_an_absorbed_insert_with_no_winner_is_not_reported_as_found(self) -> None:
         """a conflict on something other than the grant is raised, never answered as the grant."""
         pool = AsyncMock()
-        pool.fetch.return_value = []
-        pool.fetchrow.side_effect = [None]
+        pool.fetch.return_value = []  # every read finds none, the winner read too
         pool.fetchval.side_effect = [None]
         coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         with pytest.raises(RuntimeError, match="no row holds that grant"):
@@ -786,7 +796,7 @@ class TestDeleteByGroupAndScope:
         )
         delete = pool.fetch.await_args_list[1]
         assert delete.args[0].lstrip().upper().startswith("DELETE")
-        assert "managed_by = $5" in delete.args[0]
+        assert '"managed_by" = $5' in delete.args[0]
         assert delete.args[-1] == "auto:agent-yaml"
 
 

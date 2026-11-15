@@ -61,12 +61,6 @@ async def test_idx_intentions_open_ranked(engine_conn: Any) -> None:
     assert plan_uses_index(plan, "idx_intentions_open_ranked"), json.dumps(plan.plan)
 
 
-async def test_idx_workspace_file_versions_history(engine_conn: Any) -> None:
-    """Flips if packages/agent/workspace/src/threetears/agent/workspace/collections.py::WorkspaceFileVersionCollection.find_by_workspace; packages/agent/workspace/src/threetears/agent/workspace/collections.py::WorkspaceFileVersionCollection.find_by_workspace_and_path's read stops reading idx_workspace_file_versions_history."""
-    plan = await explain_index_read(engine_conn, _ENTRIES["idx_workspace_file_versions_history"])
-    assert plan_uses_index(plan, "idx_workspace_file_versions_history"), json.dumps(plan.plan)
-
-
 async def test_idx_workspace_files_workspace(engine_conn: Any) -> None:
     """Flips if packages/agent/workspace/src/threetears/agent/workspace/collections.py::WorkspaceFileCollection.find_by_workspace; packages/agent/workspace/src/threetears/agent/workspace/collections.py::WorkspaceFileCollection.find_by_workspace_and_relative_path; packages/agent/workspace/src/threetears/agent/workspace/materialize.py::_capture_back's read stops reading idx_workspace_files_workspace."""
     plan = await explain_index_read(engine_conn, _ENTRIES["idx_workspace_files_workspace"])

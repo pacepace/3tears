@@ -671,8 +671,10 @@ class _LateConn(_CuttingConn):
 
     async def fetch(self, sql: str, *params: Any) -> list[Any]:
         rows = await super().fetch(sql, *params)
-        moved_page = sql.startswith("SELECT scope FROM") and sql.endswith("ORDER BY scope LIMIT 3")
-        if moved_page and len(rows) < 3:
+        # a page of the pending scopes the commit moves (keyset_rows through their partial index), three a page: it asks
+        # one more, so a page of fewer than four is the last
+        moved_page = '"pending" IS NOT NULL' in sql
+        if moved_page and len(rows) < 4:
             # the last page read: a scope pending only now, as though marked between the read and the UPDATE
             await self._conn.execute(
                 f"INSERT INTO {_TABLE} (scope, epoch, pending, date_created) VALUES ($1, 0, 1, now())", self._late

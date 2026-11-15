@@ -372,8 +372,10 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
     # column is hashed and noted_at a range under it. Created IF NOT EXISTS with the rest, so a ring installed
     # before it gains it at the next install.
     by_table = tuple(
-        "-- purpose: packages/core/src/threetears/core/collections/change_notes.py::ChangeNoteKeeper.notes_found\n"
-        "-- plan_test: packages/core/tests/integration/test_change_note_ring_plans.py::test_threetears_change_notes_0_table_reads_the_scrubs_any_note_look\n"
+        "-- purpose: packages/core/src/threetears/core/collections/change_notes.py::ChangeNoteKeeper.notes_found; "
+        "packages/core/src/threetears/core/collections/change_notes.py::_noted_rows_sql; "
+        "packages/core/src/threetears/core/collections/change_notes.py::_noted_keys_sql\n"
+        "-- plan_test: packages/core/tests/integration/test_change_note_ring_plans.py::test_threetears_change_notes_0_table_reads_a_tables_notes_since_a_time\n"
         "-- reason: a table's notes since a time, carrying the columns the reconciler's read answers so it never "
         "visits the table (a second lookup a note on YugabyteDB)\n"
         f"CREATE INDEX IF NOT EXISTS {quote_identifier(note_table(index) + '_table')} "

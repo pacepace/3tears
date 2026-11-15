@@ -112,28 +112,9 @@ _ACCESS_MACHINERY_TENANCY: Final = no_tenant(
 )
 
 
-#: the grant a concurrent ensure won, in either scope (the natural-key index that absorbed the loser spans both):
-#: ``idx_role_assignments_group_scope`` (group_id, scope_type)
-GRANT_WINNER_OF_GROUP_SQL: Final[str] = (
-    "SELECT row_scope, assignment_id FROM role_assignments WHERE group_id = $1"
-    " AND row_scope IN ('platform', 'customer') AND role_id = $2 AND scope_type = $3"
-    " AND scope_namespace_id IS NOT DISTINCT FROM $4 AND managed_by = $5"
-    " ORDER BY date_granted ASC, assignment_id ASC LIMIT 1"
-)
-
-#: a group's grants on one scope (``$5`` NULL: of any provenance): ``idx_role_assignments_group_scope``
-#: (group_id, scope_type)
-GRANTS_OF_GROUP_SCOPE_SQL: Final[str] = (
-    "SELECT assignment_id FROM role_assignments WHERE row_scope = $1 AND group_id = $2 AND scope_type = $3"
-    " AND scope_namespace_id IS NOT DISTINCT FROM $4 AND ($5::text IS NULL OR managed_by = $5)"
-)
-
-#: the same grants, deleted: ``idx_role_assignments_group_scope`` (group_id, scope_type)
-DELETE_GRANTS_OF_GROUP_SCOPE_SQL: Final[str] = (
-    "DELETE FROM role_assignments WHERE row_scope = $1 AND group_id = $2 AND scope_type = $3"
-    " AND scope_namespace_id IS NOT DISTINCT FROM $4 AND ($5::text IS NULL OR managed_by = $5)"
-    " RETURNING assignment_id"
-)
+#: the order a concurrent ensure's winner is read in: the earliest grant, then its key. The natural-key indexes leave
+#: at most one row matching (they span both scopes), so the order only makes the answer one row on every read
+_GRANT_WINNER_ORDER: Final[tuple[k.Sort, ...]] = (k.Sort("date_granted"), k.Sort("assignment_id"))
 
 
 #: rows a listing's page keeps unless its caller asks for fewer
@@ -1438,6 +1419,8 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             "list_by_scope_type",
             "backfill_customers",
             "ensure_group_role_assignment",
+            # the grant a lost ensure race left, read in either partition (the natural-key index spans both)
+            "grant_winner",
             "delete_by_group_and_scope",
             "delete_from_store",
             "save_entity",
@@ -1974,14 +1957,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             else:
                 # a concurrent ensure inserted the same grant between the lookup and
                 # this insert, and the deploying app's natural-key index absorbed ours
-                winner_row = await self.l3_pool.fetchrow(
-                    GRANT_WINNER_OF_GROUP_SQL,
-                    group_id,
-                    role_id,
-                    scope_type,
-                    scope_id,
-                    managed_by,
-                )
+                winner_row = await self.grant_winner(group_id, role_id, scope_type, scope_id, managed_by)
                 if winner_row is None:
                     raise RuntimeError(
                         f"role assignment ({group_id}, {role_id}, {scope_type}, {scope_id}, {managed_by}) was "
@@ -2042,6 +2018,42 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 )
             written.extend(rows)
         return CustomerBackfillPage(read=plan.read, written=tuple(written), next_cursor=plan.next_cursor)
+
+    async def grant_winner(
+        self, group_id: UUID, role_id: UUID, scope_type: str, scope_id: UUID | None, managed_by: str
+    ) -> dict[str, Any] | None:
+        """the grant a concurrent ensure won, in either scope (the natural-key index that absorbed the loser spans
+        both): read by idx_role_assignments_group_scope (group_id, scope_type); ``scope_id`` None pins IS NULL, as the
+        statement's IS NOT DISTINCT FROM did.
+
+        :param group_id: the grant's group
+        :ptype group_id: UUID
+        :param role_id: its role
+        :ptype role_id: UUID
+        :param scope_type: its scope
+        :ptype scope_type: str
+        :param scope_id: its namespace, None for none
+        :ptype scope_id: UUID | None
+        :param managed_by: its provenance
+        :ptype managed_by: str
+        :return: the winner's ``row_scope``, ``assignment_id`` and ``date_granted``; None when no row holds the grant
+        :rtype: dict[str, Any] | None
+        """
+        winners = await k.read_by(
+            self.required_l3_pool,
+            "role_assignments",
+            by={
+                "row_scope": k.AnyOf(("platform", "customer"), cast=None),
+                "group_id": group_id,
+                "role_id": role_id,
+                "scope_type": scope_type,
+                "scope_namespace_id": scope_id,
+                "managed_by": managed_by,
+            },
+            columns=("row_scope", "assignment_id", "date_granted"),
+            order=_GRANT_WINNER_ORDER,
+        )
+        return winners[0] if winners else None
 
     async def _announce_rows(self, keys: Sequence[tuple[str, UUID]], group_id: UUID) -> None:
         """evict rows a statement of this class wrote by SQL, in one advance, naming their group.
@@ -2111,15 +2123,39 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         row_scope = "platform" if scope_type == "all" else "customer"
         result: int = 0
         if self.l3_pool is not None:
-            # one predicate for both statements; ``managed_by IS NULL`` as the parameter means no
-            # provenance filter
-            params = (row_scope, group_id, scope_type, scope_id, managed_by)
+            # one set of pins for both statements, by idx_role_assignments_group_scope (group_id, scope_type):
+            # scope_id None pins IS NULL (as IS NOT DISTINCT FROM did), and a managed_by of None pins no
+            # provenance at all (as ``$5 IS NULL OR managed_by = $5`` did)
             # the rows first, so a revocation that matches nothing issues no DELETE: through the L3
             # broker a DELETE advances the table's write generation whether it removed a row or
             # not, and an advance with no row heard for it drops the table on every follower.
-            matching = await self.l3_pool.fetch(GRANTS_OF_GROUP_SCOPE_SQL, *params)
+            matching = await k.read_by(
+                self.l3_pool,
+                "role_assignments",
+                by={
+                    "row_scope": row_scope,
+                    "group_id": group_id,
+                    "scope_type": scope_type,
+                    "scope_namespace_id": scope_id,
+                    **({} if managed_by is None else {"managed_by": managed_by}),
+                },
+                columns=("assignment_id",),
+            )
             if matching:
-                deleted = await self.l3_pool.fetch(DELETE_GRANTS_OF_GROUP_SCOPE_SQL, *params)
+                deleted = (
+                    await k.delete_keyed(
+                        self.l3_pool,
+                        "role_assignments",
+                        by={
+                            "row_scope": row_scope,
+                            "group_id": group_id,
+                            "scope_type": scope_type,
+                            "scope_namespace_id": scope_id,
+                            **({} if managed_by is None else {"managed_by": managed_by}),
+                        },
+                        returning=("assignment_id",),
+                    )
+                ).rows
                 result = len(deleted)
                 keys = dict.fromkeys(
                     [(row_scope, row["assignment_id"]) for row in matching]

@@ -271,6 +271,18 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
                 "reason": "agent_wake_schedules carries five indexes: a deleted schedule's downstream wakes, set NULL",
             },
         ),
+        # v016: one conversation's schedules newest first, completed by the key (the listing's pages)
+        Index(
+            "idx_wake_schedules_conv_created",
+            "conversation_id",
+            sa_text("date_created DESC"),
+            sa_text("schedule_id DESC"),
+            info={
+                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WakeScheduleCollection.list_for_conversation",
+                "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_schedules_conv_created",
+                "reason": "agent_wake_schedules carries six indexes: one conversation's schedules listed newest first",
+            },
+        ),
         Index(
             "idx_wake_schedules_agent_status",
             "agent_id",

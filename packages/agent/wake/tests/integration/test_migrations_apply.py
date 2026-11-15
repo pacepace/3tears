@@ -183,6 +183,7 @@ class TestSchemaShape:
                 "idx_wake_schedules_next_fire_asc",
                 "idx_wake_schedules_conv_status",
                 "idx_wake_schedules_conv_active",
+                "idx_wake_schedules_conv_created",
                 "idx_wake_schedules_user",
                 "idx_wake_schedules_context_from",
                 "idx_wake_fires_schedule_time",

@@ -913,6 +913,9 @@ class TestWorkspaceFileCollectionFindByWorkspace:
         executed: list[tuple[str, tuple[Any, ...]]] = []
 
         async def _fetch(query: str, *args: Any) -> list[dict[str, Any]]:
+            # the dialect probe a read served by a declared index asks once (the YugabyteDB index hint): PostgreSQL
+            if query.startswith("SELECT version()"):
+                return [{"v": "PostgreSQL 16.4"}]
             executed.append((query, args))
             wid = args[0]
             return [r for r in rows if r["workspace_id"] == wid]
@@ -973,6 +976,9 @@ class TestWorkspaceFileVersionCollectionHistoryQueries:
         executed: list[tuple[str, tuple[Any, ...]]] = []
 
         async def _fetch(query: str, *args: Any) -> list[dict[str, Any]]:
+            # the dialect probe a read served by a declared index asks once (the YugabyteDB index hint): PostgreSQL
+            if query.startswith("SELECT version()"):
+                return [{"v": "PostgreSQL 16.4"}]
             executed.append((query, args))
             wid = args[0]
             limit = int(query.rsplit("LIMIT ", 1)[1])
@@ -1009,6 +1015,9 @@ class TestWorkspaceFileVersionCollectionHistoryQueries:
         executed: list[tuple[str, tuple[Any, ...]]] = []
 
         async def _fetch(query: str, *args: Any) -> list[dict[str, Any]]:
+            # the dialect probe a read served by a declared index asks once (the YugabyteDB index hint): PostgreSQL
+            if query.startswith("SELECT version()"):
+                return [{"v": "PostgreSQL 16.4"}]
             executed.append((query, args))
             wid, path = args
             limit = int(query.rsplit("LIMIT ", 1)[1])

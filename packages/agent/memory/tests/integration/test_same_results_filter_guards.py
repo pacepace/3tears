@@ -13,14 +13,17 @@ Runs on PostgreSQL and YugabyteDB (the session's ``db_container``), a schema of 
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import timedelta
 from typing import Any
 
 import asyncpg
 import pytest
 
 from threetears.agent.memory.collections import MediaContentCollection, MemoriesCollection, MemoryChunkCollection
-from threetears.core.testing.same_results import assert_same_results
+from threetears.agent.memory.read_filter import ReadFilter, filter_clause
+from threetears.core.testing.same_results import Seeded, assert_same_results
 
 from .memory_same_results import (
     text_vectors,
@@ -28,6 +31,7 @@ from .memory_same_results import (
     CUSTOMER,
     MEMORIES,
     PAGE,
+    T0,
     USER,
     chunk_row,
     collection,
@@ -268,3 +272,117 @@ async def test_find_by_chunk_indexes_gives_the_hand_written_rows(conn: asyncpg.C
             order_by=["chunk_index"],
             page_size=PAGE,
         )
+
+
+#: the four scope grains a consolidation run pins exactly (None: IS NULL), each seeded on every fourth memory
+_GRAINS = ((None, None), (None, USER), (CUSTOMER, None), (CUSTOMER, USER))
+#: the columns a consolidation candidate is compared on (its embedding decoded by the method, so compared by which
+#: rows carry one, the NULL ones never being candidates)
+_CANDIDATE = (
+    "memory_id",
+    "customer_id",
+    "user_id",
+    "conversation_id",
+    "type_memory",
+    "content",
+    "date_created",
+    "tags",
+)
+#: the statement find_active_for_consolidation sent before read_by, one per grain, frozen
+_OLD_CANDIDATE_COLUMNS = (
+    "m.memory_id, m.customer_id, m.user_id, m.conversation_id, m.type_memory, m.content, "
+    "m.embedding::text AS embedding, m.date_created, m.tags"
+)
+_OLD_CANDIDATE_TAIL = (
+    "AND NOT m.evergreen AND m.embedding IS NOT NULL "
+    "AND (m.superseded_by IS NULL OR NOT EXISTS ("
+    "SELECT 1 FROM memories g WHERE g.agent_id = m.agent_id AND g.memory_id = m.superseded_by)) "
+    "AND NOT (COALESCE(m.tags, '[]'::jsonb) ? 'retracted') ORDER BY m.date_created"
+)
+
+
+def _hide(tags: str, bind: Callable[[Any], str]) -> str:
+    return f"NOT (COALESCE({tags}, '[]'::jsonb) ? {bind('hide')})"
+
+
+def _old_candidates(customer: Any, user: Any, read_filter: ReadFilter | None) -> tuple[str, list[Any]]:
+    """the hand-written statement of a grain, as the method built it (the filter's clause where it spliced it)."""
+    params: list[Any] = [AGENTS[0]]
+    head = f"SELECT {_OLD_CANDIDATE_COLUMNS} FROM memories m WHERE m.agent_id = $1"
+    if customer is None and user is None:
+        allowed = filter_clause(read_filter, "m.tags", params)
+        sql = f"{head}{allowed} AND m.customer_id IS NULL AND m.user_id IS NULL {_OLD_CANDIDATE_TAIL}"
+    elif customer is None:
+        params.append(user)
+        allowed = filter_clause(read_filter, "m.tags", params)
+        sql = f"{head} AND m.customer_id IS NULL AND m.user_id = $2{allowed} {_OLD_CANDIDATE_TAIL}"
+    elif user is None:
+        params.append(customer)
+        allowed = filter_clause(read_filter, "m.tags", params)
+        sql = f"{head} AND m.customer_id = $2{allowed} AND m.user_id IS NULL {_OLD_CANDIDATE_TAIL}"
+    else:
+        params.extend((customer, user))
+        allowed = filter_clause(read_filter, "m.tags", params)
+        sql = f"{head} AND m.customer_id = $2 AND m.user_id = $3{allowed} {_OLD_CANDIDATE_TAIL}"
+    return sql, params
+
+
+def _candidate_row(seed: Seeded) -> Mapping[str, Any]:
+    """a memory of its tenant's agent in one of the four grains (by its index), its time its tie. Each guard is set
+    by the row's place within its grain (``index // 4``), so every grain holds every kind: the second of each five
+    superseded by the memory before it (a live gist while that one is seeded), the fourth of each five by a gist that
+    does not exist (so the NOT EXISTS keeps it), the sixth of each six pinned (evergreen), the first of each three
+    tagged ``hide`` (the filter's) and the fifth of each seven retracted."""
+    customer, user = _GRAINS[seed.index % 4]
+    place = seed.index // 4
+    superseded = (
+        ident("memory", seed.index - 1)
+        if place % 5 == 1
+        else ident("dead-gist", seed.index)
+        if place % 5 == 3
+        else None
+    )
+    tags = ["retracted"] if place % 7 == 4 else ["hide"] if place % 3 == 0 else None
+    return {
+        **memory_row(seed),
+        "customer_id": customer,
+        "user_id": user,
+        "date_created": T0 + timedelta(minutes=seed.tie),
+        "evergreen": place % 6 == 5,
+        "superseded_by": superseded,
+        "tags": None if tags is None else json.dumps(tags),
+    }
+
+
+@pytest.mark.parametrize("read_filter", [None, _hide], ids=["unfiltered", "filtered"])
+@pytest.mark.parametrize("grain", range(len(_GRAINS)), ids=["agent", "user-only", "customer", "user"])
+async def test_find_active_for_consolidation_gives_the_hand_written_rows(
+    conn: asyncpg.Connection, grain: int, read_filter: ReadFilter | None
+) -> None:
+    """Flips if find_active_for_consolidation's read_by, in any of the four grains (a None one pinned IS NULL), with
+    the host's filter or without, returns a candidate its grain's statement did not, misses one, or orders them
+    differently: the pins, the evergreen, embedding and retracted guards, and the live-gist NOT EXISTS (true for
+    some rows of every grain, false for others)."""
+    customer, user = _GRAINS[grain]
+    old_sql, params = _old_candidates(customer, user, read_filter)
+
+    async def helper(c: Any) -> list[dict[str, Any]]:
+        memories = collection(MemoriesCollection, c)
+        memories.set_read_filter(read_filter)
+        found = await memories.find_active_for_consolidation(AGENTS[0], customer_id=customer, user_id=user)
+        return [{column: candidate[column] for column in _CANDIDATE} for candidate in found]
+
+    await text_vectors(conn)
+    answered = await assert_same_results(
+        conn,
+        table="memories",
+        row=_candidate_row,
+        old_sql=old_sql,
+        params=params,
+        helper=helper,
+        columns=_CANDIDATE,
+        order_by=["date_created"],
+        page_size=PAGE,
+    )
+    # the seeds reach every guard: some case keeps rows, and the many-rows case drops some its grain and agent hold
+    assert any(answered), "no case kept a candidate"

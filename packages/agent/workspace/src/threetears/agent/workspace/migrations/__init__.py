@@ -31,6 +31,13 @@ version history:
   Postgres updates the PK constraint, every index, and every
   dependent FK constraint automatically; the renames are guarded by
   ``information_schema`` DO blocks so replays are idempotent.
+- v006: ``idx_workspace_file_versions_history_key`` (workspace_id,
+  date_created DESC, version_id DESC) and
+  ``idx_workspace_file_versions_path_history`` (workspace_id,
+  relative_path, date_created DESC, version_id DESC): a workspace's and a
+  path's history walk one page in their order; v001's
+  ``idx_workspace_file_versions_history``, which the first covers, is
+  dropped in the same step.
 """
 
 from __future__ import annotations
@@ -55,6 +62,9 @@ from threetears.agent.workspace.migrations.v004_datetime_to_datetimetz import (
 )
 from threetears.agent.workspace.migrations.v005_rename_id_columns import (
     rename_id_columns,
+)
+from threetears.agent.workspace.migrations.v006_history_key_indexes import (
+    add_history_key_indexes,
 )
 
 PACKAGE_NAME = "agent_workspace"
@@ -83,6 +93,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(3)(workspace_namespace_backfill)
     pkg.version(4)(datetime_to_datetimetz)
     pkg.version(5)(rename_id_columns)
+    pkg.version(6)(add_history_key_indexes)
     runner.register(pkg)
     return pkg
 
