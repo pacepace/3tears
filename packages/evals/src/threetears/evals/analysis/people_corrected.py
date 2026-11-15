@@ -278,9 +278,9 @@ def pair_labels(
     found: list[PairLabels] = []
     for rater, kind in readers:
         own: dict[str, BlindAnswer] = {}
-        for answer in read.answers:
-            if (answer.rater, answer.rater_kind) == (rater, kind):
-                own[answer.item] = answer
+        for given_answer in read.answers:
+            if (given_answer.rater, given_answer.rater_kind) == (rater, kind):
+                own[given_answer.item] = given_answer
         pairs: dict[str, tuple[float, float]] = {}
         skipped = 0
         for item in read.items:
