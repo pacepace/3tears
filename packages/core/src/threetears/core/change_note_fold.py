@@ -103,9 +103,12 @@ class RestoreFolder:
     (S/r4/rss.py, macOS arm64, Python 3.14, the keeper's modules imported as a hub imports them): the kept worker
     held 193 MiB resident and its store directory stayed, for a restore that comes only at a cold start or a lost
     log. Now the worker exits and the store is removed when the restore ends (:meth:`close`): nothing is left. The
-    cost is a spawn per restore (about 0.6 s, the worker's imports), started on a thread as the restore begins
-    (:meth:`start`), beside its sizing reads, so it is off the loop and mostly hidden; the loop-hold and speed tests
-    (``test_change_note_restore_speed_live``) measure it on PG and YugabyteDB.
+    cost is a spawn per restore, started on a thread as the restore begins (:meth:`start`), beside its sizing reads,
+    so it is off the loop. Measured in ``test_change_note_restore_speed_live``'s world (PG 16, 200,000 notes, quiet
+    machine, R4 2026-11-15): spawn to ready 196-211 ms (237-242 ms before the job moved to
+    :mod:`threetears.core.change_note_fold_job`); the first page waits for it from ~80 ms, the six pages after fold
+    in ~15 ms each, and the worker's exit takes ~25-55 ms more: a restore 331-372 ms against 148-176 ms of bare reads,
+    2.1-2.4x (the kept worker's restore was inside 2x). YugabyteDB, whose bare reads are slower, stays inside 2x.
 
     The store's directory is a fresh one, memory-backed where the system has ``/dev/shm``. Used as ``async with``.
     """
