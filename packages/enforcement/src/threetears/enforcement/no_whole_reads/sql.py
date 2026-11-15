@@ -59,6 +59,7 @@ from threetears.enforcement.no_whole_reads.schema import (
     COPY_PREFIX,
     MIN_REASON,
     NEAREST_METHODS,
+    SPATIAL_METHODS,
     TENANT_COLUMNS,
     _DeclaredTable,
     SchemaCatalog,
@@ -1273,6 +1274,13 @@ def _key_hit(
         for name, _ in purposed
     }
     purposed = [(name, columns) for name, columns in purposed if fits[name] is not False]
+    # an R*Tree is no btree: no leading prefix of its coordinates keys it, and a read bounding every one walks it
+    # (:func:`_spatial_hit`); it takes no part in the prefix rules below
+    spatial = _spatial_indexes(purposed, reader, relation)
+    if spatial:
+        purposed = [(name, columns) for name, columns in purposed if name not in spatial]
+        if _spatial_hit(spatial, eq | ranged | bounded, reader, relation):
+            return True
     nearest = _nearest_hit(purposed, level, index, reader, relation)
     covering = [key for key in primary if _covers(key, eq, tenants)]
     if covering:
@@ -1681,6 +1689,60 @@ def _nearest_hit(
         found = declared.indexes.get(name) if declared is not None else None
         if columns[:1] == (level.nearest[1],) and found is not None and found.method in NEAREST_METHODS:
             reader.schema.use(table if table is not None else declared.name, name, reader.names)  # type: ignore[union-attr]
+            return True
+    return False
+
+
+def _spatial_indexes(
+    purposed: list[tuple[str, tuple[str, ...]]], reader: Reader, relation: _Relation
+) -> dict[str, tuple[str, ...]]:
+    """the relation's purposed R*Trees (:data:`~.schema.SPATIAL_METHODS`), by name onto their coordinate columns.
+
+    :param purposed: the relation's indexes whose purpose names the reader, ``(name, columns)``
+    :ptype purposed: list[tuple[str, tuple[str, ...]]]
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :param relation: the relation
+    :ptype relation: _Relation
+    :return: the R*Trees among them
+    :rtype: dict[str, tuple[str, ...]]
+    """
+    table = bare_table(relation.name)
+    declared = reader.schema.table(relation.name) if table is not None else reader.template
+    if declared is None:
+        return {}
+    found = {}
+    for name, columns in purposed:
+        index = declared.indexes.get(name)
+        if index is not None and index.method in SPATIAL_METHODS:
+            found[name] = columns
+    return found
+
+
+def _spatial_hit(spatial: dict[str, tuple[str, ...]], bound: set[str], reader: Reader, relation: _Relation) -> bool:
+    """whether a read walks a purposed R*Tree: it bounds every coordinate column of the tree by a bound value (each
+    ``>=`` / ``<=`` / ``=`` of a placeholder: a box's overlap or containment), so SQLite's ``xBestIndex`` answers it
+    from the tree and reads only the entries the box can reach (the tree is credited as used). A read leaving one
+    coordinate unbounded (one axis of two) may reach every entry along it: not keyed by the tree.
+
+    :param spatial: the relation's purposed R*Trees, by name onto their coordinates (:func:`_spatial_indexes`)
+    :ptype spatial: dict[str, tuple[str, ...]]
+    :param bound: the relation's columns bound by equality or a range
+    :ptype bound: set[str]
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :param relation: the relation
+    :ptype relation: _Relation
+    :return: whether it does
+    :rtype: bool
+    """
+    table = bare_table(relation.name)
+    for name, columns in spatial.items():
+        if columns and set(columns) <= bound:
+            if table is not None:
+                reader.schema.use(table, name, reader.names)
+            elif reader.template is not None:
+                reader.schema.use(reader.template.name, name, reader.names)
             return True
     return False
 
