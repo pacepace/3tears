@@ -300,7 +300,7 @@ def looks_taken(
 #: equal batches, measured by ``tests/test_simulated_looks.py`` at its seed (which pins every value here). Past the
 #: last count it only grows.
 UNPLANNED_FALSE_SEPARATION: Final[Mapping[int, float]] = MappingProxyType(
-    {1: 0.05, 2: 0.08, 3: 0.105, 4: 0.12, 5: 0.135}
+    {1: 0.05, 2: 0.097, 3: 0.112, 4: 0.125, 5: 0.129}
 )
 
 

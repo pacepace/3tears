@@ -164,7 +164,7 @@ def _bundle(
                         host_measures={"field_accuracy": round(value, 6), "fields_stripped": 5.0},
                         scored_at=(began + timedelta(seconds=case_index)).isoformat(),
                         judge_rescores=[
-                            JudgeRescore(dims=["d"], prior_judge_error="cut off", judge_model="judge")
+                            JudgeRescore(dims=["extract.d"], prior_judge_error="cut off", judge_model="judge", cost_usd=None)
                             for _ in range(rescores if side == 0 and case_index == cases[0] else 0)
                         ],
                     )
@@ -197,9 +197,11 @@ def test_a_campaign_that_added_cases_and_read_again_reads_two_looks() -> None:
     assert bundle.reading_scope.looks == Looks(planned=None, taken=2)
 
 
-def test_arms_launched_alone_then_more_cases_launched_alone_reads_two_looks() -> None:
+def test_more_cases_launched_alone_on_each_arm_are_a_look_each_an_upper_bound() -> None:
+    """Each arm's first run, launched alone, makes the first look; each later run launched alone is a launch of its own,
+    so more cases run on the two arms in two calls count two looks, whether or not anyone read between them."""
     bundle, _, _ = _bundle([(None, 0, range(20)), (None, 120, range(20, 40))])
-    assert bundle.reading_scope.looks == Looks(planned=None, taken=2)
+    assert bundle.reading_scope.looks == Looks(planned=None, taken=3)
 
 
 def test_a_re_judge_of_the_contrast_s_runs_is_one_more_look() -> None:
@@ -275,8 +277,8 @@ def test_the_family_reads_its_verdicts_at_alpha_over_the_plan(planned: int | Non
 
 def test_a_p_between_alpha_over_three_and_alpha_separates_with_no_plan_and_not_under_a_plan_of_three() -> None:
     """The branch the plan exists for: one seeded contrast whose adjusted p falls between α/3 and α."""
-    unplanned, _, _ = _bundle([("g1", 0, range(30))], shift=0.035, seed="between")
-    planned, _, _ = _bundle([("g1", 0, range(30))], planned=3, shift=0.035, seed="between")
+    unplanned, _, _ = _bundle([("g1", 0, range(30))], shift=0.03, seed="between-0")
+    planned, _, _ = _bundle([("g1", 0, range(30))], planned=3, shift=0.03, seed="between-0")
 
     def accuracy(bundle: AnalysisContextBundle):  # type: ignore[no-untyped-def]  # a family comparison
         return next(
