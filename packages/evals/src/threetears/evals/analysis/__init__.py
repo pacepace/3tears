@@ -105,8 +105,6 @@ from threetears.evals.analysis.campaign_bundle import ArmSpelling, CampaignBundl
 from threetears.evals.analysis.checks import (
     BlindRead,
     Check,
-    CheckFigures,
-    CheckSample,
     Corrected,
     Looks,
     Preference,
@@ -472,8 +470,6 @@ __all__ = [
     "ArmIdentity",
     "BlindRead",
     "Check",
-    "CheckFigures",
-    "CheckSample",
     "Coordinate",
     "Corrected",
     "IdentityState",

@@ -20,14 +20,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
 from threetears.evals.kernel.text_block import one_line
 
-if TYPE_CHECKING:
-    from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-
-__all__ = ["RunEnding", "StoppedShort", "bundle_stopped_short", "stopped_short", "unfinished_opening"]
+__all__ = ["RunEnding", "StoppedShort", "stopped_short"]
 
 #: The one status a run's evidence is whole under.
 _FINISHED: Final = "completed"
@@ -133,71 +130,3 @@ def stopped_short(endings: Iterable[RunEnding]) -> StoppedShort | None:
     """
     short = tuple(ending for ending in endings if ending.status != _FINISHED)
     return StoppedShort(short) if short else None
-
-
-def bundle_stopped_short(bundle: AnalysisContextBundle) -> StoppedShort | None:
-    """Whether a reading over ``bundle`` may open with a verdict, as every page asks it: None when it may, else the
-    member runs that did not finish (:func:`stopped_short`), each with why its
-    record says it ended (``RunSummary.ended_because``; none on a bundle assembled before that was carried).
-
-    :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
-    :return: None when every member run completed; else the unfinished runs, in the bundle's order.
-    :rtype: StoppedShort | None
-    """
-    reasons = {summary.run_id: summary.ended_because for summary in bundle.run_summaries}
-    return stopped_short(
-        RunEnding(run_id=run_id, status=status, reason=reasons.get(run_id))
-        for run_id, status in bundle.incomplete_runs.items()
-    )
-
-
-def _unfinished_sentences(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:
-    """What stopped each unfinished run of ``bundle``, a sentence each with its closing stop, as a page opens with
-    them in place of a verdict; empty when every run completed (:func:`bundle_stopped_short`).
-
-    A run is named by its arm (``v2's run``), by its id too where the arm has several runs, and as ``The run`` where
-    the bundle reads one arm; a run the realized design places in no arm by its id.
-
-    :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
-    :param arm: Names an arm by its variant key, as every table of the report does.
-    :ptype arm: Callable[[str], str]
-    :return: The sentences.
-    :rtype: list[str]
-    """
-    short = bundle_stopped_short(bundle)
-    if short is None:
-        return []
-    design = bundle.design
-    placed = [*([design.control_arm] if design.control_arm is not None else []), *design.contrasts]
-    arm_of = {run_id: each for each in placed for run_id in each.run_ids}
-
-    def who(ending: RunEnding) -> str:
-        of = arm_of.get(ending.run_id)
-        if of is None:
-            return f"Run {ending.run_id}"
-        if len(placed) == 1 and len(of.run_ids) == 1:
-            return "The run"
-        return f"{arm(of.variant_key)}'s run{'' if len(of.run_ids) == 1 else f' {ending.run_id}'}"
-
-    return [f"{sentence.rstrip('.')}." for sentence in short.sentences(who)]
-
-
-def unfinished_opening(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> tuple[str, str] | None:
-    """What a reading over ``bundle`` opens with in place of a verdict where a run of it did not finish, or None when
-    every run completed: what stopped each run, and that followed by what the readings below still count and the remedy
-    (:meth:`StoppedShort.pooled`).
-
-    :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
-    :param arm: Names an arm by its variant key, as every table of the report does.
-    :ptype arm: Callable[[str], str]
-    :return: What stopped the runs, then the whole opening; None when every run completed.
-    :rtype: tuple[str, str] | None
-    """
-    short = bundle_stopped_short(bundle)
-    if short is None:
-        return None
-    stopped = " ".join(_unfinished_sentences(bundle, arm))
-    return stopped, f"{stopped} {short.pooled()}."

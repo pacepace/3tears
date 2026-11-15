@@ -29,7 +29,7 @@ command line or an action prints changed, and no digest, fingerprint or golden m
 - The report input's builder is numbers: `analysis/report/input_build.py` is now `analysis/report_input_build.py`,
   and the names it read from the page moved down with it (`declared_arm_names`, `printed_arm_labels`,
   `trial_dimension` and `measure_name_of` to `analysis/style.py`; `bundle_stopped_short` to
-  `analysis/run_ending.py`).
+  `analysis/completeness.py`).
 
 **For hosts:** nothing, if you import from the public roots. A stored bundle or report input without the new fields
 reads as it did. An import written against a module below a root follows the moves above; none has a forwarding

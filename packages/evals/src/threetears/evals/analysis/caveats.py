@@ -23,7 +23,8 @@ from typing import Final, Literal, Protocol
 from threetears.evals.analysis.reading_states import CaveatClass
 from threetears.evals.analysis.report_input import CaveatEntry
 
-__all__ = ["CLASS_OF_KIND", "REMEDY_OF_REASON", "Remedy", "from_legacy", "remedy"]
+#: Nothing is declared yet: the tables' readers are the raisers and the page that renders the first screen.
+__all__: list[str] = []
 
 #: The class of each caveat kind; None for a kind that only ever lands in the method section. A kind absent here (an
 #: analyst's own) has no class and ranks after every class.

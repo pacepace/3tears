@@ -1073,8 +1073,6 @@
 "threetears.evals.analysis.ChartStatus": "provisional",
 "threetears.evals.analysis.Check": "provisional",
 "threetears.evals.analysis.check_names": "host-contract",
-"threetears.evals.analysis.CheckFigures": "provisional",
-"threetears.evals.analysis.CheckSample": "provisional",
 "threetears.evals.analysis.compare_two_runs": "provisional",
 "threetears.evals.analysis.ComparedCell": "provisional",
 "threetears.evals.analysis.comparison_sets": "provisional",

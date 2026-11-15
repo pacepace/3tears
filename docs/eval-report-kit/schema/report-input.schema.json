@@ -1703,8 +1703,35 @@
      "type": "string"
     },
     "sample": {
-     "$ref": "#/$defs/CheckSample",
-     "description": "What was read."
+     "description": "Whether the items were drawn at random, chosen, or no sample stands behind the read.",
+     "enum": [
+      "random",
+      "selected",
+      "none"
+     ],
+     "type": "string"
+    },
+    "answered": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Items the reader answered."
+    },
+    "skipped": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Items the reader skipped."
     },
     "planned_items": {
      "anyOf": [
@@ -2045,13 +2072,62 @@
     "sample": {
      "anyOf": [
       {
-       "$ref": "#/$defs/CheckSample"
+       "enum": [
+        "random",
+        "selected",
+        "none"
+       ],
+       "type": "string"
       },
       {
        "type": "null"
       }
      ],
-     "description": "What it was read on."
+     "description": "Whether the items it was read on were drawn at random, chosen, or no sample stands behind it."
+    },
+    "sample_results": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Results read."
+    },
+    "sample_cases": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Distinct cases behind them."
+    },
+    "skipped": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Items a reader skipped."
+    },
+    "read_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The blind read the sample is, by id."
     },
     "result": {
      "description": "met, not_met, undecided or insufficient.",
@@ -2101,47 +2177,6 @@
      ],
      "description": "Why the result is not met, where a shared reason says it."
     },
-    "figures": {
-     "anyOf": [
-      {
-       "$ref": "#/$defs/CheckFigures"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "Its figures."
-    },
-    "reading": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "The reading a check of the rig covers."
-    },
-    "covers_arms": {
-     "description": "The arms a check of the rig covers.",
-     "items": {
-      "type": "string"
-     },
-     "type": "array"
-    }
-   },
-   "required": [
-    "instrument",
-    "against",
-    "result"
-   ],
-   "type": "object"
-  },
-  "CheckFigures": {
-   "additionalProperties": false,
-   "description": "A check's figures, each left out where the check does not compute it.",
-   "properties": {
     "kappa": {
      "anyOf": [
       {
@@ -2270,68 +2305,8 @@
       }
      ],
      "description": "Its adjusted p."
-    }
-   },
-   "type": "object"
-  },
-  "CheckSample": {
-   "additionalProperties": false,
-   "description": "What a check, or a blind read, was read on.",
-   "properties": {
-    "kind": {
-     "description": "Whether the items were drawn at random, chosen, or no sample stands behind the read.",
-     "enum": [
-      "random",
-      "selected",
-      "none"
-     ],
-     "type": "string"
     },
-    "results": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "Results read."
-    },
-    "cases": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "Distinct cases behind them."
-    },
-    "answered": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "Items a reader answered."
-    },
-    "skipped": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "description": "Items a reader skipped."
-    },
-    "read_id": {
+    "reading": {
      "anyOf": [
       {
        "type": "string"
@@ -2340,11 +2315,20 @@
        "type": "null"
       }
      ],
-     "description": "The blind read the sample is, by id."
+     "description": "The reading a check of the rig covers."
+    },
+    "covers_arms": {
+     "description": "The arms a check of the rig covers.",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
     }
    },
    "required": [
-    "kind"
+    "instrument",
+    "against",
+    "result"
    ],
    "type": "object"
   },

@@ -84,7 +84,7 @@ from threetears.evals.analysis.report.aspect.contrasts import contrast_evidence
 from threetears.evals.analysis.report.verdict import led_sentences, unfinished_line
 from threetears.evals.analysis.report.words import heading_case
 from threetears.evals.analysis.style import CANNOT_TELL_APART
-from threetears.evals.analysis.run_ending import bundle_stopped_short
+from threetears.evals.analysis.completeness import bundle_stopped_short
 
 __all__ = ["build_campaign_report"]
 
@@ -295,7 +295,7 @@ def _stopped_blocks(
     """What opens the page in place of a verdict where an aspect's runs did not all finish: for each such aspect, the
     line its own page opens with (:func:`~threetears.evals.analysis.report.verdict.unfinished_line`, or the failed
     setup's), named by its aspect where the campaign reads several. Whether an aspect has a verdict to lead with is the
-    one decision every surface asks (:func:`~threetears.evals.analysis.run_ending.bundle_stopped_short`). Empty
+    one decision every surface asks (:func:`~threetears.evals.analysis.completeness.bundle_stopped_short`). Empty
     where every run of every aspect completed."""
     several = len(campaign.aspects) > 1
     labels = readings.arm_labels()

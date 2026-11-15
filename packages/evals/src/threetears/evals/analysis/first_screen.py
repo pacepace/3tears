@@ -32,7 +32,7 @@ from typing import Final, NamedTuple
 from threetears.evals.analysis.reading_states import CaveatClass, ReadingState, Reason
 from threetears.evals.analysis.report_input import CallRead, CaveatEntry, FirstScreen, Gate
 
-__all__ = ["RANKS", "REASONS_SHOWN", "Rank", "first_screen", "subsumed"]
+__all__ = ["first_screen"]
 
 #: How many reasons the trust slot shows before it counts the rest.
 REASONS_SHOWN: Final = 3

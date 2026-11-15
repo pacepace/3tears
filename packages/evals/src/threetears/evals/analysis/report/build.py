@@ -86,7 +86,7 @@ from threetears.evals.analysis.report.verdict import unfinished_line, verdict_li
 from threetears.evals.analysis.report.words import input_arm_tags, reader_arm_labels
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.kernel.campaign import EvalAnalysis
-from threetears.evals.analysis.run_ending import bundle_stopped_short
+from threetears.evals.analysis.completeness import bundle_stopped_short
 
 
 def analysis_writer(analysis: EvalAnalysis) -> str:
@@ -274,7 +274,7 @@ class AnalysisLead(NamedTuple):
     :ivar verdict: The verdict alone; over evidence with a run that did not finish, what stopped it, with no verdict
         on the aspect it stopped.
     :ivar stopped: Whether a run of the evidence did not finish
-        (:func:`~threetears.evals.analysis.run_ending.bundle_stopped_short`), so :attr:`verdict` opens on what
+        (:func:`~threetears.evals.analysis.completeness.bundle_stopped_short`), so :attr:`verdict` opens on what
         stopped it and the line leads with it.
     """
 

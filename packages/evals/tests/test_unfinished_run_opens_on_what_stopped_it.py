@@ -78,7 +78,7 @@ from threetears.evals.providers.failures import error_from_response
 from threetears.evals.quick import EXIT_OK, run_cli
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.schema.models import RUN_STATUSES
-from threetears.evals.analysis.run_ending import bundle_stopped_short
+from threetears.evals.analysis.completeness import bundle_stopped_short
 
 #: Every way a run ends short, with how each reads after the run's name: every status but ``completed``. A run
 #: interrupted and never taken up again is still ``running`` when it is read.

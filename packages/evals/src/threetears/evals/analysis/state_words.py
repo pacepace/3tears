@@ -23,7 +23,8 @@ from typing import Final, NamedTuple
 
 from threetears.evals.analysis.reading_states import Coordinate, IdentityState, ReadingState, Reason
 
-__all__ = ["STATE_WORDS", "StateWord", "state_word"]
+#: Nothing is declared yet: the table's readers are the call sites that move onto the shared words.
+__all__: list[str] = []
 
 
 class StateWord(NamedTuple):

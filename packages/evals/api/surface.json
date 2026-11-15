@@ -5361,16 +5361,6 @@
       "signature": "check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str, str]",
       "tier": "host-contract"
     },
-    "threetears.evals.analysis.CheckFigures": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.CheckSample": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.compare_two_runs": {
       "kind": "function",
       "signature": "",

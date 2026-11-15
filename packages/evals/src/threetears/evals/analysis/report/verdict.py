@@ -46,7 +46,7 @@ from threetears.evals.analysis.bundle.schema import (
     FailCause,
 )
 from threetears.evals.analysis.quantities import is_money
-from threetears.evals.analysis.run_ending import unfinished_opening
+from threetears.evals.analysis.completeness import unfinished_opening
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import cannot_tell_apart, measure_name
 from threetears.evals.analysis.report.words import PASS_RATE, comparison_words, judged_heading
@@ -238,7 +238,7 @@ def arm_run_statuses(bundle: AnalysisContextBundle) -> dict[str, frozenset[str]]
 
 def unfinished_line(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> VerdictLine | None:
     """The line a page opens with in place of a verdict where a run of ``bundle`` did not finish, or None when every
-    run completed (:func:`~threetears.evals.analysis.run_ending.unfinished_opening`). Nothing in it is a decision, so
+    run completed (:func:`~threetears.evals.analysis.completeness.unfinished_opening`). Nothing in it is a decision, so
     nothing is set in bold.
 
     :param bundle: The campaign's evidence.

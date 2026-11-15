@@ -23,43 +23,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis.reading_states import Maker, Reason, StateOf
 from threetears.evals.kernel.evidence_tiers import CriterionState
 
-__all__ = ["BlindRead", "Check", "CheckFigures", "CheckSample", "Corrected", "Looks", "Preference", "Rescore"]
-
-#: A figure with its interval's two ends.
-_Interval = tuple[float, float]
+__all__ = ["BlindRead", "Check", "Corrected", "Looks", "Preference", "Rescore"]
 
 
 class _Shape(BaseModel):
     """Immutable, and refusing a key it does not declare."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-
-
-class CheckSample(_Shape):
-    """What a check, or a blind read, was read on."""
-
-    kind: Literal["random", "selected", "none"] = Field(
-        description="Whether the items were drawn at random, chosen, or no sample stands behind the read."
-    )
-    results: int | None = Field(default=None, description="Results read.")
-    cases: int | None = Field(default=None, description="Distinct cases behind them.")
-    answered: int | None = Field(default=None, description="Items a reader answered.")
-    skipped: int | None = Field(default=None, description="Items a reader skipped.")
-    read_id: str | None = Field(default=None, description="The blind read the sample is, by id.")
-
-
-class CheckFigures(_Shape):
-    """A check's figures, each left out where the check does not compute it."""
-
-    kappa: float | None = Field(default=None, description="Agreement beyond chance.")
-    kappa_interval: _Interval | None = Field(default=None, description="The interval on it.")
-    lean: float | None = Field(default=None, description="The instrument's lean toward one arm.")
-    lean_interval: _Interval | None = Field(default=None, description="The interval on it.")
-    half_width: float | None = Field(default=None, description="The half-width the check was read at.")
-    reads: int | None = Field(default=None, description="Reads behind the figures.")
-    delta: float | None = Field(default=None, description="The difference between identical arms.")
-    interval: _Interval | None = Field(default=None, description="The interval on that difference.")
-    p_adjusted: float | None = Field(default=None, description="Its adjusted p.")
 
 
 class Check(_Shape):
@@ -73,10 +43,25 @@ class Check(_Shape):
         default_factory=list,
         description="The arms whose candidate model is of the family of the model checked against.",
     )
-    sample: CheckSample | None = Field(default=None, description="What it was read on.")
+    sample: Literal["random", "selected", "none"] | None = Field(
+        default=None,
+        description="Whether the items it was read on were drawn at random, chosen, or no sample stands behind it.",
+    )
+    sample_results: int | None = Field(default=None, description="Results read.")
+    sample_cases: int | None = Field(default=None, description="Distinct cases behind them.")
+    skipped: int | None = Field(default=None, description="Items a reader skipped.")
+    read_id: str | None = Field(default=None, description="The blind read the sample is, by id.")
     result: CriterionState = Field(description="met, not_met, undecided or insufficient.")
     reason: Reason | None = Field(default=None, description="Why the result is not met, where a shared reason says it.")
-    figures: CheckFigures | None = Field(default=None, description="Its figures.")
+    kappa: float | None = Field(default=None, description="Agreement beyond chance.")
+    kappa_interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
+    lean: float | None = Field(default=None, description="The instrument's lean toward one arm.")
+    lean_interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
+    half_width: float | None = Field(default=None, description="The half-width the check was read at.")
+    reads: int | None = Field(default=None, description="Reads behind the figures.")
+    delta: float | None = Field(default=None, description="The difference between identical arms.")
+    interval: tuple[float, float] | None = Field(default=None, description="The interval on that difference.")
+    p_adjusted: float | None = Field(default=None, description="Its adjusted p.")
     reading: str | None = Field(default=None, description="The reading a check of the rig covers.")
     covers_arms: list[str] = Field(default_factory=list, description="The arms a check of the rig covers.")
 
@@ -86,7 +71,11 @@ class BlindRead(_Shape):
 
     read_id: str = Field(description="The read's id.")
     made_by: Maker = Field(description="Whether a person or a model read it.")
-    sample: CheckSample = Field(description="What was read.")
+    sample: Literal["random", "selected", "none"] = Field(
+        description="Whether the items were drawn at random, chosen, or no sample stands behind the read."
+    )
+    answered: int | None = Field(default=None, description="Items the reader answered.")
+    skipped: int | None = Field(default=None, description="Items the reader skipped.")
     planned_items: int | None = Field(default=None, description="The items the read planned.")
 
 
@@ -114,10 +103,10 @@ class Corrected(_Shape):
     result: CriterionState | None = Field(default=None, description="Whether the corrected reading confirms.")
     state: StateOf | None = Field(default=None, description="Its state where it is not counted.")
     estimate: float | None = Field(default=None, description="The corrected difference.")
-    interval: _Interval | None = Field(default=None, description="The interval on it.")
+    interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
     level: str | None = Field(default=None, description="The interval's level.")
     lean: float | None = Field(default=None, description="The judge's lean the correction removes.")
-    lean_interval: _Interval | None = Field(default=None, description="The interval on it.")
+    lean_interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
     labelled_cases: int | None = Field(default=None, description="Cases both the judge and the other reader read.")
     identical_cases: int | None = Field(default=None, description="Of those, the cases they read alike.")
     read_id: str | None = Field(default=None, description="The blind read the correction rests on.")
@@ -131,7 +120,7 @@ class Rescore(_Shape):
     repeated_results: int | None = Field(default=None, description="Results scored more than once.")
     repeated_cases: int | None = Field(default=None, description="Distinct cases behind them.")
     fail_given_pass: float | None = Field(default=None, description="How often a passed reply fails on a re-score.")
-    fail_given_pass_interval: _Interval | None = Field(default=None, description="The interval on it.")
+    fail_given_pass_interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
     ceiling_low: float | None = Field(default=None, description="The low end of the ceiling the noise puts on pass^k.")
     ceiling_high: float | None = Field(default=None, description="Its high end.")
 

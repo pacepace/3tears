@@ -4,8 +4,9 @@ The report input and the bundle gained every optional field the first-screen wor
 caveat list, the first-screen value, the shapes of a check), all unset. Contracts held here:
 
 - **Built fixtures digest as they did.** For each hot-path campaign whose bundle is the same on every platform, the
-  report input built from it (as a page reads it, and as an analyst's snapshot counts it) has the digest it had before
-  the fields existed (``fixtures/shape_move/input_digests.json``, written from the tree before the move). The bundles'
+  report input built from it (as a page reads it, and as an analyst's snapshot counts it) is the document it was
+  before the fields existed, by the digest of the whole document with its floats rounded as a fingerprint rounds them
+  (``fixtures/shape_move/input_digests.json``, written from the tree before the move). The bundles'
   own fingerprints and every page are held by the hot-path oracle.
 - **A document with no new field set holds no new key.** No built input and no assembled bundle, on any hot-path
   campaign, dumps a key the move added, at any depth: so it dumps byte for byte as it did.
@@ -20,6 +21,7 @@ caveat list, the first-screen value, the shapes of a check), all unset. Contract
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -38,6 +40,7 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.service import assemble_campaign_bundle
+from threetears.evals.schema.hashing import identity_json
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 PINS = FIXTURES / "shape_move" / "input_digests.json"
@@ -100,10 +103,17 @@ def _campaign(name: str) -> CampaignBundle:
 
 def _digests(name: str) -> dict[str, str]:
     bundle = _campaign(name)
-    return {
-        "page": report_input_digest(report_input(bundle)),
-        "analyst": report_input_digest(report_input(bundle, counted=True, per_slice=2, excerpt="failure")),
-    }
+    page, analyst = report_input(bundle), report_input(bundle, counted=True, per_slice=2, excerpt="failure")
+    assert report_input_digest(page) != report_input_digest(analyst)
+    return {"page": _rounded_digest(page), "analyst": _rounded_digest(analyst)}
+
+
+def _rounded_digest(built: ReportInput) -> str:
+    """The digest of an input's whole document as a bundle's fingerprint reads one: every float rounded to twelve
+    significant figures first (``identity_json``), since the last bits of a computed float differ between the
+    platforms the suite runs on, and the pins are one file."""
+    document = built.model_dump(mode="json", by_alias=True)
+    return hashlib.sha256(identity_json(document).encode("utf-8")).hexdigest()
 
 
 def _keys(node: Any) -> set[str]:
