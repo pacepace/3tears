@@ -822,3 +822,52 @@ def test_a_ring_empty_or_restore_declaration_covers_the_ring_alone(tmp_path: Pat
     assert any(" in empty_items: " in finding for finding in findings), findings
     assert any(" in count_items: " in finding for finding in findings), findings
     assert any(" in read_ring: " in finding for finding in findings), findings
+
+
+_EMPTIED = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.declared import whole_read
+
+    ITEMS = TableSchema(name="items", primary_key="id", columns=[])
+
+    def emptied(db):
+        return whole_read(
+            db.execute("DELETE FROM items"),
+            kind="EMPTY_KIND",
+            reason="the copy's complete rows replace it, so the table is emptied first",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_emptied_entry",
+            speed="tests/test_backup.py::test_emptied_speed",
+            UNTIL
+        )
+"""
+
+
+@pytest.mark.parametrize(
+    ("kind", "passes"),
+    [
+        ("cold_start", True),
+        ("schema_change", True),
+        ("rolling_upgrade", True),
+        ("every_state_answer", False),
+        ("backup_verification", False),
+    ],
+)
+def test_a_whole_delete_is_let_through_by_the_kinds_that_replace_a_copy_whole(
+    tmp_path: Path, kind: str, passes: bool
+) -> None:
+    """Flips if emptying a table whose complete rows then replace it (a copy's whole apply, coordinator 2026-11-14) is
+    still reported under the kind that staged the change (a cold start, a schema change, an older writer's whole
+    record), or if a kind that only reads (an every-state answer, a backup count) lets a whole delete through."""
+    proofs = _PROOFS + textwrap.indent(
+        "\ndef test_emptied_entry():\n    assert emptied\n\ndef test_emptied_speed():\n    budget_problem(emptied)\n",
+        "    ",
+    )
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "pkg"\nversion = "0.95.0"\n', encoding="utf-8")
+    module = _EMPTIED.replace("EMPTY_KIND", kind).replace(
+        "UNTIL", 'until="0.96.0",' if kind == "rolling_upgrade" else ""
+    )
+    findings = _findings(tmp_path, {"emptied.py": module}, proofs)
+    assert (findings == []) is passes, findings
+    if not passes:
+        assert any("in emptied: whole-delete items" in finding for finding in findings), findings
