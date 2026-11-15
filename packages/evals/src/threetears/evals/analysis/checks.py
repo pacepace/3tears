@@ -11,7 +11,8 @@ check exactly as before (:func:`tier_checks` reads those two off it), and nothin
 - :func:`reviewer_check` is a model that answered a blind read, checked against people: by its kappa, and by its lean
   toward an arm over the pair items both read (the model's difference between the arms less the person's). Kappa is
   blind to a lean the model and a judge share, so the lean is the check that can see it. ``met`` is an equivalence
-  reading: the lean's interval inside ``±δ`` over at least :data:`REVIEWER_MET_MIN_PAIR_ITEMS` items.
+  reading: the lean shown inside ``±δ`` by the bounded equivalence test over at least
+  :data:`REVIEWER_MET_MIN_PAIR_ITEMS` items.
 - :func:`blind_read_checks` is every check one closed blind read yields: the judge against people, the judge against
   each model that answered (against itself, where the model is the judge's own), and each such model against people.
 - :func:`speaking_check` is which of a judge's checks speaks for it on a criterion: people's once decided, else a
@@ -42,7 +43,7 @@ from threetears.evals.analysis.agreement import (
     judge_sort_key,
     person_scores_by_result,
 )
-from threetears.evals.analysis.stats import INTERVAL_LEVEL, t_critical_two_sided
+from threetears.evals.analysis.stats import INTERVAL_LEVEL, paired_equivalence, t_critical_two_sided
 from threetears.evals.kernel.evidence_tiers import (
     CriterionState,
     JudgeEvidenceTier,
@@ -71,9 +72,8 @@ __all__ = ["Check", "Corrected", "Looks", "Rescore", "blind_read_checks", "judge
 #: What a check checks: a judge, a model that answered a blind read (a reviewer), or the rig.
 CheckKind = Literal["judge", "reviewer", "rig"]
 
-#: The fewest pair items a reviewer's lean is read as ``met`` over. An equivalence reading needs this many before its
-#: interval can sit inside ``±δ`` at all often: at 40 it rarely does, and inside ``±0.10`` with 80% chance takes about
-#: 105 to 260 on pass/fail. ``tests/test_simulated_checks.py`` holds it.
+#: The fewest pair items a reviewer's lean is read as ``met`` over. On pass/fail an unbiased reviewer is shown inside
+#: ``±0.10`` in about 40% of reads at 105 items and 98% at 260, never at 40 (``tests/test_simulated_checks.py``).
 REVIEWER_MET_MIN_PAIR_ITEMS: Final = 40
 
 #: The fewest pair items a reviewer's lean demotes it from. A floor in the safe direction: a reviewer shown to lean only
@@ -309,24 +309,26 @@ def _lean_interval(leans: Sequence[float]) -> tuple[float | None, tuple[float, f
 
 
 def _reviewer_result(
-    kappa: TierCriterion, pair_items: int, interval: tuple[float, float] | None, delta: float
+    kappa: TierCriterion, leans: Sequence[float], interval: tuple[float, float] | None, delta: float, width: float
 ) -> tuple[CriterionState, Reason | None]:
     """The reviewer's own check, its rows in the order they bind: below the bar, then a lean, then nothing to read a
-    lean over, then the equivalence reading, else undecided."""
+    lean over, then the equivalence reading, else undecided.
+
+    The equivalence reading is the bounded test (:func:`~threetears.evals.analysis.stats.paired_equivalence`) on the
+    leans, which lie within twice the scale's width: a t interval inside ``±δ`` claimed it 5% of the time at the
+    bound over 60 pass/fail items (a few rare leans give an interval far too narrow), where 2.5% was its stated rate.
+    """
+    pair_items = len(leans)
     if kappa.state == "not_met":
         return "not_met", "instrument_below_bar"
     if interval is not None and pair_items >= REVIEWER_LEAN_MIN_PAIR_ITEMS and (interval[0] > 0 or interval[1] < 0):
         return "not_met", "instrument_leans"
     if pair_items == 0:
         return "insufficient", "not_recorded"
-    if (
-        pair_items >= REVIEWER_MET_MIN_PAIR_ITEMS
-        and interval is not None
-        and -delta < interval[0]
-        and interval[1] < delta
-        and kappa.state == "met"
-    ):
-        return "met", None
+    if pair_items >= REVIEWER_MET_MIN_PAIR_ITEMS and kappa.state == "met":
+        equivalent, _ = paired_equivalence(leans, delta, value_range=(-width, width))
+        if equivalent:
+            return "met", None
     return "undecided", None
 
 
@@ -345,8 +347,9 @@ def reviewer_check(
 ) -> Check:
     """A model that answered a blind read, checked against people on one criterion: its kappa, and its lean.
 
-    ``met`` is an equivalence reading: at least :data:`REVIEWER_MET_MIN_PAIR_ITEMS` pair items, the lean's interval
-    inside ``±δ``, and the kappa criterion ``met`` by its rule. ``not_met`` is the kappa shown below its bar
+    ``met`` is an equivalence reading: at least :data:`REVIEWER_MET_MIN_PAIR_ITEMS` pair items, the lean shown inside
+    ``±δ`` by the bounded equivalence test (valid at every n on coarse scores, as a t interval is not), and the kappa
+    criterion ``met`` by its rule. ``not_met`` is the kappa shown below its bar
     (``instrument_below_bar``: the judge reads as not checked against this model on the criterion), or the lean's
     interval excluding zero over :data:`REVIEWER_LEAN_MIN_PAIR_ITEMS` items or more (``instrument_leans``: an
     improvement read by a judge checked only against this model is set aside for the arm it leans toward). With no
@@ -383,7 +386,7 @@ def reviewer_check(
     agreement = instrument_agreement(scale, kappa_pairs)
     kappa = calibration_criterion(agreement.n, agreement.results, agreement.agreement, agreement.interval)
     lean, interval = _lean_interval(leans)
-    result, reason = _reviewer_result(kappa, len(leans), interval, delta)
+    result, reason = _reviewer_result(kappa, leans, interval, delta, float(high - low))
     return Check(
         kind="reviewer",
         instrument=reviewer,
