@@ -30,6 +30,7 @@ from threetears.evals.schema import (
     StopReason,
     bind_cell_identity,
 )
+from threetears.evals.schema.call_inputs import bind_call_inputs
 from threetears.evals.testing import (
     CompletionConformanceFailure,
     ReplayedCompletion,
@@ -246,7 +247,7 @@ async def test_each_cell_is_served_the_call_recorded_for_it_when_two_arms_ask_on
     cells = [line["cell"] for line in _lines(path)]
     assert cells[0] == {"subject": "a", "variant": "variant-a", "case": "t", "repeat": 0, "ask": 0}
     assert [cell["ask"] for cell in cells[:5]] == [0, 0, 0, 0, 1] and cells[5] is None
-    assert all(line["recorder_version"] == RecordedCompletions.FORMAT_VERSION == 3 for line in _lines(path))
+    assert all(line["recorder_version"] == RecordedCompletions.FORMAT_VERSION == 4 for line in _lines(path))
 
     async def served(order: list[tuple[str, int]]) -> list[tuple[str, int, str]]:
         replay = RecordedCompletions.replay(path, settings=BUDGETED)
@@ -268,17 +269,113 @@ async def test_a_format_2_line_names_no_cell_and_is_served_by_repeat_index_then_
     lines = _lines(path)
     for line in lines:
         line["recorder_version"] = 2
-        del line["cell"]
+        del line["cell"], line["inputs"]
     path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
 
     client = RecordedCompletions.replay(path, settings=BUDGETED)
     with bind_cell_identity(_cell("a", 1)):
         assert (await client.generate(system=SYSTEM, user="Roll a die.")).content == "2"
     assert (await client.generate(system=SYSTEM, user="Roll a die.")).content == "4", "outside a cell: the first left"
-    # Recording onto it appends format-3 lines beside the format-2 ones, and the file is read whole.
+    # Recording onto it appends lines of this build's format beside the format-2 ones, and the file is read whole.
     await _record(path, ("Roll a die.", _Reply(content="6")))
-    assert [line["recorder_version"] for line in _lines(path)] == [2, 2, 3]
+    assert [line["recorder_version"] for line in _lines(path)] == [2, 2, 4]
     RecordedCompletions.check_covers(path, [RecordedPrompt(SYSTEM, "Roll a die.")] * 3, settings=BUDGETED)
+
+
+#: What a judge call over one page is asked about, as the judge service names it: the page by its stored document,
+#: the criterion by its prompt's digest.
+PAGE_INPUTS = {
+    "judge_prompt": "j" * 64,
+    "intent": "Write the report.",
+    "evidence": {"document": "d1", "snapshot": "s1"},
+}
+
+
+async def test_a_call_named_by_its_inputs_is_keyed_by_them_so_its_reworded_prompt_replays(tmp_path: Path) -> None:
+    """A call whose caller binds its inputs is keyed by them in place of its prompt, and the line keeps them (format
+    4): the same inputs asked over a reworded page are served the recorded answer; with none bound, the reworded
+    prompt is a miss, as any prompt-keyed call's is."""
+    path = tmp_path / "judge.jsonl"
+    inner = _FakeInner(_Reply(content="4"))
+    async with RecordedCompletions.record(inner, path, settings=BUDGETED) as client:
+        with bind_call_inputs(PAGE_INPUTS):
+            await client.generate(system=SYSTEM, user="Page: the total is 3.", response_format=SCHEMA)
+    (line,) = _lines(path)
+    assert line["recorder_version"] == 4 and line["inputs"] == PAGE_INPUTS
+    assert line["user_head"] == "Page: the total is 3.", "the prompt's head is kept, for inspection only"
+    by_prompt = tmp_path / "by-prompt.jsonl"
+    async with RecordedCompletions.record(_FakeInner(_Reply(content="4")), by_prompt, settings=BUDGETED) as client:
+        await client.generate(system=SYSTEM, user="Page: the total is 3.", response_format=SCHEMA)
+    assert _lines(by_prompt)[0]["key"] != line["key"] and _lines(by_prompt)[0]["inputs"] is None
+
+    replay = RecordedCompletions.replay(path, settings=BUDGETED)
+    with bind_call_inputs(PAGE_INPUTS):
+        served = await replay.generate(system=SYSTEM, user="Page: teh total is 3, reworded.", response_format=SCHEMA)
+    assert served.content == "4"
+    with pytest.raises(RecordingRefused, match="no call is recorded for the prompt 'Page: teh total"):
+        await RecordedCompletions.replay(path, settings=BUDGETED).generate(
+            system=SYSTEM, user="Page: teh total is 3, reworded.", response_format=SCHEMA
+        )
+
+
+async def test_a_call_whose_inputs_moved_is_refused_naming_each_input_that_differs(tmp_path: Path) -> None:
+    """A miss of a call keyed by its inputs names what was asked, then each input that differs from the recorded call
+    sharing the most of them, by its path, with the asked and recorded values, and the inputs that agree."""
+    path = tmp_path / "judge.jsonl"
+    async with RecordedCompletions.record(_FakeInner(_Reply(content="4")), path, settings=BUDGETED) as client:
+        with bind_call_inputs(PAGE_INPUTS):
+            await client.generate(system=SYSTEM, user="Page one.")
+    moved = {**PAGE_INPUTS, "evidence": {"document": "d2", "snapshot": "s1"}}
+
+    replay = RecordedCompletions.replay(path, settings=BUDGETED)
+    with bind_call_inputs(moved), pytest.raises(RecordingRefused) as refused:
+        await replay.generate(system=SYSTEM, user="Page one.")
+    said = str(refused.value)
+    assert "no call is recorded for the inputs {evidence: sha256:" in said and 'intent: "Write the report."' in said
+    assert re.search(r"\(call 0, key [0-9a-f]{12}, prompt 'Page one\.'\)", said), said
+    assert (
+        'the inputs differ at evidence.document (asked "d2", recorded "d1"), and agree on intent, judge_prompt' in said
+    )
+    assert said.endswith(refused.value.remedy) and refused.value.remedy.startswith("re-record")
+    # Two inputs moved: each is named.
+    both = {**PAGE_INPUTS, "intent": "Grade it.", "evidence": {"document": "d1", "snapshot": "s2"}}
+    with bind_call_inputs(both), pytest.raises(RecordingRefused) as refused:
+        await replay.generate(system=SYSTEM, user="Page one.")
+    assert 'differ at evidence.snapshot (asked "s2", recorded "s1"); intent (asked "Grade it."' in str(refused.value)
+
+
+async def test_a_format_3_recording_replays_a_call_that_now_names_its_inputs_by_its_prompt(tmp_path: Path) -> None:
+    """A recording made before its caller named a call's inputs keyed it by its prompt: a call naming its inputs now is
+    served by that prompt, so the file replays as it did, and a changed prompt is still a miss, which says the
+    recording keys none of its calls by inputs."""
+    path = tmp_path / "judge.jsonl"
+    await _record(path, ("Page one.", _Reply(content="4")))
+    lines = _lines(path)
+    for line in lines:
+        line["recorder_version"] = 3
+        del line["inputs"]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+
+    replay = RecordedCompletions.replay(path, settings=BUDGETED)
+    with bind_call_inputs(PAGE_INPUTS):
+        assert (await replay.generate(system=SYSTEM, user="Page one.")).content == "4"
+        with pytest.raises(RecordingRefused, match="the recording keeps no call keyed by its inputs, only by prompt"):
+            await replay.generate(system=SYSTEM, user="Page one, reworded.")
+
+
+async def test_lines_under_one_key_that_carry_other_inputs_refuse_the_file(tmp_path: Path) -> None:
+    path = tmp_path / "judge.jsonl"
+    async with RecordedCompletions.record(
+        _FakeInner(_Reply(content="4"), _Reply(content="5")), path, settings=BUDGETED
+    ) as client:
+        with bind_call_inputs(PAGE_INPUTS):
+            await client.generate(system=SYSTEM, user="Page one.")
+            await client.generate(system=SYSTEM, user="Page one.")
+    lines = _lines(path)
+    lines[1]["inputs"] = {**PAGE_INPUTS, "intent": "edited"}
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+    with pytest.raises(RecordingRefused, match="line 2 is not a recorded call: its inputs are not the ones"):
+        RecordedCompletions.replay(path, settings=BUDGETED)
 
 
 def _arm(arm: str, repeat: int, case: str = "t") -> CellIdentity:
@@ -750,6 +847,7 @@ def _good_line(**overrides: Any) -> dict[str, Any]:
         },
         "extra": {},
         "cell": None,
+        "inputs": None,
     }
     return {**line, **overrides}
 
@@ -784,6 +882,8 @@ def _good_line(**overrides: Any) -> dict[str, Any]:
         (json.dumps(_good_line(settings={"max_tokens": 16000, "seed": 7})), "seed"),
         (json.dumps({k: v for k, v in _good_line().items() if k != "sent_settings"}), "it lacks sent_settings"),
         (json.dumps(_good_line(sent_settings="high")), "its sent_settings are a JSON str, not an object or null"),
+        (json.dumps(_good_line(inputs="page 3")), "its inputs are a JSON str, not an object or null"),
+        (json.dumps({k: v for k, v in _good_line().items() if k != "inputs"}), "it lacks inputs"),
         (
             json.dumps(_good_line(sent_settings={"max_tokens": 0})),
             "its sent_settings are not request settings this build reads",

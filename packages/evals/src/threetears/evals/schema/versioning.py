@@ -447,7 +447,17 @@ CORE_SCHEMA_VERSION: int = 15
 #:   identity, key or digest. An older build refuses a row carrying it unless the row says this minor wrote it, and
 #:   then lists the purpose by name beside the ones it knows.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 19
+#: - **v15.20** — a judge's evidence can name what its text was rendered from: ``JudgeEvidence.inputs`` (default None:
+#:   the strings are the input themselves, as a conversation's transcript is, or the evidence was stored before the
+#:   field existed), on ``EvalTrace.judge_evidence``. The report writer's page names its stored document's digest, the
+#:   snapshot id it was written over and its open findings' digest, and a pair of pages names both in the order shown.
+#:   A recorded judge call over such evidence is keyed by them instead of by its prompt (recording format 4), so a word
+#:   a page prints differently moves no recording. Left out of the document when unset, so evidence naming none is
+#:   stored byte for byte as before. In no identity, key or digest: ``fingerprint_judged_output`` hashes the three
+#:   strings alone, so every label key is what it was. An older build reads such evidence without it, and a re-judge
+#:   there keys its calls by their prompts, as it did.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 20
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
