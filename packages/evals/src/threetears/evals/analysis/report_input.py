@@ -1344,6 +1344,36 @@ class FirstScreen(_Part):
     )
 
 
+class CaseSamples(_Part):
+    """The per-case values one contrast was read from, kept so a step that adds cases is sized on them: the stored fact
+    the planner reads (:func:`~threetears.evals.analysis.separation.cases_to_lift`) where a reading's interval alone
+    would size it by a normal approximation and as if the cases it holds carried no chance.
+
+    Derived from the bundle the input was built from, like the caveat list, so never part of the input's digest. Held
+    for a reading a step sizes on more cases (an unsettled one), keyed ``<aspect>/<measure>/<arm>``.
+    """
+
+    control: list[float] = Field(
+        description="The control's per-case values the reading read, higher better, aligned with contrast when paired."
+    )
+    contrast: list[float] = Field(description="The arm's per-case values the reading read, higher better.")
+    paired: bool = Field(description="Whether the two are one-to-one on the cases both sides ran.")
+    only_control: int = Field(
+        ge=0,
+        description="Cases the control ran that the arm did not: outside the values when paired, and every case the "
+        "control read when not (the two then share at most one). A cross-fill runs them on the arm.",
+    )
+    only_contrast: int = Field(
+        ge=0, description="Cases the arm ran that the control did not, read as only_control is. A cross-fill runs them "
+        "on the control."
+    )
+    value_range: tuple[float, float] = Field(description="The values' declared inclusive bounds.")
+    confidence: float = Field(gt=0, lt=1, description="The two-sided level the reading's interval was read at.")
+    scale: float = Field(
+        gt=0, description="The reading's units per unit of a value: 100 for a pass rate read in points of shares."
+    )
+
+
 class ReportInput(_Part):
     """One campaign's results as the report planner reads them (``report-input/1``)."""
 
@@ -1421,12 +1451,20 @@ class ReportInput(_Part):
         exclude_if=lambda value: value is None,
         description="The first screen's slots, as shown when the input was frozen; never part of the input's digest.",
     )
+    per_case: dict[str, CaseSamples] | None = Field(
+        default=None,
+        exclude_if=lambda value: not value,
+        description="The per-case values each reading a step sizes on more cases was read from, keyed "
+        "<aspect>/<measure>/<arm>; none where no step does, or on an input built before it. Derived, so never part of "
+        "the input's digest.",
+    )
 
 
 #: The keys of the document no digest reads: each a function of the rest of the input, of the bundle the input was
-#: built from (whose own fingerprint a snapshot holds) and of a call made later. Identity is over inputs only, so a
+#: built from (whose own fingerprint a snapshot holds) and of a call made later; ``per_case`` is the bundle's per-case
+#: values a step is sized on. Identity is over inputs only, so a
 #: change to how caveats are raised or ranked re-keys no snapshot and moves no recording.
-_OUTSIDE_THE_DIGEST = frozenset({"caveat_list", "first_screen"})
+_OUTSIDE_THE_DIGEST = frozenset({"caveat_list", "first_screen", "per_case"})
 
 
 def report_input_digest(report_input: ReportInput) -> str:

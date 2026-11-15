@@ -94,16 +94,29 @@ here reads what kind of eval a figure came from: every condition is on the numbe
 from __future__ import annotations
 
 import math
+import random
 import re
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from statistics import NormalDist
-from typing import Literal
+from typing import Final, Literal
+
+from threetears.evals.analysis.stats import (
+    INTERVAL_LEVEL,
+    PROJECTION_CASE_CAP,
+    bounded_cases_to_clear,
+    bounded_difference_interval,
+    ci_half_width,
+)
+from threetears.evals.schema.reading_states import StateOf
 
 __all__ = [
     "POWER",
     "NoSpread",
     "Spread",
+    "cases_to_lift",
     "cases_to_separate",
+    "figure_cases_to_lift",
     "difference_spread",
     "independent_difference",
     "level_share",
@@ -392,3 +405,291 @@ def wrong_side_share(distance: float, se: float) -> float:
     if se <= 0 or not math.isfinite(se):
         raise NoSpread("the estimate carries no spread, so a fresh run reads it exactly again")
     return _NORMAL.cdf(-abs(distance) / se)
+
+
+#: How near its line, as a share of the scale its values are on, an estimate reads as on it: a distance of rounding,
+#: at which no finite count of cases lifts it.
+_ON_THE_LINE: Final = 1e-9
+
+#: How close the search for the cases that lift a reading comes to the fewest, as a share of the count: a plan needs
+#: no exact count in the thousands, and each count it tries reads intervals over that many cases.
+_LIFT_RESOLUTION: Final = 0.01
+
+#: How far the tilt that moves a draw's mean is searched, in the pairs' own range of differences, and in how many
+#: halvings: past the bound the tilted draw is every pair at one end.
+_TILT_BOUND: Final = 60.0
+_TILT_STEPS: Final = 60
+
+#: The orders the reach's spread over orders is read on (:func:`_order_spread`).
+_ORDERS: Final = 12
+
+#: Too few cases to read: fewer than two a side, no count, or no count up to the search's cap (an estimate on its
+#: line, or so near it) at which the reading clears.
+_TOO_FEW: Final = StateOf(state="not_available", reason="too_few")
+
+#: Every case read alike, on a reading whose interval narrows only with its spread: no added case changes it.
+_NO_VARIATION: Final = StateOf(state="not_available", reason="no_variation")
+
+#: No count says how many cases the figure rests on.
+_NO_COUNT: Final = StateOf(state="not_available", reason="not_recorded")
+
+
+def _spread_of(values: Sequence[float]) -> float:
+    """The standard deviation of ``values`` as a distribution (over ``n``): the spread of one value drawn from them,
+    which is how new cases are drawn like the held ones."""
+    centre = math.fsum(values) / len(values)
+    return math.sqrt(math.fsum((value - centre) ** 2 for value in values) / len(values))
+
+
+def _fewest(lifts: Callable[[int], bool], fixed: int, cap: int) -> int | None:
+    """The fewest cases in all, above ``fixed``, at which ``lifts`` holds: doubling from the cases held, then bisecting
+    to within :data:`_LIFT_RESOLUTION` of the count. None where even ``cap`` does not.
+
+    Between the cases held and twice them the cushion a projection keeps for the new cases grows with the count while
+    the interval's reach falls, so the test can fail, then hold, then fail again on the way up; past twice the cases
+    held both fall. Doubling from twice the cases held and bisecting below the first count that holds finds the one
+    place it starts to hold for good: below it, the cases held already read past the line unsettled and the cushion
+    only adds to that.
+    """
+    low = fixed
+    high = min(max(2 * fixed, fixed + 1, 2), cap)
+    while not lifts(high):
+        if high >= cap:
+            return None
+        low, high = high, min(2 * high, cap)
+    while high - low > max(1, int(high * _LIFT_RESOLUTION)):
+        middle = (low + high) // 2
+        if lifts(middle):
+            high = middle
+        else:
+            low = middle
+    return high
+
+
+def _tilted(differences: Sequence[float], base: Sequence[float], target: float) -> list[float]:
+    """Each difference's chance under the distribution closest to ``base`` (the chances the draws are made with) whose
+    mean is ``target``: its exponential tilt, held to the differences' own range. A count drawn from it is a count
+    drawn like the held ones whose mean sits at ``target``, with the spread such a draw has.
+
+    :return: The chances, aligned with ``differences``, summing to one.
+    """
+    low, high = min(differences), max(differences)
+    if high - low <= 0:
+        return list(base)
+    centre = math.fsum(chance * difference for chance, difference in zip(base, differences, strict=True))
+
+    def weights(theta: float) -> list[float]:
+        exponents = [theta * (difference - centre) / (high - low) for difference in differences]
+        top = max(exponents)
+        raw = [chance * math.exp(exponent - top) for chance, exponent in zip(base, exponents, strict=True)]
+        total = math.fsum(raw)
+        return [weight / total for weight in raw]
+
+    def mean_at(theta: float) -> float:
+        return math.fsum(weight * difference for weight, difference in zip(weights(theta), differences, strict=True))
+
+    # The tilted mean rises with theta from the least difference to the greatest, so it is bisected on theta; a
+    # target past either end is held at that end, since no draw like the held ones averages past it.
+    lower, upper = -_TILT_BOUND, _TILT_BOUND
+    for _ in range(_TILT_STEPS):
+        middle = (lower + upper) / 2.0
+        if mean_at(middle) < target:
+            lower = middle
+        else:
+            upper = middle
+    return weights((lower + upper) / 2.0)
+
+
+def _like(pairs: Iterable[tuple[float, float]]) -> tuple[list[tuple[float, float]], list[float]]:
+    """The distinct pairs among ``pairs``, in the order of their differences, and each one's share of them: the
+    distribution new pairs are drawn from."""
+    counts: dict[tuple[float, float], int] = {}
+    for pair in pairs:
+        counts[pair] = counts.get(pair, 0) + 1
+    distinct = sorted(counts, key=lambda pair: (pair[1] - pair[0], pair))
+    total = sum(counts.values())
+    return distinct, [counts[pair] / total for pair in distinct]
+
+
+def _drawn(pairs: Sequence[tuple[float, float]], chances: Sequence[float], count: int) -> list[tuple[float, float]]:
+    """``count`` pairs read off ``chances`` at evenly spaced quantiles, ``pairs`` in the order of their differences:
+    the draw of that many with no luck in it."""
+    drawn: list[tuple[float, float]] = []
+    cumulative, at = chances[0], 0
+    for step in range(count):
+        quantile = (step + 0.5) / count
+        while quantile > cumulative and at < len(pairs) - 1:
+            at += 1
+            cumulative += chances[at]
+        drawn.append(pairs[at])
+    return drawn
+
+
+def _order_spread(pairs: Sequence[tuple[float, float]], value_range: tuple[float, float], confidence: float) -> float:
+    """How far the bounded interval's reach below its estimate varies with the order it bets in, over these pairs:
+    its spread over :data:`_ORDERS` seeded orders. A reading bets in an order fixed by its cases' ids, and new cases'
+    ids fall among the held ones at random, so which order a reading after an extend bets in is a draw."""
+    count = len(pairs)
+    estimate = math.fsum(b - a for a, b in pairs) / count
+    reaches = []
+    for seed in range(_ORDERS):
+        shuffled = list(pairs)
+        random.Random(f"lift-order-{seed}-{count}").shuffle(shuffled)
+        interval = bounded_difference_interval(
+            [a for a, _ in shuffled],
+            [b for _, b in shuffled],
+            paired=True,
+            value_range=value_range,
+            confidence=confidence,
+        )
+        if interval is None:
+            return 0.0
+        reaches.append(estimate - interval[0])
+    return _spread_of(reaches)
+
+
+def cases_to_lift(
+    control: Sequence[float],
+    contrast: Sequence[float],
+    *,
+    paired: bool,
+    value_range: tuple[float, float],
+    confidence: float,
+    line: float,
+    power: float = POWER,
+    cap: int = PROJECTION_CASE_CAP,
+) -> int | StateOf:
+    """The pairs to add to a contrast so that, read again by its bounded interval at ``confidence``, the interval
+    clears ``line`` on today's side with chance ``power``, if the truth is today's estimate and the cases held stay as
+    they are.
+
+    **What is fixed.** The pairs held are kept, and new pairs are drawn like them, so their truth is today's estimate.
+    With ``s`` the spread of one pair's difference and ``m`` new pairs, the new pairs' mean difference falls below
+    ``d - z(power) * s / sqrt(m)`` (``d`` today's) one time in ``1 - power``: that is the **critical draw**, and the
+    reading at ``N = n0 + m`` pairs (``n0`` held) lifts with chance ``power`` where it lifts on the critical draw. The
+    critical draw is ``m`` pairs read evenly off the distribution of the held pairs tilted to that mean
+    (:func:`_tilted`, :func:`_drawn`), so the spread a draw with that mean has is in it: on bounded values a draw
+    nearer the line reads a narrower interval, which a reach read at today's estimate misses. The held pairs and the
+    critical draw are read by the bounded interval itself, at ``N``
+    (:func:`~threetears.evals.analysis.stats.bounded_cases_to_clear`, the room the critical draw's estimate less the
+    line, its cap ``N``). The fewest such ``N`` is found as :func:`_fewest` says. Sizing the whole design to clear at
+    ``power`` and subtracting the held cases over-asks: the held half carries no chance, so such a plan lifts about
+    ``Phi(z(power) * sqrt(N / m))`` of the time, 88% at ``m = N / 2``.
+
+    **An unpaired contrast** (each side's own cases, sharing fewer than two) is read paired once each side runs the
+    cases only the other ran: no pair is held whole, so ``n0`` is 0 and every pair is drawn new, each side's value
+    from its own cases, at no correlation between the arms, which is the most a cross-filled pair can vary; arms that
+    agree case by case lift more often.
+
+    **Today's side.** An estimate below its line lifts by its interval's high end clearing below it: the sides are read
+    swapped, which mirrors the interval.
+
+    :param control: The control's per-case values, aligned with ``contrast`` when ``paired``.
+    :ptype control: Sequence[float]
+    :param contrast: The arm's per-case values, oriented so higher is better.
+    :ptype contrast: Sequence[float]
+    :param paired: Whether the two are one-to-one on the same cases.
+    :ptype paired: bool
+    :param value_range: The reading's declared inclusive bounds.
+    :ptype value_range: tuple[float, float]
+    :param confidence: The two-sided level the reading is read at.
+    :ptype confidence: float
+    :param line: The line the difference (contrast minus control) must clear, in the values' units.
+    :ptype line: float
+    :param power: The chance of clearing, if the truth is today's estimate.
+    :ptype power: float
+    :param cap: The most pairs, in all, searched.
+    :ptype cap: int
+    :return: The pairs to add, at least one; or, ``not_available``: ``too_few`` with fewer than two values a side, an
+        estimate on its line, or no count up to ``cap`` that lifts it.
+    :rtype: int | StateOf
+    :raises ValueError: A value lies outside ``value_range``.
+    """
+    if len(control) < 2 or len(contrast) < 2:
+        return _TOO_FEW
+    a, b = [float(value) for value in control], [float(value) for value in contrast]
+    if any(not value_range[0] <= value <= value_range[1] for value in (*a, *b)):
+        raise ValueError("a per-case value lies outside the reading's declared range")
+    estimate = math.fsum(b) / len(b) - math.fsum(a) / len(a)
+    distance = estimate - line
+    if abs(distance) <= _ON_THE_LINE * max(1.0, value_range[1] - value_range[0]):
+        return _TOO_FEW
+    if distance < 0:
+        a, b, estimate, distance = b, a, -estimate, -distance
+    held = list(zip(a, b, strict=True)) if paired else []
+    like, base = _like(held if paired else ((x, y) for x in a for y in b))
+    differences = [y - x for x, y in like]
+    spread = _spread_of([y - x for x, y in held]) if paired else math.hypot(_spread_of(a), _spread_of(b))
+    z = _z_one_sided(power)
+    fixed = len(held)
+
+    def lifts(total: int) -> bool:
+        new = total - fixed
+        if total < 2 or new < 1:
+            return False
+        # The estimate at ``total`` and the interval's reach both vary, the one with the new pairs drawn, the other
+        # with the order the reading bets in; the critical outcome splits the shortfall between them by their spreads.
+        estimate_spread = spread * math.sqrt(new) / total
+        order_spread = _order_spread([*held, *_drawn(like, base, new)], value_range, confidence)
+        both = math.hypot(estimate_spread, order_spread)
+        shift = z * estimate_spread**2 / both if both > 0 else 0.0
+        allowance = z * order_spread**2 / both if both > 0 else 0.0
+        drawn = _drawn(like, _tilted(differences, base, estimate - shift * total / new), new)
+        design = [*held, *drawn]
+        first, second = [x for x, _ in design], [y for _, y in design]
+        room = (math.fsum(second) - math.fsum(first)) / total - (estimate - distance) - allowance
+        if room <= 0:
+            return False
+        found = bounded_cases_to_clear(
+            first, second, paired=True, value_range=value_range, confidence=confidence, room=room, cap=total
+        )
+        return found is not None and found <= total
+
+    total = _fewest(lifts, fixed, cap)
+    return _TOO_FEW if total is None else total - fixed
+
+
+def figure_cases_to_lift(
+    spread: Spread, distance: float, *, power: float = POWER, cap: int = PROJECTION_CASE_CAP
+) -> int | StateOf:
+    """The cases to add to one arm's figure so that its interval, two-sided at the spread's level, clears its line on
+    today's side with chance ``power``, if the truth is today's estimate and the cases held stay as they are: the rule
+    of :func:`cases_to_lift` in one-sample form.
+
+    A figure states its interval, not its cases' values, so its reach at ``N`` cases is its own rule's at the spread
+    one case carries: the t interval a mean is stated on (:func:`~threetears.evals.analysis.stats.ci_half_width`), at
+    the spread's level by the normal quantiles' ratio where that is not the nominal one.
+
+    :param spread: The figure's spread (:func:`stat_spread`), with the cases it rests on.
+    :ptype spread: Spread
+    :param distance: Today's estimate's distance from its line, in the figure's units.
+    :ptype distance: float
+    :param power: The chance of clearing, if the truth is today's estimate.
+    :ptype power: float
+    :param cap: The most cases, in all, searched.
+    :ptype cap: int
+    :return: The cases to add, at least one; or, ``not_available``: ``not_recorded`` where no count says how many
+        cases the figure rests on, ``too_few`` below two of them, on its line, or past ``cap``; ``no_variation``
+        where every case read alike, so no added case narrows its interval.
+    :rtype: int | StateOf
+    """
+    held_count = spread.cases if spread.cases is not None else spread.n
+    if held_count is None or spread.per_case is None:
+        return _NO_COUNT
+    held = math.ceil(held_count)
+    if held < 2 or not math.isfinite(distance):
+        return _TOO_FEW
+    if abs(distance) <= _ON_THE_LINE * max(1.0, abs(spread.mean)):
+        return _TOO_FEW
+    if spread.per_case <= 0:
+        return _NO_VARIATION
+    per_case, gap = spread.per_case, abs(distance)
+    scale = _z_two_sided(spread.level) / _z_two_sided(INTERVAL_LEVEL)
+    z = _z_one_sided(power)
+
+    def lifts(total: int) -> bool:
+        reach = ci_half_width(per_case / math.sqrt(total), total)
+        return reach is not None and reach * scale + z * per_case * math.sqrt(total - held) / total <= gap
+
+    total = _fewest(lifts, held, cap)
+    return _TOO_FEW if total is None else total - held

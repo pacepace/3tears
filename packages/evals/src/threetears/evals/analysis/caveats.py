@@ -108,6 +108,7 @@ from threetears.evals.analysis.first_screen import first_screen
 from threetears.evals.analysis.report_input import (
     Aspect,
     CallRead,
+    CaseSamples,
     CaveatEntry,
     Criterion,
     FirstScreen,
@@ -132,15 +133,17 @@ from threetears.evals.analysis.separation import (
     POWER,
     NoSpread,
     Spread,
+    cases_to_lift,
     cases_to_separate,
     difference_spread,
+    figure_cases_to_lift,
     level_share,
     stat_spread,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.kernel.declaration import CampaignCall
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
-from threetears.evals.schema.reading_states import CaveatClass, CaveatReach, Coordinate, ReadingState, Reason
+from threetears.evals.schema.reading_states import CaveatClass, CaveatReach, Coordinate, ReadingState, Reason, StateOf
 
 #: Nothing is declared yet: the list's readers are the report input's builder and the page's thin reads of it.
 __all__: list[str] = []
@@ -1078,11 +1081,19 @@ class Plan(NamedTuple):
     """The size of a step that is more evidence, read before it runs, or why none can be read, or why no added case
     can close the caveat.
 
-    :ivar cases: The cases to add per arm it names (on fresh cases, the cases to run); None where none can be read.
+    :ivar cases: The cases to add per arm it names (on fresh cases, the cases to run); None where none can be read. On
+        a contrast the input holds the per-case values of, the pairs it gains: each a held case the other side ran,
+        where ``cross_fill`` names some, else a new case every arm runs.
     :ivar unsized: Why none can be read; None where one was.
     :ivar no_action: Why no added case closes the caveat on this input; the step then takes no action.
     :ivar size_bias: Why the size is known to be too small, where it is.
     :ivar arms: The arms the planned design runs, where they are not the caveat's own (a paired reading's control).
+    :ivar cross_fill: Per arm, by id, the held cases it would run that only the other side of its contrast ran: a
+        cross-fill pairs them, and up to ``cases`` of them are among the pairs gained. A control in several contrasts
+        counts every candidate's, so where candidates share cases it counts some twice. Empty where every held case
+        is paired, or the input holds no per-case values.
+    :ivar state: Where no size can be read off a contrast's or a figure's spread, the state that says so, from the one
+        closed set: ``not_available`` with ``too_few``, ``no_variation`` or ``not_recorded``.
     """
 
     cases: int | None = None
@@ -1090,6 +1101,8 @@ class Plan(NamedTuple):
     no_action: NoActionReason | None = None
     size_bias: Literal["picked_best_of_n"] | None = None
     arms: tuple[str, ...] | None = None
+    cross_fill: tuple[tuple[str, int], ...] = ()
+    state: StateOf | None = None
 
 
 #: How near its line, relative to the figure's size, an estimate reads as on it: a distance of rounding, at which no
@@ -1161,16 +1174,21 @@ def _figure_counts(
 def _figure_plan(
     report_input: ReportInput, criterion: Criterion, arm: str, figure: CriterionFigure, *, fresh: bool
 ) -> Plan:
-    """The plan that settles one arm's figure against a gate's, a guardrail's or a bar's line."""
+    """The plan that settles one arm's figure against a gate's, a guardrail's or a bar's line: cases added to the ones
+    it holds, sized so its interval clears with chance :data:`~threetears.evals.analysis.separation.POWER` with the
+    held cases fixed (:func:`~threetears.evals.analysis.separation.figure_cases_to_lift`); on fresh cases, the whole
+    design. Where the figure states its standard error, one case's spread is read from it, so a t interval's
+    small-sample multiplier is not read as spread."""
     if criterion.statistic != "mean":
         return Plan(unsized="no_interval")
     table = report_input.measures.get(criterion.measure) or report_input.judged.get(criterion.measure)
     n, cases = _figure_counts(report_input, criterion, arm, figure)
+    by_sem = not fresh and figure.sem is not None
     try:
         spread = stat_spread(
             figure.value,
-            ci=figure.ci,
-            half_width=figure.half_width,
+            ci=None if by_sem else figure.ci,
+            half_width=None if by_sem else figure.half_width,
             sem=figure.sem,
             n=n,
             stated_level=None if table is None else level_share(table.level),
@@ -1181,7 +1199,9 @@ def _figure_plan(
     line = float(criterion.threshold)
     distance = figure.value - line if criterion.direction == "higher_is_better" else line - figure.value
     # A figure's status reads its interval two-sided at the level its table states it at (criteria's borderline).
-    return _settling(spread, distance, spread.level, fresh=fresh)
+    if fresh:
+        return _settling(spread, distance, spread.level, fresh=True)
+    return _lifting(figure_cases_to_lift(spread, distance))
 
 
 def _criteria_plan(
@@ -1196,12 +1216,21 @@ def _criteria_plan(
     )
 
 
-def _reading_plan(aspect: Aspect, reading: Reading, *, fresh: bool) -> Plan:
+def _reading_plan(
+    aspect: Aspect, reading: Reading, *, fresh: bool, samples: CaseSamples | None = None, control: str | None = None
+) -> Plan:
     """The plan that settles a candidate's reading against its margin's line (no margin: against no change) on its
     nominal interval, two-sided at :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`: what an unsettled reading
-    is lifted by, and what one candidate against its control reads a gain on. Its spread is read from that interval
-    and the cases each arm ran; a reading with no margin holds no nominal interval, so its gain interval gives the
-    spread, read at that interval's own level."""
+    is lifted by, and what one candidate against its control reads a gain on.
+
+    Where the input holds the per-case values the reading was read from (``samples``), cases are added to the ones it
+    holds, sized on those values by the bounded interval at the level the reading was read at, the held cases fixed
+    (:func:`~threetears.evals.analysis.separation.cases_to_lift`), and an unpaired or partly paired contrast is planned
+    on the paired read a cross-fill gives it. Otherwise its spread is read from that interval and the cases each arm
+    ran; a reading with no margin holds no nominal interval, so its gain interval gives the spread, read at that
+    interval's own level: the size an input built before the per-case values were kept was planned at."""
+    if samples is not None and not fresh:
+        return _lifting_contrast(aspect, reading, samples, control)
     level: float | None
     if reading.within_interval is not None:
         interval, level = reading.within_interval, INTERVAL_LEVEL
@@ -1219,14 +1248,72 @@ def _reading_plan(aspect: Aspect, reading: Reading, *, fresh: bool) -> Plan:
     return _settling(spread, float(reading.change) - line, INTERVAL_LEVEL, fresh=fresh)
 
 
-def _readings_plan(aspects: Iterable[Aspect], arms: Iterable[str], *, fresh: bool) -> Plan:
+def _readings_plan(
+    aspects: Iterable[Aspect],
+    arms: Iterable[str],
+    *,
+    fresh: bool,
+    per_case: Mapping[str, CaseSamples] | None = None,
+    control: str | None = None,
+) -> Plan:
+    """The widest plan over the named arms' readings on ``aspects``: each read on its per-case values where
+    ``per_case`` holds them (keyed ``<aspect>/<measure>/<arm>``), and every arm's cross-fill counted."""
     named = set(arms)
-    return _widest(
-        _reading_plan(aspect, reading, fresh=fresh)
+    held = per_case or {}
+    plans = [
+        _reading_plan(
+            aspect, reading, fresh=fresh, samples=held.get(f"{aspect.id}/{_PASSED}/{reading.arm}"), control=control
+        )
         for aspect in aspects
         for reading in aspect.readings
         if reading.arm in named
+    ]
+    widest = _widest(plans)
+    if widest.cases is None:
+        return widest
+    filled: dict[str, int] = {}
+    for plan in plans:
+        for arm, count in plan.cross_fill:
+            filled[arm] = filled.get(arm, 0) + count
+    return widest._replace(cross_fill=tuple(filled.items()))
+
+
+def _lifting(found: int | StateOf) -> Plan:
+    """A plan from what the conditional projection read: its cases, or the state that says why none, with the step's
+    own word for it."""
+    if isinstance(found, int):
+        return Plan(found)
+    unsized: UnsizedReason
+    if found.reason == "no_variation":
+        unsized = "no_spread"
+    elif found.reason == "not_recorded":
+        unsized = "no_count"
+    else:
+        unsized = "on_the_line"
+    return Plan(unsized=unsized, state=found)
+
+
+def _lifting_contrast(aspect: Aspect, reading: Reading, samples: CaseSamples, control: str | None) -> Plan:
+    """The plan that lifts one reading on its per-case values (:func:`_reading_plan`)."""
+    margin = reading.margin if reading.margin is not None else aspect.margin
+    line = (0.0 if margin is None else -float(margin)) / samples.scale
+    if len(samples.control) < 2 or len(samples.contrast) < 2:
+        return Plan(unsized="no_interval", state=StateOf(state="not_available", reason="too_few"))
+    found = cases_to_lift(
+        samples.control,
+        samples.contrast,
+        paired=samples.paired,
+        value_range=samples.value_range,
+        confidence=samples.confidence,
+        line=line,
     )
+    plan = _lifting(found)
+    if plan.cases is None:
+        return plan
+    filled = [(reading.arm, samples.only_control)]
+    if control is not None:
+        filled.append((control, samples.only_contrast))
+    return plan._replace(cross_fill=tuple((arm, count) for arm, count in filled if count))
 
 
 def _to_the_floor(cases: int | None) -> Plan:
@@ -1309,7 +1396,13 @@ def plan_of(report_input: ReportInput, caveat: CaveatEntry) -> Plan | None:
         return _criteria_plan(report_input, criteria, caveat.arms, fresh=False)
     aspects = [aspect for aspect in report_input.aspects if f"{aspect.id}/{_PASSED}" in caveat.readings]
     if caveat.kind == "unsettled":
-        plan = _readings_plan(aspects, caveat.arms, fresh=False)
+        plan = _readings_plan(
+            aspects,
+            caveat.arms,
+            fresh=False,
+            per_case=report_input.per_case,
+            control=control_arm(report_input),
+        )
         return plan._replace(arms=_with_control(report_input, caveat.arms))
     if caveat.kind == "best_of_n":
         # No estimate the engine reads corrects a pick for having been the best of several, so the confirmation is

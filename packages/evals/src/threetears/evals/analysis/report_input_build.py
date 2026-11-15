@@ -61,6 +61,7 @@ from threetears.evals.analysis.arms import writer_arms
 from threetears.evals.analysis.bundle.caps import capped_text
 from threetears.evals.analysis.bundle.schema import (
     SEPARATED_VERDICTS,
+    TRIAL_PASS_NAME,
     AnalysisContextBundle,
     ArmPricing,
     FamilyComparison,
@@ -70,7 +71,7 @@ from threetears.evals.analysis.campaign_bundle import KIND_MEANS, CampaignBundle
 from threetears.evals.analysis.cells import answer_split_variants
 from threetears.evals.analysis.checks import Check
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading, reading_name
-from threetears.evals.analysis.floors import floor_subject
+from threetears.evals.analysis.floors import aspect_pass_rate, floor_subject
 from threetears.evals.analysis.depth import REPEATS_FLOOR
 from threetears.evals.analysis.depth import Precision as BundlePrecision
 from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
@@ -87,6 +88,8 @@ from threetears.evals.analysis.report_input import (
     BarRead,
     CallRead,
     CaseOverlap,
+    CaseSamples,
+    CaveatEntry,
     Caveats,
     Contrast,
     ContrastFamily,
@@ -225,8 +228,84 @@ def report_input(
     # The list is raised off the input the bundle built, and the first screen read off the list: both are copied
     # onto the input, which the models check field by field already.
     caveats = raise_caveats(built, bundle)
+    # The per-case values the list's steps are sized on are read off the bundle before the first screen plans them.
+    built = built.model_copy(update={"per_case": _per_case_samples(bundle, caveats) or None})
     value = screen(built, caveats, gate=gate_of(bundle), call=call, evidence=evidence_of(bundle))
     return built.model_copy(update={"caveat_list": caveats, "first_screen": value})
+
+
+def _per_case_samples(bundle: CampaignBundle, caveats: Iterable[CaveatEntry]) -> dict[str, CaseSamples]:
+    """The per-case values each reading an unsettled caveat names was read from, as the report input keeps them for
+    the step that adds cases (:class:`~threetears.evals.analysis.report_input.CaseSamples`), keyed
+    ``<aspect>/<measure>/<arm>``.
+
+    Each is the aspect's pass rate on the candidate against the control as its reading read it
+    (:func:`~threetears.evals.analysis.floors.aspect_pass_rate`, at the nominal level its ``within_interval`` is read
+    at): its per-case shares, whether they pair, and the level; with the cases each side ran that the other did not,
+    from the contrast those shares were read from. A reading with no per-case values (one side under two cases, an arm
+    read per answering model) holds none, and its step is planned as before.
+
+    :param bundle: The campaign's bundle.
+    :ptype bundle: CampaignBundle
+    :param caveats: The input's caveat list.
+    :ptype caveats: Iterable[CaveatEntry]
+    :return: The samples; empty where no unsettled caveat names a reading that holds them.
+    :rtype: dict[str, CaseSamples]
+    """
+    found: dict[str, CaseSamples] = {}
+    labels = {aspect.aspect for aspect in bundle.aspects}
+    for caveat in caveats:
+        if caveat.kind != "unsettled":
+            continue
+        for named in caveat.readings:
+            label, _, measure = named.rpartition("/")
+            if measure != TRIAL_PASS_NAME or label not in labels:
+                continue
+            aspect = bundle.aspect(label)
+            control = aspect.design.control_arm.variant_key if aspect.design.control_arm is not None else None
+            for row in bundle.readings.on_aspect(label):
+                if control is None or row.arm_label not in caveat.arms:
+                    continue
+                samples = _case_samples(aspect, control, row.arm)
+                if samples is not None:
+                    found[f"{label}/{measure}/{row.arm_label}"] = samples
+    return found
+
+
+def _case_samples(aspect: AnalysisContextBundle, control: str, candidate: str) -> CaseSamples | None:
+    """One reading's per-case values (:func:`_per_case_samples`); None where it holds none."""
+    rate = aspect_pass_rate(aspect, control, candidate)
+    if rate is None or rate.samples is None or rate.confidence is None:
+        return None
+    contrast = next(
+        (
+            held
+            for held in aspect.floor_contrasts
+            if held.reading == "trial"
+            and held.name == TRIAL_PASS_NAME
+            and held.control.variant_key == control
+            and held.contrast.variant_key == candidate
+            and held.control.apparatus_class_id == rate.rig
+        ),
+        None,
+    )
+    if contrast is None:
+        return None
+    ours, theirs = rate.samples
+    if rate.paired:
+        only = (contrast.control.n_left_out, contrast.contrast.n_left_out)
+    else:
+        only = (len(ours), len(theirs))
+    return CaseSamples(
+        control=list(ours),
+        contrast=list(theirs),
+        paired=rate.paired,
+        only_control=only[0],
+        only_contrast=only[1],
+        value_range=(0.0, 1.0),
+        confidence=rate.confidence,
+        scale=100.0,
+    )
 
 
 class _Builder:
