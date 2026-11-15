@@ -32,7 +32,8 @@ not count: the catalogue serves its JSON schema.
 
 **Provisional names** (owner ruling on Q1, 2026-11-15: they leave). A provisional name that a declared name reaches,
 transitively, through a signature, a field, a base, a raised error or a docstring role (``surface_kinds.edges`` and
-``surface_kinds.doc_edges``, the walk the admission criteria use), or that is reached by definition, is placed by
+``surface_kinds.doc_edges``, the walk the admission criteria use), that a host's production code imports (it is
+reached itself, and what it reaches is), or that is reached by definition, is placed by
 ``surface_kinds.kind_by_rule`` where that decides, and as ``received`` otherwise (a function, which nothing reads,
 as ``invoked``). It keeps its provisional tier. Any other provisional name leaves the public roots, to be imported
 from its home module. :data:`UNREACHED` = ``"stay"`` keeps them instead, placed the same way; it is the only switch.
@@ -60,6 +61,8 @@ from functools import cache
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
+
+from threetears.evals.actions import definition_drift_actions, eval_catalogue
 
 from public_surface import PACKAGE, PACKAGE_ROOT, TIER_MAP_PATH, SurfaceEntry, declared, defining_module, load_snapshot
 from surface_kinds import (
@@ -185,6 +188,11 @@ MODULE_RENAMES: Mapping[str, str] = MappingProxyType(
         f"{PACKAGE}.analysis.judge_kind_readings": f"{PACKAGE}.analysis.judge_kind_read",
     }
 )
+
+#: Names a ruling places on another root than the rule would (design-reroot-cutover.md §9, Q2, answered 2026-11-15).
+#: ``ProviderError`` is what a host catches around a model call and what the provider seam (#1013) keeps in evals: a
+#: host binds it, so it is on ``host``, though no recorded host raises or subclasses it yet.
+PLACED_BY_RULING: Mapping[str, Rule] = MappingProxyType({f"{PACKAGE}.providers.ProviderError": 5})
 
 #: Former roots whose own ``__init__`` defines public names. The cut-over empties a former root's ``__init__`` (it
 #: serves nothing and raises naming the new spelling), and a module ``__getattr__`` never fires for a name the module
@@ -429,9 +437,7 @@ def _job_results() -> Iterator[type]:
     ``action_job_work(..., run=...)`` call is handed, which ``result_model`` stores by class name."""
     for path in sorted(SOURCE.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        defs = {
-            node.name: node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
+        defs = {node.name: node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and _dotted(node.func) == "action_job_work"):
                 continue
@@ -449,8 +455,6 @@ def _job_results() -> Iterator[type]:
 def action_results() -> Mapping[str, type]:
     """Every type an action of the engine hands its caller, by ``module.qualname``: each catalogue action's result
     (the standard catalogue and the definition-drift pair), and each action job's result."""
-    from threetears.evals.actions import definition_drift_actions, eval_catalogue
-
     actions = [*eval_catalogue().actions, *definition_drift_actions(lambda _key: _never())]
     found = {f"{action.result.__module__}.{action.result.__qualname__}": action.result for action in actions}
     for result in _job_results():
@@ -668,11 +672,7 @@ def plan(
             f"{sorted(awaiting ^ (set(DEMOTED) | KEPT_AS_TESTS))}; update scripts/role_roots.py"
         )
     observed = set(observed) if observed is not None else recorded_observed_uses() | repo_observed_uses()
-    production = (
-        set(host_production)
-        if host_production is not None
-        else set().union(*host_import_names().values())
-    )
+    production = set(host_production) if host_production is not None else set().union(*host_import_names().values())
     names = list(surface)
     objects = objects_of(names)
     if missing := [name for name in names if name not in objects]:
@@ -716,8 +716,13 @@ def plan(
             orphans[name] = "only demoted names name it: " + ", ".join(sorted(named))
     demoted |= set(orphans)
 
-    # The provisional names a kept declared name or an admitted kit reaches, or that are reached by definition.
-    after = [objects[name] for name in names if (is_declared[name] or name in KIND_EXCEPTIONS) and name not in demoted]
+    # The provisional names a kept declared name, an admitted kit or a host's production import reaches, or that are
+    # reached by definition. A name a host's production code imports is reached itself (owner ruling on Q1).
+    after = [
+        objects[name]
+        for name in names
+        if (is_declared[name] or name in KIND_EXCEPTIONS or name in production) and name not in demoted
+    ]
     after_constants = [
         each
         for name in names
@@ -754,6 +759,9 @@ def plan(
             kind = kind_of.get(spelling) or _provisional_kind(spelling, obj, surface, holders)
             candidates.append((_rule(kind, home, bare in observed_bare and kind == "received", metadata), kind))
         rule, kind = min(candidates)
+        ruled = [PLACED_BY_RULING[s] for s in spellings if s in PLACED_BY_RULING]
+        if ruled:
+            rule = ruled[0]
         new_root = RULE_ROOTS[rule]
         for spelling in spellings:
             new = RENAMED.get(spelling) or f"{new_root}.{bare}"
@@ -788,9 +796,7 @@ def plan(
     result = Plan(
         ordered,
         added,
-        MappingProxyType(
-            {root: tuple(r for r in ROLE_ROOTS if r in went) for root, went in sorted(roots.items())}
-        ),
+        MappingProxyType({root: tuple(r for r in ROLE_ROOTS if r in went) for root, went in sorted(roots.items())}),
         MODULE_RENAMES,
         unreached,
     )
@@ -882,8 +888,9 @@ def spelling_clashes(planned: Plan) -> list[str]:
 def taught_through(rung: int, planned: Plan) -> dict[str, str]:
     """Each name rungs 0 to ``rung`` teach, with its spelling after the cut."""
     after = {placement.old: placement.new for placement in planned.placements}
-    return {name: after[name] for name, first in sorted(TYPED.items(), key=lambda item: (item[1], item[0]))
-            if first <= rung}
+    return {
+        name: after[name] for name, first in sorted(TYPED.items(), key=lambda item: (item[1], item[0])) if first <= rung
+    }
 
 
 # --- the command -----------------------------------------------------------------------------------------------------

@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Literal, get_args
 
 from public_surface import PACKAGE_ROOT
-from role_roots import UNREACHED, Plan, Unreached, host_import_names, plan
+from role_roots import HOST_TEST_IMPORTS, UNREACHED, Plan, Unreached, host_import_names, plan
 
 #: Where the map is written; the rewrite script reads it.
 MAP_PATH = PACKAGE_ROOT / "api" / "reroot-map.txt"
@@ -226,7 +226,9 @@ def render_left(planned: Plan, epoch: str, host_tests: Mapping[str, Iterable[str
     tests = {host: set(names) for host, names in host_tests.items()}
     names = {placement.old.rsplit(".", 1)[1] for placement in left}
     demoted = sum(1 for placement in planned.placements if placement.record == "demoted")
-    imported = {host: sorted(placement.old for placement in left if placement.old in found) for host, found in tests.items()}
+    imported = {
+        host: sorted(placement.old for placement in left if placement.old in found) for host, found in tests.items()
+    }
     header = [
         "# The provisional names of 3tears-evals that leave the public roots at the re-root (issue #1199), because no",
         "# declared name reaches them and they are neither a stored document class nor an action's result (owner ruling",
@@ -262,11 +264,8 @@ def render_all(planned: Plan, epoch: str) -> dict[Path, str]:
     """
     if wrong := leaving_production(planned, host_import_names()):
         raise ValueError(
-            "a host's production code imports a name the rule finds unreached, so the rule is wrong for it: "
-            f"{wrong}"
+            f"a host's production code imports a name the rule finds unreached, so the rule is wrong for it: {wrong}"
         )
-    from role_roots import HOST_TEST_IMPORTS
-
     return {
         MAP_PATH: render_map(planned, epoch),
         LEFT_PATH: render_left(planned, epoch, host_import_names(HOST_TEST_IMPORTS)),
@@ -286,7 +285,9 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.check:
         stale = [path for path, text in files.items() if not path.exists() or path.read_text("utf-8") != text]
         for path in stale:
-            print(f"{path.relative_to(PACKAGE_ROOT)} is not what the rule writes: re-run reroot_map.py", file=sys.stderr)
+            print(
+                f"{path.relative_to(PACKAGE_ROOT)} is not what the rule writes: re-run reroot_map.py", file=sys.stderr
+            )
         return 1 if stale else 0
     for path, text in files.items():
         path.write_text(text, encoding="utf-8")
