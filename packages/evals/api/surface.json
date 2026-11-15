@@ -208,7 +208,7 @@
     },
     "threetears.evals.schema.CalibrationRating": {
       "kind": "model",
-      "signature": "CalibrationRating(schema_minor: DurableSchemaMinor = 1, doc_type: Literal['calibration_rating'] = 'calibration_rating', schema_version: DurableSchemaVersion = 17, scope_id: str, run_id: str, result_id: str, rubric_dim: DimName, rater: str, rater_kind: RaterKind, source: str | None = None, collected_by: str | None = None, id: str = <lambda>(), scale: RubricScale, score: int, reason: str, rated_at: str = utc_now_iso(), output_fingerprint: str | None = None, criterion_fingerprint: str | None = None, rated: RatedOutput | None = None, rated_withheld: str | None = None)",
+      "signature": "CalibrationRating(schema_minor: DurableSchemaMinor = 2, doc_type: Literal['calibration_rating'] = 'calibration_rating', schema_version: DurableSchemaVersion = 17, scope_id: str, run_id: str, result_id: str, rubric_dim: DimName, rater: str, rater_kind: RaterKind, source: str | None = None, collected_by: str | None = None, id: str = <lambda>(), scale: RubricScale, score: int, reason: str, rated_at: str = utc_now_iso(), output_fingerprint: str | None = None, criterion_fingerprint: str | None = None, rated: RatedOutput | None = None, rated_withheld: str | None = None)",
       "tier": "stable"
     },
     "threetears.evals.schema.CallLedger": {
@@ -268,8 +268,18 @@
     },
     "threetears.evals.schema.CatalogRubricDim": {
       "kind": "model",
-      "signature": "CatalogRubricDim(schema_minor: DurableSchemaMinor = 1, id: str = <lambda>(), doc_type: Literal['rubric_dim'] = 'rubric_dim', schema_version: DurableSchemaVersion = 17, scope_id: str, key: str, dim: RubricDim, axis: RubricAxis = 'capability', universal: bool = False, seed_digest: str | None = None, archived: bool = False, created_at: str = utc_now_iso(), updated_at: str = utc_now_iso())",
+      "signature": "CatalogRubricDim(schema_minor: DurableSchemaMinor = 2, id: str = <lambda>(), doc_type: Literal['rubric_dim'] = 'rubric_dim', schema_version: DurableSchemaVersion = 17, scope_id: str, key: str, dim: RubricDim, axis: RubricAxis = 'capability', universal: bool = False, seed_digest: str | None = None, archived: bool = False, created_at: str = utc_now_iso(), updated_at: str = utc_now_iso())",
       "tier": "stable"
+    },
+    "threetears.evals.schema.CaveatClass": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.CaveatReach": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.CELL_TIMEOUT_ORIGINS": {
       "kind": "constant (tuple)",
@@ -553,12 +563,12 @@
     },
     "threetears.evals.schema.EvalTemplate": {
       "kind": "model",
-      "signature": "EvalTemplate(schema_minor: DurableSchemaMinor = 1, id: str = <lambda>(), doc_type: Literal['eval_template'] = 'eval_template', schema_version: DurableSchemaVersion = 17, scope_id: str, name: str, description: str = '', intent: str, candidate_kind: str, tools_required: list[str] = list(), universal: bool = False, tools_allowed: list[str] | None = None, variation_axes: list[VariationAxis] = list(), conversation: ConversationSpec | None = None, world_seed: WorldSeed = WorldSeed(), kind_spec: dict[str, Any] = dict(), preconditions: list[Precondition] = list(), goal_state_checks: list[str] = list(), goal_check_controls: GoalCheckControls | None = None, rubric: list[RubricDim] = list(), goal_check_names: dict[str, str] = dict(), stratum_names: dict[str, str] = dict(), revision: int = 1, seed_digest: str | None = None, archived: bool = False, created_at: str = utc_now_iso(), updated_at: str = utc_now_iso())",
+      "signature": "EvalTemplate(schema_minor: DurableSchemaMinor = 2, id: str = <lambda>(), doc_type: Literal['eval_template'] = 'eval_template', schema_version: DurableSchemaVersion = 17, scope_id: str, name: str, description: str = '', intent: str, candidate_kind: str, tools_required: list[str] = list(), universal: bool = False, tools_allowed: list[str] | None = None, variation_axes: list[VariationAxis] = list(), conversation: ConversationSpec | None = None, world_seed: WorldSeed = WorldSeed(), kind_spec: dict[str, Any] = dict(), preconditions: list[Precondition] = list(), goal_state_checks: list[str] = list(), goal_check_controls: GoalCheckControls | None = None, rubric: list[RubricDim] = list(), goal_check_names: dict[str, str] = dict(), stratum_names: dict[str, str] = dict(), revision: int = 1, seed_digest: str | None = None, archived: bool = False, created_at: str = utc_now_iso(), updated_at: str = utc_now_iso())",
       "tier": "host-contract"
     },
     "threetears.evals.schema.EvalTestCase": {
       "kind": "model",
-      "signature": "EvalTestCase(schema_minor: DurableSchemaMinor = 1, id: str = <lambda>(), doc_type: Literal['eval_test_case'] = 'eval_test_case', schema_version: DurableSchemaVersion = 17, scope_id: str, template_id: str | None, variation_params: dict[str, str] = dict(), host_payload: VerbatimObject = dict(), stratum: str | None = None, name: str | None = None, content_hash: str | None = None, archived: bool = False, archived_reason: str | None = None, seed_name: str | None = None, seed_digest: str | None = None, carried_from: str | None = None, created_at: str = utc_now_iso())",
+      "signature": "EvalTestCase(schema_minor: DurableSchemaMinor = 2, id: str = <lambda>(), doc_type: Literal['eval_test_case'] = 'eval_test_case', schema_version: DurableSchemaVersion = 17, scope_id: str, template_id: str | None, variation_params: dict[str, str] = dict(), host_payload: VerbatimObject = dict(), stratum: str | None = None, name: str | None = None, content_hash: str | None = None, archived: bool = False, archived_reason: str | None = None, seed_name: str | None = None, seed_digest: str | None = None, carried_from: str | None = None, created_at: str = utc_now_iso())",
       "tier": "host-contract"
     },
     "threetears.evals.schema.EvalTrace": {
@@ -738,7 +748,7 @@
     },
     "threetears.evals.schema.JudgeConfig": {
       "kind": "model",
-      "signature": "JudgeConfig(schema_minor: DurableSchemaMinor = 1, id: str = <lambda>(), doc_type: Literal['judge_config'] = 'judge_config', schema_version: DurableSchemaVersion = 17, scope_id: str, name: str, description: str = '', rubric_dim_id: DimName, prompt_template: str, model: str = '', temperature: float = 0.0, seed_digest: str | None = None, archived: bool = False, created_at: str = utc_now_iso())",
+      "signature": "JudgeConfig(schema_minor: DurableSchemaMinor = 2, id: str = <lambda>(), doc_type: Literal['judge_config'] = 'judge_config', schema_version: DurableSchemaVersion = 17, scope_id: str, name: str, description: str = '', rubric_dim_id: DimName, prompt_template: str, model: str = '', temperature: float = 0.0, seed_digest: str | None = None, archived: bool = False, created_at: str = utc_now_iso())",
       "tier": "stable"
     },
     "threetears.evals.schema.JudgeConfigTombstone": {
@@ -883,6 +893,11 @@
     },
     "threetears.evals.schema.LostField": {
       "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.Maker": {
+      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
@@ -1563,7 +1578,7 @@
     },
     "threetears.evals.kernel.AspectDesign": {
       "kind": "model",
-      "signature": "AspectDesign(axes: list[SweptAxis], bars: list[BarOverride] = list(), guardrail_margins: list[GuardrailMargin] = list(), intended_repetitions: int | None = None, held_fixed: ControlDeclaration, merit_axes: list[MeritAxis] | None = None, merit_priority: list[MeritAxis] = list(), crossing: Literal['full', 'star'] | None = None, skipped_cells: list[dict[str, str]] = list(), measure_latency: bool = False, measure_order: list[str] = list())",
+      "signature": "AspectDesign(axes: list[SweptAxis], bars: list[BarOverride] = list(), guardrail_margins: list[GuardrailMargin] = list(), intended_repetitions: int | None = None, held_fixed: ControlDeclaration, merit_axes: list[MeritAxis] | None = None, merit_priority: list[MeritAxis] = list(), crossing: Literal['full', 'star'] | None = None, skipped_cells: list[dict[str, str]] = list(), measure_latency: bool = False, planned_looks: int | None = None, measure_order: list[str] = list())",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.AttemptOutcome": {
@@ -1668,7 +1683,7 @@
     },
     "threetears.evals.kernel.CampaignCall": {
       "kind": "model",
-      "signature": "CampaignCall(arm: str, variant_key: str, reason: str = '', floors_overridden: list[str] = list(), bars_overridden: list[OverriddenBar] = list(), analysis_id: str | None = None, run_ids: list[str] = list(), called_at: str = utc_now_iso(), called_by: str)",
+      "signature": "CampaignCall(arm: str, variant_key: str, reason: str = '', floors_overridden: list[str] = list(), bars_overridden: list[OverriddenBar] = list(), analysis_id: str | None = None, run_ids: list[str] = list(), called_at: str = utc_now_iso(), made_by: Maker | None = None, model: str | None = None, on_behalf_of: str | None = None, evidence_fingerprint: str | None = None, called_by: str)",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.CampaignDeclaration": {
@@ -2063,7 +2078,7 @@
     },
     "threetears.evals.kernel.EvalCampaign": {
       "kind": "model",
-      "signature": "EvalCampaign(schema_minor: DurableSchemaMinor = 1, id: str = <lambda>(), doc_type: Literal['eval_campaign'] = 'eval_campaign', schema_version: DurableSchemaVersion = 17, scope_id: str, name: str, description: str = '', subject_id: str, subject_kind: str = '', behavior: str, question: str = '', arms: list[CampaignArm] = list(), aspects: list[Aspect], floors: list[Floor] = list(), declared_at: str | None = None, declared_by: str = '', call: CampaignCall | None = None, archived: bool = False, created_at: str = utc_now_iso(), created_by: str)",
+      "signature": "EvalCampaign(schema_minor: DurableSchemaMinor = 2, id: str = <lambda>(), doc_type: Literal['eval_campaign'] = 'eval_campaign', schema_version: DurableSchemaVersion = 17, scope_id: str, name: str, description: str = '', subject_id: str, subject_kind: str = '', behavior: str, question: str = '', arms: list[CampaignArm] = list(), aspects: list[Aspect], floors: list[Floor] = list(), declared_at: str | None = None, declared_by: str = '', volume_per_month: float | None = None, call: CampaignCall | None = None, archived: bool = False, created_at: str = utc_now_iso(), created_by: str)",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.EvalGenerationSlot": {
@@ -3218,7 +3233,7 @@
     },
     "threetears.evals.kernel.SweptAxis": {
       "kind": "model",
-      "signature": "SweptAxis(axis_id: str, reader_name: str | None = None, values: list[SweepableValue], rationale: str = '')",
+      "signature": "SweptAxis(axis_id: str, reader_name: str | None = None, values: list[SweepableValue], rationale: str = '', ordered: bool = False)",
       "tier": "stable"
     },
     "threetears.evals.kernel.SyncActionSeam": {
@@ -5186,6 +5201,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.CallRead": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.campaign_aggregate": {
       "kind": "function",
       "signature": "",
@@ -5283,6 +5303,11 @@
     },
     "threetears.evals.analysis.CasesNeeded": {
       "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.CaveatEntry": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -5751,6 +5776,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.FirstScreen": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.FloorContrast": {
       "kind": "model",
       "signature": "",
@@ -5851,6 +5881,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.Gate": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.GATE_TOKENS": {
       "kind": "constant (tuple)",
       "signature": "",
@@ -5882,6 +5917,11 @@
       "tier": "stable"
     },
     "threetears.evals.analysis.GateRow": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.GateRun": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -6361,6 +6401,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.NoActionReason": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.OpenAxisFamily": {
       "kind": "model",
       "signature": "",
@@ -6583,6 +6628,16 @@
     },
     "threetears.evals.analysis.RemainderState": {
       "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.Remedy": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.RemedyStep": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -6836,6 +6891,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.StepArgument": {
+      "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.stopped_short": {
       "kind": "function",
       "signature": "",
@@ -7023,6 +7083,11 @@
     },
     "threetears.evals.analysis.UnresolvableReference": {
       "kind": "exception",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.UnsizedReason": {
+      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
