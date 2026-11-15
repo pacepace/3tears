@@ -37,6 +37,8 @@ from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.model import ChartBlock, Report
+from threetears.evals.analysis.caveats import caveat_list
+from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, RateDrop
@@ -155,6 +157,22 @@ class _Read:
     def bars(self) -> list[str]:
         """The arms the aspect's outcome bar draws, as the page names them."""
         return [bar.arm for block in self.aspect().blocks if isinstance(block, ChartBlock) for bar in block.bars]
+
+
+def _split_caveats(built: ReportInput, *, stored: bool) -> list[tuple[object, ...]]:
+    """The withheld-by-split caveats of a built input as the builder raised them with its bundle, or, ``stored``, of
+    the same input written out without its list and read back, which raises them from its own parts alone."""
+    if stored:
+        written = built.model_copy(update={"caveat_list": None, "first_screen": None}).model_dump(mode="json")
+        entries = caveat_list(ReportInput.model_validate(written))
+    else:
+        assert built.caveat_list is not None
+        entries = built.caveat_list
+    return [
+        (entry.state, entry.reason, entry.coordinate, entry.arms, entry.readings)
+        for entry in entries
+        if entry.reason == "split"
+    ]
 
 
 def _scoreboard_row(first_screen: str, arm: str) -> list[str]:
@@ -477,3 +495,24 @@ def test_the_figures_across_aspects_never_call_an_arm_answered_by_two_models_dea
     assert aggregate is not None
     held = {figures.arm_label: figures for figures in aggregate.arms}
     assert (held[_ALIAS].cheaper_on, held[_ALIAS].dearer_on) == ([], [])
+
+
+@pytest.mark.parametrize("stored", [False, True], ids=["built", "stored"])
+def test_an_arm_answered_by_two_models_raises_one_split_caveat_on_the_served_model_from_its_scoreboard_row(
+    stored: bool,
+) -> None:
+    """The withheld-by-split caveat is raised from the scoreboard row's typed state, so a stored input with no bundle
+    raises it as the built one does, once."""
+    built = report_input(_Read([_MARCH, _JUNE]).whole)
+
+    assert _split_caveats(built, stored=stored) == [
+        ("withheld", "split", "served_model", [_ALIAS], [f"{ASPECT}/passed"])
+    ]
+
+
+@pytest.mark.parametrize("stored", [False, True], ids=["built", "stored"])
+def test_an_arm_answered_by_one_model_raises_no_split_caveat(stored: bool) -> None:
+    built = report_input(_Read([_MARCH, _MARCH]).whole)
+
+    assert all(row.state is None for row in built.scoreboard.values())
+    assert _split_caveats(built, stored=stored) == []

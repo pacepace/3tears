@@ -45,6 +45,8 @@ from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.model import ChartBlock, Report
+from threetears.evals.analysis.caveats import caveat_list
+from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, RateDrop
@@ -304,6 +306,22 @@ def test_rewording_what_a_frontier_says_of_differing_definitions_moves_no_stored
     assert '"definitions_apart":true' in stored
 
 
+def _split_caveats(built: ReportInput, *, stored: bool) -> list[tuple[object, ...]]:
+    """The withheld-by-split caveats of a built input as the builder raised them with its bundle, or, ``stored``, of
+    the same input written out without its list and read back, which raises them from its own parts alone."""
+    if stored:
+        written = built.model_copy(update={"caveat_list": None, "first_screen": None}).model_dump(mode="json")
+        entries = caveat_list(ReportInput.model_validate(written))
+    else:
+        assert built.caveat_list is not None
+        entries = built.caveat_list
+    return [
+        (entry.state, entry.reason, entry.coordinate, entry.arms, entry.readings)
+        for entry in entries
+        if entry.reason == "split"
+    ]
+
+
 def _scoreboard_row(first_screen: str, arm: str) -> list[str]:
     """One arm's scoreboard row on an aspect's first screen, cell by cell."""
     (row,) = [line for line in first_screen.splitlines() if line.startswith(("| " + arm + " |", "| ▸ " + arm + " |"))]
@@ -456,3 +474,24 @@ def test_the_equal_weight_figures_withhold_the_pass_rate_of_an_arm_read_under_tw
     held = {figures.arm_label: figures for figures in aggregate.arms}
     assert (held[_CANDIDATE].pass_rate.value, held[_CANDIDATE].pass_rate.missing) == (None, [ASPECT])
     assert held[_CONTROL].pass_rate.value is not None and held[_CONTROL].pass_rate.missing == []
+
+
+@pytest.mark.parametrize("stored", [False, True], ids=["built", "stored"])
+def test_an_arm_read_under_two_definitions_raises_one_split_caveat_on_the_measure_definition_from_its_scoreboard_row(
+    stored: bool,
+) -> None:
+    """The withheld-by-split caveat names the coordinate the row's typed state names, so a definition split is raised
+    as one, from a stored input as from the built one."""
+    built = report_input(_Read({_CONTROL: [_AFTER], _CANDIDATE: [_BEFORE, _AFTER]}).whole)
+
+    assert _split_caveats(built, stored=stored) == [
+        ("withheld", "split", "measure_definition", [_CANDIDATE], [f"{ASPECT}/passed"])
+    ]
+
+
+@pytest.mark.parametrize("stored", [False, True], ids=["built", "stored"])
+def test_an_arm_read_under_one_definition_throughout_raises_no_split_caveat(stored: bool) -> None:
+    built = report_input(_Read({_CONTROL: [_AFTER], _CANDIDATE: [_AFTER, _AFTER]}).whole)
+
+    assert all(row.state is None for row in built.scoreboard.values())
+    assert _split_caveats(built, stored=stored) == []
