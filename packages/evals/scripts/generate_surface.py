@@ -1,4 +1,4 @@
-"""Generate ``packages/evals/docs/surface.md`` and ``packages/evals/llms.txt`` from the tier map's kinds.
+"""Generate ``packages/evals/docs/surface.md`` and ``packages/evals/llms.txt`` from the declared names' kinds.
 
 Dev tooling for ``3tears-evals``: it lives beside the package, not in it, and is not installed.
 
@@ -8,14 +8,14 @@ Dev tooling for ``3tears-evals``: it lives beside the package, not in it, and is
     # Exit 1 when either committed file is stale, without writing:
     uv run python packages/evals/scripts/generate_surface.py --check
 
-Both are read from what the snapshot generator records: each declared name's kind (``surface_kinds.py``) and, for a
-``typed`` name, its rung. ``docs/surface.md`` lists every declared name once, by role: the names an eval is written
-with, rung by rung, then the host's contract, the operations, the action catalogue, a host's test kits, and the
-shapes, each under the name that hands it over. Each line is the name and the first sentence of its own docstring.
-``llms.txt`` is what an AI agent adopting the package reads first: what the package is, the names a first eval
-needs with a few lines of the first ladder example verbatim, where a later task's names are by rung and by role,
-and the actions. The wheel ships it as ``threetears/evals/llms.txt``. ``tests/test_surface_docs.py`` fails while
-either committed file is not what this makes of the package.
+Both are read from each declared name's kind (``surface_kinds.py``) and, for a ``typed`` name, the rung that teaches
+it. ``docs/surface.md`` opens with the names a first eval needs and what each rung adds, then the host's contract, the
+operations, the action catalogue, a host's test kits, the shapes by the concept each belongs to, the reading states
+with their reasons and remedies, and last the counts each kind is held to; each line is a name and the first sentence
+of its own docstring. ``llms.txt`` is what an AI agent adopting the package reads first: what it is, the first
+example whole, how to get and run the examples, how to read what comes back, where a later task's names are, and the
+actions. The wheel ships it as ``threetears/evals/llms.txt``, so it cites only what an install holds or the repository
+by URL. ``tests/test_surface_docs.py`` fails while either committed file is not what this makes of the package.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import ast
 import re
 import sys
 import textwrap
+import tomllib
 import typing
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -40,15 +41,23 @@ from public_surface import (
 )
 from surface_kinds import (
     FIRST_EVAL_CEILING,
+    HELPERS,
+    KIND_BUDGETS,
     KIND_CEILINGS,
+    KIND_MEANINGS,
     KINDS,
+    NEAR_DUPLICATES,
+    THROUGH_RUNG_3_CEILING,
     TYPED,
+    UNTAUGHT_TYPED,
     Kind,
     counts,
     declared_kinds,
     objects_of,
+    rung_anchors,
     rung_titles,
     shape_reach,
+    typed_through,
 )
 
 #: The page this writes.
@@ -71,24 +80,56 @@ LEDGER_REASONS: Mapping[str, str] = {
     "unreached": "Nothing",
 }
 
-#: What each kind asks of the reader who meets it.
-KIND_MEANINGS: Mapping[Kind, str] = {
-    "typed": "a newcomer writes it in an eval file",
-    "bound": "a host implements it or hands it to the engine",
-    "invoked": "an operation called by name, from host code or through an action",
-    "received": "a value someone is handed and reads",
-    "tests": "a kit, recorder or guard a host runs in its own tests",
-}
-
-#: The first ladder example, and the lines of it the agent's file shows, each the start of exactly one line.
-FIRST_EXAMPLE = PACKAGE_ROOT / "examples" / "1-triage" / "triage.py"
-EXAMPLE_LINES: tuple[str, ...] = (
-    "from threetears.evals import ",
-    "model = Model(",
-    "async def triage(",
-    "    return await model.json(",
-    "triage_eval = Eval(",
+#: The concepts a reader already knows, in the order the shapes are grouped by: a shape belongs to the first whose
+#: words its own name holds. An exception is an error, and a shape no concept's words name is "other".
+CONCEPTS: tuple[tuple[str, frozenset[str]], ...] = (
+    (
+        "Runs, results and traces",
+        frozenset(
+            {"Run", "Runs", "Runner", "Result", "Results", "Trace", "Cell", "Trial", "Attempt", "Launch", "Delivery"}
+            | {"Candidate", "Variant"}
+        ),
+    ),
+    (
+        "Judges, graders and labels",
+        frozenset({"Judge", "Judged", "Rubric", "Calibration", "Rating", "Label", "Blind", "Verdict", "Grader"}),
+    ),
+    (
+        "Campaigns and comparisons",
+        frozenset({"Campaign", "Aspect", "Floor", "Bar", "Arm", "Control", "Swept", "Contrast", "Gate", "Frontier"})
+        | frozenset({"Sweepable", "Axis", "Pass", "Threshold", "Pins", "Merit"}),
+    ),
+    (
+        "Reports and analyses",
+        frozenset({"Report", "Chart", "Reading", "Readings", "Insight", "Analysis", "Analyst", "Summary", "Bundle"}),
+    ),
+    (
+        "Cost and budgets",
+        frozenset({"Cost", "Spend", "Price", "Pricing", "Budget", "Ceiling", "Ceilings", "Usage", "Metered", "Rate"}),
+    ),
+    (
+        "Cases, templates and seeds",
+        frozenset({"Case", "Template", "Seed", "Corpus", "Definition", "Prompt", "Variation"}),
+    ),
+    (
+        "Worlds, agents and conversations",
+        frozenset({"World", "Goal", "Precondition", "Tool", "Turn", "Conversation", "Actor", "Simulator", "Subject"}),
+    ),
+    (
+        "Model calls",
+        frozenset({"Completion", "Settings", "Setting", "Wire", "Refusal", "Provider", "Thinking", "Call", "Model"})
+        | frozenset({"Stop", "Failure", "Negotiated"}),
+    ),
+    ("Measures", frozenset({"Measure", "Metric", "Descriptor", "Latency", "Interval", "Scale", "Value", "Phase"})),
+    ("Actions and jobs", frozenset({"Action", "Catalogue", "Job", "Jobs", "Lease"})),
+    ("Storage", frozenset({"Store", "Doc", "Document", "Route", "Routing", "Reset"})),
 )
+
+#: The first ladder example, which the agent's file shows whole.
+FIRST_EXAMPLE = PACKAGE_ROOT / "examples" / "1-triage" / "triage.py"
+
+#: The examples' own guide, whose "Running them" section says how to fetch them and what their exit codes mean.
+EXAMPLES_GUIDE = PACKAGE_ROOT / "examples" / "README.md"
 
 PREFIX = "threetears.evals."
 
@@ -111,6 +152,17 @@ def summary(qualified: str, obj: object) -> str:
     return md_text(first_sentence(text)) if text else "*(no description)*"
 
 
+def repository() -> str:
+    """The repository's URL, as the package's metadata states it."""
+    config = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return typing.cast(str, config["project"]["urls"]["Repository"])
+
+
+def at_tag(path: str) -> str:
+    """A file of the package in the repository, at the tag of the installed version."""
+    return f"{repository()}/blob/<tag>/packages/evals/{path}"
+
+
 class Surface:
     """The declared names, their kinds and objects, and what reaches each shape: read once for both files."""
 
@@ -125,18 +177,29 @@ class Surface:
         self.objects = objects_of(self.entries)
         self.reach = shape_reach(self.entries, self.kinds)
         self.rungs = rung_titles()
+        self.anchors = rung_anchors()
+        self._first: dict[int, str] = {}
 
     def of_kind(self, kind: Kind) -> list[str]:
         return [name for name in self.entries if self.kinds[name] == kind]
 
     def line(self, qualified: str) -> str:
-        return f"- `{short(qualified)}`: {summary(qualified, self.objects[qualified])}"
+        """One name's line; the second spelling of one class or function says whose it is."""
+        obj = self.objects[qualified]
+        if isinstance(obj, type) or callable(obj):
+            first = self._first.setdefault(id(obj), qualified)
+            if first != qualified:
+                return f"- `{short(qualified)}`: the same as `{short(first)}`."
+        return f"- `{short(qualified)}`: {summary(qualified, obj)}"
 
     def typed_by_rung(self) -> dict[int, list[str]]:
         found: dict[int, list[str]] = {rung: [] for rung in sorted(self.rungs)}
         for name in TYPED:
             found.setdefault(TYPED[name], []).append(name)
         return found
+
+    def first_eval(self) -> list[str]:
+        return [name for name in TYPED if TYPED[name] <= 1]
 
 
 def _by_root(names: list[str]) -> dict[str, list[str]]:
@@ -164,36 +227,44 @@ def _actions() -> list[tuple[str, list[tuple[str, str]]]]:
     return list(grouped.items())
 
 
+def concept_of(qualified: str, entry: SurfaceEntry) -> str:
+    """The concept a shape belongs to: the first of :data:`CONCEPTS` whose words its name holds."""
+    if entry.kind == "exception":
+        return "Errors"
+    words = set(re.findall(r"[A-Z][a-z]+|[A-Z]+(?![a-z])", qualified.rsplit(".", 1)[1]))
+    return next((concept for concept, names in CONCEPTS if words & names), "Other")
+
+
+def reading_states() -> list[tuple[str, str, str]]:
+    """Each state a reading can be in that is not counted, each of its reasons, and the act that closes it."""
+    from threetears.evals.analysis.caveats import REMEDY_OF_REASON
+    from threetears.evals.schema.reading_states import REASONS_OF
+
+    return [
+        (state, reason, REMEDY_OF_REASON[reason]) for state, reasons in REASONS_OF.items() for reason in sorted(reasons)
+    ]
+
+
 # --- docs/surface.md ---------------------------------------------------------------------------------------------
 
 
 def surface_page(surface: Surface) -> str:
-    """``docs/surface.md``: every declared name once, by role, then rung, then the name that reaches it."""
+    """``docs/surface.md``: every declared name once, the newcomer's first."""
     return "\n".join(_surface_lines(surface)).rstrip() + "\n"
 
 
+def _rung_heading(surface: Surface, rung: int, added: str) -> str:
+    return f"### [Rung {rung}: {surface.rungs[rung]}](ladder.md#{surface.anchors[rung]}) ({added})"
+
+
 def _surface_lines(surface: Surface) -> Iterator[str]:
-    total = counts(surface.kinds)
+    by_rung = surface.typed_by_rung()
+    first = surface.first_eval()
     yield "# The surface: every declared name, by role"
     yield ""
-    yield from textwrap.wrap(
-        f"Generated by `{REGENERATE}` from each declared name's kind; change a docstring or "
-        "`scripts/surface_kinds.py`, never this page. Each line is a name, `threetears.evals.` dropped, and the "
-        "first sentence of its docstring; the [reference](reference.md#public-api) has the rest.",
-        120,
-        break_on_hyphens=False,
-        break_long_words=False,
-    )
+    yield "Each line is a name, `threetears.evals.` dropped, and the first sentence of its docstring; the"
+    yield "[reference](reference.md#public-api) has the rest."
     yield ""
-    yield "| Kind | Who meets it | Names | Ceiling |"
-    yield "|---|---|---|---|"
-    for kind in KINDS:
-        ceiling = KIND_CEILINGS[kind]
-        yield f"| `{kind}` | {KIND_MEANINGS[kind]} | {total[kind]} | {ceiling if ceiling is not None else 'none'} |"
-    yield f"| all | | {sum(total.values())} | |"
-    yield ""
-    by_rung = surface.typed_by_rung()
-    first = [name for rung, names in by_rung.items() if rung <= 1 for name in names]
     yield "## Writing an eval"
     yield ""
     yield f"### Your first eval: these {len(first)}"
@@ -203,12 +274,16 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
     for rung, names in by_rung.items():
         if rung <= 1:
             continue
-        added = f"adds {len(names)}" if names else "adds no name"
-        yield f"### Rung {rung}: {surface.rungs[rung]} ({added})"
+        yield _rung_heading(surface, rung, f"adds {len(names)}" if names else "adds no name")
         yield ""
         if names:
             yield from (surface.line(name) for name in names)
             yield ""
+    untaught = [name for name in surface.entries if name in UNTAUGHT_TYPED]
+    yield f"### Written in an eval, taught on no rung ({len(untaught)})"
+    yield ""
+    yield from (surface.line(name) for name in untaught)
+    yield ""
     ledger = _ledger()
     bound = surface.of_kind("bound")
     yield f"## The host's contract: {len(bound)} names a host implements or hands the engine"
@@ -228,13 +303,19 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
     yield from (surface.line(name) for name in rest)
     yield ""
     invoked = surface.of_kind("invoked")
-    yield f"## Operations: {len(invoked)} names called from host code"
+    operations = [name for name in invoked if name not in HELPERS]
+    yield f"## Operations: {len(operations)} names called to make the engine act"
     yield ""
-    for root, names in _by_root(invoked).items():
+    for root, names in _by_root(operations).items():
         yield f"### `{root}` ({len(names)})"
         yield ""
         yield from (surface.line(name) for name in names)
         yield ""
+    helpers = [name for name in invoked if name in HELPERS]
+    yield f"### Helpers: {len(helpers)} that repeat a step of the engine's"
+    yield ""
+    yield from (surface.line(name) for name in helpers)
+    yield ""
     actions = _actions()
     yield f"## The action catalogue: {sum(len(each) for _, each in actions)} actions an agent calls"
     yield ""
@@ -253,31 +334,55 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
     received = surface.of_kind("received")
     yield f"## Shapes: {len(received)} values a reader is handed"
     yield ""
-    groups: dict[str | None, list[str]] = {}
-    constants: list[str] = []
+    groups: dict[str, list[str]] = {}
     for name in received:
-        if name in surface.reach.by:
-            groups.setdefault(surface.reach.by[name], []).append(name)
-        else:
-            constants.append(name)
-    order = {name: index for index, name in enumerate(n for kind in KINDS for n in surface.of_kind(kind))}
-    for start in sorted((s for s in groups if s is not None), key=order.__getitem__):
-        yield f"### From `{short(start)}` ({len(groups[start])})"
-        yield ""
-        yield from (surface.line(name) for name in groups[start])
-        yield ""
-    yield f"### Constants ({len(constants)})"
+        concept = "Constants" if name not in surface.reach.by else concept_of(name, surface.entries[name])
+        groups.setdefault(concept, []).append(name)
+    for concept in (*(c for c, _ in CONCEPTS), "Errors", "Other", "Constants"):
+        if concept in groups:
+            yield f"### {concept} ({len(groups[concept])})"
+            yield ""
+            yield from (surface.line(name) for name in groups[concept])
+            yield ""
+    states = reading_states()
+    yield f"## Reading states: {len(states)} reasons a reading is not counted, and what closes each"
     yield ""
-    yield from (surface.line(name) for name in constants)
+    yield "| State | Reason | Remedy |"
+    yield "|---|---|---|"
+    yield from (f"| `{state}` | `{reason}` | `{remedy}` |" for state, reason, remedy in states)
     yield ""
-    unreached = groups.get(None, [])
+    unreached = [name for name, by in surface.reach.by.items() if by is None]
+    yield f"## Findings: {len(unreached) + len(NEAR_DUPLICATES)} shapes to resolve"
+    yield ""
     yield f"### Reached by no declared signature ({len(unreached)})"
     yield ""
-    yield from (surface.line(name) for name in unreached)
+    yield from (f"- `{short(name)}`" for name in unreached)
+    yield ""
+    yield f"### Near-duplicate shapes ({len(NEAR_DUPLICATES)})"
+    yield ""
+    yield from (f"- `{short(one)}` and `{short(other)}`" for one, other in sorted(NEAR_DUPLICATES))
+    yield ""
+    total = counts(surface.kinds)
+    yield "## The counts"
+    yield ""
+    yield "| Kind | Who meets it | Names | Budget | Ceiling |"
+    yield "|---|---|---|---|---|"
+    for kind in KINDS:
+        budget, ceiling = KIND_BUDGETS[kind], KIND_CEILINGS[kind]
+        yield (
+            f"| `{kind}` | {KIND_MEANINGS[kind]} | {total[kind]} | {budget if budget is not None else 'none'} | "
+            f"{ceiling if ceiling is not None else 'none'} |"
+        )
+    yield f"| all | | {sum(total.values())} | | |"
+    yield ""
+    yield "| Typed names | Names | Budget |"
+    yield "|---|---|---|"
+    yield f"| A first eval (rungs 0 and 1) | {typed_through(1)} | {FIRST_EVAL_CEILING} |"
+    yield f"| Through rung 3 | {typed_through(3)} | {THROUGH_RUNG_3_CEILING} |"
+    yield f"| The whole ladder | {len(TYPED)} | {KIND_BUDGETS['typed']} |"
+    yield f"| Taught on no rung | {len(UNTAUGHT_TYPED)} | 0 |"
     yield ""
     reasons = list(ledger.values())
-    yield "## Held back"
-    yield ""
     yield "The hold-back ledger, [`tests/fixtures/declared_holdbacks.txt`](../tests/fixtures/declared_holdbacks.txt),"
     yield "lists every declared name the tree alone does not hold; `tests/test_declared_holdbacks.py` holds it."
     yield ""
@@ -285,6 +390,8 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
     yield "|---|---|---|"
     for reason, meaning in LEDGER_REASONS.items():
         yield f"| `{reason}` | {meaning} | {reasons.count(reason)} |"
+    yield ""
+    yield f"Generated by `{REGENERATE}`: change a docstring or `scripts/surface_kinds.py`, never this page."
 
 
 # --- llms.txt ----------------------------------------------------------------------------------------------------
@@ -317,16 +424,54 @@ def what_it_is() -> list[str]:
     return [_sentences(" ".join(opening.split()), 1)[0], *_sentences(rest, 2)]
 
 
-def example_lines() -> list[str]:
-    """The lines of the first ladder example the agent's file shows, verbatim, in the file's order."""
-    lines = FIRST_EXAMPLE.read_text(encoding="utf-8").splitlines()
-    shown: list[int] = []
-    for start in EXAMPLE_LINES:
-        matches = [index for index, line in enumerate(lines) if line.startswith(start)]
-        if len(matches) != 1:
-            raise SystemExit(f"{FIRST_EXAMPLE} has {len(matches)} lines starting {start!r}, not one")
-        shown.append(matches[0])
-    return [lines[index] for index in sorted(shown)]
+def _module_doc(path: Path) -> str:
+    return ast.get_docstring(ast.parse(path.read_text(encoding="utf-8"))) or ""
+
+
+def example_program() -> list[str]:
+    """The first ladder example whole, its module docstring left out: a complete program, verbatim."""
+    source = FIRST_EXAMPLE.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    first = tree.body[0]
+    skip = first.end_lineno if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) else 0
+    lines = source.splitlines()[skip or 0 :]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    return lines
+
+
+def example_notes() -> list[str]:
+    """What running an example costs, from the examples' guide, and how the first one replays and records again,
+    from its own docstring."""
+    guide = paragraphs(_section(EXAMPLES_GUIDE, "Running them").partition("\n\n")[2])[0]
+    doc = paragraphs(_module_doc(FIRST_EXAMPLE))
+    return [_plain(_sentences(guide, 1)[0]), _plain(_sentences(doc[1], 2)[1])]
+
+
+def _section(path: Path, heading: str) -> str:
+    text = path.read_text(encoding="utf-8")
+    start = text.index(f"\n## {heading}\n")
+    end = text.find("\n## ", start + 1)
+    return text[start : end if end != -1 else len(text)]
+
+
+def fetch_commands() -> list[str]:
+    """The commands the examples' guide fetches them with, verbatim."""
+    block = re.search(r"```bash\n(.*?)```", _section(EXAMPLES_GUIDE, "Running them"), re.S)
+    assert block is not None, f"{EXAMPLES_GUIDE} shows no fetch commands under Running them"
+    return block[1].rstrip("\n").splitlines()
+
+
+def exit_codes() -> list[tuple[str, str]]:
+    """The exit codes the command line uses, from the examples' guide."""
+    return re.findall(r"^\| (\d) \| (.+?) \|$", _section(EXAMPLES_GUIDE, "Running them"), re.M)
+
+
+def printed_first_line(rung_heading: str) -> str:
+    """The first line a rung's run prints, as ``docs/ladder.md`` shows it."""
+    block = re.search(r"```text\n(.*?)\n", _section(PACKAGE_ROOT / "docs" / "ladder.md", rung_heading), re.S)
+    assert block is not None, f"docs/ladder.md shows no output under {rung_heading}"
+    return block[1]
 
 
 def agent_file(surface: Surface) -> str:
@@ -335,7 +480,9 @@ def agent_file(surface: Surface) -> str:
 
 
 def _wrapped(text: str, indent: str = "") -> Iterator[str]:
-    yield from textwrap.wrap(text, _WIDTH, initial_indent=indent, subsequent_indent=f"{indent}  ")
+    yield from textwrap.wrap(
+        text, _WIDTH, initial_indent=indent, subsequent_indent=f"{indent}  ", break_on_hyphens=False
+    )
 
 
 def _names(names: list[str]) -> str:
@@ -344,51 +491,72 @@ def _names(names: list[str]) -> str:
 
 def _agent_lines(surface: Surface) -> Iterator[str]:
     by_rung = surface.typed_by_rung()
-    first = [name for rung, names in by_rung.items() if rung <= 1 for name in names]
+    first = surface.first_eval()
     yield "3tears-evals: read this first"
     yield ""
-    yield from _wrapped(f"Generated by {REGENERATE}; do not edit. Names drop the threetears.evals. prefix.")
+    yield from _wrapped(
+        f"Generated by {REGENERATE}; do not edit. Names drop the threetears.evals. prefix. <tag> below is v and "
+        "the installed version (threetears.evals.__version__)."
+    )
     yield ""
     yield "WHAT IT IS"
     yield from _wrapped(" ".join(what_it_is()))
     yield ""
-    yield f"A FIRST EVAL: THESE {len(first)} NAMES (at most {FIRST_EVAL_CEILING})"
+    yield f"A FIRST EVAL NEEDS {len(first)} NAMES"
     for name in first:
         yield from _wrapped(_plain(f"{short(name)}: {summary(name, surface.objects[name])}"), "  ")
     yield ""
-    relative = FIRST_EXAMPLE.relative_to(PACKAGE_ROOT)
-    run = _sentences(paragraphs(_module_doc(FIRST_EXAMPLE))[0], 2)[-1]
-    yield f"EXAMPLE: lines of {relative}, verbatim"
-    yield from (f"  {line}" for line in example_lines())
-    yield from _wrapped(_plain(run))
+    relative = FIRST_EXAMPLE.relative_to(PACKAGE_ROOT / "examples")
+    yield f"THE FIRST EXAMPLE, WHOLE ({relative} of the examples fetched below; its docstring left out)"
+    yield from (f"  {line}" if line else "" for line in example_program())
+    for note in example_notes():
+        yield from _wrapped(note)
     yield ""
-    yield "LATER TASKS, BY RUNG (docs/ladder.md teaches each)"
+    yield "GETTING THE EXAMPLES: they are not in the installed package; fetch them from the repository"
+    yield from (f"  {line}" for line in fetch_commands())
+    yield from _wrapped(
+        "Then run one from that directory: python -m threetears.evals 1-triage/triage.py. Each rung reads its cases "
+        "and replays its recordings from beside itself, so keep its directory together."
+    )
+    yield ""
+    yield "READING WHAT COMES BACK"
+    yield from _wrapped("The first line printed is the answer. Rung 1 prints:")
+    yield from _wrapped(printed_first_line("Rung 1: your own function"), "  ")
+    yield from _wrapped("A comparison's first line says whether the evidence tells the arms apart. Rung 3a prints:")
+    yield from _wrapped(printed_first_line("Rung 3a: two prompts, compared"), "  ")
+    yield from _wrapped(
+        "Below it: each measure's rate, the top misses with why each missed, and where the report page is. A "
+        "refusal before anything runs goes to stderr with exit 2; an action that refuses answers with refused: "
+        "and a remedy: saying what to do instead."
+    )
+    yield from _wrapped(f"Exit codes: {'; '.join(f'{code} {meaning}' for code, meaning in exit_codes())}.", "  ")
+    yield ""
+    yield f"LATER TASKS, BY RUNG ({at_tag('docs/ladder.md')})"
     for rung, names in by_rung.items():
         if rung > 1:
             yield from _wrapped(f"Rung {rung}, {surface.rungs[rung]}: {_names(names) or 'no new name'}", "  ")
+    untaught = [name for name in surface.entries if name in UNTAUGHT_TYPED]
+    yield from _wrapped(f"On no rung, in the reference: {_names(untaught)}", "  ")
     yield ""
-    total = counts(surface.kinds)
-    yield "LATER TASKS, BY ROLE (docs/surface.md lists every name with one line)"
-    for kind in KINDS:
-        if kind == "typed":
-            continue
-        roots = _by_root(surface.of_kind(kind))
-        where = ", ".join(f"{root} {len(names)}" for root, names in roots.items())
-        yield from _wrapped(f"{kind} ({total[kind]}), {KIND_MEANINGS[kind]}: {where}", "  ")
+    ledger = _ledger()
+    ports = [name for name in surface.of_kind("bound") if ledger.get(name) == "port-host-implements"]
+    yield f"EMBEDDING IT IN AN APP ({at_tag('docs/adopting-a-host.md')})"
+    yield from _wrapped(
+        f"A product builds one kernel.host.EvalHost and hands it to every entrypoint. The {len(ports)} ports a host "
+        f"may implement: {_names(ports)}.",
+        "  ",
+    )
+    yield from _wrapped(f"Every declared name, with one line each: {at_tag('docs/surface.md')}", "  ")
     yield ""
     actions = _actions()
-    yield f"ACTIONS: {sum(len(each) for _, each in actions)}, no Python needed"
+    yield f"ACTIONS: {sum(len(each) for _, each in actions)}, called without writing Python"
     yield from _wrapped(
-        "actions.eval_catalogue() holds them; transports.fastmcp.mount_fastmcp serves them over MCP; "
-        "docs/serving.md and docs/reference.md describe each.",
+        f"actions.eval_catalogue() holds them; transports.fastmcp.mount_fastmcp serves them over MCP "
+        f"({at_tag('docs/serving.md')}).",
         "  ",
     )
     for workflow, each in actions:
         yield from _wrapped(f"{workflow}: {', '.join(name for name, _ in each)}", "  ")
-
-
-def _module_doc(path: Path) -> str:
-    return ast.get_docstring(ast.parse(path.read_text(encoding="utf-8"))) or ""
 
 
 # --- main --------------------------------------------------------------------------------------------------------

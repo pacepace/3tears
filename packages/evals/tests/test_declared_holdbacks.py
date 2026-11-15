@@ -65,9 +65,9 @@ PROTOCOL_REASONS = (HOST_IMPLEMENTS, ENGINE_PROVIDES)
 _REFERENCE_ENTRY = re.compile(r"^- \*\*`[^`]+`\*\*", re.M)
 #: A reference entry's own signature, on the line under it.
 _REFERENCE_SIGNATURE = re.compile(r"^\s*<br>`.*$", re.M)
-#: A line on ``docs/surface.md`` that only lists declared names: one name and its docstring's first sentence, or a
-#: heading naming the name a group of shapes is reached from.
-_SURFACE_ROOT = re.compile(r"^(?:- `[\w.]+`: |### From `).*$", re.M)
+#: A line on ``docs/surface.md`` that only lists declared names: a name and its docstring's first sentence, a name and
+#: its first spelling, or a finding naming one or two.
+_SURFACE_ROOT = re.compile(r"^- `[\w.]+`.*$", re.M)
 #: A fenced code block on a page.
 _FENCE = re.compile(r"^```.*?^```", re.M | re.S)
 #: An exception a docstring says a callable raises.

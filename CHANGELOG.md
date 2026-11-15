@@ -9,21 +9,25 @@ packages (bumped in lock-step).
 ### evals: every declared name has a kind, each kind its ceiling, and the surface page and an agent's first read are generated
 
 **Added:** the tier map the wheel ships (`threetears/evals/surface_tiers.json`) gains `kinds`: each of the 503 declared
-names is exactly one of `typed` (a newcomer writes it in an eval file, 23), `bound` (a host implements it or hands it
-to the engine, 75), `invoked` (an operation called by name, 129), `received` (a value someone is handed and reads,
-258) or `tests` (a host's test kit, 18). `surface_tier` and `declared_names` read the map as before.
+names is exactly one of `typed` (a newcomer writes it in an eval file, 14: the 11 the ladder's rungs import, and
+`Answer`, `Log` and `quick.measure`, which no rung teaches), `bound` (a host implements it or hands it to the engine,
+107), `invoked` (an operation called by name, 117, of which 37 are helpers an owner may demote), `received` (a value
+someone is handed and reads, 249) or `tests` (a host's test kit, 16). `surface_tier` and `declared_names` read the
+map as before.
 
-**Changed:** the one ceiling on the declared surface is replaced by a ceiling per kind: `typed` at most 25 (8 for a
-first eval, 12 through rung 3), `bound` 100, `invoked` 129 and `tests` 18, both of which may only fall, and no total
-for `received`, whose every shape must be reached from a `typed`, `bound` or `invoked` name.
+**Changed:** the one ceiling on the declared surface is replaced by a ceiling per kind, each its budget or today's
+count where that is over it, and held there: `typed` 25 (2 names for a first eval against a budget of 8, 5 through
+rung 3 against 12), `bound` 107 (budget 100), `invoked` 117 (budget 110), `tests` 16, and no total for `received`,
+whose every shape must be reached from a name a reader meets first.
 
-**Changed:** `docs/surface.md` is generated (`scripts/generate_surface.py`), by role and then rung: the eight names a
-first eval needs, what each rung adds, the host's contract, the operations, the action catalogue, a host's test kits,
-and the shapes under the name that hands each over, one line each from its docstring.
+**Changed:** `docs/surface.md` is generated (`scripts/generate_surface.py`): the names a first eval needs and what
+each rung adds, then the host's contract, the operations, the action catalogue, a host's test kits, the shapes by
+concept, the reading states with each reason's remedy, the findings, and last the counts.
 
 **Added:** `llms.txt`, at the package's root and in the wheel as `threetears/evals/llms.txt`: what an AI agent adopting
-the package reads first (what it is, a first eval's names and lines of the first example, where a later task's names
-are by rung and role, the actions), generated from the same kinds.
+the package reads first (what it is, the first example whole, how to fetch and run the examples, that they replay for
+free and how to record live, how to read what comes back, where a later task's names are, the actions), generated from
+the same kinds.
 
 ### evals: one closed set of reading states, one caveat entry and one first-screen value, all unset
 

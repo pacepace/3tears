@@ -9,7 +9,6 @@ are regenerated, so neither describes an older package.
 from __future__ import annotations
 
 import re
-import tomllib
 from pathlib import Path
 
 from packages.evals.tests.script_loader import load_script
@@ -48,25 +47,40 @@ def test_the_page_lists_every_declared_name_once() -> None:
     )
 
 
-def test_the_page_opens_with_the_first_eval() -> None:
-    """The first screen is the kinds' counts and the names a first eval needs."""
+def test_the_page_opens_with_the_first_eval_and_ends_with_the_counts() -> None:
+    """The first screen is the newcomer's: the names a first eval needs, then each rung's; the counts come last."""
     page = generator.SURFACE_PATH.read_text(encoding="utf-8").splitlines()
-    first = page.index("### Your first eval: these 8")
-    assert first < 25
+    first = page.index(f"### Your first eval: these {load_script('surface_kinds.py').typed_through(1)}")
+    assert first < 10
     assert page[first + 2].startswith("- `Eval`: ")
+    assert page.index("## The counts") > page.index("## Findings: 10 shapes to resolve")
+    assert not any("Ceiling" in line for line in page[:40])
 
 
-def test_the_agent_file_is_short_and_shows_the_first_example_verbatim() -> None:
+def test_the_agent_file_is_short_true_and_sufficient() -> None:
+    """Read whole by an agent that has never seen the package: the first example runs as shown, and the file says
+    how to get it, that it replays for free, how to record live, how to run it and how to read what comes back."""
     text = generator.AGENT_PATH.read_text(encoding="utf-8")
-    assert len(text.splitlines()) < 200
-    example = set(generator.FIRST_EXAMPLE.read_text(encoding="utf-8").splitlines())
-    shown = generator.example_lines()
-    assert len(shown) == 5 and all(line in example for line in shown)
-    assert all(f"  {line}" in text.splitlines() for line in shown)
+    lines = text.splitlines()
+    assert len(lines) < 150
+    program = generator.example_program()
+    assert "\n".join(program) in generator.FIRST_EXAMPLE.read_text(encoding="utf-8")
+    compile("\n".join(program), str(generator.FIRST_EXAMPLE), "exec")
+    assert all((f"  {line}" if line else "") in lines for line in program)
+    flat = " ".join(" ".join(lines).split())
+    for needed in (
+        "calls nothing and costs nothing",
+        "`RECORD=1` with `OPENROUTER_API_KEY` set records it again",
+        "git sparse-checkout set packages/evals/examples",
+        "python -m threetears.evals 1-triage/triage.py",
+        "The first line printed is the answer",
+        "refused: and a remedy:",
+        "0 Every run completed",
+    ):
+        assert needed in flat, f"llms.txt does not say {needed!r}"
     assert len(generator.what_it_is()) == 3
-
-
-def test_the_wheel_ships_the_agent_file() -> None:
-    config = tomllib.loads((PACKAGE / "pyproject.toml").read_text(encoding="utf-8"))
-    shipped = config["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
-    assert shipped["llms.txt"] == "threetears/evals/llms.txt"
+    # The wheel ships this file without the docs or the examples: each is named in the repository, by URL.
+    for match in re.finditer(r"\S*(?:docs|examples)/\S*", text):
+        assert match[0].startswith(("https://", "packages/evals/examples")) or match[0].startswith("(https://"), (
+            f"llms.txt names {match[0]!r}, which the installed package does not hold"
+        )
