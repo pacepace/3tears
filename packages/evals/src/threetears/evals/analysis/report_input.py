@@ -1364,8 +1364,9 @@ class CaseSamples(_Part):
         "control read when not (the two then share at most one). A cross-fill runs them on the arm.",
     )
     only_contrast: int = Field(
-        ge=0, description="Cases the arm ran that the control did not, read as only_control is. A cross-fill runs them "
-        "on the control."
+        ge=0,
+        description="Cases the arm ran that the control did not, read as only_control is. A cross-fill runs them "
+        "on the control.",
     )
     value_range: tuple[float, float] = Field(description="The values' declared inclusive bounds.")
     confidence: float = Field(gt=0, lt=1, description="The two-sided level the reading's interval was read at.")

@@ -96,7 +96,9 @@ from __future__ import annotations
 import math
 import random
 import re
+from bisect import bisect_right
 from collections.abc import Callable, Iterable, Sequence
+from itertools import accumulate
 from dataclasses import dataclass
 from statistics import NormalDist
 from typing import Final, Literal
@@ -420,8 +422,8 @@ _LIFT_RESOLUTION: Final = 0.01
 _TILT_BOUND: Final = 60.0
 _TILT_STEPS: Final = 60
 
-#: The orders the reach's spread over orders is read on (:func:`_order_spread`).
-_ORDERS: Final = 12
+#: The seeded extends the reach's own spread is read on (:func:`_reach_noise`).
+_DRAWS: Final = 16
 
 #: Too few cases to read: fewer than two a side, no count, or no count up to the search's cap (an estimate on its
 #: line, or so near it) at which the reading clears.
@@ -525,27 +527,48 @@ def _drawn(pairs: Sequence[tuple[float, float]], chances: Sequence[float], count
     return drawn
 
 
-def _order_spread(pairs: Sequence[tuple[float, float]], value_range: tuple[float, float], confidence: float) -> float:
-    """How far the bounded interval's reach below its estimate varies with the order it bets in, over these pairs:
-    its spread over :data:`_ORDERS` seeded orders. A reading bets in an order fixed by its cases' ids, and new cases'
-    ids fall among the held ones at random, so which order a reading after an extend bets in is a draw."""
-    count = len(pairs)
-    estimate = math.fsum(b - a for a, b in pairs) / count
-    reaches = []
-    for seed in range(_ORDERS):
-        shuffled = list(pairs)
-        random.Random(f"lift-order-{seed}-{count}").shuffle(shuffled)
+def _reach_noise(
+    held: Sequence[tuple[float, float]],
+    like: Sequence[tuple[float, float]],
+    base: Sequence[float],
+    new: int,
+    value_range: tuple[float, float],
+    confidence: float,
+) -> float:
+    """How far the bounded interval's reach below its estimate varies between readings after an extend, beyond what
+    goes with the estimate itself: over :data:`_DRAWS` seeded extends (the held pairs and ``new`` drawn like them, in a
+    seeded order), the spread of the reach about its straight-line fit on the estimate.
+
+    Two things move the reach that the estimate does not carry. The order the reading bets in is fixed by its cases'
+    ids, and new cases' ids fall among the held ones at random, so it is a draw; and on a few distinct values (a pass
+    rate's pairs, which mostly agree) how many of the rare ones are drawn moves the interval's width more than its
+    centre. What does go with the estimate (a draw nearer the line reading narrower on bounded values) is read on the
+    critical draw instead (:func:`cases_to_lift`), so the fit keeps it from being counted twice."""
+    total = len(held) + new
+    cumulative = list(accumulate(base))
+    estimates, reaches = [], []
+    for seed in range(_DRAWS):
+        drawn = random.Random(f"lift-draw-{seed}-{total}")
+        design = [*held, *(like[min(bisect_right(cumulative, drawn.random()), len(like) - 1)] for _ in range(new))]
+        drawn.shuffle(design)
+        first, second = [a for a, _ in design], [b for _, b in design]
         interval = bounded_difference_interval(
-            [a for a, _ in shuffled],
-            [b for _, b in shuffled],
-            paired=True,
-            value_range=value_range,
-            confidence=confidence,
+            first, second, paired=True, value_range=value_range, confidence=confidence
         )
         if interval is None:
             return 0.0
+        estimate = (math.fsum(second) - math.fsum(first)) / total
+        estimates.append(estimate)
         reaches.append(estimate - interval[0])
-    return _spread_of(reaches)
+    centre, middle = math.fsum(estimates) / _DRAWS, math.fsum(reaches) / _DRAWS
+    across = math.fsum((estimate - centre) ** 2 for estimate in estimates)
+    slope = (
+        math.fsum((e - centre) * (r - middle) for e, r in zip(estimates, reaches, strict=True)) / across
+        if across > 0
+        else 0.0
+    )
+    residuals = [r - middle - slope * (e - centre) for e, r in zip(estimates, reaches, strict=True)]
+    return math.sqrt(math.fsum(value**2 for value in residuals) / (_DRAWS - 2))
 
 
 def cases_to_lift(
@@ -630,7 +653,7 @@ def cases_to_lift(
         # The estimate at ``total`` and the interval's reach both vary, the one with the new pairs drawn, the other
         # with the order the reading bets in; the critical outcome splits the shortfall between them by their spreads.
         estimate_spread = spread * math.sqrt(new) / total
-        order_spread = _order_spread([*held, *_drawn(like, base, new)], value_range, confidence)
+        order_spread = _reach_noise(held, like, base, new, value_range, confidence)
         both = math.hypot(estimate_spread, order_spread)
         shift = z * estimate_spread**2 / both if both > 0 else 0.0
         allowance = z * order_spread**2 / both if both > 0 else 0.0
@@ -683,7 +706,9 @@ def figure_cases_to_lift(
         return _TOO_FEW
     if spread.per_case <= 0:
         return _NO_VARIATION
-    per_case, gap = spread.per_case, abs(distance)
+    # New cases are drawn like the held ones: one case's spread among them, not the estimate of the spread of the
+    # cases they were drawn from (which divides by one fewer).
+    per_case, gap = spread.per_case * math.sqrt((held - 1) / held), abs(distance)
     scale = _z_two_sided(spread.level) / _z_two_sided(INTERVAL_LEVEL)
     z = _z_one_sided(power)
 

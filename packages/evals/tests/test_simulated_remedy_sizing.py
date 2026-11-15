@@ -1,0 +1,568 @@
+"""The plan that lifts a caveat: seeded simulations of the real path, and the typed states where no plan can be read.
+
+A step that adds cases promises that, taken as planned, it lifts its caveat by the rule that raised it four times in
+five if the truth is today's estimate. The planner sizes it on the per-case values the reading was read from
+(``ReportInput.per_case``, :func:`~threetears.evals.analysis.separation.cases_to_lift`), or on a figure's stated spread
+(:func:`~threetears.evals.analysis.separation.figure_cases_to_lift`), with the cases held fixed.
+
+**What each simulation fixes.** A held sample is drawn from a truth (seeded), kept where its reading is unsettled past
+a 10-point margin (a gate: borderline) and its per-case values vary. Its plan is read through the report's own planner
+(:func:`~threetears.evals.analysis.caveats.plan_of` on the input with its per-case part). Then, for each design, that
+many cases are added, drawn like the held ones (truth = today's estimate, held sample fixed), at case ids that fall
+among the held ones at random, and the reading is read again by its own rule: the bounded interval at the reading's
+level and :func:`~threetears.evals.analysis.answer.unsettled_arms` for a contrast; the figure's mean interval, the gate's
+status and the implied raiser for a gate. A row's rate is the share of designs that lift, over every held sample of
+the row. On an unpaired held contrast (each arm's own generated cases) the extend first cross-fills (each arm runs the
+held cases only the other ran, in a seeded order, up to the pairs planned) and draws the rest as new shared cases; the
+cross-filled half is drawn independently of the held half (no correlation between the arms).
+
+**Measured** (seed 20261115; the rate each row holds in [0.78, 0.84]):
+
+=========================  ======  ======  ======  ======  ======
+row                        n0=3    n0=5    n0=10   n0=30   n0=100
+=========================  ======  ======  ======  ======  ======
+see ``_MEASURED``
+=========================  ======  ======  ======  ======  ======
+
+A gate's figure under five cases states no interval (``SMALL_N_BAND_FLOOR``), so it is a point estimate sized to the
+floor and never borderline: the gate rows start at five.
+
+**What it refuses.** The size before this one (the whole design sized to clear four in five, less the cases held,
+read off the reading's interval by a normal approximation) lifts these rows far more often than it says; and a size
+read at the one-sided level lifts them less. Each is run through the same simulation and must fall outside the band.
+"""
+
+from __future__ import annotations
+
+import gzip
+import json
+import math
+import random
+from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import Final
+
+import pytest
+
+from threetears.evals.analysis import answer, criteria, stats
+from threetears.evals.analysis.caveats import Plan, caveat_step, implied, plan_of, raise_caveats
+from threetears.evals.analysis.report_input import CaseSamples, CaveatEntry, ReportInput, report_input_digest
+from threetears.evals.analysis.separation import Spread, cases_to_lift, figure_cases_to_lift
+from threetears.evals.schema.reading_states import StateOf
+
+FIXTURES: Final = Path(__file__).resolve().parent / "fixtures"
+
+_SEED: Final = 20261115
+_LEVEL: Final = stats.INTERVAL_LEVEL
+_BAND: Final = (0.78, 0.84)
+
+#: The aspect the contrast rows read on the reasoning-effort campaign, and its margin in points.
+_ASPECT, _MARGIN = "queue discipline", 10.0
+_LINE: Final = -_MARGIN / 100
+
+#: Held samples per row, and designs per held sample.
+_HELD, _DESIGNS = 16, 80
+
+#: The gate the gate rows read (r1: resolves, in the trouble task), its arm and its place.
+_GATE, _GATED, _GATE_TASK = "trouble.resolves", "atlas-m", "trouble"
+
+#: The truths the contrast rows draw from: each case's (control, candidate) values, higher better.
+Pairs = list[tuple[float, float]]
+
+#: A pass/fail pair per case, k = 1: a 4-point drop with most pairs agreeing (60 both pass, 10 the control only, 6 the
+#: candidate only, 24 neither, per 100).
+_K1: Final = (((1.0, 1.0), 60), ((1.0, 0.0), 10), ((0.0, 1.0), 6), ((0.0, 0.0), 24))
+
+
+def _k1(rng: random.Random, count: int) -> Pairs:
+    return rng.choices([pair for pair, _ in _K1], weights=[weight for _, weight in _K1], k=count)
+
+
+def _k3(rng: random.Random, count: int) -> Pairs:
+    """A share of three trials per case on each arm, the case's difficulty shared by both: a 4-point drop."""
+    drawn = []
+    for _ in range(count):
+        chance = 0.35 + 0.6 * rng.random()
+        control = sum(rng.random() < chance for _ in range(3)) / 3
+        candidate = sum(rng.random() < chance - 0.04 for _ in range(3)) / 3
+        drawn.append((control, candidate))
+    return drawn
+
+
+def _mean(rng: random.Random, count: int) -> Pairs:
+    """A bounded score per case on [0, 1], the case's level shared by both arms: a 3-point drop."""
+    drawn = []
+    for _ in range(count):
+        level = rng.betavariate(4.0, 2.0)
+        control = min(1.0, max(0.0, level + rng.gauss(0.0, 0.15)))
+        candidate = min(1.0, max(0.0, level - 0.03 + rng.gauss(0.0, 0.15)))
+        drawn.append((control, candidate))
+    return drawn
+
+
+_TRUTHS: Final[dict[str, Callable[[random.Random, int], Pairs]]] = {"k1": _k1, "k3": _k3, "mean": _mean}
+
+
+# --- the real path ----------------------------------------------------------------------------------------------------
+
+_BASE: list[ReportInput] = []
+
+
+def _base() -> ReportInput:
+    """The reasoning-effort campaign's frozen input, whose aspects each read two candidates against the control."""
+    if not _BASE:
+        path = FIXTURES / "writer_cases" / "held_out" / "discodon-1017-reasoning-effort-01a18d4d.json.gz"
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            held = ReportInput.model_validate(json.load(handle)["snapshot"]["report_input"])
+        _BASE.append(held.model_copy(update={"caveat_list": None, "first_screen": None, "per_case": None}))
+    return _BASE[0]
+
+
+def _contrast_input(
+    control: Sequence[float], contrast: Sequence[float], *, paired: bool, samples: bool = True
+) -> ReportInput:
+    """The campaign with both candidates' readings on :data:`_ASPECT` read from these per-case values as the pipeline
+    reads them (the bounded interval at the nominal level, against a 10-point margin), and, where ``samples``, the
+    per-case part the builder keeps for them."""
+    held = _base()
+    bounded = stats.bounded_difference_interval(
+        control, contrast, paired=paired, value_range=(0.0, 1.0), confidence=_LEVEL
+    )
+    assert bounded is not None
+    interval = (bounded[0] * 100, bounded[1] * 100)
+    change = (sum(contrast) / len(contrast) - sum(control) / len(control)) * 100
+    update = {
+        "change": change,
+        "within_interval": interval,
+        "gain_interval": interval,
+        "gain_confidence": _LEVEL,
+        "margin": _MARGIN,
+        "cases": [len(control), len(contrast)],
+    }
+    aspects = [
+        aspect.model_copy(
+            update={"margin": _MARGIN, "readings": [reading.model_copy(update=update) for reading in aspect.readings]}
+        )
+        if aspect.id == _ASPECT
+        else aspect
+        for aspect in held.aspects
+    ]
+    per_case = None
+    if samples:
+        kept = CaseSamples(
+            control=list(control),
+            contrast=list(contrast),
+            paired=paired,
+            only_control=0 if paired else len(control),
+            only_contrast=0 if paired else len(contrast),
+            value_range=(0.0, 1.0),
+            confidence=_LEVEL,
+            scale=100.0,
+        )
+        per_case = {
+            f"{_ASPECT}/passed/{reading.arm}": kept
+            for aspect in held.aspects
+            if aspect.id == _ASPECT
+            for reading in aspect.readings
+        }
+    return held.model_copy(update={"aspects": aspects, "per_case": per_case})
+
+
+def _unsettled(report_input: ReportInput) -> CaveatEntry | None:
+    return next(
+        (
+            entry
+            for entry in raise_caveats(report_input)
+            if entry.kind == "unsettled" and f"{_ASPECT}/passed" in entry.readings
+        ),
+        None,
+    )
+
+
+def _lifted(pairs: Pairs) -> bool:
+    """Whether the reading over ``pairs`` (in case-id order) is no longer unsettled, by the rule that raises it."""
+    read = _contrast_input([a for a, _ in pairs], [b for _, b in pairs], paired=True, samples=False)
+    return f"unsettled:{_ASPECT}" not in answer.unsettled_arms(read)
+
+
+def _among(rng: random.Random, held: Pairs, new: Pairs) -> Pairs:
+    """``held`` and ``new`` in case-id order: the held keep their order, and new ids fall among them at random."""
+    slots = set(rng.sample(range(len(held) + len(new)), len(new)))
+    fresh, kept = iter(new), iter(held)
+    return [next(fresh) if place in slots else next(kept) for place in range(len(held) + len(new))]
+
+
+def _paired_rate(held: Pairs, cases: int, rng: random.Random, designs: int) -> float:
+    return sum(_lifted(_among(rng, held, [rng.choice(held) for _ in range(cases)])) for _ in range(designs)) / designs
+
+
+def _crossed_rate(control: list[float], contrast: list[float], cases: int, rng: random.Random, designs: int) -> float:
+    """Each design cross-fills up to ``cases`` held cases in a seeded order, the other half drawn like that side's held
+    values, and draws the rest as new pairs; the held cases not cross-filled leave the contrast."""
+    lifted = 0
+    for _ in range(designs):
+        order = [("control", index) for index in range(len(control))]
+        order += [("contrast", index) for index in range(len(contrast))]
+        rng.shuffle(order)
+        pairs = [
+            (control[index], rng.choice(contrast)) if side == "control" else (rng.choice(control), contrast[index])
+            for side, index in order[:cases]
+        ]
+        pairs += [(rng.choice(control), rng.choice(contrast)) for _ in range(cases - len(pairs))]
+        rng.shuffle(pairs)
+        lifted += _lifted(pairs)
+    return lifted / designs
+
+
+def _paired_samples(truth: str, count: int, rng: random.Random) -> list[tuple[Pairs, Plan]]:
+    """:data:`_HELD` held samples of ``count`` pairs that read unsettled, whose differences vary, with their plans."""
+    found: list[tuple[Pairs, Plan]] = []
+    while len(found) < _HELD:
+        held = _TRUTHS[truth](rng, count)
+        if len({b - a for a, b in held}) < 2:
+            continue
+        report = _contrast_input([a for a, _ in held], [b for _, b in held], paired=True)
+        caveat = _unsettled(report)
+        if caveat is None:
+            continue
+        plan = plan_of(report, caveat)
+        assert plan is not None
+        if plan.cases is not None:
+            found.append((held, plan))
+    return found
+
+
+# --- the paired rows --------------------------------------------------------------------------------------------------
+
+_ROWS: Final = [(truth, count) for truth in ("k1", "k3", "mean") for count in (3, 5, 10, 30, 100)]
+
+
+@pytest.mark.parametrize(("truth", "count"), _ROWS, ids=[f"{truth}-{count}" for truth, count in _ROWS])
+def test_a_paired_contrast_s_plan_lifts_it_four_times_in_five_with_the_held_cases_fixed(truth: str, count: int) -> None:
+    rng = random.Random(f"{_SEED}-paired-{truth}-{count}")
+    samples = _paired_samples(truth, count, rng)
+    rate = sum(_paired_rate(held, plan.cases or 0, rng, _DESIGNS) for held, plan in samples) / len(samples)
+    assert _BAND[0] <= rate <= _BAND[1], rate
+
+
+# --- the cross-filled rows --------------------------------------------------------------------------------------------
+
+_CROSSED: Final = [(truth, count) for truth in ("k1", "mean") for count in (3, 5, 10, 30, 100)]
+
+
+@pytest.mark.parametrize(("truth", "count"), _CROSSED, ids=[f"{truth}-{count}" for truth, count in _CROSSED])
+def test_an_unpaired_contrast_s_plan_cross_fills_and_lifts_it_four_times_in_five(truth: str, count: int) -> None:
+    """Each arm ran ``count`` cases of its own (two launches, each generating its own): the contrast reads unpaired.
+    The plan counts the held cases each arm would cross-fill, and the pairs it gains lift the reading four times in
+    five."""
+    rng = random.Random(f"{_SEED}-crossed-{truth}-{count}")
+    rates = []
+    while len(rates) < _HELD:
+        control = [a for a, _ in _TRUTHS[truth](rng, count)]
+        contrast = [b for _, b in _TRUTHS[truth](rng, count)]
+        if len(set(control)) < 2 and len(set(contrast)) < 2:
+            continue
+        report = _contrast_input(control, contrast, paired=False)
+        caveat = _unsettled(report)
+        if caveat is None:
+            continue
+        plan = plan_of(report, caveat)
+        assert plan is not None
+        if plan.cases is None:
+            continue
+        held_control = answer.control_arm(report)
+        assert held_control is not None
+        assert dict(plan.cross_fill)[held_control] == 2 * count, "the control runs both candidates' held cases"
+        assert all(dict(plan.cross_fill)[arm] == count for arm in caveat.arms)
+        rates.append(_crossed_rate(control, contrast, plan.cases, rng, _DESIGNS))
+    rate = sum(rates) / len(rates)
+    assert _BAND[0] <= rate <= _BAND[1], rate
+
+
+# --- the gate rows ----------------------------------------------------------------------------------------------------
+
+_R1: list[ReportInput] = []
+
+
+def _gate_input(values: Sequence[float]) -> ReportInput:
+    """r1 with the gated arm's figure on the gate read from ``values`` by the pipeline's own mean interval (its
+    clustered standard error and :func:`~threetears.evals.analysis.stats.mean_interval`, at the table's 95%), and the
+    other survivor's figure cleared, so the borderline caveat is that arm's alone."""
+    if not _R1:
+        path = FIXTURES / "report_inputs" / "r1" / "input.json"
+        _R1.append(ReportInput.model_validate(json.loads(path.read_text(encoding="utf-8"))))
+    held = _R1[0]
+    count = len(values)
+    mean = sum(values) / count
+    sem = stats.clustered_standard_error(list(values), list(range(count)))
+    assert sem is not None
+    interval = stats.mean_interval(mean, sem, count)
+    assert interval is not None
+    figure = {"mean": mean, "ci": interval, "half_width": None, "sem": sem, "n": count, "n_cases": count}
+    tasks = []
+    for task in held.tasks:
+        if task.id == _GATE_TASK:
+            per_arm = {arm: dict(stats_of) for arm, stats_of in task.per_arm.items()}
+            per_arm[_GATED]["resolves"] = per_arm[_GATED]["resolves"].model_copy(update=figure)
+            per_arm["atlas-l"]["resolves"] = per_arm["atlas-l"]["resolves"].model_copy(update={"half_width": 0.5})
+            task = task.model_copy(update={"per_arm": per_arm})
+        tasks.append(task)
+    return held.model_copy(update={"tasks": tasks, "caveat_list": None})
+
+
+def _gate_lifted(values: Sequence[float]) -> bool:
+    held = _gate_input(values)
+    (read,) = criteria.criterion_reads(held, _GATED, criterion=_GATE)
+    return read.status == "pass" and f"borderline:{_GATE}" not in {entry.id for entry in implied(held)}
+
+
+_GATES: Final = (5, 10, 30, 100)
+
+
+@pytest.mark.parametrize("count", _GATES)
+def test_a_borderline_gate_s_plan_lifts_it_four_times_in_five_with_the_held_cases_fixed(count: int) -> None:
+    """Today: ``count`` cases scoring about 93 with a per-case spread of about 25 against a gate at 90, read borderline
+    on the gate's t interval."""
+    rng = random.Random(f"{_SEED}-gate-{count}")
+    rates = []
+    while len(rates) < _HELD:
+        held = [rng.gauss(93.0, 25.0) for _ in range(count)]
+        report = _gate_input(held)
+        caveat = next((entry for entry in implied(report) if entry.id == f"borderline:{_GATE}"), None)
+        if caveat is None:
+            continue
+        plan = plan_of(report, caveat)
+        assert plan is not None
+        if plan.cases is None:
+            assert plan.state == StateOf(state="not_available", reason="too_few"), plan
+            continue
+        cases = plan.cases
+        rates.append(
+            sum(_gate_lifted(held + [rng.choice(held) for _ in range(cases)]) for _ in range(_DESIGNS)) / _DESIGNS
+        )
+    rate = sum(rates) / len(rates)
+    assert _BAND[0] <= rate <= _BAND[1], rate
+
+
+# --- what it refuses: the sizing before it, and a one-sided one -------------------------------------------------------
+
+_REFUSED: Final = (("k1", 30), ("k1", 100), ("mean", 30))
+
+
+def _rates_of(truth: str, count: int, size: Callable[[Pairs, Plan], int]) -> tuple[float, float]:
+    """The row's rate under the planner, and under another sizing ``size`` of the same held samples."""
+    rng = random.Random(f"{_SEED}-refused-{truth}-{count}")
+    samples = _paired_samples(truth, count, rng)
+    planned = sum(_paired_rate(held, plan.cases or 0, rng, _DESIGNS) for held, plan in samples) / len(samples)
+    other = sum(_paired_rate(held, size(held, plan), rng, _DESIGNS) for held, plan in samples) / len(samples)
+    return planned, other
+
+
+def _before(held: Pairs, plan: Plan) -> int:
+    """The size the planner read before the per-case values were kept: off the reading's interval, the whole design
+    to clear four in five less the cases held."""
+    report = _contrast_input([a for a, _ in held], [b for _, b in held], paired=True, samples=False)
+    caveat = _unsettled(report)
+    assert caveat is not None
+    before = plan_of(report, caveat)
+    assert before is not None and before.cases is not None
+    return before.cases
+
+
+def _one_sided(held: Pairs, plan: Plan) -> int:
+    """The size read at the one-sided level: a bound at the reading's level on the one side asked, which is the
+    two-sided interval at a lower level, so it asks for fewer cases than the interval the reading prints."""
+    found = cases_to_lift(
+        [a for a, _ in held],
+        [b for _, b in held],
+        paired=True,
+        value_range=(0.0, 1.0),
+        confidence=2 * _LEVEL - 1,
+        line=_LINE,
+    )
+    assert isinstance(found, int)
+    return found
+
+
+@pytest.mark.parametrize(("truth", "count"), _REFUSED, ids=[f"{truth}-{count}" for truth, count in _REFUSED])
+def test_the_sizing_before_it_lifts_far_more_often_than_it_says(truth: str, count: int) -> None:
+    planned, before = _rates_of(truth, count, _before)
+    assert _BAND[0] <= planned <= _BAND[1], planned
+    assert before > _BAND[1], before
+
+
+@pytest.mark.parametrize(("truth", "count"), _REFUSED, ids=[f"{truth}-{count}" for truth, count in _REFUSED])
+def test_a_size_read_one_sided_lifts_less_often_than_it_says(truth: str, count: int) -> None:
+    planned, one_sided = _rates_of(truth, count, _one_sided)
+    assert _BAND[0] <= planned <= _BAND[1], planned
+    assert one_sided < _BAND[0], one_sided
+
+
+# --- degenerate inputs are typed, never a size ------------------------------------------------------------------------
+
+_TOO_FEW: Final = StateOf(state="not_available", reason="too_few")
+
+
+def test_too_few_cases_a_contrast_on_its_line_and_one_no_count_reaches_are_typed_never_a_size() -> None:
+    def lift(control: Sequence[float], contrast: Sequence[float], line: float = _LINE) -> int | StateOf:
+        return cases_to_lift(control, contrast, paired=True, value_range=(0.0, 1.0), confidence=_LEVEL, line=line)
+
+    assert lift([1.0], [0.0]) == _TOO_FEW, "one case a side reads no interval"
+    assert lift([1.0, 0.0, 1.0, 1.0], [1.0, 0.0, 0.0, 1.0], line=-0.25) == _TOO_FEW, "an estimate on its line"
+    near = [(1.0, 1.0)] * 60 + [(1.0, 0.0)] * 10 + [(0.0, 1.0)] * 6 + [(0.0, 0.0)] * 24
+    far = lift([a for a, _ in near], [b for _, b in near], line=-0.04 - 1e-4)
+    assert far == _TOO_FEW, "a size past the search's cap is no size"
+
+
+def test_a_figure_with_no_count_too_few_cases_no_spread_or_on_its_line_is_typed_never_a_size() -> None:
+    no_count = Spread(93.0, 5.0, None, None, _LEVEL, "sem")
+    one = Spread(93.0, 5.0, 1.0, 5.0, _LEVEL, "sem")
+    alike = Spread(93.0, 0.0, 20.0, 0.0, _LEVEL, "sem")
+    held = Spread(93.0, 25.0 / math.sqrt(20.0), 20.0, 25.0, _LEVEL, "sem")
+    assert figure_cases_to_lift(no_count, 3.0) == StateOf(state="not_available", reason="not_recorded")
+    assert figure_cases_to_lift(one, 3.0) == _TOO_FEW
+    assert figure_cases_to_lift(alike, 3.0) == StateOf(state="not_available", reason="no_variation")
+    assert figure_cases_to_lift(held, 0.0) == _TOO_FEW, "on its line"
+    assert figure_cases_to_lift(held, 1e-3) == _TOO_FEW, "past the search's cap"
+    found = figure_cases_to_lift(held, 3.0)
+    assert isinstance(found, int) and 20 < found < stats.PROJECTION_CASE_CAP, "near its line: the size as computed"
+
+
+def test_a_plan_with_no_size_states_why_typed_and_makes_no_call() -> None:
+    """A reading on its line: the planner carries the typed state beside the step's own word for it, and the step it
+    gives makes no call."""
+    held = _contrast_input([1.0, 0.0, 1.0, 1.0], [1.0, 0.0, 0.0, 1.0], paired=True)
+    on_line = held.model_copy(
+        update={
+            "aspects": [
+                aspect.model_copy(
+                    update={"readings": [reading.model_copy(update={"margin": 25.0}) for reading in aspect.readings]}
+                )
+                if aspect.id == _ASPECT
+                else aspect
+                for aspect in held.aspects
+            ]
+        }
+    )
+    caveat = _unsettled(on_line)
+    assert caveat is not None
+    plan = plan_of(on_line, caveat)
+    assert plan is not None
+    assert (plan.cases, plan.unsized, plan.state) == (None, "on_the_line", _TOO_FEW)
+    step = caveat_step(caveat, plan=plan)
+    assert (step.action, step.calls, step.planned_cases, step.unsized) == (None, [], None, "on_the_line")
+
+
+def test_every_case_differing_alike_is_planned_and_lifts_every_time() -> None:
+    """A contrast whose pairs all differ by one amount still narrows as cases are added (the bounded interval's width
+    is not its spread alone): it is planned, and drawn like its cases it lifts with certainty."""
+    held = [(1.0, 1.0)] * 6
+    found = cases_to_lift(
+        [a for a, _ in held], [b for _, b in held], paired=True, value_range=(0.0, 1.0), confidence=_LEVEL, line=_LINE
+    )
+    assert isinstance(found, int) and found >= 1
+    assert _lifted(held * math.ceil((len(held) + found) / len(held)))
+
+
+# --- what the planner reads -------------------------------------------------------------------------------------------
+
+
+def _reasoning() -> tuple[ReportInput, CaveatEntry]:
+    held = [pair for pair, weight in _K1 for _ in range(weight)]
+    report = _contrast_input([a for a, _ in held], [b for _, b in held], paired=True)
+    caveat = _unsettled(report)
+    assert caveat is not None
+    return report, caveat
+
+
+def test_a_stored_input_without_per_case_values_plans_as_before() -> None:
+    """With no per-case part the plan is read off the reading's interval, as before; with one, on the values."""
+    report, caveat = _reasoning()
+    without = report.model_copy(update={"per_case": None})
+    before = plan_of(without, caveat)
+    planned = plan_of(report, caveat)
+    assert before is not None and planned is not None and before.cases is not None and planned.cases is not None
+    assert before.cases != planned.cases
+    assert (before.state, before.cross_fill) == (None, ())
+
+
+def test_the_planner_reads_the_level_the_reading_was_read_at() -> None:
+    report, caveat = _reasoning()
+    stricter = report.model_copy(
+        update={
+            "per_case": {
+                key: samples.model_copy(update={"confidence": 0.99}) for key, samples in (report.per_case or {}).items()
+            }
+        }
+    )
+    at_level, at_stricter = plan_of(report, caveat), plan_of(stricter, caveat)
+    assert at_level is not None and at_stricter is not None
+    assert at_level.cases is not None and at_stricter.cases is not None and at_stricter.cases > at_level.cases
+
+
+def test_a_paired_contrast_plans_no_cross_fill_and_an_unpaired_one_plans_it_and_the_rest() -> None:
+    report, caveat = _reasoning()
+    paired = plan_of(report, caveat)
+    assert paired is not None and paired.cross_fill == ()
+    rng = random.Random(f"{_SEED}-unpaired")
+    control = [a for a, _ in _k1(rng, 20)]
+    contrast = [b for _, b in _k1(rng, 20)]
+    unpaired = _contrast_input(control, contrast, paired=False)
+    caveat = _unsettled(unpaired)
+    assert caveat is not None
+    plan = plan_of(unpaired, caveat)
+    assert plan is not None and plan.cases is not None
+    held_control = answer.control_arm(unpaired)
+    assert held_control is not None
+    assert dict(plan.cross_fill) == {**{arm: 20 for arm in caveat.arms}, held_control: 40}
+    assert plan.arms == (*caveat.arms, held_control)
+
+
+# --- nothing that identifies an input moves ---------------------------------------------------------------------------
+
+
+def _bundle_case(name: str) -> ReportInput:
+    from threetears.evals.analysis.campaign_bundle import CampaignBundle
+    from threetears.evals.analysis.report_input_build import report_input
+
+    path = FIXTURES / "writer_cases" / "held_out" / f"{name}.json.gz"
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        snapshot = json.load(handle)["snapshot"]
+    return report_input(CampaignBundle.from_dict(snapshot["bundle"]))
+
+
+_UNSETTLED_CASES: Final = ("discodon-1017-reasoning-effort-01a18d4d", "discodon-kairo-persona-r1-01a16bd4", "s1")
+
+
+@pytest.mark.parametrize("name", _UNSETTLED_CASES)
+def test_the_per_case_part_is_the_values_each_unsettled_reading_was_read_from_and_outside_the_digest(name: str) -> None:
+    built = _bundle_case(name)
+    kept = built.per_case or {}
+    unsettled = {
+        f"{reading.rpartition('/')[0]}/passed/{arm}"
+        for entry in built.caveat_list or []
+        if entry.kind == "unsettled"
+        for reading in entry.readings
+        for arm in entry.arms
+    }
+    assert kept and set(kept) <= unsettled
+    for key, samples in kept.items():
+        aspect, _, arm = key.split("/")
+        (reading,) = [held for each in built.aspects if each.id == aspect for held in each.readings if held.arm == arm]
+        interval = stats.bounded_difference_interval(
+            samples.control,
+            samples.contrast,
+            paired=samples.paired,
+            value_range=samples.value_range,
+            confidence=samples.confidence,
+        )
+        assert interval is not None and reading.within_interval is not None
+        assert [round(end * samples.scale, 9) for end in interval] == [round(end, 9) for end in reading.within_interval]
+    assert report_input_digest(built) == report_input_digest(built.model_copy(update={"per_case": None}))
+    assert "per_case" in built.model_dump(mode="json", by_alias=True)
+
+
+def test_an_input_no_step_sizes_on_per_case_values_holds_no_per_case_key() -> None:
+    built = _bundle_case("toyhost")
+    assert built.per_case is None
+    assert "per_case" not in built.model_dump(mode="json", by_alias=True)
