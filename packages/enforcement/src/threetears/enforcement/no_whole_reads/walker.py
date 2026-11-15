@@ -1098,6 +1098,18 @@ _TEMPLATE: Final[str] = "{}()"
 #: called on ``self`` or ``cls`` alone, never matched by a module function's name
 _METHOD_TEMPLATE: Final[str] = "self.{}()"
 
+#: a local list of statement pieces in a function's names (``selects = ["COUNT(*) AS total_rows"]`` and what
+#: ``selects.extend(...)`` / ``.append(...)`` add), under its name so read; its items' texts joined by
+#: :data:`_LIST_ITEMS`. A placeholder joining it (``{", ".join(selects)}``) reads as those items joined
+_LIST_TEMPLATE: Final[str] = "[{}]"
+
+#: what separates a local list's items' texts in its :data:`_LIST_TEMPLATE` entry
+_LIST_ITEMS: Final[str] = "\x1f"
+
+#: a list item that aggregates (``COUNT(*) AS total_rows``): only a list holding one is read as its items, so a list
+#: of plain columns joined into a select list stays ``{}`` as before
+_AGGREGATE_PIECE: Final[re.Pattern[str]] = re.compile(r"\b(?:count|sum|avg|min|max)\s*\(", re.IGNORECASE)
+
 #: the key an instance attribute every assignment in its class binds to one name is kept under
 #: (``self._marks = f"{self._owner}.{quote_identifier(MARKS_TABLE)}"``: :func:`_method_templates`)
 _ATTRIBUTE_TEMPLATE: Final[str] = "self.{}"
@@ -1186,6 +1198,9 @@ def _placeholder(value: ast.expr, constants: dict[str, str], produced: Produced 
     named = produced(value) if produced is not None else None
     if named is not None:
         return named
+    joined = _joined_list(value, constants)
+    if joined is not None:
+        return joined
     if keyed is not None and keyed(value):
         # a declared key source, even one bound to a constant column: the key, as declared
         return PK_TOKEN
@@ -1204,6 +1219,34 @@ def _placeholder(value: ast.expr, constants: dict[str, str], produced: Produced 
             # a copy relation named at run time: judged against the default key every copy declares
             return f"{COPY_PREFIX}{{}}"
     return "{}"
+
+
+def _joined_list(value: ast.expr, constants: dict[str, str]) -> str | None:
+    """what ``<separator>.join(<name>)`` reads as when ``<name>`` is a local list of statement pieces the function
+    builds (:data:`_LIST_TEMPLATE`): its items' texts joined by the separator, an unknown item as ``{}``; else None.
+
+    WHY: the coverage builder wrote its select list as ``", ".join(selects)`` over ``["COUNT(*) AS total_rows", ...]``,
+    so its whole aggregate read as ``SELECT {} FROM {}.{}`` and neither it nor its caller was named (D8, 2026-11-15).
+
+    :param value: the placeholder's expression
+    :ptype value: ast.expr
+    :param constants: the names bound in scope, a list's under :data:`_LIST_TEMPLATE`
+    :ptype constants: dict[str, str]
+    :return: the text, or None
+    :rtype: str | None
+    """
+    if not (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "join"
+        and isinstance(value.func.value, ast.Constant)
+        and isinstance(value.func.value.value, str)
+        and len(value.args) == 1
+        and isinstance(value.args[0], ast.Name)
+    ):
+        return None
+    items = constants.get(_LIST_TEMPLATE.format(value.args[0].id))
+    return None if items is None else value.func.value.value.join(items.split(_LIST_ITEMS))
 
 
 #: 3tears' keyed-helper connections over a local database (DuckDB in process): a helper handed one reads its tables
@@ -2322,6 +2365,29 @@ class _ModuleWalk(ast.NodeVisitor):
             elif isinstance(node, ast.AnnAssign) and node.value is not None:
                 target, value = node.target, node.value
             if isinstance(target, ast.Name) and target.id in fixed:
+                continue
+            if isinstance(target, ast.Name) and isinstance(value, ast.List) and stores.get(target.id, 0) == 1:
+                items = [_string_text(item, env, self._produced_by, self._key_expression) for item in value.elts]
+                if items and any(item is not None and _AGGREGATE_PIECE.search(item) is not None for item in items):
+                    env[_LIST_TEMPLATE.format(target.id)] = _LIST_ITEMS.join(
+                        "{}" if item is None else item for item in items
+                    )
+                continue
+            if (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and node.value.func.attr in {"append", "extend"}
+                and isinstance(node.value.func.value, ast.Name)
+                and _LIST_TEMPLATE.format(node.value.func.value.id) in env
+                and len(node.value.args) == 1
+            ):
+                added = node.value.args[0]
+                if node.value.func.attr == "extend":
+                    added = added.elt if isinstance(added, (ast.GeneratorExp, ast.ListComp)) else None  # type: ignore[assignment]
+                text = None if added is None else _string_text(added, env, self._produced_by, self._key_expression)
+                key = _LIST_TEMPLATE.format(node.value.func.value.id)
+                env[key] = env[key] + _LIST_ITEMS + ("{}" if text is None else text)
                 continue
             if isinstance(target, ast.Name) and value is not None:
                 text = _string_text(self._view_part(value), env, self._produced_by, self._key_expression)

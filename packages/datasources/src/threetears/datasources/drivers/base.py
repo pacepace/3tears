@@ -221,7 +221,17 @@ def _build_coverage_sql(schema: str, table: str, columns: list[str]) -> str:
     qualified = f"{quote_identifier(schema)}.{quote_identifier(table)}"
     selects = ["COUNT(*) AS total_rows"]
     selects.extend(f"COUNT(NULLIF({quote_identifier(col)}, 0)) AS nz_{i}" for i, col in enumerate(columns))
-    return f"SELECT {', '.join(selects)} FROM {qualified}"
+    # the warehouse reads the client's relation whole and answers one row: that aggregate IS the coverage (whether a
+    # column was ever loaded is seen only by counting every row). The relation is a datasource's (the hub's coverage
+    # reconcile names it), never one of our L3 tables: no change record of ours narrows it, and our speed bar is our
+    # own side, not the warehouse's
+    return whole_read(
+        f"SELECT {', '.join(selects)} FROM {qualified}",
+        kind="unbounded_by_warehouse",
+        reason="a datasource relation's column coverage: one aggregate the warehouse answers in one row, over the client's relation, which keeps no change record of ours",
+        ruling="Pace 2026-11-12: unbounded_by_warehouse; coordinator 2026-11-15 (D8 brief): a read over a client warehouse relation may declare it, with the why at the code",
+        proof="packages/datasources/tests/unit/test_coverage_reach.py::test_coverage_is_read_only_by_a_driver_over_its_datasources_relation",
+    )
 
 
 def _build_coverage_by_dimension_sql(
