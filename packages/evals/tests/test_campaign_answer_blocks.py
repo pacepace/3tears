@@ -14,9 +14,9 @@ from threetears.evals.analysis import (
     campaign_report_html,
     campaign_report_markdown,
 )
-from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.model import DisclosureBlock
 from threetears.evals.kernel.declaration import CampaignCall, OverriddenBar
+from threetears.evals.analysis.style import measure_name_of
 
 from packages.evals.tests.style_support import unlinked
 from packages.evals.tests.campaign_support import (

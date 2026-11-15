@@ -69,7 +69,7 @@ from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.number_forms.printed import Printed
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.analysis.report.campaign.common import floor_of
-from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
+from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.floors import (
     CasesNeeded,
     RateReading,
@@ -104,6 +104,7 @@ from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import RateDrop
+from threetears.evals.analysis.style import measure_name_of
 
 __all__ = [
     "BAR_WORDS",
@@ -1816,7 +1817,7 @@ def measure_blocks(
 
 def _measure_words(reading: MeasureReading, reports: Mapping[str, Report]) -> str:
     """A measure as the page names it on its aspect, and as every other surface names it
-    (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`): a goal check by its name on the aspect
+    (:func:`~threetears.evals.analysis.style.measure_name_of`): a goal check by its name on the aspect
     (declared, else what it tests), any other measure by its reader name; the pass rate as a name, capitalised as the
     others are (``Pass rate``)."""
     if reading.measure == PASSED_READING:

@@ -26,9 +26,12 @@ import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
+from threetears.evals.analysis.arms import arm_names
+from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.metrics import MATCH_MEASURE, MetricDescriptor, goal_check_of
+from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID
 from threetears.evals.schema.lever_words import lever_id_words
 from threetears.evals.schema.goal_grammar import (
     ACTION_BUILTINS,
@@ -37,6 +40,10 @@ from threetears.evals.schema.goal_grammar import (
     REFUSAL_BUILTINS,
     WORLD_ROOT,
 )
+
+if TYPE_CHECKING:
+    from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+    from threetears.evals.analysis.campaign_bundle import CampaignBundle
 
 #: What :func:`humanize` names.
 HumanizeKind = Literal["model", "arm", "dimension", "case", "provider"]
@@ -808,7 +815,125 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
     return found
 
 
+#: How a trial's drill-down names a reserved judge axis, where a reader sees it: never by its stored id.
+_RESERVED_AXIS_WORDS: dict[str, str] = {TRANSCRIPT_DIM_ID: "transcript", OUTCOME_DIM_ID: "outcome"}
+
+
+def trial_dimension(dimension: str) -> str:
+    """A judged dimension as a trial's drill-down and its examples name it: a reserved axis by its word (``outcome``),
+    any other by its id as the rubric names it. A bundle's trials hold every dimension by its id
+    (:attr:`~threetears.evals.analysis.bundle.schema.TrialJudgement.dim`); this names it when a page is rendered.
+
+    :param dimension: The dimension's id.
+    :ptype dimension: str
+    :return: What a trial prints for it.
+    :rtype: str
+    """
+    return _RESERVED_AXIS_WORDS.get(dimension, dimension)
+
+
+def declared_arm_names(arms: Iterable[CampaignArm]) -> dict[str, str]:
+    """The short name each arm declares (``CampaignArm.short_name``), by every variant key that names its cells: its
+    own, and those it resolves to under this build's identity predicate. A declared name is what a page prints for
+    the arm in its tight places, ahead of any short name a page would compute (GENERATOR.md §6.1); an arm declaring
+    none is absent.
+
+    :param arms: A campaign's arms.
+    :ptype arms: Iterable[CampaignArm]
+    :return: Variant key -> declared short name.
+    :rtype: dict[str, str]
+    """
+    return {
+        key: arm.short_name
+        for arm in arms
+        if arm.short_name is not None
+        for key in (arm.variant_key, *resolve_control_arm(arm).variant_keys)
+    }
+
+
+def printed_arm_labels(bundle: CampaignBundle) -> dict[str, str]:
+    """The name every page prints for each arm of a campaign, by every variant key a label names: the one display-name
+    rule (:func:`~threetears.evals.analysis.style.arm_display_name`) every surface reads, the doc page's ``Arm.name``,
+    the campaign page's folds and readings, and the plan page alike.
+
+    "Computed" is read from data: an arm no arm of the campaign's declaration covers is labelled by code. One code
+    spelled from several levers is printed from the spelling the bundle carries for it
+    (:class:`~threetears.evals.analysis.campaign_bundle.ArmSpelling`: each lever by id and its level), each lever by the
+    name every page calls it (``lever_names``), never by reading its frozen label's text back; the bundle refuses a
+    spelling that does not spell the label. Any other arm, a person's or one labelled by a single level, keeps its label
+    as written. The labels themselves, which name the arms as ids and are frozen and fingerprinted with the evidence,
+    are unchanged: a name is applied here, at render time only.
+
+    :param bundle: The campaign's evidence.
+    :ptype bundle: CampaignBundle
+    :return: Variant key -> the name a page prints.
+    :rtype: dict[str, str]
+    """
+    return {
+        key: arm_display_name(label, levers, bundle.lever_names)
+        for key, (label, levers) in named_arm_labels(bundle).items()
+    }
+
+
+def named_arm_labels(bundle: CampaignBundle) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Each arm's label by every variant key a label names, a derived arm code spelled from several levers printed
+    from its spelling with each lever named as every page names it (:attr:`CampaignBundle.arm_spellings`), and the
+    levers code spelled it from (none for a label a person gave): what :func:`printed_arm_labels` prints by the display
+    rule, and
+    :func:`~threetears.evals.analysis.report.words.reader_arms` names an arm by.
+
+    :param bundle: The campaign's evidence.
+    :ptype bundle: CampaignBundle
+    :return: Variant key -> the label and the levers code spelled it from.
+    :rtype: dict[str, tuple[str, tuple[str, ...]]]
+    """
+    given = {key for arm in bundle.declaration.arms for key in bundle.arm_keys(arm)}
+    entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
+    spelled = arm_names(list(entries.values()))
+    spellings = {
+        key: spelling
+        for arm in bundle.arms
+        if (spelling := bundle.arm_spellings.get(arm.variant_key)) is not None
+        for key in bundle.arm_keys(arm)
+    }
+    keys = [*(key for arm in bundle.arms for key in bundle.arm_keys(arm)), *entries]
+    labels: dict[str, tuple[str, tuple[str, ...]]] = {}
+    for key in dict.fromkeys(keys):
+        if (spelling := spellings.get(key)) is not None:
+            labels[key] = (spelling.label(bundle.lever_names), tuple(spelling.levers))
+            continue
+        levers = arm_name(spelled[key]).levers if key in spelled and key not in given else ()
+        labels[key] = (bundle.label_of(key), levers)
+    return labels
+
+
+def measure_name_of(bundle: AnalysisContextBundle, measure: str) -> str:
+    """What the page calls ``measure`` on the aspect ``bundle`` reads.
+
+    A goal check's measure by the display name the aspect's template declares for it, else by what it tests
+    (``Refund amount check``, ``AnalysisContextBundle.check_name``); any other measure by its catalog reader
+    name, else its key humanized
+    (:func:`~threetears.evals.analysis.style.measure_name`).
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param measure: The measure's key, as the bundle's readings carry it.
+    :ptype measure: str
+    :return: Its name on the page.
+    :rtype: str
+    """
+    described = bundle.measure_catalog.get(measure)
+    return measure_name(
+        measure, described.reader_name if described is not None else None, declared=bundle.check_name(measure)
+    )
+
+
 __all__ = [
+    "declared_arm_names",
+    "measure_name_of",
+    "named_arm_labels",
+    "printed_arm_labels",
+    "trial_dimension",
     "BANNED_PHRASES",
     "CANNOT_TELL_APART",
     "CANNOT_TELL_APART_PHRASE",

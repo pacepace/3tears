@@ -33,9 +33,8 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NOT_SHOWN_TO_MEASURE, analysis_lead
-from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.fact_arms import fact_arms
-from threetears.evals.analysis.report.input_build import report_input
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report.words import (
     PASS_RATE,
     campaign_arm_tags,
@@ -50,6 +49,7 @@ from threetears.evals.analysis.report.parts.words import reading_words
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart, lint_prose
 from threetears.evals.quick.files import load_evals
 from threetears.evals.quick.result import Result
+from threetears.evals.analysis.style import measure_name_of
 
 from packages.evals.tests.analyst_support import shape_bundle
 from packages.evals.tests.campaign_page_support import kairo_page

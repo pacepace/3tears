@@ -12,10 +12,10 @@ from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.model import ReportBlock
 from threetears.evals.analysis.report.verdict import guardrail_name
 from threetears.evals.analysis.style import StyleViolation, lint_prose
+from threetears.evals.analysis.style import measure_name_of
 
 __all__ = ["Absence", "absence_violations", "lint_page", "reading_names", "unlinked"]
 

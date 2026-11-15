@@ -6,6 +6,47 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: one closed set of reading states, one caveat entry and one first-screen value, all unset
+
+**Added:** the shape every later first-screen change fills, with nothing filled yet. Nothing a report, a page, a
+command line or an action prints changed, and no digest, fingerprint or golden moved
+(`tests/test_shape_move_moves_no_digest.py`).
+
+- `schema/reading_states.py` holds the one closed set of states a reading or a contrast is in (`counted`,
+  `set_aside`, `withheld`, `not_available`), the one closed set of sixteen reasons, an arm's identity state per coordinate
+  (`one`, `split`, `unrecorded`, on the served model, a measure's definition, the template and the rig), and
+  `check_state`, which refuses a reason outside its state's set and a split or an unrecorded identity that names no
+  coordinate.
+- `analysis/state_words.py` maps every earlier word for "this reading is not counted" onto them: 155 words of 37
+  vocabularies. A test finds the package's closed vocabularies by structure and holds that each is mapped there or
+  listed as no word about a reading, with why, so one added later is mapped or listed the day it lands. No call site
+  moved onto the shared words yet.
+- The report input gains, all optional and left out of the document when unset: a typed state on a reading, a
+  contrast, a pair and an arm's figure (`state`); the one caveat list (`caveat_list`, each entry with its class,
+  reach, state and reason); the first-screen value of four slots (`first_screen`, outside the input's digest); and
+  the fields the judge and structure work fills (`checks`, `corrected`, `aa`, `looks`, `baseline`, `family`,
+  `delta_note`, `spread`, `no_variation`, `ordered`, `flip_margin`, `margin_informative`, `cost`, an arm's `arm_id`,
+  `cell`, `spelling` and `identity`). The bundle gains the matching fields, unset.
+- `analysis/first_screen.py` holds `first_screen`, the one function that ranks caveats in eight ranks and applies
+  the cap of three reasons and a count, each rule held by one test (`tests/test_first_screen.py`). Nothing calls it
+  yet.
+- The report input's builder is numbers: `analysis/report/input_build.py` is now `analysis/report_input_build.py`,
+  and the names it read from the page moved down with it (`declared_arm_names`, `printed_arm_labels`,
+  `trial_dimension` and `measure_name_of` to `analysis/style.py`; `bundle_stopped_short` to
+  `analysis/completeness.py`).
+
+**For hosts:** nothing, if you import from the public roots. A stored bundle or report input without the new fields
+reads as it did. An import written against a module below a root follows the moves above; none has a forwarding
+import. Eleven new provisional names, the types the bundle's new fields hold: `threetears.evals.schema` exports
+the shapes `StateOf` and `ArmIdentity` and the aliases `ReadingState`, `Reason`, `Coordinate`, `IdentityState` and
+`SampleKind`; `threetears.evals.analysis` exports the shapes `Check`, `Corrected`, `Rescore` and `Looks`.
+
+A blind read's preference says why it was not read with the same states: `BlindPreference.verdict` is `improved`,
+`regressed` or `not_separated` where the preference was read and None where it was not, and `BlindPreference.state`
+then says `withheld`, `unfinished` (the planned items are not all answered) or `not_available`, `too_few` (too few
+items carry a preference). The quick path prints the same lines. `BlindSample.sample` and a check's `sample` are one
+vocabulary, `SampleKind`. Neither shape is stored, and the blind read shipped in no release.
+
 ### evals: a bundle's fingerprint is over the evidence it was assembled from, not the statistics computed from it (#1062)
 
 **Changed:** `AnalysisContextBundle.fingerprint()` is `v3:` and the sha256 of the bundle's new `evidence` manifest: one

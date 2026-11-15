@@ -40,7 +40,7 @@ from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput, Unanswered
-from threetears.evals.analysis.report.input_build import report_input
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes

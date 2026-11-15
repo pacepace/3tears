@@ -24,7 +24,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
 from threetears.evals.analysis.report.campaign.page import build_campaign_report
-from threetears.evals.analysis.report.input_build import report_input
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, RateDrop
 from threetears.evals.schema.models import EvalResult, EvalRun, RoleUsage

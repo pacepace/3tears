@@ -26,6 +26,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.reading_states import SampleKind, StateOf
 from threetears.evals.schema.models import DimName, JudgeEvidence, RubricDim, RubricScale, utc_now_iso
 
 #: The slot an output is shown in. A single is always ``A``; a pair's two outputs are ``A`` and ``B`` as drawn.
@@ -39,16 +40,6 @@ BlindPreferenceAnswer = Literal["A", "B", "tie"]
 
 #: What a blind read asks of each item: a verdict per criterion per output, and, of a pair, which output is better.
 BlindAsk = Literal["verdicts", "preference"]
-
-#: Whether a rater's answered items are a random sample of the population: ``random`` (the first ``m`` of the drawn
-#: order), ``selected`` (any other set), or ``none`` (nothing answered).
-BlindSampleKind = Literal["random", "selected", "none"]
-
-#: How a preference read: the candidate shown better or worse, not told apart, too few non-tie items to test, or
-#: ``withheld``: the read has not reached its planned length, so no direction, count or p is given. A preference
-#: read after every item and stopped when it separates is wrong far more often than its level says, and a running
-#: count tells the rater which arm is ahead while they are still reading.
-BlindPreferenceVerdict = Literal["improved", "regressed", "not_separated", "too_few", "withheld"]
 
 #: The test a preference was read by: the exact sign test (one answer per item), or the bounded test on shares.
 BlindPreferenceTest = Literal["exact_sign", "bounded_share"]
@@ -166,7 +157,7 @@ class BlindSample(EvalDocumentModel):
 
     rater: str = Field(min_length=1)
     rater_kind: Literal["person", "reference"]
-    sample: Literal["random", "selected", "none"] = Field(
+    sample: SampleKind = Field(
         description="`random`: the first `answered` items of the order. `selected`: any other set. `none`: nothing."
     )
     answered: int = Field(ge=0, description="The items answered, skipped and partly answered ones included.")
@@ -286,7 +277,22 @@ class BlindPreference(EvalDocumentModel):
     ties: int = Field(ge=0, description="Items at exactly a half: counted, never split.")
     test: Literal["exact_sign", "bounded_share"]
     p: float | None = Field(description="The two-sided p; None where too few items carry a preference to test.")
-    verdict: Literal["improved", "regressed", "not_separated", "too_few", "withheld"]
+    verdict: Literal["improved", "regressed", "not_separated"] | None = Field(
+        description=(
+            "How it read, in a contrast's own verdict words: the candidate shown better or worse, or the two not "
+            "told apart; None where it was not read, and `state` says why."
+        )
+    )
+    state: StateOf | None = Field(
+        default=None,
+        description=(
+            "Why the preference was not read, where it was not. `withheld`, `unfinished`: the read has not reached "
+            "its planned length, so no direction, count or p is given (a preference read after every item and "
+            "stopped when it separates is wrong far more often than its level says, and a running count tells the "
+            "rater which arm is ahead while they are still reading). `not_available`, `too_few`: too few items "
+            "carry a preference to test. None where it was read."
+        ),
+    )
     slot_a_share: float | None = Field(
         description="The share of non-tie preferences given to slot A, which a rater with no lean gives a half."
     )
@@ -299,7 +305,11 @@ class BlindPreference(EvalDocumentModel):
 
         :raises ValueError: Naming the rule.
         """
-        if self.verdict == "withheld" and (
+        if (self.verdict is None) == (self.state is None):
+            raise ValueError("a preference has a verdict, or the state that says why it has none, and never both")
+        if self.state is not None and (self.state.state, self.state.reason) not in _UNREAD:
+            raise ValueError("a preference that was not read is withheld as unfinished, or not available as too few")
+        if self.withheld and (
             self.items
             or self.prefer_candidate
             or self.prefer_control
@@ -310,6 +320,20 @@ class BlindPreference(EvalDocumentModel):
         ):
             raise ValueError("a withheld preference states how far the read is, and no count, share or p")
         return self
+
+    @property
+    def withheld(self) -> bool:
+        """Whether the read has not reached its planned length, so the preference gives nothing away."""
+        return self.state is not None and self.state.state == "withheld"
+
+    @property
+    def too_few(self) -> bool:
+        """Whether too few items carry a preference to test."""
+        return self.state is not None and self.state.reason == "too_few"
+
+
+#: The two ways a preference is not read: the planned read is unfinished, or too few items carry a preference.
+_UNREAD = frozenset({("withheld", "unfinished"), ("not_available", "too_few")})
 
 
 class BlindReview(EvalDocumentModel):
@@ -466,12 +490,10 @@ __all__ = [
     "BlindPreference",
     "BlindPreferenceAnswer",
     "BlindPreferenceTest",
-    "BlindPreferenceVerdict",
     "BlindRaterKind",
     "BlindRead",
     "BlindReadReport",
     "BlindReview",
-    "BlindSampleKind",
     "BlindSheet",
     "BlindSlot",
     "BlindSample",

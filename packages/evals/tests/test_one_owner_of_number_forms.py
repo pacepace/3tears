@@ -251,7 +251,6 @@ _CLASSIFIER = "a classifier: it reads a figure's unit to refuse mismatched axes 
 _SVG_FIXED = _KIT_FORMAT + "a number at the format's fixed decimals, as toFixed writes it"
 _SVG_USD = _KIT_FORMAT + "dollars at two significant figures under ten"
 _SVG_TICKS = "axis arithmetic: where a tick falls and how fine the step is, as the kit's script places them"
-_SNAPSHOT = "text stored in the report-input snapshot, which a stored report reads back unchanged"
 _CENT_CEILING = "arithmetic: a budget in cents with its float error cleaned before it is rounded up to the cent"
 _STORED_MEAN = "a stored mean latency, rounded as arithmetic before it is kept"
 _COUNTS_FROM_SHARES = "arithmetic: a count recovered from a share of a whole count"
@@ -356,7 +355,6 @@ _PERMANENT: dict[tuple[str, str, str], tuple[int, str]] = {
     ("threetears/evals/analysis/report/html_parts.py", "_id_rem", "round()"): (1, _CSS_WIDTH),
     ("threetears/evals/analysis/report/html_parts.py", "_key_rem", "round()"): (1, _CSS_WIDTH),
     ("threetears/evals/analysis/report/html_parts.py", "_lines_rem", "round()"): (1, _CSS_WIDTH),
-    ("threetears/evals/analysis/report/input_build.py", "_level", "format_number()"): (1, _SNAPSHOT),
     ("threetears/evals/analysis/report/keys/prices.py", "_unanswered_figure", "group_thousands()"): (
         1,
         _UNANSWERED_COUNT,
@@ -436,8 +434,9 @@ _PERMANENT: dict[tuple[str, str, str], tuple[int, str]] = {
 #: owner's per-measure precision ruling (2026-11-14) reads a host-built chart's column at one precision. 106: the
 #: numbers side of the analysis package spells by the rule's primitives, as the engine does, so the thirteen entries
 #: that named a ``format_number()`` or ``format_signed()`` call there (a bundle's stored text, a quantity's helper,
-#: a stored reading's figure) name no site.
-_PERMANENT_CEILING = 106
+#: a stored reading's figure) name no site. 105: the report input's builder joined the numbers side, so its one
+#: entry (an interval level in the snapshot's text) names no site either.
+_PERMANENT_CEILING = 105
 
 #: The one-line remedy every failure of the rule ends with.
 _REMEDY = (

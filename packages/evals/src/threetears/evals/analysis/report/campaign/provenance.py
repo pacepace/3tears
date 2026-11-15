@@ -35,7 +35,7 @@ from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.contention import reader_latency_sentence
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, CriterionKind, LateCriterion
 from threetears.evals.analysis.report.campaign.common import named_arms
-from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
+from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.campaign.warnings import listed, where
 from threetears.evals.analysis.floors import floor_statement
 from threetears.evals.analysis.report.forms import PageForms
@@ -53,6 +53,7 @@ from threetears.evals.analysis.report.words import label_case
 from threetears.evals.analysis.style import judged_name
 from threetears.evals.analysis.style import ArmName
 from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.analysis.style import measure_name_of
 
 __all__ = [
     "aspect_provenance_blocks",
