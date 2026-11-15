@@ -6836,6 +6836,11 @@
       "signature": "'as_asked'` | `'sent_otherwise'` | `'mixed'` | `'unverified'",
       "tier": "host-contract"
     },
+    "threetears.evals.analysis.SeparationTest": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.serialize_report": {
       "kind": "function",
       "signature": "",

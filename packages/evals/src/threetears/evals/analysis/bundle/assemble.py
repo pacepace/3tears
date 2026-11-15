@@ -162,6 +162,7 @@ from threetears.evals.analysis.bundle.cell_notes import (
 from threetears.evals.analysis.bundle.comparisons import (
     multiple_comparisons,
     aspect_looks,
+    aspect_tests,
     reading_scope,
 )
 from threetears.evals.analysis.bundle.judges import judge_change
@@ -933,6 +934,13 @@ def assemble_context_bundle(
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
         planned_looks=planned_looks,
     )
+    # The tests its readings are read by, which a caveat on its looks quotes a measured rate for.
+    if looks is not None:
+        looks = looks.model_copy(
+            update={
+                "tests": aspect_tests(bundle.multiple_comparisons.families, bundle.guardrails, bundle.floor_contrasts)
+            }
+        )
     bundle.reading_scope = reading_scope(
         declared, bundle.measure_catalog, bundle.judged_measures, first_result_at=first_result_at, looks=looks
     ).model_copy(update={"untimed_results": untimed_results})

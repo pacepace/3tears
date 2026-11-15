@@ -45,7 +45,7 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.kernel.campaign import ReadingKind
 from threetears.evals.analysis.aspects import AspectDeclaration
 from threetears.evals.analysis.checks import Looks
-from threetears.evals.analysis.significance import looks_alpha, looks_confidence, looks_taken
+from threetears.evals.analysis.significance import SeparationTest, looks_alpha, looks_confidence, looks_taken
 from threetears.evals.schema.campaign_upgrade import aware_instant
 from threetears.evals.kernel.declaration import (
     JUDGED_MERIT_AXIS,
@@ -1175,10 +1175,15 @@ def aspect_looks(
     - **Each re-measure** of a member run is one occasion, at when it finished (or began, where it has not); **each
       re-judge** is read per result (``rejudged_at``).
 
-    **The count is a lower bound** (``lower_bound``) where a fact it needs is not stored: a member whose joining was
-    never recorded (an aspect stored before the record, whose old runs may have joined after their results), a run that
-    left with no first result recorded (a deleted run), an archived or unresolved member (``unread``), a result with no
-    ordered time, or any re-judge after the first look.
+    **Looks were not recorded** (``recorded`` false, no ``taken``) where a member's joining was never recorded: it
+    joined before durable 17.3 recorded membership. Its runs' stored occasions are how they were stored, not occasions
+    anyone could read a verdict on, and old runs joined in one write are dated each by its own launch, so the count can
+    be too high as well as too low: it is given as ``evidence_changes``, never as looks, and never as a bound. A silent
+    past is stated as not recorded, never assumed to hold no looks and never assumed to hold the most.
+
+    **The count is a lower bound** (``lower_bound``) where a fact it needs is not stored: a run that left with no first
+    result recorded (a deleted run), an archived or unresolved member (``unread``), a result with no ordered time, or
+    any re-judge after the first look.
 
     **A plan declared after the first look is no plan** (``planned`` None, ``late_plan`` the looks it named): the
     looks it would count were taken before it, perhaps read at α. The first look here is timed by when both arms first
@@ -1209,7 +1214,8 @@ def aspect_looks(
     for change in membership:
         if change.change == "joined":
             joined[change.run_id] = change.at
-    lower = unread or any(run_id not in joined for run_id in by_id)
+    recorded = all(run_id in joined for run_id in by_id)
+    lower = unread
     deliveries: dict[str, list[tuple[datetime, str, str, Hashable]]] = {}
     scored_first: dict[str, datetime] = {}
     rejudges: dict[str, list[list[datetime]]] = {}
@@ -1295,11 +1301,40 @@ def aspect_looks(
     in_force = planned is not None and declared is not None and declared <= first_compared
     return Looks(
         planned=planned if in_force else None,
-        taken=taken,
+        taken=taken if recorded else None,
         plannable=plannable,
-        lower_bound=lower or any(lowered for _, lowered in counts),
+        lower_bound=recorded and (lower or any(lowered for _, lowered in counts)),
+        recorded=recorded,
+        evidence_changes=None if recorded else taken,
         late_plan=planned if planned is not None and not in_force else None,
     )
+
+
+def aspect_tests(
+    families: Iterable[ComparisonFamily], guardrails: GuardrailReadings, floor_contrasts: Iterable[FloorContrast]
+) -> list[SeparationTest]:
+    """The tests the aspect's readings are read by, sorted: each family comparison's and guardrail's interval basis,
+    and each floor contrast's (a pass rate on the bounded test, a cost per reply on the t test).
+
+    :param families: The aspect's comparison families.
+    :ptype families: Iterable[ComparisonFamily]
+    :param guardrails: Its guardrail checks.
+    :ptype guardrails: GuardrailReadings
+    :param floor_contrasts: The readings its floors and rows read per case.
+    :ptype floor_contrasts: Iterable[FloorContrast]
+    :return: ``bounded``, ``t``, both or neither.
+    :rtype: list[SeparationTest]
+    """
+    found: set[SeparationTest] = {
+        basis
+        for basis in (
+            *(comparison.interval_basis for family in families for comparison in family.comparisons),
+            *(check.interval_basis for check in guardrails.checks),
+        )
+        if basis is not None
+    }
+    found |= {"bounded" if contrast.reading == "trial" else "t" for contrast in floor_contrasts}
+    return sorted(found)
 
 
 def _first_result(change: MembershipChange) -> datetime | None:
@@ -1495,4 +1530,5 @@ __all__ = [
     "planning_readings",
     "reading_scope",
     "aspect_looks",
+    "aspect_tests",
 ]

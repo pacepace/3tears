@@ -28,7 +28,7 @@ What the plan buys, and what looking without one costs, is measured in ``test_si
 from __future__ import annotations
 
 import random
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -38,16 +38,20 @@ import pytest
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, campaigns
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
+from threetears.evals.analysis.caveats import caveat_list
 from threetears.evals.analysis.checks import Looks
 from threetears.evals.analysis.floors import floor_readings
-from threetears.evals.analysis.report_input import report_input_digest
+from threetears.evals.analysis.report_input import FalseSeparation, ReportInput, report_input_digest
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.significance import (
     FALSE_SEPARATION,
+    SeparationTest,
     looks_alpha,
     looks_confidence,
     looks_false_separation,
     looks_taken,
+    measured_upper_bound,
+    plan_kept,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SIGNIFICANCE_ALPHA, bounded_difference_interval
 from threetears.evals.kernel import CampaignArm
@@ -183,6 +187,7 @@ def _bundle(
     repeats: int = 0,
     joined: dict[int, float] | None = None,
     recorded: bool = True,
+    unrecorded: Collection[int] = (),
     left: Sequence[MembershipChange] = (),
     declared: float = -1440.0,
     pass_rates: tuple[float, float] | None = None,
@@ -196,7 +201,8 @@ def _bundle(
     arm launched alone, the candidate five minutes after the control), when it started in minutes, the cases it ran,
     and which arms. The candidate is shifted by ``shift`` on ``field_accuracy``; each arm passes its one check at its
     ``pass_rates`` share and costs its ``costs`` per reply (plus noise). Each run joins the aspect a minute before it
-    starts, or at ``joined[launch index]``, as the membership record says (none where not ``recorded``); ``left`` is
+    starts, or at ``joined[launch index]``, as the membership record says (none where not ``recorded``, nor for the
+    launches in ``unrecorded``); ``left`` is
     appended. The design, its plan and the question are declared at ``declared``. The candidate makes up to one
     destructive call a case, read as a guardrail on its declared range at ``guardrail_margin``. Returns the bundle, the
     campaign and each arm's per-case accuracy as written."""
@@ -224,7 +230,8 @@ def _bundle(
             )
             runs.append(run)
             join = (joined or {}).get(index, start - 1)
-            membership.append(MembershipChange(run_id=run.id, change="joined", at=_stamp(join)))
+            if index not in unrecorded:
+                membership.append(MembershipChange(run_id=run.id, change="joined", at=_stamp(join)))
             members = []
             for case_index in cases:
                 case = f"tc-{case_index:03d}"
@@ -326,30 +333,36 @@ def _with_guardrail(margin: float | None) -> HostProfile:
     )
 
 
+def _counted(bundle: AnalysisContextBundle) -> Looks | None:
+    """The bundle's looks, without the tests its readings use (held on their own below)."""
+    looks = bundle.reading_scope.looks
+    return None if looks is None else looks.model_copy(update={"tests": []})
+
+
 def test_a_campaign_launched_once_reads_one_look_and_none_planned() -> None:
     bundle, _, _ = _bundle([("g1", 0, range(20))])
-    assert bundle.reading_scope.looks == Looks(planned=None, taken=1)
+    assert _counted(bundle) == Looks(planned=None, taken=1)
 
 
 def test_a_campaign_that_added_cases_and_read_again_reads_two_looks() -> None:
     bundle, _, _ = _bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))])
-    assert bundle.reading_scope.looks == Looks(planned=None, taken=2)
+    assert _counted(bundle) == Looks(planned=None, taken=2)
 
 
 def test_more_cases_launched_alone_on_each_arm_are_one_look() -> None:
     """One extend run arm by arm: the control's new cases pair with nothing until the candidate's run them."""
     bundle, _, _ = _bundle([(None, 0, range(20)), (None, 120, range(20, 40))])
-    assert bundle.reading_scope.looks == Looks(planned=None, taken=2)
+    assert _counted(bundle) == Looks(planned=None, taken=2)
 
 
 def test_one_re_judge_pass_over_both_arms_is_one_look_and_a_lower_bound() -> None:
     bundle, _, _ = _bundle([("g1", 0, range(20))], rescores=1)
-    assert bundle.reading_scope.looks == Looks(planned=None, taken=2, lower_bound=True)
+    assert _counted(bundle) == Looks(planned=None, taken=2, lower_bound=True)
 
 
 def test_judge_repeats_change_no_value_the_test_reads_and_are_no_look() -> None:
     bundle, _, _ = _bundle([("g1", 0, range(20))], repeats=2)
-    assert bundle.reading_scope.looks == Looks(planned=None, taken=1)
+    assert _counted(bundle) == Looks(planned=None, taken=1)
 
 
 def test_an_old_run_joined_after_the_first_look_is_a_look_when_it_joins() -> None:
@@ -359,44 +372,76 @@ def test_an_old_run_joined_after_the_first_look_is_a_look_when_it_joins() -> Non
         [("a", 0, range(20), "control"), ("b", 20, range(20), "candidate"), ("d", 12, range(20), "control")],
         joined={2: 300},
     )
-    assert bundle.reading_scope.looks == Looks(planned=None, taken=2)
+    assert _counted(bundle) == Looks(planned=None, taken=2)
 
 
 def test_a_run_removed_after_its_look_keeps_the_look_and_its_leaving_is_another() -> None:
     """The first launch's control run left at 300, recorded as it left: the look it made and its leaving both count."""
     gone = MembershipChange(run_id="gone", change="left", at=_stamp(300), first_result_at=_stamp(-60), launch="g0")
     kept, _, _ = _bundle([("g1", 0, range(20))], left=[gone])
-    assert kept.reading_scope.looks == Looks(planned=None, taken=3)
+    assert _counted(kept) == Looks(planned=None, taken=3)
 
 
 def test_a_deleted_run_s_departure_is_counted_and_makes_the_count_a_lower_bound() -> None:
     gone = MembershipChange(run_id="gone", change="left", at=_stamp(300))
     bundle, _, _ = _bundle([("g1", 0, range(20))], left=[gone])
-    assert bundle.reading_scope.looks == Looks(planned=None, taken=2, lower_bound=True)
+    assert _counted(bundle) == Looks(planned=None, taken=2, lower_bound=True)
 
 
-def test_members_whose_joining_was_never_recorded_make_the_count_a_lower_bound() -> None:
-    bundle, _, _ = _bundle([("g1", 0, range(20))], recorded=False)
-    assert bundle.reading_scope.looks == Looks(planned=None, taken=1, lower_bound=True)
+def test_an_aspect_whose_members_joining_was_never_recorded_states_its_looks_were_not_recorded() -> None:
+    """Joined before durable 17.3 recorded membership: no count of looks, as neither bound; the evidence changes as
+    what they are."""
+    bundle, _, _ = _bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], recorded=False)
+    assert _counted(bundle) == Looks(planned=None, recorded=False, evidence_changes=2)
+    assert bundle.reading_scope.looks is not None and bundle.reading_scope.looks.taken is None
+    dumped = _counted(bundle).model_dump()  # type: ignore[union-attr]  # counted above
+    assert dumped == {"planned": None, "taken": None, "recorded": False, "evidence_changes": 2}
+
+
+def test_one_member_whose_joining_was_never_recorded_leaves_the_looks_not_recorded() -> None:
+    """A campaign stored before the record and extended after it: the runs from before still joined unrecorded."""
+    bundle, _, _ = _bundle(
+        [("g1", 0, range(20)), ("g2", 120, range(20, 40)), ("g3", 240, range(40, 60))], unrecorded={0}
+    )
+    assert _counted(bundle) == Looks(planned=None, recorded=False, evidence_changes=3)
+
+
+def test_unrecorded_looks_carry_no_count_and_recorded_looks_no_evidence_changes() -> None:
+    with pytest.raises(ValueError, match="unrecorded"):
+        Looks(recorded=False, taken=2, evidence_changes=2)
+    with pytest.raises(ValueError, match="unrecorded"):
+        Looks(recorded=False, evidence_changes=2, lower_bound=True)
+    with pytest.raises(ValueError, match="recorded looks carry taken"):
+        Looks(taken=2, evidence_changes=2)
+
+
+def test_the_tests_an_aspect_s_readings_use_ride_with_its_looks() -> None:
+    """Accuracy on the t test, the pass rate on the bounded one; a cost per reply on the t test."""
+    rated, _, _ = _bundle([("g1", 0, range(20))], pass_rates=(0.8, 0.8))
+    assert rated.reading_scope.looks is not None and rated.reading_scope.looks.tests == ["bounded", "t"]
+    families = rated.multiple_comparisons.families
+    bases = {comparison.interval_basis for family in families for comparison in family.comparisons}
+    assert "t" in bases, "the accuracy comparison reads the t test"
+    assert {contrast.reading for contrast in rated.floor_contrasts} >= {"trial"}, "the pass rate reads the bounded test"
 
 
 def test_the_plan_in_force_is_carried_beside_the_looks_taken() -> None:
     bundle, _, _ = _bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], planned=_PLAN)
-    assert bundle.reading_scope.looks == Looks(planned=_PLAN, taken=2)
+    assert _counted(bundle) == Looks(planned=_PLAN, taken=2)
 
 
 def test_a_plan_declared_after_the_first_look_is_no_plan_and_is_disclosed() -> None:
     """Runs scored, then a campaign declared over them with a plan: the looks it would count were already taken."""
     bundle, _, _ = _bundle([("g1", 0, range(30))], planned=_PLAN, declared=60, joined={0: 90}, shift=0.03)
-    assert bundle.reading_scope.looks == Looks(planned=None, taken=1, late_plan=_PLAN)
+    assert _counted(bundle) == Looks(planned=None, taken=1, late_plan=_PLAN)
     (family,) = bundle.multiple_comparisons.families
     assert family.look_alpha is None, "a late plan tightens nothing: the family reads at alpha"
 
 
 def test_a_campaign_created_before_looks_were_counted_says_its_looks_could_not_have_been_planned() -> None:
     bundle, _, _ = _bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], stamped=False)
-    assert bundle.reading_scope.looks == Looks(planned=None, taken=2, plannable=False)
-    assert bundle.reading_scope.looks.model_dump() == {"planned": None, "taken": 2, "plannable": False}
+    assert _counted(bundle) == Looks(planned=None, taken=2, plannable=False)
+    assert _counted(bundle).model_dump() == {"planned": None, "taken": 2, "plannable": False}  # type: ignore[union-attr]
     stamped, _, _ = _bundle([("g1", 0, range(20))])
     assert "plannable" not in stamped.to_dict()["reading_scope"]["looks"], "a stamped campaign's looks say no more"
 
@@ -648,11 +693,17 @@ def _built(bundle: AnalysisContextBundle, campaign: EvalCampaign):  # type: igno
 
 
 def _looks_caveats(built):  # type: ignore[no-untyped-def]  # the input's caveats on looks
-    return [entry for entry in built.caveat_list or [] if entry.kind == "looks"]
+    return [entry for entry in caveat_list(built) if entry.kind == "looks"]
 
 
 #: Two launches and a candidate clearly ahead on accuracy: the aspect claims a gain.
 _TWO_LOOKS_AND_A_GAIN = dict(shift=0.08, seed="gain-0")
+
+
+def _quoted(test: SeparationTest, planned: int | None, taken: int) -> FalseSeparation:
+    """What the caveat quotes for ``test``: the named row's figure, read straight off the table."""
+    measured = looks_false_separation(test, planned, taken)
+    return FalseSeparation(test=test, rate=measured.rate, upper=measured.upper, row=measured.row)
 
 
 def test_a_reader_of_a_campaign_that_took_an_undeclared_second_look_is_told_two_looks_none_planned_and_one_caveat() -> (
@@ -660,15 +711,110 @@ def test_a_reader_of_a_campaign_that_took_an_undeclared_second_look_is_told_two_
 ):
     built = _built(*_bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], **_TWO_LOOKS_AND_A_GAIN)[:2])  # type: ignore[arg-type]
     (aspect,) = built.aspects
-    assert aspect.looks == Looks(planned=None, taken=2)
+    assert aspect.looks is not None and aspect.looks.model_copy(update={"tests": []}) == Looks(planned=None, taken=2)
     (looks,) = _looks_caveats(built)
     assert (looks.id, looks.cls, looks.reach) == (f"looks:{_ASPECT}", "D", "report")
     assert f"{_ASPECT}/field_accuracy" in looks.readings, "it names the claim the second look loosened"
-    assert looks.looks == Looks(planned=None, taken=2)
-    measured = looks_false_separation(None, 2)
-    assert looks.false_separation is not None
-    assert (looks.false_separation.rate, looks.false_separation.bound) == (measured.rate, "measured")
-    assert measured.rate == max(table[(None, 2)] for table in FALSE_SEPARATION.values()), "the larger procedure's"
+    assert looks.looks == aspect.looks
+    assert looks.false_separation == [_quoted(test, None, 2) for test in aspect.looks.tests]
+    assert "t" in aspect.looks.tests and all(quote.rate is not None for quote in looks.false_separation)
+
+
+def _restated(built: ReportInput, **looks: object) -> ReportInput:
+    """``built`` with its aspect's looks set as ``looks`` says, and its caveat list raised again on read."""
+    return built.model_copy(
+        update={
+            "aspects": [aspect.model_copy(update={"looks": Looks(**looks)}) for aspect in built.aspects],  # type: ignore[arg-type]
+            "caveat_list": None,
+        }
+    )
+
+
+@pytest.fixture(scope="module")
+def gained() -> ReportInput:
+    """A campaign whose aspect claims a gain, read once."""
+    return _built(*_bundle([("g1", 0, range(20))], **_TWO_LOOKS_AND_A_GAIN)[:2])  # type: ignore[arg-type,no-any-return]
+
+
+#: Each situation a caveat on looks quotes for, and the row it quotes (None: not measured for it, no rate stated).
+_SITUATIONS: list[tuple[SeparationTest, int | None, int, str | None]] = [
+    # A t-test aspect extended without a plan: the planner-sized t row, which errs more than fixed batches do.
+    ("t", None, 2, "t, planner-sized, no plan"),
+    ("t", None, 3, "t, planner-sized, no plan"),
+    ("t", None, 4, "t, planner-sized, no plan"),
+    # A pass-rate aspect: the bounded test's rows, never the t test's.
+    ("bounded", None, 2, "bounded, planner-sized, no plan"),
+    ("bounded", None, 4, "bounded, planner-sized, no plan"),
+    # Past a plan.
+    ("t", 2, 3, "t, planner-sized, plan of 2"),
+    ("bounded", 3, 4, "bounded, planner-sized, plan of 3"),
+    # Within a plan a t-test aspect's planner-sized extends are not shown to hold alpha: the caveat is raised.
+    ("t", 2, 2, "t, planner-sized, plan of 2"),
+    # Past the last count measured, or under a plan no row measured: not measured, nothing quoted as a bound.
+    ("t", None, 5, None),
+    ("bounded", None, 5, None),
+    ("t", 4, 5, None),
+]
+
+
+@pytest.mark.parametrize(("test", "planned", "taken", "row"), _SITUATIONS)
+def test_the_caveat_quotes_the_row_measured_for_its_situation(
+    gained: ReportInput, test: SeparationTest, planned: int | None, taken: int, row: str | None
+) -> None:
+    (looks,) = _looks_caveats(_restated(gained, planned=planned, taken=taken, tests=[test]))
+    (quote,) = looks.false_separation
+    assert (quote.test, quote.row) == (test, row)
+    if row is None:
+        assert (quote.rate, quote.upper) == (None, None), "not measured: no rate, no bound"
+        return
+    measured = FALSE_SEPARATION[row]
+    assert (measured.test, measured.planned) == (test, planned)
+    assert quote.rate == measured.rates[taken - 1], "the named row's own figure"
+    assert quote.upper == pytest.approx(measured_upper_bound(measured.rates[taken - 1], measured.replicates))
+    others = [
+        other.rates[taken - 1]
+        for other in FALSE_SEPARATION.values()
+        if (other.test, other.planned) == (test, planned) and len(other.rates) >= taken
+    ]
+    assert quote.rate == max(others), "the procedure that errs more: how the looks were added is not stored"
+
+
+def test_an_aspect_read_by_both_tests_quotes_each_its_own_row(gained: ReportInput) -> None:
+    (looks,) = _looks_caveats(_restated(gained, planned=None, taken=3, tests=["bounded", "t"]))
+    assert looks.false_separation == [_quoted("bounded", None, 3), _quoted("t", None, 3)]
+    assert looks.false_separation[0].rate != looks.false_separation[1].rate
+
+
+def test_a_t_test_aspect_extended_by_the_planner_is_quoted_more_than_fixed_batches_err() -> None:
+    """The Critic's case: a score contrast extended twice. The fixed-batch t figure understates the planner-sized one."""
+    quoted = looks_false_separation("t", None, 3)
+    assert quoted.row == "t, planner-sized, no plan"
+    assert quoted.rate is not None and quoted.rate > FALSE_SEPARATION["t, fixed batches, no plan"].rates[2]
+
+
+def test_looks_within_a_plan_raise_nothing_only_where_keeping_it_is_shown(gained: ReportInput) -> None:
+    """A pass-rate aspect within its plan: the planner-sized rows' upper bounds clear alpha, so nothing is raised. A
+    t-test aspect within the same plan: they do not, so the caveat is raised and quotes the measured rate."""
+    assert plan_kept("bounded", 2, 2) and plan_kept("bounded", 3, 3)
+    assert not _looks_caveats(_restated(gained, planned=2, taken=2, tests=["bounded"]))
+    assert not plan_kept("t", 2, 2)
+    (looks,) = _looks_caveats(_restated(gained, planned=2, taken=2, tests=["bounded", "t"]))
+    assert looks.false_separation == [_quoted("bounded", 2, 2), _quoted("t", 2, 2)]
+    t_row = FALSE_SEPARATION["t, planner-sized, plan of 2"]
+    assert measured_upper_bound(t_row.rates[1], t_row.replicates) > SIGNIFICANCE_ALPHA
+
+
+def test_plan_kept_reads_the_planner_sized_row_s_upper_bound() -> None:
+    """Shown only where the planner-sized row's upper bound is at most alpha at that count; one look is the plan's
+    first, read at alpha over L; a plan or count no planner-sized row measured is not shown."""
+    for name, row in FALSE_SEPARATION.items():
+        if row.procedure != "planner_extends" or row.planned is None:
+            continue
+        for taken in range(2, row.planned + 1):
+            shown = measured_upper_bound(row.rates[taken - 1], row.replicates) <= SIGNIFICANCE_ALPHA
+            assert plan_kept(row.test, row.planned, taken) is shown, (name, taken)
+    assert plan_kept("t", 5, 1)
+    assert not plan_kept("t", 5, 2) and not plan_kept("bounded", 5, 2)
 
 
 def test_a_second_look_at_an_aspect_that_claims_nothing_qualifies_the_method_only() -> None:
@@ -685,33 +831,46 @@ def test_a_second_look_at_a_campaign_created_before_looks_were_counted_qualifies
     assert looks.reach == "method" and looks.looks is not None and looks.looks.plannable is False
 
 
-def test_a_plan_whose_keeping_the_count_cannot_show_raises_the_caveat() -> None:
-    """A run deleted after its look: the count is a lower bound, so looks past the plan cannot be ruled out."""
+def test_a_plan_whose_keeping_the_count_cannot_show_raises_the_caveat_and_quotes_no_rate() -> None:
+    """A run deleted after its look: the count is a lower bound, so looks past the plan cannot be ruled out, and the
+    looks taken are not known, so no row is the situation's."""
     gone = MembershipChange(run_id="gone", change="left", at=_stamp(300))
     built = _built(*_bundle([("g1", 0, range(20))], planned=2, left=[gone], **_TWO_LOOKS_AND_A_GAIN)[:2])  # type: ignore[arg-type]
-    assert built.aspects[0].looks == Looks(planned=2, taken=2, lower_bound=True)
+    (aspect,) = built.aspects
+    assert aspect.looks is not None
+    assert aspect.looks.model_copy(update={"tests": []}) == Looks(planned=2, taken=2, lower_bound=True)
     (looks,) = _looks_caveats(built)
     assert looks.reach == "report"
+    assert looks.false_separation == [FalseSeparation(test=test, rate=None) for test in aspect.looks.tests]
 
 
-def test_one_look_counted_as_a_lower_bound_with_no_plan_raises_nothing() -> None:
+def test_a_campaign_whose_looks_were_not_recorded_says_so_with_no_rate_and_no_count_of_looks() -> None:
+    """Joined before durable 17.3 recorded membership, its evidence changed by two launches: one entry at method
+    reach, the looks carried as not recorded, no rate."""
+    built = _built(
+        *_bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], recorded=False, **_TWO_LOOKS_AND_A_GAIN)[:2]  # type: ignore[arg-type]
+    )
+    (aspect,) = built.aspects
+    assert aspect.looks is not None and aspect.looks.recorded is False and aspect.looks.taken is None
+    (looks,) = _looks_caveats(built)
+    assert (looks.reach, looks.false_separation) == ("method", [])
+    assert looks.looks == aspect.looks and looks.looks.evidence_changes == 2
+    dumped = looks.model_dump(by_alias=True)
+    assert "false_separation" not in dumped and dumped["looks"]["taken"] is None
+
+
+def test_a_campaign_whose_looks_were_not_recorded_and_whose_evidence_changed_once_raises_nothing() -> None:
     built = _built(*_bundle([("g1", 0, range(20))], recorded=False, **_TWO_LOOKS_AND_A_GAIN)[:2])  # type: ignore[arg-type]
-    assert built.aspects[0].looks == Looks(planned=None, taken=1, lower_bound=True)
+    assert built.aspects[0].looks is not None and built.aspects[0].looks.evidence_changes == 1
     assert not _looks_caveats(built)
 
 
-def test_the_rate_quoted_past_the_last_count_measured_is_a_floor_and_for_an_unmeasured_plan_a_ceiling() -> None:
-    last = max(taken for table in FALSE_SEPARATION.values() for planned, taken in table if planned is None)
-    assert looks_false_separation(None, last + 3).bound == "at_least"
-    assert looks_false_separation(None, last + 3).rate == looks_false_separation(None, last).rate
-    unmeasured = looks_false_separation(7, 9)
-    assert unmeasured.bound == "at_most" and unmeasured.rate == looks_false_separation(None, 9).rate
-
-
-def test_a_reader_of_looks_within_the_plan_is_told_the_looks_and_no_caveat() -> None:
-    built = _built(*_bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], planned=2)[:2])
-    assert built.aspects[0].looks == Looks(planned=2, taken=2)
-    assert not _looks_caveats(built)
+def test_a_campaign_whose_looks_were_recorded_gets_a_count_and_a_rate() -> None:
+    """The same two launches, recorded: a count of looks, and the rate measured for it."""
+    built = _built(*_bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], **_TWO_LOOKS_AND_A_GAIN)[:2])  # type: ignore[arg-type]
+    (looks,) = _looks_caveats(built)
+    assert looks.looks is not None and looks.looks.taken == 2
+    assert looks.false_separation and all(quote.rate is not None for quote in looks.false_separation)
 
 
 def test_an_aspect_s_looks_are_outside_the_input_s_digest() -> None:

@@ -186,7 +186,7 @@ from threetears.evals.analysis.lenses.cost_estimate import (
 )
 from threetears.evals.analysis.lenses.pivot import CELL_MEASURED, CELL_NOT_RUN, CELL_WITHHELD
 from threetears.evals.analysis.lenses.history import HISTORY_METRICS
-from threetears.evals.analysis.significance import format_significance, significance_disclosure
+from threetears.evals.analysis.significance import SeparationTest, format_significance, significance_disclosure
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.gate import (
     DEFAULT_FAIL_ON,
@@ -466,6 +466,8 @@ __all__ = [
     "Corrected",
     "Looks",
     "Rescore",
+    # The test a reading's claims are read by, which a caveat on looks quotes a measured rate for.
+    "SeparationTest",
     # The one caveat list and the first screen read off it, which the campaign bundle holds.
     "CallRead",
     "CaveatEntry",

@@ -75,7 +75,8 @@ the step says that instead of offering an act that cannot work. A criterion set 
 closed by no case added to this campaign, so its step is the confirmation in a new one.
 Taking a step that adds cases is one more look at the readings it names, and says so; the looks are counted
 (:func:`~threetears.evals.analysis.significance.looks_taken`), and a reading past its plan carries a caveat on looks
-that states the false-separation rate measured for that many looks.
+that states the false-separation rate measured for its test, plan and that many looks, or that none was measured; an
+aspect whose looks were not recorded says so, with no rate.
 
 Nothing here reads an eval's kind, a campaign's shape or a measure's name.
 """
@@ -139,7 +140,7 @@ from threetears.evals.analysis.separation import (
     level_share,
     stat_spread,
 )
-from threetears.evals.analysis.significance import looks_false_separation
+from threetears.evals.analysis.significance import looks_false_separation, plan_kept
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.kernel.declaration import CampaignCall
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
@@ -928,46 +929,62 @@ def _aspect_claims(report_input: ReportInput, aspect: Aspect) -> list[str]:
 
 
 def _looks(report_input: ReportInput) -> Iterator[CaveatEntry]:
-    """A caveat per aspect whose test was looked at more often than its plan allows, or whose plan's keeping the count
-    cannot show.
+    """A caveat per aspect whose test was looked at more often than its plan allows, whose plan's keeping is not shown,
+    or whose looks were not recorded.
 
-    Raised where more looks were taken than planned (more than one with no plan in force; a plan declared after the
-    first look is none, ``Looks.late_plan``), or where a plan is in force and the count is a lower bound, so the looks
-    past it cannot be ruled out. With no plan and one look counted, a count that is a lower bound raises nothing: every
-    campaign stored before membership was recorded reads so, and its looks say it in ``Looks.lower_bound``. Looks within
-    the plan raise none: the simulation measures every declared row, fixed or sized by the planner, at most α within
-    its plan (``tests/test_simulated_looks.py``).
+    **Recorded looks** raise it where more were taken than planned (more than one with no plan in force; a plan
+    declared after the first look is none, ``Looks.late_plan``); where a plan is in force and the count is a lower
+    bound, so looks past it cannot be ruled out; and where looks within the plan are not shown to hold α for a test the
+    aspect's readings use (:func:`~threetears.evals.analysis.significance.plan_kept`: batches fixed in advance by the
+    union bound, extends sized by the planner only where the measured rate's upper bound is at most α). It carries,
+    per test the aspect's readings are read by (``Looks.tests``), the false-separation rate measured for that test,
+    plan and count, by row (:func:`~threetears.evals.analysis.significance.looks_false_separation`), or says none was
+    measured for it; and where the count is a lower bound, says none: the looks taken are not known, so no row is the
+    situation's.
 
-    It names every claim of the aspect (:func:`_aspect_claims`) and carries the looks and the false-separation rate
-    measured for that many looks under that plan (:func:`~threetears.evals.analysis.significance.looks_false_separation`).
-    Its reach is the report's (scoped for an unasked aspect beside asked ones), and the method's where the aspect makes
-    no claim, or where the campaign was created before looks were counted (``Looks.plannable`` false): its looks could
-    not have been planned and none of its stored verdicts moves.
+    **Looks not recorded** (``Looks.recorded`` false: a member joined before durable 17.3 recorded membership) raise one
+    entry at method reach saying so, where the stored evidence changed more than once, with no rate: the count is
+    neither a lower nor an upper bound on looks, and nothing stored says a verdict was read at any of those occasions.
+    A single launch stays silent.
+
+    It names every claim of the aspect (:func:`_aspect_claims`). Its reach is the report's (scoped for an unasked aspect
+    beside asked ones), and the method's where the aspect makes no claim, where the campaign was created before looks
+    were counted (``Looks.plannable`` false: its looks could not have been planned and none of its stored verdicts
+    moves), or where its looks were not recorded.
     """
     asked = asked_aspects(report_input)
     for aspect in report_input.aspects:
         looks = aspect.looks
         if looks is None:
             continue
-        past = looks.taken > (looks.planned or 1)
-        unshown = looks.lower_bound and looks.planned is not None
-        if not (past or unshown):
-            continue
         claims = _aspect_claims(report_input, aspect)
+        readings = claims or [f"{aspect.id}/{_PASSED}"]
+        if not looks.recorded or looks.taken is None:
+            if (looks.evidence_changes or 0) > 1:
+                yield _entry(report_input, f"looks:{aspect.id}", "looks", "method", readings=readings, looks=looks)
+            continue
+        planned, taken = looks.planned, looks.taken
+        past = taken > (planned or 1)
+        unshown = looks.lower_bound and planned is not None
+        unkept = planned is not None and not past and any(not plan_kept(test, planned, taken) for test in looks.tests)
+        if not (past or unshown or unkept):
+            continue
         reach: CaveatReach
         if not claims or not looks.plannable:
             reach = "method"
         else:
             reach = "report" if aspect.asked or not asked else "scoped"
-        measured = looks_false_separation(looks.planned, looks.taken)
+        quoted: list[FalseSeparation] = []
+        for test in looks.tests:
+            # A lower-bound count is no situation a row measured: the looks taken are not known.
+            measured = looks_false_separation(test, planned, taken) if not looks.lower_bound else None
+            quoted.append(
+                FalseSeparation(test=test, rate=None)
+                if measured is None
+                else FalseSeparation(test=test, rate=measured.rate, upper=measured.upper, row=measured.row)
+            )
         yield _entry(
-            report_input,
-            f"looks:{aspect.id}",
-            "looks",
-            reach,
-            readings=claims or [f"{aspect.id}/{_PASSED}"],
-            looks=looks,
-            false_separation=FalseSeparation(rate=measured.rate, bound=measured.bound),
+            report_input, f"looks:{aspect.id}", "looks", reach, readings=readings, looks=looks, false_separation=quoted
         )
 
 

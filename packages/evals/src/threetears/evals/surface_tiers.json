@@ -1368,6 +1368,7 @@
 "threetears.evals.analysis.SelfAgreementDimension": "provisional",
 "threetears.evals.analysis.SentSettingsShare": "host-contract",
 "threetears.evals.analysis.SentSettingsState": "host-contract",
+"threetears.evals.analysis.SeparationTest": "provisional",
 "threetears.evals.analysis.serialize_report": "provisional",
 "threetears.evals.analysis.SeriesPoint": "provisional",
 "threetears.evals.analysis.SERVED_MODEL_UNRECORDED": "provisional",

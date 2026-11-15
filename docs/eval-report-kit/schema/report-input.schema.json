@@ -2042,19 +2042,14 @@
       }
      ],
      "default": null,
-     "description": "For a caveat on looks: the aspect's looks, planned and taken (`Aspect.looks`)."
+     "description": "For a caveat on looks: the aspect's looks, planned and taken, or that they were not recorded (`Aspect.looks`)."
     },
     "false_separation": {
-     "anyOf": [
-      {
-       "$ref": "#/$defs/FalseSeparation"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "description": "For a caveat on looks: how often a test with no true difference separates at some look, measured for that many looks under that plan: the level the readings it names now hold, in place of the one stated."
+     "description": "For a caveat on looks: per test the aspect's readings are read by, how often a test with no true difference separates at some look, measured for that many looks under that plan (the level the readings it names now hold, in place of the one stated), or that it was not measured. Empty where the aspect's looks were not recorded: no rate is stated for a count that is not one.",
+     "items": {
+      "$ref": "#/$defs/FalseSeparation"
+     },
+     "type": "array"
     }
    },
    "required": [
@@ -2067,25 +2062,55 @@
   },
   "FalseSeparation": {
    "additionalProperties": false,
-   "description": "How often a test with no true difference separates at some look, measured for a contrast looked at so many times under its plan: what a caveat on looks states the loosened level to be.",
+   "description": "How often a test with no true difference separates at some look, measured for one test the aspect's readings are read by, looked at so many times under its plan: what a caveat on looks states the loosened level to be, or that it was not measured for that situation.",
    "properties": {
-    "rate": {
-     "description": "The rate, as a share.",
-     "type": "number"
-    },
-    "bound": {
-     "description": "measured where the simulation states it; at_least past the last count it measured (the rate only grows with looks); at_most for a plan it measured no row for, read as no plan.",
+    "test": {
+     "description": "The test it is measured for: bounded or t.",
      "enum": [
-      "measured",
-      "at_least",
-      "at_most"
+      "bounded",
+      "t"
      ],
      "type": "string"
+    },
+    "rate": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The rate the simulation measured for this test, plan and count, as a share (for the procedure that errs more, since how the looks were added is not stored); None where it measured none for the situation: then no rate is stated, neither as a floor nor as a ceiling."
+    },
+    "upper": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The rate's one-sided 97.5% upper confidence bound, as a share; None with no rate."
+    },
+    "row": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The row of `significance.FALSE_SEPARATION` it is read from; None with no rate."
     }
    },
    "required": [
-    "rate",
-    "bound"
+    "test",
+    "rate"
    ],
    "type": "object"
   },
@@ -2762,9 +2787,17 @@
      "description": "The looks the design plans, where the plan was declared before the first look; None where none was, or where it was declared after (``late_plan``)."
     },
     "taken": {
-     "description": "The looks taken.",
-     "minimum": 1,
-     "type": "integer"
+     "anyOf": [
+      {
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The looks taken; None where looks were not recorded (``recorded``)."
     },
     "plannable": {
      "default": true,
@@ -2775,6 +2808,35 @@
      "default": false,
      "description": "Whether ``taken`` is a lower bound: a fact a look is counted by is not stored, so more were taken.",
      "type": "boolean"
+    },
+    "recorded": {
+     "default": true,
+     "description": "Whether looks were recorded: false where a member run joined before durable 17.3 recorded membership, so no count of looks is given (``taken`` None), neither as a lower nor as an upper bound.",
+     "type": "boolean"
+    },
+    "evidence_changes": {
+     "anyOf": [
+      {
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Where looks were not recorded: how many times the stored evidence of a contrast changed (its runs' launches, re-measures and re-judges as stored), context and not a count of looks. None where they were."
+    },
+    "tests": {
+     "description": "The tests the aspect's readings are read by, sorted: ``bounded`` (a pass rate, a judged score, a guardrail) and ``t`` (a mean, a measure's score, a cost per reply). What a caveat on looks quotes a measured rate for.",
+     "items": {
+      "enum": [
+       "bounded",
+       "t"
+      ],
+      "type": "string"
+     },
+     "type": "array"
     },
     "late_plan": {
      "anyOf": [
@@ -2789,9 +2851,6 @@
      "description": "The looks a plan declared after the first look named (or over runs that held results before it was declared): read as no plan, since the looks it would count were already taken. None where no plan was declared late."
     }
    },
-   "required": [
-    "taken"
-   ],
    "type": "object"
   },
   "NextExperiment": {

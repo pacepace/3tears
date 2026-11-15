@@ -140,7 +140,6 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
         "analysis/report_input.py:UnsizedReason",
         "RemedyStep.after",
         "RemedyStep.limits",
-        "FalseSeparation.bound",
     ),
     _CHECK: (
         "kernel/evidence_tiers.py:CriterionState",
@@ -201,7 +200,7 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
         "Criterion.scope",
         "Criterion.statistic",
         "FamilyComparison.basis",
-        "FamilyComparison.interval_basis",
+        "analysis/significance.py:SeparationTest",
         "FamilyComparison.margin_source",
         "InterJudgeDimension.kappa_weighting",
         "LeverCoverageInput.cohort_scope",

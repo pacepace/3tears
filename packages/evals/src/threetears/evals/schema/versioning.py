@@ -910,8 +910,8 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   campaign created before is stored exactly as v17.2 stored it, and reads as created before looks were counted: its
 #:   looks qualify the method only and none of its stored verdicts moves. Each aspect records its runs joining and
 #:   leaving, append-only: ``Aspect.membership`` (a list of ``MembershipChange``, default empty, left out while empty),
-#:   so a look a run's evidence made is never erased by removing it; an aspect stored before reads its looks as a lower
-#:   bound. Neither is in a variant key, measurement context, declaration snapshot or fingerprint. An older build
+#:   so a look a run's evidence made is never erased by removing it; an aspect with a member stored before reads its
+#:   looks as not recorded (no count of looks, as neither bound). Neither is in a variant key, measurement context, declaration snapshot or fingerprint. An older build
 #:   reading a campaign at this minor keeps both opaquely and writes them back.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 DURABLE_SCHEMA_MINOR: int = 3

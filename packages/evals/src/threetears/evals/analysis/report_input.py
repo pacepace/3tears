@@ -62,6 +62,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from threetears.evals.analysis.checks import Check, Corrected, Looks
+from threetears.evals.analysis.significance import SeparationTest
 from threetears.evals.schema.reading_states import (
     ArmIdentity,
     CaveatClass,
@@ -998,16 +999,24 @@ _CHANGES_THE_ANSWER = frozenset({"set_aside", "withheld"})
 
 
 class FalseSeparation(_Part):
-    """How often a test with no true difference separates at some look, measured for a contrast looked at so many
-    times under its plan (:func:`~threetears.evals.analysis.significance.looks_false_separation`): what a caveat on
-    looks states the loosened level to be."""
+    """How often a test with no true difference separates at some look, measured for one test the aspect's readings
+    are read by, looked at so many times under its plan
+    (:func:`~threetears.evals.analysis.significance.looks_false_separation`): what a caveat on looks states the loosened
+    level to be, or that it was not measured for that situation."""
 
-    rate: float = Field(description="The rate, as a share.")
-    bound: Literal["measured", "at_least", "at_most"] = Field(
+    test: SeparationTest = Field(description="The test it is measured for: bounded or t.")
+    rate: float | None = Field(
         description=(
-            "measured where the simulation states it; at_least past the last count it measured (the rate only grows "
-            "with looks); at_most for a plan it measured no row for, read as no plan."
+            "The rate the simulation measured for this test, plan and count, as a share (for the procedure that errs "
+            "more, since how the looks were added is not stored); None where it measured none for the situation: "
+            "then no rate is stated, neither as a floor nor as a ceiling."
         )
+    )
+    upper: float | None = Field(
+        default=None, description="The rate's one-sided 97.5% upper confidence bound, as a share; None with no rate."
+    )
+    row: str | None = Field(
+        default=None, description="The row of `significance.FALSE_SEPARATION` it is read from; None with no rate."
     )
 
 
@@ -1073,14 +1082,19 @@ class CaveatEntry(_Part):
     looks: Looks | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="For a caveat on looks: the aspect's looks, planned and taken (`Aspect.looks`).",
-    )
-    false_separation: FalseSeparation | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
         description=(
-            "For a caveat on looks: how often a test with no true difference separates at some look, measured for "
-            "that many looks under that plan: the level the readings it names now hold, in place of the one stated."
+            "For a caveat on looks: the aspect's looks, planned and taken, or that they were not recorded "
+            "(`Aspect.looks`)."
+        ),
+    )
+    false_separation: list[FalseSeparation] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "For a caveat on looks: per test the aspect's readings are read by, how often a test with no true "
+            "difference separates at some look, measured for that many looks under that plan (the level the readings "
+            "it names now hold, in place of the one stated), or that it was not measured. Empty where the aspect's "
+            "looks were not recorded: no rate is stated for a count that is not one."
         ),
     )
 

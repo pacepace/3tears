@@ -17,7 +17,9 @@ For looks at sizes fixed before the data, each reading is a fixed-size test and 
 from the readings so far (a step that adds the cases an unclear reading would need), the reading at the data-chosen
 size is no fixed-size test, and nothing in the bound says it still errs at most α/L: what holds there is what the
 simulation of that procedure measures (:data:`FALSE_SEPARATION`, ``planner_extends``), and an
-extend is one of the ``L`` looks only because it is counted as one. Past ``L`` looks the bound says nothing. The union
+extend is one of the ``L`` looks only because it is counted as one. It measures the bound holding on the bounded test
+and failing on the t test (a plan of 2, one planner-sized extend: 5.6%), so keeping a plan is shown only where the
+measured rate's upper bound is at most α (:func:`plan_kept`). Past ``L`` looks the bound says nothing. The union
 bound is conservative (for three looks, about a third more cases at the last than Pocock's boundaries, and more than
 O'Brien–Fleming's); it is chosen because looks here are irregular and their sizes not fixed in advance, which group
 sequential boundaries need. A stage-wise betting product, its stakes fixed before each stage, would hold α under any
@@ -31,6 +33,8 @@ from __future__ import annotations
 
 from collections.abc import Hashable, Iterable, Mapping
 from datetime import datetime
+from math import sqrt
+from statistics import NormalDist
 from types import MappingProxyType
 from typing import Final, Literal, NamedTuple
 
@@ -268,98 +272,205 @@ def looks_confidence(confidence: float, planned: int | None) -> float:
     return 1.0 - (1.0 - confidence) / planned if planned and planned > 1 else confidence
 
 
+#: The test a reading's claim is read by: ``bounded`` (the bounded test by betting on a declared range: a pass rate, a
+#: judged score on its scale, a guardrail) or ``t`` (the t test: a mean, a measure's score, a cost per reply). The same
+#: two names a comparison's ``interval_basis`` uses.
+SeparationTest = Literal["bounded", "t"]
+
 #: How a contrast's looks were added: in batches whose sizes were fixed before the data (``fixed_batches``), or each
 #: after the first sized by a planner from the reading before it (``planner_extends``: a step that adds the cases an
 #: unclear reading would need, which is optional stopping on the data).
 LooksProcedure = Literal["fixed_batches", "planner_extends"]
 
+#: Every procedure a contrast's looks could have been added by. Which one added them is not stored, so a rate is
+#: quoted only where every one of them was measured for the situation.
+LOOKS_PROCEDURES: Final[tuple[LooksProcedure, ...]] = ("fixed_batches", "planner_extends")
+
+#: The one-sided level a measured rate's upper confidence bound is read at (:func:`measured_upper_bound`).
+UPPER_BOUND_LEVEL: Final = 0.975
+
+
+class MeasuredRow(NamedTuple):
+    """One row of :data:`FALSE_SEPARATION`: how often a test with no true difference separated at some look, read by
+    one test, its looks added by one procedure, under one plan, stopped at the first separation.
+
+    :ivar test: The test each look is read by.
+    :ivar procedure: How the looks after the first were added.
+    :ivar planned: The looks planned, each read at α/L; None where every look is read at α.
+    :ivar rates: The rate by the looks taken: ``rates[0]`` after one look, ``rates[k]`` after ``k + 1``. No rate is
+        stated past the last: the simulation measured none.
+    :ivar replicates: The replicates each rate was measured on (for a row that is the largest over several settings,
+        each setting's).
+    :ivar setting: What was simulated, in one line.
+    """
+
+    test: SeparationTest
+    procedure: LooksProcedure
+    planned: int | None
+    rates: tuple[float, ...]
+    replicates: int
+    setting: str
+
+
+_T_FIXED = "a mean on the t test, paired normal per-case values"
+_T_PLANNER = "a mean on the t test, paired normal per-case values, launched at 20 or 40 cases (the larger)"
+_BOUNDED_FIXED = "a pass rate of three trials at 0.8 or 0.5, cases 20 to 80 in batches of 20 (the larger)"
+_BOUNDED_PLANNER = "a pass rate of three trials at 0.8 or 0.5, launched at 20 or 40 cases (the largest)"
+_PLANNER = "; each extend the cases the caveat step's planner sizes, at most 100 a step"
+
 #: How often a test with no true difference separates at some look, stopped at the first separation, as the seeded
-#: simulation in ``tests/test_simulated_looks.py`` measures it (which holds this table to its rows): by procedure, then
-#: by the looks planned (None: every look read at α) and the looks taken. ``fixed_batches``: the mean of 20 to 60 cases
-#: on the t test in equal batches with no plan, and under a plan of 2 or 3 the mean of 20 to 120 cases in batches of 20
-#: run past it. ``planner_extends``: a per-case pass rate of three trials, launched at 20 or 40 cases, each extend the
-#: cases the caveat step's planner sizes (at most 100), the largest rate over the settings measured. Past a row's last
-#: count the rate only grows.
-FALSE_SEPARATION: Final[Mapping[LooksProcedure, Mapping[tuple[int | None, int], float]]] = MappingProxyType(
+#: simulation in ``tests/test_simulated_looks.py`` measures it (which holds every row here to its measured values and
+#: replicates), by name. Each row is one test, one procedure and one plan (:class:`MeasuredRow`); a caveat on looks
+#: quotes one of them by name (:func:`looks_false_separation`) and never a rate no row states. The planner-sized rows
+#: measure the capped procedure: with no true difference the planner's size is often thousands of cases, so the cap
+#: of 100 a step makes most extends +100; a planner sized otherwise, or a cap set by a corpus, is measured anew.
+FALSE_SEPARATION: Final[Mapping[str, MeasuredRow]] = MappingProxyType(
     {
-        "fixed_batches": MappingProxyType(
-            {
-                (None, 1): 0.05,
-                (None, 2): 0.097,
-                (None, 3): 0.112,
-                (None, 4): 0.125,
-                (None, 5): 0.129,
-                (2, 1): 0.0255,
-                (2, 2): 0.047,
-                (2, 3): 0.0605,
-                (2, 4): 0.07225,
-                (2, 5): 0.07975,
-                (2, 6): 0.08975,
-                (3, 1): 0.01525,
-                (3, 2): 0.02675,
-                (3, 3): 0.035,
-                (3, 4): 0.042,
-                (3, 5): 0.04925,
-                (3, 6): 0.05375,
-            }
+        "t, fixed batches, no plan": MeasuredRow(
+            "t", "fixed_batches", None, (0.05, 0.097, 0.112, 0.125, 0.129), 4000, _T_FIXED + ", 20 to 60 cases"
         ),
-        "planner_extends": MappingProxyType(
-            {
-                (None, 1): 0.0166,
-                (None, 2): 0.0479,
-                (None, 3): 0.0731,
-                (None, 4): 0.0923,
-                (2, 1): 0.0059,
-                (2, 2): 0.0203,
-                (2, 3): 0.0348,
-                (2, 4): 0.0448,
-                (3, 1): 0.0026,
-                (3, 2): 0.0125,
-                (3, 3): 0.0212,
-                (3, 4): 0.0288,
-            }
+        "t, fixed batches, plan of 2": MeasuredRow(
+            "t",
+            "fixed_batches",
+            2,
+            (0.02492, 0.04408, 0.05858, 0.06925, 0.0785, 0.08612),
+            40_000,
+            _T_FIXED + ", 20 to 120 cases in batches of 20",
+        ),
+        "t, fixed batches, plan of 3": MeasuredRow(
+            "t",
+            "fixed_batches",
+            3,
+            (0.01525, 0.02675, 0.035, 0.042, 0.04925, 0.05375),
+            4000,
+            _T_FIXED + ", 20 to 120 cases in batches of 20",
+        ),
+        "t, planner-sized, no plan": MeasuredRow(
+            "t", "planner_extends", None, (0.056, 0.1008, 0.1304, 0.1513), 10_000, _T_PLANNER + _PLANNER
+        ),
+        "t, planner-sized, plan of 2": MeasuredRow(
+            "t", "planner_extends", 2, (0.0257, 0.0559, 0.0749, 0.087), 10_000, _T_PLANNER + _PLANNER
+        ),
+        "t, planner-sized, plan of 3": MeasuredRow(
+            "t", "planner_extends", 3, (0.0171, 0.0333, 0.0481, 0.0569), 10_000, _T_PLANNER + _PLANNER
+        ),
+        "bounded, fixed batches, no plan": MeasuredRow(
+            "bounded", "fixed_batches", None, (0.0036, 0.0207, 0.0416, 0.0588), 10_000, _BOUNDED_FIXED
+        ),
+        "bounded, fixed batches, plan of 2": MeasuredRow(
+            "bounded", "fixed_batches", 2, (0.0002, 0.007, 0.0165, 0.0263), 10_000, _BOUNDED_FIXED
+        ),
+        "bounded, fixed batches, plan of 3": MeasuredRow(
+            "bounded", "fixed_batches", 3, (0.0001, 0.0026, 0.0075, 0.0156), 10_000, _BOUNDED_FIXED
+        ),
+        "bounded, planner-sized, no plan": MeasuredRow(
+            "bounded", "planner_extends", None, (0.0166, 0.0479, 0.0731, 0.0923), 10_000, _BOUNDED_PLANNER + _PLANNER
+        ),
+        "bounded, planner-sized, plan of 2": MeasuredRow(
+            "bounded", "planner_extends", 2, (0.0059, 0.0203, 0.0348, 0.0448), 10_000, _BOUNDED_PLANNER + _PLANNER
+        ),
+        "bounded, planner-sized, plan of 3": MeasuredRow(
+            "bounded", "planner_extends", 3, (0.0026, 0.0125, 0.0212, 0.0288), 10_000, _BOUNDED_PLANNER + _PLANNER
         ),
     }
 )
 
 
-class MeasuredRate(NamedTuple):
-    """The false-separation rate a caveat on looks quotes (:func:`looks_false_separation`).
+def measured_upper_bound(rate: float, replicates: int) -> float:
+    """The one-sided upper confidence bound, at :data:`UPPER_BOUND_LEVEL`, on a rate measured as ``rate`` over
+    ``replicates`` replicates: the Wilson score bound, which stays above zero for a rate measured at zero. A claim that
+    a rate is at or under a level is shown only where this is.
 
-    :ivar rate: The rate, as a share.
-    :ivar bound: ``measured`` where a row states it; ``at_least`` past the last count measured (the rate only grows
-        with looks); ``at_most`` for a plan no row measured, read as no plan (a plan only lowers it).
+    :param rate: The measured rate, as a share.
+    :ptype rate: float
+    :param replicates: The replicates it was measured on.
+    :ptype replicates: int
+    :return: The upper bound, as a share.
+    :rtype: float
+    """
+    z = NormalDist().inv_cdf(UPPER_BOUND_LEVEL)
+    n = replicates
+    centre = rate + z * z / (2 * n)
+    spread = z * sqrt(rate * (1 - rate) / n + z * z / (4 * n * n))
+    return min(1.0, (centre + spread) / (1 + z * z / n))
+
+
+class MeasuredRate(NamedTuple):
+    """The false-separation rate a caveat on looks quotes for one test (:func:`looks_false_separation`).
+
+    :ivar test: The test it is measured for.
+    :ivar rate: The rate measured for the situation, as a share; None where no row measured it.
+    :ivar upper: Its upper confidence bound (:func:`measured_upper_bound`); None with no rate.
+    :ivar row: The :data:`FALSE_SEPARATION` row it is read from; None with no rate.
     """
 
-    rate: float
-    bound: Literal["measured", "at_least", "at_most"]
+    test: SeparationTest
+    rate: float | None
+    upper: float | None
+    row: str | None
 
 
-def looks_false_separation(planned: int | None, taken: int) -> MeasuredRate:
-    """The false-separation rate measured for a contrast looked at ``taken`` times under a plan of ``planned``: the
-    larger of the two procedures' (:data:`FALSE_SEPARATION`), since which one added the looks is not stored.
+def _rows(test: SeparationTest, planned: int | None) -> dict[LooksProcedure, tuple[str, MeasuredRow]]:
+    """The measured row of each procedure for ``test`` under a plan of ``planned``."""
+    return {
+        row.procedure: (name, row)
+        for name, row in FALSE_SEPARATION.items()
+        if row.test == test and row.planned == planned
+    }
 
+
+def looks_false_separation(test: SeparationTest, planned: int | None, taken: int) -> MeasuredRate:
+    """The false-separation rate measured for a contrast read by ``test``, looked at ``taken`` times under a plan of
+    ``planned``: what a caveat on looks quotes.
+
+    How the looks after the first were added (in batches fixed in advance, or sized by the planner from the reading
+    before) is not stored, so the rate quoted is the larger of the two procedures' rows for this test, plan and count:
+    the one measured for the procedure that errs more here, named by its row. Where either procedure has no row for this
+    test and plan, or measured fewer looks than were taken, the rate was not measured for this situation, and none is
+    quoted: no rate of another test, plan or count stands in for it, as a floor or as a ceiling.
+
+    :param test: The test the contrast's claims are read by.
+    :ptype test: SeparationTest
     :param planned: The looks the plan in force allows; None where none is.
     :ptype planned: int | None
     :param taken: The looks taken, at least one.
     :ptype taken: int
-    :return: The rate, and whether it is measured, a floor or a ceiling.
+    :return: The rate, its upper bound and its row; no rate where none was measured.
     :rtype: MeasuredRate
     """
-    bound: Literal["measured", "at_least", "at_most"] = "measured"
-    rows = [table for table in FALSE_SEPARATION.values() if any(key[0] == planned for key in table)]
-    if not rows:
-        # A plan no row measured: reading at α/L only lowers each look's chance, so the unplanned rate is a ceiling.
-        planned, bound = None, "at_most"
-        rows = [table for table in FALSE_SEPARATION.values() if any(key[0] is None for key in table)]
-    found: list[float] = []
-    for table in rows:
-        counts = [key[1] for key in table if key[0] == planned]
-        last = max(counts)
-        if taken > last and bound == "measured":
-            bound = "at_least"
-        found.append(table[(planned, min(taken, last))])
-    return MeasuredRate(max(found), bound)
+    rows = _rows(test, planned)
+    if set(rows) != set(LOOKS_PROCEDURES) or any(taken > len(row.rates) for _, row in rows.values()):
+        return MeasuredRate(test, None, None, None)
+    name, row = max(rows.values(), key=lambda named: named[1].rates[taken - 1])
+    rate = row.rates[taken - 1]
+    return MeasuredRate(test, rate, measured_upper_bound(rate, row.replicates), name)
+
+
+def plan_kept(test: SeparationTest, planned: int, taken: int) -> bool:
+    """Whether a contrast read by ``test``, looked at ``taken`` times within a plan of ``planned``, is shown to err at
+    most α over them.
+
+    For batches fixed in advance the union bound shows it (the module). For extends sized by the planner from the
+    reading before, no theorem does: it is shown only where the row measured for that procedure has an upper bound
+    (:func:`measured_upper_bound`) at most α at that count. Which procedure added the looks is not stored, so both must
+    be shown; a plan, a test or a count no planner-sized row measured is not.
+
+    :param test: The test the contrast's claims are read by.
+    :ptype test: SeparationTest
+    :param planned: The looks the plan in force allows.
+    :ptype planned: int
+    :param taken: The looks taken, at most ``planned``.
+    :ptype taken: int
+    :return: Whether keeping the plan is shown to hold α.
+    :rtype: bool
+    """
+    if taken <= 1:
+        return True
+    extends = _rows(test, planned).get("planner_extends")
+    if extends is None or taken > len(extends[1].rates):
+        return False
+    _, row = extends
+    return measured_upper_bound(row.rates[taken - 1], row.replicates) <= SIGNIFICANCE_ALPHA
 
 
 def looks_taken(
@@ -438,6 +549,7 @@ __all__ = [
     "looks_alpha",
     "looks_confidence",
     "looks_taken",
+    "plan_kept",
     "NOT_SIGNIFICANT_LABEL",
     "NOT_TESTED_LABEL",
     "PAIRED_EFFECT_LABEL",
