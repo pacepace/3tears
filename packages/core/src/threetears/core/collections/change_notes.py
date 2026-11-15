@@ -124,7 +124,7 @@ from pydantic import TypeAdapter
 from threetears.nats.change_log import ChangeLogState
 from threetears.observe import contain, get_logger
 from threetears.observe.background import cancel_and_wait
-from threetears.observe.metrics import counter, gauge
+from threetears.observe.metrics import counter, gauge, histogram
 
 from threetears.core.collections.epoch_change import RESET_REASON, ChangedRow, EpochChange, check_whole_reach
 from threetears.core.collections.generation import NotedTable, split_generation_token
@@ -406,6 +406,31 @@ _UNTRIGGERED = gauge(
     "trigger, at the keeper's last install check: the keeper gives none (its classes declare its own schema's "
     "tables); their schema's migration run does. Alert on any that stays",
 )
+# WHY (R1, 2026-11-15, Pace's question: is a slot's deleted-row debris cleared before the ring switches back into it?).
+# No. The keeper empties a slot with batched deletes; on YugabyteDB each deleted note stays a tombstone until a
+# compaction drops it, and a compaction may not drop one younger than timestamp_history_retention_interval_sec (900 s,
+# the default, on the local b118) -- longer than the 10 min wait between switches -- nor runs at all on a table whose
+# reads see under auto_compact_percent_obsolete (99 %) obsolete keys. Measured (test_reused_note_slot_live.py, YB
+# 2026.1.0.0-b118 lane 1 under measure-lock; a slot filled to the switch size at the 64 MiB log, 393,216 notes, emptied
+# by empty_slot, then holding 25,500 new notes, against two never-filled slots with the same notes): this count
+# 62.3 ms against 6.4 ms (9.7x; the A/A gap 0.95x), a bare full scan 12.9x, and the same 5 min later (9.5x, 13.4x).
+# Postgres 16 (integ095-pg, same test): 5.6 against 1.6 ms (3.4x) at once, 1.5x five minutes later as autovacuum
+# reached it. The indexed reads are not slower on either (noted_rows_since 1.01x YB, 0.74x PG; noted_keys_page 1.01x,
+# 1.00x; the scrub's look 0.55x/1.16x, inside its noise): their (table_name, noted_at) range starts past the
+# tombstones' times. So the cost falls on the reads that walk the whole current slot: this count, every twentieth of
+# the fence, and a restore's coverage read. This histogram is that cost, by how long the slot has been current, so a
+# reused slot's debris shows as a first fence slower than the later ones (metrics only; no alert rule).
+_CURRENT_COUNT_SECONDS = histogram(
+    "threetears_change_notes_current_count_seconds",
+    description="seconds the keeper's count of the current note table took (a walk of the whole slot, debris "
+    "included), by how long the slot has been current: first_fence, fences_2_to_3, later",
+    label_names=("since_switch",),
+)
+_CURRENT_COUNT_NOTES = gauge(
+    "threetears_change_notes_current_count_notes",
+    description="notes the keeper's last count of the current note table found (at most the switch's note count): "
+    "what threetears_change_notes_current_count_seconds read besides any debris",
+)
 _SCRUB_BEHIND = gauge(
     "threetears_change_notes_scrub_behind",
     description="epochs the change log holds after the scrub's position: how far the scrub is behind",
@@ -665,6 +690,23 @@ def _taken_bytes(state: ChangeLogState, switched_seq: str | None) -> int:
     since = _seq_under(switched_seq, state.incarnation)
     taken = state.last_seq - (since if since is not None else 0)
     return int(state.bytes / held * max(0, taken))
+
+
+def _since_switch(ring: NoteRingState) -> str:
+    """how long the ring's current table has been current, in fences, as a bounded label: ``first_fence`` (a slot
+    switched back into is read here while its last emptying's debris is youngest), ``fences_2_to_3``, ``later``.
+
+    :param ring: the ring
+    :ptype ring: NoteRingState
+    :return: the label
+    :rtype: str
+    """
+    fences = (ring.now - ring.switched_at).total_seconds() / max(ring.fence_seconds, 1e-9)
+    if fences < 1:
+        return "first_fence"
+    if fences < 3:
+        return "fences_2_to_3"
+    return "later"
 
 
 def _switch_threshold(max_bytes: int | None) -> int | None:
@@ -1535,11 +1577,14 @@ class ChangeNoteKeeper:
         if self._counted_at is not None and now - self._counted_at < self._mark_every.total_seconds():
             return self._notes_full
         self._counted_at = now
+        began = time.perf_counter()
         rows = await self._pool.fetch(
             f"SELECT count(*) AS notes FROM (SELECT 1 FROM {self._ring_table(ring.current)} LIMIT $1) n",  # noqa: S608 - trusted identifiers
             threshold,
         )
+        _CURRENT_COUNT_SECONDS.labels(since_switch=_since_switch(ring)).observe(time.perf_counter() - began)
         self._notes_seen = int(rows[0]["notes"])
+        _CURRENT_COUNT_NOTES.set(self._notes_seen)
         self._notes_full = self._notes_seen >= threshold
         return self._notes_full
 

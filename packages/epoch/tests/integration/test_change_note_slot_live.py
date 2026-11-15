@@ -370,6 +370,42 @@ class TestTheIdleTableEmptiesByDeletes:
         assert (REGISTRY.get_sample_value("threetears_change_notes_current_bytes") or 0) >= 0
 
 
+class TestTheCurrentTablesCountIsExported:
+    async def test_the_keepers_count_of_the_current_table_is_timed_by_how_long_it_has_been_current(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        """Flips if the keeper's count of the current note table (every twentieth of the fence) stops being exported:
+        its seconds to threetears_change_notes_current_count_seconds under the time since the switch in fences
+        (first_fence just after it, later an hour on), the notes it found to threetears_change_notes_current_count_notes.
+        A slot switched back into still holds its last emptying's debris, which this count walks (R1, 2026-11-15:
+        9.7x on YugabyteDB, 3.4x on Postgres; the why above _CURRENT_COUNT_SECONDS)."""
+        pool, schema, _ = ring
+        source = EpochGenerationSource(FakeNatsClient())
+        await source.start_log()
+        keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=source, fence=_FENCE, switch_notes=10_000)
+        await _fill(pool, schema, 0, 37)
+
+        def counted(age: str) -> float:
+            return (
+                REGISTRY.get_sample_value("threetears_change_notes_current_count_seconds_count", {"since_switch": age})
+                or 0.0
+            )
+
+        ages = ("first_fence", "fences_2_to_3", "later")
+        before = {age: counted(age) for age in ages}
+        await keeper.run_pass()
+        assert {age: counted(age) - before[age] for age in ages} == {"first_fence": 1, "fences_2_to_3": 0, "later": 0}
+        assert REGISTRY.get_sample_value("threetears_change_notes_current_count_notes") == 37
+
+        await pool.execute(f"UPDATE {schema}.{RING_TABLE} SET switched_at = now() - interval '1 hour'")
+        await _fill(pool, schema, 0, 5)
+        # the count runs every twentieth of the fence
+        await asyncio.sleep(_FENCE.total_seconds() / 20 + 0.05)
+        await keeper.run_pass()
+        assert {age: counted(age) - before[age] for age in ages} == {"first_fence": 1, "fences_2_to_3": 0, "later": 1}
+        assert REGISTRY.get_sample_value("threetears_change_notes_current_count_notes") == 42
+
+
 class TestTheMigrationRunGivesANewNotedTableItsTriggers:
     async def test_a_table_created_by_a_run_is_noted_from_that_run(
         self, ring: tuple[asyncpg.Pool, str, str], db_container: str
