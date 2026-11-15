@@ -24,6 +24,7 @@ from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.schema.reading_states import (
     ArmIdentity,
+    AttestableCoordinate,
     CaveatClass,
     CaveatReach,
     Coordinate,
@@ -124,6 +125,7 @@ from threetears.evals.schema.models import (
     RunDisclosure,
     EvalTemplate,
     MeasureAttestation,
+    ServedModelAttestation,
     MeasureDeclaration,
     MeasureRemeasure,
     MeasureReread,
@@ -320,6 +322,7 @@ from threetears.evals.schema.versioning import (
 
 __all__ = [
     "ArmIdentity",
+    "AttestableCoordinate",
     "CaveatClass",
     "CaveatReach",
     "Coordinate",
@@ -517,6 +520,7 @@ __all__ = [
     "LabelKey",
     "LatencyMetrics",
     "MeasureAttestation",
+    "ServedModelAttestation",
     "MeasureDeclaration",
     "MeasureRemeasure",
     "MeasureReread",

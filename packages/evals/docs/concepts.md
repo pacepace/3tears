@@ -234,12 +234,14 @@ their variant matches and their apparatus falls in the same class; an arm measur
 named with `(test setup <digest>)` in a report. These cells, and every contrast read between them, pool on
 variant x rig, and on the candidate model that answered: an arm whose runs under one rig were answered by more than
 one model, or by a model some responses did not name, holds a cell per answering model, each a class of its own
-that names the rig it shares (`Cell.rig_class_id`) and is compared with the control under that rig. An arm answered
-by one model throughout, or by none any response named, is one cell under the rig's own class. pass^k splits
-further: on the measurement context, the template revision and each host measure's definition, and a run whose
-responses named no model stands alone there (see [Measurement context](#measurement-context)). These cells
-do not yet read a measure's definition: a campaign page pools runs read under two definitions of one host measure,
-where pass^k and the comparison sets keep them apart.
+that names the rig it shares (`Cell.rig_class_id`) and is compared with the control under that rig. Two runs whose
+responses each named no model are two such cells: two silences are no match, and `runs_attest` (coordinate `served_model`) records
+your statement of the model that answered them. An arm answered by one model throughout, or by one silent run
+alone, is one cell under the rig's own class. What each host measure counts is part of the rig: runs that recorded
+two definitions of a measure are under two classes, so they share no cell and no contrast, and a run whose results
+hold a host measure and that recorded no definition is a class of its own, compared with nothing until you state
+its definitions (`runs_attest`, coordinate `measure_definition`) or re-measure it. pass^k splits further: on the measurement context and
+the template revision (see [Measurement context](#measurement-context)).
 
 #### Apparatus settings
 Rig values your host declares and a launch may set (`apparatus_settings`), so one template can be run at two
@@ -265,7 +267,9 @@ counts and the descriptor stays as it is (`MeasureRegistry.definition_digests()`
 how a value is read, and moves nothing. A run records every measure's digest at launch
 (`EvalRun.measure_definitions`). Runs that recorded two definitions of one measure are two conditions. A run that
 recorded none (stored before runs recorded them, or assembled without a launch) pools with nothing where its
-results hold a host measure, and as it always did where they hold none. `attest_measure_definitions` records your
+results hold a host measure, and as it always did where they hold none. A campaign reads it the same way: a
+measure's definition is part of the test setup, so runs under two definitions share no cell and no contrast, and
+an unrecorded run is compared with nothing until you state its definitions. `attest_measure_definitions` records your
 statement of the definitions such runs ran under, touching no result (`EvalRun.measure_attestation`).
 `remeasure_run` reads a stored run again from what its cells stored, through your `HostProfile.measure_rereader`,
 and the run then joins the cell of the definitions it was read under, marked (`EvalRun.measure_remeasures`).
@@ -281,8 +285,9 @@ cell alone, chosen in the one order `PassHatKCellReading` states (a recorded, re
 that pools, then most runs, most results and the first run id); every other cell stands beside it with its own
 pass^k and the reason it is not the headline (`FrontierPoint.pass_hat_k_cells`), named on the frontier's text and the report page.
 A run kept out of the headline is kept out of the frontier's pass^k, bar and verdict
-only: the arm's tables, its cells (see [Apparatus class](#apparatus-class)), composite, cost and latency still
-count it. A run that froze no template digest, a run whose results hold a host measure and that recorded no
+only: the frontier's composite, cost and latency for the arm still count it. A campaign's cells (see
+[Apparatus class](#apparatus-class)) keep apart what they split on, the served model and each host measure's
+definition, and pool across the rest. A run that froze no template digest, a run whose results hold a host measure and that recorded no
 measure definitions, and a run with a candidate call whose response named no model, is a cell of its own: a silence is never evidence of a match, so it pools with nothing and is named with what it did
 not record, the headline too when every run is silent and others are kept out beside it. A run whose candidate made no model call recorded
 that, and pools on everything else.

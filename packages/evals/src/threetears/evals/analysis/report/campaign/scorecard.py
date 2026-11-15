@@ -1131,12 +1131,20 @@ def _unread_lines(campaign: EvalCampaign, readings: CampaignReadings, names: Asp
     lines: list[str] = []
     for aspect in campaign.aspects:
         rows = readings.on_aspect(aspect.label)
-        split = [held.arm_label for held in readings.answer_splits if held.aspect == aspect.label]
+        held_here = [held for held in readings.answer_splits if held.aspect == aspect.label]
+        split = [held.arm_label for held in held_here if held.coordinate == "served_model"]
+        defined = [held.arm_label for held in held_here if held.coordinate == "measure_definition"]
         if split:
             # Both sides ran: what withholds the rows is an arm read per answering model, which the warning names.
             lines.append(
                 f"{names(aspect.label)} is not compared: {_listed(split)}'s results there were answered by more than "
-                "one model, so they are read per model and no row is read for the arm."
+                "one model, or by one no response named, so they are read per model and no row is read for the arm."
+            )
+        elif defined:
+            # Both sides ran: what withholds the rows is a host measure's definition, which the warning names.
+            lines.append(
+                f"{names(aspect.label)} is not compared: {_listed(defined)}'s runs there were not read under one "
+                "recorded definition of each host measure shared with the control, so no row is read for the arm."
             )
         elif not rows:
             lines.append(f"{names(aspect.label)} holds the runs of one side only, so its figures are read arm by arm.")

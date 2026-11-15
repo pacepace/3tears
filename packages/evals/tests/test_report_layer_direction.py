@@ -229,6 +229,7 @@ _NUMBERS_MODULES = frozenset(
         "generation_tally",
         "judge_drift",
         "judge_kind_readings",
+        "judge_noise",
         "judge_profiles",
         "judge_temperature",
         "kinds",

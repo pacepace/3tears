@@ -285,7 +285,10 @@ def _messy(*, unfinished: bool) -> CampaignBundle:
     held = aspect.model_copy(
         update={
             "cells": [
-                cell.model_copy(update={"rig_class_id": f"{cell.apparatus_class_id}:{index}"})
+                # What the pooling sets for an arm read per answering model: the rig split and the coordinate.
+                cell.model_copy(
+                    update={"rig_class_id": f"{cell.apparatus_class_id}:{index}", "split_on": ["served_model"]}
+                )
                 if cell.variant_key == split
                 else cell
                 for index, cell in enumerate(aspect.cells)
