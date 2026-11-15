@@ -105,7 +105,7 @@ A miss at any tier falls through to the next -- **the stack degrades gracefully*
 
 | Tier | Implementation | Nature | Source of truth? | Required? |
 |---|---|---|---|---|
-| **L1** | `SQLiteBackend` (`threetears.core.cache.sqlite`) | **In-process, in-memory** SQLite (named `memdb` VFS). Fast local cache, **not durable** -- rebuilt from L3 on restart. | No | Practically yes (collections cache through it) |
+| **L1** | `SQLiteBackend` (`threetears.core.cache.sqlite`) | **Per-process** SQLite: one WAL file of the process on `/dev/shm` (`threetears.core.cache.l1_file`), gone with the process. Fast local cache, **not durable** -- rebuilt from L3 on restart. Every table declares its eviction policy (`EVICTABLE` or `KEEP`, `threetears.core.eviction`); the process holds it under `THREETEARS_L1_BUDGET_BYTES` (`threetears.core.cache.l1_lru`), so a deployment mounts a sized memory-backed `emptyDir` at `/dev/shm`. | No | Practically yes (collections cache through it) |
 | **L2** | `NatsClient` JetStream KV (`threetears.nats`) | **Cross-pod** shared cache + typed cache-coherence pub/sub. Bucket is `{namespace}-collections`, on the storage its declarer chooses; declare it on **file** storage so it survives a broker restart (§12, Step 3). | No | **No** -- only matters with >1 pod |
 | **L3** | an asyncpg-style pool, `NatsProxyL3Backend`, or a git working tree | **Durable storage. The source of truth.** | **Yes** | **Yes, always** |
 
