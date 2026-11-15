@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the plan that lifts a caveat is sized with the cases held fixed
+
+**Changed:** a step that adds cases on an unsettled reading, or a borderline gate, plans the cases that lift its caveat
+four times in five if the truth is today's estimate, with the cases already held fixed. The size used to clear the whole
+design four times in five and subtract the held cases, which lifted about nine times in ten. A contrast is sized on
+the per-case values its reading was read from, by its own bounded interval at the level it was read at; an unpaired
+A/B is planned on the paired read it gets once each arm runs the held cases only the other ran (a cross-fill), and the
+plan names those counts per arm. A size that cannot be read (too few cases, every case alike, an estimate on its line,
+or no count up to the search's cap) is typed as `not_available` with its reason, never a huge or default number.
+
+**Added:** `ReportInput.per_case` (optional, outside the input's digest): the per-case values each such reading was
+read from. No digest, snapshot id or recording moves.
+
 ### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
 
 **Changed:** a declared name of `3tears-evals` is public only when it is admitted (owner ruling, 2026-11-15): someone
