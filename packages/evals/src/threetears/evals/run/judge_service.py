@@ -63,6 +63,7 @@ call + parse + cost-log still flow through
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from functools import cache
 from typing import Any, NamedTuple, Self
@@ -89,6 +90,8 @@ from threetears.evals.schema.models import (
     label_key_of,
 )
 from threetears.evals.kernel.host.eval_host import CompletionClients
+from threetears.evals.schema.call_inputs import bind_call_inputs
+from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.completion import BoundCompletionClient, FailureOwner, ProviderFailureDescriber
 from threetears.evals.kernel.capped_completion import call_ceiling
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger, blended_cost
@@ -546,6 +549,10 @@ class JudgeRequest(NamedTuple):
     #: What the call reads — the evidence's fingerprint and the criterion's — stamped onto its score, so a
     #: person's label of the same output on the same criterion pairs with it on any result (#628).
     label_key: LabelKey | None = None
+    #: What the call is asked about, by its inputs (:func:`_input_key`), where the evidence names what its text was
+    #: rendered from; ``None`` where it names nothing, and the call is keyed by its prompt. Bound around the call, so
+    #: a recorded replay matches it on these and a word printed differently on the page moves no recording.
+    input_key: Mapping[str, Any] | None = None
 
 
 def _criterion(dim_id: str, scale: RubricScale) -> dict[str, Any]:
@@ -566,6 +573,7 @@ def _request(
     document: bool = False,
     axis: RubricAxis = "capability",
     label_key: LabelKey | None = None,
+    inputs: _Asked | None = None,
 ) -> JudgeRequest:
     """Compose one call's system prompt from its instructions and the JSON-format contract.
 
@@ -575,10 +583,11 @@ def _request(
     ``builtin_config_id`` is the identity of the built-in prompt the dim is asked with when ``config`` is ``None``,
     and is what the call records as having asked it then.
     """
+    system_prompt = _system_prompt(dim_id=dim_id, instructions=instructions, scale=scale, document=document)
     return JudgeRequest(
         dim_id=dim_id,
         config=config,
-        system_prompt=_system_prompt(dim_id=dim_id, instructions=instructions, scale=scale, document=document),
+        system_prompt=system_prompt,
         user_prompt=user_prompt,
         scale=scale,
         label=label,
@@ -587,7 +596,43 @@ def _request(
         judge_config_id=_configured_id(config, scale, document) if config is not None else builtin_config_id,
         axis=axis,
         label_key=label_key,
+        input_key=None if inputs is None else _input_key(system_prompt, inputs),
     )
+
+
+class _Asked(NamedTuple):
+    """What a call's user prompt lays out, as the structured values it was rendered from: the part of its input key
+    the prompt carries, with the evidence's inputs standing for the evidence's text."""
+
+    intent: str
+    variation: dict[str, str]
+    goals: list[GoalStateOutcome] | None
+    evidence: dict[str, Any]
+
+
+def _input_key(system_prompt: str, asked: _Asked) -> dict[str, Any]:
+    """A judge call's input key: what it asks about, by inputs, never by the text a page or a layout prints.
+
+    Each component and why a printed word cannot move it is the table in
+    :mod:`~threetears.evals.testing.recorded_completions`. The system prompt enters by digest: it holds the judge's
+    instructions and the criterion's definition and no page text, so rewording what the judge is asked moves the key,
+    and rewording a page does not. The user prompt does not enter at all: its headings are layout, and its evidence
+    is a rendering of ``asked.evidence``.
+
+    :param system_prompt: The call's system prompt, as sent.
+    :ptype system_prompt: str
+    :param asked: What its user prompt was laid out from.
+    :ptype asked: _Asked
+    :return: The key, a JSON object.
+    :rtype: dict[str, Any]
+    """
+    return {
+        "judge_prompt": canonical_digest({"judge_prompt": system_prompt}),
+        "intent": asked.intent,
+        "variation": dict(asked.variation),
+        "goals": None if asked.goals is None else [outcome.model_dump(mode="json") for outcome in asked.goals],
+        "evidence": asked.evidence,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -743,6 +788,7 @@ class JudgeService:
         return self._transcript_call(
             self._build_user_prompt(context, include_goal_outcomes=False),
             label_key_of(context.judge_evidence, TRANSCRIPT_DIM_ID),
+            _asked(context, include_goal_outcomes=False),
         )
 
     def outcome_request(self, context: JudgeContext) -> JudgeRequest:
@@ -750,6 +796,7 @@ class JudgeService:
         return self._outcome_call(
             self._build_user_prompt(context, include_goal_outcomes=True),
             label_key_of(context.judge_evidence, OUTCOME_DIM_ID),
+            _asked(context, include_goal_outcomes=True),
         )
 
     def dimension_request(self, dim: RubricDim, context: JudgeContext) -> JudgeRequest:
@@ -759,6 +806,7 @@ class JudgeService:
             self._build_user_prompt(context, include_goal_outcomes=True),
             label_key_of(context.judge_evidence, dim),
             document=context.judged_artifact is JudgedArtifact.DOCUMENT,
+            inputs=_asked(context, include_goal_outcomes=True),
         )
 
     def floor_requests(
@@ -835,7 +883,9 @@ class JudgeService:
             rubric, {dim: config.id for dim, config in self._configs.items()}, judged_artifact=judged_artifact
         )
 
-    def _transcript_call(self, user_prompt: str, label_key: LabelKey | None) -> JudgeRequest:
+    def _transcript_call(
+        self, user_prompt: str, label_key: LabelKey | None, inputs: _Asked | None = None
+    ) -> JudgeRequest:
         """The transcript axis's call over ``user_prompt``."""
         config = self._configs.get(TRANSCRIPT_DIM_ID)
         return _request(
@@ -848,9 +898,10 @@ class JudgeService:
             scale="ordinal",
             include_goal_outcomes=False,
             label_key=label_key,
+            inputs=inputs,
         )
 
-    def _outcome_call(self, user_prompt: str, label_key: LabelKey | None) -> JudgeRequest:
+    def _outcome_call(self, user_prompt: str, label_key: LabelKey | None, inputs: _Asked | None = None) -> JudgeRequest:
         """The outcome axis's call over ``user_prompt``."""
         config = self._configs.get(OUTCOME_DIM_ID)
         return _request(
@@ -863,10 +914,17 @@ class JudgeService:
             scale="ordinal",
             include_goal_outcomes=True,
             label_key=label_key,
+            inputs=inputs,
         )
 
     def _dimension_call(
-        self, dim: RubricDim, user_prompt: str, label_key: LabelKey | None, *, document: bool
+        self,
+        dim: RubricDim,
+        user_prompt: str,
+        label_key: LabelKey | None,
+        *,
+        document: bool,
+        inputs: _Asked | None = None,
     ) -> JudgeRequest:
         """One rubric dimension's call over ``user_prompt``."""
         config = self._configs.get(dim.name)
@@ -882,6 +940,7 @@ class JudgeService:
             document=document,
             axis=dim.axis,
             label_key=label_key,
+            inputs=inputs,
         )
 
     # ------------------------------------------------------------------
@@ -894,16 +953,18 @@ class JudgeService:
         client = self._client_for(request.config)
         config_id = request.judge_config_id
 
-        result = await run_judge_llm(
-            client=client,
-            system_prompt=request.system_prompt,
-            user_prompt=request.user_prompt,
-            criteria_dicts=[_criterion(dim_id, request.scale)],
-            label=request.label,
-            case_id=case_id,
-            cannot_tell_offered=True,
-            failure_describer=self._failure_describer,
-        )
+        # Every attempt of the call, its parse retries included, is asked about the same inputs.
+        with nullcontext() if request.input_key is None else bind_call_inputs(request.input_key):
+            result = await run_judge_llm(
+                client=client,
+                system_prompt=request.system_prompt,
+                user_prompt=request.user_prompt,
+                criteria_dicts=[_criterion(dim_id, request.scale)],
+                label=request.label,
+                case_id=case_id,
+                cannot_tell_offered=True,
+                failure_describer=self._failure_describer,
+            )
         # A judge call that failed to parse, omitted its score, or errored still burned
         # tokens — every return below carries the spend so an unscored dim can't hide the
         # dollars the program paid for it.
@@ -1003,24 +1064,44 @@ class JudgeService:
         """
         evidence = context.judge_evidence
         document = context.judged_artifact is JudgedArtifact.DOCUMENT
-        goals: str | None = None
-        if document:
-            # A document's mechanical facts are the kind's own checks, shown only when it has any:
-            # a document kind that grades nothing mechanically declares no goal-state checks to say
-            # are missing.
-            if include_goal_outcomes and context.goal_outcomes:
-                goals = _render_goal_outcomes(context.goal_outcomes)
-        elif include_goal_outcomes:
-            goals = _render_goal_outcomes(context.goal_outcomes)
+        shown = _shown_goals(context, include_goal_outcomes=include_goal_outcomes)
         return _user_prompt(
             intent=context.intent,
             variation=_render_variation(context.variation),
             subject=evidence.subject,
-            goals=goals,
+            goals=None if shown is None else _render_goal_outcomes(shown),
             case_material=evidence.case_material,
             artifact=evidence.artifact,
             document=document,
         )
+
+
+def _shown_goals(context: JudgeContext, *, include_goal_outcomes: bool) -> list[GoalStateOutcome] | None:
+    """The goal-state outcomes a call's prompt shows, or ``None`` where it leaves their section out.
+
+    A document's mechanical facts are the kind's own checks, shown only when it has any: a document kind that grades
+    nothing mechanically declares no goal-state checks to say are missing. A conversation's are shown on every axis
+    that includes them, an empty list included.
+    """
+    if not include_goal_outcomes:
+        return None
+    if context.judged_artifact is JudgedArtifact.DOCUMENT and not context.goal_outcomes:
+        return None
+    return list(context.goal_outcomes)
+
+
+def _asked(context: JudgeContext, *, include_goal_outcomes: bool) -> _Asked | None:
+    """What a call over ``context`` is asked about, by inputs; ``None`` where its evidence names no inputs, and the
+    call is keyed by its prompt."""
+    inputs = context.judge_evidence.inputs
+    if inputs is None:
+        return None
+    return _Asked(
+        intent=context.intent,
+        variation=dict(context.variation),
+        goals=_shown_goals(context, include_goal_outcomes=include_goal_outcomes),
+        evidence=dict(inputs),
+    )
 
 
 def _user_prompt(

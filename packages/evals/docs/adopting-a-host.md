@@ -260,7 +260,7 @@ reasoning_effort='high'`), so moving your judge's reasoning effort or output cap
 replaying answers the new configuration never asked for. Each line also keeps what the call's request was actually
 SENT with, when your completion reports it (`sent_settings`, below), and a replayed completion reports the same, so
 a replay records what the recorded call was sent with, never the settings it was asked under. A recording made by a
-build before `.25` (recording format 1; `RecordedCompletions.FORMAT_VERSION` is 3) kept none, and is refused by name:
+build before `.25` (recording format 1; `RecordedCompletions.FORMAT_VERSION` is 4) kept none, and is refused by name:
 re-record it.
 
 A call is matched on its prompt (`system`, `user`, `response_format`), the model and temperature its completion
@@ -268,7 +268,14 @@ reported, the settings the client was built with, and how many times that prompt
 replay as the `k` answers they were. Inside an eval's cell, each call is also recorded with the cell it was made for
 (the arm, the case, the repeat), and a replay serves each cell the call recorded for it, so two arms sending a judge
 one prompt get back what each got, whatever order the cells run in. A recording made before format 3 noted no cell
-and is still read: repeat `i` is served the call of index `i`, and otherwise the first call left. A prompt the recording does not hold, or one asked once more than it was, is
+and is still read: repeat `i` is served the call of index `i`, and otherwise the first call left.
+
+A judge call over evidence whose kind names what its text was rendered from (`JudgeEvidence.inputs`: the report
+writer's page names its stored document, its snapshot and its open findings) is matched on those inputs and the
+criterion asked, in place of its prompt (format 4): a word the package prints differently on the page replays every
+call as recorded, and a miss names each input that differs from the nearest recorded call. A recording made before
+format 4 keyed such a call by its prompt, and still replays it that way. Your own kind's evidence names no inputs
+unless it sets them, and its calls are matched on their prompts as before. A prompt the recording does not hold, or one asked once more than it was, is
 refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
 a `ReplayMiss` ([rig failures](#rig-failures-a-broken-rig-costs-one-cell-a-recording-that-cannot-serve-costs-the-run)),
 so a candidate that meets one never has its cell scored: the cell is recorded `apparatus_failed`, naming the call, and
@@ -799,9 +806,10 @@ above it, an ordered read with a `limit` included.
 
 **Reading every page of a listing.** `runs_list` and `campaigns_list` (and their actions) return `next`, the cursor
 for the page after, and take it back as `cursor`: call again with `cursor=next` until `next` is `None`. The page is
-100 rows unless `limit` names another (1 to 1000 from Python, 1 to 200 through an action). The cursor is the
-package's own opaque string, bound to the filters it was read with; hand it through unchanged, beside the same
-filters. A `runs_list` page read with a `label` can list fewer runs than `limit` while `next` is set: the label filter
+100 rows unless `limit` names another (1 to 1000 from Python, 1 to 200 through an action); a REST route of your own
+states its limits from `LIST_PAGE_SIZE` and `LIST_PAGE_MAX` (`threetears.evals.ops`), the 100 and the 1000. The
+cursor is the package's own opaque string, bound to the filters it was read with; hand it through unchanged, beside
+the same filters. A `runs_list` page read with a `label` can list fewer runs than `limit` while `next` is set: the label filter
 runs after the read (the status and archive filters are in it), and `filtered` counts the runs it left out.
 
 **Narrowed and grouped reads are optional** (`ResultReadings`, provisional; `RESULT_READINGS_CONFORMANCE_CASES`
@@ -1306,11 +1314,12 @@ release, on:
   below a root. Such a name is promised nothing: it may change or move in any release, and the
   [reference](reference.md#public-api) does not list it.
 
-The first two tiers are the declared surface, about 500 names, mapped by rung in [the surface](surface.md). A declared
+The first two tiers are the declared surface, about 500 names, mapped by role and rung in [the surface](surface.md),
+and each is one kind: typed in an eval, bound by a host, invoked, received or for tests. A declared
 name stays declared while something outside the package imports it, a shipped page teaches it or a declared
 signature reaches it, or while it is a port you implement, a version constant or a one-minor shim, or a stable name
-only a known host's tests import, until that host accepts that it may move (the rules, in full:
-[the surface](surface.md)). Otherwise it is provisional; a name that goes provisional still imports, nothing warns,
+only a known host's tests import, until that host accepts that it may move (the rules, in full: the comment on
+`HOST_CONTRACT` in `packages/evals/scripts/public_surface.py`). Otherwise it is provisional; a name that goes provisional still imports, nothing warns,
 and `MIGRATIONS.toml` names it.
 `packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
 signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two

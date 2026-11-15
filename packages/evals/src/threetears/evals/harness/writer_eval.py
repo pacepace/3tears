@@ -1270,6 +1270,7 @@ class WriterEval:
         disclosures[at:at] = self._recording_disclosures(turns, before, wrote)
         for arm, routed in turns.items():
             disclosures += [f"{arm}: {left}" for left in routed.unconsumed()]
+        disclosures += _rerendered_judge_line(self.judge)
         disclosures += await run_blocking(
             eval_host.blocking_executor,
             _over_budget_with_no_page,
@@ -2266,6 +2267,19 @@ def _pageless_runs(host: EvalHost, run_ids: Mapping[str, Sequence[str]], scope_i
             MUST_FIX_OPEN_MEASURE in result.host_measures
             for result in host.storage.query_eval_results_by_run(run_id, scope_id)
         )
+    ]
+
+
+def _rerendered_judge_line(judge: WriterJudge) -> list[str]:
+    """The line a run says when its judge's replay served calls over pages rendered otherwise since they were recorded
+    (``Model.served_over_changed_prompts``): the same question, answered about the page as it was then. Empty for a
+    judge that served none, or one that does not count them (a host's own client)."""
+    changed = getattr(judge, "served_over_changed_prompts", 0)
+    if not isinstance(changed, int) or isinstance(changed, bool) or changed <= 0:
+        return []
+    return [
+        f"judge: {changed} call(s) replayed over a page rendered otherwise since it was recorded; each answer is about "
+        "the page as it read then"
     ]
 
 

@@ -153,15 +153,25 @@ def test_a_removal_recorded_only_in_an_older_section_does_not_count() -> None:
     assert [f.regenerating_fixes for f in findings] == [False]
 
 
-def test_the_generator_refuses_to_write_while_a_removal_is_unrecorded(tmp_path: Path) -> None:
+def test_the_generator_refuses_to_write_while_a_removal_is_unrecorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path, tiers = tmp_path / "surface.json", tmp_path / "surface_tiers.json"
     blocked = [surface.Finding("x left the public surface", False), surface.Finding("y is new", True)]
     assert generator.write_snapshot({}, blocked, path, tiers) is False
     assert not path.exists() and not tiers.exists()
     installed = {f"{A}.y": Entry("function", "y()", "stable")}
+    # A declared function no rule places has no kind, and nothing is written until it is given one.
+    assert generator.write_snapshot(installed, [surface.Finding("y is new", True)], path, tiers) is False
+    assert not path.exists() and not tiers.exists()
+    monkeypatch.setattr(load_script("surface_kinds.py"), "KIND_ENTRIES", {f"{A}.y": "invoked"})
     assert generator.write_snapshot(installed, [surface.Finding("y is new", True)], path, tiers) is True
     assert surface.load_snapshot(path) == installed
-    assert json.loads(tiers.read_text(encoding="utf-8")) == {"format": 1, "tiers": {f"{A}.y": "stable"}}
+    assert json.loads(tiers.read_text(encoding="utf-8")) == {
+        "format": 1,
+        "tiers": {f"{A}.y": "stable"},
+        "kinds": {f"{A}.y": "invoked"},
+    }
 
 
 def test_a_snapshot_of_another_format_is_refused(tmp_path: Path) -> None:

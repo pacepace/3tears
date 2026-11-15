@@ -11,7 +11,12 @@ This holds the lists' completeness, not their taste: a name the host guide, the 
 imports is one a host was told to write against, so a release moving it without the deprecation cycle would break
 a host that did exactly what the docs said; and a name a topic guide or an example host imports is one a reader was
 shown, so it may not be provisional. What else belongs in either list is a judgement their comments record, and
-nothing here second-guesses it beyond the ceiling on how many names they hold.
+nothing here second-guesses it beyond each kind's ceiling.
+
+Every declared name is also exactly one kind (``scripts/surface_kinds.py``): ``typed`` in an eval, ``bound`` by a
+host, ``invoked``, ``received`` or for ``tests``. This holds that each has one, that each kind is within its ceiling,
+that the ladder examples' imports are the typed names recorded for them, and that every received shape is reached
+from a name a reader meets first.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ import ast
 import json
 import re
 import textwrap
+from functools import cache
 from importlib.resources import files
 from pathlib import Path
 
@@ -134,33 +140,134 @@ def test_every_name_the_toy_host_imports_is_public() -> None:
     assert not below, f"the toy host imports names no public root exports: {below}"
 
 
-def test_the_declared_surface_is_one_sitting() -> None:
-    """The declared surface is what a reader takes in at once; promoting a name past the ceiling demotes another."""
-    declared = surface.HOST_CONTRACT | surface.STABLE
-    assert len(declared) <= surface.DECLARED_CEILING, (
-        f"{len(declared)} declared names, over the ceiling of {surface.DECLARED_CEILING}: demote one to "
-        "provisional (drop it from STABLE) before promoting another."
+#: Each kind's rule and record, and the budgets they are held to (``scripts/surface_kinds.py``).
+kinds_of = load_script("surface_kinds.py")
+
+
+@cache
+def declared_kinds() -> object:
+    return kinds_of.declared_kinds(surface.load_snapshot())
+
+
+def test_every_declared_name_has_exactly_one_kind() -> None:
+    """By rule, or by an entry no rule contradicts: a name with neither, or with both, is a problem the record names."""
+    found = declared_kinds()
+    assert not found.problems, "\n  ".join(("the declared names' kinds:", *found.problems))
+    declared = {name for name, entry in surface.load_snapshot().items() if surface.declared(entry.tier)}
+    assert set(found.of) == declared
+    assert set(found.of.values()) == set(kinds_of.KINDS)
+
+
+def test_a_kind_comes_from_its_rule_or_its_entry() -> None:
+    kind = declared_kinds().of
+    assert kind["threetears.evals.Eval"] == "typed"
+    assert kind["threetears.evals.Result"] == "received"  # what `run()` hands back, a rule: returned, never taken
+    assert kind["threetears.evals.quick.Grader"] == "received"
+    assert kind["threetears.evals.schema.DocumentStore"] == "bound"  # a protocol
+    assert kind["threetears.evals.ops.runs_list"] == "invoked"  # an action's name
+    assert kind["threetears.evals.analysis.format_number"] == "invoked"  # a helper
+    assert kind["threetears.evals.schema.EvalRun"] == "received"
+    assert kind["threetears.evals.testing.STORE_CONFORMANCE_CASES"] == "tests"
+    # Entries, since no rule is certain: a host's dataclass, a function handed over as a value, a launch entry.
+    for name in (
+        "threetears.evals.kernel.host.EvalHost",
+        "threetears.evals.providers.describe_failure",
+        "threetears.evals.kernel.default_job_timeout",
+        "threetears.evals.run.LaunchableKind",
+    ):
+        assert kind[name] == "bound" and name in kinds_of.KIND_ENTRIES, name
+
+
+def test_no_name_takes_a_kind_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Made up: a function that is no action, a class and a shape nothing names have no rule, and each fails saying
+    how to decide; a protocol entered against its rule, and an entry for no declared name, fail too."""
+    names = {
+        "threetears.evals.alpha.P": surface.SurfaceEntry("protocol", "P{}", "stable"),
+        "threetears.evals.alpha.f": surface.SurfaceEntry("function", "f()", "stable"),
+        "threetears.evals.alpha.C": surface.SurfaceEntry("class", "C()", "stable"),
+        "threetears.evals.alpha.M": surface.SurfaceEntry("model", "M()", "stable"),
+    }
+    monkeypatch.setattr(
+        kinds_of, "KIND_ENTRIES", {"threetears.evals.alpha.P": "received", "threetears.evals.z": "bound"}
     )
-
-
-#: One root's line on ``docs/surface.md``: the root, ``threetears.evals.`` dropped, then its names.
-_SURFACE_LINE = re.compile(r"^- `([\w.]+)`: (.+)$", re.M)
-
-
-def test_the_surface_page_lists_exactly_the_declared_names() -> None:
-    """``docs/surface.md`` maps the declared surface by rung: every declared name once, and nothing provisional."""
-    page = (PACKAGE / "docs" / "surface.md").read_text(encoding="utf-8")
-    listed: list[str] = []
-    for label, names in _SURFACE_LINE.findall(page):
-        root = label if label == "threetears.evals" else f"threetears.evals.{label}"
-        listed += [f"{root}.{name}" for name in re.findall(r"`(\w+)`", names)]
-    declared = surface.HOST_CONTRACT | surface.STABLE
-    twice = sorted({name for name in listed if listed.count(name) > 1})
-    assert not twice, f"docs/surface.md lists these more than once: {twice}"
-    assert set(listed) == declared, (
-        f"docs/surface.md is not the declared surface. Missing: {sorted(declared - set(listed))}. "
-        f"Not declared: {sorted(set(listed) - declared)}."
+    problems = kinds_of.declared_kinds(names).problems
+    assert problems[0] == (
+        "threetears.evals.alpha.P is bound by rule and also entered as received: drop it from KIND_ENTRIES"
     )
+    for name, problem in zip(("f", "C", "M"), problems[1:4], strict=True):
+        assert problem.startswith(f"threetears.evals.alpha.{name} (")
+        assert "has no kind, since no rule decides it: record it in KIND_ENTRIES" in problem
+        assert all(f"{kind}, {meaning}" in problem for kind, meaning in kinds_of.KIND_MEANINGS.items())
+        assert "asking first whether a newcomer writes it" in problem
+    assert problems[4] == "threetears.evals.z is in KIND_ENTRIES but is not declared"
+    assert len(problems) == 5
+
+
+def test_the_typed_names_are_what_the_rungs_teach() -> None:
+    """Each typed name a rung teaches is recorded at the first rung whose example or ladder section imports it, so an
+    import a rung gains fails until it is recorded and its budget reconsidered."""
+    assert kinds_of.taught_rungs() == dict(kinds_of.TYPED)
+    declared = {name for name, entry in surface.load_snapshot().items() if surface.declared(entry.tier)}
+    assert kinds_of.UNTAUGHT_TYPED <= declared
+    assert not kinds_of.UNTAUGHT_TYPED & set(kinds_of.taught_rungs())
+
+
+#: Each kind's budget (information-architecture §8.2): what its ceiling falls to. ``tests`` is held at the count when
+#: kinds were first recorded.
+BUDGETS = {"typed": 25, "bound": 100, "invoked": 110, "received": None, "tests": 16}
+
+#: The counts when kinds were first recorded (2026-11-15). A ceiling, and each list of findings, may never pass these:
+#: raising one means editing this test, which review sees.
+FIRST_RECORDED = {"bound": 107, "invoked": 117, "tests": 16, "untaught": 3, "helpers": 37, "unreached": 8, "pairs": 2}
+
+
+def test_each_ceiling_is_its_budget_or_todays_count_and_only_falls() -> None:
+    """A ceiling is exactly the larger of its budget and today's count: over it fails, and under it fails until the
+    ceiling is lowered, so a count that falls takes its ceiling with it."""
+    assert dict(kinds_of.KIND_BUDGETS) == BUDGETS
+    total = kinds_of.counts(declared_kinds().of)
+    expected = {kind: None if budget is None else max(budget, total[kind]) for kind, budget in BUDGETS.items()}
+    assert dict(kinds_of.KIND_CEILINGS) == expected, (
+        f"set KIND_CEILINGS in scripts/surface_kinds.py to {expected}: each kind's budget, or today's count where "
+        f"that is over it ({total})"
+    )
+    for kind in ("bound", "invoked", "tests"):
+        assert expected[kind] is not None and expected[kind] <= FIRST_RECORDED[kind], f"{kind} grew past its record"
+
+
+def test_a_first_eval_needs_at_most_eight_names_rung_three_twelve_and_the_ladder_twenty_five() -> None:
+    assert kinds_of.typed_through(1) <= kinds_of.FIRST_EVAL_CEILING == 8
+    assert kinds_of.typed_through(3) <= kinds_of.THROUGH_RUNG_3_CEILING == 12
+    assert len(kinds_of.TYPED) + len(kinds_of.UNTAUGHT_TYPED) <= BUDGETS["typed"]
+    assert set(kinds_of.TYPED.values()) <= set(kinds_of.rung_titles()), "a typed name's rung is not on the ladder"
+
+
+def test_the_lists_of_findings_only_shrink() -> None:
+    """Untaught typed names, helpers, unreached shapes and near-duplicates: each recorded list is exactly what is
+    measured, and none may pass its first recorded size."""
+    found = declared_kinds()
+    assert len(kinds_of.UNTAUGHT_TYPED) <= FIRST_RECORDED["untaught"]
+    assert {name for name in kinds_of.HELPERS if found.of.get(name) != "invoked"} == set()
+    assert len(kinds_of.HELPERS) <= FIRST_RECORDED["helpers"]
+    unreached = set(kinds_of.unreached_shapes(kinds_of.shape_reach(surface.load_snapshot(), found.of)))
+    assert unreached == kinds_of.UNREACHED_SHAPES, (
+        f"received shapes newly unreached: {sorted(unreached - kinds_of.UNREACHED_SHAPES)}; reached now, so drop "
+        f"from UNREACHED_SHAPES: {sorted(kinds_of.UNREACHED_SHAPES - unreached)}"
+    )
+    assert len(kinds_of.UNREACHED_SHAPES) <= FIRST_RECORDED["unreached"]
+    pairs = set(kinds_of.near_duplicate_shapes(found.of))
+    assert pairs == kinds_of.NEAR_DUPLICATES, (
+        f"near-duplicate shapes newly found: {sorted(pairs - kinds_of.NEAR_DUPLICATES)}; resolved, so drop from "
+        f"NEAR_DUPLICATES: {sorted(kinds_of.NEAR_DUPLICATES - pairs)}"
+    )
+    assert len(kinds_of.NEAR_DUPLICATES) <= FIRST_RECORDED["pairs"]
+
+
+def test_the_reach_walk_follows_fields_returns_and_aliases() -> None:
+    reach = kinds_of.shape_reach(surface.load_snapshot(), declared_kinds().of).by
+    assert reach["threetears.evals.schema.IntervalScale"] is not None  # through an alias no root exports
+    assert reach["threetears.evals.transports.fastmcp.ToolCall"] is not None  # a Callable alias's parameter
+    assert reach["threetears.evals.RootExtra"] == "threetears.evals.ROOT_EXTRAS"  # a constant's annotation
 
 
 def test_the_import_reader_sees_every_spelling(tmp_path: Path) -> None:
@@ -211,8 +318,8 @@ def test_the_installed_tier_map_is_the_repository_snapshot() -> None:
     """The wheel ships the tiers (``api/`` is not installed), and what it ships is exactly what the snapshot records."""
     recorded = json.loads(surface.SNAPSHOT_PATH.read_text(encoding="utf-8"))["names"]
     installed = files("threetears.evals").joinpath("surface_tiers.json").read_text(encoding="utf-8")
-    assert installed == surface.render_tier_map(surface.load_snapshot()), (
-        f"the shipped surface_tiers.json is not the snapshot's tiers: run `{surface.REGENERATE_SNAPSHOT}`"
+    assert installed == surface.render_tier_map(surface.load_snapshot(), declared_kinds().of), (
+        f"the shipped surface_tiers.json is not the snapshot's tiers and kinds: run `{surface.REGENERATE_SNAPSHOT}`"
     )
     assert {name: threetears.evals.surface_tier(name) for name in recorded} == {
         name: entry["tier"] for name, entry in recorded.items()
