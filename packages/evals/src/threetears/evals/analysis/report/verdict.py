@@ -573,13 +573,18 @@ def verdict_line(
             result = f"{arm(board.variant_key)} has no one pass rate: {_split_why(bundle, board.variant_key)}."
             return VerdictLine(rule="one_arm", text=result, lead=result)
         result = f"{_one_arm(board, arm, graded=_holds_a_check(bundle))}."
+        named = case_name or (lambda case: case)
         return VerdictLine(
-            rule="one_arm", text=result + _missed_cases(bundle, case_name or (lambda case: case)), lead=result
+            rule="one_arm",
+            text=result + _ungraded_cases(bundle, board, named) + _missed_cases(bundle, named),
+            lead=result,
         )
     declared_question = bundle.question_declared
+    # Every figure below is over the graded trials: an arm that lost any says so, and which, beside them.
+    ungraded = _ungraded_sentences(bundle, arm, case_name or (lambda case: case))
     if any(board.usable_cases < MIN_CASES for board in boards):
         lead = "" if declared_question else "Exploratory: "
-        return VerdictLine(rule="too_small", text=lead + _too_small(bundle, arm))
+        return VerdictLine(rule="too_small", text=lead + _too_small(bundle, arm) + ungraded)
     rule: VerdictRule = "declared" if declared_question else "exploratory"
     prefix = "" if declared_question else "Exploratory: "
     if verdicts:
@@ -595,7 +600,7 @@ def verdict_line(
             )
             return VerdictLine(
                 rule=rule,
-                text=prefix + text + _guardrail_sentences(verdicts) + _not_compared_sentences(bundle, arm),
+                text=prefix + text + ungraded + _guardrail_sentences(verdicts) + _not_compared_sentences(bundle, arm),
                 lead=result,
                 decisions=decisions,
                 undecided=any(verdict.outcome == "not_separated" for verdict in led),
@@ -642,7 +647,11 @@ def verdict_line(
         _guardrail_sentences(verdicts) if verdicts else "".join(f" {line}" for line in guardrail_lines(bundle, arm))
     ) + not_compared
     return VerdictLine(
-        rule=rule, text=f"{prefix}{result}.{guardrails}", lead=f"{result}.", decisions=(result,), undecided=undecided
+        rule=rule,
+        text=f"{prefix}{result}.{ungraded}{guardrails}",
+        lead=f"{result}.",
+        decisions=(result,),
+        undecided=undecided,
     )
 
 
@@ -775,7 +784,64 @@ def _one_arm(board: ArmScoreboard, arm: Callable[[str], str], *, graded: bool) -
         else:
             ran = f"{arm(board.variant_key)} ran {board.usable} of {board.ran} trials on {board.usable_cases} cases"
         return f"{ran}; no grader here says pass or fail"
-    return passed_clause(arm(board.variant_key), board.passed, board.usable, board.usable_cases)
+    lost = board.ran - board.usable
+    if not lost:
+        return passed_clause(arm(board.variant_key), board.passed, board.usable, board.usable_cases)
+    # Every trial that ran is the count: a trial lost to the setup (a grader that raised, a Measure's non-number, a
+    # call declined) is neither passed nor gone, and the lost are likeliest the failures.
+    return f"{passed_clause(arm(board.variant_key), board.passed, board.ran, board.cases)}; {_not_graded(lost, board)}"
+
+
+def _not_graded(lost: int, board: ArmScoreboard) -> str:
+    """``3 were not graded``, or ``6 trials were not graded`` where cases ran more than once: the clause beside a pass
+    count over every trial that ran, saying how many of them nothing graded."""
+    if board.ran == board.cases:
+        return f"{lost} {'was' if lost == 1 else 'were'} not graded"
+    return f"{lost} trial{'' if lost == 1 else 's'} {'was' if lost == 1 else 'were'} not graded"
+
+
+def _ungraded_cases(
+    bundle: AnalysisContextBundle,
+    board: ArmScoreboard,
+    case_name: Callable[[str], str],
+    *,
+    arm: str | None = None,
+) -> str:
+    """`` Not graded: c0, c1, c2 (`test setup: the scorer right raised TypeError: ...`).`` — the cases of one arm's
+    trials lost to the setup, the first :data:`_MISSES_NAMED` by name and a count of the rest, and the first one's
+    recorded error, verbatim, a sentence of its own so the count line before it keeps its figures (``Not graded on
+    b:`` where ``arm`` names the arm among several); empty where none was lost, or where the bundle holds only some of
+    its trials (``trials_omitted``)."""
+    if bundle.trials_omitted or board.ran == board.usable:
+        return ""
+    lost = [trial for trial in bundle.trials if trial.arm == board.variant_key and trial.state == "lost"]
+    cases = list(dict.fromkeys(trial.case_id for trial in lost))
+    if not cases:
+        return ""
+    shown = [case_name(case) or case for case in cases[:_MISSES_NAMED]]
+    more = f", and {len(cases) - _MISSES_NAMED} more" if len(cases) > _MISSES_NAMED else ""
+    # The first error as the run recorded it, verbatim: its first role's words (the others repeat it).
+    why = next((trial.error_words.split("; ", 1)[0] for trial in lost if trial.error_words), None)
+    on = f" on {arm}" if arm is not None else ""
+    return f" Not graded{on}: {', '.join(shown)}{more}{f' (`{why}`)' if why else ''}."
+
+
+def _ungraded_sentences(
+    bundle: AnalysisContextBundle, arm: Callable[[str], str], case_name: Callable[[str], str]
+) -> str:
+    """For each arm of a comparison that lost trials to the setup, that its figures are over its graded trials and how
+    many were not, then which cases and why (:func:`_ungraded_cases`); empty where no arm lost any."""
+    said = ""
+    for board in bundle.scoreboard:
+        if (lost := board.ran - board.usable) and board.usable:
+            said += f" {arm(board.variant_key)}'s figures are over its graded trials: {_not_graded_of(lost, board)}."
+            said += _ungraded_cases(bundle, board, case_name, arm=arm(board.variant_key))
+    return said
+
+
+def _not_graded_of(lost: int, board: ArmScoreboard) -> str:
+    """``3 of 10 were not graded``: how many of an arm's trials nothing graded, of all that ran."""
+    return f"{lost} of {board.ran} {'was' if lost == 1 else 'were'} not graded"
 
 
 def _holds_a_check(bundle: AnalysisContextBundle) -> bool:

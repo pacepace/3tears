@@ -22,6 +22,7 @@ import pytest
 
 from threetears.evals import Eval, grader
 from threetears.evals.kernel.scoring import failed_checks, measure_catalog_of
+from threetears.evals.quick import measure
 from threetears.evals.quick.one_call import callable_host, scorer_measure
 from threetears.evals.run import list_results, list_runs
 from threetears.evals.storage import InMemoryDocumentStore
@@ -260,9 +261,6 @@ def _made_without_source(text: str) -> Callable[..., Any]:
         (_made_without_source("def made(case, out):\n    return 0.5\n"), True),
         (_made_without_source("def made(case, out) -> 'bool':\n    return True\n"), True),
         (_made_without_source("def made(case, out) -> 'float':\n    return 1.0\n"), False),
-        (_made_without_source("def made(case, out) -> bool | None:\n    return True\n"), True),
-        (_made_without_source("def made(case, out) -> 'Optional[float]':\n    return 1.0\n"), False),
-        (_made_without_source("def made(case, out) -> 'typing.Union[bool, None]':\n    return True\n"), True),
         (_made_without_source("def made(case, out) -> builtins.int:\n    return 1\n"), False),
     ],
     ids=[
@@ -280,9 +278,6 @@ def _made_without_source(text: str) -> Callable[..., Any]:
         "no source, no annotation",
         "a string 'bool'",
         "a string 'float'",
-        "bool or None",
-        "Optional[float]",
-        "typing.Union[bool, None]",
         "builtins.int",
     ],
 )
@@ -297,14 +292,16 @@ def test_a_range_declares_a_number_and_a_bool_annotation_outranks_it() -> None:
 
 # Re-pinned deliberately (coordinator ruling, second fix round): -> Any, -> bool | float, an unresolvable name and a union
 # with one were read as a kind (check, number, check, number); an annotation the engine cannot read as exactly one kind
-# is now refused when the eval is built, so they moved from the kind table above to the refusals below.
+# is now refused when the eval is built, so they moved from the kind table above to the refusals below. Third round, the
+# same: -> bool | None, Optional[float] and typing.Union[bool, None] were read through their None, yet a None returned
+# fails the run; a declaration naming None is refused, and the three moved here too.
 @pytest.mark.parametrize(
     ("annotation", "read"),
     [
         ("bool | float", "names both a pass or fail (bool) and a number"),
         ("float | bool", "names both a pass or fail (bool) and a number"),
-        ("int | bool | None", "names both a pass or fail (bool) and a number"),
-        ("Optional[Union[bool, float]]", "names both a pass or fail (bool) and a number"),
+        ("int | bool", "names both a pass or fail (bool) and a number"),
+        ("Union[bool, Union[int, float]]", "names both a pass or fail (bool) and a number"),
         ("Score", "and Score is read as neither a pass or fail nor a number"),
         ("np.float64", "and np.float64 is read as neither a pass or fail nor a number"),
         ("Decimal", "and Decimal is read as neither a pass or fail nor a number"),
@@ -313,7 +310,12 @@ def test_a_range_declares_a_number_and_a_bool_annotation_outranks_it() -> None:
         ("t.Optional[float]", "and t.Optional[float] is read as neither a pass or fail nor a number"),
         ("Undefined", "and Undefined is read as neither a pass or fail nor a number"),
         ("float | Undefined", "and Undefined is read as neither a pass or fail nor a number"),
-        ("None", "and None is read as neither a pass or fail nor a number"),
+        ("None", "and None is no grade"),
+        ("bool | None", "and None is no grade"),
+        ("Optional[bool]", "and None is no grade"),
+        ("Optional[float]", "and None is no grade"),
+        ("typing.Union[bool, None]", "and None is no grade"),
+        ("builtins.float | None", "and None is no grade"),
     ],
 )
 def test_an_annotation_not_read_as_exactly_one_kind_is_refused_when_the_eval_is_built(
@@ -457,3 +459,66 @@ async def test_a_number_grader_s_unusable_value_fails_the_run_naming_the_case(
     # Never a completed run whose mean is over the 7 cells that happened to be usable.
     assert result.summary.status == "failed"
     assert result.exit_code() == 1
+
+
+async def _async_right(case: Mapping[str, Any], out: Any) -> bool:
+    return bool(out == case["want"])
+
+
+@functools.wraps(_async_right)
+async def _wrapped_async(case: Mapping[str, Any], out: Any) -> bool:
+    return await _async_right(case, out)
+
+
+@pytest.mark.parametrize("graded", [_async_right, _wrapped_async], ids=["async def", "wraps-decorated async def"])
+def test_an_async_grader_is_refused_when_the_eval_is_built(graded: Callable[..., Any]) -> None:
+    # A grader is called as a plain function of (case, out), never awaited: an async one would grade a coroutine.
+    with pytest.raises(
+        ValueError, match=r"is an async def, and a grader is called as a plain function of \(case, out\)"
+    ):
+        Eval(CASES, classify, [graded])
+
+
+def raises_on_three(case, out):
+    if case["want"] == "q":
+        raise TypeError("string indices must be integers")
+    return out == case["want"]
+
+
+@pytest.mark.expect_contained(TypeError, why="the grader raises on three cases on purpose: their cases are not graded")
+async def test_a_grader_that_raises_leaves_its_cases_counted_as_not_graded_on_the_first_line() -> None:
+    result = await Eval(TEN, classify, [raises_on_three], k=1).run(store=":memory:")
+
+    first = result.render().splitlines()[0]
+    # Never "passed 7 of 7 cases": every case that ran is the count, and the three nothing graded are named, with why.
+    assert first == (
+        "classify: classify passed 7 of 10 cases; 3 were not graded. Not graded: c0, c1, c2 (`test setup: the scorer "
+        "raises_on_three raised TypeError: string indices must be integers`)."
+    )
+
+
+@measure(higher_is_better=True, merit_axis="quality", value_range=(0.0, 1.0), population="scored")
+def answered(case: Mapping[str, Any], out: Any) -> Any:
+    """Whether the answer is the case's, or no number on the three it cannot read."""
+    return None if case["want"] == "q" else float(out == case["want"])
+
+
+async def test_a_measure_s_non_number_leaves_its_case_counted_as_not_graded() -> None:
+    result = await Eval(TEN, classify, [right_annotated, answered], k=1).run(store=":memory:")
+
+    first = result.render().splitlines()[0]
+    assert first.startswith("classify: classify passed 7 of 10 cases; 3 were not graded. Not graded: c0, c1, c2 (")
+    assert "the scorer answered returned None, not a finite number or a bool" in first
+
+
+@pytest.mark.expect_contained(TypeError, why="the grader raises on three cases on purpose: their cases are not graded")
+async def test_a_comparison_says_beside_its_figures_how_many_of_each_arm_were_not_graded() -> None:
+    async def also(case: Mapping[str, Any]) -> str:
+        return "p"
+
+    result = await Eval(TEN, {"a": classify, "b": also}, [raises_on_three], k=1, name="cmp").run(store=":memory:")
+
+    first = result.render().splitlines()[0]
+    assert "Of 7 trials each" in first
+    assert " a's figures are over its graded trials: 3 of 10 were not graded. Not graded on a: c0, c1, c2 (" in first
+    assert " b's figures are over its graded trials: 3 of 10 were not graded. Not graded on b: c0, c1, c2 (" in first

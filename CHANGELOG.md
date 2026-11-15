@@ -19,7 +19,12 @@ False fails the case on the first line, it is listed among the misses, it prints
 1 of 3 trials`), and a comparison gates on it. A value the declaration contradicts (anything but `True`, `False`, 0
 or 1 from a check, `None` from a function that falls off its end and a numpy bool among them; from a grader declared
 to grade a number, a bool, `None`, NaN, infinity, a string, or a score outside its declared range) fails the run at
-the first such answer, naming the case and the fix; no cell is dropped from the count or the mean. Where no grader is a check and no judged dimension counts, one arm's first line states no pass count
+the first such answer, naming the case and the fix; no cell is dropped from the count or the mean. A grader that
+raises, or a `Measure` that returns no number, leaves its case ungraded and the run goes on, but the first line counts
+every case that ran and says how many were not graded, which, and the first error as recorded (`classify passed 7 of
+10 cases; 3 were not graded. Not graded: c0, c1, c2 (...)`); a comparison says the same of each arm beside its
+figures. A grader written `async def`, or annotated with `None` among its kinds (`-> bool | None`), is refused when the
+`Eval` is built. Where no grader is a check and no judged dimension counts, one arm's first line states no pass count
 (`classify ran 3 of 3 cases; no grader here says pass or fail.`, its readings carrying the means), and two arms under
 the case floor compare none (`b and a ran 3 cases each; no grader here says pass or fail; too few cases to call a
 difference.`).

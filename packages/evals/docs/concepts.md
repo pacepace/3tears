@@ -31,10 +31,11 @@ case's: the first is read as a classifier, with a confusion matrix and each labe
 a pass rate. A function `(case, answer)` is a grader named by its `__name__`, and every grader is higher-is-better.
 Its kind is what its author declared: `-> bool`, or no annotation, grades pass or fail, and it returns `True` or
 `False` on every path (wrap a numpy result in `bool(...)`); `-> float` or `-> int`, or a range
-(`grader(f, range=(1, 5))`), grades a number. An annotation read as both (`-> bool | float`) or as neither (an alias,
-a numpy type) is refused when the eval is built, and a value its kind cannot hold fails the run, naming the case:
+(`grader(f, range=(1, 5))`), grades a number. An annotation read as both (`-> bool | float`), as neither (an alias,
+a numpy type) or naming `None` (`-> bool | None`), and an `async def` grader, are refused when the eval is built, and a value its kind cannot hold fails the run, naming the case:
 `None` from a pass or fail grader, or from a grader of a number anything but a finite number on its declared range. A string that is not a name is a [goal-state check](#goal-state-check) over a world. A grader that
-raises excludes its trial: it is part of the measuring setup, not the runner.
+raises excludes its trial: it is part of the measuring setup, not the runner, and every count beside it says how many
+trials were not graded, and which.
 
 ### Judge
 

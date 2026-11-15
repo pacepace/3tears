@@ -6,10 +6,11 @@ An :class:`~threetears.evals.quick.contract.Eval`'s ``grader`` is one grader or 
   it; higher is better. Its kind is what its author declared (:func:`declares_a_check`): annotated ``-> bool``, or
   not annotated, it is a check, a pass/fail whose False fails its case; annotated ``-> float`` or ``-> int``, or given
   a range (``grader(f, range=(1, 5))``), it grades a number. An annotation read as neither, or as both
-  (``-> bool | float``), is refused when the eval is built. A check returns a Python ``True`` or ``False`` (or 0 or 1)
-  on every path, and anything else from it (``None`` from a function that falls off its end, a numpy bool, 0.25)
-  fails the run, naming the case and the fix; so does anything from a grader of a number that is not a finite number
-  on its declared range (a bool, ``None``, NaN, a score off its scale).
+  (``-> bool | float``), one naming ``None``, and an ``async def`` are refused when the eval is built. A check returns
+  a Python ``True`` or ``False`` (or 0 or 1) on every path, and anything else from it (``None`` from a function that
+  falls off its end, a numpy bool, 0.25) fails the run, naming the case and the fix; so does anything from a grader of
+  a number that is not a finite number on its declared range (a bool, ``None``, NaN, a score off its scale). A grader
+  that raises leaves its case ungraded: the run goes on, and every count says how many were not graded, and which.
 - **A field name** (``"category"``): the answer's ``category`` (``out.category`` on a pydantic model,
   ``out["category"]`` on a mapping, the answer itself when it is a plain value) against the case's ``category``. A
   field is graded as a label: the first field listed is the run's classifier, so the run carries its confusion
@@ -277,8 +278,11 @@ def declares_a_check(function: Callable[..., Any], *, ranged: bool = False) -> b
 
     The annotation is read as the text it was written as (``annotationlib.Format.STRING``), parsed as an expression and
     never evaluated, so a name imported only for type checking is no error and the kind is one in every process that
-    reads it. Each member of a union (``A | B``, ``Optional[A]``, ``Union[A, B]``, a quoted ``'A'``) is read; ``None``
-    among them is left out. A decorated function's is the function it wraps, followed through ``__wrapped__``.
+    reads it. Each member of a union (``A | B``, ``Union[A, B]``, a quoted ``'A'``) is read. ``None`` is no member a
+    grader may declare (``-> bool | None``, ``Optional[float]``): a grader returns a grade on every path, so a ``None``
+    it returns fails the run, and one it declares is refused here. A decorated function's is the function it wraps,
+    followed through ``__wrapped__``. A coroutine function (``async def``) is refused: a grader is called as a plain
+    function of ``(case, out)``, never awaited.
 
     :param function: The function grader.
     :ptype function: Callable[..., Any]
@@ -286,10 +290,17 @@ def declares_a_check(function: Callable[..., Any], *, ranged: bool = False) -> b
     :ptype ranged: bool
     :return: Whether it is a check.
     :rtype: bool
-    :raises ValueError: Its annotation names both bool and a number (``-> bool | float``), or names something read as
-        neither (``-> np.float64``, ``-> Decimal``, an alias, ``-> Any``, ``-> None``): the message says what was read
-        and the spellings accepted.
+    :raises ValueError: It is an ``async def``; its annotation names ``None``, or both bool and a number
+        (``-> bool | float``), or something read as neither (``-> np.float64``, ``-> Decimal``, an alias, ``-> Any``):
+        the message says what was read and the spellings accepted.
     """
+    if inspect.iscoroutinefunction(inspect.unwrap(function)) or inspect.iscoroutinefunction(function):
+        name = getattr(function, "__name__", "the grader")
+        raise ValueError(
+            f"the grader {name} is an async def, and a grader is called as a plain function of (case, out), never "
+            f"awaited, so it would grade a coroutine: write it def {name}(case, out) (a grader that needs a model's "
+            "reading is a Judge)"
+        )
     kinds = _declared_kinds(function)
     if kinds == {"bool"}:
         return True
@@ -314,16 +325,18 @@ def _declared_kinds(function: Callable[..., Any]) -> frozenset[str]:
         members = _union_members(ast.parse(text.strip(), mode="eval").body)
     except SyntaxError, ValueError:
         raise ValueError(_unreadable_kind(name, text, text)) from None
+    if any(isinstance(member, ast.Constant) and member.value is None for member in members):
+        raise ValueError(
+            f"the grader {name} is annotated -> {text}, and None is no grade: a grader returns one on every path, and "
+            f"a None it returns fails the run. Annotate it def {name}(case, out) -> bool and return True or False on "
+            f"every path, or def {name}(case, out) -> float and return a number; raise where no grade can be given"
+        )
     kinds: set[str] = set()
     for member in members:
-        if isinstance(member, ast.Constant) and member.value is None:
-            continue
         spelled = ast.unparse(member)
         if spelled not in _KIND_SPELLINGS:
             raise ValueError(_unreadable_kind(name, text, spelled))
         kinds.add(_KIND_SPELLINGS[spelled])
-    if not kinds:
-        raise ValueError(_unreadable_kind(name, text, text))
     if len(kinds) > 1:
         raise ValueError(
             f"the grader {name} is annotated -> {text}, which names both a pass or fail (bool) and a number, so "
@@ -335,8 +348,8 @@ def _declared_kinds(function: Callable[..., Any]) -> frozenset[str]:
 
 
 def _union_members(node: ast.expr) -> list[ast.expr]:
-    """The members an annotation's expression unions, each read on its own: ``A | B``, ``Optional[A]``,
-    ``Union[A, B]``, and a quoted ``'A'`` as the expression it quotes; anything else is one member.
+    """The members an annotation's expression unions, each read on its own: ``A | B``, ``Optional[A]`` (``A`` and
+    ``None``), ``Union[A, B]``, and a quoted ``'A'`` as the expression it quotes; anything else is one member.
 
     :raises SyntaxError: A quoted member that is no expression.
     """
@@ -344,7 +357,9 @@ def _union_members(node: ast.expr) -> list[ast.expr]:
         return [*_union_members(node.left), *_union_members(node.right)]
     if isinstance(node, ast.Subscript) and ast.unparse(node.value) in _UNION_SPELLINGS:
         parts = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
-        return [member for part in parts for member in _union_members(part)]
+        # ``Optional[A]`` is ``A | None``.
+        none = [ast.Constant(None)] if ast.unparse(node.value).endswith("Optional") else []
+        return [member for part in parts for member in _union_members(part)] + none
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return _union_members(ast.parse(node.value.strip(), mode="eval").body)
     return [node]
@@ -355,9 +370,9 @@ def _unreadable_kind(name: str, text: str, spelled: str) -> str:
     return (
         f"the grader {name} is annotated -> {text}, and {spelled} is read as neither a pass or fail nor a number: a "
         f"grader's kind is read from its annotation as written, which names bool for pass or fail (def {name}(case, "
-        f"out) -> bool), or float or int for a number (def {name}(case, out) -> float), each alone or with | None. An "
-        "alias, a numpy or Decimal type, Any or a Literal is not read through; name the built-in type, or leave the "
-        "grader unannotated to grade pass or fail"
+        f"out) -> bool), or float or int for a number (def {name}(case, out) -> float), alone. An alias, a numpy or "
+        "Decimal type, Any or a Literal is not read through; name the built-in type, or leave the grader unannotated "
+        "to grade pass or fail"
     )
 
 
