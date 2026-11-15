@@ -63,13 +63,19 @@ def _guards_of_restore_calls() -> list[tuple[str, ...]]:
 
 def test_the_coverage_is_read_whole_only_by_a_restore() -> None:
     """Flips if ``_count_since``, ``_estimate`` or ``_stream`` (the coverage's whole reads) is reached from anything
-    but a restore: each is called from one place, the chain ends at ``_restore``, and ``run_pass`` calls ``_restore``
+    but a restore: each is called only from the restore's own steps, the chain ends at ``_restore``, and ``run_pass`` calls ``_restore``
     only when the log is lost or a declared restore of the ring's lost log was never labelled."""
     callers = _callers()
-    assert callers["_count_since"] == {"ChangeNoteKeeper._restore"}
-    assert callers["_estimate"] == {"ChangeNoteKeeper._fitting"}
+    # the count sizes the coverage before the stream (_restore) or beside it (_sized)
+    assert callers["_count_since"] == {"ChangeNoteKeeper._restore", "ChangeNoteKeeper._sized"}
+    # the estimate sizes the whole coverage (_fitting, or _sized beside the stream) or a cut of it (_cut)
+    assert callers["_estimate"] == {"ChangeNoteKeeper._fitting", "ChangeNoteKeeper._sized", "ChangeNoteKeeper._cut"}
     assert callers["_fitting"] == {"ChangeNoteKeeper._restore"}
-    assert callers["_stream"] == {"_StreamedChanges.__aiter__"}
+    assert callers["_sized"] == {"ChangeNoteKeeper._restore"}
+    assert callers["_cut"] == {"ChangeNoteKeeper._fitting", "ChangeNoteKeeper._restore"}
+    assert callers["_stream"] == {"_StreamedChanges.__aiter__", "_StreamedChanges.stream"}
+    assert callers["stream"] == {"_Gated._gate"}
+    assert callers["_Gated"] == {"ChangeNoteKeeper._restore"}
     assert callers["_StreamedChanges"] == {"ChangeNoteKeeper._changes_since"}
     assert callers["_changes_since"] == {"ChangeNoteKeeper._restore"}
     assert callers["_restore"] == {"ChangeNoteKeeper.run_pass"}
