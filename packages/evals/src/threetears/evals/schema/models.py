@@ -3691,6 +3691,25 @@ class MeasureAttestation(EvalBaseModel, CoreShapeModel):
     note: str | None = Field(default=None, description="Why the host knows, in its own words; None when it gave none.")
 
 
+class ServedModelAttestation(EvalBaseModel, CoreShapeModel):
+    """A host's statement, after the fact, of the model that answered a stored run's candidate calls whose responses
+    named none.
+
+    Written by the ``runs_attest_served_model`` action on a run some of whose candidate usage rows name no served
+    model. It is the host's word and never the engine's guess: the id a run asked for (``RoleUsage.model``) is not
+    evidence of what answered, and nothing else a silent run stores is. The stated model is written to each of those
+    rows (``RoleUsage.served_model``), so every reading that keeps answering models apart reads it, and this entry is
+    what tells a stated model from one a response named.
+    """
+
+    attested_at: str = Field(default_factory=utc_now_iso)
+    attested_by: str = Field(min_length=1, description="Who stated it, as the host names them: a person or a job.")
+    served_model: str = Field(
+        min_length=1, description="The model stated as having answered the run's candidate calls that named none."
+    )
+    note: str | None = Field(default=None, description="Why the host knows, in its own words; None when it gave none.")
+
+
 class RunLifetime(EvalBaseModel, CoreShapeModel):
     """One holding of a run by one process, from when it took the run up to how that holding ended.
 
@@ -4559,6 +4578,16 @@ class EvalRun(CoreDocumentModel):
             "Each re-measure of this run, oldest first (MeasureRemeasure). Empty for a run whose values are as its "
             "cells wrote them. A run carrying one has its context identity derived at read, from "
             "measure_definitions as the re-measure left them, never read off the key its launch stamped."
+        ),
+    )
+    served_model_attestation: ServedModelAttestation | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The host's statement of the model that answered this run's candidate calls whose responses named none, "
+            "made after the run by the runs_attest_served_model action; the stated model is on those usage rows "
+            "(RoleUsage.served_model). None = never attested: every served model its rows name is what a response "
+            "named, and a row naming none is unknown, which pools with nothing."
         ),
     )
 
@@ -7152,6 +7181,7 @@ __all__ = [
     "MeasureDeclaration",
     "MeasureRemeasure",
     "MeasureReread",
+    "ServedModelAttestation",
     "EvalRunStatus",
     "ArmSchedule",
     "EvalTemplate",

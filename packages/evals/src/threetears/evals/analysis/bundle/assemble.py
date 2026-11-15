@@ -59,6 +59,7 @@ from threetears.evals.analysis.contention import (
 from threetears.evals.analysis.cells import (
     pool_observations,
     rig_of,
+    split_on_measure_definitions,
     split_on_served_model,
     subject_key_instabilities,
 )
@@ -108,7 +109,12 @@ from threetears.evals.analysis.bundle.insights import (
     carried_insights,
     retracted_insights,
 )
-from threetears.evals.analysis.bundle.observations import classify_apparatus, observations_of, variant_key_of_run
+from threetears.evals.analysis.bundle.observations import (
+    classify_apparatus,
+    measure_definition_levels,
+    observations_of,
+    variant_key_of_run,
+)
 from threetears.evals.analysis.bundle.measures import (
     failures_as_misses,
     goal_check_proofs_of,
@@ -594,12 +600,20 @@ def assemble_context_bundle(
     observations, variant_index = observations_of(
         runs, results_by_run, apparatus_classes, scope_id=scope_id, profile=profile
     )
-    # One arm's observations under one rig stay one cell only while one candidate model answered them all: a served
-    # model that changed between runs, or that some responses did not name, classes them apart before anything pools
-    # (owner, 2026-10-23: a silent served model never joins a cell).
-    observations, classes = split_on_served_model(
+    # What each host measure counted is the instrument's: runs read under two definitions are under two rigs, and a
+    # run holding host measures that recorded none is under a rig of its own, pooled and contrasted with nothing
+    # (#1187: an unrecorded coordinate matches nothing).
+    observations, classes = split_on_measure_definitions(
         observations,
         {c.apparatus_class_id: c for c in apparatus_classes.values()},
+        measure_definition_levels(runs, results_by_run),
+    )
+    # One arm's observations under one rig stay one cell only while one candidate model answered them all: a served
+    # model that changed between runs, or that some responses did not name, classes them apart before anything pools
+    # (owner, 2026-10-23: a silent served model never joins a cell, nor another silent run's).
+    observations, classes = split_on_served_model(
+        observations,
+        classes,
         {result_id: served_level(reading) for result_id, reading in served.items()},
     )
     variant_index = name_arms(variant_index, observations, folds, run_ids)

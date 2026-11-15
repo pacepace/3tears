@@ -677,8 +677,9 @@ class _Builder:
             label = self.arm(cell.variant_key)
             if cell.variant_key in split:
                 note = (
-                    f"{label}'s results on {aspect.aspect} were answered by more than one candidate model, so they "
-                    f"are read per model in {split[cell.variant_key]} cells and no figure is given for {label} there."
+                    f"{label}'s results on {aspect.aspect} were answered by more than one candidate model, or by "
+                    f"one no response named, so they are read per model in {split[cell.variant_key]} cells and no "
+                    f"figure is given for {label} there."
                 )
                 if note not in self.unreported:
                     self.unreported.append(note)

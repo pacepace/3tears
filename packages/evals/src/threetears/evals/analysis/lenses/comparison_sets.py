@@ -234,9 +234,11 @@ def measure_definition_disclosure(
     measure (:func:`~threetears.evals.kernel.metrics.holds_host_measure`), since a run with no host measure has no
     value a definition could have moved. A caller that supplies no results therefore hears of no silent run.
 
-    **What it says is kept apart is what is kept apart today**: the frontier's pass^k cells. A campaign's own cells
-    (variant by rig), and so its tables, composites, bars and history, do not read measure definitions yet and
-    still pool such runs, and the sentence says so.
+    **What it says is kept apart is what is kept apart**: the frontier's pass^k cells, and a campaign's own cells,
+    where a host measure's definition is a dimension of the rig
+    (:func:`~threetears.evals.analysis.cells.split_on_measure_definitions`), so such runs share no cell and no
+    contrast. The lenses that read runs outside a campaign's cells (history, pivot, the frontier's composite) group
+    by contestant still, and the sentence says so.
 
     :param runs: One comparison group's runs.
     :ptype runs: Sequence[EvalRun]
@@ -266,15 +268,17 @@ def measure_definition_disclosure(
         groups = "; ".join(_listed(run_ids) for _held, run_ids in sorted(by_definitions.items(), key=lambda kv: kv[1]))
         sentences.append(
             f"The host defined {', '.join(moved)} in more than one way across these runs "
-            f"(runs read under one definition together: {groups}), so their values are not one quantity. pass^k keeps "
-            "them in separate cells; the arm's tables, composites, bars and history still pool them, so read "
-            f"{', '.join(moved)} there as a mixture. A re-measure reads a run again under the current definitions."
+            f"(runs read under one definition together: {groups}), so their values are not one quantity. pass^k and "
+            "a campaign's cells keep them apart, and no contrast is read between them; history, a pivot and the "
+            f"frontier's composite still pool them, so read {', '.join(moved)} there as a mixture. A re-measure reads "
+            "a run again under the current definitions."
         )
     if silent:
         sentences.append(
             f"{_listed(silent)} hold host measures and recorded no measure definitions, so nothing says which "
-            "definition their values were read under. Each is a pass^k cell of its own; the arm's tables still pool "
-            "them. Their host states the definitions they ran under, or re-measures them."
+            "definition their values were read under. Each is a cell of its own, in pass^k and in a campaign, "
+            "where it is pooled and compared with nothing. Their host states the definitions they ran under "
+            "(runs_attest_definitions), or re-measures them (run_remeasure)."
         )
     if attested:
         sentences.append(
@@ -289,7 +293,8 @@ def measure_definition_disclosure(
     if unfinished:
         sentences.append(
             f"A re-measure of {_listed(unfinished)} began and did not finish, so their results hold values read "
-            "under two definitions and each is a pass^k cell of its own until it is re-measured again."
+            "under two definitions and each is a cell of its own, in pass^k and in a campaign, until it is "
+            "re-measured again."
         )
     return MeasureDefinitionReading(bool(moved), bool(silent or unfinished), " ".join(sentences) or None)
 

@@ -26,6 +26,7 @@ the wrapped callable still runs.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import random
 import sys
@@ -66,6 +67,7 @@ from threetears.evals.schema.models import (
     fingerprint_criterion,
 )
 from threetears.evals.ops import report_read
+from threetears.evals.run import attest_measure_definitions
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import (
     declared,
@@ -78,6 +80,7 @@ from packages.evals.tests.factories import (
 )
 from packages.evals.tests.fixtures.courierhost import COURIER_SCOPE, courier_host, run_courier_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.clock_support import frozen_clock
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, generate, ops_fixture, settled
 
@@ -576,14 +579,60 @@ async def toyhost_doc_capture() -> list[dict[str, Any]]:
     return dumped(store, TOYHOST_SCOPE)
 
 
+#: Who states the definitions of a capture's runs, as the upgrade step names itself.
+UPGRADE_STEP = "fixture: the host's upgrade step"
+
+
+def _upgraded(host: EvalHost, documents: Sequence[Mapping[str, Any]], scope_id: str) -> EvalHost:
+    """``host`` after the step a real host takes on upgrade, over a store captured before runs recorded their host
+    measures' definitions.
+
+    THE HOST'S UPGRADE STEP. A stored run that holds host measures and recorded no definition of them is pooled and
+    compared with nothing, since nothing says which definition its values were read under. Its host knows: these
+    runs were made under the measures it declares today, and it says so through the public door
+    (:func:`~threetears.evals.run.attest_measure_definitions`), once, for every such run. The clock is held, so the
+    statement's stamp is the same on every build and the store it leaves reads alike. A run that records its
+    definitions (a capture taken since) is left as it is.
+
+    :param host: The host over the captured store.
+    :ptype host: EvalHost
+    :param documents: The captured documents, which name the runs.
+    :ptype documents: Sequence[Mapping[str, Any]]
+    :param scope_id: The scope they live in.
+    :ptype scope_id: str
+    :return: The host, its store's unrecorded runs attested.
+    :rtype: EvalHost
+    """
+    unrecorded = [
+        str(document["id"])
+        for document in documents
+        if document.get("doc_type") == "eval_run" and document.get("measure_definitions") is None
+    ]
+    if unrecorded:
+        with frozen_clock():
+            off_loop(
+                asyncio.run,
+                attest_measure_definitions(
+                    host,
+                    unrecorded,
+                    scope_id,
+                    host.profile.measures.definition_digests(),
+                    attested_by=UPGRADE_STEP,
+                    note="captured before runs recorded measure definitions; made under the host's current measures",
+                ),
+            )
+    return host
+
+
 def courierhost_from(documents: Sequence[Mapping[str, Any]]) -> EvalHost:
-    """The courier host over a store holding ``documents`` (:func:`courierhost_capture`)."""
-    return replace(courier_host(), storage=EvalStorage(loaded(documents)))
+    """The courier host over a store holding ``documents`` (:func:`courierhost_capture`), upgraded
+    (:func:`_upgraded`)."""
+    return _upgraded(replace(courier_host(), storage=EvalStorage(loaded(documents))), documents, COURIER_SCOPE)
 
 
 def toyhost_from(documents: Sequence[Mapping[str, Any]]) -> EvalHost:
-    """The toy host over a store holding ``documents`` (:func:`toyhost_doc_capture`)."""
-    return toyhost_host(storage=EvalStorage(loaded(documents)))
+    """The toy host over a store holding ``documents`` (:func:`toyhost_doc_capture`), upgraded (:func:`_upgraded`)."""
+    return _upgraded(toyhost_host(storage=EvalStorage(loaded(documents))), documents, TOYHOST_SCOPE)
 
 
 def campaign_id_of(documents: Sequence[Mapping[str, Any]]) -> str:

@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable, Sequence
 from itertools import chain
 
+from threetears.evals.analysis.cells import MEASURE_DEFINITIONS_DIMENSION
 from threetears.evals.analysis.lens_text import tier_sentence_in
 from threetears.evals.analysis.bundle.schema import (
     AliasedFactors,
@@ -572,6 +573,12 @@ def _design_disclosures(
         if row.cannot_be_an_arm:
             why = row.cannot_be_an_arm.rstrip(".")
             say("comparisons", f"Declared axis {lever} reads unswept whatever the runs did: {why}.")
+    # Why runs read under another definition of a host measure, or under none recorded, share no cell and no contrast,
+    # and what their host does about it: said wherever the campaign's cells keep such runs apart.
+    unrecorded = any(MEASURE_DEFINITIONS_DIMENSION in cell.unknown_dimensions for cell in bundle.cells)
+    for group in bundle.comparison.comparison_sets:
+        if group.measure_definition_disclosure and (unrecorded or "measure_definitions_differ" in group.badges):
+            say("apparatus", group.measure_definition_disclosure)
     for merge in bundle.refused_merges:
         dimensions = f" on {_listed(merge.dimensions)}" if merge.dimensions else ""
         say(

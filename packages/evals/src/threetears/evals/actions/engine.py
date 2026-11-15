@@ -182,6 +182,7 @@ from threetears.evals.schema.models import (
     eval_trace_doc_id,
 )
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
+from threetears.evals.run.remeasure import ServedModelAttested, attest_served_model
 from threetears.evals.run import (
     Attested,
     JudgeCaseFreezeReport,
@@ -980,6 +981,11 @@ class RunRemeasureParams(EvalBaseModel):
     ] = False
 
 
+AttestationNote = Annotated[
+    str | None, Field(description="Why the host knows what it states of the runs, in its own words.")
+]
+
+
 class RunsAttestDefinitionsParams(EvalBaseModel):
     """``runs_attest_definitions``."""
 
@@ -992,9 +998,22 @@ class RunsAttestDefinitionsParams(EvalBaseModel):
             "last definition change."
         ),
     ] = None
-    attestation_note: Annotated[
-        str | None, Field(description="Why the host knows which definitions the runs ran under.")
-    ] = None
+    attestation_note: AttestationNote = None
+
+
+class RunsAttestServedModelParams(EvalBaseModel):
+    """``runs_attest_served_model``."""
+
+    run_ids: RunIds
+    served_model: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="The model that answered those runs' candidate calls, as a provider's response would name "
+            "it: the dated version, never a floating alias.",
+        ),
+    ]
+    attestation_note: AttestationNote = None
 
 
 SecondJudgeModel = Annotated[
@@ -1669,6 +1688,19 @@ async def _runs_attest_definitions(host: OpsHost, caller: Caller, params: RunsAt
         params.run_ids,
         caller.scope_id,
         definitions,
+        attested_by=caller.identity,
+        note=params.attestation_note,
+    )
+
+
+async def _runs_attest_served_model(
+    host: OpsHost, caller: Caller, params: RunsAttestServedModelParams
+) -> ServedModelAttested:
+    return await attest_served_model(
+        host.eval_host,
+        params.run_ids,
+        caller.scope_id,
+        params.served_model,
         attested_by=caller.identity,
         note=params.attestation_note,
     )
@@ -3238,9 +3270,32 @@ def engine_actions() -> tuple[Action, ...]:
             example={"run_ids": [run_id], "attestation_note": "made after the last definition change"},
             detail=(
                 "The host's statement, recorded as one: who stated it (the caller), when, and the definitions, on "
-                "each run (measure_attestation). A run so stamped pools in pass^k only with runs whose definitions "
-                "match. Stating the same definitions twice changes nothing; a run that already records other "
+                "each run (measure_attestation). A run so stamped pools, in pass^k and in a campaign's cells, only "
+                "with runs whose definitions match, and is compared only with them. Until then a run whose results "
+                "hold a host measure and that recorded none is pooled and compared with nothing. Takes many runs in "
+                "one call. Stating the same definitions twice changes nothing; a run that already records other "
                 "definitions (its launch's, a re-measure's, another statement's) is refused, and nothing is written."
+            ),
+        ),
+        Action(
+            name="runs_attest_served_model",
+            summary="State the model that answered stored runs' candidate calls, for runs whose responses named none.",
+            workflow=CURATE,
+            permission="write",
+            params=RunsAttestServedModelParams,
+            result=ServedModelAttested,
+            handler=_runs_attest_served_model,
+            render=render.render_model,
+            example={"run_ids": [run_id], "served_model": "vendor/model-2026-08", "attestation_note": "pinned upstream"},
+            detail=(
+                "For runs whose candidate responses named no model (a router that echoed a requested alias back, a "
+                "logged output, a host's answer naming none): each pools with no other run, in pass^k and in a "
+                "campaign's cells, since nothing says what answered it. The host's statement is recorded as one: "
+                "who stated it (the caller), when, and the model, on each run (served_model_attestation), and the "
+                "model is written to each candidate usage row of the run that named none. Takes many runs in one "
+                "call. A row whose response named a model is never touched; a run none of whose candidate rows is "
+                "silent, or one already stated as another model, is refused, and nothing is written. Stating the "
+                "same model twice changes nothing."
             ),
         ),
         Action(

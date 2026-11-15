@@ -1,8 +1,9 @@
 """Which arm and which cell each result belongs to.
 
 :func:`variant_key_of_run` and :func:`_variant_key_of` read the variant key a run or result was stamped with,
-:func:`observations_of` turns a campaign's results into the observations the cell algebra pools, and
-:func:`classify_apparatus` classifies each run's rig.
+:func:`observations_of` turns a campaign's results into the observations the cell algebra pools,
+:func:`classify_apparatus` classifies each run's rig, and :func:`measure_definition_levels` reads the definitions of
+its host's measures each run's values were read under.
 """
 
 from __future__ import annotations
@@ -19,7 +20,9 @@ from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_variant_identity
+from threetears.evals.kernel.metrics import holds_host_measure
 from threetears.evals.kernel.result_reading import ResultView
+from threetears.evals.schema.hashing import canonical_digest
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun
@@ -57,6 +60,41 @@ def classify_apparatus(
         )
         for run in runs
     }
+
+
+def measure_definition_levels(
+    runs: Sequence[EvalRun], results_by_run: dict[str, list[ResultView]]
+) -> dict[str, str | None]:
+    """The definitions of its host's measures each result's values were read under, as the level a rig is split on
+    (:func:`~threetears.evals.analysis.cells.split_on_measure_definitions`).
+
+    Read as pass^k reads it (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell`), off what each run RECORDED
+    (``EvalRun.measure_definitions``: its launch's, a re-measure's or its host's attestation) and what its results
+    hold, never off the host's registry as it is today.
+
+    :param runs: The campaign's resolved runs.
+    :ptype runs: Sequence[EvalRun]
+    :param results_by_run: Each run's results, keyed by run id.
+    :ptype results_by_run: dict[str, list[ResultView]]
+    :return: Result id → one digest of the run's recorded map, in any key order. ``None`` where nothing says which
+        definition the run's values were read under: its results hold a host measure
+        (:func:`~threetears.evals.kernel.metrics.holds_host_measure`) and it recorded none, or a re-measure of it
+        began and did not finish, so its results hold values read under two. A result ABSENT here has no definition
+        to record: its run recorded an empty map, or recorded none and holds no host measure.
+    :rtype: dict[str, str | None]
+    """
+    levels: dict[str, str | None] = {}
+    for run in runs:
+        results = results_by_run.get(run.id, [])
+        unfinished = bool(run.measure_remeasures) and run.measure_remeasures[-1].completed_at is None
+        if unfinished or (
+            run.measure_definitions is None and any(holds_host_measure(result.host_measures) for result in results)
+        ):
+            levels.update({result.id: None for result in results})
+        elif run.measure_definitions:
+            digest = canonical_digest(run.measure_definitions)
+            levels.update({result.id: digest for result in results})
+    return levels
 
 
 def observations_of(
