@@ -33,6 +33,10 @@ from typing import Any
 from threetears.evals import Eval, Model, Result
 
 from .agent import (
+    CANNOT_TELL,
+    CAUSES,
+    HARNESS,
+    REPLY_TOKENS,
     Brain,
     Caps,
     ModelBrain,
@@ -40,6 +44,7 @@ from .agent import (
     attempt,
     commands,
     errors_hit,
+    format_error_turns,
     parse_report,
     stuck_point,
 )
@@ -87,8 +92,8 @@ class Tier:
     def model(self, recording: Path | None, **client: Any) -> Model:  # Any: Model's client options (http=, ...)
         """The tier's model, recording every call to ``recording``; never handed a temperature."""
         if self.provider == "anthropic":
-            return Model(self.model_id, provider="anthropic", max_tokens=4096, recording=recording, **client)
-        return Model(self.model_id, max_tokens=4096, effort="low", recording=recording, **client)
+            return Model(self.model_id, provider="anthropic", max_tokens=REPLY_TOKENS, recording=recording, **client)
+        return Model(self.model_id, max_tokens=REPLY_TOKENS, effort="low", recording=recording, **client)
 
 
 TIERS: Mapping[str, Tier] = {
@@ -189,6 +194,7 @@ def adopter(build: DocsBuild, brains: Callable[[Sandbox], Brain], *, workdir: Pa
         run = await attempt(sandbox, brain, caps, log=trial / "steps.jsonl")
         report, problem = parse_report(run.report)
         ran = commands(run.steps)
+        guide = build.llms_txt.read_text(encoding="utf-8") if build.llms_txt.is_file() else ""
         record = {
             "app": app,
             "arm": build.name,
@@ -206,8 +212,10 @@ def adopter(build: DocsBuild, brains: Callable[[Sandbox], Brain], *, workdir: Pa
             "errors_hit": errors_hit(run.steps),
             "pages_read": sandbox.pages,
             "written": sandbox.written,
-            "stuck": stuck_point(run.steps),
+            "stuck": stuck_point(run.steps, guide),
+            "format_error_turns": format_error_turns(run.steps),
             "report": report,
+            "report_from": run.report_from,
             "report_problem": problem,
             "sandbox": str(sandbox.root),
             "checks": await regrade(sandbox, trial, report, ran),
@@ -240,12 +248,32 @@ def onramp_eval(arms: Mapping[str, Runner], *, k: int, max_cost_usd: float | Non
 
 
 def trials(result: Result) -> list[dict[str, Any]]:  # Any: each trial's stored record and grades
-    """Every trial as the eval's store holds it: the arm, the agent's record, and each grade."""
-    return [
+    """Every trial as the eval's store holds it: the arm, the agent's record, each grade, and each failed check's
+    :func:`failure_causes`."""
+    rows = [
         {"arm": arm, "repeat": trial.repeat, "state": trial.state, "scores": trial.scores, "record": trial.answer}
         for arm in result.arms
         for trial in result.results(arm)
     ]
+    return [{**row, "causes": failure_causes(row)} for row in rows]
+
+
+def failure_causes(row: Mapping[str, Any]) -> dict[str, str]:  # Any: a trial's stored row
+    """What caused each check a trial failed, as far as the harness can tell mechanically (:data:`~.agent.CAUSES`).
+
+    The harness's: every check of a run its own limits stopped (the wall, the dollar cap, a model call that failed);
+    and the reading of a run that gave no report while a reply of its, after its last door run, was refused as no tool
+    call (the report may have been in it). Anything else cannot be told without reading the run.
+    """
+    record = row.get("record")
+    record = record if isinstance(record, Mapping) else {}
+    failed = [grader.__name__ for grader in GRADERS if row["scores"].get(grader.__name__, 1.0) != 1.0]
+    if record.get("stopped") in ("wall", "cap", "error"):
+        return dict.fromkeys(failed, HARNESS)
+    doors = [command["turn"] for command in record.get("commands", []) if command["door"]]
+    late_format = [turn for turn in record.get("format_error_turns", []) if turn > max(doors, default=0)]
+    lost_report = record.get("report") is None and bool(late_format)
+    return {name: HARNESS if name == "read_right" and lost_report else CANNOT_TELL for name in failed}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -276,6 +304,13 @@ def _parser() -> argparse.ArgumentParser:
         help="where each arm's model calls are recorded (<arm>.jsonl); when every arm's is there, they are replayed",
     )
     parser.add_argument("--dry-run", action="store_true", help="say what would run and what it may cost; run nothing")
+    parser.add_argument(
+        "--regrade",
+        type=Path,
+        default=None,
+        metavar="RUN_DIR",
+        help="grade a stored run again with today's harness, in trial containers: no model call, no agent run",
+    )
     return parser
 
 
@@ -283,6 +318,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     """The agent test's command line; the exit code is the eval door's, and 2 for a run refused before it began."""
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.regrade is not None:
+        if (refusal := isolation_refusal()) is not None:
+            print(f"onramp-agent: {refusal}", file=sys.stderr)
+            return 2
+        from .rescore import rescore  # it reads this module's records; imported here, so neither imports the other
+
+        print("\n".join(rescore(args.regrade)))
+        return 0
     if args.host and not args.scripted:
         parser.error("--host runs commands on this machine, which only the scripted agent may do: add --scripted")
     apps = [app for app in args.apps.split(",") if app]
@@ -370,7 +413,8 @@ def _finish(ev: Eval, run_dir: Path) -> int:
         if record.get("stuck"):
             stuck = record["stuck"]
             print(
-                f"stuck: {row['arm']} {record['app']} turns {stuck['from_turn']}-{stuck['to_turn']}: {stuck['opened_by']}"
+                f"stuck ({stuck.get('cause', CANNOT_TELL)}): {row['arm']} {record['app']} turns "
+                f"{stuck['from_turn']}-{stuck['to_turn']}: {stuck['opened_by']}"
             )
     said = census(rows)
     (run_dir / "census.txt").write_text("\n".join(said) + "\n", encoding="utf-8")
@@ -421,7 +465,12 @@ def census(rows: Sequence[Mapping[str, Any]]) -> list[str]:  # Any: a trial's st
         passed = sum(1 for row in rows if row["scores"].get(name) == 1.0)
         if n:
             low, high = clopper_pearson(passed, n)
-            lines.append(f"  {name}: {passed} of {n} trials, 95% range {low:.2f} to {high:.2f}")
+            causes = [row.get("causes", failure_causes(row)).get(name) for row in rows if name in row["scores"]]
+            counted = ", ".join(f"{causes.count(each)} {each}" for each in CAUSES if causes.count(each))
+            harness = causes.count(HARNESS)
+            apart = f"; {n - passed} failed: {counted}" if n > passed else ""
+            apart += f"; {passed} of {n - harness} the harness failed none of" if harness else ""
+            lines.append(f"  {name}: {passed} of {n} trials, 95% range {low:.2f} to {high:.2f}{apart}")
     lines += [
         "  it shows: whether the tier ever succeeds, where runs get stuck and on which message, and turns and cost",
         "  per run.",

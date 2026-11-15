@@ -34,19 +34,26 @@ TASK = """\
 Add an eval to this app with 3tears-evals, run it, and report what it found as the JSON below.
 
 {"eval_file": "<the eval file you wrote, relative to the app's directory>",
- "first_line": "<the first line your last run of the eval printed, verbatim>",
- "pass_rate": <your eval's first measure on its first runner, a share from 0 to 1>,
+ "first_line": "<the first line your last run of the eval printed, verbatim and whole>",
+ "measure": "<the measure pass_rate reads, named as the run printed it>",
+ "pass_rate": <that measure on your eval's first runner, a share from 0 to 1>,
  "finished": <true when that run finished, false when it did not>}"""
+
+#: The most tokens one reply may hold, its reasoning included.
+REPLY_TOKENS = 16_384
 
 SYSTEM = """\
 You work in an app's directory, which you have not seen before, with one tool call per turn, answered as one JSON \
-object: {{"tool": ..., "path": ..., "start": ..., "text": ..., "command": ...}}.
+object: {{"tool": ..., "path": ..., "start": ..., "text": ..., "command": ...}}, every field present and the ones \
+the tool does not read left empty ("" or 1).
 - read: the file at `path` (in the app's directory, or in the installed package), {lines} lines from line `start`.
 - write: `text` to the file at `path`, relative to the app's directory.
 - run: `command`, one of `python ...`, `python -m threetears.evals ...`, `ls [path]`, `cat path`; no shell, no pipes.
-- done: your final report as `text`, which ends the task.
-Leave unused fields empty. 3tears-evals is installed at {package}; its guide for agents is {llms}. Your commands \
-run in a container with no network and no API key; the app runs offline."""
+- done: your final report, the JSON the task asks for, as `text`; it ends the task.
+Your working directory is the app's directory, shown as `.`: give paths relative to it. Nothing outside it and the \
+installed package can be read. 3tears-evals is installed at {package}; its guide for agents is {llms}. Your \
+commands run in a container with no network and no API key; the app runs offline. A reply holds at most {tokens} \
+tokens, your reasoning included."""
 
 #: How many of the latest steps the prompt shows whole; older ones are cut to their first lines.
 RECENT_STEPS = 6
@@ -63,6 +70,82 @@ class Act(BaseModel):
     start: int
     text: str
     command: str
+
+
+#: The fields each tool reads: a reply may leave out any other, which is then empty.
+READS: Mapping[str, tuple[str, ...]] = {"read": ("path",), "write": ("path", "text"), "run": ("command",), "done": ()}
+#: The keys of the report the task asks for.
+REPORT_KEYS = frozenset({"eval_file", "first_line", "measure", "pass_rate", "finished"})
+#: How a reply that was no tool call is answered: what the shape is.
+SHAPE = (
+    'send one JSON object a turn, {"tool": "read"|"write"|"run"|"done", "path": ..., "start": ..., "text": ..., '
+    '"command": ...}, with the report as the text of done'
+)
+
+
+def _objects(content: str) -> list[Any]:  # Any: JSON values
+    """Every JSON value ``content`` holds one after another, or ``[]`` when it holds none whole."""
+    decoder, found, at = json.JSONDecoder(), [], 0
+    while at < len(content):
+        if content[at].isspace():
+            at += 1
+            continue
+        try:
+            value, at = decoder.raw_decode(content, at)
+        except json.JSONDecodeError:
+            return []
+        found.append(value)
+    return found
+
+
+def read_reply(content: str) -> tuple[Act | None, str, str]:
+    """A model's reply read as one tool call: the act, or ``None`` and why it is none, and how it was read.
+
+    Where a reply's intent is unambiguous it is taken: a field the tool does not read may be left out, and a bare
+    report (a JSON object holding the report's keys and no other tool) is the ``done`` it means (read as ``"bare
+    report"``). Anything else that is no tool call (two objects, a field no tool has, a tool that is none, a field its
+    tool reads left out) is refused, naming what was wrong and the shape: never guessed.
+    """
+    values = _objects(content)
+    if len(values) != 1:
+        held = "no JSON object" if not values else f"{len(values)} JSON values"
+        return None, f"the reply held {held}; {SHAPE}", ""
+    (value,) = values
+    if not isinstance(value, dict):
+        return None, f"the reply is not a JSON object; {SHAPE}", ""
+    fields = set(Act.model_fields)
+    extra = sorted(set(value) - fields)
+    if extra and set(extra) <= REPORT_KEYS and value.get("tool", "done") == "done":
+        report = {key: value[key] for key in value if key in REPORT_KEYS}
+        return Act.model_validate({**_BLANK, "tool": "done", "text": json.dumps(report)}), "", "bare report"
+    if extra:
+        return None, f"{', '.join(extra)} is no field of a tool call; {SHAPE}", ""
+    tool = value.get("tool")
+    if tool not in READS:
+        return None, f"tool {tool!r} is none of read, write, run, done; {SHAPE}", ""
+    missing = [name for name in READS[tool] if name not in value]
+    if missing:
+        return None, f"{tool} reads {', '.join(missing)}, which the reply left out; {SHAPE}", ""
+    try:
+        return Act.model_validate({**_BLANK, **value}), "", ""
+    except ValidationError as malformed:
+        error = malformed.errors()[0]
+        where = ".".join(str(part) for part in error["loc"])
+        return None, f"{where}: {error['msg']}; {SHAPE}", ""
+
+
+def _holds_object(text: str) -> bool:
+    """Whether ``text`` holds a JSON object, as the report is read from it."""
+    report, _ = parse_report(text)
+    return report is not None
+
+
+def done_report(act: Act) -> tuple[str, str]:
+    """The report a ``done`` gives, and the field it was read from: ``text``, as asked; or ``command``, when ``text``
+    holds no JSON object and ``command`` does (the report in the wrong field, its intent plain)."""
+    if not _holds_object(act.text) and _holds_object(act.command):
+        return act.command, "command"
+    return act.text, "text"
 
 
 _BLANK: dict[str, Any] = {"path": "", "start": 1, "text": "", "command": ""}  # Any: a field's empty value
@@ -171,20 +254,31 @@ class Usage:
 
 @dataclass(frozen=True)
 class Turn:
-    """A brain's answer: the act, or ``None`` with why the reply was no act, and what asking cost."""
+    """A brain's answer: the act, or ``None`` with why the reply was no act, and what asking cost.
+
+    :ivar reply: The reply as the model gave it, when it was read as no act, or read as one it was not written as:
+        kept so the run can be read again.
+    :ivar read_as: How the act was read when not as written (``"bare report"``); empty otherwise.
+    """
 
     act: Act | None
     usage: Usage
     problem: str = ""
+    reply: str = ""
+    read_as: str = ""
 
 
 @dataclass(frozen=True)
 class Step:
-    """One turn as it happened: the act (``None`` for a reply that was none) and what the tool did."""
+    """One turn as it happened: the act (``None`` for a reply that was none) and what the tool did.
+
+    :ivar reply: The model's reply, when it was read as no act or not as written (:attr:`Turn.reply`).
+    """
 
     turn: int
     act: Act | None
     observation: Observation
+    reply: str = ""
 
 
 class Brain(Protocol):
@@ -239,11 +333,12 @@ class ModelBrain:
             maybe_billed_sends=sends.maybe_billed - priced,
         )
         if completion.stop_reason != "end_turn":
-            return Turn(None, usage, f"the reply stopped short ({completion.stop_reason})")
-        try:
-            return Turn(Act.model_validate_json(completion.content), usage)
-        except ValidationError as malformed:
-            return Turn(None, usage, f"the reply was not one tool call: {malformed.errors()[0]['msg']}")
+            why = f"the reply stopped short ({completion.stop_reason}) at {REPLY_TOKENS} tokens, reasoning included"
+            return Turn(None, usage, why, completion.content)
+        act, problem, read_as = read_reply(completion.content)
+        if act is None:
+            return Turn(None, usage, f"the reply was not one tool call: {problem}", completion.content)
+        return Turn(act, usage, reply=completion.content if read_as else "", read_as=read_as)
 
 
 class ScriptedBrain:
@@ -283,7 +378,9 @@ class Caps:
     """
 
     turns: int = 40
-    wall_s: float = 360.0
+    #: As long as the engine's cell budget leaves after the regrade and the copies' stop (600 - 90 - 2 x 20, less a
+    #: margin): ``Eval`` takes no longer cell, so the design's 15 minutes cannot be had here.
+    wall_s: float = 450.0
     cost_usd: float | None = None
 
 
@@ -299,6 +396,8 @@ class Attempt:
     usages: list[Usage] = field(default_factory=list)
     stopped: Stopped = "turns"
     report: str | None = None
+    #: Where the report was read from: ``text`` as asked, ``command``, or a ``bare report`` (:func:`read_reply`).
+    report_from: str = ""
     wall_s: float = 0.0
 
     def spent(self) -> float | None:
@@ -347,6 +446,8 @@ def _logged(log: Path | None, turn: int, usage: Usage | None, step: Step | None,
     if step is not None:
         row["act"] = None if step.act is None else step.act.model_dump()
         row["observation"] = asdict(step.observation)
+        if step.reply:
+            row["reply"] = step.reply
     if stopped is not None:
         row["stopped"] = stopped
     with log.open("a", encoding="utf-8") as out:
@@ -367,7 +468,12 @@ async def attempt(sandbox: Sandbox, brain: Brain, caps: Caps, *, log: Path | Non
             f"the sandbox runs commands on this machine, which only the scripted agent may do; {brain.model} runs in "
             "a trial container (DocsBuild.in_image)"
         )
-    system = SYSTEM.format(lines=READ_LINES, package=sandbox.build.shown_package_dir, llms=sandbox.build.shown_llms_txt)
+    system = SYSTEM.format(
+        lines=READ_LINES,
+        package=sandbox.build.shown_package_dir,
+        llms=sandbox.build.shown_llms_txt,
+        tokens=REPLY_TOKENS,
+    )
     run = Attempt()
     started = time.monotonic()
     try:
@@ -412,13 +518,16 @@ async def _turns(sandbox: Sandbox, brain: Brain, caps: Caps, system: str, run: A
         run.usages.append(usage)
         act = answer.act
         if act is None:
-            step = Step(turn, None, Observation(ok=False, text=answer.problem, first_error=answer.problem))
+            failure = Observation(ok=False, text=answer.problem, first_error=answer.problem)
+            step = Step(turn, None, failure, answer.reply)
             run.steps.append(step)
             _logged(log, turn, usage, step)
             continue
         if act.tool == "done":
-            run.stopped, run.report = "done", act.text
-            _logged(log, turn, usage, Step(turn, act, Observation(ok=True, text="")))
+            run.stopped = "done"
+            run.report, run.report_from = done_report(act)
+            run.report_from = answer.read_as or run.report_from
+            _logged(log, turn, usage, Step(turn, act, Observation(ok=True, text=""), answer.reply))
             return
         sandbox.turn = turn
         if act.tool == "read":
@@ -468,8 +577,45 @@ def failed(step: Step) -> bool:
     return not step.observation.ok
 
 
-def stuck_point(steps: Sequence[Step]) -> dict[str, Any] | None:  # Any: a span's turns, count and message
-    """The longest span of consecutive failing turns, and the message that opened it; ``None`` when none failed.
+#: What caused a failure, as far as the harness can tell it mechanically: the harness's own rules and limits (a reply
+#: that was no tool call, a sandbox path, a refused command, a token or time limit, a model call that failed), the docs
+#: (a file the guide names that is not there), or :data:`CANNOT_TELL`. The package's messages and the agent's own
+#: mistakes are told apart only by reading the run.
+HARNESS, DOCS, CANNOT_TELL = "harness", "docs", "cannot tell"
+CAUSES = (HARNESS, DOCS, CANNOT_TELL)
+#: What a failed turn's first error says when the harness's own rules or limits failed it.
+_HARNESS_SAID = (
+    "the reply was not one tool call",
+    "the reply stopped short",
+    "the model call failed",
+    "is no directory in the app or the installed package",
+    "is outside the app's directory and the installed package",
+    "is not a file in the app's directory",
+    "run takes python",
+    "the command does not parse",
+    "cat takes one file",
+    "timed out after",
+    "could not be copied",
+    "a read takes",
+)
+_MISSING = re.compile(r"^(?P<path>\S+): no such file$")
+
+
+def cause(step: Step, guide: str = "") -> str:
+    """What caused a failed turn, when the harness can tell it mechanically (:data:`CAUSES`): its own rules and limits,
+    or the docs for a read of a file the build's guide (``guide``, its text) names and the build does not ship."""
+    said = step.observation.first_error or step.observation.text
+    if step.act is None or any(phrase in said for phrase in _HARNESS_SAID):
+        return HARNESS
+    missing = _MISSING.match(said)
+    if missing is not None and len(named := Path(missing["path"]).parts[-2:]) == 2 and "/".join(named) in guide:
+        return DOCS  # the guide names the file, by its directory and name, and the build does not have it
+    return CANNOT_TELL
+
+
+def stuck_point(steps: Sequence[Step], guide: str = "") -> dict[str, Any] | None:  # Any: a span's fields
+    """The longest span of consecutive failing turns, the message that opened it and its :func:`cause`; ``None`` when
+    none failed.
 
     Only a run of the eval door that worked ends a span. Anything else that worked (a read, a write, ``ls``, ``cat``, a
     probe script) neither extends nor ends it: it is the agent looking for help, or trying a fix. Ties go to the
@@ -494,7 +640,13 @@ def stuck_point(steps: Sequence[Step]) -> dict[str, Any] | None:  # Any: a span'
         "to_turn": worst[-1].turn,
         "failed_turns": len(worst),
         "opened_by": opened.first_error or opened.text.splitlines()[0],
+        "cause": cause(worst[0], guide),
     }
+
+
+def format_error_turns(steps: Sequence[Step]) -> list[int]:
+    """The turns whose reply was refused as no tool call, or cut off at the token limit: the harness's format rules."""
+    return [step.turn for step in steps if step.act is None and not step.observation.text.startswith("the model call")]
 
 
 def commands(steps: Sequence[Step]) -> list[dict[str, Any]]:  # Any: a command's fields

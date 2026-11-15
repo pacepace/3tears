@@ -437,6 +437,19 @@ def _rerun_tar() -> bytes:
     return buffer.getvalue()
 
 
+def _frames(raw: IO[bytes]) -> Iterator[tuple[bytes | None, bytes | None]]:
+    """A command's output as the daemon multiplexes it, each piece as ``(stdout, None)`` or ``(None, stderr)``: an
+    eight-byte header (the stream, then the frame's size) before each frame, read a chunk at a time."""
+    while len(header := raw.read(8)) == 8:
+        left = int.from_bytes(header[4:8], "big")
+        while left > 0:
+            piece = raw.read(min(left, CHUNK_BYTES))
+            if not piece:
+                return
+            left -= len(piece)
+            yield (piece, None) if header[0] == 1 else (None, piece)
+
+
 def _kept(chunks: Iterable[tuple[bytes | None, bytes | None]]) -> tuple[bytes, bytes]:
     """A command's demultiplexed output, each stream's first and last :data:`KEPT_BYTES` kept, saying how much was cut
     between."""
@@ -603,7 +616,16 @@ class Container:
     def _exec(client: docker.DockerClient, container: str, argv: list[str]) -> tuple[int, bytes, bytes]:
         """Run ``argv`` in ``container``'s ``/work``: its exit code and its output, head and tail kept."""
         started = client.api.exec_create(container, argv, workdir=WORK)
-        out, err = _kept(client.api.exec_start(started["Id"], stream=True, demux=True))
+        url = f"{client.api.base_url}/v{client.api.api_version}/exec/{started['Id']}/start"
+        # Read as a plain streamed response, closed here once read: the SDK's stream leaves its response for the
+        # garbage collector, which may close it after its file and print "Exception ignored while finalizing file".
+        # No read timeout: a command may be silent to its own limit, and the caller holds that limit.
+        response = client.api.post(url, json={"Detach": False, "Tty": False}, stream=True, timeout=(COPY_STALL_S, None))
+        try:
+            response.raise_for_status()
+            out, err = _kept(_frames(response.raw))
+        finally:
+            response.close()
         code = client.api.exec_inspect(started["Id"])["ExitCode"]
         return (code if code is not None else -1), out, err
 

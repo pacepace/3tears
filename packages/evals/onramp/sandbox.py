@@ -227,6 +227,9 @@ class Sandbox:
             return Observation(ok=False, text=f"refused: {why}", first_error=why)
         lines = data.decode("utf-8", errors="replace").splitlines()
         first = max(start, 1)
+        if lines and first > len(lines):
+            why = f"{path} has {len(lines)} lines; start at a line from 1 to {len(lines)}"
+            return Observation(ok=False, text=why, first_error=why)
         chunk = lines[first - 1 : first - 1 + READ_LINES]
         more = f"\n[lines {first}-{first + len(chunk) - 1} of {len(lines)}]" if len(lines) > len(chunk) else ""
         numbered = "\n".join(f"{first + offset:>5}  {line}" for offset, line in enumerate(chunk))

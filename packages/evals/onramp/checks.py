@@ -5,12 +5,13 @@ the three graders read them. The work runs there rather than in the graders beca
 the event loop (``quick/one_call.py``), where three re-runs of an eval would stall every other trial.
 
 - :func:`eval_runs`: the agent's eval file, run by the eval door in a fresh copy of the app, exits 0 or 4 and stores a
-  run, and that run finished.
+  run, that run finished, and a grader scored at least one of its results.
 - :func:`measures_the_app`: on the app's fixed twin its reading moves the better way on at least one measure, the way
   the package states is better for it (``higher_is_better``), and a runner that does nothing passes at most half its
   cases: the eval beats doing nothing.
-- :func:`read_right`: the agent's report matches the run: the first line verbatim, the pass rate within half a point,
-  and ``finished`` true exactly when the run finished.
+- :func:`read_right`: the agent's report matches the run: the first line verbatim, the pass rate within half a point
+  of the measure it names (of one of the run's measures, when the name is none the run printed), and ``finished``
+  true exactly when the run finished.
 
 Every re-run is a command in the trial's container (:class:`~.isolation.Container`), as the agent's own were: the
 regrade runs what the agent wrote, so it runs it where the agent ran it, with no network, and it makes no model call.
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shlex
 import time
 from collections.abc import Mapping, Sequence
@@ -32,8 +34,9 @@ from typing import Any
 
 from .sandbox import DOOR_EXITS_OK, Observation, Sandbox, is_door
 
-#: The most the whole regrade of one trial may take, in seconds: with the agent's wall cap it fits the cell budget.
-REGRADE_BUDGET_S = 180.0
+#: The most the whole regrade of one trial may take, in seconds: with the agent's wall cap it fits the cell budget. The
+#: baseline's regrades took 9 to 15 s each (run 20261115T224108Z, regraded again 2026-11-16).
+REGRADE_BUDGET_S = 90.0
 #: How far the reported pass rate may be from the stored one: half a point.
 PASS_RATE_TOLERANCE = 0.005
 
@@ -114,13 +117,19 @@ async def _regrade(
 
 
 def eval_runs(case: dict[str, Any], out: dict[str, Any]) -> bool:
-    """The agent's eval, re-run by the eval door in a fresh copy of the app, exits 0 or 4 and stores a finished run."""
+    """The agent's eval, re-run by the eval door in a fresh copy of the app, exits 0 or 4 and stores a finished run in
+    which a grader scored at least one result.
+
+    An eval whose runner fails every case (it raised on each) finishes and stores a run, and measures nothing: it does
+    not run as an eval. One that scores any case does, whatever the scores are.
+    """
     checks = out["checks"]
     return (
         not checks["problem"]
         and checks["door_exit"] in DOOR_EXITS_OK
         and checks["stored"]
         and checks["app"].get("finished") is True
+        and (checks["app"].get("scored") or 0) > 0
     )
 
 
@@ -146,20 +155,40 @@ def _better(higher_is_better: bool | None, app: float | None, twin: float | None
     return twin > app if higher_is_better else twin < app
 
 
+def _plain(name: str) -> str:
+    """A measure's name as compared: ``Slug score``, ``slug`` and ``matches_expected`` as ``slug`` and ``matches
+    expected``, whichever way the run printed it or the eval declared it."""
+    words = re.sub(r"[^a-z0-9]+", " ", name.lower()).split()
+    return " ".join(words[:-1] if len(words) > 1 and words[-1] == "score" else words)
+
+
+def reported_measures(report: Mapping[str, Any], app: Mapping[str, Any]) -> list[float]:  # Any: JSON
+    """The means the report's ``pass_rate`` may be: the measure it names, when the run has one of that name; else any
+    measure the run read, since which is "first" differs between the console's order and the eval's."""
+    means = {name: mean for name, mean in app["means"].items() if mean is not None}
+    named = _plain(str(report.get("measure") or ""))
+    chosen = [mean for name, mean in means.items() if named and _plain(name) == named]
+    return chosen or list(means.values())
+
+
 def read_right(case: dict[str, Any], out: dict[str, Any]) -> bool:
-    """The agent's report matches the run: its first line verbatim, its pass rate within half a point, its ending."""
+    """The agent's report matches the run: its first line verbatim, its pass rate within half a point of the measure it
+    names (or of one of the run's measures, when it names none the run printed), its ending.
+
+    A competent reading passes whichever measure it reports, named or not; a pass rate that is no measure's mean (a
+    share read off the case count when a grader says otherwise, a figure made up) fails, as does a measure named and
+    another's value given.
+    """
     report, checks = out["report"], out["checks"]
     if report is None or checks["problem"] or "refused" in checks["app"]:
         return False
     app = checks["app"]
-    lead = app["means"].get(app["readings"][0]) if app["readings"] else None
     rate = report.get("pass_rate")
     return (
         str(report.get("first_line", "")).strip() == checks["door_first_line"].strip()
         and isinstance(rate, int | float)
         and not isinstance(rate, bool)
-        and lead is not None
-        and abs(rate - lead) <= PASS_RATE_TOLERANCE
+        and any(abs(rate - mean) <= PASS_RATE_TOLERANCE for mean in reported_measures(report, app))
         and report.get("finished") is app["finished"]
     )
 

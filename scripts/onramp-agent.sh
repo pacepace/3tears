@@ -15,6 +15,9 @@ cd "$REPO_ROOT"
 #   ONRAMP_LIVE=1 ./scripts/onramp-agent.sh --cap 4.50        the live baseline: cheap tier, three apps, k=3
 #   ... --tier ceiling --cap 13.50                            Claude Haiku 5.5, direct to Anthropic
 #   ... --arm docs@candidate=PATH.whl                         a second docs build, tested against the control
+#   ./scripts/onramp-agent.sh --regrade packages/evals/onramp/runs/<stamp>
+#                                                             a stored run graded again with today's harness: no
+#                                                             model call, no agent run (rescore.txt beside the run)
 #
 # The control arm, docs@control, is today's wheel: 3tears-evals built from ONRAMP_CONTROL_REF (default f9ab6f74d,
 # the docs and messages before any on-ramp fix), so a later fix never leaks into the baseline. It is built once into

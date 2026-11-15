@@ -21,7 +21,8 @@ from packages.evals.onramp.sandbox import DocsBuild
 #: Every field a trial's record carries.
 RECORDED = {
     "app", "arm", "build", "model", "stopped", "wall_s", "turns", "input_tokens", "output_tokens", "cost_usd",
-    "charged_usd", "maybe_billed_sends", "commands", "errors_hit", "pages_read", "written", "stuck", "report", "report_problem", "sandbox", "checks",
+    "charged_usd", "maybe_billed_sends", "commands", "errors_hit", "pages_read", "written", "stuck", "format_error_turns",
+    "report", "report_from", "report_problem", "sandbox", "checks",
 }  # fmt: skip
 
 

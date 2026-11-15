@@ -67,6 +67,8 @@ def read(result: Result, declared: Mapping[str, bool | None]) -> dict[str, Any]:
         "control": result.control,
         "readings": list(result.grader_readings),
         "finished": all(summary.status == "completed" for summary in result.arms.values()),
+        # Results a grader scored: not failed by the candidate (its runner raised) and not excluded.
+        "scored": sum(1 for trial in result.results(result.control) if getattr(trial, "outcome", None) == "scored"),
         "means": {name: means.get(name) for name in result.grader_readings},
         "higher_is_better": {name: declared.get(name, True) for name in result.grader_readings},
     }

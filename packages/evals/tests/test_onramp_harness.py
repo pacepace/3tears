@@ -28,6 +28,8 @@ from threetears.evals.providers import Catalogue, DeclinedRetry, ProviderError
 from threetears.evals.run.runner import DEFAULT_CELL_TIMEOUT_S
 from packages.evals.onramp.agent import (
     BILLED_SENDS_AT_MOST,
+    REPLY_TOKENS,
+    SYSTEM,
     Act,
     Caps,
     ModelBrain,
@@ -38,12 +40,16 @@ from packages.evals.onramp.agent import (
     Turn,
     Usage,
     attempt,
+    cause,
+    done_report,
     errors_hit,
     metered_call,
+    read_reply,
     parse_report,
     stuck_point,
 )
-from packages.evals.onramp.checks import REGRADE_BUDGET_S, measures_the_app
+from packages.evals.onramp.checks import REGRADE_BUDGET_S, eval_runs, measures_the_app, read_right
+from packages.evals.onramp.rescore import read_again
 from packages.evals.onramp.campaign import (
     CELL_BUDGET_S,
     CONTROL_REF,
@@ -51,6 +57,7 @@ from packages.evals.onramp.campaign import (
     Tier,
     census,
     clopper_pearson,
+    failure_causes,
     live_refusal,
     main,
     quote,
@@ -220,7 +227,9 @@ def test_the_stuck_point_is_the_longest_run_of_failing_turns_and_the_message_tha
         _step(7, "run", True, command="python -m threetears.evals e.py"),
     ]
     # The ls at turn 2 is the agent looking around, not a way out: only the door working at turn 7 ends the span.
-    assert stuck_point(steps) == {"from_turn": 1, "to_turn": 6, "failed_turns": 4, "opened_by": "first"}
+    assert stuck_point(steps) == {
+        "from_turn": 1, "to_turn": 6, "failed_turns": 4, "opened_by": "first", "cause": "cannot tell"
+    }  # fmt: skip
     assert stuck_point([_step(1, "run", True, command="ls")]) is None
 
 
@@ -346,16 +355,17 @@ async def test_the_live_brain_is_priced_by_the_package_and_held_to_its_cap(tmp_p
     )
     sandbox = _isolated(tmp_path)
     try:
-        run = await attempt(sandbox, brain, Caps(cost_usd=0.015))
+        run = await attempt(sandbox, brain, Caps(cost_usd=0.042))
     finally:
         await brain.aclose()
         await http.aclose()
     assert run.stopped == "cap" and sent, "it ran turns, then stopped before one that could pass the cap"
     spent, charged = run.spent(), run.charged()
-    assert spent is not None and spent == pytest.approx(0.00014 * len(sent)) and spent <= 0.015
+    assert spent is not None and spent == pytest.approx(0.00014 * len(sent)) and spent <= 0.042
     assert charged == spent and all(usage.ceiling_usd for usage in run.usages), "each call was bounded before it went"
     assert run.tokens("input_tokens") == 1000 * len(sent)
     assert all("temperature" not in body for body in sent)
+    assert all(body["max_tokens"] == REPLY_TOKENS for body in sent), "the limit the agent is told is the one sent"
 
 
 async def test_the_ceiling_tier_goes_direct_to_anthropic_with_no_temperature(tmp_path: Path) -> None:
@@ -384,7 +394,7 @@ async def test_the_ceiling_tier_goes_direct_to_anthropic_with_no_temperature(tmp
     finally:
         await brain.aclose()
     assert run.stopped == "done" and hosts == ["api.anthropic.com"]
-    assert "temperature" not in bodies[0]
+    assert "temperature" not in bodies[0] and bodies[0]["max_tokens"] == REPLY_TOKENS
     assert run.spent() == pytest.approx(2000 * 0.10 / 1e6 + 50 * 0.50 / 1e6), "Anthropic's published rates"
 
 
@@ -607,6 +617,22 @@ def test_doing_nothing_is_counted_failed_on_a_grader_returning_false_not_only_on
     reading = json.loads(done.stdout.splitlines()[-1])
     assert reading["means"] == {"odd": pytest.approx(2 / 3)} and reading["finished"] is True
     assert reading["nothing_unpassed"] == 1.0, "a None answer graded False fails its case, though no check failed"
+    assert reading["scored"] == 3, "every case's answer was graded"
+
+    (tmp_path / "evals.py").write_text(
+        "from threetears.evals import Eval\n\n\n"
+        "def broken(case):\n"
+        '    """Fail every case."""\n'
+        '    return case["missing"]\n\n\n'
+        "def odd(case, out):\n"
+        '    """The answer is odd."""\n'
+        "    return out % 2 == 1\n\n\n"
+        'numbers = Eval("cases.jsonl", runner=broken, grader=[odd], k=1)\n',
+        encoding="utf-8",
+    )
+    done = subprocess.run([sys.executable, str(RERUN), "evals.py"], cwd=tmp_path, capture_output=True, text=True)
+    reading = json.loads(done.stdout.splitlines()[-1])
+    assert reading["finished"] is True and reading["scored"] == 0, "a runner failing every case scores none"
 
 
 async def test_a_recorded_agent_run_replays_offline_turn_for_turn_in_another_sandbox(tmp_path: Path) -> None:
@@ -893,7 +919,9 @@ def test_only_a_door_run_that_worked_ends_a_stuck_span() -> None:
         _step(5, "run", True, command=door),
         _step(6, "run", False, command=door, first_error="later"),
     ]
-    assert stuck_point(steps) == {"from_turn": 1, "to_turn": 4, "failed_turns": 2, "opened_by": "opened it"}
+    assert stuck_point(steps) == {
+        "from_turn": 1, "to_turn": 4, "failed_turns": 2, "opened_by": "opened it", "cause": "cannot tell"
+    }  # fmt: skip
 
 
 def _facts(app: float, twin: float, higher_is_better: bool | None) -> dict[str, Any]:  # Any: the regrade's facts
@@ -920,8 +948,8 @@ def test_the_census_states_each_checks_tally_with_its_exact_range() -> None:
     assert clopper_pearson(9, 9) == (pytest.approx(0.6637, abs=1e-4), 1.0)
     rows = [{"scores": {"eval_runs": float(i < 3), "measures_the_app": 0.0, "read_right": 0.0}} for i in range(9)]
     lines = census(rows)
-    assert "  eval_runs: 3 of 9 trials, 95% range 0.07 to 0.70" in lines
-    assert "  measures_the_app: 0 of 9 trials, 95% range 0.00 to 0.34" in lines
+    assert any(line.startswith("  eval_runs: 3 of 9 trials, 95% range 0.07 to 0.70; 6 failed") for line in lines)
+    assert any(line.startswith("  measures_the_app: 0 of 9 trials, 95% range 0.00 to 0.34; 9 failed") for line in lines)
     assert any("cannot show" in line for line in lines)
 
 
@@ -952,3 +980,178 @@ def test_the_census_range_covers_the_true_share_at_least_95_percent_of_the_time(
         worst = _worst_coverage(n, clopper_pearson)
         assert worst >= 0.95, (n, worst)
     assert _worst_coverage(9, _wald) < 0.90
+
+
+# --- the harness's own rules, after the baseline (H1 to H8) -----------------------------------------------------------
+
+_REPORT = {"eval_file": "e.py", "first_line": "x: x passed 1 of 2 cases.", "measure": "grader", "pass_rate": 0.5,
+           "finished": True}  # fmt: skip
+
+
+def test_a_report_given_bare_or_in_the_wrong_field_is_taken_and_an_ambiguous_reply_is_refused_saying_the_shape() -> (
+    None
+):
+    """H1 and H2: where the intent is plain the reply is read as meant; where it is not, nothing is guessed and the
+    refusal names what was wrong and the shape."""
+    act, problem, how = read_reply(json.dumps(_REPORT))
+    assert act is not None and act.tool == "done" and json.loads(act.text) == _REPORT and how == "bare report"
+    act, _, how = read_reply(json.dumps({"tool": "done", **_REPORT}))
+    assert act is not None and act.tool == "done" and how == "bare report"
+    # A field the tool does not read may be left out; one it reads may not.
+    act, problem, _ = read_reply('{"tool": "write", "path": "e.py", "text": "x = 1"}')
+    assert act is not None and (act.tool, act.path, act.text, act.command, act.start) == (
+        "write",
+        "e.py",
+        "x = 1",
+        "",
+        1,
+    )
+    act, problem, _ = read_reply('{"tool": "write", "path": "e.py"}')
+    assert act is None and problem.startswith("write reads text, which the reply left out") and '"tool"' in problem
+    refused = {
+        "two calls": '{"tool": "run", "command": "ls"}\n{"tool": "run", "command": "ls"}',
+        "a report beside another tool": json.dumps({"tool": "run", "command": "ls", **_REPORT}),
+        "a field no tool has": '{"tool": "run", "command": "ls", "cwd": "."}',
+        "no tool": '{"tool": "edit", "path": "e.py"}',
+        "no JSON": "I will now run the eval.",
+        "a wrong type": '{"tool": "read", "path": "e.py", "start": "top"}',
+    }
+    for what, reply in refused.items():
+        act, problem, _ = read_reply(reply)
+        assert act is None and "send one JSON object a turn" in problem, what
+    assert "2 JSON values" in read_reply(refused["two calls"])[1]
+    assert "cwd is no field" in read_reply(refused["a field no tool has"])[1]
+    assert "start" in read_reply(refused["a wrong type"])[1]
+
+    text = json.dumps(_REPORT)
+    blank = {"tool": "done", "path": "", "start": 1}
+    assert done_report(Act(**blank, text=text, command="")) == (text, "text")
+    assert done_report(Act(**blank, text="", command=text)) == (text, "command")
+    assert done_report(Act(**blank, text=text, command='{"other": 1}')) == (text, "text"), "the asked field wins"
+    assert done_report(Act(**blank, text="", command="ls")) == ("", "text")
+
+
+async def test_a_bare_report_ends_the_run_and_the_record_says_where_it_was_read_from(tmp_path: Path) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [_CHEAP_ROW]})
+        return httpx.Response(200, json=_act_reply(json.dumps(_REPORT)))
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    brain = ModelBrain(
+        lambda meter: TIERS["cheap"].model(None, api_key="scripted", transport=meter, catalogue=Catalogue(http=http)),
+        inner=httpx.MockTransport(respond),
+    )
+    try:
+        run = await attempt(_isolated(tmp_path), brain, Caps(cost_usd=1.0), log=tmp_path / "steps.jsonl")
+    finally:
+        await brain.aclose()
+        await http.aclose()
+    assert run.stopped == "done" and run.report_from == "bare report" and json.loads(run.report or "") == _REPORT
+    logged = json.loads((tmp_path / "steps.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert json.loads(logged["reply"]) == _REPORT, "the reply as given is kept, so the run can be read again"
+
+
+def test_the_agent_is_told_its_working_directory_and_its_token_limit_and_the_tier_holds_to_it() -> None:
+    """H3 and H6: what the sandbox is, said as it is."""
+    assert "Your working directory is the app's directory, shown as `.`" in SYSTEM
+    assert "{tokens}" in SYSTEM and REPLY_TOKENS >= 16_384
+
+
+def test_a_read_past_the_end_fails_and_says_how_long_the_file_is(tmp_path: Path) -> None:
+    """H4."""
+    sandbox = Sandbox.create(tmp_path / "app", "recipes", _build(tmp_path))
+    lines = len((sandbox.root / "kitchen.py").read_text(encoding="utf-8").splitlines())
+    observation = sandbox.read("kitchen.py", lines + 50)
+    assert (
+        not observation.ok
+        and observation.first_error == f"kitchen.py has {lines} lines; start at a line from 1 to {lines}"
+    )
+    assert sandbox.read("kitchen.py", lines).ok
+
+
+def _run_facts(**app: Any) -> dict[str, Any]:  # Any: the regrade's facts
+    reading = {"readings": ["accuracy", "slug"], "finished": True, "scored": 3,
+               "means": {"accuracy": 0.6667, "slug": 1.0}, **app}  # fmt: skip
+    return {
+        "problem": "",
+        "door_exit": 0,
+        "stored": True,
+        "door_first_line": "g: r passed 2 of 3 cases.",
+        "app": reading,
+    }
+
+
+def test_an_eval_that_scored_nothing_does_not_run_and_one_that_scored_any_case_does() -> None:
+    """H7: a runner that failed every case finished a run that measured nothing."""
+    assert eval_runs({}, {"checks": _run_facts()})
+    assert eval_runs({}, {"checks": _run_facts(means={"accuracy": 0.0, "slug": None}, scored=1)})
+    assert not eval_runs({}, {"checks": _run_facts(scored=0)})
+
+
+def test_the_pass_rate_is_read_against_the_measure_named_or_any_the_run_read() -> None:
+    """H8: which measure is "first" differs between the console and the eval, so a reading of any of the run's
+    measures is right; a named measure is held to its own value, and a number no measure reads fails."""
+    line = "g: r passed 2 of 3 cases."
+    report = {"first_line": line, "finished": True}
+
+    def reads(**given: Any) -> bool:
+        return read_right({}, {"report": {**report, **given}, "checks": _run_facts()})
+
+    assert reads(pass_rate=0.6667, measure="Accuracy") and reads(pass_rate=1.0, measure="Slug score")
+    assert reads(pass_rate=1.0) and reads(pass_rate=0.667, measure="headword"), "no name the run printed: any measure"
+    assert not reads(pass_rate=1.0, measure="accuracy"), "named, and another measure's value given"
+    assert not reads(pass_rate=0.5), "no measure reads 0.5"
+    assert not reads(pass_rate=0.6667, measure="accuracy", first_line="g: r passed 2 of 3"), "the line cut short"
+
+
+def test_what_the_harness_caused_is_told_apart_where_it_can_be_told_mechanically() -> None:
+    """Item 2: a format error, a sandbox path, a refused command or a limit is the harness's; a file the guide names
+    and the build lacks is the docs'; anything else cannot be told without reading the run."""
+    guide = "THE FIRST EXAMPLE (1-triage/triage.py of the examples fetched below)"
+    refused_reply = Step(3, None, Observation(ok=False, text="the reply was not one tool call: ..."))
+    assert cause(refused_reply) == "harness"
+    assert cause(_step(2, "run", False, command="ls /app", first_error="ls: /app is no directory in the app or the "
+                       "installed package")) == "harness"  # fmt: skip
+    assert cause(_step(4, "read", False, first_error="examples/1-triage/triage.py: no such file"), guide) == "docs"
+    assert cause(_step(4, "read", False, first_error="tests/__init__.py: no such file"), guide) == "cannot tell"
+    assert cause(_step(5, "run", False, command="python -m threetears.evals e.py", first_error="KeyError: 'id'")) == (
+        "cannot tell"
+    )
+    assert stuck_point([refused_reply])["cause"] == "harness"  # type: ignore[index]
+
+    door = {"turn": 6, "command": "python -m threetears.evals e.py", "door": True}
+    failed = {"eval_runs": 0.0, "measures_the_app": 0.0, "read_right": 0.0}
+    walled = {"scores": failed, "record": {"stopped": "wall", "commands": []}}
+    assert failure_causes(walled) == dict.fromkeys(failed, "harness")
+    lost = {"scores": {**failed, "eval_runs": 1.0}, "record": {"stopped": "done", "commands": [door], "report": None,
+            "format_error_turns": [7]}}  # fmt: skip
+    assert failure_causes(lost) == {"measures_the_app": "cannot tell", "read_right": "harness"}
+    early = {**lost, "record": {**lost["record"], "format_error_turns": [3]}}
+    assert failure_causes(early)["read_right"] == "cannot tell", (
+        "a refused reply before the last door run lost no report"
+    )
+
+    rows = [walled, lost, {"scores": dict.fromkeys(failed, 1.0), "record": {"stopped": "done"}}]
+    lines = census(rows)
+    assert any(line.startswith("  read_right: 1 of 3 trials") and "2 failed: 2 harness" in line
+               and "1 of 1 the harness failed none of" in line for line in lines), lines  # fmt: skip
+
+
+def test_a_stored_run_is_read_again_with_todays_rules_and_ends_where_a_report_was_first_given() -> None:
+    """Item 3's reading: a bare report refused then is the done it meant now; a command after it is named."""
+    steps = [
+        {"turn": 1, "act": {**_BLANK_ACT, "tool": "run", "command": "python -m threetears.evals e.py"}},
+        {"turn": 2, "act": None},
+        {"turn": 3, "act": None},
+        {"turn": 4, "act": {**_BLANK_ACT, "tool": "done", "text": ""}},
+    ]
+    replies = ['{"tool": "run"}', "not json", json.dumps(_REPORT), "{}"]
+    again = read_again(steps, replies)
+    assert again["ended"] == 3 and again["report_from"] == "bare report" and json.loads(again["report"]) == _REPORT
+    assert again["refused"] == [2] and again["unmade"] == []
+    command = {**_BLANK_ACT, "tool": "done", "text": "", "command": json.dumps(_REPORT)}
+    assert read_again([{"turn": 1, "act": command}], [])["report_from"] == "command"
+
+
+_BLANK_ACT: dict[str, Any] = {"path": "", "start": 1, "text": "", "command": ""}  # Any: an act's fields
