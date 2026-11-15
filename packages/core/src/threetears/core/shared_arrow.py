@@ -3785,6 +3785,7 @@ class _HeldVersion:
         try:
             for name, table in self.mapped.tables.items():
                 cursor.register(f"{_REGISTERED_PREFIX}{name}", table)
+            cursor.execute(_PREPARE_TEMPORARY_OBJECTS)
             made = _temporary_objects(cursor)
         except BaseException:
             cursor.close()
@@ -3808,22 +3809,32 @@ class _HeldVersion:
             self.lease.release()
 
 
-#: a cursor's temporary views and tables: a read's leftovers, which would shadow a mapped table for the next read
-_TEMPORARY_VIEWS: Final = "SELECT count(*) FROM duckdb_views() WHERE temporary"
-_TEMPORARY_TABLES: Final = "SELECT count(*) FROM duckdb_tables() WHERE temporary"
+#: the statement counting a cursor's temporary views and tables (a read's leftovers, which would shadow a mapped table
+#: for the next read), prepared once on each cursor as it is made and executed after every read. Every read pays it,
+#: so it is one prepared statement, not two plain ones: on DuckDB 1.5.6 (2026-11-14, 20 registered tables) the
+#: two plain counts took 175-188 us a read, one plain UNION ALL 129-131 us, the prepared UNION ALL 66-76 us (a bare
+#: round trip is 53 us), beside a 350-420 us point query. With the two plain counts the check was ~90% of a serving
+#: read's cost past its query (the real-size read test at 1.43x on an idle laptop, 2.0-2.5x on loaded pool hosts
+#: against its 2x budget). A read that deallocates or replaces it makes the check fail, and its cursor is closed
+_TEMPORARY_OBJECTS_STATEMENT: Final = "threetears_shared_arrow_temporary_objects"
+_PREPARE_TEMPORARY_OBJECTS: Final = (
+    f"PREPARE {_TEMPORARY_OBJECTS_STATEMENT} AS SELECT count(*) FROM ("
+    "SELECT 1 FROM duckdb_views() WHERE temporary UNION ALL SELECT 1 FROM duckdb_tables() WHERE temporary)"
+)
+_TEMPORARY_OBJECTS: Final = f"EXECUTE {_TEMPORARY_OBJECTS_STATEMENT}"
 
 
 def _temporary_objects(cursor: Any) -> int:
-    """how many temporary views and tables a cursor sees (its registrations among them).
+    """how many temporary views and tables a cursor sees (its registrations among them), by the statement
+    :data:`_PREPARE_TEMPORARY_OBJECTS` prepared on it as it was made.
 
     :param cursor: the cursor
     :ptype cursor: duckdb.DuckDBPyConnection
     :return: the count
     :rtype: int
     """
-    views = cursor.execute(_TEMPORARY_VIEWS).fetchone()
-    tables = cursor.execute(_TEMPORARY_TABLES).fetchone()
-    return int(views[0]) + int(tables[0])
+    (count,) = cursor.execute(_TEMPORARY_OBJECTS).fetchone()
+    return int(count)
 
 
 def _clean_cursor(cursor: Any, made: int) -> bool:
