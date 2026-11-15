@@ -174,6 +174,8 @@ def test_whole_reads_and_writes_are_found(sql: str, expected: list[tuple[str, st
         "SELECT a FROM t WHERE k = $1 AND {}",
         "SELECT a FROM {} WHERE {pk}",
         "SELECT * FROM pg_class",
+        # SQLite's own catalog of a database's pages, bounded by the database, as pg_class is
+        "SELECT name, sum(pgsize) AS bytes FROM dbstat GROUP BY name",
         "SELECT a, max(b) FROM t WHERE k = $1 GROUP BY a",
     ],
 )

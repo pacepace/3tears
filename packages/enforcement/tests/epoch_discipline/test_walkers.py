@@ -185,6 +185,8 @@ _COMPLIANT: dict[str, list[str]] = {
         "async def page(pool):\n    return await pool.fetch('SELECT * FROM roles ORDER BY id LIMIT 100')\n",
         "async def count(pool):\n    return await pool.fetchval('SELECT 1')\n",
         "async def dynamic(pool, where):\n    return await pool.fetch(f'SELECT * FROM roles {where}')\n",
+        # a database's own catalog: SQLite's pages (dbstat), bounded by the database as pg_class is
+        "async def sizes(pool):\n    return await pool.fetch('SELECT name, sum(pgsize) FROM dbstat GROUP BY name')\n",
     ],
 }
 

@@ -35,6 +35,7 @@ from threetears.core.collections.generation import (
 )
 from threetears.core.backends.protocol import DurableStore
 from threetears.core.backends.sql import SqlL3Backend
+from threetears.core.cache.l1_sizes import L1_SIZES
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.core.exceptions import GenerationUnavailableError, InvalidL2ScopeError, L2ScopeNotConfiguredError
 from threetears.observe import contain, get_logger
@@ -566,6 +567,8 @@ class CollectionRegistry:
             self._kv_key_scope = kv_key_scope
         if l1_backend is not None:
             self._l1_backend = l1_backend
+            # its tables' rows and bytes measured every minute, off the loop (threetears.core.cache.l1_sizes)
+            L1_SIZES.watch(l1_backend)
             # a cache built over the previous backend would keep answering from
             # it; drop it so the next access rebuilds over the new one.
             self._scan_cache = None

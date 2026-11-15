@@ -147,8 +147,10 @@ _COLLATE: Final[re.Pattern[str]] = re.compile(r"(.+?)\s+COLLATE\s+(\"[^\"]+\"|\w
 _NO_ROWS: Final[re.Pattern[str]] = re.compile(r"WHERE\s+(?:1\s*=\s*0|FALSE)", re.IGNORECASE)
 #: a shape probe: no row is read
 _LIMIT_ZERO: Final[re.Pattern[str]] = re.compile(r"\bLIMIT\s+0\b", re.IGNORECASE)
+#: a database's own catalog, never a table of rows: ``dbstat`` is SQLite's virtual table of a database's pages
+#: (``threetears.core.cache.l1_sizes`` measures an L1's tables from it), bounded by the database as ``pg_class`` is
 _CATALOG: Final[re.Pattern[str]] = re.compile(
-    r"(?i)^\"?(pg_|information_schema|sqlite_|duckdb_|sys\.|svv_|stl_|stv_|svl_|pg_catalog|dual$|"
+    r"(?i)^\"?(pg_|information_schema|sqlite_|duckdb_|sys\.|svv_|stl_|stv_|svl_|pg_catalog|dual$|dbstat$|"
     r"generate_series|unnest|values$)"
 )
 _VIEW: Final[re.Pattern[str]] = re.compile(r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP\w*\s+)?VIEW\b", re.I)

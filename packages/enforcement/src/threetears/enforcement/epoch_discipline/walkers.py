@@ -260,8 +260,10 @@ _SQL_SELECT_FROM: Final[re.Pattern[str]] = re.compile(
 )
 _SQL_NARROWS: Final[re.Pattern[str]] = re.compile(r"\b(WHERE|LIMIT|FETCH\s+FIRST)\b", re.IGNORECASE)
 _SQL_VERB: Final[re.Pattern[str]] = re.compile(r"^\s*(SELECT|WITH|INSERT|UPDATE|DELETE|TRUNCATE|COPY|MERGE)\b", re.I)
+#: a database's own catalog, never a table of rows: ``dbstat`` is SQLite's virtual table of a database's pages
+#: (``threetears.core.cache.l1_sizes`` measures an L1's tables from it), bounded by the database as ``pg_class`` is
 _CATALOG: Final[re.Pattern[str]] = re.compile(
-    r"(?i)^(pg_|information_schema|sqlite_|duckdb_|\(|unnest|generate_series)"
+    r"(?i)^(pg_|information_schema|sqlite_|duckdb_|dbstat$|\(|unnest|generate_series)"
 )
 
 
