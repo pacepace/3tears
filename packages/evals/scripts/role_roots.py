@@ -64,7 +64,6 @@ from typing import Any, Literal
 from public_surface import PACKAGE, PACKAGE_ROOT, TIER_MAP_PATH, SurfaceEntry, declared, defining_module, load_snapshot
 from surface_kinds import (
     AWAITING_DEMOTION,
-    AWAITING_SHIPPED_USE,
     TYPED,
     Kind,
     constant_edges,
@@ -110,9 +109,30 @@ RENAMED: Mapping[str, str] = MappingProxyType(
     {f"{PACKAGE}.ROOT_EXTRAS": f"{PACKAGE}.EXTRAS", f"{PACKAGE}.RootExtra": f"{PACKAGE}.Extra"}
 )
 
-#: Provisional names placed by kind though no rule of ``surface_kinds`` gives them one (§1.1): ``Log`` is what an eval
-#: file writes to keep a line beside its scores, so it is typed, at the root, and still provisional.
-KIND_EXCEPTIONS: Mapping[str, Kind] = MappingProxyType({f"{PACKAGE}.Log": "typed"})
+#: How each renamed name's shape changed, which a host checks by hand at each use.
+RENAMED_SHAPES: Mapping[str, str] = MappingProxyType(
+    {
+        f"{PACKAGE}.ROOT_EXTRAS": "keyed by each lazy name's qualified spelling, not by root",
+        f"{PACKAGE}.RootExtra": "names the lazy names an extra serves, not a root",
+    }
+)
+
+#: Provisional names given a kind by the design, which no rule of ``surface_kinds`` gives them, so they are placed
+#: whether or not a declared name reaches them (§1.1, §4.4). ``Log`` is what an eval file writes to keep a line beside
+#: its scores: typed, at the root, still provisional. The seven kits are admitted to ``tests`` under ruling R-a: a
+#: host's own tests run them (its reader-conformance and keyless-matrix tests).
+KIND_EXCEPTIONS: Mapping[str, Kind] = MappingProxyType(
+    {
+        f"{PACKAGE}.Log": "typed",
+        f"{PACKAGE}.testing.READER_CONFORMANCE_CASES": "tests",
+        f"{PACKAGE}.testing.ReaderConformanceCase": "tests",
+        f"{PACKAGE}.testing.ReaderSample": "tests",
+        f"{PACKAGE}.testing.RESULT_READINGS_CONFORMANCE_CASES": "tests",
+        f"{PACKAGE}.testing.ResultReadingsConformanceCase": "tests",
+        f"{PACKAGE}.run.resolve_constructor": "tests",
+        f"{PACKAGE}.run.callers_missing_the_constructor": "tests",
+    }
+)
 
 #: The three names of ``AWAITING_DEMOTION`` that stay public as the ``tests`` kind (§4.2): the only door a host's own
 #: gate and conformance tests have to what they do (criteria 1 to 3 under ruling R-a), until the host proof (X4,
@@ -164,6 +184,14 @@ MODULE_RENAMES: Mapping[str, str] = MappingProxyType(
         f"{PACKAGE}.analysis.judge_drift": f"{PACKAGE}.analysis.judge_drift_read",
         f"{PACKAGE}.analysis.judge_kind_readings": f"{PACKAGE}.analysis.judge_kind_read",
     }
+)
+
+#: Former roots whose own ``__init__`` defines public names. The cut-over empties a former root's ``__init__`` (it
+#: serves nothing and raises naming the new spelling), and a module ``__getattr__`` never fires for a name the module
+#: defines, so what it defines moves to a submodule first; the name is proposed, and the cut-over decides it. Unlike
+#: :data:`MODULE_RENAMES` this moves no module path: the package keeps its path and its definitions leave it.
+INIT_DEFINITIONS_MOVE: Mapping[str, str] = MappingProxyType(
+    {f"{PACKAGE}.transports.fastmcp": f"{PACKAGE}.transports.fastmcp.server"}
 )
 
 #: What becomes of a provisional name nothing declared reaches. Owner ruling on Q1 (2026-11-15): it leaves the public
@@ -464,7 +492,9 @@ class Placement:
     :ivar rule: The rule that placed it, or ``None`` for a name that leaves.
     :ivar kind: The kind it is placed as, or ``None`` for a name that leaves.
     :ivar tier: Its tier today.
-    :ivar note: For a demoted name, its replacement; for a name that leaves, why it is unreached; else empty.
+    :ivar home: Its spelling in the module that defines it, after the cut's module moves.
+    :ivar note: For a demoted name, its replacement; for a name that leaves, why it is unreached; for a renamed
+        name, how its shape changed; else empty.
     """
 
     old: str
@@ -473,6 +503,7 @@ class Placement:
     rule: Rule | None
     kind: Kind | None
     tier: str
+    home: str
     note: str = ""
 
 
@@ -554,7 +585,7 @@ def home_of(qualified: str, obj: object) -> str:
     if found is None:
         raise LookupError(f"{qualified}: no module assigns it")
     module, defined = found
-    return f"{renamed_module(module)}.{defined}"
+    return f"{renamed_module(INIT_DEFINITIONS_MOVE.get(module, module))}.{defined}"
 
 
 def renamed_module(module: str) -> str:
@@ -685,8 +716,8 @@ def plan(
             orphans[name] = "only demoted names name it: " + ", ".join(sorted(named))
     demoted |= set(orphans)
 
-    # The provisional names a kept declared name reaches, or that are reached by definition.
-    after = [objects[name] for name in names if is_declared[name] and name not in demoted]
+    # The provisional names a kept declared name or an admitted kit reaches, or that are reached by definition.
+    after = [objects[name] for name in names if (is_declared[name] or name in KIND_EXCEPTIONS) and name not in demoted]
     after_constants = [
         each
         for name in names
@@ -696,20 +727,20 @@ def plan(
     reached = _walk([*after, *after_constants, *_by_definition_objects()])
 
     observed_bare = {name.rsplit(".", 1)[1] for name, _ in observed}
-    groups: dict[str, list[Placement]] = {}
     placements: dict[str, Placement] = {}
     all_holders = _all_holders(objects)
     leaving_bare: set[str] = set()
     for bare, spellings in by_bare.items():
         obj = objects[spellings[0]]
-        tier = next((surface[s].tier for s in spellings if is_declared[s]), surface[spellings[0]].tier)
         home = home_of(spellings[0], obj)
         if any(s in demoted for s in spellings):
             note = DEMOTED.get(next((s for s in spellings if s in DEMOTED), ""), "") or orphans.get(
                 next((s for s in spellings if s in orphans), ""), ""
             )
             for spelling in spellings:
-                placements[spelling] = Placement(spelling, home, "demoted", None, None, surface[spelling].tier, note)
+                placements[spelling] = Placement(
+                    spelling, home, "demoted", None, None, surface[spelling].tier, home, note
+                )
             continue
         group_declared = any(is_declared[s] for s in spellings)
         metadata = any(s in METADATA for s in spellings)
@@ -727,27 +758,23 @@ def plan(
         for spelling in spellings:
             new = RENAMED.get(spelling) or f"{new_root}.{bare}"
             record: Record = "kept" if new == spelling else "renamed" if spelling in RENAMED else "name"
-            placements[spelling] = Placement(spelling, new, record, rule, kind, surface[spelling].tier)
+            placements[spelling] = Placement(
+                spelling, new, record, rule, kind, surface[spelling].tier, home, RENAMED_SHAPES.get(spelling, "")
+            )
 
     for bare in leaving_bare:
         for spelling in by_bare[bare]:
             obj = objects[spelling]
-            placements[spelling] = Placement(
-                spelling,
-                home_of(spelling, obj),
-                "left",
-                None,
-                None,
-                surface[spelling].tier,
-                _why_unreached(obj, all_holders, leaving_bare, by_bare, demoted),
-            )
+            home = home_of(spelling, obj)
+            why = _why_unreached(obj, all_holders, leaving_bare, by_bare, demoted)
+            placements[spelling] = Placement(spelling, home, "left", None, None, surface[spelling].tier, home, why)
 
     ordered = tuple(placements[name] for name in names)
     exported = {id(objects[name]) for name in names}
     added = tuple(
         Added(
             f"{SHAPES}.{klass.__name__}",
-            f"{renamed_module(klass.__module__)}.{klass.__qualname__}",
+            f"{renamed_module(INIT_DEFINITIONS_MOVE.get(klass.__module__, klass.__module__))}.{klass.__qualname__}",
             why,
         )
         for klass, why in _by_definition_items()
@@ -782,7 +809,7 @@ def _by_definition_items() -> list[tuple[type, str]]:
         found.setdefault(id(klass), (klass, f"stored document class ({doc_type})"))
     for name, klass in action_results().items():
         found.setdefault(id(klass), (klass, f"action result ({name.rsplit('.', 1)[1]})"))
-    return sorted(found.values(), key=lambda item: item[0].__name__)
+    return sorted(found.values(), key=lambda item: (item[0].__name__, item[0].__module__))
 
 
 def _by_definition_objects() -> list[type]:
@@ -829,8 +856,8 @@ def _why_unreached(
         parts.append("demoted names: " + ", ".join(sorted(dropped)[:3]) + (" ..." if len(dropped) > 3 else ""))
     other = named - gone - dropped
     if other:
-        # A declared name only names it through a position the reach walk does not follow from a declared start.
-        parts.append("names named only through a walk the rule does not follow: " + ", ".join(sorted(other)[:3]))
+        # Public names that stay, yet reach it only through a provisional name that is itself unreached.
+        parts.append("names no declared name reaches: " + ", ".join(sorted(other)[:3]))
     return "named only by " + "; ".join(parts)
 
 
