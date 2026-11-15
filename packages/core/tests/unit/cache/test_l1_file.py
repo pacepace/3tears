@@ -82,7 +82,7 @@ class TestTheFile:
         assert _ours(tmp_path) == []
 
     def test_the_directory_is_named_by_the_environment(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(l1_file.L1_DIR_ENV, str(tmp_path))
+        monkeypatch.setenv("THREETEARS_L1_DIR", str(tmp_path))
         assert l1_file.l1_directory() == tmp_path
 
 

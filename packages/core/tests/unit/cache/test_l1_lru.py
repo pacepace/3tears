@@ -5,7 +5,6 @@ answer."""
 from __future__ import annotations
 
 import json
-import statistics
 import threading
 import time
 import uuid
@@ -25,10 +24,13 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.eviction import Declared, Policy, Tier, declared
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO
+from threetears.core.testing.loop_lateness import quietly
 
 _CACHED = Declared(Policy.EVICTABLE, "lru test: rows cached on a read")
 _KEPT = Declared(Policy.KEEP, "lru test: a table a reader treats as complete")
 _BODY = "b" * 1000
+#: the most the host's idle loop may be late over a timed comparison, as the other side-by-side cost tests take it
+_HOST_MAY_BE_LATE = 0.020
 
 
 def _metadata() -> MetaData:
@@ -147,15 +149,23 @@ class TestTheBudget:
         backend.upsert_many("lru_kept", [{"id": key, "body": "x"} for key in keys])
 
         def per_read(table: str) -> float:
-            rounds = []
-            for _ in range(5):
-                started = time.perf_counter()
-                for key in keys:
-                    backend.select_by_id(table, key)
-                rounds.append((time.perf_counter() - started) / len(keys))
-            return statistics.median(rounds)
+            started = time.perf_counter()
+            for key in keys:
+                backend.select_by_id(table, key)
+            return (time.perf_counter() - started) / len(keys)
 
-        kept, cached = per_read("lru_kept"), per_read("lru_cached")
+        def side_by_side() -> tuple[float, float]:
+            # the two tables' rounds alternate and each side keeps its fastest: run one after the other, a burst of
+            # crowding on a shared host landed on one side only (the pool, 2026-11-15: 43 us against 29 us, where a
+            # quiet laptop measures about 1 us of recency on a 9 us read)
+            kept_rounds, cached_rounds = [], []
+            for _ in range(5):
+                kept_rounds.append(per_read("lru_kept"))
+                cached_rounds.append(per_read("lru_cached"))
+            return min(kept_rounds), min(cached_rounds)
+
+        # a host too busy to keep an idle loop on time says nothing about the code: retaken, else CouldNotMeasure
+        kept, cached = quietly(side_by_side, host_may_be_late=_HOST_MAY_BE_LATE, threads=1)
         backend.reset()
         # measured 2026-11-15 on a laptop: about 1 us on a 9 us read
         assert cached < kept * 1.5, (

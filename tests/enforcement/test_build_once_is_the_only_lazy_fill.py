@@ -462,6 +462,12 @@ _NOT_BUILDS: dict[str, str] = {
         "two callers that both find it unasked each ask the same pool and record the same answer, with no object "
         "built and nothing registered twice"
     ),
+    "packages/core/src/threetears/core/cache/l1_file.py::acquire::_FILES": (
+        "the L1 database files this process holds, each with its count of holding backends: acquire adds a holder "
+        "and release takes one away, dropping the entry and removing the file at the last, so BuildOnce (one value "
+        "per key for the life of the process, never dropped) cannot hold it; the check and the fill both run under "
+        "_LOCK, so two threads never make one file twice"
+    ),
 }
 
 

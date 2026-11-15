@@ -138,6 +138,7 @@ INHERITED_UNFILTERED: dict[str, str] = {
     "invalidate_cache_many": "evicts many keys from the cache tiers; returns nothing",
     "l2_cas_mutate": "a compare-and-set on one L2 cache entry the writer holds; no SQL read",
     "announce_flushed": "publishes that a write reached L3; returns nothing",
+    "table_drops_settled": "waits for this process's table drops to finish deleting from L1; reads and returns no row",
     "aclose": "shuts the collection down; reads nothing",
 }
 

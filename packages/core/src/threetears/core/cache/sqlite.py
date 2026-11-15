@@ -321,7 +321,7 @@ class SQLiteBackend:
     def initialize(self, sa_metadata: Any) -> None:
         """Initialize SQLite with schema from SQLAlchemy metadata.
 
-        Creates a named in-memory database and initializes all tables.
+        Opens this process's database file for the name and initializes all tables.
         The anchor connection is kept open to prevent garbage collection.
         Builds a schema registry for type-aware serialization.
 
@@ -332,7 +332,7 @@ class SQLiteBackend:
         shared backend exactly like a single all-tables metadata.
 
         Every table declares its eviction policy (``Table.info["l1_eviction"]``, put there by
-        :func:`~threetears.core.cache.l1_lru.declare_l1` or ``TableSchema(l1_eviction=...)``); there is no default.
+        ``Table(info={L1_EVICTION_INFO: ...})`` or ``TableSchema(l1_eviction=...)``); there is no default.
 
         :raises UnsupportedL1ColumnError: when a column is one this L1 cannot hold exactly
         :raises LookupError: when a table declares no eviction policy
@@ -385,7 +385,7 @@ class SQLiteBackend:
         )
 
     def get_connection(self) -> _PooledConnection:
-        """Get a thread-local connection to the named in-memory database.
+        """Get a thread-local connection to this backend's database file.
 
         Returns a cached connection for the current thread, created once
         per thread and reused. The returned proxy makes close() a no-op.
@@ -786,7 +786,7 @@ class SQLiteBackend:
         :return: nothing
         :rtype: None
         """
-        pk_cols = self._table_keys.get(table)
+        pk_cols = self._key_of(table)
         if table not in self._evictable:
             # declared KEEP since its rows were picked: never evicted, and the ledger forgets its recency
             self.budget.emptied(self, table)
@@ -796,6 +796,16 @@ class SQLiteBackend:
         pk_where = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
         sql = f"DELETE FROM {quote_identifier(table)} WHERE {pk_where}"  # noqa: S608 -- quoted registered names
         self._in_write_transaction(lambda conn: conn.executemany(sql, keys))
+
+    def _key_of(self, table: str) -> KeyColumns:
+        """the primary-key columns ``table`` was created with; empty for a table this backend did not create.
+
+        :param table: the table
+        :ptype table: str
+        :return: its key's columns
+        :rtype: KeyColumns
+        """
+        return self._table_keys.get(table, ())
 
     def table_bytes(self) -> Mapping[str, int]:
         """each table's real bytes in the file (its pages and its indexes', from ``dbstat``); blocking, a walk of

@@ -724,8 +724,15 @@ class TestATableWideDropReadsL1InPages:
         pod.members.add_l1_change_listener(heard.append)
         statements: list[str] = []
         if l1_kind == "sqlite":
-            raw = l1.get_connection()
-            raw.set_trace_callback(statements.append)  # type: ignore[union-attr]
+            # the walk runs on a thread (below), on that thread's own connection: trace each connection handed out
+            handed = l1.get_connection
+
+            def traced() -> Any:
+                conn = handed()
+                conn.set_trace_callback(statements.append)  # type: ignore[union-attr]
+                return conn
+
+            monkeypatch.setattr(l1, "get_connection", traced)
 
         # announced on the loop, deleted on a thread (SQ3, Pace 2026-11-15): the count comes when it has run
         assert pod.members.drop_cached_table() is None

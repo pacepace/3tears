@@ -54,11 +54,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from threetears.observe import contain, get_logger
+from threetears.observe import BuildOnce, contain, get_logger
 
 __all__ = [
-    "L1_DIR_ENV",
-    "L1File",
     "acquire",
     "l1_directory",
     "release",
@@ -68,7 +66,7 @@ __all__ = [
 log = get_logger(__name__)
 
 #: names the directory the L1 files go in, in place of /dev/shm (or the temp directory off Linux)
-L1_DIR_ENV: Final = "THREETEARS_L1_DIR"
+_L1_DIR_ENV: Final = "THREETEARS_L1_DIR"
 #: tmpfs on Linux; a memory-backed emptyDir in a pod
 _SHM: Final = Path("/dev/shm")
 _PREFIX: Final = "threetears-l1-"
@@ -84,7 +82,7 @@ def l1_directory() -> Path:
     :return: the directory
     :rtype: Path
     """
-    named = os.environ.get(L1_DIR_ENV)
+    named = os.environ.get(_L1_DIR_ENV)
     if named:
         return Path(named)
     if _SHM.is_dir() and os.access(_SHM, os.W_OK):
@@ -93,7 +91,7 @@ def l1_directory() -> Path:
 
 
 @dataclass
-class L1File:
+class _L1File:
     """one L1 database file this process holds, and how many backends share it.
 
     :ivar path: the database file
@@ -107,10 +105,10 @@ class L1File:
 
 
 _LOCK = threading.Lock()
-_FILES: dict[str, L1File] = {}
+_FILES: dict[str, _L1File] = {}
 _SWEPT: set[str] = set()
-#: this process's pid and token, made on its first L1 file
-_ME: list[str] = []
+#: this process's pid and token, made on its first L1 file; keyed by pid, so a forked child makes its own
+_ME: BuildOnce[int, str] = BuildOnce()
 
 
 def _me() -> str:
@@ -119,9 +117,8 @@ def _me() -> str:
     :return: the pid and the process's random token
     :rtype: str
     """
-    if not _ME or not _ME[0].startswith(f"{os.getpid()}-"):
-        _ME[:] = [f"{os.getpid()}-{secrets.token_hex(4)}"]
-    return _ME[0]
+    pid = os.getpid()
+    return _ME.get(pid, lambda: f"{pid}-{secrets.token_hex(4)}")
 
 
 def _remove(path: Path) -> None:
@@ -133,6 +130,7 @@ def _remove(path: Path) -> None:
     :rtype: None
     """
     for suffix in _SIDE_FILES:
+        # NOSILENT: SQLite makes the side files only when it needs them; a missing one is already removed
         with contextlib.suppress(FileNotFoundError):
             os.unlink(f"{path}{suffix}")
 
@@ -223,7 +221,7 @@ def acquire(db_name: str, directory: Path | None = None) -> Path:
                     break
                 os.close(fd)
             _remove(path)
-            held = _FILES[key] = L1File(path=path, owner_fd=fd)
+            held = _FILES[key] = _L1File(path=path, owner_fd=fd)
         held.holders += 1
     return path
 
@@ -247,8 +245,9 @@ def release(path: Path) -> None:
         _close(held)
 
 
-def _close(held: L1File) -> None:
+def _close(held: _L1File) -> None:
     _remove(held.path)
+    # NOSILENT: a sweep of another process's start may have taken the lock file first; gone is the goal
     with contextlib.suppress(FileNotFoundError):
         os.unlink(_owner_path(held.path))
     os.close(held.owner_fd)
@@ -259,6 +258,7 @@ def _remove_all() -> None:
     """a clean exit leaves no file behind."""
     with _LOCK:
         for held in _FILES.values():
+            # NOSILENT: at exit nothing can be said; a file left behind is swept by the next process's first L1
             with contextlib.suppress(OSError):
                 _close(held)
         _FILES.clear()

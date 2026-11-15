@@ -42,7 +42,7 @@ from threetears.core.data.collection_factory import create_dynamic_collection
 from threetears.core.data.schema import ColumnDef, TableDef
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import CorruptCacheEntry
-from threetears.core.testing.l1_tables import TEST_L1_TABLE
+from threetears.core.testing.l1_tables import TEST_L1_KEEP
 
 _ROW_ID = uuid.UUID("01926f3a-0000-7000-8000-000000000001")
 _WHEN = datetime(2026, 10, 1, 12, 30, tzinfo=UTC)
@@ -64,7 +64,7 @@ class _TypedRows(SchemaBackedCollection[_Entity]):
             Column("blob", BYTES_TYPE, nullable=True),
             Column("doc", JSONB_TYPE, nullable=True),
         ],
-        l1_eviction=TEST_L1_TABLE,
+        l1_eviction=TEST_L1_KEEP,
     )
 
     @property
@@ -156,10 +156,14 @@ def _bound(pool: _RecordingPool) -> list[Any]:
 async def test_a_write_recovered_after_a_restart_binds_its_typed_values() -> None:
     db_name = f"wb_typed_{uuid.uuid4().hex}"
     row = {"id": _ROW_ID, "date_created": _WHEN, "cost": Decimal("2.50"), "blob": b"\x00\x01", "doc": {"k": 1}}
-    await WriteBuffer(l1_backend=SQLiteBackend(db_name=db_name)).add("typed_rows", _ROW_ID, row)
+    # the durable store is the L1 database by name; it outlives the buffer that wrote to it. Held here, since an
+    # L1 file goes when its last backend is collected (threetears.core.cache.l1_file), as a memdb database went
+    # with its last connection: the old test leaned on the first backend's collection coming late
+    store = SQLiteBackend(db_name=db_name)
+    await WriteBuffer(l1_backend=store).add("typed_rows", _ROW_ID, row)
     registry, pool = _wired()
 
-    # the process that buffered it is gone; a new one drains the same durable store
+    # the buffer that wrote it is gone; a new one drains the same durable store
     flushed = await flush_pending(WriteBuffer(l1_backend=SQLiteBackend(db_name=db_name)), registry)
 
     assert flushed == 1
@@ -320,7 +324,9 @@ async def _recovered(table_name: str, row: dict[str, Any], registry: CollectionR
     :rtype: int
     """
     db_name = f"wb_typed_{uuid.uuid4().hex}"
-    await WriteBuffer(l1_backend=SQLiteBackend(db_name=db_name)).add(table_name, row["id"], row)
+    # the store outlives the buffer that wrote to it (see test_a_write_recovered_after_a_restart_binds_its_typed_values)
+    store = SQLiteBackend(db_name=db_name)
+    await WriteBuffer(l1_backend=store).add(table_name, row["id"], row)
     return await flush_pending(WriteBuffer(l1_backend=SQLiteBackend(db_name=db_name)), registry)
 
 

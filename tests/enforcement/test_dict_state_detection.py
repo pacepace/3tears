@@ -996,6 +996,46 @@ _ALLOWLIST = (
             "callables, static once registered, served only while THIS process holds the writer lease"
         ),
     ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/cache/l1_lru.py",
+        class_name="L1Ledger",
+        attr_name="_tables",
+        rationale=(
+            "the recency order of each EVICTABLE L1 table of this process, keyed by (store, table): the L1 is process-local by design (a WAL file on /dev/shm that dies with the process), so its ledger is too; a restart starts with an empty L1 and nothing to order"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/cache/l1_lru.py",
+        class_name="L1Ledger",
+        attr_name="_counters",
+        rationale=(
+            "each L1 table's bound Prometheus hit/miss counters, made once so a read pays no label lookup: metric handles, not data"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/cache/sqlite.py",
+        class_name="SQLiteBackend",
+        attr_name="_policies",
+        rationale=(
+            "each table's declared eviction policy as this backend created it: a copy of the process-wide declarations (threetears.core.eviction), made again by every start's initialize"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/cache/sqlite.py",
+        class_name="SQLiteBackend",
+        attr_name="_table_keys",
+        rationale=(
+            "each table's primary-key columns as created by this backend's DDL: schema facts of the process-local L1 file, made again by every start's initialize"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/cache/sqlite.py",
+        class_name="SQLiteBackend",
+        attr_name="_counters",
+        rationale=(
+            "each table's bound Prometheus hit/miss counters, made on the table's first read so a read pays no label lookup: metric handles, not data"
+        ),
+    ),
 )
 
 #: Tracked for migration: real violations that are acknowledged, not accepted.

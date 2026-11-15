@@ -31,7 +31,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.kv import FakeNatsClient
-from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_KEEP
 
 _SCOPE = "cas-principal"
 _TABLE = "attempt_counters"
@@ -47,7 +47,7 @@ def _metadata() -> MetaData:
         Column("count", Integer),
         Column("date_created", DateTime(timezone=True)),
         Column("date_updated", DateTime(timezone=True)),
-        info={L1_EVICTION_INFO: TEST_L1_TABLE},
+        info={L1_EVICTION_INFO: TEST_L1_KEEP},
     )
     return metadata
 

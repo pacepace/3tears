@@ -19,7 +19,7 @@ under one byte budget:
 across the tables (a handful of tables, so a scan of heads). ``KEEP`` tables keep nothing in memory.
 
 **Bytes, estimated then measured.** A row's bytes are estimated on write from its serialized values; a thread
-measures each table's real pages (``dbstat``) every :data:`MEASURE_SECONDS` and scales the estimate by what it
+measures each table's real pages (``dbstat``) every :data:`_MEASURE_SECONDS` and scales the estimate by what it
 found, so the hot path never touches the file system and the budget is held in real bytes.
 
 **The budget**: ``THREETEARS_L1_BUDGET_BYTES`` (the deploy config sets it from SIZING.md), else half the L1
@@ -64,12 +64,8 @@ from threetears.observe import contain, get_logger
 
 __all__ = [
     "L1_EVICTION_INFO",
-    "L1_BUDGET_ENV",
-    "MEASURE_SECONDS",
     "L1Ledger",
     "TableCounters",
-    "budget_from_env",
-    "declare_l1",
     "declare_l1_table",
     "ledger",
     "row_bytes",
@@ -77,12 +73,12 @@ __all__ = [
 
 log = get_logger(__name__)
 
-#: the key of a SQLAlchemy table's ``info`` that holds its declared L1 policy (:func:`declare_l1`)
+#: the key of a SQLAlchemy table's ``info`` that holds its declared L1 policy
 L1_EVICTION_INFO: Final = "l1_eviction"
 #: the process's L1 byte budget, as the deploy config sets it from SIZING.md
-L1_BUDGET_ENV: Final = "THREETEARS_L1_BUDGET_BYTES"
+_L1_BUDGET_ENV: Final = "THREETEARS_L1_BUDGET_BYTES"
 #: how often the thread measures the real pages of every table: a ``dbstat`` walk of the file, off the loop
-MEASURE_SECONDS: Final = 30.0
+_MEASURE_SECONDS: Final = 30.0
 #: evict down to this share of what is left for ``EVICTABLE`` rows, so an eviction runs once per stretch of
 #: writes, not once per write
 _EVICT_TO: Final = 0.9
@@ -96,44 +92,23 @@ _LOCK_ROWS: Final = 256
 POLICY_EPOCH: list[int] = [0]
 
 
-def declare_l1[T](table: T, policy: Policy, why: str) -> T:
-    """declare a SQLAlchemy table's L1 policy where the table is declared; the SQLite L1 refuses a table without one.
-
-    :param table: the ``sqlalchemy.Table``
-    :ptype table: T
-    :param policy: ``EVICTABLE`` (a cache of reads; a miss refills from L2/L3) or ``KEEP`` (a reader treats it as
-        complete, or it holds state a write or settle needs)
-    :ptype policy: Policy
-    :param why: the one-line reason
-    :ptype why: str
-    :return: the table
-    :rtype: T
-    """
-    policy_and_why = Declared(policy, why)
-    table.info[L1_EVICTION_INFO] = policy_and_why  # type: ignore[attr-defined]
-    declare_l1_table(table.name, policy_and_why)  # type: ignore[attr-defined]
-    return table
-
-
 def declare_l1_table(name: str, policy: Declared) -> None:
     """declare one L1 table's policy in the cache family's declarations (:func:`threetears.core.eviction.declare`,
     ``Tier.L1``, the kind named by the table), where every reader of a table's policy finds it
     (:func:`~threetears.core.eviction.policy_of`): the ledger, and the held-bytes sampler's ``policy`` label.
 
     A table's name is its kind: one table, one policy, in every L1 of the process. ``TableSchema(l1_eviction=...)``
-    and :func:`declare_l1` call this where the table is declared; ``SQLiteBackend.initialize`` for a table that
-    carries its policy in ``Table.info``.
+    reaches this where the table is declared, and ``SQLiteBackend.initialize`` for a table that carries its policy
+    in ``Table.info`` (``info={L1_EVICTION_INFO: ...}``).
+
+    Two declarations of one name that disagree (two tables of one name in one process, or one table two users
+    read differently) resolve to ``KEEP``, said once in the log: one of its users needs it complete, and keeping a
+    cache costs only bytes where evicting what a user needs complete answers wrongly.
 
     :param name: the table
     :ptype name: str
     :param policy: its policy and why
     :ptype policy: Declared
-    :return: nothing
-    :rtype: None
-    Two declarations of one name that disagree (two tables of one name in one process, or one table two users
-    read differently) resolve to ``KEEP``, said once in the log: one of its users needs it complete, and keeping a
-    cache costs only bytes where evicting what a user needs complete answers wrongly.
-
     :return: nothing
     :rtype: None
     """
@@ -172,7 +147,7 @@ def row_bytes(values: Sequence[Any]) -> int:
     return size
 
 
-def budget_from_env(directory: Path) -> int:
+def _budget_from_env(directory: Path) -> int:
     """the process's budget: ``THREETEARS_L1_BUDGET_BYTES``, else half of ``directory``'s file system.
 
     :param directory: where the L1 files are
@@ -181,17 +156,17 @@ def budget_from_env(directory: Path) -> int:
     :rtype: int
     :raises ValueError: when the variable is set and not a positive integer
     """
-    named = os.environ.get(L1_BUDGET_ENV)
+    named = os.environ.get(_L1_BUDGET_ENV)
     if named:
         budget = int(named)
         if budget < 1:
-            raise ValueError(f"{L1_BUDGET_ENV} must be a positive number of bytes, got {named!r}")
+            raise ValueError(f"{_L1_BUDGET_ENV} must be a positive number of bytes, got {named!r}")
         return budget
     stat = os.statvfs(directory)
     budget = stat.f_blocks * stat.f_frsize // 2
     log.info(
         "L1 budget not set; half the L1 directory's file system",
-        extra={"extra_data": {"env": L1_BUDGET_ENV, "directory": str(directory), "budget_bytes": budget}},
+        extra={"extra_data": {"env": _L1_BUDGET_ENV, "directory": str(directory), "budget_bytes": budget}},
     )
     return budget
 
@@ -201,13 +176,21 @@ class _Store(Protocol):
 
     store_name: str
 
-    def evict_keys(self, table: str, keys: Sequence[tuple[Any, ...]]) -> None: ...
+    def evict_keys(self, table: str, keys: Sequence[tuple[Any, ...]]) -> None:
+        """delete rows the ledger evicted, by their keys as already serialized; blocking."""
+        ...
 
-    def table_bytes(self) -> Mapping[str, int]: ...
+    def table_bytes(self) -> Mapping[str, int]:
+        """each table's measured bytes."""
+        ...
 
-    def table_policies(self) -> Mapping[str, Declared]: ...
+    def table_policies(self) -> Mapping[str, Declared]:
+        """each table's declared policy."""
+        ...
 
-    def side_bytes(self) -> int: ...
+    def side_bytes(self) -> int:
+        """the bytes the store holds beside its tables (the WAL)."""
+        ...
 
 
 @dataclass
@@ -268,7 +251,7 @@ class L1Ledger:
         """
         with self._lock:
             if self._budget is None:
-                self._budget = budget_from_env(directory)
+                self._budget = _budget_from_env(directory)
             BUDGET_BYTES.labels(tier=_TIER, name="").set(self._budget)
             self._stores[id(store)] = store
             if self._threaded and (self._thread is None or not self._thread.is_alive()):
@@ -508,8 +491,8 @@ class L1Ledger:
     # --- the thread ---
 
     def _run(self) -> None:
-        """the ledger's thread: run evictions as they come, and measure every :data:`MEASURE_SECONDS`."""
-        next_measure = time.monotonic() + MEASURE_SECONDS
+        """the ledger's thread: run evictions as they come, and measure every :data:`_MEASURE_SECONDS`."""
+        next_measure = time.monotonic() + _MEASURE_SECONDS
         while True:
             try:
                 job = self._jobs.get(timeout=max(0.0, next_measure - time.monotonic()))
@@ -519,7 +502,7 @@ class L1Ledger:
                 if job is not None:
                     job()
                 if time.monotonic() >= next_measure:
-                    next_measure = time.monotonic() + MEASURE_SECONDS
+                    next_measure = time.monotonic() + _MEASURE_SECONDS
                     self.measure()
             except Exception as exc:  # noqa: BLE001  # NOSILENT: the thread outlives one bad pass; said
                 contain(exc, log=log, what="L1 ledger pass failed; the next pass tries again")
@@ -554,7 +537,7 @@ class L1Ledger:
             SIZING_FAILURES.labels(tier=_TIER, name="").inc()
             log.error(
                 "L1 sizing failure: KEEP tables alone pass the budget; nothing KEEP is evicted, the budget is wrong",
-                extra={"extra_data": {"kept_bytes": kept, "budget_bytes": self._budget, "env": L1_BUDGET_ENV}},
+                extra={"extra_data": {"kept_bytes": kept, "budget_bytes": self._budget, "env": _L1_BUDGET_ENV}},
             )
         self._sizing_failed = failed
         if victims:
@@ -578,7 +561,7 @@ class L1Ledger:
         while True:
             try:
                 job = self._jobs.get_nowait()
-            except queue.Empty:
+            except queue.Empty:  # NOSILENT: an empty queue is the end of the drain, not a failure
                 return
             job()
 

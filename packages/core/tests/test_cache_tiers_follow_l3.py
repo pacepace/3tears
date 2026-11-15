@@ -38,7 +38,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
-from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_KEEP
 
 _SCOPE = "tier-order-principal"
 _TABLE = "tier_rows"
@@ -57,7 +57,7 @@ def _metadata() -> MetaData:
         Column("l2_revision", BigInteger),
         Column("date_created", DateTime(timezone=True)),
         Column("date_updated", DateTime(timezone=True)),
-        info={L1_EVICTION_INFO: TEST_L1_TABLE},
+        info={L1_EVICTION_INFO: TEST_L1_KEEP},
     )
     return metadata
 

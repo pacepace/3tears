@@ -55,7 +55,7 @@ from threetears.epoch import (
     generation_kv_key,
 )
 from threetears.nats import KvError, set_default_namespace
-from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_KEEP
 
 _TABLE = "group_members"
 _OTHER = "role_assignments"
@@ -79,7 +79,7 @@ def _metadata() -> MetaData:
             Column("member_id", String(255)),
             Column("date_created", DateTime(timezone=True)),
             Column("date_updated", DateTime(timezone=True)),
-            info={L1_EVICTION_INFO: TEST_L1_TABLE},
+            info={L1_EVICTION_INFO: TEST_L1_KEEP},
         )
     return metadata
 
