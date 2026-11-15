@@ -24,7 +24,7 @@ past 1,000 uses as "1,000 or more". `record_outcome` is one transaction (the use
 one CTE statement.
 **Migrations:** skills v007 (expand) builds `idx_skill_invocations_skill_time_key` (`agent_id, skill_id, invoked_at
 DESC, invocation_id DESC`) and drops v002's `idx_skill_invocations_skill_time`, which it covers; the held contract step
-is now v008. tools' held contract v006 also drops `ix_context_items_conv` (the primary key leads with its column).
+is now v008.
 
 ### epoch: `StandingRows` and follow-since -- a standing set read cold once, followed from its cold read
 
