@@ -465,7 +465,7 @@ async def test_a_host_reaches_both_doors_through_the_action_catalogue() -> None:
 
     stated = await tool.call({"action": "runs_attest_definitions", "run_ids": [since.id]}, host=host, caller=caller)
     reported = await tool.call({"action": "run_remeasure", "run_id": old.id}, host=host, caller=caller)
-    applied = await tool.call({"action": "run_remeasure", "run_id": old.id, "apply": True}, host=host, caller=caller)
+    applied = await tool.call({"action": "run_remeasure", "run_id": old.id, "store": True}, host=host, caller=caller)
 
     assert not stated.is_error and stated.structured is not None, stated.text
     assert stated.structured["run_ids"] == [since.id]
