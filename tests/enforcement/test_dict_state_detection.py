@@ -53,6 +53,22 @@ _SRC_ROOTS = (
 #: Genuinely ephemeral, non-serializable, or the infrastructure itself -- never migrating.
 _ALLOWLIST = (
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_revokers",
+        rationale=(
+            "open file descriptors holding each live version's revoke flock in this process: an OS handle per version, never data; the lock is the cross-process state and dies with the process, which is what lets kept mappings go"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_evictable",
+        rationale=(
+            "the versions the last sweep found held only by idle workers' flocks, with their bytes: re-derived from the locks at every sweep, so a restart reads it again from the directory"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/copy_follower.py",
         class_name="CopyFollower",
         attr_name="_whole",

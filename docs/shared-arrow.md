@@ -20,6 +20,7 @@ and that work reads, or produces, more data than you want copied per process.
 | Layout | `versions/<name>/` holds a version's `MANIFEST` (the files it names) and its lock file; the files live in `parts/<one directory per publish>/`, never written again. Read a version's files with `version_files(root, version)`, never by listing its directory. |
 | Bound | `max_bytes` on the store covers every version, result and hand-off together. Set it below the volume's `sizeLimit`: a pod whose `emptyDir` passes its `sizeLimit` is evicted. |
 | What is charged to the pod | The files' pages, once (tmpfs pages count against the pod's memory limit), plus each process's private memory. |
+| Eviction | A store short of room first lets go of what is only cached -- a superseded version an idle worker keeps mapped for its next read -- least recently used first, then refuses only when what it must keep alone does not fit. Every kind of entry declares its policy (`EVICTABLE` or `KEEP`, with why; no default): `threetears.core.eviction.declared(Tier.SHARED)` lists them. |
 | Cleanup | By state, never by time: a version goes when it is not current and nobody holds it, and a part file when the last version naming it goes; a result goes when it is closed and no table taken from it lives, or its job ends without a claim. A new store clears what no live process holds, part files no kept version names among it. |
 | Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, `settle`, `reserve`, `discard`, `hand`, `release`, `handing`, a lease's `release`, a segment's `close`, and a reader's `read` write, scan, map or remove files (most also sweep the directory): call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you, and lets go of what a caller that stops waiting was handed. |
 | Shared files | A version published from a `base` names the base's files it does not rewrite: they exist once, the store counts them once, and the publish touches none of them. |
@@ -412,6 +413,44 @@ what is still being written: a version or hand-off counts once it is renamed int
 once it is claimed (until then its open slot shows in `slots_open`). The three walking methods block: call them on a
 thread. Right after a publish, the sweep it left may still be running on the store's thread: call `store.settle()`
 (on a thread) first to read the directory as that sweep leaves it.
+
+## Watch its memory: the cache metrics and autosize
+
+The store is the `shared` tier of the cache metric family (`threetears.core.eviction`, the same words and metrics as
+the L1 and the L2), one `name` per store (`SharedArrowStore(..., name=)`, the directory's name by default):
+
+| Metric | What it says |
+|---|---|
+| `threetears_cache_budget_bytes{tier="shared",name}` | the store's `max_bytes` |
+| `threetears_cache_held_bytes{tier="shared",name,policy}`, `threetears_cache_held_entries` | what it holds, in bytes and entries: `policy="keep"` must stay, `policy="evictable"` is only cached |
+| `threetears_cache_evictions_total`, `threetears_cache_evicted_bytes_total` | cached versions let go for room, and their bytes |
+| `threetears_cache_evicted_age_seconds` | how long the last evicted version had gone unused: small means the budget is too small |
+| `threetears_cache_hits_total`, `threetears_cache_misses_total` | jobs whose worker found its version kept, or mapped it |
+| `threetears_cache_refusals_total` | writes refused (`SharedArrowFullError`): what it must keep alone left no room |
+| `threetears_cache_serving_fallbacks_total{tier="shared",name=<what>}` | work a consumer ran in its serving process (`fell_back_to_serving`) |
+
+Shared-memory autosize (`threetears.core.shm_autosize`) is off by default. A product turns it on with its own settings
+and an actuator (the hub's deploy path; 3tears ships none). Enabled with no actuator, it refuses at startup:
+
+```python
+from threetears.core.shm_autosize import AutosizeSettings, ShmAutosize
+
+autosize = ShmAutosize(
+    AutosizeSettings(enabled=True, product="reports", threshold=0.75, limit_bytes=16 << 30),
+    actuator,  # anything with request(need: SizeRequest) -> None, idempotent by need.request_id
+    volume="/shared-arrow",
+    stores=[store],
+)
+autosize.start()  # a thread of its own; autosize.stop() at shutdown
+```
+
+Every 10 s it measures the volume (`statvfs`), the container's memory (cgroup) and the stores' kept bytes, and
+exports `threetears_cache_volume_used_bytes`, `volume_size_bytes`, `rss_bytes`, `memory_limit_bytes`,
+`requested_bytes` and `autosize_limit_bytes` (`tier="shared"`, `name` the product). When the volume's peak, the
+memory, or a store's kept bytes reach the threshold of its size, limit or budget, it hands the actuator one
+`SizeRequest`: the volume doubled until the peak sits under the threshold, the memory limit raised by the same
+growth, `past_limit` set when it passes the product's limit. Metrics only: page on
+`threetears_cache_requested_bytes > threetears_cache_autosize_limit_bytes` in Grafana.
 
 ## What it saves, measured
 

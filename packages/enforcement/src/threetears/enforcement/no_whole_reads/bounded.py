@@ -33,6 +33,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final
 
+from threetears.enforcement.common import walk_tree
 from threetears.enforcement.no_whole_reads.helpers import COPY_CALLS
 from threetears.enforcement.no_whole_reads.schema import MIN_REASON
 
@@ -152,7 +153,7 @@ def _bound_once(function: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, a
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith, ast.NamedExpr)):
             names = [
                 found_name.id
-                for found_name in ast.walk(
+                for found_name in walk_tree(
                     node.target if isinstance(node, (ast.For, ast.AsyncFor, ast.NamedExpr)) else node
                 )
                 if isinstance(found_name, ast.Name) and isinstance(found_name.ctx, ast.Store)
@@ -323,7 +324,7 @@ class _Check:
                 targets = {
                     node.id
                     for generator in value.generators
-                    for node in ast.walk(generator.target)
+                    for node in walk_tree(generator.target)
                     if isinstance(node, ast.Name)
                 }
                 self._cut(module, function, name, value.value, binders, targets, local)
@@ -636,7 +637,7 @@ class _Check:
     def _through_accessor(self, module: _Module, value: ast.expr, depth: int = 0) -> bool:
         """whether a relation reads through the copy accessor: an accessor call in it, or a call of a function of the
         module whose every return holds one."""
-        if any(isinstance(node, ast.Call) and _final(node) in COPY_CALLS for node in ast.walk(value)):
+        if any(isinstance(node, ast.Call) and _final(node) in COPY_CALLS for node in walk_tree(value)):
             return True
         if depth < _DEPTH and isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
             callee = module.functions.get(value.func.id)
@@ -705,13 +706,13 @@ class _Check:
             none_calls = [
                 call
                 for statement in none_branch
-                for call in ast.walk(statement)
+                for call in walk_tree(statement)
                 if isinstance(call, ast.Call) and _final(call) == producer
             ]
             other_calls = [
                 call
                 for statement in (other or self._after(function, node))
-                for call in ast.walk(statement)
+                for call in walk_tree(statement)
                 if isinstance(call, ast.Call) and _final(call) == producer
             ]
             if (
@@ -738,8 +739,8 @@ class _Check:
         """whether a call of the producer sits where the function's states are not None."""
         for node, _, none_branch, other in self._none_tests(function):
             region = other or self._after(function, node)
-            if any(call in ast.walk(statement) for statement in region) and not any(
-                call in ast.walk(statement) for statement in none_branch
+            if any(call in walk_tree(statement) for statement in region) and not any(
+                call in walk_tree(statement) for statement in none_branch
             ):
                 return True
         return False
