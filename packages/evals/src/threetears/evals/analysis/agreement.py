@@ -105,6 +105,7 @@ if TYPE_CHECKING:
     from threetears.evals.schema.models import (
         CalibrationRating,
         LabelKey,
+        RaterKind,
     )
 
 
@@ -392,9 +393,15 @@ class _PairedRatings(NamedTuple):
     read: int
 
 
-def _pair_ratings(ratings: Iterable[CalibrationRating], results: Iterable[ResultView]) -> _PairedRatings:
+def _pair_ratings(
+    ratings: Iterable[CalibrationRating], results: Iterable[ResultView], *, rated_by: RaterKind = "person"
+) -> _PairedRatings:
     """Pair each rating with the judge's score on its dimension, on its result or the same output — the ONE matching
     rule.
+
+    ``rated_by`` is whose ratings are paired: people's (the default, and the only reading that is agreement with
+    people), or agents' (a reference reviewer's answers, read apart as agreement with that model). A rating of the
+    other kind is listed unpaired, never pooled.
 
     A rating pairs with its own result's score, then with every other result's score carrying its label key (#628),
     entering each judge (:class:`JudgeKey`) once; it is unpaired only when it entered none, with its own result's
@@ -420,7 +427,11 @@ def _pair_ratings(ratings: Iterable[CalibrationRating], results: Iterable[Result
     for rating in ratings:
         read += 1
         # Before anything is paired: an agent's rating is not a person's, whatever it would pair with.
-        if rating.rater_kind != "person":
+        if rating.rater_kind != rated_by:
+            if rated_by != "person":
+                raise ValueError(
+                    f"an agreement with {rated_by} ratings reads those alone; {rating.id!r} is a {rating.rater_kind}'s"
+                )
             unpaired.append(_unpaired(rating, "rated_by_an_agent"))
             continue
         # The judges this label has entered: one entry per judge, whichever route found it.
@@ -454,8 +465,14 @@ def _pair_ratings(ratings: Iterable[CalibrationRating], results: Iterable[Result
     return _PairedRatings(groups, unpaired, read)
 
 
-def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[ResultView]) -> JudgeAgreement:
+def judge_agreement(
+    ratings: Iterable[CalibrationRating], results: Iterable[ResultView], *, rated_by: RaterKind = "person"
+) -> JudgeAgreement:
     """Pair each rating with the judge's score on its dimension, on its result or the same output, and read agreement.
+
+    By default the agreement is with people: an agent's rating is listed unpaired. ``rated_by="agent"`` reads the
+    judge against agents' ratings alone (a reference reviewer's answers to a blind read), which is agreement with
+    that model and is never presented as agreement with people; every rating handed in must then be an agent's.
 
     :param ratings: The ratings to read.
     :ptype ratings: Iterable[CalibrationRating]
@@ -464,8 +481,9 @@ def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[Resu
     :ptype results: Iterable[ResultView]
     :return: The agreement per (dimension, scale, judge, judge config), and the ratings that could not be paired.
     :rtype: JudgeAgreement
+    :raises ValueError: ``rated_by="agent"`` and a rating that is a person's.
     """
-    groups, unpaired, read = _pair_ratings(ratings, results)
+    groups, unpaired, read = _pair_ratings(ratings, results, rated_by=rated_by)
     dimensions = []
     for key in sorted(groups, key=judge_sort_key):
         numbers = _agreement_numbers(key.scale, groups[key])
@@ -490,7 +508,7 @@ def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[Resu
 
 
 def person_scores_by_result(
-    ratings: Iterable[CalibrationRating], results: Iterable[ResultView]
+    ratings: Iterable[CalibrationRating], results: Iterable[ResultView], *, rated_by: RaterKind = "person"
 ) -> dict[tuple[str, str], list[int]]:
     """Every person's score of a judged dimension of a result, keyed ``(result_id, dimension)`` — the human labels.
 
@@ -512,7 +530,7 @@ def person_scores_by_result(
     :rtype: dict[tuple[str, str], list[int]]
     """
     scores: dict[tuple[str, str], list[int]] = {}
-    for key, pairs in _pair_ratings(ratings, results).groups.items():
+    for key, pairs in _pair_ratings(ratings, results, rated_by=rated_by).groups.items():
         for pair in pairs:
             if pair.other is not None:
                 scores.setdefault((pair.result_id, key.rubric_dim), []).append(pair.other)
@@ -635,8 +653,11 @@ def _agreement_numbers(scale: RubricScale, pairs: Sequence[_Pair]) -> _Agreement
 
 
 #: The one-sided confidence of the bound a tier is AWARDED on: a criterion is met only when its lower bound at
-#: this confidence reaches the bar, so a judge exactly at the bar is awarded the tier at most 5% of the time.
-#: Measured at most 3.6% at 20-40 results (``tests/test_simulated_agreement.py``).
+#: this confidence reaches the bar, so a judge exactly at the bar is awarded the tier at most 5% of the time, where
+#: each result is its own case. Measured at most 3.6% at 20-40 results (``tests/test_simulated_agreement.py``).
+#: Results clustered by case raise it: two results a case whose judge errors coincide, as a blind read of pairs
+#: gives, measure 5.3% at 20 cases and about 7% at 60 to 120 (``docs/open-problems.md``, "Two results of one case
+#: count as two").
 TIER_LOWER_CONFIDENCE: Final = 0.95
 
 #: The one-sided confidence of the bound a criterion is MISSED on: not met only when its upper bound at this

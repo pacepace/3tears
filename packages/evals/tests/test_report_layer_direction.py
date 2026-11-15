@@ -20,7 +20,7 @@ The facts side is matched by path, so a new flat ``report_*.py`` is held to the 
   laundered. Only imports a module writes are followed: a parent package's ``__init__``, which Python runs first, is
   not, because every module's parent would then reach every sibling. An import that names a package is an import
   of that package's ``__init__`` and is followed like any other.
-* **The floor**: the facts side is exactly the three modules that hold the input and its arithmetic, and the page
+* **The floor**: the facts side is exactly the four modules that hold the input, its builder and its arithmetic, and the page
   imports at least one of them, so the gate never passes on an empty side.
 
 **Numbers never import presentation.** The same direction, over the whole analysis package:
@@ -68,8 +68,15 @@ _PAGE = f"{_ANALYSIS}.report"
 #: The facts side, by file name, directly in the analysis package's directory.
 _FACT_FILES = ("report_*.py", "reporting.py")
 
-#: What the facts side is today: the input's shape, its margins and the read tier's projection.
-_FACTS_TODAY = frozenset({f"{_ANALYSIS}.report_input", f"{_ANALYSIS}.report_margins", f"{_ANALYSIS}.reporting"})
+#: What the facts side is today: the input's shape, the one builder of it, its margins and the read tier's projection.
+_FACTS_TODAY = frozenset(
+    {
+        f"{_ANALYSIS}.report_input",
+        f"{_ANALYSIS}.report_input_build",
+        f"{_ANALYSIS}.report_margins",
+        f"{_ANALYSIS}.reporting",
+    }
+)
 
 #: A string literal that is a dotted path into the engine, matched whole, so a sentence naming a module is not one.
 _DOTTED_ENGINE_PATH = re.compile(r"threetears\.evals(?:\.\w+)+")
@@ -197,20 +204,24 @@ _NUMBERS_MODULES = frozenset(
     {
         "agreement",
         "arms",
+        "blind_read",
         "aspects",
         "bar_proposals",
         "campaign_bundle",
         "campaign_readings",
         "campaigns",
         "cassette_mode",
+        "caveats",
         "cell_mean",
         "cells",
+        "checks",
         "completeness",
         "confusion",
         "contention",
         "depth",
         "depth_reading",
         "errors",
+        "first_screen",
         "floors",
         "generation_tally",
         "judge_drift",
@@ -226,6 +237,7 @@ _NUMBERS_MODULES = frozenset(
         "references",
         "remainder",
         "report_input",
+        "report_input_build",
         "report_margins",
         "reporting",
         "revisions",
@@ -233,6 +245,7 @@ _NUMBERS_MODULES = frozenset(
         "said",
         "separation",
         "significance",
+        "state_words",
         "stats",
         "style",
     }

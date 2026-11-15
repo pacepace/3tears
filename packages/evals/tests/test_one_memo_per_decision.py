@@ -37,9 +37,8 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaign_readings import BarStatus
-from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.doc_analysis import aspect_analysis
-from threetears.evals.analysis.report.input_build import report_input
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.service import analysis_report
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
@@ -54,6 +53,7 @@ from threetears.evals.ops import analyses_list, analysis_archive, campaign_recor
 from threetears.evals.quick.contract import as_host
 from threetears.evals.run.curation import set_analysis_archived
 from threetears.evals.storage import InMemoryDocumentStore
+from threetears.evals.analysis.style import measure_name_of
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
 from packages.evals.tests.fixtured_client import FixturedClient
@@ -675,7 +675,7 @@ _WHEN = re.compile(
 
 
 #: A bundle's fingerprint, which digests the campaign it was read for.
-_FINGERPRINT = re.compile(r"v2:[0-9a-f]{64}")
+_FINGERPRINT = re.compile(r"v[23]:[0-9a-f]{64}")
 
 
 def _undated(text: str, *ids: str) -> str:

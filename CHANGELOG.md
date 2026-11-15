@@ -31,7 +31,7 @@ unrecorded-served-model rule. The frontier's cell sentence and the comparison se
 what a campaign's cells keep apart, where they said a campaign still pooled.
 
 **Added:** the `runs_attest_served_model` action (`write`; `run_ids`, `served_model`, `attestation_note?`). It
-records the host's statement on each run (`EvalRun.served_model_attestation`: who, when, the model; core minor 15.19)
+records the host's statement on each run (`EvalRun.served_model_attestation`: who, when, the model; core minor 15.20)
 and writes the model to each candidate usage row of the run that named none. It never replaces a model a response
 named: a run with no silent candidate row, or one stated as another model, is refused before anything is written.
 Stating the same model twice changes nothing.
@@ -54,6 +54,130 @@ Stating the same model twice changes nothing.
   when unset) names the run a class is alone to.
 
 
+### evals: one closed set of reading states, one caveat entry and one first-screen value, all unset
+
+**Added:** the shape every later first-screen change fills, with nothing filled yet. Nothing a report, a page, a
+command line or an action prints changed, and no digest, fingerprint or golden moved
+(`tests/test_shape_move_moves_no_digest.py`).
+
+- `schema/reading_states.py` holds the one closed set of states a reading or a contrast is in (`counted`,
+  `set_aside`, `withheld`, `not_available`), the one closed set of sixteen reasons, an arm's identity state per coordinate
+  (`one`, `split`, `unrecorded`, on the served model, a measure's definition, the template and the rig), and
+  `check_state`, which refuses a reason outside its state's set and a split or an unrecorded identity that names no
+  coordinate.
+- `analysis/state_words.py` maps every earlier word for "this reading is not counted" onto them: 155 words of 37
+  vocabularies. A test finds the package's closed vocabularies by structure and holds that each is mapped there or
+  listed as no word about a reading, with why, so one added later is mapped or listed the day it lands. No call site
+  moved onto the shared words yet.
+- The report input gains, all optional and left out of the document when unset: a typed state on a reading, a
+  contrast, a pair and an arm's figure (`state`); the one caveat list (`caveat_list`, each entry with its class,
+  reach, state and reason); the first-screen value of four slots (`first_screen`, outside the input's digest); and
+  the fields the judge and structure work fills (`checks`, `corrected`, `aa`, `looks`, `baseline`, `family`,
+  `delta_note`, `spread`, `no_variation`, `ordered`, `flip_margin`, `margin_informative`, `cost`, an arm's `arm_id`,
+  `cell`, `spelling` and `identity`). The bundle gains the matching fields, unset.
+- `analysis/first_screen.py` holds `first_screen`, the one function that ranks caveats in eight ranks and applies
+  the cap of three reasons and a count, each rule held by one test (`tests/test_first_screen.py`). Nothing calls it
+  yet.
+- The report input's builder is numbers: `analysis/report/input_build.py` is now `analysis/report_input_build.py`,
+  and the names it read from the page moved down with it (`declared_arm_names`, `printed_arm_labels`,
+  `trial_dimension` and `measure_name_of` to `analysis/style.py`; `bundle_stopped_short` to
+  `analysis/completeness.py`).
+
+**For hosts:** nothing, if you import from the public roots. A stored bundle or report input without the new fields
+reads as it did. An import written against a module below a root follows the moves above; none has a forwarding
+import. Eleven new provisional names, the types the bundle's new fields hold: `threetears.evals.schema` exports
+the shapes `StateOf` and `ArmIdentity` and the aliases `ReadingState`, `Reason`, `Coordinate`, `IdentityState` and
+`SampleKind`; `threetears.evals.analysis` exports the shapes `Check`, `Corrected`, `Rescore` and `Looks`.
+
+A blind read's preference says why it was not read with the same states: `BlindPreference.verdict` is `improved`,
+`regressed` or `not_separated` where the preference was read and None where it was not, and `BlindPreference.state`
+then says `withheld`, `unfinished` (the planned items are not all answered) or `not_available`, `too_few` (too few
+items carry a preference). The quick path prints the same lines. `BlindSample.sample` and a check's `sample` are one
+vocabulary, `SampleKind`. Neither shape is stored, and the blind read shipped in no release.
+
+### evals: a bundle's fingerprint is over the evidence it was assembled from, not the statistics computed from it (#1062)
+
+**Changed:** `AnalysisContextBundle.fingerprint()` is `v3:` and the sha256 of the bundle's new `evidence` manifest: one
+digest for each kind of input the assembly read (the declaration, the host's criteria, the member runs, every result
+as the readers read it, the cases, the ratings, the judge profiles consulted, the prior insights, and the host
+declarations digest). It hashes nothing the package computes. A better formula, another platform's maths library or a
+reordered sum moves no fingerprint; a changed, added or removed input moves it, and the manifest names which kind
+moved. Anything that can change a verdict or a printed number is evidence: the host's pass threshold, its registered
+bars and each catalogued measure's declaration are the `criteria` component, and every stored field of a run, a
+result, a rating and an insight is decided as evidence or not, with the reason, when the package is imported.
+Records are built from named fields, so a field a stored record gains later moves no stored fingerprint.
+Stored values are rendered by `schema.hashing.input_json` (new): keys sorted at every depth, a whole float as the
+integer it equals and any other as Python's shortest round-trip `repr`, so a `jsonb` store that reorders keys or
+hands a whole number back as an integer moves nothing and no platform renders a number another way. Names, prose
+and pricing stay out, as before.
+
+**Changed:** `CampaignBundle.fingerprint()` is `v4:` and means the same for a campaign: the digest of what the campaign
+declares and each aspect's `v3:` fingerprint. The campaign's computed readings and stored reasons, which a `v3:`
+campaign fingerprint hashed, are no part of it.
+
+**Fixed:** `hedges_j` is computed without subtracting two large log-gammas (an exact rational product below 100
+degrees of freedom, Stirling's series from there), within 3 ULP of the exact value at every df; the old form was off
+by up to 1e-9 relative at a million degrees of freedom. It lands with version 3 so that no stored fingerprint moves
+with it. A g shown at its four figures moves only where that error straddled the fourth figure's rounding boundary.
+
+**For hosts:** nothing stored needs regenerating, and nothing is rewritten on a read.
+- An analysis, a frame or a frozen bundle stored with a `v2:` fingerprint keeps it. `evidence_digest(document)` and
+  `fingerprint()` answer `v2:` for a bundle that carries no manifest, `CampaignBundle.from_frame` compares each
+  aspect in the version the frame holds, and a stored analysis's page prints the fingerprint it was stored with.
+- A host that compares a stored fingerprint with a bundle assembled today passes the stored one as `like`:
+  `bundle.fingerprint(like=stored)` or `evidence_digest(document, like=stored)`. A `v2:` record is then compared the
+  version 2 way, over a pre-image frozen at bundle shape 66 with the earlier small-sample factor, so the same evidence
+  still matches. Comparing `bundle.fingerprint()` with a stored `v2:` string directly never matches: that is a
+  version difference, not moved evidence.
+- `inspect_analysis_bundle` does this already. Its `fingerprint` is in the recorded one's version, and
+  `mismatch_cause` is never `package_shape` against a `v3:` record.
+- A new analysis stores `v3:` aspect fingerprints and a `v4:` campaign fingerprint
+  (`generation.bundle_fingerprint`). A stored `v3:` campaign fingerprint is compared through
+  `campaign_bundle.fingerprint(like=stored)`, which answers the version 3 way (the frame, each aspect named by its
+  `v2:` fingerprint); a campaign bundle frozen before the manifest answers `v3:` whatever is asked.
+- `AnalysisContextBundle` gains `evidence` (`EvidenceManifest`, optional, left out while unset); bundle shape stays 66.
+
+### evals: a judged run writes a blind read, and a person's labels say whether they are a random sample (#848)
+
+- A judged result's `write()` writes `blind_read.html` and `blind_read.csv` in place of `to_label.csv`: the run's
+  judged answers in one seeded random order, one per case, with no arm, run or result id and no judge score. The page
+  is one static file that opens from disk, loads nothing, and saves `labels.csv`.
+- `Judge(labels=...)` keeps its name and meaning. The print now says how far the person read and whether the answers
+  are the first cases of the drawn order (a random sample) or any other set (not drawn at random), then per dimension the
+  results paired with their cases, kappa with its bounds, the tier, and, where the person failed some answers, how
+  many of those the judge failed. `to_label.csv` listed answers arm by arm in store order, so no prefix of it was a
+  random sample.
+- With two arms each item is a pair in slots A and B, and the person's preference is read by the exact two-sided sign
+  test (ties counted, never split; fewer than 6 non-tie items too few to test). It is given once, when the first 30
+  items (or all of them, where fewer) are answered, and over those items only. Before that the print says how far the
+  read is and no direction or p: a sign test re-read after every item and stopped when it separates is falsely
+  separated about 18% of the time (`tests/test_simulated_blind_read.py`).
+- `Judge(reviewer=...)` and `Result.reviewed_by(model)` have a model answer the same sheet, one call per case. Its
+  answers are a model's, never a person's: the judge's agreement with it prints as "checked against a model (<id>)"
+  with no tier word, it is not read as a check where it is the judge's own model or where which model served either
+  side was not recorded, and a person's reading decides once it is itself decided. Its calls are held to the eval's
+  `max_cost_usd`, written to the out-of-run ledger under a new purpose, `reviewer` (core v15.19), and printed with
+  what they cost; beside a file store its answers are kept and the same draw is not asked again. A reply that cannot
+  be used leaves its case not answered and the run completes.
+- Labels carry a fingerprint of the output each was given on, so when the answers change the labels whose outputs
+  are still there are kept, as not drawn at random, and the print counts the rest with why.
+- Measured and recorded (`docs/open-problems.md`): two results of one case whose judge errors coincide award the
+  tier to a judge at the bar up to 7% of the time against the 5% its bound claims. Every agreement line states its
+  cases beside its results.
+- No name a user types is added beyond `Judge(reviewer=)` and `Result.reviewed_by`. `Result.blind_read` is what
+  the read found, as typed data (`BlindReadReport`, with the six shapes it holds, provisional on
+  `threetears.evals.schema`): the cases read and how they were sampled, agreement per criterion, the preference with
+  its test, and what a model's reading cost. `Result.blind_read_files` is the two files' text by file name,
+  `Result.judge_read` the judge lines the print says, and `Result.reviews_kept` where a model's answers are kept. The
+  read's working records (the draw, the items, the answers, the sheet) stay the engine's. `judge_agreement` and
+  `person_scores_by_result` take `rated_by=` (people by default).
+- Removed: `Result.to_label`. A `to_label.csv` filled in under an earlier version still reads as a labels file, and
+  counts as not drawn at random.
+
+**For hosts:** no stored document changes shape and no action is added; the host door for blind reads is a later
+change. The out-of-run ledger gains the purpose `reviewer` at core v15.19: a build that lists purposes lists it.
+A host that read `Result.to_label` or the `to_label` key of `Result.write()` reads `Result.blind_read_files` and the
+`blind_read` and `blind_read_csv` keys.
 ### evals: numbers never import presentation, with no exemption
 
 **Changed:** no module on the numbers side of `threetears.evals.analysis` (the statistics, the bundle, the lenses, the

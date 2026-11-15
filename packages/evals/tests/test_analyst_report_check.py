@@ -479,11 +479,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: The evals tool moved again when it gained two actions (#1160): run_remeasure and runs_attest_definitions, a host's
 #: doors to re-read a stored run's measures and to state the measure definitions stored runs ran under. Each adds
 #: its line to the tool's description and its help page; no other action's text moved.
-#: The evals tool moved again when it gained runs_attest_served_model (#1187), a host's door to state the model that
-#: answered stored runs whose responses named none: its line in the tool's description and its help page, the
-#: `served_model` parameter, runs_attest_definitions's help saying a campaign's cells read the statement too, and the
-#: one `attestation_note` the two share, worded for both.
-_EVALS_BYTES = "1534e3cc2a168fa1693b4766969a3de0a936c9e147af0e05b4a69ae2f7b5a269"
+#: The evals tool moved again when the out-of-run ledger gained the purpose ``reviewer`` (a model's reading of a blind
+#: read's sheet; core v15.19): spend_list's purpose filter lists it. Nothing else it serves moved.
+_EVALS_BYTES = "8d87d33721480c08d204e5e31eef098518329dbc073ef03468aa9e072b97aed2"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).

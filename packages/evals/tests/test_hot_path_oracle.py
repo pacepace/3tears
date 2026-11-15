@@ -4,8 +4,8 @@ Each campaign below is read the way a host reads it, and every output is compare
 compares it (:func:`~threetears.evals.schema.hashing.round_figures`: a computed float is compared or served to twelve
 significant figures):
 
-- every aspect's assembled bundle through :func:`~threetears.evals.schema.hashing.identity_json`, the pre-image its
-  fingerprint hashes, and its ``fingerprint()``;
+- every aspect's assembled bundle through :func:`~threetears.evals.schema.hashing.identity_json`, and its
+  ``fingerprint()``, the digest of the evidence it was assembled from;
 - the campaign bundle's frame (what a stored analysis keeps of it) through ``identity_json``, and the campaign
   fingerprint;
 - every ``report_read`` body: markdown, html, the static html page and json, each with ``trials="table"`` and
@@ -46,17 +46,23 @@ hot_path_oracle``, the reason ``test.sh`` asks of every local run), and each reg
 sizes before and after, and how many it left as they were. A capture under ``inputs/`` is written only when it is
 missing; it is the campaign read, not an output, so it is never rewritten by a regeneration.
 
-**One golden set, the pool's, holds on every platform but for one named exception.** The last digits of some statistics (a t interval's bounds and everything
-computed from them, read through the platform's maths library) differ between platforms: the same code reads
-``21.28666989160534`` on the pool and ``21.28666989160533`` in the aarch64 dev container on glibc 2.39. By house rule
-those digits are not a difference: a bundle is compared through ``identity_json``, as its fingerprint is, and a served
-page rounds every computed float it serializes (its JSON, the kit's ``data-chart``, the static page's SVG
-coordinates and interval glyphs), so a body is compared as served, byte for byte. A value that falls on a
-twelfth-figure rounding boundary is the rule's one stated exception, and the fixture holds one: a ``hedges_g`` of
-``scaled_two_aspects`` (its small-sample factor subtracts two large log-gammas) rounds to neighbouring twelfth figures
-on the aarch64 dev container on glibc 2.39 and on the pool, so that aspect's fingerprint, the campaign's and every
-body that prints them differ there. Those entries, and only those (:data:`PLATFORM_OVERRIDES`), carry a second golden
-for that platform until a fingerprint over inputs retires the case (#1062); an override of any other entry fails. The
+**One golden set, the pool's, holds on every platform but for one named entry.** The last digits of some statistics
+(a t interval's bounds and everything computed from them, read through the platform's maths library) differ between
+platforms: the same code reads ``21.28666989160534`` on the pool and ``21.28666989160533`` in the aarch64 dev container
+on glibc 2.39. By house rule those digits are not a difference: a bundle is compared through ``identity_json``, and a
+served page rounds every computed float it serializes (its JSON, the kit's ``data-chart``, the static page's SVG
+coordinates and interval glyphs), so a body is compared as served, byte for byte.
+
+**A fingerprint reads none of them.** It is the digest of the evidence the bundle was assembled from (``v3:``, #1062),
+which no maths library touches, so every fingerprint here, the campaign's frame (which names each aspect by its
+fingerprint) and every body that prints one is one value for every platform. Until version 3 a fingerprint hashed
+the bundle's statistics, and ``scaled_two_aspects`` held twelve entries a second time for the dev container.
+
+**One entry is still held twice**, and it is no fingerprint: ``scaled_two_aspects``' ``tpl-support`` bundle, compared
+whole as computed, holds one corrected p-value (``multiple_comparisons.families[0].comparisons[7].p_adjusted``,
+``1.5029458234250586e-05`` on the pool and ``1.5029458234249729e-05`` on the aarch64 dev container on glibc 2.39) that
+falls on a twelfth-figure rounding boundary, the house rule's one stated exception. That entry, and only that
+(:data:`PLATFORM_OVERRIDES`), carries a second golden for that platform; an override of any other entry fails. The
 goldens are the pool's (GitHub CI's x86_64 runner on glibc 2.39 reads them too). One red lists every entry of its test that moved, carrying the record it read
 (between :data:`OBSERVED` marks). A regeneration is local only: it refuses in CI, on xdist and on testament's runners,
 and every regenerating test fails, naming what it moved.
@@ -141,26 +147,11 @@ PLATFORM_KEY = f"{platform.machine()}-{'-'.join(platform.libc_ver())}"
 #: The one platform an override is held for: the aarch64 dev container on glibc 2.39.
 OVERRIDE_PLATFORM = "aarch64-glibc-2.39"
 
-#: The entries held a second time for :data:`OVERRIDE_PLATFORM`, by campaign, and no others. A ``hedges_g`` of
-#: ``scaled_two_aspects``' ``tpl-support`` sits on a twelfth-figure rounding boundary that the platform's ``lgamma``
-#: decides, so the aspect's bundle (compared through ``identity_json``), its fingerprint, the campaign's frame and
-#: fingerprint, and every body printing a fingerprint differ there. #1062 (a fingerprint over inputs) is the fix; this
-#: table, :data:`OVERRIDE_PLATFORM` and every ``@`` entry in the goldens are deleted when it lands.
-PLATFORM_OVERRIDES: dict[str, frozenset[str]] = {
-    "scaled_two_aspects": frozenset(
-        {
-            "bundle:tpl-support",
-            "fingerprint:tpl-support",
-            "frame",
-            "campaign_fingerprint",
-            *(
-                f"body:{form}:{trials}"
-                for form in ("markdown", "html", "html_static", "json")
-                for trials in ("table", "all")
-            ),
-        }
-    ),
-}
+#: The entries held a second time for :data:`OVERRIDE_PLATFORM`, by campaign, and no others: one bundle, compared whole
+#: as computed, whose ``p_adjusted`` of one comparison sits on a twelfth-figure rounding boundary that the platform's
+#: maths library decides (see the module docstring). No fingerprint, frame or body is among them: a fingerprint is
+#: over the evidence (#1062), so the statistic reaches none of them.
+PLATFORM_OVERRIDES: dict[str, frozenset[str]] = {"scaled_two_aspects": frozenset({"bundle:tpl-support"})}
 
 #: What brackets the observed record in a red's message, so a pool run's report carries the record it read.
 OBSERVED = "<<observed-record>>"
@@ -515,9 +506,29 @@ def test_every_campaign_holds_one_golden_per_form_and_overrides_only_the_named_e
     assert expected <= entries, f"{name} lacks goldens for {sorted(expected - entries)}"
     named = PLATFORM_OVERRIDES.get(name, frozenset())
     assert set(goldens.overrides()) == {f"{entry}@{OVERRIDE_PLATFORM}" for entry in named}, (
-        f"{name}'s overrides are not the named ones (#1062): {goldens.overrides()}"
+        f"{name}'s overrides are not the named ones: {goldens.overrides()}"
     )
     assert named <= entries, f"{name} overrides an entry with no pool golden beside it"
+
+
+def test_no_fingerprint_frame_or_body_is_held_for_one_platform() -> None:
+    """A fingerprint is over the evidence (#1062), so nothing that is one or prints one depends on where it was
+    computed: the only entry held a second time for a platform is a bundle compared whole as computed."""
+    overridden = {entry for entries in PLATFORM_OVERRIDES.values() for entry in entries}
+
+    assert overridden == {"bundle:tpl-support"}
+    assert not {entry for entry in overridden if not entry.startswith("bundle:")}
+
+
+@pytest.mark.parametrize("name", WITH_BUNDLES)
+def test_every_pinned_fingerprint_is_over_the_evidence(name: str) -> None:
+    """The golden vectors: each aspect's pinned fingerprint is ``v3:``, the digest of its evidence manifest, one value
+    for every platform."""
+    goldens = Goldens(name)
+    pinned = {entry: goldens.stored[entry]["text"] for entry in goldens.entries() if entry.startswith("fingerprint:")}
+
+    assert pinned, f"{name} pins no aspect's fingerprint"
+    assert all(len(text) == 67 and text.startswith("v3:") for text in pinned.values()), pinned
 
 
 @pytest.mark.parametrize("variable", ["CI", "PYTEST_XDIST_WORKER", "TESTAMENT_RUNNER"])

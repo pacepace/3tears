@@ -27,6 +27,7 @@ from typing import Any, Final
 from pydantic import Field, field_validator, model_validator
 
 from threetears.evals.analysis.arms import arm_names, short_digest
+from threetears.evals.analysis.bundle.evidence import campaign_fingerprint
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     refuse_a_bundle_of_another_shape,
@@ -68,12 +69,18 @@ CAMPAIGN_BUNDLE_SHAPE = 4
 #: evidence, so renaming it moves no fingerprint (its description never reaches the bundle at all).
 CAMPAIGN_PRESENTATION_FIELDS: frozenset[str] = frozenset({"name"})
 
-#: What a campaign bundle's fingerprint starts with: version 3, the digest of :func:`~threetears.evals.schema.hashing.
-#: identity_digest` (floats rounded) over its evidence without the campaign's name. A fingerprint of another version was
-#: taken over a frame of an earlier shape, which no build reads, so it never matches: what holds it is regenerated.
+#: What a version 3 campaign fingerprint starts with: the digest of :func:`~threetears.evals.schema.hashing.
+#: identity_digest` (floats rounded to twelve figures) over the campaign's frame without its name, the frame naming each
+#: aspect by its ``v2:`` fingerprint. It hashes the campaign's computed readings and stored reasons, so a formula or
+#: wording change moved it; version 4 (:func:`~threetears.evals.analysis.bundle.evidence.campaign_fingerprint`,
+#: ``v4:``) is over the evidence alone and is what a campaign bundle answers now. Version 3 is still computed for what
+#: was stored under it (:meth:`CampaignBundle.fingerprint`'s ``like``).
 _CAMPAIGN_FINGERPRINT_PREFIX: Final[str] = "v3:"
 
-#: What each kind of campaign asks of its report, as the report input says it (``report.input_build``).
+#: The version a ``v3:`` campaign fingerprint named each aspect's bundle in.
+_ASPECT_NAMED_IN_V3: Final[str] = "v2:"
+
+#: What each kind of campaign asks of its report, as the report input says it (``report_input_build``).
 KIND_MEANS: dict[str, str] = {
     "measurement": "One arm, measured: there is nothing to choose between, so the report recommends no arm.",
     "choice": (
@@ -231,18 +238,53 @@ class CampaignBundle(EvalDocumentModel):
         frame["aspects"] = [{"aspect": bundle.aspect, "fingerprint": bundle.fingerprint()} for bundle in self.aspects]
         return frame
 
-    def fingerprint(self) -> str:
-        """The campaign bundle's fingerprint: its frame's, which names each aspect's bundle by its fingerprint, without
-        the campaign's name (:data:`CAMPAIGN_PRESENTATION_FIELDS`) or how a page prints each aspect and arm.
+    def fingerprint(self, *, like: str | None = None) -> str:
+        """The campaign bundle's fingerprint: ``v4:`` and the digest of the evidence it was put together from.
 
-        Its floats rounded to twelve significant figures, so one campaign's evidence fingerprints alike across Python
-        builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary
-        (:meth:`AnalysisContextBundle.fingerprint` says why).
+        **Over the evidence, never over a statistic**, as each aspect's ``v3:`` fingerprint is (#1062): what the
+        campaign declares (its question, arms, aspects and floors, each without how a page prints it, and its ids)
+        and each aspect's bundle fingerprint, which digests what that aspect's assembly read. The campaign's readings
+        across aspects, its arms' computed spellings and every stored reason are no part of it, so a formula or a
+        wording change moves no campaign fingerprint, and changed evidence in any aspect, or an edited declaration,
+        moves it. Renaming the campaign, an aspect, an arm, a lever or a level does not.
 
-        :return: ``v3:`` and a 64-character lowercase hex digest.
+        **A stored fingerprint is compared in its own version.** A ``v3:`` campaign fingerprint was the digest of the
+        campaign's frame, readings and all, with every float rounded to twelve figures and each aspect named by its
+        ``v2:`` fingerprint. Passed as ``like``, it is answered that way, so the same evidence read by the same
+        formulas still matches what was stored. A campaign bundle any of whose aspects carries no evidence manifest
+        (one frozen before the manifest existed) answers ``v3:`` whatever is asked: nothing stored is rewritten.
+
+        :param like: A stored campaign fingerprint whose version to answer in; None answers in the newest the bundle
+            can.
+        :ptype like: str | None
+        :return: The fingerprint: its version's prefix and a 64-character lowercase hex digest.
         :rtype: str
         """
-        return _campaign_digest(self.frame())
+        as_stored = like is not None and like.startswith(_CAMPAIGN_FINGERPRINT_PREFIX)
+        if not as_stored and all(bundle.evidence is not None for bundle in self.aspects):
+            return campaign_fingerprint(
+                self._declared_evidence(), [(bundle.aspect, bundle.fingerprint()) for bundle in self.aspects]
+            )
+        frame = self.model_dump(mode="json", exclude={"aspects"})
+        frame["aspects"] = [
+            {"aspect": bundle.aspect, "fingerprint": bundle.fingerprint(like=_ASPECT_NAMED_IN_V3)}
+            for bundle in self.aspects
+        ]
+        return _campaign_digest(frame)
+
+    def _declared_evidence(self) -> dict[str, Any]:
+        """The campaign's own evidence: its ids and what it declares, rendered without any field that holds its
+        declared default (so a field a later build adds to a declaration moves nothing until a campaign sets it) and
+        without how a page prints an aspect, an arm, a lever or a level."""
+        declared = _evidence_of({"declaration": self.declaration.model_dump(mode="json", exclude_defaults=True)})
+        return {
+            "campaign_id": self.campaign_id,
+            "scope_id": self.scope_id,
+            "subject_id": self.subject_id,
+            "subject_kind": self.subject_kind,
+            "behavior": self.behavior,
+            "declaration": declared["declaration"],
+        }
 
     @staticmethod
     def refuse_another_shape(data: Mapping[str, Any], *, what: str, remedy: str) -> None:
@@ -329,11 +371,15 @@ class CampaignBundle(EvalDocumentModel):
         :return: The bundle.
         :rtype: CampaignBundle
         :raises RefusedInput: The frame is of another shape.
-        :raises ValueError: The bundles are not the ones the frame names, by aspect and fingerprint.
+        :raises ValueError: The bundles are not the ones the frame names, by aspect and fingerprint, each fingerprint
+            compared in the version the frame holds it in.
         """
         cls.refuse_another_shape(frame, what=what, remedy="generate the analysis again (analysis_generate)")
         named = [(entry["aspect"], entry["fingerprint"]) for entry in frame.get("aspects") or []]
-        held = [(bundle.aspect, bundle.fingerprint()) for bundle in bundles]
+        # Each bundle's fingerprint in the version the frame named it by, so a frame stored under an earlier version
+        # still holds its bundles.
+        likes = [fingerprint for _, fingerprint in named] + [None] * len(bundles)
+        held = [(bundle.aspect, bundle.fingerprint(like=like)) for bundle, like in zip(bundles, likes)]
         if named != held:
             raise ValueError(f"{what}'s campaign bundle names aspects {named}, and its aspects hold {held}")
         return cls.model_validate({**_held(frame), "aspects": bundles})
@@ -488,7 +534,7 @@ class CampaignBundle(EvalDocumentModel):
 
 
 def _campaign_digest(frame: Mapping[str, Any]) -> str:
-    """A campaign bundle frame's fingerprint: :data:`_CAMPAIGN_FINGERPRINT_PREFIX` and the digest of its evidence
+    """A campaign bundle frame's version 3 fingerprint: :data:`_CAMPAIGN_FINGERPRINT_PREFIX` and the digest of its evidence
     without the campaign's name."""
     evidence = _evidence_of(frame)
     unnamed = {key: value for key, value in evidence.items() if key not in CAMPAIGN_PRESENTATION_FIELDS}

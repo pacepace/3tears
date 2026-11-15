@@ -39,7 +39,7 @@ from threetears.evals.analysis.report.figure_keys import (
     resolve,
 )
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report.input_build import report_input
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report.call import report_caveats
 from threetears.evals.analysis.report_margins import criterion_figures, flip_margin, weakest_margin
 

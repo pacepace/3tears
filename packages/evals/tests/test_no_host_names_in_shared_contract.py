@@ -195,6 +195,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/campaign_upgrade.py",
     # The one rule naming an aspect after its campaign's behavior, which every site that does so calls.
     "schema/aspect_label.py",
+    # The blind read's stored shapes: a draw, a sheet, answers and what a close found. No host is named.
+    "schema/blind_read.py",
     # The one function reading a lever id as words, which every surface naming a lever calls.
     "schema/lever_words.py",
     "kernel/declaration.py",
@@ -506,6 +508,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # listing order, so a host noun here would be one host's codec written into every host's paging.
     "kernel/list_pages.py",
     "schema/job_lease.py",
+    # The shared reading states: the engine's own closed sets, which every layer holds.
+    "schema/reading_states.py",
     "schema/refusal.py",
     # The generic trial loop and the per-result covariate derivation, both importing nothing of the
     # host. Moved off _HOST_COUPLED_MODULES when a host tool's delivery record became

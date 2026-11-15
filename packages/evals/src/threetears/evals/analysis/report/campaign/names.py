@@ -7,7 +7,7 @@ key, a fold's id, a link) keep the label. An aspect is called by the short name 
 label, never a shortening of it. Where a short name stands in for a label, :func:`legend` gives the pairs a page
 prints once, so a reader can read each short name back to its label.
 
-A measure is named here too, by :func:`measure_name_of`: a goal check by the display name its template declares
+A measure is named beside them, by :func:`~threetears.evals.analysis.style.measure_name_of`: a goal check by the display name its template declares
 (``EvalTemplate.goal_check_names``, carried on the bundle beside the catalog and never in it, so a name moves no
 reading or fingerprint), else by what it tests (``Refund amount check``,
 ``AnalysisContextBundle.named_checks``); every other measure as :func:`~threetears.evals.analysis.style.measure_name`
@@ -26,10 +26,9 @@ from threetears.evals.analysis.report.model import (
     fold_anchor,
     fold_ids,
 )
-from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.declaration import printed_aspect_name
 
-__all__ = ["AspectNames", "aspect_name", "legend", "measure_name_of"]
+__all__ = ["AspectNames", "aspect_name", "legend"]
 
 
 def aspect_name(bundle: AnalysisContextBundle, *, campaign: str | None = None) -> str:
@@ -129,24 +128,3 @@ def legend(names: AspectNames) -> list[tuple[str, str]]:
     :rtype: list[tuple[str, str]]
     """
     return [(name, label) for label, name in names.by_label.items() if name != label]
-
-
-def measure_name_of(bundle: AnalysisContextBundle, measure: str) -> str:
-    """What the page calls ``measure`` on the aspect ``bundle`` reads.
-
-    A goal check's measure by the display name the aspect's template declares for it, else by what it tests
-    (``Refund amount check``, ``AnalysisContextBundle.check_name``); any other measure by its catalog reader
-    name, else its key humanized
-    (:func:`~threetears.evals.analysis.style.measure_name`).
-
-    :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
-    :param measure: The measure's key, as the bundle's readings carry it.
-    :ptype measure: str
-    :return: Its name on the page.
-    :rtype: str
-    """
-    described = bundle.measure_catalog.get(measure)
-    return measure_name(
-        measure, described.reader_name if described is not None else None, declared=bundle.check_name(measure)
-    )

@@ -168,7 +168,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`FailureOwner`** · literal · Whose failure a raised completion call was, as the host's describer reads it (`ProviderFailure.owner`): the calling `account` (refused for every model behind the key), the `provider` (it declined to serve the call at that moment: a rate limit, 429, or the provider overloaded or unavailable, 529 or 503), `unserved` (the provider does not serve the model the call named: retired, unknown, or not a valid model id, so every call naming it gets the same answer), or the `candidate` (anything else, charged to whoever made the call).
   <br>`'account'` | `'provider'` | `'unserved'` | `'candidate'`
 - **`KnownOutOfRunPurpose`** · *host contract* · literal · A value of `OutOfRunPurpose` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
-  <br>`'variation'` | `'proposer'` | `'analysis'` | `'judge'` | `'second_judge'`
+  <br>`'variation'` | `'proposer'` | `'analysis'` | `'judge'` | `'second_judge'` | `'reviewer'`
 - **`KnownRefusalKind`** · *host contract* · literal · A value of `RefusalKind` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
   <br>`'refused'` | `'not_found'` | `'conflict'` | `'validation_failed'` | `'storage_failed'` | `'provider_refused'` | `'admission_refused'`
 - **`KnownSimulatorPurpose`** · *host contract* · literal · A value of `SimulatorPurpose` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
@@ -586,7 +586,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`inter_judge_agreement`** · function · Pair each second judge's score with the first score it answers, and read agreement the way calibration does.
   <br>`inter_judge_agreement(results: Iterable[ResultView], *, pass_id: str | None = None) -> InterJudgeAgreement`
 - **`judge_agreement`** · function · Pair each rating with the judge's score on its dimension, on its result or the same output, and read agreement.
-  <br>`judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[ResultView]) -> JudgeAgreement`
+  <br>`judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[ResultView], *, rated_by: RaterKind = 'person') -> JudgeAgreement`
 - **`judge_drift`** · function · Read how far each dimension's scores moved from the run's judge to a second judge on the same evidence.
   <br>`judge_drift(results: Iterable[ResultView], *, pass_id: str | None = None) -> JudgeDrift`
 - **`judge_evidence_tiers`** · function · Decide the evidence tier of every judge's readings on every dimension, from the two agreements.
@@ -1192,7 +1192,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `design_frozen_at` | `str \| None` | `None` | When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs included, after which a design edit is refused. |
 | `first_result_at` | `str \| None` | `None` | When the aspect's readings could first be seen (ISO-8601): the earliest `scored_at` among the results of the runs it reads. |
 | `package_version` | `str \| None` | `None` | The 3tears-evals version that assembled the bundle; None when the build carries no distribution metadata (a source tree on the path). |
-| `reading_scope` | `ReadingScope` | `ReadingScope(questions_declared=False, late_criteria=[], untimed_results=0, exploratory_measures=[], exploratory_dimensions=[], disclosure=None)` | Which readings no declared question asked about: exploratory, reportable as leads and never as confirmed answers. |
+| `reading_scope` | `ReadingScope` | `ReadingScope(questions_declared=False, late_criteria=[], untimed_results=0, exploratory_measures=[], exploratory_dimensions=[], disclosure=None, looks=None)` | Which readings no declared question asked about: exploratory, reportable as leads and never as confirmed answers. |
 | `exclusions` | `list[ArmExclusions]` | `[]` | Per arm (cell), in coordinate order: how many of its trials were left out of its measures, by cause — `infra` (the harness faulted it), `truncated` (a judge reply cut off at the cap it was sent, named in `truncated_sent_caps`), `judge_cannot_tell` — so a shrunken n says why, arm by arm. |
 | `differential_exclusions` | `list[DifferentialExclusion]` | `[]` | Every (arm, cause) where one cause took more than DIFFERENTIAL_EXCLUSION_SHARE (10%) of the arm's trials, with every other arm's share of the same cause beside it. |
 | `verdict_order` | `VerdictOrder` | `VerdictOrder(merit_priority=[], tiers=[], unranked_bar_measure_ids=[], question=None)` | The order verdicts are read in, as declared: the bars on each axis of `merit_priority`, strongest first, the bars on no ranked axis, and for the aspect's question the bars on the axes it names. |
@@ -1227,6 +1227,8 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `prior_insights` | `list[EvalInsight]` | `[]` | Subject-scoped prior insights (newest first), one per claim and at most the reporting cap of the newest. |
 | `prior_insights_omitted` | `int` | `0` | Live prior insights the ledger holds that `prior_insights` does not carry: an older insight stating the same claim as a carried one, and every insight beyond the cap, oldest dropped first. |
 | `retracted_insights` | `dict[str, str]` | `{}` | Insight id → the archived analysis that minted it, for every insight the ledger held that is NOT in `prior_insights` because its analysis was archived as shown false. |
+| `checks` | `list[Check]` | `[]` | The checks of the rig: identical arms read on the same reading. |
+| `evidence` | `EvidenceManifest \| None` | `None` | What the bundle was assembled from, as one digest and one count per kind of input the assembly read (`analysis.bundle.evidence`): the pre-image of a `v3:` fingerprint, which hashes the evidence and no statistic computed from it. |
 
 <a id="goal-checks"></a>
 ## The goal-check language
@@ -1656,7 +1658,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `person` (on `result_rate_person`) | `string` | Whose verdict it is, as you name them; the host must vouch that you relay it for them, and records it under its own name for them. |
 | `person` (on `judge_case_author`) | `string` or `null` | Whose verdict it is, as you name them; the host must vouch that you relay it for them, and records it under its own name for them. |
 | `predicted_cost` | `object` or `null` | A cost pivot's plan: the structured result launch_estimate returned before these runs. The cell at each priced arm's model and template then shows its predicted cost beside the cost observed. |
-| `purpose_filter` | `'variation'` \| `'proposer'` \| `'analysis'` \| `'judge'` \| `'second_judge'` or `null` | Only calls made for this purpose: variation (a launch's case generation), proposer (a rubric draft), analysis (an analysis generation), judge (a judge's repeat or temperature comparison) or second_judge (a second judge's pass). |
+| `purpose_filter` | `'variation'` \| `'proposer'` \| `'analysis'` \| `'judge'` \| `'second_judge'` \| `'reviewer'` or `null` | Only calls made for this purpose: variation (a launch's case generation), proposer (a rubric draft), analysis (an analysis generation), judge (a judge's repeat or temperature comparison) or second_judge (a second judge's pass). |
 | `question` (on `campaign_create`) | `string` | The one question the campaign asks of its arms, in the operator's words: what would make a candidate the one to adopt. A decision rule is never written here; its clauses are floors. Empty asks none. |
 | `question` (on `campaign_update`) | `string` or `null` | The one question the campaign asks of its arms, in the operator's words: what would make a candidate the one to adopt. A decision rule is never written here; its clauses are floors. Empty asks none. |
 | `rated_at` | `string` or `null` | When the person gave the rating, ISO-8601 with an offset, not in the future; omitted is now and replaces their stored rating of the same thing. Dated, it replaces one given at the same time or earlier; one they gave later stands, and this call is refused (conflict, 409). |
@@ -1825,7 +1827,7 @@ options:
 
 ```text
 usage: python -m threetears.evals spend [-h] --host MODULE:FACTORY --scope SCOPE
-                                        [--purpose {variation,proposer,analysis,judge,second_judge}]
+                                        [--purpose {variation,proposer,analysis,judge,second_judge,reviewer}]
                                         [--launch-group ID] [--template ID]
 
 Print what the engine spent outside any run — case generations, rubric proposals, analyses.
@@ -1835,7 +1837,7 @@ options:
   --host MODULE:FACTORY
                         the host to work in
   --scope SCOPE         the scope to read and write in
-  --purpose {variation,proposer,analysis,judge,second_judge}
+  --purpose {variation,proposer,analysis,judge,second_judge,reviewer}
                         only this purpose's calls
   --launch-group ID     only one launch's case generation
   --template ID         only calls made for this template

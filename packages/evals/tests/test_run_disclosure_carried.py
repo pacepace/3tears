@@ -36,7 +36,7 @@ from packages.evals.tests.run_facts_support import CASES, aspect_bundle, campaig
 from threetears.evals.actions.render import render_cited
 from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.report_input import Disclosure
-from threetears.evals.analysis.report.input_build import report_input
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import (
     JUDGE_KIND,
     JUDGE_KIND_CONTRACT,
@@ -297,6 +297,10 @@ def test_a_disclosure_moves_nothing_in_the_bundle_but_the_run_summaries_that_car
     assert all("machine" not in confound.dimension for confound in disclosed.apparatus_confounds)
     left, right = disclosed.to_dict(), plain.to_dict()
     left.pop("run_summaries"), right.pop("run_summaries")
+    # A run's disclosure is stored on the run and printed, so it is evidence: it moves the manifest's runs, and no
+    # other component.
+    told, untold = left.pop("evidence"), right.pop("evidence")
+    assert {name for name in told if told[name] != untold[name]} == {"runs"}
     assert left == right, "no cell, confound, coverage row or reading reads a disclosure"
 
 

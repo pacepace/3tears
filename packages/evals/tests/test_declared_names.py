@@ -39,7 +39,7 @@ from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis.campaigns import create_campaign, update_campaign
 from threetears.evals.analysis.judge_profiles import judged_criteria
 from threetears.evals.analysis.cells import CELL_MODEL_VERSION
-from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name, legend, measure_name_of
+from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name, legend
 from threetears.evals.analysis.report.serialize_html import campaign_report_html
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.words import reason_words
@@ -68,6 +68,7 @@ from threetears.evals.run.rejudge import judged_template
 from threetears.evals.schema.hashing import identity_json
 from threetears.evals.schema.models import EvalTemplate, GoalStateOutcome, RoleUsage
 from threetears.evals.schema.versioning import DURABLE_SCHEMA_MINOR, DURABLE_SCHEMA_VERSION
+from threetears.evals.analysis.style import measure_name_of
 from packages.evals.tests.campaign_support import ASKED_AT, ASSEMBLED_AT, QUESTION
 from packages.evals.tests.factories import (
     fixture_variant_key,
@@ -236,8 +237,10 @@ def identities(*, named: bool) -> dict[str, str]:
         found[f"{run.id} variant_key"] = derive_variant_identity(run=run, profile=profile).variant_key
         found[f"{run.id} case_set_fingerprint"] = case_set_fingerprint(run)
     for label, bundle in built["bundles"].items():
-        found[f"{label} fingerprint"] = bundle.fingerprint()
-        found[f"{label} evidence_digest"] = evidence_digest(bundle.to_dict())
+        # In version 2, which every pin below was taken in: it hashes the bundle's own document, so it is the one
+        # that would move if a name reached a computed field. (`v3:` is over the evidence, #1062.)
+        found[f"{label} fingerprint"] = bundle.fingerprint(like="v2:")
+        found[f"{label} evidence_digest"] = evidence_digest(bundle.to_dict(), like="v2:")
         found[f"{label} cells"] = ",".join(
             sorted(f"{cell.variant_key}@{cell.apparatus_class_id}" for cell in bundle.cells)
         )
@@ -250,8 +253,12 @@ def identities(*, named: bool) -> dict[str, str]:
     found["readings"] = _sha(built["readings"].model_dump(mode="json", exclude={"aggregate"}))
     # Version 3, the one computed (no earlier version is: what was taken in one is regenerated), leaves the
     # campaign's name out.
-    found["campaign fingerprint v3"] = campaign_bundle.fingerprint()
-    found["campaign document fingerprint v3"] = CampaignBundle.from_dict(campaign_bundle.to_dict()).fingerprint()
+    # In version 3 of the campaign's numbering, which every pin below was taken in: the digest of its frame,
+    # readings and all, each aspect named by its `v2:` fingerprint. (`v4:` is over the evidence, #1062.)
+    found["campaign fingerprint v3"] = campaign_bundle.fingerprint(like="v3:")
+    found["campaign document fingerprint v3"] = CampaignBundle.from_dict(campaign_bundle.to_dict()).fingerprint(
+        like="v3:"
+    )
     return found
 
 
@@ -284,7 +291,13 @@ def documents() -> dict[str, str]:
         **{
             f"{label} bundle": hashlib.sha256(
                 identity_json(
-                    {k: v for k, v in bundle.to_dict().items() if k not in ("package_version", "lever_names")}
+                    {
+                        k: v
+                        for k, v in bundle.to_dict().items()
+                        # `evidence`: the manifest a bundle carries since fingerprint version 3 (#1062), the one
+                        # field added; less it each bundle is written as before.
+                        if k not in ("package_version", "lever_names", "evidence")
+                    }
                 ).encode()
             ).hexdigest()
             for label, bundle in built["bundles"].items()
@@ -457,9 +470,11 @@ class TestAStoredReasonIsNeverReworded:
             "the pinned fixture no longer carries the reason it guards"
         )
         campaign = built["campaign_bundle"]
-        assert campaign.fingerprint() == PINNED["campaign fingerprint v3"], STORED_REASON_MOVED
+        # In the versions that hash the bundle's own document, so a reworded reason would move them; a `v3:` bundle
+        # fingerprint reads no reason at all.
+        assert campaign.fingerprint(like="v3:") == PINNED["campaign fingerprint v3"], STORED_REASON_MOVED
         for label, bundle in built["bundles"].items():
-            assert bundle.fingerprint() == PINNED[f"{label} fingerprint"], STORED_REASON_MOVED
+            assert bundle.fingerprint(like="v2:") == PINNED[f"{label} fingerprint"], STORED_REASON_MOVED
 
     def test_the_page_says_the_stored_reason_in_the_readers_words(self) -> None:
         said = reason_words(UNIFORM_MOVE_NEEDS_RANGE)

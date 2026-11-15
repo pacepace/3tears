@@ -1646,7 +1646,7 @@ def reading_name(bundle: AnalysisContextBundle, measure: str) -> str:
     any other measure as :func:`~threetears.evals.analysis.style.measure_name` names it by the catalog's reader name.
     The readings hold the measure by its key (:attr:`MeasureReading.measure`, :attr:`BarStatus.measure`), never a name,
     so renaming a measure moves no campaign fingerprint; a page that names a goal check by its declared display name
-    reads :func:`~threetears.evals.analysis.report.campaign.names.measure_name_of` instead.
+    reads :func:`~threetears.evals.analysis.style.measure_name_of` instead.
 
     :param bundle: The evidence of the reading's aspect.
     :ptype bundle: AnalysisContextBundle

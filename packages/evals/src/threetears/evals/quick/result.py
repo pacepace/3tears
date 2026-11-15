@@ -32,9 +32,10 @@ A factor's effect at another level of another factor is read against a second co
 
 from __future__ import annotations
 
-import csv
+import hashlib
 import json
 import math
+import os
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -57,27 +58,21 @@ from threetears.evals.analysis import (
     campaign_report_markdown,
     create_campaign,
     get_campaign,
-    judge_agreement,
-    judge_self_agreement,
     variant_key_of_run,
 )
 from threetears.evals.kernel import (
     ACCURACY_MEASURE,
-    CALIBRATION_MIN_RESULTS,
     CONFUSION_CELL_MEASURE,
     MATCH_MEASURE,
     ArmGuardrails,
     GuardrailMargin,
     GuardrailReadings,
-    TierCriterion,
-    agreement_statistic,
-    calibration_criterion,
     confusion_cell,
     confusion_of,
-    separation_criterion,
-    tier_of,
 )
-from threetears.evals.schema import CalibrationRating, EvalResult, RubricScale
+from threetears.evals.analysis.blind_read import BlindClose, blind_sheet, close_blind_read, draw_blind_read
+from threetears.evals.schema import BlindReadReport, CalibrationRating, CompletionClient, EvalResult
+from threetears.evals.schema.blind_read import BlindAnswer, BlindArm, BlindRead
 from threetears.evals.schema.models import DECLARED_NAME_CHARS
 from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
@@ -97,14 +92,27 @@ from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.blocks import DisclosureBlock
 from threetears.evals.analysis.report.aspect.contrasts import aspect_verdict, contrast_rows, report_cell_labels
 from threetears.evals.analysis.report.build import build_code_only_report_in_forms
-from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.verdict import VerdictLine
 from threetears.evals.analysis.style import arm_display_name, arm_name
 from threetears.evals.analysis.report.words import campaign_arm_tags, judged_heading, stratum_names
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
-from threetears.evals.quick.judged import Judge, JudgeExamples
+from threetears.evals.kernel.out_of_run import OutOfRunBudget
+from threetears.evals.quick.blind import (
+    BLIND_READ_CSV,
+    BLIND_READ_HTML,
+    REVIEWER_PURPOSE,
+    answer_sheet,
+    blind_read_csv,
+    blind_read_html,
+    judge_lines,
+    keep_reviewed,
+    plan_review,
+    read_labels,
+)
+from threetears.evals.quick.judged import BorrowedJudgeClient, Judge, JudgeExamples, judge_client
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
 from threetears.evals.run import get_result_trace, list_results
+from threetears.evals.analysis.style import measure_name_of
 
 #: Who an eval's campaign and its control are recorded as created by, unless the caller says.
 CREATED_BY = "eval"
@@ -116,30 +124,8 @@ _UNPREFIXED = frozenset({CANDIDATE_MODEL_LEVER, ARM_LEVER})
 #: How many misses the quiet print shows; the rest are in the report and :meth:`Result.misses`.
 QUIET_MISSES = 5
 
-#: The file a judged result writes beside its report for a person to label: each judged answer, the verdict withheld.
-TO_LABEL = "to_label.csv"
-
-#: The columns of :data:`TO_LABEL`, which ``Judge(labels=...)`` reads back once ``label`` is filled in.
-LABEL_COLUMNS: tuple[str, ...] = (
-    "case",
-    "repeat",
-    "dimension",
-    "case_material",
-    "answer",
-    "label",
-    "reason",
-    "rater",
-    "run_id",
-    "result_id",
-    "output_fingerprint",
-    "criterion_fingerprint",
-)
-
 #: How many characters of an answer a miss line shows where the graded field cannot be read off it.
 _MISS_ANSWER_CHARS = 120
-
-#: What a label is read as, on a pass/fail dimension.
-_PASS_FAIL = {"pass": 1, "fail": 0, "1": 1, "0": 0, "true": 1, "false": 0}
 
 
 def coordinates(arm: str) -> dict[str, str] | None:
@@ -254,12 +240,20 @@ class Result:
     :ivar judge: The eval's judge, or ``None``.
     :ivar disclosures: What the run must say about how it was run, beside its readings: a tool recording replayed or
         made, a logged runner's file.
-    :ivar calibrations: How the judge agrees with the labels ``Judge(labels=...)`` names, per dimension
-        (:func:`calibrate`); empty with no judge, no labels, or no label that pairs.
+    :ivar calibrations: How the judge agrees with the person's labels ``Judge(labels=...)`` names, per dimension
+        (:func:`calibrations_of`); empty with no judge, no labels, or no person's label that pairs.
     :ivar judge_examples: How the judge graded its examples (``Judge(examples=...)``) in the run, each on every
         repeat, beside its agreement with the labels and never pooled into it; ``None`` with no judge, or a judge
         with no examples.
-    :ivar to_label: Every judged answer on every dimension, as a row of :data:`TO_LABEL`, the verdict withheld.
+    :ivar blind_read: What the run's blind read found, as typed data: how many cases were read and whether as a random
+        sample, the judge's agreement per criterion with people and with a model, the preference with its test, and
+        what a model's reading cost. ``None`` with no judge, or no judged answer to show.
+    :ivar blind_read_files: What a judged result writes for a blind read, by file name: ``blind_read.html`` (the
+        run's judged answers in one seeded random order, with no arm, run or judge score on the page) and
+        ``blind_read.csv`` (the same order as rows). Empty with no judge, or no judged answer to show.
+    :ivar judge_read: What the print says of the judge against whoever read it blind (:meth:`calibration_lines`),
+        line by line; empty for an unjudged eval.
+    :ivar reviews_kept: The file a model reviewer's answers are kept in (:meth:`reviewed_by`), or ``None``.
     :ivar contrast_arms: The arm each row of the report's contrasts table tests, by name, row for row; ``None`` for a
         row no arm's variant matches.
     :ivar contrast_measures: The key of the measure each row of the contrasts table reads, row for row.
@@ -286,7 +280,10 @@ class Result:
     disclosures: tuple[str, ...] = ()
     calibrations: tuple[JudgeCalibration, ...] = ()
     judge_examples: JudgeExamples | None = None
-    to_label: tuple[dict[str, str], ...] = field(default=(), repr=False, compare=False)
+    blind_read: BlindReadReport | None = field(default=None, repr=False, compare=False)
+    blind_read_files: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
+    judge_read: tuple[str, ...] = field(default=(), repr=False, compare=False)
+    reviews_kept: Path | None = field(default=None, repr=False, compare=False)
     contrast_arms: tuple[str | None, ...] = field(default=(), repr=False, compare=False)
     contrast_measures: tuple[str | None, ...] = field(default=(), repr=False, compare=False)
     kind: str = field(default=CALLABLE_KIND, repr=False, compare=False)
@@ -404,43 +401,123 @@ class Result:
         return confusion_matrix(cells), label_statistics(observations)
 
     def calibration_lines(self) -> list[str]:
-        """How the judge stands against people, as the quiet print says it; empty for an unjudged eval."""
-        judge = self.judge
-        if judge is None:
-            return []
-        if judge.labels is None:
-            return [
-                f"judge: 0 labels: judge uncalibrated (Judge(labels=...) names a person's labels){self._next_step()}"
-            ]
-        if not judge.labels.is_file():
-            return [f"judge: 0 labels: judge uncalibrated ({judge.labels.name} is not there yet){self._next_step()}"]
-        read = self.calibrations
-        # The sheet by its name, never the path it was read from: a path is the machine's, not the reading's.
-        if not read:
-            return [f"judge: 0 labels paired from {judge.labels.name}: judge uncalibrated{self._next_step()}"]
-        return [f"judge against {judge.labels.name}: {entry.line()}" for entry in read]
+        """How the judge stands against whoever read its answers blind, as the quiet print says it; empty for an
+        unjudged eval."""
+        return list(self.judge_read)
 
-    def _next_step(self) -> str:
-        """What an uncalibrated judge's line ends with: the step that calibrates it, read off the sheet it is taken on.
+    async def reviewed_by(
+        self,
+        model: str | CompletionClient,
+        *,
+        max_cost_usd: float | None = None,
+        kept: str | os.PathLike[str] | None = None,
+    ) -> Result:
+        """This result with its blind read answered by a model, read apart from any person and never as one.
 
-        The calibrated tier's floor is :data:`~threetears.evals.kernel.CALIBRATION_MIN_RESULTS` labelled results per
-        dimension, and :data:`TO_LABEL` holds one row per judged answer per dimension, so the step says how many rows
-        the sheet holds for each, and, where the fewest fall short of the floor, how many more judged answers it needs.
+        The model is shown the sheet a person is (the outputs in their drawn order and slots, the case each answers,
+        the criteria as worded; no arm, run or judge score), one call per case. The judge's agreement with it is
+        agreement with that model. It is not read as a check of the judge where it is the judge's own model, or where
+        which model served either side was not recorded.
+
+        **Its calls are spend like any other.** Each is admitted before it is made, held to ``max_cost_usd`` over
+        everything the eval has landed (its arms, its judge's examples), and written to the store's out-of-run ledger
+        under the purpose ``reviewer``: the cost of checking the judge, in no candidate's cost. The print says what
+        they cost on a line of their own.
+
+        **A case it answered is not asked again.** With ``kept`` its answers are written there as a labels file, and
+        a later call over the same draw reads them back and asks only the cases the file does not hold. A reply that
+        cannot be used leaves its case not answered, counted and said, and the rest are asked.
+
+        The read is drawn again from the stored answers, which draw the same order, and the labels file is read
+        again. A result carries one model's reading: a second call with another model replaces the first, unless
+        both are kept.
+
+        :param model: The reviewer: a model id, a :class:`~threetears.evals.providers.Model`, or any completion
+            client that names its model.
+        :ptype model: str | CompletionClient
+        :param max_cost_usd: The most the eval may spend, these calls included; ``None`` for no cap.
+        :ptype max_cost_usd: float | None
+        :param kept: The file its answers are kept in and read back from; ``None`` keeps none.
+        :ptype kept: str | os.PathLike[str] | None
+        :return: The result, its blind read carrying the model's answers beside any already there.
+        :rtype: Result
+        :raises ValueError: A client naming no model, or an unjudged result or one with no judged answer to read.
         """
-        rows = {dim.name: 0 for dim in self.judge.dims} if self.judge is not None else {}
-        for row in self.to_label:
-            rows[row["dimension"]] = rows.get(row["dimension"], 0) + 1
-        fewest, most = min(rows.values(), default=0), max(rows.values(), default=0)
-        held = f"{fewest}" if fewest == most else f"{fewest} to {most}"
-        sheet = f"the {TO_LABEL} the report writes, which holds {held} per dimension"
-        unseen = "without looking at the judge's verdict"
-        if fewest >= CALIBRATION_MIN_RESULTS:
-            return f"; next step: rate about {CALIBRATION_MIN_RESULTS} outputs of each dimension in {sheet}, {unseen}"
-        return (
-            f"; next step: rate every output in {sheet}, {unseen}; the calibrated tier's floor is "
-            f"{CALIBRATION_MIN_RESULTS} per dimension, so it needs {CALIBRATION_MIN_RESULTS - fewest} more judged "
-            "answers per dimension"
+        judge = self.judge
+        if judge is None or not self.blind_read_files:
+            raise ValueError("a model answers a judged result's blind read, and this result has none")
+        client, name = judge_client(model)
+        lent = BorrowedJudgeClient(client, model_name=name)
+        kept_at = None if kept is None else Path(kept)
+
+        def recorded() -> tuple[BlindRead, tuple[CalibrationRating, ...], list[EvalResult], list[BlindAnswer]]:
+            drawn, outside = read_blind(judge, self.host, self.arms, self.control, self.scope_id, self.name)
+            if drawn is None:
+                raise ValueError("the stored answers no longer hold a judged answer to read blind")
+            results = _results_of(self.host, self.arms, self.scope_id)
+            if kept_at is None or not kept_at.is_file():
+                return drawn, outside, results, []
+            # Only answers on this very draw are read back: an answer to another draw is asked for again.
+            earlier = read_labels(kept_at, drawn, results).answers
+            mine = [answer for answer in earlier if (answer.rater, answer.rater_kind) == (name, "reference")]
+            return drawn, outside, results, mine
+
+        read, loose, results, earlier = await run_blocking(self.host.blocking_executor, recorded)
+        report = read.report
+        have = {answer.item for answer in earlier}
+        landed = [summary.total_cost_usd for summary in self.arms.values()]
+        if self.judge_examples is not None and self.judge_examples.spend.calls:
+            landed.append(None if self.judge_examples.spend.unpriced_calls else self.judge_examples.spend.cost_usd)
+        budget = OutOfRunBudget(
+            store=self.host.storage,
+            scope_id=self.scope_id,
+            cap_usd=None,
+            template_id=self.template_id,
+            campaign_id=self.campaign_id,
+            blocking_executor=self.host.blocking_executor,
         )
+        sheet = blind_sheet(read)
+        # Planned, then admitted here, then made: the reading makes only what this call admitted.
+        planned = plan_review(sheet, {item.item for item in read.items} - have)
+        admitted = (
+            dict(zip(planned, budget.admit(lent, REVIEWER_PURPOSE, list(planned.values())), strict=True))
+            if planned
+            else {}
+        )
+        try:
+            answers, review = await answer_sheet(
+                sheet,
+                lent,
+                budget,
+                admitted,
+                reused=len(have),
+                max_cost_usd=max_cost_usd,
+                landed_usd=None
+                if any(cost is None for cost in landed)
+                else math.fsum(c for c in landed if c is not None),
+            )
+        finally:
+            if isinstance(model, str):
+                # A client built here from a model id is this call's to close; a caller's own is the caller's.
+                await client.aclose()
+
+        def closed() -> Result:
+            others = [answer for answer in read.answers if (answer.rater, answer.rater_kind) != (name, "reference")]
+            reviews = [review_ for review_ in read.reviews if review_.reviewer != name]
+            again = close_blind_read(
+                read.model_copy(
+                    update={"answers": [*others, *earlier, *answers], "reviews": [*reviews, review], "report": None}
+                ),
+                results,
+                other_ratings=loose,
+                unread=report.unread if report is not None else (),
+                judge_models=[judge.model],
+            ).read
+            if kept_at is not None:
+                keep_reviewed(kept_at, again, name)
+            return replace(self, reviews_kept=kept_at, **blind_reading(judge, again, self.arms, kept_at))
+
+        return await run_blocking(self.host.blocking_executor, closed)
 
     # --- the report --------------------------------------------------------------------------------------------------
 
@@ -714,7 +791,7 @@ class Result:
         return _aspect_forms(self.page, self.report.bundle)
 
     def _printed_name(self, measure: str) -> str:
-        """A measure as the page names it (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`):
+        """A measure as the page names it (:func:`~threetears.evals.analysis.style.measure_name_of`):
         ``Accuracy``, ``Number score``. The classifier's ``match`` is its accuracy, which the page leads on, so it is
         named as the page names that."""
         key = ACCURACY_MEASURE if measure == MATCH_MEASURE and self._classifier is not None else measure
@@ -722,21 +799,24 @@ class Result:
 
     def write(self, out_dir: Path | str) -> dict[str, Path]:
         """Write the campaign's page as one self-contained file, its Markdown, its JSON and its aspect's bundle, and the
-        judged answers to label.
+        judged answers to read blind.
 
         :param out_dir: The directory; created when missing.
         :ptype out_dir: Path | str
         :return: Each file written, by role, as :meth:`~threetears.evals.analysis.CampaignReport.write` names them
-            (``html``, ``markdown``, ``json``, ``bundle:<aspect>``), and, for a judged eval, ``to_label``
-            (:data:`TO_LABEL`): each judged answer on each dimension, the judge's verdict withheld, for a person to
-            label and ``Judge(labels=...)`` to read back.
+            (``html``, ``markdown``, ``json``, ``bundle:<aspect>``), and, for a judged eval, ``blind_read`` (a
+            self-contained page: the judged answers in one seeded random order, no arm, run or judge score on it, to
+            answer from the top and save as the labels ``Judge(labels=...)`` reads back) and ``blind_read_csv`` (the
+            same order as rows, for a spreadsheet).
         :rtype: dict[str, Path]
         """
         written = self.page.write(out_dir)
-        if self.judge is not None:
-            path = Path(out_dir) / TO_LABEL
-            _write_to_label(path, self.to_label)
-            written["to_label"] = path
+        for role, name in (("blind_read", BLIND_READ_HTML), ("blind_read_csv", BLIND_READ_CSV)):
+            if name in self.blind_read_files:
+                path = Path(out_dir) / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(self.blind_read_files[name], encoding="utf-8", newline="")
+                written[role] = path
         return written
 
     def exit_code(self) -> int:
@@ -1024,7 +1104,10 @@ class Result:
                     judge=self.judge,
                     disclosures=self.disclosures,
                     calibrations=self.calibrations,
-                    to_label=self.to_label,
+                    blind_read=self.blind_read,
+                    blind_read_files=self.blind_read_files,
+                    judge_read=self.judge_read,
+                    reviews_kept=self.reviews_kept,
                 ),
                 self.judge_examples,
             )
@@ -1250,104 +1333,138 @@ def _exclusion_causes(summary: EvalSummary) -> list[str]:
     return [f"{count} x {error}" for error, count in counted.items()]
 
 
-def _write_to_label(path: Path, rows: Iterable[Mapping[str, str]]) -> None:
-    """Write the judged answers for a person to label, in :data:`LABEL_COLUMNS`."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as written:
-        writer = csv.DictWriter(written, fieldnames=LABEL_COLUMNS)
-        writer.writeheader()
-        writer.writerows(rows)
+def _results_of(host: EvalHost, arms: Mapping[str, EvalSummary], scope_id: str) -> list[EvalResult]:
+    """Every arm's results, arm by arm. Reads the store."""
+    return [result for summary in arms.values() for result in list_results(host.storage, summary.run_id, scope_id)]
 
 
-def _read_labels(path: Path, scope_id: str, scales: Mapping[str, RubricScale]) -> list[CalibrationRating]:
-    """The labels a person filled in on a :data:`TO_LABEL` file, as ratings to pair with the judge's scores.
+def read_blind(
+    judge: Judge | None, host: EvalHost, arms: Mapping[str, EvalSummary], control: str, scope_id: str, name: str
+) -> tuple[BlindRead | None, tuple[CalibrationRating, ...]]:
+    """Draw the run's blind read and read the labels ``judge`` names against it. Reads the store.
 
-    :raises ValueError: A missing column, a label not on its dimension's scale, or a dimension the judge does not score.
-    """
-    with path.open(encoding="utf-8", newline="") as read:
-        rows = list(csv.DictReader(read))
-    if rows and (missing := [column for column in LABEL_COLUMNS if column not in rows[0]]):
-        raise ValueError(f"{path} lacks the column(s) {', '.join(missing)}; label the {TO_LABEL} a result wrote")
-    ratings: list[CalibrationRating] = []
-    for number, row in enumerate(rows, start=2):
-        label = (row.get("label") or "").strip().lower()
-        if not label:
-            continue
-        dimension = row["dimension"]
-        scale = scales.get(dimension)
-        if scale is None:
-            raise ValueError(f"{path} line {number} labels {dimension!r}, which the judge does not score")
-        if scale == "pass_fail":
-            score = _PASS_FAIL.get(label)
-        else:
-            score = int(label) if label.isdigit() and 1 <= int(label) <= 5 else None
-        if score is None:
-            scale_words = "pass or fail" if scale == "pass_fail" else "1 to 5"
-            raise ValueError(f"{path} line {number} labels {dimension!r} {label!r}; its scale is {scale_words}")
-        ratings.append(
-            CalibrationRating(
-                scope_id=scope_id,
-                run_id=row["run_id"],
-                result_id=row["result_id"],
-                rubric_dim=dimension,
-                rater=(row.get("rater") or "").strip() or path.name,
-                rater_kind="person",
-                scale=scale,
-                score=score,
-                reason=(row.get("reason") or "").strip() or f"labelled in {path.name}",
-                output_fingerprint=row["output_fingerprint"] or None,
-                criterion_fingerprint=row["criterion_fingerprint"] or None,
-                rated_withheld=f"read from {path.name}, which carries the answer and its case as the person read them",
-            )
-        )
-    return ratings
+    One arm is read as singles; several as the control against the first candidate, in pairs. The draw is not
+    stored: the same answers draw the same order, so a run replayed from its recordings reads the labels saved from
+    an earlier run's page as answers to its own draw. A label that is not on this draw (an older ``to_label.csv``,
+    another run's answers) pairs with the judge's score of the byte-identical answer and counts as not drawn at random.
 
-
-def _criterion(entry: Any, *, of: Any) -> TierCriterion:
-    """A tier criterion over one agreement reading, or an insufficient one where there is none."""
-    if entry is None:
-        insufficient: TierCriterion = of(0, 0, None, None)
-        return insufficient
-    statistic = agreement_statistic(entry.scale, entry.kappa, entry.weighted_kappa)
-    criterion: TierCriterion = of(entry.n, entry.results, statistic, entry.agreement_interval)
-    return criterion
-
-
-def calibrate(
-    judge: Judge | None, host: EvalHost, arms: Mapping[str, EvalSummary], scope_id: str
-) -> list[JudgeCalibration]:
-    """How ``judge`` agrees with the labels it names, per dimension, over every arm's results. Reads the store.
-
-    Labels pair with the judge's scores of byte-identical answers on the same dimension, in this run or the one they
-    were written on, so a replayed run reads the labels written on its recording's.
-
-    :return: One per dimension a label pairs with; empty with no judge, no labels file, or no label in it.
-    :rtype: list[JudgeCalibration]
+    :return: The read, closed over the labels, and the people's labels that are not on its draw; ``(None, ())`` with
+        no judge or no judged answer to show.
+    :rtype: tuple[BlindRead | None, tuple[CalibrationRating, ...]]
     :raises ValueError: A labels file with a missing column, or a label not on its dimension's scale.
     """
-    if judge is None or judge.labels is None or not judge.labels.is_file():
-        return []
-    ratings = _read_labels(judge.labels, scope_id, {dim.name: dim.scale for dim in judge.dims})
-    results: list[EvalResult] = [
-        result for summary in arms.values() for result in list_results(host.storage, summary.run_id, scope_id)
-    ]
-    separation = {entry.rubric_dim: entry for entry in judge_self_agreement(results).dimensions}
-    calibrations: list[JudgeCalibration] = []
-    for entry in judge_agreement(ratings, results).dimensions:
-        calibrated = _criterion(entry, of=calibration_criterion)
-        separated = _criterion(separation.get(entry.rubric_dim), of=separation_criterion)
-        calibrations.append(
-            JudgeCalibration(
-                dimension=entry.rubric_dim,
-                labels=entry.n,
-                kappa=agreement_statistic(entry.scale, entry.kappa, entry.weighted_kappa),
-                lower=None if entry.agreement_interval is None else entry.agreement_interval[0],
-                upper=None if entry.agreement_interval is None else entry.agreement_interval[1],
-                calibration=calibrated.state,
-                tier=tier_of(calibrated, separated),
-            )
+    if judge is None:
+        return None, ()
+    results = _results_of(host, arms, scope_id)
+    evidence = {}
+    for result in results:
+        trace = get_result_trace(host.storage, result) if result.has_trace else None
+        if trace is not None and trace.judge_evidence is not None:
+            evidence[result.id] = trace.judge_evidence
+    chosen = [control, *(arm for arm in arms if arm != control)][:2]
+    read = draw_blind_read(
+        results,
+        evidence,
+        judge.dims,
+        [
+            BlindArm(key=arm, role="control" if arm == control else "candidate", run_ids=[arms[arm].run_id])
+            for arm in chosen
+        ],
+        scope_id=scope_id,
+        created_by=CREATED_BY,
+        name=f"{name}: blind read",
+    )
+    if not read.items:
+        return None, ()
+    labels = None
+    if judge.labels is not None and judge.labels.is_file():
+        labels = read_labels(judge.labels, read, results)
+        read = read.model_copy(update={"answers": labels.answers})
+    loose = tuple(labels.loose) if labels is not None else ()
+    closed: BlindClose = close_blind_read(
+        read,
+        results,
+        other_ratings=loose,
+        unread=labels.unread if labels is not None else (),
+        judge_models=[judge.model],
+    )
+    return closed.read, loose
+
+
+def model_slug(model: str | CompletionClient) -> str:
+    """A file-name-safe digest of a reviewer's model id: what a kept answers file is named by, never read back."""
+    name = model if isinstance(model, str) else str(getattr(model, "model_name", ""))
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+
+
+def blind_reading(
+    judge: Judge | None, read: BlindRead | None, arms: Mapping[str, EvalSummary], kept: Path | None = None
+) -> dict[str, Any]:
+    """What a result carries of its blind read, as plain values: the files it writes, the lines it prints, and the
+    judge's agreement with people. The read itself stays the engine's.
+
+    :param judge: The eval's judge, or ``None``.
+    :ptype judge: Judge | None
+    :param read: The run's blind read, closed over its labels, or ``None`` where there is no judged answer to show.
+    :ptype read: BlindRead | None
+    :param arms: Each arm's summary, by name: an arm is printed by the name every surface prints it by.
+    :ptype arms: Mapping[str, EvalSummary]
+    :param kept: The file a model reviewer's answers are kept in, or ``None``.
+    :ptype kept: Path | None
+    :return: The result's ``blind_read``, ``blind_read_files``, ``judge_read`` and ``calibrations``.
+    :rtype: dict[str, Any]
+    """
+    if judge is None:
+        return {"blind_read": None, "blind_read_files": {}, "judge_read": (), "calibrations": ()}
+    report = read.report if read is not None else None
+    lines = judge_lines(
+        read,
+        # The file by its name, never the path it was read from: a path is the machine's, not the reading's.
+        labels_name=None if judge.labels is None else judge.labels.name,
+        labels_there=judge.labels is not None and judge.labels.is_file(),
+        loose=report.other_ratings if report is not None else 0,
+        unread=report.unread if report is not None else (),
+        shown={arm: _shown_arm_name(arm) for arm in arms},
+        kept=None if kept is None else kept.name,
+    )
+    files = (
+        {}
+        if read is None
+        else {BLIND_READ_HTML: blind_read_html(blind_sheet(read)), BLIND_READ_CSV: blind_read_csv(read)}
+    )
+    return {
+        "blind_read": report,
+        "blind_read_files": files,
+        "judge_read": tuple(lines),
+        "calibrations": calibrations_of(read),
+    }
+
+
+def calibrations_of(read: BlindRead | None) -> tuple[JudgeCalibration, ...]:
+    """How the judge agrees with people's labels, per dimension, off a closed blind read's report.
+
+    A model's answers are never here: this is agreement with people.
+
+    :param read: The read, or ``None``.
+    :ptype read: BlindRead | None
+    :return: One per dimension a person's label pairs with.
+    :rtype: tuple[JudgeCalibration, ...]
+    """
+    if read is None or read.report is None:
+        return ()
+    return tuple(
+        JudgeCalibration(
+            dimension=reading.dim,
+            labels=reading.pairs,
+            kappa=reading.kappa,
+            lower=reading.lower,
+            upper=reading.upper,
+            calibration=reading.calibration,
+            tier=reading.tier,
         )
-    return calibrations
+        for reading in read.report.agreement
+        if reading.anchor == "person"
+    )
 
 
 #: The id the page's line on how the judge graded its examples carries.
@@ -1360,7 +1477,7 @@ def with_judge_examples(result: Result, examples: JudgeExamples | None) -> Resul
     The page says it in Design & provenance, where it states how far the judge's scores can be read (the judge's
     calibration against people's labels), after that table: one sentence, then the misses. It is the eval's reading,
     taken in its call and not stored with the runs, so the line is set on this result's page; a page read again from
-    the store has none, as it has no ``to_label.csv``.
+    the store has none, as it has no blind read.
 
     :param result: The result.
     :ptype result: Result
@@ -1377,49 +1494,6 @@ def with_judge_examples(result: Result, examples: JudgeExamples | None) -> Resul
     return replace(
         result, judge_examples=examples, page=result.page.model_copy(update={"blocks": [*result.page.blocks, line]})
     )
-
-
-def judged_rows(
-    host: EvalHost, arms: Mapping[str, EvalSummary], scope_id: str, case_names: Mapping[str, str]
-) -> list[dict[str, str]]:
-    """Every judged answer on every dimension, as a :data:`TO_LABEL` row, the judge's score withheld. Reads the store.
-
-    :param host: Where the runs are stored.
-    :ptype host: EvalHost
-    :param arms: Each arm's summary.
-    :ptype arms: Mapping[str, EvalSummary]
-    :param scope_id: Their scope.
-    :ptype scope_id: str
-    :param case_names: What each test case is called, by its id.
-    :ptype case_names: Mapping[str, str]
-    :return: The rows, arm by arm, in the order the store lists each run's results.
-    :rtype: list[dict[str, str]]
-    """
-    rows: list[dict[str, str]] = []
-    for summary in arms.values():
-        for result in list_results(host.storage, summary.run_id, scope_id):
-            trace = get_result_trace(host.storage, result) if result.has_trace else None
-            evidence = trace.judge_evidence if trace is not None else None
-            if evidence is None:
-                continue
-            for score in result.rubric_scores:
-                rows.append(
-                    {
-                        "case": case_names.get(result.test_case_id, result.test_case_id),
-                        "repeat": str(result.k_iteration),
-                        "dimension": score.dim,
-                        "case_material": evidence.case_material,
-                        "answer": evidence.artifact,
-                        "label": "",
-                        "reason": "",
-                        "rater": "",
-                        "run_id": result.eval_run_id,
-                        "result_id": result.id,
-                        "output_fingerprint": score.output_fingerprint or "",
-                        "criterion_fingerprint": score.criterion_fingerprint or "",
-                    }
-                )
-    return rows
 
 
 def _campaign_name(name: str) -> str:
@@ -1613,15 +1687,14 @@ def declare(
 
 __all__ = [
     "CREATED_BY",
-    "LABEL_COLUMNS",
     "QUIET_MISSES",
-    "TO_LABEL",
     "JudgeCalibration",
     "Result",
-    "calibrate",
+    "blind_reading",
+    "model_slug",
     "coordinates",
     "declare",
-    "judged_rows",
+    "read_blind",
     "refuse_an_unusable_margin",
     "with_judge_examples",
 ]
