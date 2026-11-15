@@ -4,6 +4,7 @@ A host never imports from here — :mod:`threetears.evals.analysis` is the publi
 package imports the module that owns a name directly. The modules, in dependency order (each imports only
 those above it):
 
+- ``evidence`` — the manifest of what a bundle was assembled from, the pre-image of its fingerprint.
 - ``schema`` — :class:`~threetears.evals.analysis.bundle.schema.AnalysisContextBundle` and every value object
   it carries; ``caps`` — how many entries each growing list may carry.
 - ``config`` — lever and configuration resolution; ``observations`` — which arm and cell each result is;
