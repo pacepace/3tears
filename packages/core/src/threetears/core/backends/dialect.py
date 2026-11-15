@@ -69,11 +69,19 @@ async def l3_on_yugabyte(l3: Any) -> bool:
 #: readers whose database was asked once (a pool, the rail's proxy): a reader's database does not change under it
 _ASKED: Final[weakref.WeakKeyDictionary[Any, bool]] = weakref.WeakKeyDictionary()
 
+#: asyncpg pools whose database was asked once, by ``id``, each held beside its answer. A pool is slotted with no
+#: ``__weakref__``, so it cannot sit in :data:`_ASKED`; before this every keyed read through a pool -- the hub's and
+#: every service's L3 -- paid a ``SELECT version()`` round trip (plus the pool's reset on release). Held strongly, a
+#: pool's id cannot be reused while it is here; a closed pool is dropped when the next pool is asked, so the map holds
+#: the process's live pools (one or two) and never grows with closed ones. (test_known_dialect, 3tears work/h4-dialect)
+_ASKED_POOLS: Final[dict[int, tuple[asyncpg.Pool, bool]]] = {}
+
 
 async def known_on_yugabyte(l3: Any) -> bool:
     """whether ``l3`` answers from YugabyteDB, with no round trip where it can be known locally: an asyncpg
     connection reads the ``server_version`` its server sent at startup (YugabyteDB's carries ``-YB-``); any other
-    reader (a pool, the rail's proxy) is asked once, by :func:`l3_on_yugabyte`, and its answer kept for it.
+    reader (a pool, the rail's proxy) is asked once, by :func:`l3_on_yugabyte`, and its answer kept for it (an
+    asyncpg pool, which cannot be held weakly, in :data:`_ASKED_POOLS`).
 
     For a statement whose spelling differs by database on every call (a listing's page past its cursor), where
     :func:`l3_on_yugabyte`'s question each time would be a round trip a page.
@@ -85,6 +93,8 @@ async def known_on_yugabyte(l3: Any) -> bool:
     """
     if isinstance(l3, asyncpg.Connection | PoolConnectionProxy):
         return _YUGABYTE_VERSION_MARK in str(l3.get_settings().server_version)
+    if isinstance(l3, asyncpg.Pool):
+        return await _pool_on_yugabyte(l3)
     try:
         return _ASKED[l3]
     except KeyError:  # NOSILENT: not asked yet: asked below, and the answer kept
@@ -94,6 +104,24 @@ async def known_on_yugabyte(l3: Any) -> bool:
         return await l3_on_yugabyte(l3)
     answer = await l3_on_yugabyte(l3)
     _ASKED[l3] = answer
+    return answer
+
+
+async def _pool_on_yugabyte(pool: asyncpg.Pool) -> bool:
+    """whether ``pool`` answers from YugabyteDB, asked once a pool (:data:`_ASKED_POOLS`).
+
+    :param pool: the pool
+    :ptype pool: asyncpg.Pool
+    :return: whether its database is YugabyteDB
+    :rtype: bool
+    """
+    held = _ASKED_POOLS.get(id(pool))
+    if held is not None and held[0] is pool:
+        return held[1]
+    answer = await l3_on_yugabyte(pool)
+    for key in [key for key, (other, _) in _ASKED_POOLS.items() if other.is_closing()]:
+        del _ASKED_POOLS[key]
+    _ASKED_POOLS[id(pool)] = (pool, answer)
     return answer
 
 

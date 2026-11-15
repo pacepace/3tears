@@ -45,6 +45,7 @@ from threetears.observe import get_logger
 
 import threetears.core.backends.schema_sql as schema_sql
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
+from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.backends.protocol import (
     L3_RAIL_ROW_CAP,
     L3AnswerCutError,
@@ -664,6 +665,19 @@ class SqlL3Backend:
         :raises AttributeError: if the wrapped pool has no such attribute.
         """
         return getattr(self._pool, name)
+
+    async def answers_from_yugabyte(self) -> bool:
+        """whether the reader behind this backend answers from YugabyteDB, asked of that reader
+        (:func:`~threetears.core.backends.dialect.known_on_yugabyte`): this wrapper sends no ``SELECT version()``.
+
+        WHY: a collection's ``l3_pool`` is this wrapper around a bare pool or the rail's proxy. Asked as a pool, it sent
+        ``version()`` through the rail, which the hub's broker refuses (a pod's keyed read with an index hint failed),
+        and over a bare pool it was a second question beside the pool's own (test_known_dialect).
+
+        :return: whether the database behind it is YugabyteDB
+        :rtype: bool
+        """
+        return await known_on_yugabyte(self._pool)
 
     def register_schema(self, table: str, schema: TableSchema) -> None:
         """Register a :class:`TableSchema` so the structured ops emit schema-aware SQL for ``table``.

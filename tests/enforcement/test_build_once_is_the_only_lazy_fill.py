@@ -455,6 +455,13 @@ _NOT_BUILDS: dict[str, str] = {
         "callers that both find it stale each read the listing and record the same facts, with "
         "no object built and nothing registered twice"
     ),
+    "packages/core/src/threetears/core/backends/dialect.py::_pool_on_yugabyte::_ASKED_POOLS": (
+        "which database each live asyncpg pool answers from, by id with the pool held beside it (a pool cannot be "
+        "held weakly) and dropped once the pool closes, so BuildOnce (one value per key for the life of the "
+        "process, never dropped) cannot hold it; the question is awaited, which BuildOnce's build cannot be, and "
+        "two callers that both find it unasked each ask the same pool and record the same answer, with no object "
+        "built and nothing registered twice"
+    ),
 }
 
 
