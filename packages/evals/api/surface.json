@@ -4971,6 +4971,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.AnswerSplit": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.ArmAggregate": {
       "kind": "model",
       "signature": "",

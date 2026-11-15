@@ -28,7 +28,7 @@ arm's cell with the control's by `rig_class_id or apparatus_class_id`, not by eq
 that stop pooling: within one arm and setup of a campaign, results whose candidate responses named different models,
 and those that named none beside those that named one. No host apparatus dimension may be named
 `served_model:candidate`. `CampaignReadings.answer_splits` (new, optional, left out when empty) names each arm read
-per model; a host that expects a row per candidate and aspect handles its absence there. After a judge-case write, read the receipt's `template_id` (with `revision`,
+per model, as an `AnswerSplit` (new, provisional, `threetears.evals.analysis`); a host that expects a row per candidate and aspect handles its absence there. After a judge-case write, read the receipt's `template_id` (with `revision`,
 `superseded_template_id`, `carried`, `stranded_case_sets`, all new): it is the template to launch and to write the
 next case into, and a case set left on the superseded revision needs its next version minted over `carried`'s
 copies. `freeze_judge_cases` writes in place unless called with `revise=True`.

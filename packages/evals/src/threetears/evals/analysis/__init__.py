@@ -105,6 +105,7 @@ from threetears.evals.analysis.campaign_bundle import ArmSpelling, CampaignBundl
 from threetears.evals.analysis.campaign_readings import (
     AggregateFigure,
     AggregateWeighting,
+    AnswerSplit,
     ArmAggregate,
     AspectReading,
     BarState,
@@ -451,6 +452,7 @@ __all__ = [
     # A campaign read one aspect at a time, and the shapes of what code reads off it across aspects.
     "AggregateFigure",
     "AggregateWeighting",
+    "AnswerSplit",
     "ArmAggregate",
     "AspectDeclaration",
     "AspectReading",
