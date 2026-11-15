@@ -18,6 +18,7 @@ from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.identity import case_set_fingerprint, resolve_context_identity
 from threetears.evals.kernel.metrics import holds_host_measure
+from threetears.evals.kernel.scoring import definitions_unrecorded, remeasure_unfinished
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.analysis.reporting import _subject_id_of
 from threetears.evals.analysis.measurement_windows import measurement_window, measurement_window_disclosure
@@ -251,11 +252,15 @@ def measure_definition_disclosure(
     silent = [
         run.id
         for run in runs
-        if run.measure_definitions is None
-        and any(holds_host_measure(result.host_measures) for result in results_by_run.get(run.id, ()))
+        if definitions_unrecorded(
+            run,
+            holds_host_measures=any(
+                holds_host_measure(result.host_measures) for result in results_by_run.get(run.id, ())
+            ),
+        )
     ]
-    remeasured = [run.id for run in runs if run.measure_remeasures and run.measure_remeasures[-1].completed_at]
-    unfinished = [run.id for run in runs if run.measure_remeasures and not run.measure_remeasures[-1].completed_at]
+    remeasured = [run.id for run in runs if run.measure_remeasures and not remeasure_unfinished(run)]
+    unfinished = [run.id for run in runs if remeasure_unfinished(run)]
     attested = [run.id for run in runs if run.measure_attestation is not None]
     names = sorted({name for run in recorded for name in run.measure_definitions or {}})
     moved = [name for name in names if len({(run.measure_definitions or {}).get(name) for run in recorded}) > 1]
@@ -278,7 +283,7 @@ def measure_definition_disclosure(
             f"{_listed(silent)} hold host measures and recorded no measure definitions, so nothing says which "
             "definition their values were read under. Each is a cell of its own, in pass^k and in a campaign, "
             "where it is pooled and compared with nothing. Their host states the definitions they ran under "
-            "(runs_attest_definitions), or re-measures them (run_remeasure)."
+            "(runs_attest, coordinate measure_definition), or re-measures them (run_remeasure)."
         )
     if attested:
         sentences.append(

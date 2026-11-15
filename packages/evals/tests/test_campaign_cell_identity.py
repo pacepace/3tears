@@ -3,10 +3,10 @@ recorded matches nothing.
 
 * What a host measure counts is the instrument's, so it is a dimension of the rig: runs read under two definitions
   share no cell and no contrast, and a run whose results hold a host measure and that recorded no definition is
-  pooled and compared with nothing, until its host states the definitions (``runs_attest_definitions``).
+  pooled and compared with nothing, until its host states the definitions (``runs_attest``).
 * Two runs whose candidate responses each named no model share no cell: two silences are no match. A run that names
   what answered it (a provider's response, a scripted client's own name, a recording) pools as it always did, and a
-  host states the model that answered a silent run (``runs_attest_served_model``).
+  host states the model that answered a silent run (``runs_attest``).
 * The cell model's version moved once for it, and the frontier's sentence says what a campaign's cells keep apart.
 """
 
@@ -20,6 +20,7 @@ from threetears.evals.actions import Caller, eval_catalogue, standard_tools
 from threetears.evals.analysis import (
     CELL_MODEL_VERSION,
     AnalysisContextBundle,
+    BundleInspection,
     Cell,
     assemble_context_bundle,
     build_code_only_report,
@@ -32,6 +33,7 @@ from threetears.evals.kernel import ControlDeclaration, EvalStorage, SweptAxis, 
 from threetears.evals.ops import OpsHost
 from threetears.evals import Log
 from threetears.evals.run import attest_measure_definitions
+from threetears.evals.run.remeasure import attest_served_model
 from threetears.evals.schema import EvalResult, EvalRun, SweepableValue
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_campaign
@@ -232,7 +234,7 @@ def test_a_run_holding_host_measures_that_recorded_no_definition_stands_alone_an
 
     page = report_markdown(build_code_only_report(bundle, assembled_at="2026-11-15T00:00:00+00:00"))
     assert "hold host measures and recorded no measure definitions" in page
-    assert "runs_attest_definitions" in page and "run_remeasure" in page
+    assert "runs_attest, coordinate measure_definition" in page and "run_remeasure" in page
 
 
 def test_an_unrecorded_run_holding_no_host_measure_pools_exactly_as_before() -> None:
@@ -315,7 +317,7 @@ def test_the_campaign_page_says_silent_runs_are_read_apart_and_names_the_remedy(
         off_loop(campaign_report, toyhost_host(storage=storage), _CAMPAIGN_ID, TOYHOST_SCOPE)
     )
     assert "named no model in more than one run" in page
-    assert "runs_attest_served_model" in page
+    assert "runs_attest, coordinate served_model" in page
 
 
 async def test_the_hosts_statement_of_the_served_model_is_recorded_as_one_and_the_runs_pool() -> None:
@@ -325,13 +327,22 @@ async def test_the_hosts_statement_of_the_served_model_is_recorded_as_one_and_th
     host = OpsHost(launch=launch)
     (tool, *_) = eval_catalogue().mount_all(standard_tools())
     caller = Caller(scope_id=TOYHOST_SCOPE, identity="agent:backfill")
-    ask = {"action": "runs_attest_served_model", "run_ids": [first[0].id, second[0].id]}
+    ask = {"action": "runs_attest", "coordinate": "served_model", "run_ids": [first[0].id, second[0].id]}
 
     stated = await tool.call({**ask, "served_model": "vendor/extractor-next-2026-08"}, host=host, caller=caller)
 
     assert not stated.is_error and stated.structured is not None, stated.text
     assert stated.structured["run_ids"] == [first[0].id, second[0].id], "one call takes many runs"
-    assert stated.structured["rows_named"] == len(first[1]) + len(second[1])
+    assert stated.structured["coordinate"] == "served_model"
+    assert stated.structured["stated"] == {"served_model": "vendor/extractor-next-2026-08"}
+    silent_left = [
+        row
+        for run_id in (first[0].id, second[0].id)
+        for result in off_loop(storage.query_eval_results_by_run, run_id, TOYHOST_SCOPE)
+        for row in result.usage
+        if row.role == "candidate" and not row.served_model
+    ]
+    assert silent_left == [], "every candidate row that named none now names the stated model"
     run = off_loop(storage.load_eval_run, first[0].id, TOYHOST_SCOPE)
     assert run is not None and run.served_model_attestation is not None
     assert run.served_model_attestation.attested_by == "agent:backfill", "stated, and by whom: never a response's word"
@@ -342,7 +353,7 @@ async def test_the_hosts_statement_of_the_served_model_is_recorded_as_one_and_th
 
     again = await tool.call({**ask, "served_model": "vendor/extractor-next-2026-08"}, host=host, caller=caller)
     assert not again.is_error and again.structured is not None, again.text
-    assert again.structured["run_ids"] == [] and again.structured["rows_named"] == 0
+    assert again.structured["run_ids"] == []
     assert again.structured["already_attested"] == [first[0].id, second[0].id]
 
     other = await tool.call({**ask, "served_model": "vendor/another"}, host=host, caller=caller)
@@ -356,7 +367,7 @@ async def test_a_statement_never_replaces_a_model_a_response_named() -> None:
     (tool, *_) = eval_catalogue().mount_all(standard_tools())
 
     refused = await tool.call(
-        {"action": "runs_attest_served_model", "run_ids": [named[0].id], "served_model": "vendor/another"},
+        {"action": "runs_attest", "coordinate": "served_model", "run_ids": [named[0].id], "served_model": "vendor/another"},
         host=OpsHost(launch=launch),
         caller=Caller(scope_id=TOYHOST_SCOPE, identity="agent:backfill"),
     )
@@ -389,3 +400,59 @@ def test_the_frontiers_cell_sentence_no_longer_says_a_campaigns_cells_pool_every
     assert "pooling every run of the variant under one rig" not in PASS_HAT_K_CELL_READING
     assert "is read in a cell of its own" in PASS_HAT_K_CELL_READING
     assert "is compared with nothing" in PASS_HAT_K_CELL_READING
+
+
+# =============================================================================
+# Evidence: a statement moves the fingerprint, the cell model's version does not
+# =============================================================================
+
+
+async def test_stating_a_runs_served_model_is_evidence_and_moves_the_fingerprint_of_a_bundle_over_it() -> None:
+    first, second = _silent("a"), _silent("b")
+    storage = _stored([_named(_CONTROL, "control", _NOW), first, second])
+    before = _bundle(storage)
+
+    await attest_served_model(
+        toyhost_host(storage=storage),
+        [first[0].id, second[0].id],
+        TOYHOST_SCOPE,
+        "vendor/extractor-next-2026-08",
+        attested_by="person:host",
+    )
+    after = _bundle(storage)
+
+    assert before.evidence is not None and after.evidence is not None
+    assert after.fingerprint() != before.fingerprint(), "a report over the runs as they were is no longer current"
+    assert after.evidence.runs != before.evidence.runs, "who stated it and when is on the run"
+    assert after.evidence.results != before.evidence.results, "and the stated model is on each result's usage rows"
+
+
+async def test_stating_a_runs_measure_definitions_moves_the_fingerprint_too() -> None:
+    batches = [_named(_CONTROL, "control", None), _named(_CANDIDATE, "a", None)]
+    storage = _stored(batches)
+    before = _bundle(storage)
+
+    await attest_measure_definitions(
+        toyhost_host(storage=storage), [batch.id for batch, _ in batches], TOYHOST_SCOPE, _NOW, attested_by="person:host"
+    )
+
+    assert _bundle(storage).fingerprint() != before.fingerprint()
+
+
+def test_a_stored_report_over_unmoved_evidence_reads_as_current_across_the_cell_model_move() -> None:
+    """A report written under cell model 14 recorded the fingerprint of its evidence. The rule that pools cells is
+    the package's, not evidence: over the same runs and results this build computes the same fingerprint, so the
+    report reproduces and names no cause, whatever version its bundle is stamped with."""
+    bundle = _bundle(_stored([_named(_CONTROL, "control", _NOW), _named(_CANDIDATE, "a", _NOW)]))
+    stored_under_14 = bundle.model_copy(update={"cell_model_version": 14})
+    assert stored_under_14.fingerprint() == bundle.fingerprint()
+
+    inspected = BundleInspection.over(
+        bundle,
+        analysis_id="written-under-cell-model-14",
+        recorded_fingerprint=stored_under_14.fingerprint(),
+        recorded_schema_version=bundle.schema_version,
+        recorded_host_declarations_digest=bundle.host_declarations_digest,
+    )
+
+    assert (inspected.reproduces_generation, inspected.mismatch_cause) == (True, None)

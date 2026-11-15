@@ -877,6 +877,36 @@ def _cell_field_reasons() -> tuple[tuple[str, UnpooledReason], ...]:
 _CELL_FIELD_REASONS: tuple[tuple[str, UnpooledReason], ...] = _cell_field_reasons()
 
 
+def definitions_unrecorded(run: EvalRun, *, holds_host_measures: bool) -> bool:
+    """Whether nothing says which definition of its host's measures a run's values were read under.
+
+    The one rule every reader applies (pass^k's cell, a campaign's cells, a comparison set's disclosure): the run
+    recorded no measure definitions (``None``; an empty map is a recording) and its results hold a host measure. A
+    run that recorded none and holds none has no value a definition could have moved.
+
+    :param run: The run.
+    :ptype run: EvalRun
+    :param holds_host_measures: Whether any of the run's results holds a host measure
+        (:func:`~threetears.evals.kernel.metrics.holds_host_measure`).
+    :ptype holds_host_measures: bool
+    :return: True where the run's measure definitions are unrecorded and matter.
+    :rtype: bool
+    """
+    return run.measure_definitions is None and holds_host_measures
+
+
+def remeasure_unfinished(run: EvalRun) -> bool:
+    """Whether a re-measure of the run began and did not finish, so its results hold values read under two
+    definitions and the run is no cell's until it is re-measured again.
+
+    :param run: The run.
+    :ptype run: EvalRun
+    :return: True where the run's last re-measure has no completion.
+    :rtype: bool
+    """
+    return bool(run.measure_remeasures) and run.measure_remeasures[-1].completed_at is None
+
+
 def pass_hat_k_cell(
     run: EvalRun,
     profile: HostProfile | None,
@@ -929,10 +959,10 @@ def pass_hat_k_cell(
         "served": tuple(sorted(set(served))),
         "served_unrecorded": served_unrecorded,
     }
-    definitions_unrecorded = run.measure_definitions is None and holds_host_measures
-    shared["definitions_unrecorded"] = definitions_unrecorded
-    alone = run.id if run.template_digest is None or definitions_unrecorded or served_unrecorded else None
-    if run.measure_remeasures and run.measure_remeasures[-1].completed_at is None:
+    unrecorded = definitions_unrecorded(run, holds_host_measures=holds_host_measures)
+    shared["definitions_unrecorded"] = unrecorded
+    alone = run.id if run.template_digest is None or unrecorded or served_unrecorded else None
+    if remeasure_unfinished(run):
         # Results are rewritten before the run's record is: until the pass completes, some of its values are read
         # under one definition and some under another, and the run is no cell's.
         return PassHatKCell(
@@ -1751,6 +1781,8 @@ __all__ = [
     "capability_scores",
     "composite_basis",
     "compute_async_delivery_summary",
+    "definitions_unrecorded",
+    "remeasure_unfinished",
     "compute_composite_summary",
     "compute_cost_summary",
     "compute_dimension_summary",

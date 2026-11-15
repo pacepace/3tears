@@ -244,7 +244,7 @@ def _answer_split_lines(readings: CampaignReadings, names: AspectNames) -> list[
             lines.append(
                 f"{label}'s responses on {on} named no model in more than one run, so nothing says one model answered "
                 f"them and each such run is read apart: {kept}. Its host states the model that answered them "
-                "(runs_attest_served_model)."
+                "(runs_attest, coordinate served_model)."
             )
             continue
         if arm == readings.control:

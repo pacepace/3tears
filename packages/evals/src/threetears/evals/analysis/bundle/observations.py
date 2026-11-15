@@ -22,6 +22,7 @@ from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_variant_identity
 from threetears.evals.kernel.metrics import holds_host_measure
 from threetears.evals.kernel.result_reading import ResultView
+from threetears.evals.kernel.scoring import definitions_unrecorded, remeasure_unfinished
 from threetears.evals.schema.hashing import canonical_digest
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
@@ -86,10 +87,8 @@ def measure_definition_levels(
     levels: dict[str, str | None] = {}
     for run in runs:
         results = results_by_run.get(run.id, [])
-        unfinished = bool(run.measure_remeasures) and run.measure_remeasures[-1].completed_at is None
-        if unfinished or (
-            run.measure_definitions is None and any(holds_host_measure(result.host_measures) for result in results)
-        ):
+        holds = any(holds_host_measure(result.host_measures) for result in results)
+        if remeasure_unfinished(run) or definitions_unrecorded(run, holds_host_measures=holds):
             levels.update({result.id: None for result in results})
         elif run.measure_definitions:
             digest = canonical_digest(run.measure_definitions)

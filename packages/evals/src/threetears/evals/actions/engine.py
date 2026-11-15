@@ -34,6 +34,7 @@ from threetears.evals.schema import EvalRunStatus
 from threetears.evals.kernel import EvalStorage, ResultOutcome, ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema import KnownOutOfRunPurpose
+from threetears.evals.schema.reading_states import Coordinate
 from threetears.evals.ops.analysis import CAMPAIGN_NAME_CHARS
 from threetears.evals.ops import (
     EXPORT_PAGE_RESULTS,
@@ -182,9 +183,8 @@ from threetears.evals.schema.models import (
     eval_trace_doc_id,
 )
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
-from threetears.evals.run.remeasure import ServedModelAttested, attest_served_model
+from threetears.evals.run.remeasure import attest_served_model
 from threetears.evals.run import (
-    Attested,
     JudgeCaseFreezeReport,
     JudgeTemperatureEstimate,
     Regrade,
@@ -981,39 +981,52 @@ class RunRemeasureParams(EvalBaseModel):
     ] = False
 
 
-AttestationNote = Annotated[
-    str | None, Field(description="Why the host knows what it states of the runs, in its own words.")
-]
-
-
-class RunsAttestDefinitionsParams(EvalBaseModel):
-    """``runs_attest_definitions``."""
+class RunsAttestParams(EvalBaseModel):
+    """``runs_attest``."""
 
     run_ids: RunIds
+    coordinate: Annotated[
+        Coordinate,
+        Field(
+            description="Which coordinate of the runs' identity is stated: measure_definition (what each host "
+            "measure counted when the runs' values were read) or served_model (the model that answered their "
+            "candidate calls). No other coordinate is stated after the fact."
+        ),
+    ]
     measure_definitions: Annotated[
         dict[str, str] | None,
         Field(
-            description="measure key -> the definition digest those runs ran under, as the host computes it from the "
-            "measure descriptors as they were. Omitted: the host's current definitions, for runs made since its "
-            "last definition change."
+            description="For measure_definition: measure key -> the definition digest those runs ran under, as the "
+            "host computes it from the measure descriptors as they were. Omitted: the host's current definitions, "
+            "for runs made since its last definition change."
         ),
     ] = None
-    attestation_note: AttestationNote = None
-
-
-class RunsAttestServedModelParams(EvalBaseModel):
-    """``runs_attest_served_model``."""
-
-    run_ids: RunIds
     served_model: Annotated[
-        str,
+        str | None,
         Field(
             min_length=1,
-            description="The model that answered those runs' candidate calls, as a provider's response would name "
-            "it: the dated version, never a floating alias.",
+            description="For served_model: the model that answered those runs' candidate calls, as a provider's "
+            "response would name it: the dated version, never a floating alias.",
         ),
-    ]
-    attestation_note: AttestationNote = None
+    ] = None
+    attestation_note: Annotated[
+        str | None, Field(description="Why the host knows what it states of the runs, in its own words.")
+    ] = None
+
+
+class RunsAttested(EvalBaseModel):
+    """What a host's statement of one coordinate of stored runs wrote: one shape, whichever coordinate."""
+
+    coordinate: Coordinate = Field(description="The coordinate stated.")
+    run_ids: list[str] = Field(description="The runs stamped by this call, in the order given.")
+    already_attested: list[str] = Field(
+        default_factory=list,
+        description="The runs an earlier statement had stamped with the same value: left as they were.",
+    )
+    stated: dict[str, str] = Field(
+        description="What was stated of each run: measure key -> definition digest, or served_model -> the model."
+    )
+    attested_by: str = Field(description="Who stated it: the caller.")
 
 
 SecondJudgeModel = Annotated[
@@ -1676,14 +1689,49 @@ async def _run_remeasure(host: OpsHost, caller: Caller, params: RunRemeasurePara
     return await remeasure_run(host.eval_host, params.run_id, caller.scope_id, apply=params.store)
 
 
-async def _runs_attest_definitions(host: OpsHost, caller: Caller, params: RunsAttestDefinitionsParams) -> Attested:
+async def _runs_attest(host: OpsHost, caller: Caller, params: RunsAttestParams) -> RunsAttested:
     eval_host = host.eval_host
+    stated_for = {"measure_definition": "measure_definitions", "served_model": "served_model"}
+    if params.coordinate not in stated_for:
+        raise ValidationFailedError(
+            f"the {params.coordinate} of a stored run is not stated after the fact: it is recorded at launch",
+            remedy=f"attest one of {', '.join(stated_for)}",
+        )
+    if misplaced := sorted(
+        name
+        for coordinate, name in stated_for.items()
+        if coordinate != params.coordinate and getattr(params, name) is not None
+    ):
+        raise ValidationFailedError(
+            f"{', '.join(misplaced)} states another coordinate than {params.coordinate}",
+            remedy=f"pass {stated_for[params.coordinate]} alone, or attest the other coordinate in a call of its own",
+        )
+    if params.coordinate == "served_model":
+        if params.served_model is None:
+            raise ValidationFailedError(
+                "a statement of the served model names the model", remedy="pass served_model"
+            )
+        answered = await attest_served_model(
+            eval_host,
+            params.run_ids,
+            caller.scope_id,
+            params.served_model,
+            attested_by=caller.identity,
+            note=params.attestation_note,
+        )
+        return RunsAttested(
+            coordinate="served_model",
+            run_ids=answered.run_ids,
+            already_attested=answered.already_attested,
+            stated={"served_model": answered.served_model},
+            attested_by=answered.attested_by,
+        )
     definitions = (
         params.measure_definitions
         if params.measure_definitions is not None
         else eval_host.profile.measures.definition_digests()
     )
-    return await attest_measure_definitions(
+    defined = await attest_measure_definitions(
         eval_host,
         params.run_ids,
         caller.scope_id,
@@ -1691,18 +1739,12 @@ async def _runs_attest_definitions(host: OpsHost, caller: Caller, params: RunsAt
         attested_by=caller.identity,
         note=params.attestation_note,
     )
-
-
-async def _runs_attest_served_model(
-    host: OpsHost, caller: Caller, params: RunsAttestServedModelParams
-) -> ServedModelAttested:
-    return await attest_served_model(
-        host.eval_host,
-        params.run_ids,
-        caller.scope_id,
-        params.served_model,
-        attested_by=caller.identity,
-        note=params.attestation_note,
+    return RunsAttested(
+        coordinate="measure_definition",
+        run_ids=defined.run_ids,
+        already_attested=defined.already_attested,
+        stated=defined.definitions,
+        attested_by=defined.attested_by,
     )
 
 
@@ -3259,47 +3301,28 @@ def engine_actions() -> tuple[Action, ...]:
             ),
         ),
         Action(
-            name="runs_attest_definitions",
-            summary="State the measure definitions stored runs ran under, for runs that recorded none; no result is touched.",
+            name="runs_attest",
+            summary="State one coordinate of stored runs that they did not record: their measure definitions or served model.",
             workflow=CURATE,
             permission="write",
-            params=RunsAttestDefinitionsParams,
-            result=Attested,
-            handler=_runs_attest_definitions,
+            params=RunsAttestParams,
+            result=RunsAttested,
+            handler=_runs_attest,
             render=render.render_model,
-            example={"run_ids": [run_id], "attestation_note": "made after the last definition change"},
+            example={"run_ids": [run_id], "coordinate": "measure_definition", "attestation_note": "made after the last definition change"},
             detail=(
-                "The host's statement, recorded as one: who stated it (the caller), when, and the definitions, on "
-                "each run (measure_attestation). A run so stamped pools, in pass^k and in a campaign's cells, only "
-                "with runs whose definitions match, and is compared only with them. Until then a run whose results "
-                "hold a host measure and that recorded none is pooled and compared with nothing. Takes many runs in "
-                "one call. Stating the same definitions twice changes nothing; a run that already records other "
-                "definitions (its launch's, a re-measure's, another statement's) is refused, and nothing is written."
-            ),
-        ),
-        Action(
-            name="runs_attest_served_model",
-            summary="State the model that answered stored runs' candidate calls, for runs whose responses named none.",
-            workflow=CURATE,
-            permission="write",
-            params=RunsAttestServedModelParams,
-            result=ServedModelAttested,
-            handler=_runs_attest_served_model,
-            render=render.render_model,
-            example={
-                "run_ids": [run_id],
-                "served_model": "vendor/model-2026-08",
-                "attestation_note": "pinned upstream",
-            },
-            detail=(
-                "For runs whose candidate responses named no model (a router that echoed a requested alias back, a "
-                "logged output, a host's answer naming none): each pools with no other run, in pass^k and in a "
-                "campaign's cells, since nothing says what answered it. The host's statement is recorded as one: "
-                "who stated it (the caller), when, and the model, on each run (served_model_attestation), and the "
-                "model is written to each candidate usage row of the run that named none. Takes many runs in one "
-                "call. A row whose response named a model is never touched; a run none of whose candidate rows is "
-                "silent, or one already stated as another model, is refused, and nothing is written. Stating the "
-                "same model twice changes nothing."
+                "An upgrade step for runs stored before a coordinate was recorded, never something a run launched "
+                "now needs. A run whose results hold a host measure and that recorded no measure definitions, and a "
+                "run whose candidate responses named no model, each pools and is compared with nothing, in pass^k "
+                "and in a campaign's cells, since nothing says what it was read under or what answered it. The "
+                "host's statement is recorded as one, alike for either coordinate: who stated it (the caller), when "
+                "and what, on each run (measure_attestation, served_model_attestation), and the run then pools only "
+                "with runs that match. measure_definition: pass measure_definitions, or omit it for the host's "
+                "current ones; no result is touched. served_model: pass served_model; it is written to each "
+                "candidate usage row of the run that named none, never over a model a response named. Takes many "
+                "runs in one call. Stating the same value twice changes nothing; a run that already records the "
+                "coordinate (its launch's, a re-measure's, a response's, another statement's) is refused, and "
+                "nothing is written."
             ),
         ),
         Action(

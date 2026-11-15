@@ -42,6 +42,7 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel import GuardrailMargin
 from threetears.evals.kernel.host import CompletionClients, EvalHost
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, DocumentStore
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.quick.graders import GraderPlan, expected_label, plan_graders
 from threetears.evals.quick.levers import refuse_unusable_lever_names
@@ -71,6 +72,8 @@ from threetears.evals.quick.result import (
 from threetears.evals.quick.tools import RECORD_ENV
 from threetears.evals.quick.world import World, WorldRunner
 from threetears.evals.storage import InMemoryDocumentStore, SqliteDocumentStore
+
+log = get_logger(__name__)
 
 #: Where an eval keeps its runs when it is told nothing, under the working directory.
 DEFAULT_STORE = Path(".evals") / "evals.sqlite"
@@ -571,7 +574,20 @@ class Eval:
                 f"tool answers {'recorded to' if recorded else 'replayed from'} {self.world.recording}: every arm "
                 "faced the same answers"
             )
-        said += [f"outputs graded as logged in {given.path}" for given in self.arms.values() if isinstance(given, Log)]
+        for given in self.arms.values():
+            if not isinstance(given, Log):
+                continue
+            said.append(f"outputs graded as logged in {given.path}")
+            if any(answer.served_model is None for answers in given.outputs().values() for answer in answers):
+                # The one coordinate a run launched now can lack, said as it launches and not when a campaign over it
+                # will not compare: a log holds what its app pushed, and nothing else knows what answered.
+                unnamed = (
+                    f"outputs logged in {given.path} name no served model (identity coordinate served_model), so "
+                    "nothing says which model answered and this run pools with no other run; log served_model= with "
+                    "each output, or state it afterwards (runs_attest, coordinate served_model)"
+                )
+                log.warning("%s", unnamed)
+                said.append(unnamed)
         return said
 
 

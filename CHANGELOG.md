@@ -30,28 +30,38 @@ arm's one cell.
 unrecorded-served-model rule. The frontier's cell sentence and the comparison set's measure-definition disclosure say
 what a campaign's cells keep apart, where they said a campaign still pooled.
 
-**Added:** the `runs_attest_served_model` action (`write`; `run_ids`, `served_model`, `attestation_note?`). It
-records the host's statement on each run (`EvalRun.served_model_attestation`: who, when, the model; core minor 15.20)
-and writes the model to each candidate usage row of the run that named none. It never replaces a model a response
-named: a run with no silent candidate row, or one stated as another model, is refused before anything is written.
-Stating the same model twice changes nothing.
+**Changed:** one action, `runs_attest` (`write`; `run_ids`, `coordinate`, `measure_definitions?`, `served_model?`,
+`attestation_note?`), states a coordinate of stored runs that they did not record, and answers in one shape whichever
+coordinate (`coordinate`, `run_ids`, `already_attested`, `stated`, `attested_by`). It replaces
+`runs_attest_definitions`, which no release shipped. `coordinate: "measure_definition"` is that action unchanged.
+`coordinate: "served_model"` is new: it records the statement on each run (`EvalRun.served_model_attestation`: who,
+when, the model; core minor 15.20) and writes the model to each candidate usage row of the run that named none. It
+never replaces a model a response named: a run with no silent candidate row, or one stated as another model, is
+refused before anything is written. Stating the same value twice changes nothing. A statement is evidence: it moves
+the fingerprint of every bundle over the runs it stamps.
+
+**Changed:** a run launched now records every coordinate of its identity; stating one afterwards is an upgrade step
+for stored runs. The one launch that cannot know, an eval over a `Log` whose lines name no served model, says so as
+it launches (a WARNING and a line of `Result.disclosures`), naming the coordinate and the remedy.
 
 **For hosts:** after this change, two kinds of stored run stop pooling, and each has one remedy.
 - *Every campaign over runs that hold host measures and recorded no definition loses its contrasts until the host
   attests.* That is every run stored before runs recorded definitions (#1160) on a host with measures of its own.
-  `runs_attest_definitions` takes many runs in one call (omit `measure_definitions` for runs made under today's
-  definitions; pass the digests of the descriptors as they were for older ones), touches no result and may be run
-  twice. A campaign that spans a definition change stays split after it, which is the point.
+  `runs_attest` with `coordinate: "measure_definition"` takes many runs in one call (omit `measure_definitions` for
+  runs made under today's definitions; pass the digests of the descriptors as they were for older ones), touches no
+  result and may be run twice. A campaign that spans a definition change stays split after it, which is the point.
 - *Runs whose candidate responses named no model each stand alone in their arm* (a router echoing a requested alias
-  back, a logged output, an `Answer` or a kind's usage row naming no `served_model`). `runs_attest_served_model`
-  takes many runs in one call. Going forward, report `served_model` from the completion client, the `Answer` or the
-  log line; a scripted test double names itself there.
-- *Upgrade procedure:* (1) once every reader runs this build, call `runs_attest_definitions` over the stored runs of
-  each definition era; (2) call `runs_attest_served_model` over the runs `model_identity_disclosure` names, where
-  the host knows what answered. No stored key, identity or digest is rewritten by the upgrade itself; a statement
-  changes the runs it stamps, so a report written over them is regenerated.
+  back, a logged output, an `Answer` or a kind's usage row naming no `served_model`). `runs_attest` with
+  `coordinate: "served_model"` takes many runs in one call. Going forward, report `served_model` from the completion
+  client, the `Answer` or the log line; a scripted test double names itself there.
+- *Upgrade procedure:* (1) once every reader runs this build, call `runs_attest` (`measure_definition`) over the
+  stored runs of each definition era; (2) call `runs_attest` (`served_model`) over the runs
+  `model_identity_disclosure` names, where the host knows what answered. The upgrade itself rewrites no stored key,
+  identity or fingerprint, and a stored report stays current across the cell model's move; a statement is evidence,
+  so a report written over the runs it stamps is regenerated.
 - No host apparatus dimension may be named `measure_definitions`. `ApparatusClass.alone_to` (new, optional, left out
-  when unset) names the run a class is alone to.
+  when unset) names the run a class is alone to. A host that called `runs_attest_definitions` on an unreleased build
+  calls `runs_attest` with `coordinate: "measure_definition"`.
 
 
 ### evals: one closed set of reading states, one caveat entry and one first-screen value, all unset
@@ -242,7 +252,7 @@ pooling with no other run (owner ruling, 2026-11-14: a silence is never a match)
 (`measure_definitions_differ`, `context_incomplete`, `measure_definition_disclosure`). A take-up of a run that recorded
 other definitions than the host's current ones is refused; one that recorded none is taken up and stays unrecorded.
 
-**Added:** two actions reach the doors below, `runs_attest_definitions` and `run_remeasure` (both `write`).
+**Added:** two actions reach the doors below, `runs_attest_definitions` (since replaced by `runs_attest`, #1187) and `run_remeasure` (both `write`).
 `threetears.evals.run.attest_measure_definitions` records a host's statement of the definitions stored runs
 ran under (`EvalRun.measure_attestation`: who, when, what), touching no result and refusing a run that already records
 definitions. `threetears.evals.run.remeasure_run(host, run_id, scope_id, apply=False)` reads a stored run's host

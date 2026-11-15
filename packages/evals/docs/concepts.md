@@ -236,12 +236,12 @@ named with `(test setup <digest>)` in a report. These cells, and every contrast 
 variant x rig, and on the candidate model that answered: an arm whose runs under one rig were answered by more than
 one model, or by a model some responses did not name, holds a cell per answering model, each a class of its own
 that names the rig it shares (`Cell.rig_class_id`) and is compared with the control under that rig. Two runs whose
-responses each named no model are two such cells: two silences are no match, and `runs_attest_served_model` records
+responses each named no model are two such cells: two silences are no match, and `runs_attest` (coordinate `served_model`) records
 your statement of the model that answered them. An arm answered by one model throughout, or by one silent run
 alone, is one cell under the rig's own class. What each host measure counts is part of the rig: runs that recorded
 two definitions of a measure are under two classes, so they share no cell and no contrast, and a run whose results
 hold a host measure and that recorded no definition is a class of its own, compared with nothing until you state
-its definitions (`runs_attest_definitions`) or re-measure it. pass^k splits further: on the measurement context and
+its definitions (`runs_attest`, coordinate `measure_definition`) or re-measure it. pass^k splits further: on the measurement context and
 the template revision (see [Measurement context](#measurement-context)).
 
 #### Apparatus settings

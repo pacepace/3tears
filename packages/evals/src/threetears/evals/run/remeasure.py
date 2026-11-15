@@ -52,6 +52,7 @@ from threetears.evals.kernel.errors import ConflictError, NotFoundError, Validat
 from threetears.evals.kernel.host.measures import MeasureRereadRequest
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.remedies import FIND_RUN
+from threetears.evals.kernel.scoring import remeasure_unfinished
 from threetears.evals.run.run_document import update_eval_run
 from threetears.evals.run.runner import refuse_misfit_host_measures
 from threetears.evals.schema.base import EvalBaseModel
@@ -148,7 +149,7 @@ async def remeasure_run(host: EvalHost, run_id: str, scope_id: str, *, apply: bo
     report = Remeasure(
         run_id=run.id,
         applied=apply,
-        already_current=run.measure_definitions == plan.now and not _unfinished(run),
+        already_current=run.measure_definitions == plan.now and not remeasure_unfinished(run),
         was=run.measure_definitions,
         now=plan.now,
         moved=plan.moved,
@@ -193,7 +194,7 @@ def _plan(host: EvalHost, run_id: str, scope_id: str) -> _Plan:
             remedy=f"re-measure once it has finished (job_poll run:{run.id})",
         )
     now, was = measures.definition_digests(), run.measure_definitions
-    if was == now and not _unfinished(run):
+    if was == now and not remeasure_unfinished(run):
         return _Plan(run=run, now=now, moved=[], rereads=[])
     moved = sorted(name for name in {*now, *(was or {})} if was is None or was.get(name) != now.get(name))
     # A measure the host no longer declares has no current definition to read under: its stored values stay as
@@ -267,11 +268,6 @@ def _read_under(result: EvalResult, name: str, digest: str) -> bool:
     return False
 
 
-def _unfinished(run: EvalRun) -> bool:
-    """Whether a re-measure of the run began and did not finish."""
-    return bool(run.measure_remeasures) and run.measure_remeasures[-1].completed_at is None
-
-
 def _write(host: EvalHost, plan: _Plan, report: Remeasure, scope_id: str) -> None:
     """Mark the run as being re-measured, store each result's new values, then complete the run's record.
 
@@ -288,7 +284,7 @@ def _write(host: EvalHost, plan: _Plan, report: Remeasure, scope_id: str) -> Non
             return None
         data = current.to_dict()
         # A pass cut short left its own unfinished mark: this pass takes its place.
-        kept = current.measure_remeasures[:-1] if _unfinished(current) else current.measure_remeasures
+        kept = current.measure_remeasures[:-1] if remeasure_unfinished(current) else current.measure_remeasures
         data["measure_remeasures"] = [*(entry.to_dict() for entry in kept), record.to_dict()]
         return data
 
@@ -325,7 +321,7 @@ def _write(host: EvalHost, plan: _Plan, report: Remeasure, scope_id: str) -> Non
             ) from raced
 
     def _complete(current: EvalRun) -> dict[str, Any] | None:
-        if not _unfinished(current) or current.measure_remeasures[-1].remeasured_at != record.remeasured_at:
+        if not remeasure_unfinished(current) or current.measure_remeasures[-1].remeasured_at != record.remeasured_at:
             return None
         data = current.to_dict()
         data["measure_definitions"] = dict(plan.now)

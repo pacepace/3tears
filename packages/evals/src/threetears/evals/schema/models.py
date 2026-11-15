@@ -3695,7 +3695,7 @@ class ServedModelAttestation(EvalBaseModel, CoreShapeModel):
     """A host's statement, after the fact, of the model that answered a stored run's candidate calls whose responses
     named none.
 
-    Written by the ``runs_attest_served_model`` action on a run some of whose candidate usage rows name no served
+    Written by the ``runs_attest`` action (coordinate ``served_model``) on a run some of whose candidate usage rows name no served
     model. It is the host's word and never the engine's guess: the id a run asked for (``RoleUsage.model``) is not
     evidence of what answered, and nothing else a silent run stores is. The stated model is written to each of those
     rows (``RoleUsage.served_model``), so every reading that keeps answering models apart reads it, and this entry is
@@ -4585,7 +4585,7 @@ class EvalRun(CoreDocumentModel):
         exclude_if=lambda value: value is None,
         description=(
             "The host's statement of the model that answered this run's candidate calls whose responses named none, "
-            "made after the run by the runs_attest_served_model action; the stated model is on those usage rows "
+            "made after the run by the runs_attest action; the stated model is on those usage rows "
             "(RoleUsage.served_model). None = never attested: every served model its rows name is what a response "
             "named, and a row naming none is unknown, which pools with nothing."
         ),
