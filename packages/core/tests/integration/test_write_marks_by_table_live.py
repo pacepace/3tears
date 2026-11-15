@@ -83,3 +83,28 @@ async def test_a_commits_marks_are_read_through_the_table_index(marks: tuple[asy
     assert len(rows) == _OWN
     [plan] = checked.plans
     assert plan_uses_index(plan, "collection_write_marks_table"), plan
+
+
+async def test_an_advances_marks_are_paged_through_the_table_index(marks: tuple[asyncpg.Connection, str]) -> None:
+    """The plan test of ``collection_write_marks_table`` for a writer's advance: the marks of its table it covers
+    (``BaseCollection._marks_before_advance``: ``keyed.keyset_rows`` by ``table_name``, in id order) are read through
+    the index, a page at a time, on Postgres and YugabyteDB. Flips if the index goes or the read stops naming the
+    table."""
+    conn, queue = marks
+    checked = PlanRecorder(conn)
+
+    rows = await keyed.keyset_rows(
+        checked,
+        queue.replace('"', ""),
+        columns=["id"],
+        by={"table_name": "written"},
+        order=[keyed.Sort("id", cast="bigint")],
+        page=2,
+    )
+
+    assert len(rows) == _OWN
+    first, *past = checked.plans
+    assert plan_uses_index(first, "collection_write_marks_table"), first
+    # a page past a cursor may be answered by the primary key from the cursor's id (PostgreSQL does, the table's
+    # marks being the newest): either way each page reads only its own rows, never the queue's
+    assert past and not plan_problems(checked.plans, scan_ratio=1.1), checked.plans

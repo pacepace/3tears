@@ -32,12 +32,14 @@ from threetears.core.testing.kv import FakeNatsClient
 
 from threetears.core.data.migrations.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.data.migrations.session import ConnectionSession
+from threetears.core.collections import write_marks as write_marks_module
 from threetears.core.collections.write_marks import (
     MARK_FUNCTION,
     WRITE_MARK_TRIGGER,
     WRITE_MARKS_TABLE,
     WriteMarkReconciler,
     install_write_mark_triggers,
+    observe_write_marks,
     tables_missing_the_trigger,
     write_marks_ddl,
 )
@@ -420,3 +422,27 @@ async def test_a_writer_that_dies_between_its_advance_and_the_delete_leaves_mark
     assert drain.advanced == [_TABLE]
     assert done.applied == 1
     assert await _marks(pool, platform) == []
+
+
+async def test_the_queue_gauges_count_to_the_cap_and_age_the_lowest_id(
+    schemas: tuple[asyncpg.Pool, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """the gauges' read: the marks counted along the id to the cap, and the age of the first committed mark (the
+    lowest id), never the min over an unordered sample."""
+    pool, platform, _agent = schemas
+    empty = await observe_write_marks(pool, marks_schema=platform)
+    assert (empty.pending, empty.at_least, empty.oldest_age_seconds) == (0, False, 0.0)
+    # the first mark is an hour old; nine newer ones follow it
+    await pool.execute(
+        f"INSERT INTO {platform}.{WRITE_MARKS_TABLE} (table_name, date_created) VALUES ($1, now() - interval '1 hour')",
+        _TABLE,
+    )
+    for _ in range(9):
+        await pool.execute(f"INSERT INTO {platform}.{WRITE_MARKS_TABLE} (table_name) VALUES ($1)", _TABLE)
+    state = await observe_write_marks(pool, marks_schema=platform)
+    assert (state.pending, state.at_least) == (10, False)
+    assert 3500 < state.oldest_age_seconds < 3700
+    monkeypatch.setattr(write_marks_module, "_OBSERVE_CAP", 4)
+    capped = await observe_write_marks(pool, marks_schema=platform)
+    assert (capped.pending, capped.at_least) == (4, True)
+    assert 3500 < capped.oldest_age_seconds < 3700

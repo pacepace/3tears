@@ -34,11 +34,10 @@ from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.backends.broker_generation import naming_changed_rows
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, L3Backend
-from threetears.core.keyset import read_keyset_pages
 from threetears.core.cache import MISSING
 from threetears.core.cache.base import NonFiniteNumericError
 from threetears.core import keyed
-from threetears.core.keyed import Sort, inline_l1, run_inline
+from threetears.core.keyed import Fragment, Sort, inline_l1, run_inline
 from threetears.core.collections.tier_reads import ReadTier, record_tier_read
 from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction, shared_advance_for
@@ -101,7 +100,6 @@ from threetears.core.exceptions import (
     L2WriteRefusedError,
     SchemaTenantUnknownError,
 )
-from threetears.core.sql_fragments import quote_identifier
 from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger, set_span_attribute, traced
 from threetears.observe.metrics import counter
@@ -2003,18 +2001,17 @@ class BaseCollection(ABC, Generic[EntityT]):
         schema = registry.write_marks_schema
         if schema is None or self.l3_pool is None:
             return []
-        marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
         try:
-            # in pages of the id under the L3 rail's row cap: a busy table's marks can number more than it answers
-            rows = (
-                await read_keyset_pages(
-                    self.l3_pool,
-                    f"SELECT id FROM {marks}",
-                    ["id"],
-                    where={"table_name": self.table_name},
-                    page_size=L3_RAIL_ROW_CAP - 1,
-                )
-            ).rows
+            # in pages of the id under the L3 rail's row cap: a busy table's marks can number more than it answers.
+            # By the queue's (table_name, id) index, through the keyed listing every page of which it answers
+            rows = await keyed.keyset_rows(
+                self.l3_pool,
+                f"{schema}.{WRITE_MARKS_TABLE}",  # the helper quotes it a segment at a time
+                columns=["id"],
+                by={"table_name": self.table_name},
+                order=[Sort("id", cast="bigint")],
+                page=L3_RAIL_ROW_CAP - 1,
+            )
         # prawduct:allow prawduct/broad-except -- the write committed; a mark left is drained by the reconciler
         except Exception as exc:
             contain(exc, log=log, what="could not read the write marks this advance covers; the reconciler drains them")
@@ -2397,9 +2394,17 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None or generation == self._marker_generation:
             return
-        dead = self._l1.execute_query(
-            f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE table_name = ? AND generation != ?",
-            (self.table_name, generation),
+        # the table's markers by their key's prefix, a page a statement (``keyed.keyset_rows`` over the L1)
+        dead = run_inline(
+            keyed.keyset_rows(
+                inline_l1(self._l1),
+                _ABSENT_MARKER_TABLE,
+                columns=["key"],
+                by={"table_name": self.table_name},
+                order=[Sort("key", cast=None)],
+                where=[Fragment('t."generation" != $1', (generation,))],
+                page=_ABSENT_MARKER_TRIM,
+            )
         )
         self._l1.delete_many_by_id(
             _ABSENT_MARKER_TABLE, [(self.table_name, row["key"]) for row in dead], _ABSENT_MARKER_PK
@@ -2434,10 +2439,13 @@ class BaseCollection(ABC, Generic[EntityT]):
     def _hold_markers_to_the_cap(self) -> None:
         """drop this table's oldest recorded absences past :attr:`negative_cache_max_entries`.
 
-        Oldest by when the marker was first recorded (the row's insertion order), so a flood of
-        distinct keys keeps the newest and never grows the table past the cap. Nothing is counted: the markers past
-        the newest ``cap`` are read by the table's key prefix, newest first, and go; a write adds one at a time, so
-        a pass at the cap finds one.
+        Oldest by when the marker was first recorded (the row's insertion order, SQLite's rowid), so a flood of
+        distinct keys keeps the newest and never grows the table past the cap. The table's markers are counted by its
+        key prefix to the cap plus the most one write removes (``keyed.count_at_most``), and the oldest past the cap
+        are read by rowid, a page of them (``keyed.keyset_page``), and go; a write adds one at a time, so a pass at
+        the cap finds one. It read them with ``ORDER BY rowid DESC ... OFFSET cap`` before (2026-11-14, no-whole-reads
+        drive), which sorted every marker of the table by rowid on each write; the bounded count walks the key's
+        index and stops at the bound.
 
         :return: None
         :rtype: None
@@ -2445,11 +2453,29 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._l1 is None:
             return
         cap = type(self).negative_cache_max_entries
-        past = self._l1.execute_query(
-            f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE table_name = ? "
-            f"ORDER BY rowid DESC LIMIT {_ABSENT_MARKER_TRIM:d} OFFSET {cap:d}",
-            (self.table_name,),
+        db = inline_l1(self._l1)
+        held = run_inline(
+            keyed.count_at_most(
+                db,
+                _ABSENT_MARKER_TABLE,
+                at_most=cap + _ABSENT_MARKER_TRIM,
+                order=list(_ABSENT_MARKER_PK),
+                by={"table_name": self.table_name},
+            )
         )
+        over = min(held.count - cap, _ABSENT_MARKER_TRIM)
+        if over < 1:
+            return
+        past = run_inline(
+            keyed.keyset_page(
+                db,
+                _ABSENT_MARKER_TABLE,
+                columns=["rowid", "key"],
+                by={"table_name": self.table_name},
+                order=[Sort("rowid", cast=None)],
+                limit=over,
+            )
+        ).rows
         if past:
             self._l1.delete_many_by_id(
                 _ABSENT_MARKER_TABLE, [(self.table_name, row["key"]) for row in past], _ABSENT_MARKER_PK
@@ -3638,7 +3664,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         db = inline_l1(l1)
         # uncast: each page binds the last row's own value, typed by the column (SQLite has no ``::`` casts)
         order = [Sort(column, cast=None) for column in columns]
-        return run_inline(keyed.keyset_rows(db, self.table_name, columns=list(columns), by={}, order=order, page=L1_KEY_PAGE))
+        return run_inline(
+            keyed.keyset_rows(db, self.table_name, columns=list(columns), by={}, order=order, page=L1_KEY_PAGE)
+        )
 
     async def _seed_l2(self, entity_id: Any, stored: dict[str, Any], revision: int) -> bool:
         """put a row read from L3 into L2 only if nothing has happened to the key since it was read.

@@ -222,8 +222,10 @@ class _Pod:
         cls: type[_Members] = _Members,
         l3: bool = True,
         write_buffer: WriteBuffer | None = None,
+        l1: Any = None,
     ) -> None:
-        l1 = SQLiteBackend(db_name=f"table_drop_{uuid.uuid4().hex[:8]}")
+        if l1 is None:
+            l1 = SQLiteBackend(db_name=f"table_drop_{uuid.uuid4().hex[:8]}")
         l1.initialize(_metadata())
         self.bus = bus
         self.registry = CollectionRegistry()
@@ -708,11 +710,7 @@ class TestATableWideDropReadsL1InPages:
         self, bus: _Lossy, source: _Source, monkeypatch: pytest.MonkeyPatch, l1_kind: str
     ) -> None:
         monkeypatch.setattr(base_module, "L1_KEY_PAGE", 7)
-        pod = _Pod(bus, {}, source, scope="reader")
-        if l1_kind == "duckdb":
-            duck = DuckDBBackend()
-            duck.initialize(_metadata())
-            pod.members._l1 = duck  # type: ignore[attr-defined]
+        pod = _Pod(bus, {}, source, scope="reader", l1=DuckDBBackend() if l1_kind == "duckdb" else None)
         l1 = pod.members.l1_backend
         assert l1 is not None
         keys = [f"m{n:03d}" for n in range(30)]

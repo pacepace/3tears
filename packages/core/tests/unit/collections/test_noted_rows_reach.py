@@ -55,7 +55,11 @@ class _Notes:
         if "current_ring" in query:
             return list(self.notes)
         if "count(*)" in query:
-            return [{"n": len(self.marks), "age": 3.0 if self.marks else None}]
+            # the gauges' bounded count (keyed.count_at_most): the marks, at most the bound it asks past
+            return [{"held": min(len(self.marks), int(args[-1]))}]
+        if "extract(epoch" in query:
+            # the gauges' oldest mark, the lowest id (keyed.keyset_page, one row)
+            return [{"id": min(self.marks), "age": 3.0 if self.marks else None}] if self.marks else []
         if "WHERE id > $2 ORDER BY id LIMIT $1" in query:
             return [
                 {"id": key, "table_name": value, "date_created": _EPOCH + timedelta(seconds=1)}
