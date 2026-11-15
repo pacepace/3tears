@@ -51,6 +51,7 @@ from threetears.agent.skills.tools import (
 from threetears.core.collections import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.plans import on_yugabyte
 
 
 pytestmark = pytest.mark.integration
@@ -65,29 +66,46 @@ WITH RECURSIVE waiting(pid) AS (
 SELECT count(*) FROM waiting
 """
 
+#: the same count on YugabyteDB, whose ``pg_blocking_pids`` is always empty (a statement waiting on a row lock shows
+#: as ``RPCWait``, no backend named): the transactions whose ungranted locks are blocked, directly or behind another
+#: waiter, by the given transaction (``yb_lock_status``'s ``blocked_by``).
+_WAITING_ON_YUGABYTE = """
+WITH RECURSIVE waiting(txn) AS (
+    SELECT transaction_id FROM yb_lock_status(NULL, NULL) WHERE NOT granted AND $1::uuid = ANY(blocked_by)
+    UNION
+    SELECT l.transaction_id FROM yb_lock_status(NULL, NULL) l JOIN waiting w ON w.txn = ANY(l.blocked_by)
+     WHERE NOT l.granted
+)
+SELECT count(*) FROM waiting
+"""
+
 #: how long the lock-wait check gives the waiting statements to reach the lock before it fails.
 _LOCK_WAIT_DEADLINE_SECONDS = 30.0
 
 
-async def _until_waiting_on(url: str, holder_pid: int, waiters: int) -> None:
-    """return once ``waiters`` backends wait on a lock ``holder_pid`` holds; fail past the deadline.
+async def _until_waiting_on(url: str, holder: asyncpg.Connection, waiters: int) -> None:
+    """return once ``waiters`` backends wait on a lock ``holder``'s open transaction holds; fail past the deadline.
 
     Asked on a connection of its own: the statements waiting hold the test pool's connections, and the
     holder's open transaction would read one cached snapshot of ``pg_stat_activity`` for its whole life.
 
     :param url: the database to ask
     :ptype url: str
-    :param holder_pid: the backend holding the lock
-    :ptype holder_pid: int
+    :param holder: the connection holding the lock, in its transaction
+    :ptype holder: asyncpg.Connection
     :param waiters: how many waiting backends to wait for
     :ptype waiters: int
     :return: nothing
     :rtype: None
     """
     deadline = asyncio.get_running_loop().time() + _LOCK_WAIT_DEADLINE_SECONDS
+    query: str = _WAITING_ON
+    held: Any = holder.get_server_pid()
+    if await on_yugabyte(holder):
+        query, held = _WAITING_ON_YUGABYTE, await holder.fetchval("SELECT yb_get_current_transaction()")
     watcher = await asyncpg.connect(url)
     try:
-        while (seen := await watcher.fetchval(_WAITING_ON, holder_pid)) < waiters:
+        while (seen := await watcher.fetchval(query, held)) < waiters:
             assert asyncio.get_running_loop().time() < deadline, f"{seen} of {waiters} statements reached the lock"
             await asyncio.sleep(0.01)
     finally:
@@ -884,7 +902,7 @@ class TestAUseIsCountedOnce:
             )
             for _ in range(2)
         ]
-        await _until_waiting_on(url, blocker.get_server_pid(), 2)  # both wait on the row
+        await _until_waiting_on(url, blocker, 2)  # both wait on the row
         assert not any(task.done() for task in reports)
         await held.commit()
         await blocker.close()

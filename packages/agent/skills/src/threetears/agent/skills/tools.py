@@ -2172,9 +2172,7 @@ def load_skill_history_tool(
         if place is None:
             return _tool_error("skill_history", "that cursor is not one skill_history gave; leave it out to start")
         shown, after = place
-        counted = await invocations_collection.count_for_skill_at_most(
-            agent_id, entity.skill_id, at_most=count_cap
-        )
+        counted = await invocations_collection.count_for_skill_at_most(agent_id, entity.skill_id, at_most=count_cap)
         tag = f"[skill:{entity.skill_id}] {entity.name}"
         if counted.count == 0:
             return f"{tag} has not been used yet."

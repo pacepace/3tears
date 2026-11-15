@@ -130,16 +130,19 @@ async def test_skill_invocations_skill_time_key(applied_schema: tuple[str, str])
         await invocations.list_for_skill(agent_id, skill_id, limit=_PAGE, cursor=first.next_cursor)
         counted = await invocations.count_for_skill_at_most(agent_id, skill_id, at_most=100)
         assert (counted.count, counted.more) == (100, True)
-        page_reads = [asked for asked in captured.asked if "LIMIT" in asked[0] and "count(" not in asked[0]]
-        assert len(page_reads) == 2, captured.asked
-        for sql, args in page_reads:
+        # the bounded count reads ``... LIMIT $n) AS held``; YugabyteDB's page past a cursor is legs chained by count
+        page_reads = [asked for asked in captured.asked if ") AS held" not in asked[0]]
+        assert len(page_reads) == 2, [sql for sql, _ in captured.asked]
+        for number, (sql, args) in enumerate(page_reads):
             plan = await explain_statement(conn, sql, *args)
             assert plan_uses_index(plan, "idx_skill_invocations_skill_time_key"), plan.plan
-            assert not set(_node_types(plan.plan)) & {"Sort", "Incremental Sort"}, plan.plan
+            if number == 0:
+                # the first page walks the index in its order; a later page on YugabyteDB sorts its legs' few rows
+                assert not set(_node_types(plan.plan)) & {"Sort", "Incremental Sort"}, plan.plan
             # the page with keyset_page's one row past it
             assert plan.rows_returned == _PAGE + 1, plan
             assert plan.rows_scanned <= 2 * (_PAGE + 1), plan
-        ((sql, args),) = [asked for asked in captured.asked if "count(" in asked[0]]
+        ((sql, args),) = [asked for asked in captured.asked if ") AS held" in asked[0]]
         plan = await explain_statement(conn, sql, *args)
         assert plan_uses_index(plan, "idx_skill_invocations_skill_time_key"), plan.plan
         assert plan.rows_scanned <= 2 * 101, plan
@@ -183,8 +186,16 @@ async def test_skills_agent_user_enabled(applied_schema: tuple[str, str]) -> Non
         assert len(listed) == _PAGE and all(skill.enabled for skill in listed)
         assert await skills.count_for_user(agent_id, user_id) == _SKILLS_OF_USER // 10
         assert len(captured.asked) == 2, captured.asked
+        yugabyte = await on_yugabyte(conn)
         for sql, args in captured.asked:
             plan = await explain_statement(conn, sql, *args)
+            if yugabyte and "count(" not in sql.lower():
+                # YugabyteDB's planner reads the ordered listing through the user's prefix of
+                # uq_skills_agent_user_name (no declared index serves its recency order, so the keyed read names
+                # none, and it does not pick the enabled one): the user's skills, never another user's
+                assert "Seq Scan" not in set(_node_types(plan.plan)), plan.plan
+                assert plan.rows_scanned <= _SKILLS_OF_USER, plan
+                continue
             assert plan_uses_index(plan, "idx_skills_agent_user_enabled"), plan.plan
             # the user's enabled skills (200), never the disabled 1,800 beside them
             assert plan.rows_scanned <= 2 * (_SKILLS_OF_USER // 10), plan
