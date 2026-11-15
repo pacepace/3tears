@@ -10,16 +10,15 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
+from threetears.evals.analysis.costs import PER_THOUSAND_FACTORS, cost_measures, costs_per_thousand
 from threetears.evals.analysis.cell_mean import CellMeanInterval, NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.cost_unit import per_noun
 from threetears.evals.analysis.report.keys.counts import _spelled_cell
-from threetears.evals.analysis.report.keys.figure import Figure, Scale, _PER_THOUSAND_FACTORS, _count
+from threetears.evals.analysis.report.keys.figure import Figure, Scale, _count
 from threetears.evals.analysis.report.keys.names import _measure_reader_name
 from threetears.evals.analysis.report.keys.reads import (
     _cell_spelling,
-    _cost_measures,
-    _costs_per_thousand,
     _one_stratum,
     _scale_of,
     cost_basis,
@@ -476,7 +475,7 @@ def _unpaired_interval(axis: GainAxis, first: str, second: str) -> tuple[tuple[f
 
 def _gain_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
     """The arms a move can be priced to: every costed arm but the one it starts from."""
-    return [arm for arm in _costs_per_thousand(report_input) if arm != prior[0]]
+    return [arm for arm in costs_per_thousand(report_input) if arm != prior[0]]
 
 
 def _monthly_factor(report_input: ReportInput, path: str) -> float:
@@ -583,7 +582,7 @@ def _priced(basis: _PriceBasis, report_input: ReportInput, first: str, second: s
 
 def _price(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     first, second, key, field = values
-    basis = _PriceBasis(axis=gain_axis(report_input, key), costs=_costs_per_thousand(report_input))
+    basis = _PriceBasis(axis=gain_axis(report_input, key), costs=costs_per_thousand(report_input))
     return _priced(basis, report_input, first, second, field, path)
 
 
@@ -615,9 +614,9 @@ def _slice_basis(report_input: ReportInput, kind: SliceKind, slice_id: str, key:
     spreads = {arm: width for arm, stat in held.items() if (width := _half_width(stat)) is not None}
     axis = GainAxis(key=key, higher_is_better=higher, basis="slice", positions=positions, spreads=spreads)
     within = f"{kind}.{slice_id}"
-    first, lower = _cost_measures(report_input)
+    first, lower = cost_measures(report_input)
     for cost_key in dict.fromkeys([*first, *lower]):
-        factor = _PER_THOUSAND_FACTORS[report_input.measures[cost_key].unit or ""]
+        factor = PER_THOUSAND_FACTORS[report_input.measures[cost_key].unit or ""]
         costs: dict[str, float] = {}
         for arm, by_key in figures.items():
             stat = by_key.get(cost_key)
@@ -625,7 +624,7 @@ def _slice_basis(report_input: ReportInput, kind: SliceKind, slice_id: str, key:
                 costs[arm] = float(stat.mean) * factor
         if positions and all(arm in costs for arm in positions):
             return _PriceBasis(axis, costs, within, SLICE_COST_WORDS["slice"], cost_key)
-    return _PriceBasis(axis, _costs_per_thousand(report_input), within, SLICE_COST_WORDS["overall"])
+    return _PriceBasis(axis, costs_per_thousand(report_input), within, SLICE_COST_WORDS["overall"])
 
 
 def _slice_price(kind: SliceKind) -> Callable[[ReportInput, tuple[str, ...], str], Figure]:
@@ -693,7 +692,7 @@ def _slice_compares(kind: SliceKind) -> Callable[[ReportInput, tuple[str, ...]],
 
 def _cost_per_month(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     factor = _monthly_factor(report_input, path)
-    costs = _costs_per_thousand(report_input)
+    costs = costs_per_thousand(report_input)
     return Figure(path=path, kind="number", value=costs[values[0]] * factor, scale="usd", total=True)
 
 
@@ -843,7 +842,7 @@ def price_frontier(
     :raises UnresolvableReference: The gain key names no measure or judged dimension, or one stating no direction.
     """
     if within is None:
-        basis = _PriceBasis(axis=gain_axis(report_input, gain_key), costs=_costs_per_thousand(report_input))
+        basis = _PriceBasis(axis=gain_axis(report_input, gain_key), costs=costs_per_thousand(report_input))
     else:
         kind, slice_id = within
         basis = _slice_basis(report_input, kind, slice_id, gain_key, f"{kind}.{slice_id}.price")
@@ -1008,12 +1007,12 @@ _KEPT_UNITS = frozenset({MULTIPLE_UNIT})
 
 
 def _cost_gap_seconds(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
-    return [arm for arm in _costs_per_thousand(report_input) if arm != prior[-1]]
+    return [arm for arm in costs_per_thousand(report_input) if arm != prior[-1]]
 
 
 def _cost_gap(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     first, second, field = values
-    costs = _costs_per_thousand(report_input)
+    costs = costs_per_thousand(report_input)
     gap = costs[first] - costs[second]
     if field == "per_1k":
         return Figure(path=path, kind="number", value=gap, scale="usd_per_1k", change=True)
@@ -1067,7 +1066,7 @@ def _unreported(report_input: ReportInput, values: tuple[str, ...], path: str) -
     missing = ran - stat.n
     if field == "missing":
         return _count(path, missing)
-    factor = _PER_THOUSAND_FACTORS[measure.unit or ""]
+    factor = PER_THOUSAND_FACTORS[measure.unit or ""]
     if field == "free":
         return Figure(path=path, kind="number", value=stat.mean * stat.n / ran * factor, scale="usd_per_1k")
     if stat.p95 is None:

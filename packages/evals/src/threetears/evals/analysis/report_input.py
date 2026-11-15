@@ -73,6 +73,8 @@ from threetears.evals.schema.reading_states import (
     StateOf,
     check_state,
 )
+from threetears.evals.analysis.cells import NextExperiment
+from threetears.evals.kernel.evidence_tiers import CriterionState
 from threetears.evals.kernel.host.bars import PassCriterion
 from threetears.evals.schema.hashing import bytes_digest
 
@@ -1015,7 +1017,11 @@ class CaveatEntry(_Part):
         default_factory=list,
         description="The readings it is scoped to, each '<aspect>/<measure>'; empty for the whole report.",
     )
-    asked: bool = Field(default=False, description="Whether any of its readings is on an asked aspect.")
+    asked: bool = Field(
+        default=False,
+        description="Whether it touches an asked aspect: one of its readings is on one, or it is scoped to the whole "
+        "report and the report asks about one.",
+    )
     deciding: bool = Field(
         default=False,
         description="Whether the answer turns on a reading it names: a class E caveat reaches the first screen only "
@@ -1028,9 +1034,22 @@ class CaveatEntry(_Part):
     against: Literal["people", "model"] | None = Field(
         default=None, description="For a caveat about an instrument's check: what the instrument was checked against."
     )
-    criterion: str | None = Field(default=None, description="For such a caveat: the criterion the check decides.")
+    criterion: str | None = Field(
+        default=None,
+        description="For such a caveat: the criterion the check decides; for a gate cleared on a point estimate or a "
+        "borderline figure: the gate, by id.",
+    )
     same_family: bool = Field(
         default=False, description="For a check against a model: whether the model is of a candidate's family."
+    )
+    check: CriterionState | None = Field(
+        default=None,
+        description="For a caveat about an instrument's check: the check's result. Only a result that decides (met or "
+        "not met) speaks for the instrument, so only such a check against people silences one against a model.",
+    )
+    runs: list[str] = Field(default_factory=list, description="The runs it is about, by id; empty for none named.")
+    cases: int | None = Field(
+        default=None, description="The cases the readings it names rest on, where one count says it."
     )
 
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
@@ -1059,6 +1078,9 @@ class Gate(_Part):
 
     rule: Literal["setup", "unfinished", "too_small"] = Field(description="Which rule stopped the read.")
     runs: list[GateRun] = Field(default_factory=list, description="The runs the rule names.")
+    fewest_cases: int | None = Field(
+        default=None, ge=0, description="For too few cases: the fewest usable cases an arm read holds."
+    )
     waiting: int = Field(default=0, ge=0, description="The open report-wide caveats waiting below the gate.")
 
 
@@ -1073,6 +1095,229 @@ class CallRead(_Part):
     identity_changed: bool | None = Field(
         default=None, description="Whether the evidence's fingerprint differs from the one the call was read against."
     )
+
+
+#: The one act that would close a caveat, as a closed kind; ``no_action`` where nothing the package knows of closes it,
+#: with the reason the step states (:data:`NoActionReason`).
+Remedy = Literal[
+    "resume_or_rerun",
+    "rerun_on_one_cell",
+    "remeasure_or_attest",
+    "rerun_serially",
+    "rerun_balanced",
+    "check_against_people",
+    "replace_instrument",
+    "sharpen_criterion",
+    "repair_rig",
+    "add_cases",
+    "confirm_on_fresh_cases",
+    "record_and_rerun",
+    "run_live",
+    "draw_at_random",
+    "finish_read",
+    "declare_looks",
+    "declare_criteria",
+    "name_control",
+    "no_action",
+]
+
+#: Why a step that is more evidence states no planned size, and so makes no call: ``no_interval``, the figure it would
+#: settle states no interval or standard error; ``no_spread``, every case read alike, so at today's estimate no added
+#: case is expected to differ and no size can be promised; ``on_the_line``, today's estimate sits exactly on its line,
+#: so no finite size settles it there; ``no_count``, no count says how many cases the figure rests on;
+#: ``nothing_to_settle``, the caveat names no figure with a line, a margin or a floor a size could be read against.
+UnsizedReason = Literal["no_interval", "no_spread", "on_the_line", "no_count", "nothing_to_settle"]
+
+#: Why no catalogue action takes a step: ``unclassed_kind``, an analyst's own kind, outside the package's classes;
+#: ``method_only``, a kind that only ever lands in the method section and qualifies no answer;
+#: ``no_interval_to_gain``, a figure the engine states no interval for at any size (a percentile, or a mean read from
+#: enough cases that still states none), so no added case gives it one; ``lift_not_shown``, a step no sequence of the
+#: catalogue's actions has been driven, followed as written, to lift, so it names its remedy and makes no call: a
+#: re-run whose fault (an answering model split by the provider, a rig, recording, a replay, a confound no launch
+#: setting holds alike) is not a parameter a launch sets; the serial re-run of cases run at once, which a launch can
+#: ask for (``measure_latency``) but which has not been driven; and more cases on a contrast where every arm the
+#: caveat names but the control would run in a call of its own, which adds no pair (``unpaired_arms``).
+NoActionReason = Literal["unclassed_kind", "method_only", "no_interval_to_gain", "lift_not_shown"]
+
+#: A value one argument of a catalogue action's call takes.
+StepArgument = str | bool | int | list[str]
+
+
+class RemedyStep(_Part):
+    """What would change one first-screen reason, or what stops a campaign being read: the one act that closes it, as
+    a value a person reads and an agent can take.
+
+    Where an action of the engine's catalogue takes the step, ``action`` names it, ``calls`` holds each call of it the
+    step makes, every argument named and typed as the action's own parameters (a step that adds cases passes its
+    planned size as the count of new cases), and ``needs`` names the parameters the step cannot fill from what the
+    caveat holds, which the taker supplies to every call. A launch repeats the set-up of the arms it runs: what the
+    reading holds of it is filled, and ``as_launched`` names the rest, each set as the arms' runs were launched, except
+    the dimensions ``alike`` names, held at one value on every call; ``call_arms`` says which arms each call runs.
+    Where one action's calls do not finish the act, ``then`` holds the calls that do, in order, each of the same
+    shape: a launch's runs joined to the campaign it reads, the runs a re-run replaces taken out of it, and for a
+    confirmation the campaign created first; ``after`` names each argument that only an earlier call's result holds.
+    A step ships a sequence only where following it, through the real actions on a fixture campaign, has been shown
+    to do what it says; ``limits`` states, typed, what following it cannot guarantee, and a re-run no sequence has
+    been shown to lift makes no call and says so (``no_action`` ``lift_not_shown``).
+    Where the step is more evidence, ``planned_cases`` is its size, read from the figure it would settle and stated
+    before it runs, never "until it separates"; where no size can be read, ``unsized`` says why and the step makes no
+    call, so it is never taken open-ended. Where no action takes it, ``no_action`` says why. A step that spends names
+    the action that prices it first; code never takes a step.
+    """
+
+    remedy: Remedy = Field(description="What would close it.")
+    closes: str | None = Field(
+        default=None,
+        description="The caveat it answers, by id; none for the gate's. A step whose first call is campaign_create "
+        "closes nothing on this report: the caveat stays raised here, and the confirmation is read in the campaign it "
+        "creates (limits: this_report_stays_flagged).",
+    )
+    action: str | None = Field(
+        default=None, description="The catalogue action that takes it; none where a host or a person acts."
+    )
+    calls: list[dict[str, StepArgument]] = Field(
+        default_factory=list,
+        description="Each call of the action the step makes, its arguments by the action's own parameter names; empty "
+        "where no action takes it.",
+    )
+    needs: list[str] = Field(
+        default_factory=list,
+        description="The action's parameters no call fills, by its own names, which the taker supplies to every call.",
+    )
+    as_launched: list[str] = Field(
+        default_factory=list,
+        description="For a launch: the parameters that set an arm up which the reading holds no value for, by the "
+        "action's own names; the taker sets each as the runs of the arms it launches were launched, never to its "
+        "default, or the new runs are not more of those arms. The one exception is a dimension alike names, which "
+        "the taker sets to one value on every call.",
+    )
+    alike: list[str] = Field(
+        default_factory=list,
+        description="For a re-run that balances a confound: each apparatus dimension the confound is in, by its "
+        "apparatus_settings key, which the taker sets to one value on every call of the launch, never as each arm "
+        "was launched: the arms then differ only in what is compared.",
+    )
+    call_arms: list[list[str]] = Field(
+        default_factory=list,
+        description="For a launch: the arms each call runs, by id, in the calls' order; empty where the reading does "
+        "not hold the arms' runs.",
+    )
+    after: dict[str, Literal["launched_runs", "launched_control_run", "created_campaign"]] = Field(
+        default_factory=dict,
+        description="For a call that follows another of the step: each parameter only an earlier call's result holds, "
+        "and which: launched_runs, the run ids job_poll names on the step's launch job once its runs start (run_ids); "
+        "launched_control_run, the one of them the control arm's model ran, named as soon as job_poll names it and "
+        "before any result is scored, or the campaign reads its control as named late; created_campaign, the id the "
+        "step's campaign_create returned.",
+    )
+    then: list[RemedyStep] = Field(
+        default_factory=list,
+        description="The calls that finish the act after this step's own, in order, each of one action and of this "
+        "shape: the runs a launch makes joined to the campaign (campaign_runs_add), the runs a re-run replaces taken "
+        "out (campaign_runs_remove), the control named in a new campaign (campaign_update). Empty on a call that "
+        "follows another.",
+    )
+    arms: list[str] = Field(default_factory=list, description="The arms it is about, by id; empty for all.")
+    runs: list[str] = Field(default_factory=list, description="The runs it is about, by id; empty for none named.")
+    planned_cases: int | None = Field(
+        default=None,
+        ge=1,
+        description="For more evidence: the cases to add per arm named (on fresh cases, the cases to run), read from "
+        "the figure it would settle, planned before it runs, so that once the runs it launches are in the campaign "
+        "that reads it, a design of that size clears the line the caveat is lifted by, on the interval it is lifted "
+        "by, at least four times in five if the truth is today's estimate. It counts cases the launch keeps and did "
+        "not reuse (limits: axis_may_not_generate), and holds only for arms launched in one call with the control "
+        "(limits: unpaired_arms). For a step whose first call is campaign_create, the line is the one the created "
+        "campaign reads, never this report's.",
+    )
+    unsized: UnsizedReason | None = Field(
+        default=None, description="For more evidence no size can be read for: why. Such a step makes no call."
+    )
+    size_bias: Literal["picked_best_of_n"] | None = Field(
+        default=None,
+        description="Why the planned size is known to be too small, where it is: picked_best_of_n, read from the pick's "
+        "own estimate, which reads high because the pick was the best of several, so fewer than four designs in five "
+        "of that size clear.",
+    )
+    declared_look: bool = Field(
+        default=False,
+        description="Whether taking it reads the same readings again with the cases it adds: one more look at them, "
+        "stated before it is taken. Nothing counts looks yet: the reading after it is read at its full level as if it "
+        "were the first, so adding cases and reading again even once errs more often than that level says.",
+    )
+    results_needed: int | None = Field(
+        default=None, ge=1, description="For a check: how many more results it needs before it can decide."
+    )
+    recording: list[NextExperiment] = Field(
+        default_factory=list, description="What recording an unrecorded coordinate would pool, cell by cell."
+    )
+    spends: bool = Field(default=False, description="Whether it costs money to take.")
+    priced_by: str | None = Field(
+        default=None, description="For a step that spends: the catalogue action that prices it before it is taken."
+    )
+    no_action: NoActionReason | None = Field(
+        default=None,
+        description="Why no catalogue action takes it: for no_action, why no act closes it; for an act no one action "
+        "takes, or no sequence has been shown to finish, why not.",
+    )
+    limits: list[
+        Literal["unpaired_arms", "axis_may_not_generate", "this_report_stays_flagged", "control_may_read_late"]
+    ] = Field(
+        default_factory=list,
+        description="What following the step as written cannot guarantee. unpaired_arms: an arm that differs from the "
+        "control beyond its model would run in a launch call of its own, whose new cases the control does not run; a "
+        "contrast pairs only the cases both sides ran, so such runs add no pair to it (unpaired_arms names each). A "
+        "step whose caveat reads a contrast on this report launches no such arm, and makes no call where no arm it "
+        "names is left beside the control (no_action lift_not_shown); a confirmation launches it, and the planned "
+        "size does not hold for it. A gate or a figure reads each arm's own cases, so its step names none. "
+        "axis_may_not_generate: n_variations writes unseen cases only on a template "
+        "axis a model writes (llm); on an axis of stated values (enum, sample) a launch reuses stored cases with the "
+        "same values and keeps fewer where they run out, and a kind that generates none refuses it. The reading holds "
+        "no template's axes, so the cases are new only where the launch reports reused 0 and kept the planned count; "
+        "for a confirmation, unseen cases on such an axis are authored first. this_report_stays_flagged: the caveat "
+        "is read off this report's own results (a criterion set after them, a pick among them), which nothing added "
+        "anywhere lifts; the confirmation is read in the campaign the step creates, and that reading is the one to "
+        "trust. control_may_read_late: the control is named from a launched run, which exists only once the launch "
+        "starts; named after the first result is scored, the created campaign reads its control as named late.",
+    )
+    unpaired_arms: list[str] = Field(
+        default_factory=list,
+        description="For limits unpaired_arms: the arms whose new cases no call of the control's runs, by id: "
+        "launched in a call of their own on a confirmation, not launched on a step that reads this report's contrast.",
+    )
+
+    @model_validator(mode="after")
+    def _priced_and_planned(self) -> Self:
+        if self.spends and self.priced_by is None:
+            raise ValueError("a step that spends names the action that prices it")
+        if self.planned_cases is not None and self.unsized is not None:
+            raise ValueError("a step states its planned size, or why it has none, and not both")
+        if self.size_bias is not None and self.planned_cases is None:
+            raise ValueError("a size bias qualifies a planned size")
+        if self.declared_look and self.planned_cases is None:
+            raise ValueError("a step that is one more look states its planned size")
+        if self.unsized is not None and self.action is not None:
+            raise ValueError("a step with no planned size makes no call: it is never taken open-ended")
+        if self.remedy == "no_action" and self.no_action is None:
+            raise ValueError("a step that takes no action says why none does")
+        if self.no_action is not None and self.action is not None:
+            raise ValueError("a step an action takes has no reason no action takes it")
+        if (self.action is None) != (not self.calls):
+            raise ValueError("a step an action takes makes at least one call of it, and a step none takes makes none")
+        if self.action is None and (self.then or self.after or self.as_launched):
+            raise ValueError("a step no action takes makes no call, and none follows it")
+        named = [*self.needs, *self.as_launched, *self.after]
+        if len(set(named)) != len(named) or any(set(call) & set(named) for call in self.calls):
+            raise ValueError("each parameter is filled by a call, left to the taker, or read off an earlier call: once")
+        if any(step.then for step in self.then):
+            raise ValueError("a call that follows another holds no calls of its own to follow it")
+        if bool(self.unpaired_arms) != ("unpaired_arms" in self.limits):
+            raise ValueError("a step names the arms it cannot pair exactly where it states that it cannot")
+        if self.call_arms and len(self.call_arms) != len(self.calls):
+            raise ValueError("a step that says which arms its calls run says it for every call")
+        if self.alike and "apparatus_settings" not in self.as_launched:
+            raise ValueError("a dimension held alike is one the taker sets in apparatus_settings")
+        return self
 
 
 class FirstScreen(_Part):
@@ -1093,6 +1338,10 @@ class FirstScreen(_Part):
         default_factory=list, description="The arms code's own read of the options calls: what ranks a caveat on them."
     )
     call: CallRead | None = Field(default=None, description="The call, where one was made.")
+    steps: list[RemedyStep] = Field(
+        default_factory=list,
+        description="What would change each reason shown, in their order; under a gate, what would lift it.",
+    )
 
 
 class ReportInput(_Part):
@@ -1164,7 +1413,8 @@ class ReportInput(_Part):
     caveat_list: list[CaveatEntry] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="Every qualification of the answer, each once, typed; none on an input built before the list.",
+        description="Every qualification of the answer, each once, typed; none on an input built before the list. "
+        "Derived, so never part of the input's digest.",
     )
     first_screen: FirstScreen | None = Field(
         default=None,
@@ -1173,8 +1423,10 @@ class ReportInput(_Part):
     )
 
 
-#: The one key of the document no digest reads: a function of the rest of the input and of a call made later.
-_OUTSIDE_THE_DIGEST = "first_screen"
+#: The keys of the document no digest reads: each a function of the rest of the input, of the bundle the input was
+#: built from (whose own fingerprint a snapshot holds) and of a call made later. Identity is over inputs only, so a
+#: change to how caveats are raised or ranked re-keys no snapshot and moves no recording.
+_OUTSIDE_THE_DIGEST = frozenset({"caveat_list", "first_screen"})
 
 
 def report_input_digest(report_input: ReportInput) -> str:
@@ -1199,6 +1451,6 @@ def report_input_document_digest(document: Mapping[str, Any]) -> str:
     :return: A 64-character lowercase hex digest.
     :rtype: str
     """
-    document = {key: value for key, value in document.items() if key != _OUTSIDE_THE_DIGEST}
+    document = {key: value for key, value in document.items() if key not in _OUTSIDE_THE_DIGEST}
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return bytes_digest(canonical.encode("utf-8"))
