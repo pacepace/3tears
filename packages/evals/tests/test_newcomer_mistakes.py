@@ -430,6 +430,15 @@ def _passing_through(function: Callable[..., Any]) -> Callable[..., Any]:
     return run
 
 
+def _answering(function: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(function)
+    def run(case: Mapping[str, Any]) -> Any:
+        function(case)
+        return _right(case)
+
+    return run
+
+
 def _unwrapped(function: Callable[..., Any]) -> Callable[..., Any]:
     def run(*args: Any, **kwargs: Any) -> Any:
         return function(*args, **kwargs)
@@ -497,6 +506,12 @@ def _decorated(case: Mapping[str, Any]) -> str:
     return _right(case)
 
 
+@_answering
+def _answered_by_its_decorator(case: Mapping[str, Any]) -> None:
+    # No return of its own: inspect.getsource follows __wrapped__ to this source, so only the decorator returns.
+    print(case)
+
+
 @functools.cache
 def _cached(case: str) -> str:
     return case
@@ -521,6 +536,7 @@ ACCEPTED_RUNNERS: dict[str, Any] = {
     "decorated with wraps, injecting an argument": _injected,
     "decorated with wraps, passing through": _wrapped,
     "decorated without wraps": _decorated,
+    "decorated with wraps, the decorator returns the answer the function does not": _answered_by_its_decorator,
 }
 
 
