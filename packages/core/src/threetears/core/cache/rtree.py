@@ -31,6 +31,8 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from typing import Any, Final
 
+from threetears.core.eviction import Declared, Policy
+
 __all__ = ["SQLiteRTree"]
 
 #: the tree's layout: its id, then the box as (min, max) per axis. A read bounding every coordinate walks the tree
@@ -42,6 +44,8 @@ _RTREE_DDL: Final[str] = (
 )
 
 #: the map: each key's id, read by the id the tree answers
+#: an R-tree's and its map's L1 policy (threetears.core.eviction)
+_KEPT: Final = Declared(Policy.KEEP, "a spatial index of the rows beside it, whole with them; its owner bounds it")
 _MAP_DDL: Final[str] = "CREATE TABLE IF NOT EXISTS {table} (id INTEGER PRIMARY KEY, key TEXT NOT NULL)"
 
 #: the map's key, written and removed by
@@ -98,6 +102,12 @@ class SQLiteRTree:
         conn.execute(_MAP_DDL.format(table=self._map))
         conn.execute(_MAP_KEY_DDL.format(index=f"{self._map}_key", table=self._map))
         conn.commit()
+        declare = getattr(self._conn, "declare", None)
+        if declare is not None:
+            # made by DDL, not SQLiteBackend.initialize, so declared here: the tree and its map index the rows beside
+            # them and must stay whole with them; their owner bounds what they hold (FeatureCache.max_cached_rows)
+            for table in (self._table, self._map):
+                declare(table, _KEPT)
 
     def put(self, boxes: Sequence[tuple[str, float, float, float, float]]) -> None:
         """record each box under its key, replacing the box a key held (its id kept); one transaction.
