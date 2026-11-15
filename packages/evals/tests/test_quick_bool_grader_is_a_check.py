@@ -4,8 +4,11 @@ Its kind is read from its declaration alone, never its source: annotated ``-> bo
 (``-> float``, ``-> int``) or given a range, a number; neither, a check, since the grader a newcomer writes first
 returns a bool. A check's False fails the case it is on: in the first line's count of cases passed, in the misses below
 it, in what a comparison's gate reads, and in ONE printed form, a pass rate with its count. A value the declaration
-contradicts (0.25 from a check, False from a number) fails the run at the first such answer, naming the declaration to
-write: never a dropped cell that shrinks the count. Where no grader is a check, the first line states no pass count.
+contradicts (0.25, None or a numpy-like bool from a check, False from a number) fails the run at the first such answer,
+naming the case and the fix: never a dropped cell that shrinks the count. An annotation read as both kinds
+(``-> bool | float``) or as neither (an alias, ``np.float64``, ``Any``) is refused when the eval is built, saying what
+was read. Where no grader is a check, neither one arm's first line nor two arms' under the case floor states a pass
+count or compares one.
 """
 
 from __future__ import annotations
@@ -247,20 +250,19 @@ def _made_without_source(text: str) -> Callable[..., Any]:
         (starts, True),
         (no_return, True),
         (a_count, True),
-        (anything, True),
         (decorated, True),
         (closeness, False),
         (a_float, False),
         (an_int, False),
-        (either, False),
         (cached, False),
         (_made_without_source("def made(case, out) -> bool:\n    return True\n"), True),
         (_made_without_source("def made(case, out):\n    return 0.5\n"), True),
         (_made_without_source("def made(case, out) -> 'bool':\n    return True\n"), True),
         (_made_without_source("def made(case, out) -> 'float':\n    return 1.0\n"), False),
-        (_made_without_source("def made(case, out) -> Undefined:\n    return 1.0\n"), True),
-        (_made_without_source("def made(case, out) -> float | Undefined:\n    return 1.0\n"), False),
         (_made_without_source("def made(case, out) -> bool | None:\n    return True\n"), True),
+        (_made_without_source("def made(case, out) -> 'Optional[float]':\n    return 1.0\n"), False),
+        (_made_without_source("def made(case, out) -> 'typing.Union[bool, None]':\n    return True\n"), True),
+        (_made_without_source("def made(case, out) -> builtins.int:\n    return 1\n"), False),
     ],
     ids=[
         "no annotation, a comparison",
@@ -268,20 +270,19 @@ def _made_without_source(text: str) -> Callable[..., Any]:
         "no annotation, a call",
         "no annotation, no return",
         "no annotation, 1 or 0",
-        "-> Any",
         "wraps-decorated, the wrapped -> bool",
         "-> float",
         "-> float again",
         "-> int",
-        "-> bool | float",
         "functools.cache over -> float",
         "no source, -> bool",
         "no source, no annotation",
         "a string 'bool'",
         "a string 'float'",
-        "an unresolvable name",
-        "a union with an unresolvable name",
         "bool or None",
+        "Optional[float]",
+        "typing.Union[bool, None]",
+        "builtins.int",
     ],
 )
 def test_a_grader_is_a_check_unless_it_declares_a_number(graders: Callable[..., Any], pass_fail: bool) -> None:
@@ -291,3 +292,136 @@ def test_a_grader_is_a_check_unless_it_declares_a_number(graders: Callable[..., 
 def test_a_range_declares_a_number_and_a_bool_annotation_outranks_it() -> None:
     assert scorer_measure(right, value_range=(1.0, 5.0)).pass_fail is False
     assert scorer_measure(right_annotated, value_range=(1.0, 5.0)).pass_fail is True
+
+
+# Re-pinned deliberately (coordinator ruling, second fix round): -> Any, -> bool | float, an unresolvable name and a union
+# with one were read as a kind (check, number, check, number); an annotation the engine cannot read as exactly one kind
+# is now refused when the eval is built, so they moved from the kind table above to the refusals below.
+@pytest.mark.parametrize(
+    ("annotation", "read"),
+    [
+        ("bool | float", "names both a pass or fail (bool) and a number"),
+        ("float | bool", "names both a pass or fail (bool) and a number"),
+        ("int | bool | None", "names both a pass or fail (bool) and a number"),
+        ("Optional[Union[bool, float]]", "names both a pass or fail (bool) and a number"),
+        ("Score", "and Score is read as neither a pass or fail nor a number"),
+        ("np.float64", "and np.float64 is read as neither a pass or fail nor a number"),
+        ("Decimal", "and Decimal is read as neither a pass or fail nor a number"),
+        ("Any", "and Any is read as neither a pass or fail nor a number"),
+        ("Literal[0, 1]", "and Literal[0, 1] is read as neither a pass or fail nor a number"),
+        ("t.Optional[float]", "and t.Optional[float] is read as neither a pass or fail nor a number"),
+        ("Undefined", "and Undefined is read as neither a pass or fail nor a number"),
+        ("float | Undefined", "and Undefined is read as neither a pass or fail nor a number"),
+        ("None", "and None is read as neither a pass or fail nor a number"),
+    ],
+)
+def test_an_annotation_not_read_as_exactly_one_kind_is_refused_when_the_eval_is_built(
+    annotation: str, read: str
+) -> None:
+    # Never evaluated, so a name nothing defines here (np, Decimal, Score) is read as written.
+    made = _made_without_source(f"def made(case, out) -> {annotation}:\n    return True\n")
+    ran: list[str] = []
+
+    async def counted(case: Mapping[str, Any]) -> str:
+        ran.append(str(case["id"]))
+        return "p"
+
+    with pytest.raises(ValueError) as refused:
+        Eval(CASES, counted, [made])
+
+    message = str(refused.value)
+    assert message.startswith(f"the grader made is annotated -> {annotation}, ")
+    assert read in message
+    # It names what was written, and never tells its author they wrote none.
+    assert "no annotation" not in message
+    assert "def made(case, out) -> bool" in message and "def made(case, out) -> float" in message
+    assert ran == []
+
+
+def test_a_bool_or_number_union_is_refused_by_a_host_built_over_it_too() -> None:
+    def either_kind(case: Mapping[str, Any], out: Any) -> bool | float:
+        return bool(out == case["want"])
+
+    with pytest.raises(ValueError, match=r"annotate it def either_kind\(case, out\) -> bool to grade pass or fail"):
+        callable_host([either_kind])
+
+
+TEN = [{"id": f"c{index}", "want": "q" if index < 3 else "p"} for index in range(10)]
+
+
+def falls_off(case, out):
+    if out == case["want"]:
+        return True
+
+
+class _NotAPythonBool:
+    """A truthy value that is no Python bool, as a numpy bool is."""
+
+    def __init__(self, held: bool) -> None:
+        self.held = held
+
+    def __bool__(self) -> bool:
+        return self.held
+
+    def __repr__(self) -> str:
+        return f"NotAPythonBool({self.held})"
+
+
+def python_or_not(case, out):
+    said = out == case["want"]
+    return said if said else _NotAPythonBool(said)
+
+
+def an_annotated_none(case: Mapping[str, Any], out: Any) -> bool:
+    return None  # type: ignore[return-value]
+
+
+@pytest.mark.parametrize(
+    ("graders", "said"),
+    [
+        ([falls_off], "the grader falls_off returned None on case c"),
+        ([right, falls_off], "the grader falls_off returned None on case c"),
+        ([python_or_not], "._NotAPythonBool, on case c"),
+        ([an_annotated_none], "the grader an_annotated_none returned None on case c"),
+    ],
+    ids=["falls off its end", "beside a check", "python and other bools mixed", "None from -> bool"],
+)
+async def test_a_check_returning_anything_but_a_python_bool_fails_the_run_naming_the_case(
+    graders: list[Any], said: str
+) -> None:
+    result = await Eval(TEN, classify, graders, k=1).run(store=":memory:")
+
+    first = result.render().splitlines()[0]
+    # 10 cases with 3 such answers: never "passed 7 of 7", a count over the cells left.
+    assert first.startswith("classify: the run failed, so there is no verdict: the grader ")
+    assert said in first
+    assert "passed" not in first
+    assert result.exit_code() == 1
+
+
+async def test_the_fix_a_check_s_failure_names_is_the_one_for_what_it_returned() -> None:
+    off, _ = await _lines(classify, [falls_off])
+    other = (await Eval(TEN, classify, [python_or_not], k=1).run(store=":memory:")).render().splitlines()
+
+    assert "(it is not annotated and given no range), so it returns True or False: return one on every path" in off[0]
+    assert "return bool(...) of it to grade pass or fail" in other[0]
+
+
+async def test_two_arms_under_the_case_floor_with_no_check_compare_no_pass_shares() -> None:
+    async def also(case: Mapping[str, Any]) -> str:
+        return "p"
+
+    result = await Eval(CASES, {"a": classify, "b": also}, [closeness], k=1, name="few").run(store=":memory:")
+
+    first = result.render().splitlines()[0]
+    assert first == (
+        "few: Exploratory: b and a ran 3 cases each; no grader here says pass or fail; too few cases to call a "
+        "difference."
+    )
+
+
+async def test_two_arms_under_the_case_floor_with_a_check_still_compare_their_pass_shares() -> None:
+    result = await Eval(CASES, {"a": classify, "b": perfect}, [right], k=1, name="few").run(store=":memory:")
+
+    first = result.render().splitlines()[0]
+    assert first == "few: Exploratory: b passed more often than a; too few cases to call a difference."

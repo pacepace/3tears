@@ -12,19 +12,26 @@ packages (bumped in lock-step).
 read as a score no case can fail: the first line printed `passed 3 of 3 cases` over `Right score: mean 0.3333`, and
 a comparison's gate passed over it (an arm right on thirty cases against one wrong on all thirty exited 0). A function
 grader's kind is now read from what its author declared, never from its source: annotated `-> bool`, a check;
-annotated `-> float` or `-> int` (or a union naming one), or given a range (`grader(f, range=(1, 5))`), a number;
-neither, a check. A check's False fails the case on the first line, it is listed among the misses, it prints as a
-pass rate with its count (`33%, 1 of 3 trials`), and a comparison gates on it. A value the declaration contradicts (a
-number other than 0 or 1 from a check, a bool from a grader declared to grade a number) fails the run at the first
-such answer, naming the declaration to write; no cell is dropped from the count. Where no grader is a check and no
-judged dimension counts, one arm's first line states no pass count: `classify ran 3 of 3 cases; no grader here says
-pass or fail.`, its readings carrying the means.
+annotated `-> float` or `-> int`, or given a range (`grader(f, range=(1, 5))`), a number; neither, a check. An
+annotation read as both (`-> bool | float`) or as neither (an alias, `-> np.float64`, `-> Any`) is refused when the
+`Eval` is built, saying what was read and the spellings accepted; it is parsed as written, never evaluated. A check's
+False fails the case on the first line, it is listed among the misses, it prints as a pass rate with its count (`33%,
+1 of 3 trials`), and a comparison gates on it. A value the declaration contradicts (anything but `True`, `False`, 0
+or 1 from a check, `None` from a function that falls off its end and a numpy bool among them; a bool from a grader
+declared to grade a number) fails the run at the first such answer, naming the case and the fix; no cell is dropped
+from the count. Where no grader is a check and no judged dimension counts, one arm's first line states no pass count
+(`classify ran 3 of 3 cases; no grader here says pass or fail.`, its readings carrying the means), and two arms under
+the case floor compare none (`b and a ran 3 cases each; no grader here says pass or fail; too few cases to call a
+difference.`).
 
 **For hosts:** an unannotated function grader that returns numbers (`return 0.5`) now fails its run: annotate it
 `-> float`, or declare its range. A grader annotated `-> float` or `-> int` that returns a bool fails its run: annotate
 it `-> bool`. A run graded before this by an unannotated grader stored its grades under a number's measure
 definition; read back through the same grader, its 0.0s fail their trials, and that recorded definition keeps it from
-pooling with runs graded now.
+pooling with runs graded now. A grader annotated `-> bool | float`, or with an annotation the engine reads as neither
+kind, is refused until it names one. A check returning a numpy bool fails its run: return `bool(...)`. An old run of an
+unannotated grader of a number (0.25, 0.5), re-read before the grader is annotated, is described as a check, its every
+non-zero value a pass: annotate the grader `-> float` before re-reading it.
 
 ### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
 

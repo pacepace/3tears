@@ -224,8 +224,11 @@ async def test_a_cancelled_run_whose_finished_cells_were_all_declined_stays_canc
     ids=["a string", "None", "nan", "inf"],
 )
 async def test_a_grader_returning_no_finite_number_excludes_the_cell(returned: Any, said: str) -> None:
-    def odd_grade(case: Mapping[str, Any], answer: Any) -> Any:
-        return returned
+    # Re-pinned deliberately (T1, second fix round): this was annotated -> Any, which is now refused when the
+    # eval is built (an annotation read as neither kind), and a check's None or string now fails the run
+    # (test_quick_bool_grader_is_a_check.py). The exclusion held here is a grader of a number's.
+    def odd_grade(case: Mapping[str, Any], answer: Any) -> float:
+        return returned  # type: ignore[no-any-return]
 
     summary = (await Eval(CASES[:1], double, [odd_grade], k=1).run(store=MEMORY, scope=SCOPE)).summary
     assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (0, 0, 1)

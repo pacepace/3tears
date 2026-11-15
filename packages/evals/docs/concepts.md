@@ -28,8 +28,12 @@ test. A runner may also be a `World`'s, which hosts your agent in a seeded state
 
 What counts as right, in the `grader` list. A field name (`"category"`) grades the answer's field against the
 case's: the first is read as a classifier, with a confusion matrix and each label's precision and recall, any other as
-a pass rate. A function `(case, answer) -> bool | float` is a grader named by its `__name__`, and every grader is
-higher-is-better. A string that is not a name is a [goal-state check](#goal-state-check) over a world. A grader that
+a pass rate. A function `(case, answer)` is a grader named by its `__name__`, and every grader is higher-is-better.
+Its kind is what its author declared: `-> bool`, or no annotation, grades pass or fail, and it returns `True` or
+`False` on every path (wrap a numpy result in `bool(...)`); `-> float` or `-> int`, or a range
+(`grader(f, range=(1, 5))`), grades a number. An annotation read as both (`-> bool | float`) or as neither (an alias,
+a numpy type) is refused when the eval is built, and a value its kind cannot hold (`None` from a pass or fail grader)
+fails the run. A string that is not a name is a [goal-state check](#goal-state-check) over a world. A grader that
 raises excludes its trial: it is part of the measuring setup, not the runner.
 
 ### Judge
@@ -556,8 +560,8 @@ rendered from. See [reading a comparison](reading-reports.md#reading-a-compariso
 
 #### Miss
 A trial the pass rule failed: the runner failed outright (it raised, say), or a goal check failed, the label was
-wrong, a check the host declares fell on its wrong side (on the quick path, a grader that declares no number, annotated
-`-> bool` or not annotated, guarded or not), or a judged capability dimension scored under the bar. A grader that is no check is never a miss, whatever it returns, and an
+wrong, a check the host declares fell on its wrong side (on the quick path, a function grader annotated `-> bool` or
+not annotated and given no range, guarded or not), or a judged capability dimension scored under the bar. A grader that is no check is never a miss, whatever it returns, and an
 excluded result never is. `summary.misses()` lists them, each with its reason; [rung 1](ladder.md#rung-1-your-own-function) says how
 to read them.
 

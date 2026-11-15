@@ -35,7 +35,8 @@ the table's header states. Each measure and guardrail is named as the page names
 **No pass count where nothing graded can fail a trial.** An arm whose aspect declares no check and no judged dimension
 that counts (:func:`_holds_a_check`, read off the measure catalog, never the eval's kind) states how many it ran and
 that no grader says pass or fail: ``classify ran 3 of 3 cases; no grader here says pass or fail.`` Its readings carry
-the means.
+the means. Two arms under the case floor say the same, with no pass comparison: ``b and a ran 3 cases each; no grader
+here says pass or fail; too few cases to call a difference.``
 """
 
 from __future__ import annotations
@@ -754,10 +755,22 @@ def _guardrail_sentences(verdicts: Sequence[Verdict]) -> str:
 
 
 def _too_small(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
-    """Which arm passed more of its usable trials than the control, in words, and that no difference is called."""
+    """Which arm passed more of its usable trials than the control, in words, and that no difference is called; where
+    nothing graded can fail a trial (:func:`_holds_a_check`), how many cases each arm ran and that no grader says pass
+    or fail, with no pass comparison, which would compare trials nothing judged."""
     control = _control_key(bundle) or bundle.scoreboard[0].variant_key
     boards = {board.variant_key: board for board in bundle.scoreboard}
     reference = boards[control]
+    if not _holds_a_check(bundle):
+        ordered = [board for board in bundle.scoreboard if board.variant_key != control] + [reference]
+        names = [arm(board.variant_key) for board in ordered]
+        if len({board.usable_cases for board in ordered}) == 1:
+            ran = f"{', '.join(names[:-1])} and {names[-1]} ran {reference.usable_cases} cases each"
+        else:
+            ran = ", ".join(
+                f"{name} ran {board.usable_cases} cases" for name, board in zip(names, ordered, strict=True)
+            )
+        return f"{ran}; no grader here says pass or fail; too few cases to call a difference."
 
     def share(board: ArmScoreboard) -> float:
         return board.passed / board.usable if board.usable else 0.0
