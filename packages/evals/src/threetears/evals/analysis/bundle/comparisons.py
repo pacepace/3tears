@@ -1170,8 +1170,8 @@ def aspect_looks(
     - **Each result** reaches the contrast when it was scored, or, for a run that joined the aspect after it was
       scored, when the run joined (:attr:`~threetears.evals.kernel.declaration.Aspect.membership`). Its occasion is its
       run's launch (its launch group, or the run where it was launched alone), or the membership write it joined in.
-    - **Each run that left** is counted by what its departure recorded: its arrival (its first result, or its later
-      joining), under its launch, and its leaving, under the write that removed it.
+    - **Each run that left** is counted by what its departure recorded: when its evidence first reached the aspect
+      (its first result, or its later joining), under its launch, and its leaving, under the write that removed it.
     - **Each re-measure** of a member run is one occasion, at when it finished (or began, where it has not); **each
       re-judge** is read per result (``rejudged_at``).
 
@@ -1225,6 +1225,7 @@ def aspect_looks(
                 continue
             scored_first[variant] = min(scored, scored_first.get(variant, scored))
             joined_at = _orderable(joined[run.id]) if run.id in joined else None
+            delivery: tuple[datetime, str, str, Hashable]
             if joined_at is not None and scored < joined_at:
                 delivery = (joined_at, variant, result.test_case_id, ("membership", joined_at))
             else:
@@ -1240,8 +1241,8 @@ def aspect_looks(
         if change.change != "left" or (left := _orderable(change.at)) is None:
             continue
         changes.append((left, ("membership", left)))
-        arrived = _orderable(change.first_result_at) if change.first_result_at is not None else None
-        if arrived is None:
+        reached = _orderable(change.first_result_at) if change.first_result_at is not None else None
+        if reached is None:
             lower = True
             continue
         rejoined = [
@@ -1249,10 +1250,10 @@ def aspect_looks(
             for earlier in membership[:index]
             if earlier.change == "joined" and earlier.run_id == change.run_id and (at := _orderable(earlier.at))
         ]
-        if rejoined and rejoined[-1] > arrived:
+        if rejoined and rejoined[-1] > reached:
             departed.append((rejoined[-1], ("membership", rejoined[-1])))
         else:
-            departed.append((arrived, ("launch", change.launch or change.run_id)))
+            departed.append((reached, ("launch", change.launch or change.run_id)))
     arms = sorted(deliveries)
     pairs = (
         [(control, arm) for arm in arms if arm != control]
@@ -1287,7 +1288,7 @@ def aspect_looks(
     first_compared = min(
         [
             *(max(scored_first[pair[0]], scored_first[pair[1]]) for pair in pairs),
-            *(arrived for change in membership if (arrived := _first_result(change)) is not None),
+            *(reached for change in membership if (reached := _first_result(change)) is not None),
         ]
     )
     declared = _orderable(declared_at) if declared_at is not None else None

@@ -15,8 +15,9 @@ and each measured rate is pinned within four of its own (:func:`within`), so a w
 | Unequal batches (20, +5, +35) | 11.4% | 3.6% | 5% |
 | A pass rate on the bounded interval, 3 looks | 1.9% | 0.4% | 5% (pinned, see below) |
 | A rate floor read held, true drop at the margin, 3 looks | 1.8% | 0.45% | 2.5% (pinned, see below) |
-| A cost floor read held, equal true cost, 3 looks, t interval | :data:`_COST_FIXED` | | 2.5% |
-| Looks run past the plan: planned 2 or 3, cases 20 to 120 over 6 looks | | :data:`_PAST_PLAN` | |
+| A cost floor read held, equal true cost, 3 looks, t interval | 5.65% | 2.2% | 2.5% |
+| Looks past the plan, cases 20 to 120 in batches of 20, 1 to 6 looks, planned 2 | | 2.6, 4.7, 6.1, 7.2, 8.0, 9.0% | 5% within it |
+| The same, planned 3 | | 1.5, 2.7, 3.5, 4.2, 4.9, 5.4% | 5% within it |
 
 The bounded interval a rate and a rate floor read is conservative at these counts: read at the nominal level at every
 look, they stay under their bars, so those two rows cannot fail on their bars for a missing correction. Each is held
@@ -28,11 +29,22 @@ fails and the plan holds.
 per-case pass rate of three trials at 0.8 or 0.5, paired, launched at 20 or 40 cases. At each look the campaign row's
 rule reads the change (one aspect, so its step-down is the bounded interval at ``1 − level`` clear of zero); where it
 does not separate, the planner (a parameter: today's, :func:`todays_planner`) sizes the cases to add, and they are
-added (at most :data:`EXTEND_CAP` a step: a host's corpus is finite); where it sizes none, the campaign stops. One,
-two and three extends; undeclared (α at every look) and declared L = 2 and 3 (α/L). The same for a cost floor read
-``held`` with equal true cost (:data:`_COST_PLANNER`). The rates the caveat quotes, the largest over these settings,
-are :data:`~threetears.evals.analysis.significance.FALSE_SEPARATION`, and :func:`test_the_table_the_caveat_quotes_is_the_measured_one`
-holds them to the rows here.
+added (at most :data:`EXTEND_CAP` a step: a host's corpus is finite); where it sizes none, the campaign stops. Each
+cell is how often a replicate has separated after 0, 1, 2 and 3 extends:
+
+| Pass rate, launched | Undeclared | Declared L = 2 | Declared L = 3 |
+|---|---|---|---|
+| 0.8, 20 cases | 0.05, 2.1, 4.4, 6.5% | 0, 1.0, 2.1, 3.0% | 0, 0.5, 1.4, 2.1% |
+| 0.8, 40 cases | 0.7, 3.3, 5.7, 7.9% | 0.2, 1.5, 2.8, 3.8% | 0.1, 0.8, 1.7, 2.4% |
+| 0.5, 20 cases | 0.2, 3.2, 5.9, 7.9% | 0.1, 1.3, 2.9, 4.1% | 0, 0.7, 1.6, 2.3% |
+| 0.5, 40 cases | 1.7, 4.8, 7.3, 9.2% | 0.6, 2.0, 3.5, 4.5% | 0.3, 1.25, 2.1, 2.9% |
+| Cost floor held, equal true cost, 20 cases (bar 2.5%) | 2.6, 5.0, 6.4, 7.8% | 1.2, 2.4, 3.4, 4.0% | 0.9, 1.9, 2.4, 2.9% |
+
+Every declared row holds its bar within its plan (L − 1 extends): data-sized extends, counted as looks and read at α/L,
+err no more than fixed batches do here, so a caveat raises nothing for looks within a plan. Without a plan the error
+grows with each extend; past the plan it grows too. The rates the caveat quotes, the largest over these settings, are
+:data:`~threetears.evals.analysis.significance.FALSE_SEPARATION`, and
+:func:`test_the_table_the_caveat_quotes_is_the_measured_one` holds them to the rows here.
 
 The rule each row reads is the engine's: a mean's verdict is the family rule
 (:func:`~packages.evals.tests.simulation_support.family_verdicts`, which ``test_simulated_multiple_comparisons.py`` pins
@@ -58,6 +70,7 @@ from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
     SIGNIFICANCE_ALPHA,
     bounded_difference_interval,
+    bounded_mean_p,
     difference_interval,
     interval_permits_separation,
     separation_p,
@@ -237,7 +250,10 @@ def test_a_pass_rate_on_its_bounded_interval_under_a_plan_holds_alpha_and_is_mov
 
 #: Looks run past the plan, cases 20 to 120 in batches of 20, each read at α/L: how often a replicate has separated by
 #: each look, by the looks planned. Within the plan at most α; past it the guarantee is gone.
-_PAST_PLAN: Mapping[int, Mapping[int, float]] = {}
+_PAST_PLAN: Mapping[int, Mapping[int, float]] = {
+    2: {1: 0.0255, 2: 0.047, 3: 0.0605, 4: 0.07225, 5: 0.07975, 6: 0.08975},
+    3: {1: 0.01525, 2: 0.02675, 3: 0.035, 4: 0.042, 5: 0.04925, 6: 0.05375},
+}
 
 
 def _cumulative(
@@ -352,7 +368,7 @@ def _cost_held(control: Sequence[float], candidate: Sequence[float], planned: in
 
 
 #: The fixed-batch cost row, 20, 40 and 60 cases: read held at some look, undeclared then declared at three looks.
-_COST_FIXED = (0.0, 0.0)
+_COST_FIXED = (0.0565, 0.02175)
 
 
 def _cost_fixed_rate(planned: int | None, seed: str) -> float:
@@ -383,11 +399,51 @@ EXTENDS = (1, 2, 3)
 
 
 def _rate_row_separates(control: Sequence[float], candidate: Sequence[float], level: float) -> bool:
-    """The campaign row's rule on one aspect: the bounded interval on the change at ``1 − level`` clear of zero."""
+    """The campaign row's rule on one aspect: the bounded interval on the change at ``1 − level`` clear of zero.
+
+    The interval is computed only where it can clear: its lower end is the largest null the bet refutes at the tail
+    ``level / 2``, and the bet's p rises with the null, so a lower end above zero needs the bet against no change to
+    have refuted it already (:func:`~threetears.evals.analysis.stats.bounded_mean_p` at zero, on the same differences,
+    range and stakes); likewise the upper end on the differences negated. Where neither side refutes no change, the
+    interval reaches zero and is not computed (:func:`test_the_shortcut_never_changes_a_row_s_reading` holds it)."""
+    if not _may_clear(control, candidate, level):
+        return False
     interval = bounded_difference_interval(
         control, candidate, paired=True, value_range=(0.0, 1.0), confidence=1.0 - level
     )
     return interval is not None and (interval[0] > 0 or interval[1] < 0)
+
+
+def _may_clear(control: Sequence[float], candidate: Sequence[float], level: float) -> bool:
+    """Whether the bet against no change refutes it at the tail on either side: a necessary condition for the bounded
+    interval at ``1 − level`` to clear zero (with a hair of room for the float rounding of the differences)."""
+    tail = level / 2
+    differences = [b - a for a, b in zip(control, candidate, strict=True)]
+    return any(
+        bounded_mean_p(side, 0.0, (-1.0, 1.0), alpha=tail) < tail * (1 + 1e-6)
+        for side in (differences, [-difference for difference in differences])
+    )
+
+
+def test_the_shortcut_never_changes_a_row_s_reading() -> None:
+    """Wherever the shortcut skips the interval, the interval reaches zero: drawn near a separation, so both outcomes
+    occur, at the sizes and levels the planner-sized rows read."""
+    rng = random.Random("shortcut")
+    skipped = cleared = 0
+    for _ in range(600):
+        n = rng.choice([20, 40, 80, 140])
+        level = rng.choice([SIGNIFICANCE_ALPHA, looks_alpha(2), looks_alpha(3)])
+        control = _rate_shares(rng, n, p=0.7)
+        candidate = _rate_shares(rng, n, p=rng.choice([0.7, 0.8, 0.9]))
+        interval = bounded_difference_interval(
+            control, candidate, paired=True, value_range=(0.0, 1.0), confidence=1.0 - level
+        )
+        clears = interval is not None and (interval[0] > 0 or interval[1] < 0)
+        cleared += clears
+        if not _may_clear(control, candidate, level):
+            skipped += 1
+            assert not clears, (n, level)
+    assert skipped > 100 and cleared > 100, (skipped, cleared)
 
 
 def planner_extend_rates(
@@ -419,7 +475,20 @@ def planner_extend_rates(
 
 #: The planner-sized rows, by (per-trial pass rate, cases launched, looks planned): how often a replicate has separated
 #: after 0, 1, 2 and 3 extends, measured at each row's seed.
-_PLANNER_EXTENDS: Mapping[tuple[float, int, int | None], tuple[float, float, float, float]] = {}
+_PLANNER_EXTENDS: Mapping[tuple[float, int, int | None], tuple[float, float, float, float]] = {
+    (0.8, 20, None): (0.0005, 0.0208, 0.0444, 0.0654),
+    (0.8, 20, 2): (0.0, 0.0102, 0.0205, 0.0302),
+    (0.8, 20, 3): (0.0, 0.0052, 0.0139, 0.0206),
+    (0.8, 40, None): (0.0069, 0.0326, 0.0573, 0.0791),
+    (0.8, 40, 2): (0.0023, 0.015, 0.0275, 0.0381),
+    (0.8, 40, 3): (0.0008, 0.0078, 0.0172, 0.0239),
+    (0.5, 20, None): (0.002, 0.0321, 0.0591, 0.079),
+    (0.5, 20, 2): (0.0007, 0.0132, 0.0294, 0.0406),
+    (0.5, 20, 3): (0.0, 0.0074, 0.0159, 0.0232),
+    (0.5, 40, None): (0.0166, 0.0479, 0.0731, 0.0923),
+    (0.5, 40, 2): (0.0059, 0.0203, 0.0348, 0.0448),
+    (0.5, 40, 3): (0.0026, 0.0125, 0.0212, 0.0288),
+}
 
 
 @pytest.mark.parametrize("planned", [None, 2, 3])
@@ -466,7 +535,11 @@ def cost_planner_rates(
 
 
 #: The planner-sized cost floor row, by the looks planned: how often it has read held after 0 to 3 extends.
-_COST_PLANNER: Mapping[int | None, tuple[float, float, float, float]] = {}
+_COST_PLANNER: Mapping[int | None, tuple[float, float, float, float]] = {
+    None: (0.0256, 0.0495, 0.0642, 0.0784),
+    2: (0.0122, 0.0238, 0.0335, 0.0401),
+    3: (0.0089, 0.0189, 0.0244, 0.0293),
+}
 
 
 @pytest.mark.parametrize("planned", [None, 2, 3])

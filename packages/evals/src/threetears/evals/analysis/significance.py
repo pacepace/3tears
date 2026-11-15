@@ -282,8 +282,43 @@ LooksProcedure = Literal["fixed_batches", "planner_extends"]
 #: count the rate only grows.
 FALSE_SEPARATION: Final[Mapping[LooksProcedure, Mapping[tuple[int | None, int], float]]] = MappingProxyType(
     {
-        "fixed_batches": MappingProxyType({}),
-        "planner_extends": MappingProxyType({}),
+        "fixed_batches": MappingProxyType(
+            {
+                (None, 1): 0.05,
+                (None, 2): 0.097,
+                (None, 3): 0.112,
+                (None, 4): 0.125,
+                (None, 5): 0.129,
+                (2, 1): 0.0255,
+                (2, 2): 0.047,
+                (2, 3): 0.0605,
+                (2, 4): 0.07225,
+                (2, 5): 0.07975,
+                (2, 6): 0.08975,
+                (3, 1): 0.01525,
+                (3, 2): 0.02675,
+                (3, 3): 0.035,
+                (3, 4): 0.042,
+                (3, 5): 0.04925,
+                (3, 6): 0.05375,
+            }
+        ),
+        "planner_extends": MappingProxyType(
+            {
+                (None, 1): 0.0166,
+                (None, 2): 0.0479,
+                (None, 3): 0.0731,
+                (None, 4): 0.0923,
+                (2, 1): 0.0059,
+                (2, 2): 0.0203,
+                (2, 3): 0.0348,
+                (2, 4): 0.0448,
+                (3, 1): 0.0026,
+                (3, 2): 0.0125,
+                (3, 3): 0.0212,
+                (3, 4): 0.0288,
+            }
+        ),
     }
 )
 
@@ -349,7 +384,7 @@ def looks_taken(
       and wherever it lands while they share fewer (the test then reads every case unpaired). So more cases run on one
       arm and then the other are one look, at the launch that paired them: the first changed nothing the test reads.
     - **Each occasion after the first look is one more**, dated by the first change it made; ``changes`` (a run
-      leaving, a re-measure) and ``departed`` (a departed run's own arrival) are occasions that change every contrast.
+      leaving, a re-measure) and ``departed`` (when a departed run's evidence first reached the contrast) are occasions that change every contrast.
     - **Re-judges** are stored per result, with no pass they belong to: the most any one result had after the first
       look is the fewest passes that could have made them, so the count is then a lower bound.
 
@@ -365,7 +400,7 @@ def looks_taken(
     :ptype arms: tuple[str, str]
     :param changes: Occasions that changed the evidence of every contrast, each with when it was made.
     :ptype changes: Iterable[tuple[datetime, Hashable]]
-    :param departed: The arrivals of runs that have since left, each with the occasion that brought it.
+    :param departed: When the evidence of each run that has since left first reached the contrast, each with the occasion that brought it.
     :ptype departed: Iterable[tuple[datetime, Hashable]]
     :param rejudges: Each result's re-judges, as when each was made.
     :ptype rejudges: Iterable[Iterable[datetime]]
@@ -387,9 +422,9 @@ def looks_taken(
         occasions.setdefault(occasion, at)
     if first is None:
         return None
-    arrivals = list(departed)
-    first = min([first, *(at for at, _ in arrivals)])
-    for at, occasion in [*arrivals, *changes]:
+    reached = list(departed)
+    first = min([first, *(at for at, _ in reached)])
+    for at, occasion in [*reached, *changes]:
         occasions[occasion] = min(at, occasions.get(occasion, at))
     later = sum(1 for at in occasions.values() if at > first)
     passes = max((sum(1 for at in each if at > first) for each in rejudges), default=0)
@@ -398,9 +433,6 @@ def looks_taken(
 
 __all__ = [
     "cross_subject_disclosure",
-    "FALSE_SEPARATION",
-    "LooksProcedure",
-    "MeasuredRate",
     "looks_false_separation",
     "format_significance",
     "looks_alpha",

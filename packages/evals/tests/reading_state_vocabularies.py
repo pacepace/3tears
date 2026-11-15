@@ -140,6 +140,7 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
         "analysis/report_input.py:UnsizedReason",
         "RemedyStep.after",
         "RemedyStep.limits",
+        "FalseSeparation.bound",
     ),
     _CHECK: (
         "kernel/evidence_tiers.py:CriterionState",
@@ -238,6 +239,7 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
     ),
     _DESIGN: (
         "analysis/bundle/measures.py:_Verdict",
+        "MembershipChange.change",
         "analysis/reporting.py:SentSettingsState",
         "schema/judge_attribution.py:JudgeAttributionState",
         "Confound.status",

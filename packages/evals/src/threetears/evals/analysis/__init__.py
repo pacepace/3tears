@@ -106,6 +106,7 @@ from threetears.evals.analysis.checks import Check, Corrected, Looks, Rescore
 from threetears.evals.analysis.report_input import (
     CallRead,
     CaveatEntry,
+    FalseSeparation,
     FirstScreen,
     Gate,
     GateRun,
@@ -468,6 +469,7 @@ __all__ = [
     # The one caveat list and the first screen read off it, which the campaign bundle holds.
     "CallRead",
     "CaveatEntry",
+    "FalseSeparation",
     "FirstScreen",
     "Gate",
     "GateRun",

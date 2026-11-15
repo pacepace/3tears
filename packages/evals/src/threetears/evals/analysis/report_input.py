@@ -1002,7 +1002,7 @@ class FalseSeparation(_Part):
     times under its plan (:func:`~threetears.evals.analysis.significance.looks_false_separation`): what a caveat on
     looks states the loosened level to be."""
 
-    rate: Number = Field(description="The rate, as a share.")
+    rate: float = Field(description="The rate, as a share.")
     bound: Literal["measured", "at_least", "at_most"] = Field(
         description=(
             "measured where the simulation states it; at_least past the last count it measured (the rate only grows "
