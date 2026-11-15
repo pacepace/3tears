@@ -341,8 +341,9 @@ def _judged_label(heading: str) -> str:
 
 def label_case(text: str) -> str:
     """Words as a label prints them, where they are a label rather than words in a sentence (a header, a chart's title,
-    a series, a table's row): the first letter a capital, the rest as written. The one owner of a label's capital:
-    :func:`_judged_label` and :func:`~threetears.evals.analysis.report.parts.charting.measure_words` both take it.
+    a series, a table's row): the first letter a capital, the rest as written (``GPT tone`` stays ``GPT tone``, where
+    ``str.capitalize`` would print ``Gpt tone``). The one owner of a label's capital: :func:`_judged_label`,
+    :func:`heading_case` and :func:`~threetears.evals.analysis.report.parts.charting.measure_words` all take it.
 
     :param text: The words.
     :ptype text: str
@@ -350,6 +351,24 @@ def label_case(text: str) -> str:
     :rtype: str
     """
     return text[:1].upper() + text[1:]
+
+
+#: A heading's first word where it is a plain word, which a heading capitalizes, followed by more words; a heading of
+#: one token (``tpl-support``, ``extract_invoice_fields``) or one led by an identifier (``queue_v5 traffic``) is a name.
+_PLAIN_LEAD = re.compile(r"[a-z]+(?:['-][a-z]+)*\s+\S")
+
+
+def heading_case(heading: str) -> str:
+    """A heading as a label prints it (:func:`label_case`) where it opens on a plain word and runs on in words
+    (``tone judgement on GPT replies`` reads ``Tone judgement on GPT replies``, #1127); a heading that is
+    one token, or opens on an identifier, is a name and keeps its case as written.
+
+    :param heading: The heading, as declared.
+    :ptype heading: str
+    :return: The heading.
+    :rtype: str
+    """
+    return label_case(heading) if _PLAIN_LEAD.match(heading) else heading
 
 
 #: A judged dimension's heading as :func:`judged_heading` writes it, a score's scale or a ruler's words after its mark
@@ -527,7 +546,7 @@ def campaign_arm_tags(
     """Each arm's letter tag across a campaign's pages (:func:`arm_tags`), in the one order every page tags arms in:
     the campaign's own arms as it declares them (``arms``), then the other variants its aspects index, aspect by
     aspect, then any its scoreboards list besides, then ``also``'s. It is the order a campaign's report input lists
-    its arms in (``report_input_build``), so the code page, every aspect's page and the report document's page tag
+    its arms in (``report.input_build``), so the code page, every aspect's page and the report document's page tag
     and colour one arm alike (the review's P40); an arm one aspect lacks shifts no other arm's tag.
 
     :param bundles: Each aspect's bundle, in the campaign's order.
@@ -859,7 +878,7 @@ def reader_arm_labels(bundle: CampaignBundle, tags: Mapping[str, str]) -> dict[s
 def input_arm_tags(bundle: CampaignBundle) -> dict[str, str]:
     """Each arm's tag as the campaign's report document page tags it, by every variant key that names it: over the
     arms in its report input's order (the campaign's arms, then the other variants its aspects index, one per label;
-    :func:`~threetears.evals.analysis.report_input_build.report_input`), the control ``P``. It is
+    :func:`~threetears.evals.analysis.report.input_build.report_input`), the control ``P``. It is
     :func:`campaign_arm_tags` over the campaign's declared arms, the call the code page tags by, so every page of a
     campaign tags an arm alike. Read off the bundle, so a surface that prints the document's words beside code's (the
     campaign listing) tags an arm as the document does.

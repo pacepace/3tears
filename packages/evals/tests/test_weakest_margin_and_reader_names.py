@@ -1,6 +1,6 @@
 """The weakest margin and reader names: two facts code computes about a report input.
 
-Contracts held here (``threetears.evals.analysis.report_margins``, ``report.figure_keys``, ``report_doc_prose``):
+Contracts held here (``threetears.evals.analysis.report_margins``, ``report.figure_keys``, ``report.doc_page.prose``):
 
 - **The weakest margin** is the figure nearest the line it is read against, relative to the line: on r1 to r5 it is the
   margin a reviewer names (the pick at its troubleshooting floor; the pick a fraction over the pass-rate gate; the pick's
@@ -27,9 +27,9 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import reader_name, reader_names, render, resolve
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_decision import surviving_options
+from threetears.evals.analysis.report.call import surviving_options
 from threetears.evals.analysis.report_margins import criterion_figures, margins, weakest_margin
-from threetears.evals.analysis.report_doc_prose import typed_ids
+from threetears.evals.analysis.report.doc_page.prose import typed_ids
 
 
 def _input(name: str) -> ReportInput:
@@ -113,10 +113,11 @@ def test_a_reading_read_on_its_corrected_interval_is_weaker_than_the_floor_that_
 
 def test_the_weakest_keys_render_in_their_lines_units() -> None:
     said = "{weakest.arm}: {weakest.value} against {weakest.criterion} at {weakest.threshold}, gap {weakest.margin}"
-    # The worst case is the corrected interval's lower bound (-12.85), 2.15 inside the -15 margin, in the whole points
-    # the pass rate's compared intervals set (owner ruling, set digits); the margin as declared.
+    # The worst case is the corrected interval's lower bound (-12.85), 2.15 inside the -15 margin, at the tenth the
+    # pass rate's compared intervals set (owner ruling, set digits; the precision rule, 2026-11-14); the margin as
+    # declared.
     assert render(said, {}, forms=PageForms.of(_input("r5"))) == (
-        "qwen3.8-flash (A): -13 against the margin on character adherence (v2) at -15, gap 2"
+        "qwen3.8-flash (A): -12.8 against the margin on character adherence (v2) at -15, gap 2.2"
     )
     assert render(said, {}, forms=PageForms.of(_input("r1"))) == (
         "Atlas-M (B): 90% against Resolves the issue in Troubleshooting (multi-turn) at 90%, gap 0"

@@ -25,6 +25,7 @@ def failed_call_output(
     declined: str,
     failed: str,
     log: Callable[[str, int], None],
+    unserved: str | None = None,
     telemetry: CandidateTelemetry | None = None,
     host_measures: dict[str, bool | float | str] | None = None,
     kind_payload: VerbatimJsonObject | None = None,
@@ -37,6 +38,9 @@ def failed_call_output(
       ``account_refused``, which stops the run, since every model behind the key gets the same answer;
     - the ``provider``'s decline (a rate limit, an overload) excludes the cell the same way and the run goes on, since
       the next call may be served;
+    - a model the provider does not serve (``unserved``) excludes the cell the same way and sets ``model_unserved``,
+      so the cell is never judged and a run whose cells keep meeting it stops, since every call naming that model
+      gets the same answer;
     - anything else is the ``candidate``'s, charged to the arm (``candidate_errors``).
 
     Each case is worded by the caller, so its record says which call failed; the description follows it, and an
@@ -53,6 +57,10 @@ def failed_call_output(
     :ptype declined: str
     :param failed: What failed, charged to the candidate.
     :ptype failed: str
+    :param unserved: Which call named a model the provider does not serve, e.g. ``"reporter: the generator's model is
+        not served"``; ``None`` words it from ``failed``. Optional, so a caller written before ``unserved`` existed keeps
+        working: its describer never returns it.
+    :ptype unserved: str | None
     :param log: Logs the chosen wording at a level: ``ERROR`` for an account's refusal, ``WARNING`` otherwise. A
         caller holding the raised exception logs through
         :func:`~threetears.evals.kernel.provider.log_provider_failure`, which appends the
@@ -78,6 +86,10 @@ def failed_call_output(
     if owner == "provider":
         log(declined, logging.WARNING)
         return CandidateOutput(infra_errors=[f"apparatus: {declined}: {description}"], **kept)
+    if owner == "unserved":
+        said = unserved if unserved is not None else f"{failed}: the provider does not serve the model it named"
+        log(said, logging.WARNING)
+        return CandidateOutput(infra_errors=[f"apparatus: {said}: {description}"], model_unserved=True, **kept)
     if owner == "candidate":
         log(failed, logging.WARNING)
         return CandidateOutput(candidate_errors=[f"{failed}: {description}"], **kept)

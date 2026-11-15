@@ -1,8 +1,8 @@
 """The cell notes a reader must see beside the numbers: short cells, unmeasured spend, contended latency, failed arms.
 
-:func:`_short_cells` names every cell holding fewer repetitions than declared, :func:`_cost_unmeasured` and
-:func:`_latency_contended` name the cells whose spend or latency cannot be read, :func:`_all_failed` the arms
-whose every result failed, and :func:`_held_fixed_reading` what the campaign held fixed.
+:func:`short_cells` names every cell holding fewer repetitions than declared, :func:`cost_unmeasured` and
+:func:`contended_latency_cells` name the cells whose spend or latency cannot be read, :func:`all_failed` the arms
+whose every result failed, and :func:`held_fixed_reading` what the campaign held fixed.
 """
 
 from __future__ import annotations
@@ -25,13 +25,13 @@ from threetears.evals.analysis.bundle.schema import (
     HeldFixedReading,
     ShortCell,
 )
-from threetears.evals.analysis.bundle.cell_reads import _CellKey
+from threetears.evals.analysis.bundle.cell_reads import CellKey
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun
 
 
-def _short_cells(cells: list[Cell], design: AspectDesign | None) -> list[ShortCell]:
+def short_cells(cells: list[Cell], design: AspectDesign | None) -> list[ShortCell]:
     """Name every cell holding fewer repetitions than the declaration intended.
 
     A cell is counted by its least-repeated case, since that case is the cell's weakest replication
@@ -78,7 +78,7 @@ def _short_cells(cells: list[Cell], design: AspectDesign | None) -> list[ShortCe
 _HOW_TO_REPORT_SPEND = "A quick candidate reports its spend by returning an Answer."
 
 
-def _cost_unmeasured(results_by_cell: dict[_CellKey, list[ResultView]]) -> tuple[list[CellCoordinate], str | None]:
+def cost_unmeasured(results_by_cell: dict[CellKey, list[ResultView]]) -> tuple[list[CellCoordinate], str | None]:
     """Name every cell where no result observed spend, with the one sentence that says what that means.
 
     A cell is listed when it holds a result storing a ``cost_usd`` and no result in it observed spend
@@ -89,11 +89,11 @@ def _cost_unmeasured(results_by_cell: dict[_CellKey, list[ResultView]]) -> tuple
     over the turns the candidate took (:func:`~threetears.evals.kernel.result_condition.delivered_a_turn`),
     the population a cell's ``cost_usd`` reading is read over (``delivered``), so a billed refusal cannot
     make a cell whose turns reported no spend look measured. A cell where no result took a turn is not
-    listed: it has no cost because every call failed, which :func:`_all_failed` says, and "nobody reported
+    listed: it has no cost because every call failed, which :func:`all_failed` says, and "nobody reported
     spend" would be the wrong reason.
 
-    :param results_by_cell: Each cell's results, from :func:`_results_by_cell`.
-    :ptype results_by_cell: dict[_CellKey, list[ResultView]]
+    :param results_by_cell: Each cell's results, from :func:`group_results_by_cell`.
+    :ptype results_by_cell: dict[CellKey, list[ResultView]]
     :return: The unmeasured cells in coordinate order, and the sentence — None when there are none.
     :rtype: tuple[list[CellCoordinate], str | None]
     """
@@ -119,13 +119,13 @@ def _cost_unmeasured(results_by_cell: dict[_CellKey, list[ResultView]]) -> tuple
     return unmeasured, f"{sentence} {_HOW_TO_REPORT_SPEND}"
 
 
-def _latency_contended(
-    results_by_cell: dict[_CellKey, list[ResultView]], contended_ids: Collection[str], *, declared: bool = False
+def contended_latency_cells(
+    results_by_cell: dict[CellKey, list[ResultView]], contended_ids: Collection[str], *, declared: bool = False
 ) -> tuple[list[CellCoordinate], str | None]:
     """Name every cell whose latency read under concurrency was left out, with the one sentence that says so.
 
-    :param results_by_cell: Each cell's results, from :func:`_results_by_cell`.
-    :ptype results_by_cell: dict[_CellKey, list[ResultView]]
+    :param results_by_cell: Each cell's results, from :func:`group_results_by_cell`.
+    :ptype results_by_cell: dict[CellKey, list[ResultView]]
     :param contended_ids: The results whose latency
         :func:`~threetears.evals.analysis.contention.withhold_contended_latency` removed before anything read them.
     :ptype contended_ids: Collection[str]
@@ -148,14 +148,14 @@ def _latency_contended(
     return cells, contended_latency_sentence(withheld, total, where=where, declared=declared)
 
 
-def _all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | None]:
+def all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | None]:
     """Name every cell where no counted result took a turn, with the one sentence that says so.
 
     Read off the cells' own counts (:attr:`~threetears.evals.kernel.surface.CellFacts.all_failed`), so the
     list and the surface cannot disagree about which cell took no turn. Such a cell has no cost or latency
     reading, and without this the absence reads as "not measured" beside the arms that were.
 
-    :param cells: The decision surface's cells, from :func:`_cell_measures`.
+    :param cells: The decision surface's cells, from :func:`cell_measures`.
     :ptype cells: list[CellFacts]
     :return: The cells in coordinate order, and the sentence
         (:func:`~threetears.evals.kernel.surface.all_failed_sentence`) — None when there are none.
@@ -171,7 +171,7 @@ def _all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | Non
     return failed, all_failed_sentence(len(failed), len(cells))
 
 
-def _held_fixed_reading(runs: list[EvalRun], design: AspectDesign | None) -> HeldFixedReading:
+def held_fixed_reading(runs: list[EvalRun], design: AspectDesign | None) -> HeldFixedReading:
     """Compare what the campaign declared held fixed with the provenance every resolved run recorded.
 
     :param runs: The resolved member runs.
@@ -212,4 +212,10 @@ def _held_fixed_reading(runs: list[EvalRun], design: AspectDesign | None) -> Hel
     )
 
 
-__all__: list[str] = []
+__all__ = [
+    "all_failed",
+    "cost_unmeasured",
+    "held_fixed_reading",
+    "contended_latency_cells",
+    "short_cells",
+]

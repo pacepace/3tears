@@ -25,7 +25,7 @@ from typing import Any, get_type_hints
 from uuid import uuid4, uuid7
 
 import pytest
-from hypothesis import given
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from threetears.agent.audit import (
@@ -470,15 +470,22 @@ _TREES = st.recursive(
 )
 _DETAILS = st.dictionaries(_KEYS, _TREES, max_size=6)
 
+#: what these properties promise is about the rule, never about how fast a runner draws an example: on a loaded
+#: pool runner one draw took 1.5 s and the too_slow health check failed a test whose every example passed.
+#: Neither the health check nor the per-example deadline reads the rule, so neither is held here.
+_UNTIMED = settings(deadline=None, suppress_health_check=[HealthCheck.too_slow])
+
 
 class TestProperties:
     """the rule's promises, over arbitrary JSON-shaped details."""
 
+    @_UNTIMED
     @given(details=_DETAILS)
     def test_every_top_level_key_survives(self, details: dict[str, Any]) -> None:
         """erasure never deletes a key."""
         assert anonymize_details(details, event_type=_PLAIN_EVENT).keys() == details.keys()
 
+    @_UNTIMED
     @given(details=_DETAILS)
     def test_the_shape_is_preserved_but_under_identifying_keys(self, details: dict[str, Any]) -> None:
         """every key at every depth survives; only an identifying key's value is replaced (by the marker)."""
@@ -501,6 +508,7 @@ class TestProperties:
 
         walk(details, anonymized)
 
+    @_UNTIMED
     @given(details=_DETAILS)
     def test_anonymization_is_idempotent(self, details: dict[str, Any]) -> None:
         """a second pass is a no-op."""
@@ -508,6 +516,7 @@ class TestProperties:
 
         assert anonymize_details(once, event_type=_PLAIN_EVENT) == once
 
+    @_UNTIMED
     @given(details=_DETAILS)
     def test_the_input_is_never_mutated(self, details: dict[str, Any]) -> None:
         """purity holds for every shape, not just the hand-written ones."""

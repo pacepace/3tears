@@ -5,7 +5,7 @@ A floor (:class:`~threetears.evals.kernel.declaration.Floor`) is a typed clause 
 (the candidate must cost less per reply). **A floor warns.** It never decides the page or removes an option: code
 reports, the writer recommends and a person decides, so a broken floor is the first line of the page and the call that
 adopts the candidate anyway records it as overridden. Read broken on an asked aspect, it caps the candidate's standing
-in code's dominance read (:mod:`~threetears.evals.analysis.report_decision`).
+in code's dominance read (:mod:`~threetears.evals.analysis.report.call`).
 :func:`evaluate_floor` reads one floor on one candidate (:func:`read_floor` with the per-rate detail the page prints),
 and :func:`aspect_pass_rate` reads the aspect's overall pass rate on a candidate, which the campaign's readings compare.
 
@@ -57,6 +57,7 @@ from threetears.evals.analysis.bundle.schema import (
     FLOOR_COST_MEASURE,
     TRIAL_PASS_NAME,
     AnalysisContextBundle,
+    ArmScoreboard,
     FamilyComparison,
     FloorContrast,
 )
@@ -389,6 +390,11 @@ class FloorReadings:
     def read_by(self, clause: RateDrop) -> tuple[RateReading, ...]:
         """The rates ``clause`` reads: every one, or the one it names."""
         return self.rates if clause.reading is None else tuple(r for r in self.rates if r.answers(clause.reading))
+
+    def pass_rate(self) -> RateReading | None:
+        """The overall pass rate among :attr:`rates`: every usable trial's, the one rate carrying no measure; what
+        :func:`aspect_pass_rate` reads alone. None where either arm is off the scoreboard."""
+        return next((rate for rate in self.rates if rate.measure is None), None)
 
 
 @dataclass(frozen=True)
@@ -1024,21 +1030,7 @@ def floor_readings(
         return FloorReadings(rates=(), check_names=dict(check_names or {}))
     ours, theirs = boards[control], boards[candidate]
     lost_control, lost_candidate = sum(ours.lost.values()), sum(theirs.lost.values())
-    rates = [
-        _read_on(
-            RateReading(
-                _rate_name(bundle, None),
-                ours.passed,
-                ours.usable,
-                theirs.passed,
-                theirs.usable,
-                lost_control,
-                lost_candidate,
-            ),
-            _floor_contrast(bundle, "trial", TRIAL_PASS_NAME, control, candidate),
-            confidence=confidence,
-        )
-    ]
+    rates = [_trials_rate(bundle, ours, theirs, confidence=confidence)]
     oriented = rule_rates(bundle.measure_catalog.values())
     measures: dict[str, dict[str, tuple[int, int]]] = {}
     for cell in bundle.cell_measures:
@@ -1177,8 +1169,30 @@ def aspect_pass_rate(
         off the scoreboard.
     :rtype: RateReading | None
     """
-    rates = floor_readings(bundle, control, candidate, confidence=confidence).rates
-    return next((rate for rate in rates if rate.measure is None), None)
+    boards = {board.variant_key: board for board in bundle.scoreboard}
+    if control not in boards or candidate not in boards:
+        return None
+    return _trials_rate(bundle, boards[control], boards[candidate], confidence=confidence)
+
+
+def _trials_rate(
+    bundle: AnalysisContextBundle, ours: ArmScoreboard, theirs: ArmScoreboard, *, confidence: float
+) -> RateReading:
+    """The overall pass rate of a candidate's scoreboard entry (``theirs``) against the control's (``ours``): the
+    first rate :func:`floor_readings` reads, and the one :func:`aspect_pass_rate` reads alone."""
+    return _read_on(
+        RateReading(
+            _rate_name(bundle, None),
+            ours.passed,
+            ours.usable,
+            theirs.passed,
+            theirs.usable,
+            sum(ours.lost.values()),
+            sum(theirs.lost.values()),
+        ),
+        _floor_contrast(bundle, "trial", TRIAL_PASS_NAME, ours.variant_key, theirs.variant_key),
+        confidence=confidence,
+    )
 
 
 def control_cannot_show(

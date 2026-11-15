@@ -1,4 +1,4 @@
-"""What a chart query selects from the report input (``threetears.evals.analysis.report_rows``).
+"""What a chart query selects from the report input (``threetears.evals.analysis.report.rows``).
 
 Contracts held here, over the r1–r5 fixture inputs (``fixtures/report_inputs/rN/input.json``):
 
@@ -22,7 +22,7 @@ import pytest
 from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.plan_charts_support import stored_charts
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_rows import SourceRow, query_aspect, query_rows
+from threetears.evals.analysis.report.rows import SourceRow, query_aspect, query_rows
 from threetears.evals.kernel.chart_query import ChartQuery
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_inputs"

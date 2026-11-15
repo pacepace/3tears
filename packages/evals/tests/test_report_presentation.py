@@ -682,10 +682,11 @@ async def test_a_transcript_is_quoted_whole_and_none_of_it_is_the_report_s_struc
 
 def test_an_author_s_words_open_no_block_of_their_own_in_markdown() -> None:
     """An author's words, as a report document's lede and captions lay them out (``md_parts.paragraphs``): paragraphs
-    and bullet lists, every other block a line would open escaped, so they add no heading to the page's outline."""
+    and bullet lists, every other block a line would open escaped (a tag as an entity, as everywhere in a line), so they
+    add no heading to the page's outline."""
     body = "## music\n\n- # Persona\n- plain\n\n```\n\n> quoted\n\n1. first\n\n<details>"
     markdown = "\n".join(paragraphs(body))
-    assert markdown == "\\## music\n\n- \\# Persona\n- plain\n\n\\```\n\n\\> quoted\n\n1\\. first\n\n\\<details>"
+    assert markdown == "\\## music\n\n- \\# Persona\n- plain\n\n\\```\n\n\\> quoted\n\n1\\. first\n\n&lt;details>"
     assert _outline(markdown) == []
 
 

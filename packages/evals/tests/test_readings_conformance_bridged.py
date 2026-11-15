@@ -286,6 +286,53 @@ def test_a_read_abandoned_part_way_closes_the_stores_iterator(loop: asyncio.Abst
     assert len(list(bridge.iter_narrowed("t", "s"))) == 1000, "the store still reads after the abandoned read"
 
 
+class _Cursor:
+    """An async iterator that is a class of its own, not an async generator: a driver's cursor, closed by ``aclose``."""
+
+    def __init__(self, rows: Iterator[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.closed = False
+
+    def __aiter__(self) -> _Cursor:
+        return self
+
+    async def __anext__(self) -> dict[str, Any]:
+        try:
+            return next(self.rows)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class _FakeCursorReadingStore(_FakeAsyncStore):
+    """Readings whose narrowed read hands back a :class:`_Cursor`; it keeps the last one it handed out."""
+
+    cursor: _Cursor | None = None
+
+    def iter_narrowed(self, doc_type: str, scope_id: str, **predicates: Any) -> _Cursor:
+        self.cursor = _Cursor(self.inner.iter_narrowed(doc_type, scope_id, **predicates))
+        return self.cursor
+
+    async def grouped(self, doc_type: str, scope_id: str, **arguments: Any) -> list[dict[str, Any]]:
+        return self.inner.grouped(doc_type, scope_id, **arguments)
+
+
+def test_a_read_abandoned_part_way_closes_a_cursor_that_is_not_a_generator(loop: asyncio.AbstractEventLoop) -> None:
+    store = _FakeCursorReadingStore()
+    for index in range(1000):
+        store.inner.upsert(_doc(index))
+    bridge = bridge_async_store(store, loop)
+    assert isinstance(bridge, ResultReadings)
+
+    rows = bridge.iter_narrowed("t", "s")
+    assert next(rows)["n"] == 0
+    assert store.cursor is not None and not store.cursor.closed
+    rows.close()  # type: ignore[attr-defined]
+    assert store.cursor.closed
+
+
 # --- offered only when the store offers it, and composed with the clock ----------------------------------
 
 

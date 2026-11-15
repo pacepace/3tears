@@ -42,8 +42,8 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 from threetears.evals.analysis.analyst.skill import AnalystSkill, SkillText, load_skill
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
-from threetears.evals.analysis.report_doc_checks import DocVerdict
-from threetears.evals.analysis.report_doc_store import doc_verdicts
+from threetears.evals.analysis.report.doc_page.checks import DocVerdict
+from threetears.evals.analysis.report.doc_page.store import doc_verdicts
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.candidate_kind import (
     CandidateOutput,
@@ -632,6 +632,7 @@ class ReportWriterKind:
             refused="report_writer: a turn was refused for the calling account",
             declined="report_writer: a turn was declined by the provider",
             failed="report_writer: a turn failed",
+            unserved="report_writer: a turn named a model the provider does not serve",
             log=lambda what, level: log_provider_failure(log, described, failure, "%s", what, level=level),
             telemetry=telemetry,
             host_measures=measures,
@@ -651,6 +652,10 @@ def _telemetry(tally: Tally, model: str) -> CandidateTelemetry:
     so the result's ``cost_usd`` is the sum of the turns that were priced, those delivered before the failure
     included: a failed write is the candidate's failure, never spend the run cannot count. Only a reply that reported
     usage its client could not price is unpriced spend, which stops a capped run.
+
+    **No row names a served provider, and none is lost.** A tool turn goes to Anthropic's own Messages API alone
+    (``Model.turn`` refuses any other route), and a direct provider's reply names no upstream: ``served_provider``
+    names the provider a router sent a call to, so a turn's row records none, as a direct completion's does.
     """
     ledger = RoleUsageLedger(role="candidate")
     for turn in tally.turns:
@@ -663,6 +668,9 @@ def _telemetry(tally: Tally, model: str) -> CandidateTelemetry:
             cost_usd=turn.cost_usd,
             price_source=turn.price_source,
             unpriced_reason=turn.pricing_failure,
+            # A send that broke before any response began may have been billed too: counted beside the row's cost,
+            # and by the run's cap, as a completion's is.
+            maybe_billed_sends=turn.maybe_billed_sends or None,
         )
     if unreturned := tally.unreturned_turns():
         ledger.add_unanswered(model=model, lost=unreturned)

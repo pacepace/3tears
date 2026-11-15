@@ -1,7 +1,7 @@
 """The editor's facts: what code computes about a report document on its snapshot, for the report editor to weigh.
 
 A report document (:class:`~threetears.evals.kernel.report_doc.ReportDoc`) is held to two kinds of finding (ruling 1).
-The mechanical ones are the invariants (``analysis/report_doc_checks.py``): code can prove them wrong, and a verdict
+The mechanical ones are the invariants (``analysis/report/doc_page/checks.py``): code can prove them wrong, and a verdict
 blocks storage. The interpretive ones are here. Code can compute that something holds, but not whether the document
 handles it well, so each is handed to the editor as a fact: one sentence stating a computed truth, with the figure keys
 it rests on. **A fact never refuses**, never blocks storage, and never says what the editor should conclude. The
@@ -29,9 +29,9 @@ already hold:
   evidence for switching to it is short: the snapshot asks no question of
   any aspect; or a guardrail the pipeline read on it is breached
   (:func:`~threetears.evals.analysis.analyst.analyses.breached_guardrails`); or its standing on the asked aspects is
-  not shown no worse (:func:`~threetears.evals.analysis.report_decision.asked_standing`) with a floor not held
-  (:func:`~threetears.evals.analysis.report_decision.floors_not_held`): it is shown better on no asked aspect
-  (:func:`~threetears.evals.analysis.report_decision.shown_better`, which sets aside an improvement read by a judge not
+  not shown no worse (:func:`~threetears.evals.analysis.report.call.asked_standing`) with a floor not held
+  (:func:`~threetears.evals.analysis.report.call.floors_not_held`): it is shown better on no asked aspect
+  (:func:`~threetears.evals.analysis.report.call.shown_better`, which sets aside an improvement read by a judge not
   calibrated, and the sentence names it), or a floor read broken caps it though it is shown better.
 - ``settled_loss_unasked``: a recommended candidate's reading on an aspect the campaign does not ask about is a loss
   settled past the aspect's margin: its interval lies wholly at or below minus the margin. It is the other side of
@@ -61,8 +61,8 @@ already hold:
 - ``cost_served_by``: the document's prose compares costs: a field cites figure keys reading the costs of two arms or
   more (:func:`~threetears.evals.analysis.report.figure_keys.cost_arms`: a money figure's arms, a ratio of costs' with
   the control it is on, every arm for a range over them). The fact states, for each arm compared, the providers its
-  pricing names as serving its model calls (``ScoreboardRow.pricing.providers``), or that it names none, or that the
-  input states no pricing for it, and the tools its cost spent on apart from them (``tool_providers``). A cost is the
+  pricing names as serving its model calls (``ScoreboardRow.pricing.providers``), and that the rest were not recorded
+  where only part were (``providers_in_part``), or that none was recorded, or that the input states no pricing for it, and the tools its cost spent on apart from them (``tool_providers``). A cost is the
   provider routing's, not the model's alone (owner, 2026-10-25, restated 2026-10-29), so a cost compared between models
   names who served each; whether the text does is the editor's, never this fact's. One fact for the document, naming
   the fields that compare costs and each arm they compare once, in the input's order: the routing is an arm's, not a
@@ -111,15 +111,12 @@ from threetears.evals.analysis.analyst.analyses import (
 from threetears.evals.analysis.analyst.cited import cite
 from threetears.evals.analysis.analyst.facts import confound_caveat_id, contrast_key
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.figure_keys import (
-    WEAKEST_PREFIX,
-    Figure,
-    cost_arms,
-    format_figure,
-    reader_name,
-)
+from threetears.evals.analysis.report.keys.figure import Figure
+from threetears.evals.analysis.report.keys.names import reader_name
+from threetears.evals.analysis.report.keys.resolve import cost_arms, format_figure
+from threetears.evals.analysis.report.keys.weakest import WEAKEST_PREFIX
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report_decision import (
+from threetears.evals.analysis.report.call import (
     asked_standing,
     control_arm,
     floors_not_held,
@@ -680,12 +677,14 @@ def _served_said(report_input: ReportInput, arm: str) -> list[_Part]:
     pricing = row.pricing if row is not None else None
     if pricing is None:
         return [_arm(arm), ", whose pricing the input does not state"]
-    said: list[_Part] = [
-        _arm(arm),
-        f", its model calls served by {', '.join(pricing.providers)}"
-        if pricing.providers
-        else ", whose pricing names no provider of its model calls",
-    ]
+    served = ", ".join(pricing.providers)
+    if not served:
+        routing = ", the provider of its model calls not recorded"
+    elif pricing.providers_in_part:
+        routing = f", its model calls served by {served} in part, the rest not recorded"
+    else:
+        routing = f", its model calls served by {served}"
+    said: list[_Part] = [_arm(arm), routing]
     if pricing.tool_providers:
         said.append(f", with tool spend at {', '.join(pricing.tool_providers)}")
     return said

@@ -72,6 +72,20 @@ async def _drain(stream: asyncio.StreamReader | None) -> bytes:
     return b"" if stream is None else await stream.read()
 
 
+async def _discard_to_eof(stream: asyncio.StreamReader) -> None:
+    """Read a killed child's stdout to its end, dropping what is left in it.
+
+    ``Process.wait()`` returns at once only when the loop has already seen the child exit; otherwise
+    it returns once every one of the child's pipes has closed. A consumer that stopped early leaves
+    stdout's reader paused on a full buffer, so that pipe's end is never read, and a ``wait()`` that
+    starts before the loop sees the kill land never returns (#1168: the abort waited out its test's
+    5 s on a loaded runner). Reading on resumes the reader; the writers are dead, so the end comes
+    after at most what was already in flight.
+    """
+    while await stream.read(_READ_CHUNK):
+        pass
+
+
 def _kill(proc: asyncio.subprocess.Process) -> None:
     """SIGKILL the whole child process group if it is still running.
 
@@ -125,6 +139,7 @@ async def stream_stdout(
         # blocked writing to a now-undrained stdout pipe — kill it so wait() can't hang.
         if not reached_eof:
             _kill(proc)
+            await _discard_to_eof(proc.stdout)
         stderr_final = (await stderr_task).decode(errors="replace")
         returncode = await proc.wait()
     if returncode != 0:
@@ -258,8 +273,15 @@ async def pipe_through(
             # the consumer stopped, or the read timed out: the child may be blocked on a full
             # stdout pipe and the pump on a full stdin one, so neither would ever finish alone.
             _kill(proc)
-            # a source failure the pump already hit is raised from here rather than lost.
-            await cancel_and_wait(pump)
+            try:
+                # a source failure the pump already hit is raised from here rather than lost.
+                await cancel_and_wait(pump)
+            finally:
+                # and the killed child is still drained and waited on when it is, so neither its pipes
+                # nor its transport are left open behind the error.
+                await _discard_to_eof(proc.stdout)
+                await stderr_task
+                await proc.wait()
         stderr_final = (await stderr_task).decode(errors="replace")
         returncode = await proc.wait()
     # the child closed stdout, so the pump has written all it ever will; a source failure is

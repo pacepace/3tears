@@ -1,7 +1,7 @@
 """The analyst's analyses: dominance, decision sensitivity and the measure breakdown, held to the decision code makes.
 
 Contracts held here (``threetears.evals.analysis.analyst.analyses``, ``ops.analyst_analyses``,
-``actions.analyst_analyses``, and the helpers they read in ``analysis.report_decision``):
+``actions.analyst_analyses``, and the helpers they read in ``analysis.report.call``):
 
 - **dominance** names exactly the decision's survivors (``surviving_options``), the undecided options apart from the
   removed (``undecided_arms``), and dominant options
@@ -10,7 +10,8 @@ Contracts held here (``threetears.evals.analysis.analyst.analyses``, ``ops.analy
   other survivor names it among those dominating it; extra axes are descriptive and only narrow who dominates;
   where cost is the only axis the snapshot declares (``weighed_axes``), no option is dominant or dominated, the call
   is a tradeoff and says why, and the extra axes named are weighed beside cost (the undominated set the test
-  computes from the figures);
+  computes from the figures); a contrast a survivor's standing rests on is cited by the key ``contrasts_list`` lists
+  its delta under, so the analyst never sees one figure under two keys;
 - **sensitivity**: every flip is the figure its key states (a reading's ``flip_margin``, a floor read's interval end,
   a criterion's figure for the arm) inside the range; every segment's call equals ``decision_at`` at its midpoint,
   and its picks each routable task's ``routing_picks`` there; the call at each flip is the segment it falls in by
@@ -23,7 +24,7 @@ Contracts held here (``threetears.evals.analysis.analyst.analyses``, ``ops.analy
   it is refused, pointing to ``measure_read`` by stratum; tasks and cells slice where the input holds them;
 - **every fixture snapshot** (r1 to r5, the misfit inputs, Kairo round 2): each analysis, on every parameter the input
   holds, answers or refuses, never raises, and every figure it returns resolves to its value;
-- **report_decision's helpers**: ``decision_at`` with no overrides is the declared decision, and refuses an override
+- **report.call's helpers**: ``decision_at`` with no overrides is the declared decision, and refuses an override
   naming nothing the input holds.
 """
 
@@ -42,10 +43,11 @@ from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
 from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, eval_catalogue
 from threetears.evals.analysis.analyst.analyses import GateRead, breakdown, dominance, sensitivity
+from threetears.evals.analysis.analyst.facts import contrasts_list
 from threetears.evals.analysis.analyst.snapshot import frozen_input, report_snapshot
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report_decision import (
+from threetears.evals.analysis.report.call import (
     DecisionAt,
     asked_standing,
     caveat_materiality,
@@ -56,7 +58,7 @@ from threetears.evals.analysis.report_decision import (
     surviving_options,
     weighed_axes,
 )
-from threetears.evals.analysis.report_gates import gate_check, gate_findings, routing_picks
+from threetears.evals.analysis.report.gates import gate_check, gate_findings, routing_picks
 from threetears.evals.analysis.report_input import Criterion, ReportInput
 from threetears.evals.analysis.report_margins import criterion_figures, flip_margin, undecided_arms
 from threetears.evals.kernel import EvalReportSnapshot
@@ -118,7 +120,7 @@ def _each_figure_resolves(structured: dict[str, Any], held: ReportInput) -> None
 
 
 # =============================================================================
-# report_decision's helpers
+# report.call's helpers
 # =============================================================================
 
 
@@ -372,6 +374,38 @@ def test_the_gate_figures_walk_has_a_removed_option_failing_on_a_figure_and_a_su
     results = [dominance(held) for held in _all_inputs().values()]
     assert any(gate.status == "fail" for result in results for row in result.out for gate in row.gates)
     assert any(row.borders for result in results for row in result.survivors)
+
+
+def _contrast_cited(key: str) -> bool:
+    return key.startswith("contrast.") or ".contrast." in key
+
+
+@pytest.mark.parametrize("name", sorted(_all_inputs()))
+def test_a_survivors_standing_cites_a_contrast_by_the_key_the_contrast_listing_gives_it(name: str) -> None:
+    held = _all_inputs()[name]
+    listed = {figure.key for row in contrasts_list(held, limit=WHOLE).contrasts for figure in row.figures}
+    for row in dominance(held, limit=WHOLE).survivors:
+        cited = [figure.key for figure in row.figures if _contrast_cited(figure.key)]
+        assert set(cited) <= listed, f"{name}: {row.arm} cites {sorted(set(cited) - listed)}, which no listing names"
+
+
+def test_a_standing_cites_a_contrast_read_on_an_aspect_that_holds_its_arm_and_measure_once() -> None:
+    """The control for the walk above: a fixture's standing cites a contrast that states its aspect, where the input
+    holds its arm and measure once, so its key is the unqualified one and an aspect-qualified copy would differ."""
+    held = _all_inputs()["kairo round 2"]
+    cited = {
+        figure.key
+        for row in dominance(held, limit=WHOLE).survivors
+        for figure in row.figures
+        if _contrast_cited(figure.key)
+    }
+    once = [
+        contrast
+        for contrast in held.contrasts
+        if contrast.aspect is not None
+        and sum((other.arm, other.measure) == (contrast.arm, contrast.measure) for other in held.contrasts) == 1
+    ]
+    assert any(f"contrast.{contrast.arm}.{contrast.measure}.delta" in cited for contrast in once)
 
 
 @pytest.mark.parametrize("name", ["r1", "r2", "r4", "r5", "kairo round 2"])

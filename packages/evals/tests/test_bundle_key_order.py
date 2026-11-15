@@ -27,7 +27,7 @@ import pytest
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, build_code_only_report
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report import DisclosureBlock
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.kernel import AspectDesign, ControlDeclaration, EvalStorage, SweptAxis
 from threetears.evals.schema import IntervalScale, SweepableValue
 from threetears.evals.storage import InMemoryDocumentStore

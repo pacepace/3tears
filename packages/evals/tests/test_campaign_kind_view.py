@@ -18,7 +18,7 @@ from packages.evals.tests.toyhost_cells import arm_at, cell_at
 from threetears.evals.analysis import AnalysisContextBundle, CampaignBundle, assemble_context_bundle
 from threetears.evals.analysis.campaign_readings import BarStatus, PairReading
 from threetears.evals.analysis.cells import variant_of_cell_ref
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 
 
 def _aspect(*, control: bool) -> AnalysisContextBundle:

@@ -1,8 +1,8 @@
 """Mechanism checks and served-model readings: whether a lever's declared mechanism measurably moved.
 
-:func:`_mechanism_check` tests a swept lever's ``acts_on`` measure across its levels,
-:func:`_observed_mechanism_confounds` and :func:`_served_model_confounds` name the mechanisms and served models
-that moved with a model contrast, and :func:`_arm_mechanisms` / :func:`_arm_served_models` read both per arm.
+:func:`mechanism_check` tests a swept lever's ``acts_on`` measure across its levels,
+:func:`observed_mechanism_confounds` and :func:`served_model_confounds` name the mechanisms and served models
+that moved with a model contrast, and :func:`arm_mechanisms` / :func:`arm_served_models` read both per arm.
 """
 
 from __future__ import annotations
@@ -24,12 +24,12 @@ from threetears.evals.analysis.stats import (
     holm_adjust,
     level_difference,
 )
-from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER, HostProfile
 from threetears.evals.schema.values import PooledProductionFooting
 from threetears.evals.kernel.metrics import summary_population
 from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.analysis.bundle.schema import (
-    _OBSERVED_MECHANISMS,
+    OBSERVED_MECHANISMS,
     ArmMechanismReading,
     ArmServedModel,
     CANDIDATE_SERVED_MODEL_CONFOUND,
@@ -39,24 +39,23 @@ from threetears.evals.analysis.bundle.schema import (
     observed_mechanism_key,
     RealizedDesign,
 )
-from threetears.evals.analysis.bundle.config import _CANDIDATE_MODEL_LEVER
 from threetears.evals.analysis.bundle.measures import (
-    _PER_RESULT,
-    _Describer,
-    _describer,
-    _walk_leaves,
+    PER_RESULT,
+    Describer,
+    describer,
+    walk_leaves,
     in_population,
 )
-from threetears.evals.analysis.bundle.design import _CampaignArms
+from threetears.evals.analysis.bundle.design import CampaignArms
 
 
 #: Measure name -> result id -> ``(case id, value)``: that result's one observation of it, and the case
-#: it observed. Built once per bundle by :func:`_mechanism_observations` and read by every lens that
+#: it observed. Built once per bundle by :func:`mechanism_observations` and read by every lens that
 #: compares a mechanism across levels. The case is kept because the separation test's unit is the case.
-_MechanismObservations = dict[str, dict[str, tuple[str, float]]]
+MechanismObservations = dict[str, dict[str, tuple[str, float]]]
 
 
-def _mechanism_value(result: ResultView, name: str, leaves: _NamedLeaves, *, describe: _Describer) -> float | None:
+def _mechanism_value(result: ResultView, name: str, leaves: _NamedLeaves, *, describe: Describer) -> float | None:
     """One result's observation of ``name``, read off the result itself, or None when it carries none.
 
     Walks the sources the measure surface walks — the result's own scalars, its covariate and host
@@ -73,7 +72,7 @@ def _mechanism_value(result: ResultView, name: str, leaves: _NamedLeaves, *, des
     :param leaves: The result's leaves by name, as :func:`_named_leaves` read them.
     :ptype leaves: _NamedLeaves
     :param describe: The host's measure registry, which resolves the name's population.
-    :ptype describe: _Describer
+    :ptype describe: Describer
     :return: The value, or None — a result outside the measure's population (a faulted one outside a ``scored``
         measure's; one that took no turn outside a ``delivered`` one's, which every cost or latency measure
         is read as unless it declares ``all_observed``), no observation, an ambiguous one, or one that is
@@ -95,11 +94,11 @@ def _mechanism_value(result: ResultView, name: str, leaves: _NamedLeaves, *, des
     return float(value)
 
 
-def _mechanism_observations(results: Sequence[ResultView], *, profile: HostProfile) -> _MechanismObservations:
+def mechanism_observations(results: Sequence[ResultView], *, profile: HostProfile) -> MechanismObservations:
     """Every result's observation of every mechanism a lens here compares across levels.
 
     The names are each declared lever's ``acts_on`` and every covariate read as an observed mechanism
-    (:data:`_OBSERVED_MECHANISMS`). Read once, so a coverage row, a divergence, a contrast and an arm
+    (:data:`OBSERVED_MECHANISMS`). Read once, so a coverage row, a divergence, a contrast and an arm
     reading of one measure read one set of values.
 
     :param results: Every resolved result in the campaign.
@@ -107,11 +106,11 @@ def _mechanism_observations(results: Sequence[ResultView], *, profile: HostProfi
     :param profile: The host whose declarations name the mechanisms.
     :ptype profile: HostProfile
     :return: ``{name: {result id: (case id, value)}}``; a result that observed nothing of a name is absent under it.
-    :rtype: _MechanismObservations
+    :rtype: MechanismObservations
     """
-    names = sorted({measure for _lever, measure in profile.sweepables.mechanisms} | set(_OBSERVED_MECHANISMS))
-    describe = _describer(profile.measures)
-    observed: _MechanismObservations = {name: {} for name in names}
+    names = sorted({measure for _lever, measure in profile.sweepables.mechanisms} | set(OBSERVED_MECHANISMS))
+    describe = describer(profile.measures)
+    observed: MechanismObservations = {name: {} for name in names}
     # Result by result, each walked once for every name; each name's entries still land in result order.
     for result in results:
         leaves = _named_leaves(result, frozenset(names), describe=describe)
@@ -125,7 +124,7 @@ def _mechanism_observations(results: Sequence[ResultView], *, profile: HostProfi
 _NamedLeaves = dict[str, tuple[list[float | str], list[float | str]]]
 
 
-def _named_leaves(result: ResultView, names: frozenset[str], *, describe: _Describer) -> _NamedLeaves:
+def _named_leaves(result: ResultView, names: frozenset[str], *, describe: Describer) -> _NamedLeaves:
     """The values of ``names`` the result carries: its own scalars and open maps (``outer``), and the leaves of its
     single sub-models and the measures it implies at the per-result unit (``inner``). A row-level leaf is left out.
 
@@ -134,17 +133,17 @@ def _named_leaves(result: ResultView, names: frozenset[str], *, describe: _Descr
     :param names: The names to read.
     :ptype names: frozenset[str]
     :param describe: The host's measure registry.
-    :ptype describe: _Describer
+    :ptype describe: Describer
     :return: ``{name: (outer, inner)}`` for each name the result carries at either level.
     :rtype: _NamedLeaves
     """
     leaves: _NamedLeaves = {}
-    for slot, value in _walk_leaves(result, describe):
+    for slot, value in walk_leaves(result, describe):
         if slot.name not in names:
             continue
         if slot.source == "outer":
             leaves.setdefault(slot.name, ([], []))[0].append(value)
-        elif slot.source == "carrier" and slot.unit == _PER_RESULT:
+        elif slot.source == "carrier" and slot.unit == PER_RESULT:
             leaves.setdefault(slot.name, ([], []))[1].append(value)
     return leaves
 
@@ -253,10 +252,10 @@ def _levels_separate(
     return _LevelsSeparate(separated, untestable, needs_range)
 
 
-def _mechanism_check(
+def mechanism_check(
     measure: str | None,
     result_ids_by_level: Mapping[str, Collection[str]],
-    observations: _MechanismObservations,
+    observations: MechanismObservations,
     value_range: tuple[float, float] | None = None,
 ) -> MechanismCheck:
     """Decide whether a swept lever's declared mechanism measurably moved across its levels.
@@ -266,7 +265,7 @@ def _mechanism_check(
     :param result_ids_by_level: The lever's level -> the result ids at that level, over the row's cohort.
     :ptype result_ids_by_level: Mapping[str, Collection[str]]
     :param observations: The campaign's mechanism observations.
-    :ptype observations: _MechanismObservations
+    :ptype observations: MechanismObservations
     :param value_range: The mechanism measure's declared inclusive bounds, or None when it declares none.
     :ptype value_range: tuple[float, float] | None
     :return: ``moved`` when some pair of observed levels separates; otherwise ``inert`` when every level observed
@@ -323,15 +322,15 @@ def _raises_observed_mechanism(lever: str, covariate: str, *, profile: HostProfi
     :param profile: The host whose declaration of the lever names its mechanism.
     :ptype profile: HostProfile
     """
-    if lever != _CANDIDATE_MODEL_LEVER:
+    if lever != CANDIDATE_MODEL_LEVER:
         return False
     return profile.sweepables.acts_on(lever) != covariate
 
 
-def _observed_mechanism_confounds(
+def observed_mechanism_confounds(
     lever: str,
     result_ids_by_level: Mapping[str, Collection[str]],
-    observations: _MechanismObservations,
+    observations: MechanismObservations,
     *,
     profile: HostProfile,
 ) -> list[Confound]:
@@ -349,7 +348,7 @@ def _observed_mechanism_confounds(
     :param result_ids_by_level: The comparison's level -> the result ids at that level.
     :ptype result_ids_by_level: Mapping[str, Collection[str]]
     :param observations: The campaign's mechanism observations.
-    :ptype observations: _MechanismObservations
+    :ptype observations: MechanismObservations
     :param profile: The host whose declaration of the lever names its mechanism.
     :ptype profile: HostProfile
     :return: One ``observed_mechanism`` confound per diverged covariate, sorted by dimension; empty for a lever
@@ -357,7 +356,7 @@ def _observed_mechanism_confounds(
     :rtype: list[Confound]
     """
     confounds: list[Confound] = []
-    for covariate, mechanism in sorted(_OBSERVED_MECHANISMS.items()):
+    for covariate, mechanism in sorted(OBSERVED_MECHANISMS.items()):
         if not _raises_observed_mechanism(lever, covariate, profile=profile):
             continue
         means = _level_means(observations.get(covariate, {}), result_ids_by_level)
@@ -374,10 +373,10 @@ def _observed_mechanism_confounds(
     return confounds
 
 
-def _model_contrast_confounds(
+def model_contrast_confounds(
     side_a: Sequence[ResultView],
     side_b: Sequence[ResultView],
-    observations: _MechanismObservations,
+    observations: MechanismObservations,
     *,
     profile: HostProfile,
 ) -> list[Confound]:
@@ -391,7 +390,7 @@ def _model_contrast_confounds(
     :param side_b: The other side's results.
     :ptype side_b: Sequence[ResultView]
     :param observations: The campaign's mechanism observations.
-    :ptype observations: _MechanismObservations
+    :ptype observations: MechanismObservations
     :param profile: The host whose declaration of the model lever names its mechanism.
     :ptype profile: HostProfile
     :return: The confounds, or an empty list when the sides share a model or either names no single model.
@@ -404,16 +403,16 @@ def _model_contrast_confounds(
     (model_a,), (model_b,) = models_a, models_b
     if model_a is None or model_b is None:
         return []
-    return _observed_mechanism_confounds(
-        _CANDIDATE_MODEL_LEVER,
+    return observed_mechanism_confounds(
+        CANDIDATE_MODEL_LEVER,
         {model_a: {result.id for result in side_a}, model_b: {result.id for result in side_b}},
         observations,
         profile=profile,
     )
 
 
-def _arm_production_footings(
-    arms: _CampaignArms, results_by_run: Mapping[str, list[ResultView]], *, profile: HostProfile
+def arm_production_footings(
+    arms: CampaignArms, results_by_run: Mapping[str, list[ResultView]], *, profile: HostProfile
 ) -> dict[str, PooledProductionFooting]:
     """Each arm's production footing: what each of its runs set away from production (#571).
 
@@ -422,7 +421,7 @@ def _arm_production_footings(
     arm carries every run's own, and says where they disagree, rather than one merged claim.
 
     :param arms: The campaign's arms. A run that resolved no arm is in none.
-    :ptype arms: _CampaignArms
+    :ptype arms: CampaignArms
     :param results_by_run: Each run's results.
     :ptype results_by_run: Mapping[str, list[ResultView]]
     :param profile: The host whose declarations are read.
@@ -443,12 +442,12 @@ def _arm_production_footings(
     }
 
 
-def _design_with_mechanism_confounds(
+def design_with_mechanism_confounds(
     design: RealizedDesign,
     results_by_run: Mapping[str, list[ResultView]],
-    observations: _MechanismObservations,
+    observations: MechanismObservations,
     *,
-    served: _ServedModels,
+    served: ServedModels,
     profile: HostProfile,
 ) -> RealizedDesign:
     """The design with each contrast arm's observed confounds against the control arm.
@@ -458,9 +457,9 @@ def _design_with_mechanism_confounds(
     :param results_by_run: Each run's results.
     :ptype results_by_run: Mapping[str, list[ResultView]]
     :param observations: The campaign's mechanism observations.
-    :ptype observations: _MechanismObservations
-    :param served: Which model answered each result's candidate calls, from :func:`_served_models`.
-    :ptype served: _ServedModels
+    :ptype observations: MechanismObservations
+    :param served: Which model answered each result's candidate calls, from :func:`served_models`.
+    :ptype served: ServedModels
     :param profile: The host whose declaration of the model lever names its mechanism.
     :ptype profile: HostProfile
     :return: The design, its contrasts qualified where they ran another model and a mechanism diverged, and where
@@ -474,30 +473,30 @@ def _design_with_mechanism_confounds(
     contrasts = []
     for arm in design.contrasts:
         side = [result for run_id in arm.run_ids for result in results_by_run.get(run_id, [])]
-        confounds = _model_contrast_confounds(control, side, observations, profile=profile)
-        confounds += _served_model_confounds((result.id for result in (*control, *side)), served)
+        confounds = model_contrast_confounds(control, side, observations, profile=profile)
+        confounds += served_model_confounds((result.id for result in (*control, *side)), served)
         contrasts.append(arm.model_copy(update={"mechanism_confounds": confounds}))
     return design.model_copy(update={"contrasts": contrasts})
 
 
-def _arm_mechanisms(
-    arms: _CampaignArms, results_by_run: Mapping[str, list[ResultView]], observations: _MechanismObservations
+def arm_mechanisms(
+    arms: CampaignArms, results_by_run: Mapping[str, list[ResultView]], observations: MechanismObservations
 ) -> list[ArmMechanismReading]:
     """Each arm's mean of every observed-mechanism covariate, saying so where none was measured.
 
     :param arms: The campaign's arms. A run that resolved no arm is in none, and so in no reading.
-    :ptype arms: _CampaignArms
+    :ptype arms: CampaignArms
     :param results_by_run: Each run's results.
     :ptype results_by_run: Mapping[str, list[ResultView]]
     :param observations: The campaign's mechanism observations.
-    :ptype observations: _MechanismObservations
+    :ptype observations: MechanismObservations
     :return: One reading per arm and covariate, sorted by arm then covariate.
     :rtype: list[ArmMechanismReading]
     """
     readings: list[ArmMechanismReading] = []
     for variant_key, members in sorted(arms.keyed.items()):
         result_ids = {result.id for run in members for result in results_by_run.get(run.id, [])}
-        for covariate in sorted(_OBSERVED_MECHANISMS):
+        for covariate in sorted(OBSERVED_MECHANISMS):
             values = observations.get(covariate, {})
             means = _level_means(values, {variant_key: result_ids})
             readings.append(
@@ -514,10 +513,10 @@ def _arm_mechanisms(
 
 #: Result id -> what its candidate calls say about the model that answered them. A result whose candidate
 #: left no usage row is absent: nothing was called, so nothing answered, and no claim is made about it.
-_ServedModels = dict[str, ResultServedReading]
+ServedModels = dict[str, ResultServedReading]
 
 
-def _served_models(results: Iterable[ResultView]) -> _ServedModels:
+def served_models(results: Iterable[ResultView]) -> ServedModels:
     """Read which model answered each result's candidate calls, off its candidate usage rows.
 
     ``RoleUsage.served_model`` only — what the provider's response named — and never ``RoleUsage.model``
@@ -527,12 +526,12 @@ def _served_models(results: Iterable[ResultView]) -> _ServedModels:
     :param results: The campaign's results.
     :ptype results: Iterable[ResultView]
     :return: Each result's reading, for the results whose candidate left a usage row.
-    :rtype: _ServedModels
+    :rtype: ServedModels
     """
     return {result.id: reading for result in results if (reading := served_reading(result)) is not None}
 
 
-def _served_model_confounds(result_ids: Iterable[str], served: _ServedModels) -> list[Confound]:
+def served_model_confounds(result_ids: Iterable[str], served: ServedModels) -> list[Confound]:
     """Name the candidate's served model as a confound where one requested id was answered by more than one model.
 
     The served model is EXPECTED to move with the requested one — a comparison between two model ids is
@@ -540,13 +539,13 @@ def _served_model_confounds(result_ids: Iterable[str], served: _ServedModels) ->
     different ids is the lever, not a confound. What is a confound is one requested id answered by two
     models across the runs compared: within one arm, its numbers are a mixture; between two arms that
     asked for the same id, the arms differ by a model nobody set. The rule is the fold the engine applies
-    to a resolved surface (:class:`_SurfaceFolds`): the served model folds into the requested one where it
+    to a resolved surface (:class:`SurfaceFolds`): the served model folds into the requested one where it
     is constant within each requested id, and only there.
 
     :param result_ids: The results under comparison, every side together.
     :ptype result_ids: Iterable[str]
-    :param served: The campaign's readings, from :func:`_served_models`.
-    :ptype served: _ServedModels
+    :param served: The campaign's readings, from :func:`served_models`.
+    :ptype served: ServedModels
     :return: One ``served_model`` confound, ``varied`` where some requested id was answered by two or more named
         models, ``undecided`` where none was but some candidate call named no model — which model answered
         cannot be established there, and unknown is never read as one model. Empty otherwise, including where
@@ -566,17 +565,17 @@ def _served_model_confounds(result_ids: Iterable[str], served: _ServedModels) ->
     return []
 
 
-def _arm_served_models(
-    arms: _CampaignArms, results_by_run: Mapping[str, list[ResultView]], served: _ServedModels
+def arm_served_models(
+    arms: CampaignArms, results_by_run: Mapping[str, list[ResultView]], served: ServedModels
 ) -> list[ArmServedModel]:
     """Each arm's served models, as the provider's responses named them.
 
     :param arms: The campaign's arms. A run that resolved no arm is in none, and so in no reading.
-    :ptype arms: _CampaignArms
+    :ptype arms: CampaignArms
     :param results_by_run: Each run's results.
     :ptype results_by_run: Mapping[str, list[ResultView]]
-    :param served: The campaign's readings, from :func:`_served_models`.
-    :ptype served: _ServedModels
+    :param served: The campaign's readings, from :func:`served_models`.
+    :ptype served: ServedModels
     :return: One reading per arm whose candidate left a usage row, sorted by arm.
     :rtype: list[ArmServedModel]
     """
@@ -590,4 +589,17 @@ def _arm_served_models(
     return readings
 
 
-__all__: list[str] = []
+__all__ = [
+    "MechanismObservations",
+    "ServedModels",
+    "arm_mechanisms",
+    "arm_production_footings",
+    "arm_served_models",
+    "design_with_mechanism_confounds",
+    "mechanism_check",
+    "mechanism_observations",
+    "model_contrast_confounds",
+    "observed_mechanism_confounds",
+    "served_model_confounds",
+    "served_models",
+]

@@ -10,7 +10,7 @@ one user message holds what :func:`review_report` builds from the document and t
   only for a stored page, so it is the page the analyst's ``report_check`` shows, line for line;
 - the document's ``omitted``, what the analyst saw and left out, with why;
 - the computed facts code finds for the editor to weigh
-  (:func:`~threetears.evals.analysis.report_doc_facts.editor_facts`), labelled as facts and never as verdicts;
+  (:func:`~threetears.evals.analysis.report.doc_page.facts.editor_facts`), labelled as facts and never as verdicts;
 - from the second round, the editor's own earlier findings, each with code's stable id (``f<round>.<n>``).
 
 **Nothing of the analyst's session reaches the editor.** :func:`review_report` takes the document, the snapshot's
@@ -61,7 +61,7 @@ from threetears.evals.analysis.analyst.skill import SkillText
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report.md_parts import one_line
-from threetears.evals.analysis.report_doc_facts import editor_facts
+from threetears.evals.analysis.report.doc_page.facts import editor_facts
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.inner_ceilings import EDITOR_ANSWERS
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding

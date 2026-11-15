@@ -18,7 +18,8 @@ from threetears.evals.analysis.depth_reading import SubjectDepth, subject_depth
 
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
-from threetears.evals.analysis.report.forms import PageForms, Printed
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.number_forms.printed import Printed
 from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.analysis.report.verdict import MIN_CASES
 

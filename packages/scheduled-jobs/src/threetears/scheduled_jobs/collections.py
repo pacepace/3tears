@@ -440,23 +440,23 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
         :raises CursorError: when ``cursor`` is not one this listing issued
         """
         result = JobPage(jobs=[], next_cursor=None)
+        # __SPANS_PARTITIONS__: an admin view enumerates a deployment,
+        # and each job may hold its own partition, so the partition
+        # predicate cannot apply here by construction -- the same
+        # exemption list_due_for_tick carries, for the same reason.
+        # The column list is written out literally (not interpolated)
+        # so the partition-column enforcement walker sees
+        # ``partition_key`` as a static literal.
+        #
+        # WHY by key (2026-11-15): this read was LIMIT/OFFSET over the whole table with an
+        # ORDER BY no index held, so every page read and sorted every schedule, and a page deep in the list
+        # read every row before it as well. idx_scheduled_jobs_kind_name_key (v007) holds the order, so a
+        # page walks the index from its cursor: about a page of entries read (plan test
+        # test_index_plans.py::test_scheduled_jobs_kind_name). A kind filter is a range of that index; a
+        # status filter is checked on the entry (status rides last in the index).
+        # Every status when unfiltered: the table's CHECK holds status to that vocabulary, so pinning all of
+        # it keeps every row, and the read states its filters the same way whether narrowed or not.
         if self.l3_pool is not None and kinds != [] and statuses != []:
-            # __SPANS_PARTITIONS__: an admin view enumerates a deployment,
-            # and each job may hold its own partition, so the partition
-            # predicate cannot apply here by construction -- the same
-            # exemption list_due_for_tick carries, for the same reason.
-            # The column list is written out literally (not interpolated)
-            # so the partition-column enforcement walker sees
-            # ``partition_key`` as a static literal.
-            #
-            # WHY by key (2026-11-15): this read was LIMIT/OFFSET over the whole table with an
-            # ORDER BY no index held, so every page read and sorted every schedule, and a page deep in the list
-            # read every row before it as well. idx_scheduled_jobs_kind_name_key (v007) holds the order, so a
-            # page walks the index from its cursor: about a page of entries read (plan test
-            # test_index_plans.py::test_scheduled_jobs_kind_name). A kind filter is a range of that index; a
-            # status filter is checked on the entry (status rides last in the index).
-            # Every status when unfiltered: the table's CHECK holds status to that vocabulary, so pinning all of
-            # it keeps every row, and the read states its filters the same way whether narrowed or not.
             states = AnyOf(sorted(_SCHEDULE_STATUSES) if statuses is None else list(statuses), cast=None)
             # Two calls, not one with a built ``by``: each states its pins as a literal the no-whole-reads walk
             # reads (a pin map built at run time is a predicate it cannot see).
@@ -599,16 +599,16 @@ class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
         :rtype: BoundedCount
         """
         total = BoundedCount(count=0, more=False)
+        # __SPANS_PARTITIONS__: counts what list_jobs would return, so
+        # it carries the same cross-partition exemption.
+        #
+        # WHY bounded (2026-11-15): this was count(*) over every schedule. It now walks the listing's own
+        # index (idx_scheduled_jobs_kind_name_key, v007) in its order and stops after at_most + 1 entries: the
+        # hub answers past the cap as "N or more" (JOB_COUNT_CAP, 1,000, the binding validation's cap). Read as
+        # one keyset page of the sort columns, not count_at_most: count_at_most's pins are a leading part of an
+        # index, and a status filter is checked on the entry, after the order, exactly as the listing's page
+        # checks it, so the count and the listing cannot apply different rules.
         if self.l3_pool is not None and kinds != [] and statuses != []:
-            # __SPANS_PARTITIONS__: counts what list_jobs would return, so
-            # it carries the same cross-partition exemption.
-            #
-            # WHY bounded (2026-11-15): this was count(*) over every schedule. It now walks the listing's own
-            # index (idx_scheduled_jobs_kind_name_key, v007) in its order and stops after at_most + 1 entries: the
-            # hub answers past the cap as "N or more" (JOB_COUNT_CAP, 1,000, the binding validation's cap). Read as
-            # one keyset page of the sort columns, not count_at_most: count_at_most's pins are a leading part of an
-            # index, and a status filter is checked on the entry, after the order, exactly as the listing's page
-            # checks it, so the count and the listing cannot apply different rules.
             states = AnyOf(sorted(_SCHEDULE_STATUSES) if statuses is None else list(statuses), cast=None)
             if kinds is None:
                 walked = await keyset_page(

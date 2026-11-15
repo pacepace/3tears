@@ -246,10 +246,18 @@ def code_html(text: str) -> str:
 _EXPRESSION_CHARS = 60
 
 
+#: The mark a table sets before the control's name (``▸ production``), as its cell or header text writes it.
+_CONTROL_MARK = "▸ "
+
+#: The mark as a page's HTML lays it out: a no-break space keeps it on its name's line, so a narrowed column wraps the
+#: name, never the mark alone above it (#1136). The stored text keeps its plain space, which a program reads.
+_CONTROL_MARK_KEPT = "▸&nbsp;"
+
+
 def _cell_code(text: str) -> str:
     """A cell's or a header's text escaped, its code spans set as code, each longer than :data:`_EXPRESSION_CHARS`
     shown by its start and a visible ellipsis, the whole of it in a fold that opens in place. Never shortened silently:
-    the whole expression is in the page."""
+    the whole expression is in the page. A control's mark stays on its name's line (:data:`_CONTROL_MARK_KEPT`)."""
 
     def span(match: re.Match[str]) -> str:
         whole = match.group(1)
@@ -258,7 +266,8 @@ def _cell_code(text: str) -> str:
         start = escape(html.unescape(whole)[:_EXPRESSION_CHARS].rstrip())
         return f'<details class="expr"><summary><code>{start}…</code></summary><code>{whole}</code></details>'
 
-    return _CODE.sub(span, escape(text))
+    shown = _CODE.sub(span, escape(text))
+    return _CONTROL_MARK_KEPT + shown.removeprefix(_CONTROL_MARK) if shown.startswith(_CONTROL_MARK) else shown
 
 
 def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
@@ -604,10 +613,13 @@ def held_whole(markup: str) -> str:
 def _id_span(match: re.Match[str]) -> str:
     """One hyphenated word, held on one line where the cap can hold it."""
     word = match.group(0)
+    # The control's mark is no part of the word: it stays before the span, held to it by its no-break space.
+    mark = _CONTROL_MARK_KEPT if word.startswith(_CONTROL_MARK_KEPT) else ""
+    word = word.removeprefix(mark)
     chars = len(html.unescape(word))
     if chars > _ONE_WORD_CHARS:
-        return word
-    return f'<span class="id{" long" if chars > _FLOOR_WORD_CHARS else ""}">{word}</span>'
+        return mark + word
+    return f'{mark}<span class="id{" long" if chars > _FLOOR_WORD_CHARS else ""}">{word}</span>'
 
 
 #: The widths a pinned column is laid out at, estimated from its text, in rem: its floor and its cap; the width a

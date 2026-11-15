@@ -9,9 +9,9 @@ pins the readers of three of them, and the curation write the fourth was missing
   ranked by the declared priority and scoped to the question, read off each bar's own ``merit_axis``;
 - ``EvalCampaign.archived`` → :func:`~threetears.evals.run.set_campaign_archived`.
 
-Mutations that turn this file red: comparing ``>`` for ``>=`` in ``_short_cells``; reading a cell's
+Mutations that turn this file red: comparing ``>`` for ``>=`` in ``short_cells``; reading a cell's
 ``repeats_per_case_max`` where it reads the minimum; taking the
-priority order from the bars rather than the declaration in ``_verdict_order``; dropping
+priority order from the bars rather than the declaration in ``verdict_order``; dropping
 ``merit_axis`` from the bar adjudication; removing the ``NotFoundError`` raise or the idempotence
 check in ``set_campaign_archived``.
 """

@@ -36,7 +36,7 @@ package imports its own modules directly.
 
 from __future__ import annotations
 
-from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.kernel.host.apparatus import ApparatusError, ReplayMiss
 from threetears.evals.kernel.host.bars import (
     DEFAULT_PASS_THRESHOLD,
     Bar,
@@ -128,6 +128,7 @@ __all__ = [
     "ActionParameterReader",
     "ActsOn",
     "ApparatusError",
+    "ReplayMiss",
     "Bar",
     "DEFAULT_PASS_THRESHOLD",
     "PassCriterion",

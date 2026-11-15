@@ -25,7 +25,7 @@ from threetears.evals.actions.analyst_analyses import DominanceParams, Sensitivi
 from threetears.evals.analysis.analyst.analyses import dominance, sensitivity
 from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report_decision import decision_at, surviving_options
+from threetears.evals.analysis.report.call import decision_at, surviving_options
 from threetears.evals.analysis.report_input import BarRead, Criterion, ReportInput
 
 #: The inputs whose criteria declare bars.

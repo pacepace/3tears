@@ -32,7 +32,7 @@ from threetears.evals.analysis.report.blocks import ChartBlock
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report.model import CampaignReport
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm
 from threetears.evals.kernel.errors import ValidationFailedError

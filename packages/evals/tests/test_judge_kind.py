@@ -16,6 +16,7 @@ import types
 
 import json
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -48,6 +49,7 @@ from threetears.evals.run import (
     rate_result,
 )
 from threetears.evals.run.judge_service import builtin_judge_config_ids, judge_config_ids_for
+from threetears.evals.run.runner import cell_execution_order
 from threetears.evals.schema import (
     DEFAULT_JUDGE_TEMPERATURE,
     CompletionProtocolDefect,
@@ -58,6 +60,7 @@ from threetears.evals.schema import (
     JudgedArtifact,
     RubricDim,
 )
+from threetears.evals.testing import RecordedCompletions, RecordingRefused
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.scripted_table import FakeCellSink
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, TOYHOST_SCOPE
@@ -581,6 +584,108 @@ async def test_a_trial_whose_completion_carries_no_temperature_fails_the_run_and
     assert room.progress is not None
     spent = sum(row.cost_usd or 0.0 for row in room.progress().telemetry.usage)
     assert spent > 0 and room.spent == {"candidate": pytest.approx(spent)}
+
+
+class _ResentUntempered(_Untempered):
+    """The judge's replies stripped of ``temperature``, each counting one send that broke before any response began and
+    was sent again, which the provider may have billed too."""
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        reply = await super().generate(system=system, user=user, response_format=response_format)
+        reply.maybe_billed_sends = 1
+        return reply
+
+
+async def test_a_trial_failed_by_a_protocol_defect_counts_its_resent_send_on_its_row() -> None:
+    """A trial whose completion breaks the protocol fails the run with what it was billed. Its first send was dropped
+    and sent again, so its row counts the send the provider may have billed beside the call, as every other row does,
+    and the run's cost cap counts it from there."""
+    campaign = await _campaign()
+    stored = off_loop(campaign.host.storage.load_test_case, campaign.case_ids[0], TOYHOST_SCOPE)
+    assert stored is not None
+    resent = _ResentUntempered(campaign.judge)
+    kind = JudgeKind(
+        clients=lambda role, model, *, temperature=None: resent,
+        model=TOY_JUDGE_MODEL,
+        failure_describer=withhold_failure_detail,
+    )
+    room = FakeCellSink()
+
+    with pytest.raises(CompletionProtocolDefect) as raised:
+        await kind.invoke(await _prepared(kind), stored, sink=room)
+
+    assert raised.value.maybe_billed_sends == 1
+    assert room.progress is not None
+    [row] = room.progress().telemetry.usage
+    assert row.call_count == 1 and row.maybe_billed_sends == 1
+    assert row.cost_usd is not None and row.cost_usd > 0
+
+
+async def test_a_judge_under_test_whose_replay_misses_on_one_trial_fails_the_run_naming_the_call(
+    tmp_path: Path,
+) -> None:
+    """The judge under test replays a recording made of every trial but the last one the run asks, so the recording
+    serves each of those and cannot serve the last. The trials it serves score; the one it misses once came back graded
+    no_reply and charged to the judge, and then was excluded alone, so the campaign finished on fewer trials in silence.
+    A judge call's miss now fails the run, as a scoring judge's does (owner ruling, #1162): that cell is recorded
+    apparatus_failed naming the call, and the run raises the miss."""
+    campaign = await _campaign()
+    template = _judge_template()
+    run = make_eval_run(
+        id="judge-arm-replay-missed",
+        scope_id=TOYHOST_SCOPE,
+        template_id=template.id,
+        candidate_kind=JUDGE_KIND,
+        candidate_model=TOY_JUDGE_MODEL,
+        k_runs=1,
+        test_case_ids=list(campaign.case_ids),
+    )
+    off_loop(campaign.host.storage.save_eval_run, run)
+    cases = off_loop(campaign.host.storage.load_test_cases_by_ids, list(campaign.case_ids), TOYHOST_SCOPE)
+    order = [case for _, case in cell_execution_order(run, cases)]
+    *held, missed = order
+    assert held, "the campaign holds more than one case, so some trials are served"
+
+    path = tmp_path / "judge.jsonl"
+    async with RecordedCompletions.record(campaign.judge, path, settings=None) as recorder:
+        recording = JudgeKind(
+            clients=lambda role, model, *, temperature=None: recorder,
+            model=TOY_JUDGE_MODEL,
+            failure_describer=describe_failure,
+        )
+        for case in held:
+            await recording.invoke(await _prepared(recording), case, sink=FakeCellSink())
+    replay = RecordedCompletions.replay(path, settings=None)
+    kind = JudgeKind(
+        clients=lambda role, model, *, temperature=None: replay,
+        model=TOY_JUDGE_MODEL,
+        failure_describer=describe_failure,
+    )
+
+    with pytest.raises(RecordingRefused, match=r"recording .+judge\.jsonl: the prompt .+; re-record "):
+        await execute_run(
+            campaign.host,
+            run=run,
+            template=template,
+            test_cases=cases,
+            judge_service=None,
+            options=RunnerOptions(candidate_kinds={JUDGE_KIND: lambda _cell: kind}),
+        )
+
+    results = {
+        result.test_case_id: result
+        for result in off_loop(campaign.host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
+    }
+    assert set(results) == {case.id for case in order}
+    failed = results.pop(missed.id)
+    assert failed.termination == "apparatus_failed"
+    assert failed.infra_error is not None and failed.infra_error.startswith("apparatus: RecordingRefused: recording ")
+    assert str(path) in failed.infra_error and "re-record" in failed.infra_error
+    assert failed.kind_payload is None, "no trial is graded on a call the rig could not serve"
+    for served in results.values():
+        assert served.termination == "completed"
+        trial = judge_trial_of(served.kind_payload)
+        assert trial is not None and trial.outcome == "scored"
 
 
 def test_a_config_pinning_another_model_than_the_arm_is_refused() -> None:

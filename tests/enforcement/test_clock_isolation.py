@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -194,3 +197,33 @@ def test_a_freeze_imports_nothing_under_the_fake_and_a_leak_blames_only_its_test
         ],
         consecutive=False,
     )
+
+
+#: A process that loaded ``huggingface_hub`` (an embedding test of another package, interleaved on the pool), then
+#: froze the clock. The freeze's walk reads every attribute of every loaded module; huggingface_hub serves ``cli``
+#: lazily, and importing ``huggingface_hub.cli`` asks the Hub over the network which agent harness is running.
+_HUB_UNDER_A_FREEZE = """
+import sys
+
+import huggingface_hub  # noqa: F401
+from freezegun import freeze_time
+
+import tests.clock_isolation  # noqa: F401
+
+assert "huggingface_hub.cli" not in sys.modules
+with freeze_time("2026-01-01"):
+    pass
+print("cli imported" if "huggingface_hub.cli" in sys.modules else "cli not imported")
+"""
+
+
+def test_a_freeze_does_not_import_huggingface_hubs_lazy_names(tmp_path: Path) -> None:
+    """The freeze leaves ``huggingface_hub`` unread, so it starts no network call (tests/burndown CI, 2026-11-14:
+    evals' test_three_arms_each_candidate... failed on its offline guard, a connect to huggingface.co made from
+    freezegun's walk). HF_HUB_OFFLINE keeps the control from reaching the network itself."""
+    probe = tmp_path / "probe.py"
+    probe.write_text(_HUB_UNDER_A_FREEZE)
+    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT), "HF_HUB_OFFLINE": "1"}
+    done = subprocess.run([sys.executable, str(probe)], env=env, capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "cli not imported"

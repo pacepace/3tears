@@ -28,6 +28,7 @@ from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, 
 from threetears.evals.actions.params import AnalysisId, CampaignId, Limit, Offset
 from threetears.evals.actions.report_writing import campaign_report_writer
 from threetears.evals.kernel.analyst_gap import GapDigest
+from threetears.evals.kernel.list_pages import LIST_PAGE_SIZE
 from threetears.evals.ops.analyst import analyst_gaps_list
 from threetears.evals.schema import EvalRunStatus
 from threetears.evals.kernel import EvalStorage, ResultOutcome, ValidationFailedError
@@ -206,6 +207,9 @@ JobId = Annotated[
 ]
 RunStatus = Annotated[EvalRunStatus | None, Field(description="List only runs with this stored status.")]
 IncludeArchived = Annotated[bool, Field(description="List archived records too; they are left out by default.")]
+PageCursor = Annotated[
+    str | None, Field(description="The next of the page before, to read the page after it; unset reads the first page.")
+]
 Archived = Annotated[bool, Field(description="The state to set: true retires the record, false restores it.")]
 Reason = Annotated[str | None, Field(description="Why, recorded on a cancelled run.")]
 Confirm = Annotated[str, Field(description="Must echo the id of what is destroyed, exactly.")]
@@ -378,6 +382,8 @@ class RunsListParams(EvalBaseModel):
     label: Annotated[
         str | None, Field(description="List only runs carrying this label (run_label sets them); every run if unset.")
     ] = None
+    cursor: PageCursor = None
+    limit: Limit = LIST_PAGE_SIZE
 
 
 class RunsUnreadableParams(EvalBaseModel):
@@ -493,6 +499,8 @@ class CampaignsListParams(EvalBaseModel):
     """``campaigns_list``."""
 
     include_archived: IncludeArchived = False
+    cursor: PageCursor = None
+    limit: Limit = LIST_PAGE_SIZE
 
 
 class CampaignCreateParams(EvalBaseModel):
@@ -1094,6 +1102,8 @@ async def _runs_list(host: OpsHost, caller: Caller, params: RunsListParams) -> R
         status=params.status,
         include_archived=params.include_archived,
         label=params.label,
+        cursor=params.cursor,
+        limit=params.limit,
     )
 
 
@@ -1193,7 +1203,13 @@ async def _campaigns_list(host: OpsHost, caller: Caller, params: CampaignsListPa
     eval_host = host.eval_host
     archived = None if params.include_archived else False
     return await run_blocking(
-        eval_host.blocking_executor, campaigns_list, eval_host, caller.scope_id, archived=archived
+        eval_host.blocking_executor,
+        campaigns_list,
+        eval_host,
+        caller.scope_id,
+        archived=archived,
+        cursor=params.cursor,
+        limit=params.limit,
     )
 
 
@@ -2007,9 +2023,13 @@ def engine_actions() -> tuple[Action, ...]:
             render=render.render_model,
             example={"status": "completed"},
             detail=(
-                "A stored run this build cannot read is left out and counted in unreadable rather than failing the "
-                "listing; runs_unreadable names each with why. Its archive flag and labels cannot be read, so the "
-                "count is narrowed by status alone."
+                "Paged: each call reads limit stored runs (100 unless named) and returns next, the cursor for the "
+                "page after; call again with cursor=next, and the same filters, until next is None to read every "
+                "run. The status and archive filters are part of the read; the label filter runs over the page, so a "
+                "labelled page can list fewer runs than limit while next is set, and filtered says how many it left "
+                "out. A stored run this build cannot read is left out and counted in unreadable rather than failing "
+                "the listing; runs_unreadable names each with why. Its labels cannot be read, so the count is not "
+                "narrowed by label."
             ),
         ),
         Action(
@@ -2100,6 +2120,12 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_campaigns_list,
             render=render.render_model,
             example={},
+            detail=(
+                "Paged: each call reads limit campaigns (100 unless named) and returns next, the cursor for the page "
+                "after; call again with cursor=next, and the same filter, until next is None to read every "
+                "campaign. What an exploratory "
+                "campaign feeds is read among every campaign of the scope, whatever page it is on."
+            ),
         ),
         Action(
             name="run_launch",

@@ -572,6 +572,19 @@ async def test_a_kinds_async_deliveries_land_on_the_result_verbatim():
     assert result.async_deliveries == [scouted, seeded]
 
 
+def test_a_delivery_names_the_upstream_that_served_it_and_a_seed_names_none() -> None:
+    """The host fills it; left unset, the entry is stored as it was before the field existed."""
+    routed = AsyncDelivery(
+        tool="scout_ahead", status="undelivered", model="scout/model", served_provider="Acme Cloud", substituted=False
+    )
+    assert routed.served_provider == "Acme Cloud"
+    assert routed.model_dump(mode="json")["served_provider"] == "Acme Cloud"
+    unnamed = AsyncDelivery(tool="scout_ahead", status="undelivered", model="scout/model", substituted=False)
+    assert "served_provider" not in unnamed.model_dump(mode="json")
+    with pytest.raises(ValueError, match="a substituted delivery was served by no provider, yet names 'Acme Cloud'"):
+        AsyncDelivery(tool="scout_ahead", status="undelivered", served_provider="Acme Cloud", substituted=True)
+
+
 def _live_scout(**overrides: Any) -> AsyncDelivery:
     """A scout delivered live on its own model — work that necessarily spent tokens.
 

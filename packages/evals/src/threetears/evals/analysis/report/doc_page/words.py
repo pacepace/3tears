@@ -63,7 +63,7 @@ SLOT_TITLES: Final[dict[str, str]] = {
 SET_APART: Final = frozenset({"recommendation", "our_lean"})
 
 #: The label of each caveat code assigns, by its kind
-#: (:func:`~threetears.evals.analysis.report_decision.every_caveat`). ``{name}`` is what the id names, as a reader is
+#: (:func:`~threetears.evals.analysis.report.call.every_caveat`). ``{name}`` is what the id names, as a reader is
 #: shown it (an aspect's or criterion's reader name, a setting in words), never the id. A kind not listed here is
 #: labelled by its kind in words.
 CAVEAT_LABELS: Final[dict[str, str]] = {

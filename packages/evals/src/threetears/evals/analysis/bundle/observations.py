@@ -1,8 +1,8 @@
 """Which arm and which cell each result belongs to.
 
 :func:`variant_key_of_run` and :func:`_variant_key_of` read the variant key a run or result was stamped with,
-:func:`_observations` turns a campaign's results into the observations the cell algebra pools, and
-:func:`_apparatus_classes` classifies each run's rig.
+:func:`observations_of` turns a campaign's results into the observations the cell algebra pools, and
+:func:`classify_apparatus` classifies each run's rig.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime i
     from threetears.evals.schema.models import EvalRun
 
 
-def _apparatus_classes(
+def classify_apparatus(
     runs: list[EvalRun],
     apparatus_levels: dict[str, dict[str, str | None]],
 ) -> dict[str, ApparatusClass]:
@@ -39,7 +39,7 @@ def _apparatus_classes(
 
     :param runs: The campaign's resolved runs.
     :ptype runs: list[EvalRun]
-    :param apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`. A
+    :param apparatus_levels: Dimension → run id → level key, from :func:`read_apparatus_levels`. A
         ``None`` level means the run never recorded that dimension.
     :ptype apparatus_levels: dict[str, dict[str, str | None]]
     :return: Run id → the class that run's observations belong to.
@@ -59,7 +59,7 @@ def _apparatus_classes(
     }
 
 
-def _observations(
+def observations_of(
     runs: list[EvalRun],
     results_by_run: dict[str, list[ResultView]],
     classes: dict[str, ApparatusClass],
@@ -80,7 +80,7 @@ def _observations(
     :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results, keyed by run id.
     :ptype results_by_run: dict[str, list[ResultView]]
-    :param classes: Run id → apparatus class, from :func:`_apparatus_classes`.
+    :param classes: Run id → apparatus class, from :func:`classify_apparatus`.
     :ptype classes: dict[str, ApparatusClass]
     :param scope_id: The scope these were read under.
     :ptype scope_id: str
@@ -228,5 +228,7 @@ def variant_key_of_run(results: Sequence[ResultView]) -> str | None:
 
 
 __all__ = [
+    "classify_apparatus",
+    "observations_of",
     "variant_key_of_run",
 ]

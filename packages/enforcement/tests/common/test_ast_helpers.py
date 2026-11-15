@@ -14,6 +14,7 @@ from threetears.enforcement.common.ast_helpers import (
     argument_spellings,
     callee_names,
     clear_parse_cache,
+    clear_with_parse_cache,
     dotted,
     is_logger_call,
     is_private_name,
@@ -155,6 +156,12 @@ class TestParsePythonFileCache:
         assert parse_python_file(path) is None
         path.write_text("def f():\n    return 1\n")
         assert parse_python_file(path) is not None
+
+    def test_clearing_also_clears_a_cache_registered_with_it(self) -> None:
+        kept = {"facts": 1}
+        clear_with_parse_cache(kept.clear)
+        clear_parse_cache()
+        assert kept == {}
 
     def test_clearing_releases_the_cached_tree(self, tmp_path: Path) -> None:
         path = _touch(tmp_path / "mod.py", "x = 1\n")

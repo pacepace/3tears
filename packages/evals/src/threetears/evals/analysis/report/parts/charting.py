@@ -2,7 +2,7 @@
 
 A resolver (one per kind, in a ``resolve_*`` module's ``RESOLVERS``) turns a stored chart's
 :class:`~threetears.evals.kernel.chart_query.ChartSpec` into the kit's chart data, reading the rows its query
-selects (:func:`~threetears.evals.analysis.report_rows.query_rows`, the one owner of that selection). It is handed a
+selects (:func:`~threetears.evals.analysis.report.rows.query_rows`, the one owner of that selection). It is handed a
 :class:`ChartContext` and returns a :class:`Drawn`. The rules every kind fills by (the page design's §3, first written for the
 retired planned page) are here, once:
 
@@ -46,10 +46,11 @@ retired planned page) are here, once:
 - **A config's colour** (:func:`factor_token`, :func:`factor_legend`): a chart of a factorial grid's configs colours
   each by its first factor's level, the kit's series in that factor's order, and its legend names the levels.
 - **A scatter's labels** (:func:`point_labels`): every point's name where a chart draws at most eight, else only the
-  stressed and the recommended one's, so labels never bury the points; narrow, the arm's letter tag.
-- **An interval's level** (:func:`~threetears.evals.analysis.report.forms.interval_level`): one form wherever it
-  prints, a chart's head and a table's cell alike: where its family corrects its comparisons together, the joint
-  guarantee they hold at (``95% (adjusted for 16 comparisons)``); any other level as the input states it, never rounded.
+  stressed one's, so labels never bury the points; narrow, the arm's letter tag.
+- **An interval's level** (:func:`~threetears.evals.analysis.report.number_forms.intervals.interval_level`): one
+  form wherever it prints, a chart's head and a table's cell alike: where its family corrects its comparisons
+  together, the joint guarantee they hold at (``95% (adjusted for 16 comparisons)``); any other level as the input
+  states it, never rounded.
 - **Row order** (:meth:`ChartContext.arm_order`): a chart's rows in its query's order, else the page's.
 - **The descriptive rule** (:func:`separated`): a change code computes from two point figures is bold where it lies
   beyond 1.96 times the two standard errors' hypotenuse (a half-width counts as 1.96 standard errors), muted
@@ -76,14 +77,9 @@ from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.quantities import MONEY, POINTS
 from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem, ScatterPoint
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
-from threetears.evals.analysis.report.figure_keys import (
-    Figure,
-    figure_unit,
-    held_kind,
-    input_check_name,
-    reader_name,
-    resolve,
-)
+from threetears.evals.analysis.report.keys.figure import Figure
+from threetears.evals.analysis.report.keys.names import input_check_name, reader_name
+from threetears.evals.analysis.report.keys.resolve import figure_unit, held_kind, resolve
 from threetears.evals.analysis.report.parts.look import PageLook, Quantity, quantity, series_token
 from threetears.evals.analysis.report.words import judged_name, label_case
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
@@ -109,7 +105,7 @@ from threetears.evals.analysis.report_input import (
     Task,
 )
 from threetears.evals.analysis.report_margins import criterion_aspect, criterion_place, lead_aspect
-from threetears.evals.analysis.report_rows import SourceRow, query_rows
+from threetears.evals.analysis.report.rows import SourceRow, query_rows
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.chart_query import ChartQuery, ChartSpec
 
@@ -143,6 +139,7 @@ __all__ = [
     "measure_words",
     "misses_line",
     "missing_note",
+    "own_fmt",
     "point_labels",
     "reference_line",
     "separated",
@@ -168,7 +165,7 @@ class ChartContext:
     """One chart being resolved: what the plan stores of it, the input it reads, and the page's look.
 
     :ivar spec: The stored chart.
-    :ivar look: The page's look: arm colours, tags, names, order, survivors and the recommended arm.
+    :ivar look: The page's look: arm colours, tags, marks, order and reader names.
     :ivar title: The chart's title as its block carries it: the plan's, else the section's headline.
     :ivar forms: The page's number forms, which every figure the chart draws is spelled by, over the input it reads.
     """
@@ -403,7 +400,13 @@ def money_noun(report_input: ReportInput, key: str) -> str:
 
 
 def money_words(
-    report_input: ReportInput, key: str, drawn: Quantity, *, kind: str | None = None, name: str = "", prose: bool = False
+    report_input: ReportInput,
+    key: str,
+    drawn: Quantity,
+    *,
+    kind: str | None = None,
+    name: str = "",
+    prose: bool = False,
 ) -> str:
     """What a reader calls a measure (:func:`measure_words`, or ``name`` where the chart names it otherwise) with the
     count its money is drawn per in it, as the one owner of money's words writes it
@@ -1069,14 +1072,24 @@ def unit_quantities(context: ChartContext, values: Mapping[str, Sequence[float]]
     alike = {key: forms.chart_quantity(units[key]) for key in values}
     shown: dict[Quantity, list[float]] = {}
     lead: dict[Quantity, str] = {}
-    first: dict[Quantity, str] = {}
+    members: dict[Quantity, list[str]] = {}
     for key, figures in values.items():
         lead.setdefault(alike[key], units[key])
-        first.setdefault(alike[key], key)
+        members.setdefault(alike[key], []).append(key)
         shown.setdefault(alike[key], []).extend(figure * alike[key].factor for figure in figures)
-    # The measures drawn alike share one quantity, decided today over all of their figures and named by the first.
+    # The measures drawn alike share one quantity, decided over all of their figures and named by the finest of the
+    # measures it draws a figure of (:func:`_finest`): every mark carries its own measure's text at its own precision,
+    # and a value the kit draws from the format alone never reads coarser than its measure's form, which a coarser
+    # format would round (``91.5%`` drawn as ``92``). A measure the chart draws no figure of names nothing.
     drawn = {
-        each: forms.chart_quantity(lead[each], shown[each], measure=first[each], kind=kinds[first[each]])
+        each: _finest(
+            [
+                forms.chart_quantity(lead[each], shown[each], measure=key, kind=kinds[key])
+                for key in members[each]
+                if values[key]
+            ]
+            or [forms.chart_quantity(lead[each], shown[each], measure=members[each][0], kind=kinds[members[each][0]])]
+        )
         for each in shown
     }
     # Each figure at its own factor, times what the class's money is drawn at past it (a thousand where some amount is
@@ -1087,6 +1100,41 @@ def unit_quantities(context: ChartContext, values: Mapping[str, Sequence[float]]
         factor = alike[key].factor * drawn[alike[key]].factor / lead_factor
         quantities[key] = dataclasses.replace(drawn[alike[key]], factor=factor)
     return quantities
+
+
+def own_fmt(context: ChartContext, key: str, drawn: Quantity) -> str | None:
+    """The format a panel that draws one measure alone names: its measure's own, where the measures drawn alike on the
+    chart share a finer one (:func:`unit_quantities`), so each panel's axis reads at its measure's precision; None
+    where it is the chart's, for money (one form over every amount) and for a panel of no one measure.
+
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
+    :param key: The one measure the panel draws; empty for none.
+    :ptype key: str
+    :param drawn: The quantity the chart draws it as.
+    :ptype drawn: Quantity
+    :return: The panel's own format, or None.
+    :rtype: str | None
+    """
+    if not key or drawn.unit == MONEY:
+        return None
+    own = context.forms.chart_quantity(
+        figure_unit(context.report_input, key), measure=key, kind=figure_kind(context, key)
+    ).fmt
+    return own if own != drawn.fmt and own.partition(":")[0] == drawn.fmt.partition(":")[0] else None
+
+
+def _finest(candidates: Sequence[Quantity]) -> Quantity:
+    """Of the quantities the measures drawn alike would each name, the one whose format names the most decimals
+    (``pct:1`` before ``pct:0``); the first where none names any (money, whose one form is chosen over every amount).
+
+    :param candidates: Each measure's quantity, in the order the chart reads the measures; at least one.
+    :ptype candidates: Sequence[Quantity]
+    :return: The quantity the axis is named by.
+    :rtype: Quantity
+    """
+    named = [(int(places), at) for at, one in enumerate(candidates) if (places := one.fmt.rpartition(":")[2]).isdigit()]
+    return candidates[max(named, key=lambda one: (one[0], -one[1]))[1]] if named else candidates[0]
 
 
 def _a_panel_per_measure(kind: str, query: ChartQuery) -> bool:
@@ -1273,12 +1321,11 @@ def point_labels(context: ChartContext, arm: str, name: str, count: int) -> tupl
     :ptype name: str
     :param count: How many points the panel it sits in draws.
     :ptype count: int
-    :return: ``(label, narrow_label)``: its name where the panel draws few points or it is stressed or recommended,
-        else None; narrow, the arm's tag where it is labelled.
+    :return: ``(label, narrow_label)``: its name where the panel draws few points or it is stressed, else None;
+        narrow, the arm's tag where it is labelled.
     :rtype: tuple[str | None, str | None]
     """
-    stressed = arm in (context.emphasis, context.look.recommended)
-    if count > _LABEL_ALL_UP_TO and not stressed:
+    if count > _LABEL_ALL_UP_TO and arm != context.emphasis:
         return None, None
     tag = context.look.arm(arm).tag if arm in context.look.arms else None
     return name, tag

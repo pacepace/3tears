@@ -97,7 +97,19 @@ they are frozen, each set is minted over their stored ids through
 :func:`~threetears.evals.run.case_sets.mint_case_set`, the path ``case_set_mint`` takes. Its slot is its name: a scope
 holding any version of it is already seeded, and the next version is ``case_set_mint``'s to mint.
 
-The seeder creates. It never updates and never deletes.
+The seeder creates. It never updates and never deletes, with two fill-only exceptions that change no identity and
+no digest: a stored nameless template case is given its corpus case's name, and a stored template is given the
+corpus's **presentation names** it lacks (``goal_check_names`` and ``stratum_names``, the
+:data:`~threetears.evals.schema.models.TEMPLATE_PRESENTATION_FIELDS` no digest reads). The second fills, on the
+template's current revision, each entry the stored template holds none for: a goal check the stored template has
+and names nothing, a stratum it names nothing, with a name it gives no other check or stratum. An entry the store
+holds when the seed reads the template is never overwritten, and ``updated_at`` is left as it is, as
+``update_template`` leaves it for a presentation-only edit; a second pass writes nothing. The write is not
+conditional, so an ``update_template`` landing between the read and the write can be lost, the race two
+``update_template`` calls share. ``update_template`` stays the seam for an
+operator's own names. The pass is :func:`fill_presentation_names`, which a definitions reset
+(:func:`~threetears.evals.run.definition_drift.reset_definitions`) also runs, after its writes, on every template it
+leaves current.
 
 **Every definition it writes records what was seeded** (since ``.30``): a template, rubric dim, judge config and case
 set carry ``seed_digest``, the digest of the content written (:mod:`~threetears.evals.run.definition_digests`), and a
@@ -141,7 +153,7 @@ from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -499,6 +511,13 @@ class SeedOutcome:
     #: case was written between the seed's read and its write), per doc type (``template_case``). Nothing was undone and
     #: nothing is wrong: the next boot reads the case again and fills its name if it is still empty.
     name_fill_contended: dict[str, list[str]] = field(default_factory=dict)
+    #: Names of stored templates given the corpus's presentation names they lacked (``goal_check_names``,
+    #: ``stratum_names``), per doc type (``eval_template``), each with the entries written (``goal check <check>``,
+    #: ``stratum <id>``). Fill-only: an entry the stored template holds is never overwritten.
+    presentation_named: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+    #: Names of stored templates whose presentation-name fill the store refused (``StorageError``), each with the
+    #: store's reason, per doc type (``eval_template``). Logged at WARNING; the next boot tries again.
+    presentation_fill_failed: dict[str, dict[str, str]] = field(default_factory=dict)
 
     @property
     def total_created(self) -> int:
@@ -551,6 +570,16 @@ class SeedOutcome:
         return sum(len(keys) for keys in self.name_fill_contended.values())
 
     @property
+    def total_presentation_named(self) -> int:
+        """Stored templates given presentation names from the corpus."""
+        return sum(len(names) for names in self.presentation_named.values())
+
+    @property
+    def total_presentation_fill_failed(self) -> int:
+        """Stored templates whose presentation-name fill the store refused."""
+        return sum(len(names) for names in self.presentation_fill_failed.values())
+
+    @property
     def nothing_to_do(self) -> bool:
         """True when the pass neither wrote, skipped, failed nor withheld anything.
 
@@ -570,6 +599,8 @@ class SeedOutcome:
             or self.total_named
             or self.total_name_fill_failed
             or self.total_name_fill_contended
+            or self.total_presentation_named
+            or self.total_presentation_fill_failed
         )
 
     def summary(self) -> str:
@@ -595,6 +626,8 @@ class SeedOutcome:
             | set(self.named)
             | set(self.name_fill_failed)
             | set(self.name_fill_contended)
+            | set(self.presentation_named)
+            | set(self.presentation_fill_failed)
         ):
             part = f"{doc_type}: {self.created.get(doc_type, 0)} created"
             if keys := self.created_keys.get(doc_type):
@@ -623,6 +656,12 @@ class SeedOutcome:
                     f", {len(contended)} nameless, naming lost to another writer, retried next boot "
                     f"({', '.join(contended)})"
                 )
+            if presented := self.presentation_named.get(doc_type):
+                given = ", ".join(f"{name}: {', '.join(entries)}" for name, entries in presented.items())
+                part += f", {len(presented)} given presentation names from the corpus ({given})"
+            if presentation_failed := self.presentation_fill_failed.get(doc_type):
+                reasons = ", ".join(f"{name}: {reason}" for name, reason in presentation_failed.items())
+                part += f", {len(presentation_failed)} PRESENTATION NAMES REFUSED BY STORAGE ({reasons})"
             parts.append(part)
         return "; ".join(parts)
 
@@ -707,8 +746,14 @@ def seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome:
     (:func:`~threetears.evals.run.authoring.admit_template`), all of them before any write, and is
     stored in the shape admission resolves (its ``kind_spec`` as the kind's spec model fills it).
 
-    Nothing is ever updated and nothing is ever deleted. An operator's own definitions, and
-    their edits to seeded ones, are untouched.
+    Nothing is ever updated and nothing is ever deleted, but for two fills that change no identity and no digest. An
+    operator's own definitions, and their edits to seeded ones, are untouched.
+
+    A stored template is given each presentation name (``goal_check_names``, ``stratum_names``) the corpus's
+    template of its name declares for an entry the stored current revision names nothing, reported under
+    ``presentation_named``, or under ``presentation_fill_failed`` when the store refuses the write. An entry the store
+    holds is never overwritten, a name the stored template already gives another entry is not given twice, a goal
+    check the stored template does not hold is not named, and ``updated_at`` is left as it is.
 
     A write the storage layer refuses (``StorageError``) is counted as ``failed``, never as
     created, and does not abort the seed: one refused definition is no reason to leave the
@@ -815,6 +860,9 @@ def seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome:
         lambda t: (t.name,),
         lambda t: storage.save_template(t.model_copy(update={"seed_digest": template_digest(t)})),
     )
+    outcome.presentation_named, outcome.presentation_fill_failed = fill_presentation_names(
+        storage, corpus.scope_id, templates, current_revisions(stored_templates), event="eval.seed"
+    )
     _seed_doc_type(
         outcome,
         "rubric_dim",
@@ -845,6 +893,103 @@ def seed_eval_definitions(host: EvalHost, corpus: SeedCorpus) -> SeedOutcome:
         )
 
     return outcome
+
+
+class PresentationFill(NamedTuple):
+    """What one presentation-name fill wrote and what the store refused, in the shape :class:`SeedOutcome` and
+    :class:`~threetears.evals.run.definition_drift.DefinitionReset` report them."""
+
+    #: Per doc type (``eval_template``), each template name given names -> the entries written (``goal check <check>``,
+    #: ``stratum <id>``).
+    named: dict[str, dict[str, list[str]]]
+    #: Per doc type (``eval_template``), each template name whose fill the store refused -> the store's reason.
+    failed: dict[str, dict[str, str]]
+
+
+def fill_presentation_names(
+    storage: EvalStorage,
+    scope_id: str,
+    templates: Sequence[EvalTemplate],
+    stored: Mapping[str, EvalTemplate],
+    *,
+    event: str,
+) -> PresentationFill:
+    """Give each stored template the corpus's presentation names it lacks, fill-only: the seed's pass, and the reset's.
+
+    ``stored`` is each name's current revision as the caller read it, so a template it does not hold is not filled
+    (the seed passes its read from before it wrote anything, so a template it creates, written with the corpus's
+    names, is left alone). The revision is read again just before the write, so an entry another writer gave it since
+    is kept. Each goal check the stored template holds and names nothing, and each stratum it names nothing, is given
+    the corpus template's name, unless the stored template already gives that name to another check or stratum. Only
+    the two presentation fields are written: no digest reads them, so the template keeps its identity, its seed record
+    and its drift reading, and ``updated_at`` is left as it is. A second pass writes nothing. The write is not
+    conditional, so an ``update_template`` landing between the read and the write can be lost, the race two
+    ``update_template`` calls share.
+
+    :param storage: The store.
+    :ptype storage: EvalStorage
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :param templates: The corpus's templates, whose names are given.
+    :ptype templates: Sequence[EvalTemplate]
+    :param stored: Each template name's current revision, as the caller read it.
+    :ptype stored: Mapping[str, EvalTemplate]
+    :param event: The log event the fill's lines open with (``eval.seed``, ``eval.reset_definitions``).
+    :ptype event: str
+    :return: The templates filled, with the entries written, and those whose write the store refused, with its reason.
+    :rtype: PresentationFill
+    """
+    fill = PresentationFill(named={}, failed={})
+    for template in templates:
+        if not (template.goal_check_names or template.stratum_names) or (held := stored.get(template.name)) is None:
+            continue
+        current = storage.load_template(held.id, scope_id)
+        if current is None or current.archived:
+            continue  # retired, as the seed reads an archived definition: nothing is written into it
+        checks = {
+            check: name
+            for check, name in template.goal_check_names.items()
+            if check in current.goal_state_checks
+            and check not in current.goal_check_names
+            and name not in current.goal_check_names.values()
+        }
+        strata = {
+            stratum: name
+            for stratum, name in template.stratum_names.items()
+            if stratum not in current.stratum_names and name not in current.stratum_names.values()
+        }
+        if not (checks or strata):
+            continue
+        named = current.model_copy(
+            update={
+                "goal_check_names": {**current.goal_check_names, **checks},
+                "stratum_names": {**current.stratum_names, **strata},
+            }
+        )
+        try:
+            storage.save_template(named)
+        except StorageError as refused:
+            # NOSILENT: logged and recorded under the caller's presentation_fill_failed, which its account names; the
+            # next seed or reset retries.
+            log.warning(
+                "%s eval_template=%s scope=%s presentation names refused by storage: %s",
+                event,
+                template.name,
+                scope_id,
+                refused,
+            )
+            fill.failed.setdefault("eval_template", {})[template.name] = refused.message
+            continue
+        entries = [*(f"goal check {check}" for check in checks), *(f"stratum {stratum}" for stratum in strata)]
+        fill.named.setdefault("eval_template", {})[template.name] = entries
+        log.info(
+            "%s eval_template=%s scope=%s gave presentation names from the corpus: %s",
+            event,
+            template.name,
+            scope_id,
+            ", ".join(entries),
+        )
+    return fill
 
 
 def criterion_missing_from_stored(case: SeedJudgeCase, stored_first: Mapping[str, EvalTemplate]) -> bool:

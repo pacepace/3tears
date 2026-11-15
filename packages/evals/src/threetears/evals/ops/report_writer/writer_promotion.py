@@ -300,8 +300,8 @@ def _pass_report(
             remedy="run the pass over this campaign's candidate (writer_pairwise), then read with its job id",
         )
     read = {result for pair in report.pairs for result in (pair.candidate_result_id, pair.control_result_id)}
-    # A batch that stored no page on either arm is left out of the campaign's readings and read by the pass beside
-    # them: its results are the pass's to hold, never the campaign's.
+    # A report stored before a batch run that stored no page joined its arm's test setup names such runs: the pass
+    # read their pairs beside the campaign's, so their results are the pass's to hold, never the campaign's.
     aside = outside(report.outside_run_ids)
     gone, unread = read - results - aside, results - read - set(report.unpaired)
     if gone or unread:

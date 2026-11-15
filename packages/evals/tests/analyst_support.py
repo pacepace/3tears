@@ -29,7 +29,7 @@ from threetears.evals.analysis.analyst.levers import lever_effects
 from threetears.evals.analysis.analyst.price import PriceTradeoff, price_tradeoff
 from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.analyst.snapshot import analyst_input, report_snapshot
-from threetears.evals.analysis.report_decision import every_caveat
+from threetears.evals.analysis.report.call import every_caveat
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import EvalReportSnapshot
 from threetears.evals.kernel.errors import RefusedInput

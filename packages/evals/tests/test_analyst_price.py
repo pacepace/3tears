@@ -48,7 +48,7 @@ from threetears.evals.actions.analyst_price import analyst_price_actions
 from threetears.evals.actions.render import render_cited
 from threetears.evals.analysis.analyst.analyses import gate_reads
 from threetears.evals.analysis.analyst.price import Price, PriceTradeoff, price_tradeoff
-from threetears.evals.analysis.report_gates import gate_findings
+from threetears.evals.analysis.report.gates import gate_findings
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.kernel.numbers import money_form
@@ -62,12 +62,12 @@ from threetears.evals.analysis.report.figure_keys import (
     render,
     resolve,
 )
-from threetears.evals.analysis.report_decision import surviving_options
+from threetears.evals.analysis.report.call import surviving_options
 from threetears.evals.analysis.analyst.blocks import block_catalog, block_render
 from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_rows import PriceStep, query_rows
+from threetears.evals.analysis.report.rows import PriceStep, query_rows
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.chart_query import ChartQuery
 

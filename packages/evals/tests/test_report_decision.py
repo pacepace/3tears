@@ -1,6 +1,6 @@
 """What code decides before the planner writes: caveat ids, immateriality, survivors, dominance and allowed modes.
 
-Contracts held here (``threetears.evals.analysis.report_decision``, GENERATOR.md §1.1, §2.5, §3):
+Contracts held here (``threetears.evals.analysis.report.call``, GENERATOR.md §1.1, §2.5, §3):
 
 - every entry of a report input's ``caveats`` gets one stable id, with its scope;
 - a reading's flip margin is its interval's worst drop (``-lo``), the one implementation figure keys print;
@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis.report.figure_keys import flip_margin, resolve
-from threetears.evals.analysis.report_decision import (
+from threetears.evals.analysis.report.call import (
     caveat_materiality,
     decision_at,
     dominant_options,

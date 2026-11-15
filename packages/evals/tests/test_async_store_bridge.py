@@ -74,6 +74,7 @@ class _FakeAsyncStore(AsyncDocumentStore):
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = None,
+        after: tuple[Any, str] | None = None,
         exclude: Sequence[str] = (),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
@@ -85,6 +86,7 @@ class _FakeAsyncStore(AsyncDocumentStore):
             order_by=order_by,
             descending=descending,
             limit=limit,
+            after=after,
             exclude=exclude,
             field_in=field_in,
             **field_eq,
@@ -115,6 +117,17 @@ class _FakeClockedAsyncStore(_FakeAsyncStore):
         return _STORE_TIME
 
 
+class _AsyncStoreBeforeAfter(_FakeAsyncStore):
+    """An async adapter written before ``after``: it reads an ``after=`` it is handed as an equality predicate, which a
+    tuple is refused as, so the bridge must never hand it one."""
+
+    async def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        if "after" in kwargs:
+            raise TypeError(f"by_doc_type compares a field to a scalar, not tuple: after={kwargs['after']!r}")
+        self._seen()
+        return self.inner.by_doc_type(doc_type, scope_id, **kwargs)
+
+
 class _FakeSyncClockAsyncStore(_FakeAsyncStore):
     """An async store whose ``now`` is not awaited: the shape the bridge refuses."""
 
@@ -141,6 +154,14 @@ def _doc(doc_id: str, **fields: object) -> dict[str, object]:
 @pytest.mark.parametrize("case", STORE_CONFORMANCE_CASES, ids=lambda case: case.name)
 def test_a_bridged_async_store_conforms(case: StoreConformanceCase, loop: asyncio.AbstractEventLoop) -> None:
     case.run(bridge_async_store(_FakeAsyncStore(), loop))
+
+
+@pytest.mark.parametrize("case", STORE_CONFORMANCE_CASES, ids=lambda case: case.name)
+def test_a_bridged_async_store_written_before_after_conforms(
+    case: StoreConformanceCase, loop: asyncio.AbstractEventLoop
+) -> None:
+    """The bridge pages an ordered read of it itself, ties by id, and never hands it ``after``."""
+    case.run(bridge_async_store(_AsyncStoreBeforeAfter(), loop))
 
 
 def test_the_callers_context_reaches_the_store(loop: asyncio.AbstractEventLoop) -> None:

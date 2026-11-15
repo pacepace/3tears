@@ -296,8 +296,9 @@ def test_where_candidates_read_different_cases_each_names_its_own_baseline(
 # --- L7: one precision, the pass rate's, on the matrix and in its fold --------------------------------------------
 
 #: The places each page's pass rate reads at, set by the narrowest interval a reader compares across its campaign
-#: (owner ruling, set digits: a pooled aggregate never sets them): whole points on every page, Kairo's too.
-_CHANGE_PLACES = {"rung3": 0, "kairo": 0, "scaled": 0, "scaled_two_aspects": 0, "s1": 0, "uneven": 0}
+#: (owner ruling, set digits: a pooled aggregate never sets them), its width to two significant figures (owner ruling,
+#: 2026-11-14): whole points on every page but Kairo's, whose narrowest interval, 7.0 points wide, reads a tenth.
+_CHANGE_PLACES = {"rung3": 0, "kairo": 1, "scaled": 0, "scaled_two_aspects": 0, "s1": 0, "uneven": 0}
 
 
 @pytest.mark.parametrize("name", _CHANGE_PAGES)
@@ -305,7 +306,7 @@ def test_a_change_reads_at_the_pass_rate_s_places_on_the_matrix_and_in_its_fold_
     pages: dict[str, CampaignReport], name: str
 ) -> None:
     """Kairo's qwen3.8-flash change of -7.6 printed ``-7.6`` in its fold while its matrix printed ``-8``, the column's
-    whole percents. A change now reads at the places the pass rate's narrowest compared interval sets across the campaign
+    whole percents then. A change now reads at the places the pass rate's narrowest compared interval sets across the campaign
     (one decimal at most), rounded half to even, on the matrix and in its fold alike. Trips on a fold and a matrix that
     print one change two ways, and on a change at other places than its cell's."""
     page = pages[name]
@@ -330,7 +331,7 @@ def test_a_change_reads_at_the_pass_rate_s_places_on_the_matrix_and_in_its_fold_
         assert [_figure(text) for text in shown] == expected, (arm, expected, shown)
         assert all(text == "0" or len(text.partition(".")[2]) == at for text in shown), shown
     if name == "kairo":
-        assert "-8" in on_matrix.values() and "-7.6" not in on_matrix.values()
+        assert "-7.6" in on_matrix.values() and "-8" not in on_matrix.values()
 
 
 @pytest.mark.parametrize("name", ["s1", "scaled_two_aspects", "uneven"])

@@ -66,12 +66,14 @@ from threetears.evals.analysis.report.parts.charting import (
     slice_name,
     stat_interval,
     stat_value,
+    own_fmt,
     unit_quantities,
     unit_refusal,
 )
 from threetears.evals.analysis.report.cost_unit import per_count, priced_in_part
 from threetears.evals.analysis.quantities import MONEY
-from threetears.evals.analysis.report.figure_keys import cost_basis, figure_unit
+from threetears.evals.analysis.report.keys.reads import cost_basis
+from threetears.evals.analysis.report.keys.resolve import figure_unit
 from threetears.evals.analysis.report.parts.look import (
     Quantity,
     band_domain,
@@ -93,7 +95,7 @@ from threetears.evals.analysis.report.parts.words import (
     STATISTIC_NOTE,
 )
 from threetears.evals.analysis.analyst.settle import SettleRow
-from threetears.evals.analysis.report_rows import PriceStep
+from threetears.evals.analysis.report.rows import PriceStep
 from threetears.evals.analysis.style import humanize
 from threetears.evals.analysis.report_input import (
     Measure,
@@ -526,12 +528,15 @@ def _panels(
     panels = []
     for title, rows in grouped.items():
         own = rows[0].drawn or drawn
+        # A panel of one measure on a shared axis names that measure's own format (:func:`own_fmt`).
+        alone = {bar.key for bar in rows}
+        mine = own_fmt(context, rows[0].key, own) if len(alone) == 1 else None
         panels.append(
             BarsPanel(
                 title=title,
                 rows=[_bar_row(context, bar, drawn) for bar in rows],
                 domain=spans[own] if spans is not None else None,
-                fmt=own.fmt if spans is not None else None,
+                fmt=own.fmt if spans is not None else mine,
                 tick_fmt=own.tick_fmt if spans is not None else None,
                 ticks=log_ticks(spans[own]) if spans is not None and own in logged else None,
                 log=(own in logged) if spans is not None and own in logged else None,

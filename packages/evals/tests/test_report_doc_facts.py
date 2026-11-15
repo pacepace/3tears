@@ -1,4 +1,4 @@
-"""The editor's facts (``analysis/report_doc_facts.py``): each fires on a planted case, and on the converted documents
+"""The editor's facts (``analysis/report/doc_page/facts.py``): each fires on a planted case, and on the converted documents
 only where it holds.
 
 Each fact is planted on a converted prototype document and its snapshot, changed as little as the fact needs. On the
@@ -19,7 +19,7 @@ import pytest
 from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS
 from packages.evals.tests.report_doc_support import LATER_DOCS, converted_doc, snapshot_of
 from threetears.evals.analysis.report.figure_keys import cost_arms
-from threetears.evals.analysis.report_doc_facts import EditorFact, editor_facts
+from threetears.evals.analysis.report.doc_page.facts import EditorFact, editor_facts
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.report_doc import ReportDoc
 
@@ -502,9 +502,22 @@ def test_a_document_comparing_costs_is_told_who_served_each_arms_model_calls() -
     assert fact.fact == (
         "The document compares costs (headline, decision[1].text, decision[2].text, decision[3].text, "
         "claims[0].evidence[0].caption) of September (P), its model calls served by DeepInfra; and of qwen3.8-flash "
-        "(A), its model calls served by Together, with tool spend at searxng; and of 1017 (B), whose pricing names no "
-        "provider of its model calls."
+        "(A), its model calls served by Together, with tool spend at searxng; and of 1017 (B), the provider of its "
+        "model calls not recorded."
     )
+
+
+def test_an_arm_whose_provider_was_recorded_for_part_of_its_calls_is_said_to_be_known_in_part() -> None:
+    """September's replies named DeepInfra for some calls and nobody for the rest: the fact says the rest were not
+    recorded, never that DeepInfra served them all."""
+
+    def in_part(data: dict[str, Any]) -> None:
+        _priced(data)
+        data["scoreboard"]["September"]["pricing"]["providers_in_part"] = True
+
+    (fact,) = _of(_facts(_STORED_KAIRO, input_change=in_part), _SERVED)
+
+    assert "of September (P), its model calls served by DeepInfra in part, the rest not recorded; and of" in fact.fact
 
 
 def test_a_document_citing_one_arms_cost_alone_is_no_cost_fact() -> None:

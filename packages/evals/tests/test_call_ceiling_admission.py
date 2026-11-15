@@ -5,7 +5,8 @@ went ``budget_stopped`` after one result: "a call priced at up to $0.5801 would 
 against a $0.5000 cap". A run then reserved a priced call's ceiling before making it and refused the call when the
 ceiling would take it past its cap, so a call whose ceiling was above the whole cap could never be made, and the
 case reaching it was excluded after the cases before it were paid for. Neither the estimate nor the launch said
-so. The cap is read between cells now and refuses no call inside one; a launch still refuses the arm up front.
+so. The cap now refuses no call a candidate or a simulated user makes inside a cell, and admits a cell's judging only
+when its price fits what is left; a launch still refuses the arm up front, saying which.
 
 The judge kind prices every case's call before launch, as its cell makes it (the client's ``price_ceiling`` for
 the case's prompt, times the judge's parse-retry attempts), and the arm carries the largest
@@ -214,6 +215,15 @@ async def test_a_cap_below_one_calls_ceiling_is_refused_by_the_estimate_and_the_
         "largest call under its $0.50 cap: the judge call on case 'judge-case-3'"
     )
     assert "reserved at up to $0.5801 before it is sent, more than the whole cap" in arm.refusal
+    # Why the cap cannot hold such a call, as the run would meet it: a candidate's call is made and passes the cap, and
+    # a cell's judging is never paid for. Neither says the cap refuses no call inside a cell, which judging disproves.
+    assert (
+        "A run's cap refuses no call a candidate or a simulated user makes inside a cell, so the run would make such "
+        "a call and stop budget_stopped before its next cell, after spending more than the cap on it; and it admits "
+        "a cell's judging only when its price fits what the cap has left, so it would set every cell's judging aside, "
+        "having paid for the cells and judged none."
+    ) in arm.refusal
+    assert "refuses no call inside one" not in arm.refusal
     assert "Refused before any launcher ran" in arm.refusal
     assert arm.remedy.startswith("name max_cost_usd of at least $0.59, the cap one such call needs to be admitted")
     assert arm.price.predicted_usd is not None

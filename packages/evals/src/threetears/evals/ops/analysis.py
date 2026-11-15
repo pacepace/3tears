@@ -35,11 +35,18 @@ from threetears.evals.analysis.campaigns import (
     update_campaign,
 )
 from threetears.evals.kernel.phase_log import charged, phase_logged
+from threetears.evals.kernel.list_pages import (
+    LIST_PAGE_SIZE,
+    NEXT_DESCRIPTION,
+    check_page_limit,
+    decode_list_cursor,
+    encode_list_cursor,
+)
 from threetears.evals.analysis.report import ReportBasis, TrialDetail
 from threetears.evals.analysis.report.build import AnalysisLead, analysis_campaign_bundle, analysis_lead
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.words import input_arm_tags, reader_arms
-from threetears.evals.analysis.report_doc_store import stored_headline
+from threetears.evals.analysis.report.doc_page.store import stored_headline
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
@@ -106,6 +113,7 @@ from threetears.evals.kernel.job_leases import (
 from threetears.evals.kernel.inner_ceilings import writer_turns
 from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.storage import CampaignsPage
 from threetears.evals.kernel.provider import describe_failure, traceback_is_safe
 from threetears.evals.kernel.refusals import job_refusal
 from threetears.evals.kernel.host import EvalHost, HostProfile
@@ -307,9 +315,10 @@ class CampaignLine(EvalBaseModel):
 
 
 class CampaignListing(EvalBaseModel):
-    """A scope's campaigns, newest first."""
+    """One page of a scope's campaigns, newest first by created_at and id."""
 
     campaigns: list[CampaignLine]
+    next: str | None = Field(description=NEXT_DESCRIPTION)
 
 
 #: How long a start waits for an in-process generation whose attempt has already ended to finish unwinding (releasing
@@ -538,7 +547,8 @@ class AnalysisLine(EvalBaseModel):
         default=None,
         description=(
             "Why this build cannot read the analysis, and what to do. A report document that no longer reads (its "
-            "shape moved, or it was deleted apart from it) is rendered code-only by report_read: its line is the one "
+            "shape moved, it was deleted apart from it, or its snapshot is gone) is rendered code-only by report_read: "
+            "its line is the one "
             "regenerate line, then why in parentheses where there is more to say, and it counts no findings. Every "
             "memo and every report plan is rendered code-only too, its line the retired writer's (which writer wrote "
             "it, and to regenerate). None when it reads."
@@ -956,7 +966,7 @@ def _headline(host: EvalHost, reading: _AnalysisReading) -> tuple[str, str | Non
     """What a listed report says in one line, and why its document no longer reads where it was found not to.
 
     Its stored document's headline, every figure key written out
-    (:func:`~threetears.evals.analysis.report_doc_store.stored_headline`), a draft's marked (:data:`DRAFT_HEADLINE`),
+    (:func:`~threetears.evals.analysis.report.doc_page.store.stored_headline`), a draft's marked (:data:`DRAFT_HEADLINE`),
     where the document and the frozen bundle read; else code's verdict alone, or the regenerate line where the bundle
     does not read. A headline whose snapshot no longer reads is listed by code's verdict, never by its braces, and why
     is returned, so the line says to regenerate as the report read does. Blocking."""
@@ -1011,15 +1021,15 @@ def _line_title(host: EvalHost, campaign: EvalCampaign, frozen: CampaignBundle |
     )
 
 
-def _listed(host: EvalHost, campaign: EvalCampaign, every: list[EvalCampaign] | None = None) -> CampaignLine:
-    """A campaign's whole line: its title, declared fields, report, and what it feeds among ``every`` campaign of its
-    scope.
+def _listed(host: EvalHost, campaign: EvalCampaign, holders: list[EvalCampaign] | None = None) -> CampaignLine:
+    """A campaign's whole line: its title, declared fields, report, and the declared campaigns it feeds.
 
     Its reported analysis is read once, and its frozen bundle put back together once, for the verdict, the title, the
     short verdict, the outcome and the report's state alike. Its runs are read only for a campaign that declares no
-    arm, whose title names their candidate models or counts its judges. ``every`` is read here only where the
-    campaign is exploratory, the one kind that feeds another: a declared campaign feeds none, so a write of one lists
-    nothing else."""
+    arm, whose title names their candidate models or counts its judges. ``holders`` are declared campaigns of the
+    scope holding a run of it (:meth:`~threetears.evals.kernel.EvalStorage.declared_campaigns_holding`), read once
+    for a whole page by a listing; they are read here only where the campaign is exploratory, the one kind that feeds
+    another, and none is given: a declared campaign feeds none, so a write of one reads nothing else."""
     line = _campaign_line(campaign)
     analysis = host.storage.load_reported_analysis(campaign.id, campaign.scope_id)
     read = _frozen(analysis) if analysis is not None else _Frozen(None, None)
@@ -1027,9 +1037,9 @@ def _listed(host: EvalHost, campaign: EvalCampaign, every: list[EvalCampaign] | 
         line = line.model_copy(update={"verdict_short": _decided(campaign.call, campaign, read.bundle, host.profile)})
     if analysis is not None:
         line = _with_report(host, line, analysis, campaign, read)
-    if campaign.exploratory and every is None:
-        every = list_campaigns(host.storage, campaign.scope_id, archived=None)
-    feeds = _feeds(campaign, every) if campaign.exploratory and every is not None else []
+    if campaign.exploratory and holders is None:
+        holders = host.storage.declared_campaigns_holding(campaign.run_ids, campaign.scope_id)
+    feeds = _feeds(campaign, holders) if campaign.exploratory and holders is not None else []
     return line.model_copy(update={"feeds": feeds, "title": _line_title(host, campaign, read.bundle)})
 
 
@@ -1042,27 +1052,51 @@ def _feeds(campaign: EvalCampaign, campaigns: list[EvalCampaign]) -> list[str]:
     return [other.id for other in sorted(held, key=lambda other: (other.created_at, other.id))]
 
 
-def campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing:
-    """The scope's campaigns.
+def campaigns_list(
+    host: EvalHost,
+    scope_id: str,
+    *,
+    archived: bool | None = None,
+    cursor: str | None = None,
+    limit: int = LIST_PAGE_SIZE,
+) -> CampaignListing:
+    """One page of the scope's campaigns, newest first, and the next page's cursor.
 
     :param host: The host whose store is read.
     :ptype host: EvalHost
     :param scope_id: The scope.
     :ptype scope_id: str
-    :param archived: Only archived (``True``) or only active (``False``) campaigns; ``None`` for both.
+    :param archived: Only archived (``True``) or only active (``False``) campaigns; ``None`` for both. A predicate of
+        the store's read, so every page is full but the last.
     :ptype archived: bool | None
-    :return: The listing: each campaign with its question, declared arms, recorded call, its report's state, headline
+    :param cursor: The ``next`` of the page before; ``None`` reads the first page.
+    :ptype cursor: str | None
+    :param limit: The campaigns a page reads, 1 to :data:`~threetears.evals.kernel.list_pages.LIST_PAGE_MAX`.
+    :ptype limit: int
+    :return: The page: each campaign with its question, declared arms, recorded call, its report's state, headline
         and cost, and the declared campaigns an exploratory one feeds, read among every campaign of the scope,
-        archived or not. The scope's campaigns are read once. Per campaign: one read of its reported analysis, whose
-        frozen bundle is put back together once for everything the line reads off it, and one of its analysis
-        attempts where it has a report; for a campaign declaring no arm, one read of its runs, which its title names.
-        An analysis that does not read back (a bundle of another shape, a corrupt record) lists its report as
-        needing regeneration, with why, and fails nothing else.
+        archived or not, on any page. One read of the page's campaigns, and where the page holds an exploratory
+        campaign, one of the declared campaigns holding its runs
+        (:meth:`~threetears.evals.kernel.EvalStorage.declared_campaigns_holding`), whatever page they are on. Per
+        campaign: one read of its reported analysis, whose frozen bundle is put back together once for everything the
+        line reads off it, and one of its analysis attempts where it has a report; for a campaign declaring no arm,
+        one read of its runs, which its title names. An analysis that does not read back (a bundle of another shape,
+        a corrupt record) lists its report as needing regeneration, with why, and fails nothing else.
     :rtype: CampaignListing
+    :raises ValidationFailedError: ``cursor`` is not one ``campaigns_list`` returned, or ``limit`` is out of range.
     """
-    every = list_campaigns(host.storage, scope_id, archived=None)
-    listed = [c for c in every if archived is None or c.archived == archived]
-    return CampaignListing(campaigns=[_listed(host, campaign, every) for campaign in listed])
+    page: CampaignsPage = host.storage.list_campaigns_page(
+        scope_id,
+        limit=check_page_limit(limit),
+        after=None if cursor is None else decode_list_cursor("campaigns_list", {"archived": archived}, cursor),
+        archived=archived,
+    )
+    explored = [run_id for campaign in page.campaigns if campaign.exploratory for run_id in campaign.run_ids]
+    holders = host.storage.declared_campaigns_holding(explored, scope_id)
+    return CampaignListing(
+        campaigns=[_listed(host, campaign, holders) for campaign in page.campaigns],
+        next=None if page.after is None else encode_list_cursor("campaigns_list", {"archived": archived}, *page.after),
+    )
 
 
 def campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine:
@@ -1384,9 +1418,10 @@ def _doc_claims(
     """How many claims a ``doc`` analysis's document holds, whether it is a draft, why it does not read when it does
     not, and its record when it does. Blocking.
 
-    A document that no longer reads (its shape moved, or it was deleted apart from its analysis) counts no claims, is
-    no draft (its line leads with the regenerate line) and says why, never refusing the listing of every other
-    analysis.
+    A document that no longer reads (its shape moved, it was deleted apart from its analysis, or the snapshot it was
+    written from is gone) counts no claims, is no draft (its line leads with the regenerate line) and says why, never
+    refusing the listing of every other analysis. The snapshot is only checked for (one read of its id alone), never
+    read: a snapshot stored but no longer reading is left to the report read.
     """
     try:
         stored = host.storage.load_report_doc(report_doc_id, scope_id)
@@ -1400,6 +1435,15 @@ def _doc_claims(
         )
     if stored is None:
         return 0, False, f"its report document {report_doc_id!r} was deleted apart from it", None
+    # Only that the snapshot is still stored, never the snapshot itself: reading every listed analysis's snapshot was
+    # judged not worth its cost (#1020), and a gone one is what the report read would render code-only for.
+    if not host.storage.report_snapshot_stored(stored.snapshot_id, scope_id):
+        return (
+            0,
+            False,
+            f"its report document {report_doc_id!r} was written from snapshot {stored.snapshot_id!r}, which is gone",
+            None,
+        )
     return len(ReportDoc.model_validate(stored.doc).claims), stored.draft, None, stored
 
 

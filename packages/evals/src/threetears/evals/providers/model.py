@@ -68,6 +68,7 @@ from threetears.evals.schema import (
     BoundCompletionClient,
     ClientRequestSettings,
     CompletionResult,
+    ModelListing,
     StopReason,
     ToolResultClearing,
     TurnCeiling,
@@ -197,7 +198,7 @@ _ASKED: Final[Mapping[str, ClientRequestSettings]] = {
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Completion:
-    """One reply: the completion port's ten members, and five of the client's own.
+    """One reply: the completion port's ten members, and seven of the client's own.
 
     Implements :class:`~threetears.evals.schema.CompletionResult`. Every count and the cost are ``None`` where the
     provider reported nothing, never ``0``.
@@ -225,6 +226,11 @@ class Completion:
     :ivar pricing_stale_since: When the catalogue rates that priced the call expired with every refresh since failing
         (UTC): the cost is the last rates read, kept rather than failing the call. ``None`` when the rates were
         fresh, and for a cost the provider reported (OpenRouter's), which no catalogue priced.
+    :ivar resent_after: What each resend of the call followed, oldest first, as a tool turn's reply names them
+        (:attr:`~threetears.evals.schema.TurnReply.resent_after`); empty when the first send was answered.
+    :ivar maybe_billed_sends: How many sends of the call broke before any response began and were sent again: the
+        provider may have served and billed each, and ``cost_usd`` holds none of it. A usage row counts them
+        (``RoleUsage.maybe_billed_sends``).
     """
 
     content: str
@@ -242,6 +248,19 @@ class Completion:
     served_provider: str | None
     pricing_failure: str | None
     pricing_stale_since: datetime | None
+    resent_after: tuple[str, ...] = ()
+    maybe_billed_sends: int = 0
+
+
+#: What a resend after a first send that broke before any response began follows, as its words open: what
+#: :attr:`Completion.maybe_billed_sends` counts.
+_DROPPED_BEFORE_RESPONSE: Final = "the connection broke before any response began"
+
+
+def _dropped(resent_after: Sequence[str]) -> int:
+    """How many of a call's resends followed a send that broke before any response began: the sends the provider may
+    have billed, which no reply's cost holds."""
+    return sum(1 for after in resent_after if after.startswith(_DROPPED_BEFORE_RESPONSE))
 
 
 #: What :meth:`Model.refresh_prices` answers while replaying, and for a model its pricer prices: no catalogue is read,
@@ -565,7 +584,13 @@ class _Live:
         With ``failure_attempts`` above 1 (a tool turn's: the policy's ``turn_failure_attempts``), a call the provider
         failed with a 5xx status that is no decline, or whose connection was never made, is sent again too, up to that
         many attempts in all: nothing came back, so nothing was billed. A gateway's timeout (504, 524) is not: the
-        provider may still have served it. Every wait and resend ends within one
+        provider may still have served it. A first send whose connection broke before any response began
+        (``httpx.RemoteProtocolError`` out of sending it: "Server disconnected without sending a response") is sent
+        again once, whatever ``failure_attempts`` is: a completion request changes nothing but what it bills, so one
+        resend costs at most a second call, and the drop, with its own text, is named among what the resend followed,
+        since the provider may have served the first and billed it. The first send is read streamed so that a
+        ``RemoteProtocolError`` while its body is read (a response begun and cut short: served and billed) is told
+        apart, and raised as it came, never resent. Every wait and resend ends within one
         request's timeout of the first attempt. Any other failure, and the last decline or failure, is raised as it
         came; an error in a 200's body that is no decline is left to :func:`read_reply`, as before.
         """
@@ -580,18 +605,33 @@ class _Live:
         until = time.monotonic() + budget if budget is not None else None
         made = declined = failed = 0
         resent_after: list[str] = []
-        # The answer the next resend follows, re-read if that resend brings none; or the connection never made.
+        # The answer the next resend follows, re-read if that resend brings none; or the first send that brought none:
+        # a connection never made, or one the server dropped with no response.
         previous: httpx.Response | None = None
-        unsent: httpx.ConnectError | httpx.ConnectTimeout | None = None
+        unsent: httpx.ConnectError | httpx.ConnectTimeout | httpx.RemoteProtocolError | None = None
         while True:
             if made == 0:
+                # Sent streamed, so a failure before the response began is told apart from one while its body was
+                # read: only the first is a drop with no response.
+                request = client.build_request("POST", self._url + path, json=body, headers=headers)
+                response: httpx.Response | None
                 try:
-                    response: httpx.Response | None = await client.post(self._url + path, json=body, headers=headers)
+                    begun = await client.send(request, stream=True)
                 except (httpx.ConnectError, httpx.ConnectTimeout) as never:
                     if failure_attempts < 2:
                         raise
                     # NOSILENT: the request never reached the provider; it is sent again below, or raised there.
                     response, unsent = None, never
+                except httpx.RemoteProtocolError as dropped:
+                    # NOSILENT: the connection broke before any response began; sent again once below, or raised there.
+                    response, unsent = None, dropped
+                else:
+                    try:
+                        # A body cut short here (RemoteProtocolError too) was served and billed: raised as it came.
+                        await begun.aread()
+                    finally:
+                        await begun.aclose()
+                    response = begun
             else:
                 response, lost = await self._resend(client, path, body, headers, until=until)
                 if response is None:
@@ -614,10 +654,16 @@ class _Live:
             if response is None:
                 assert unsent is not None
                 failed += 1
-                if failed >= failure_attempts:
+                dropped_once = isinstance(unsent, httpx.RemoteProtocolError)
+                if failed >= failure_attempts and not dropped_once:
                     raise unsent
                 after, wait = (
-                    f"the connection was never made ({type(unsent).__name__})",
+                    (
+                        f"{_DROPPED_BEFORE_RESPONSE} (RemoteProtocolError: {unsent}), so the provider may have served "
+                        "and billed the call"
+                        if dropped_once
+                        else f"the connection was never made ({type(unsent).__name__})"
+                    ),
                     self._retry.wait_s(failed, None),
                 )
                 standing: BaseException = unsent
@@ -706,6 +752,7 @@ class _Live:
         declared = self._declared()
         asked = replace(self._asked, strict_output=directive.asks_strict(self.provider))
         refused: list[tuple[dict[str, Any], ProviderError]] = []  # Any: a JSON body
+        resent: list[str] = []
 
         async def send(wire: WireSettings, facts: SettingFacts) -> tuple[int, Mapping[str, Any]]:  # Any: JSON
             body = request_body(
@@ -722,7 +769,8 @@ class _Live:
             if refused and refused[-1][0] == body:
                 raise refused[-1][1]  # nothing closer to send: the refusal stands, as it came
             try:
-                status, parsed, _ = await self._post(body)
+                status, parsed, after = await self._post(body)
+                resent.extend(after)
                 return status, parsed
             except ProviderError as failure:
                 refused.append((body, failure))
@@ -765,6 +813,8 @@ class _Live:
             served_provider=reply.served_provider,
             pricing_failure=price.unpriced_reason,
             pricing_stale_since=price.stale_since,
+            resent_after=tuple(resent),
+            maybe_billed_sends=_dropped(resent),
         )
 
     async def turn(
@@ -826,6 +876,7 @@ class _Live:
             sent_binding=body.get("thinking", {}).get("block_binding", {}).get("prefix_mismatch_behavior"),
             input_transformations=turned.input_transformations,
             resent_after=resent_after,
+            maybe_billed_sends=_dropped(resent_after),
         )
 
     def turn_price_ceiling(
@@ -842,6 +893,13 @@ class _Live:
         if self.rated() is not None:
             return None
         return self._fallback.unbounded_because(self.last_refresh)
+
+    def price_ceiling_refusal(self) -> str | None:
+        """Why :meth:`price_ceiling` answers no ceiling as things stand, or ``None`` when it bounds one."""
+        if self._asked.max_tokens is None:
+            return "the request has no output cap"
+        unbounded = self.unbounded_because()
+        return unbounded[0] if unbounded is not None else None
 
     async def refresh_prices(self) -> PriceRefresh:
         if self.rated() is not None:
@@ -902,9 +960,9 @@ class Model:
     naming the variable, unless a recording will serve every call.
 
     Implements :class:`~threetears.evals.schema.CompletionClient` and
-    :class:`~threetears.evals.schema.BoundCompletionClient`; ``generate`` is safe to call concurrently. Two resends,
-    and nothing else is retried. A provider's refusal of a setting the request carried, which the provider did not
-    bill, is answered with the closest setting the model then takes, learned for every model sharing the
+    :class:`~threetears.evals.schema.BoundCompletionClient`; ``generate`` is safe to call concurrently. The
+    resends below are made, and nothing else is retried. A provider's refusal of a setting the request carried, which
+    the provider did not bill, is answered with the closest setting the model then takes, learned for every model sharing the
     :class:`~threetears.evals.providers.Catalogue`. A call the provider declined at that moment (a 429 that is no
     spent quota, a 529 overloaded, a 503 unavailable, as a status or as the code a 200's body carries), which it also
     did not bill, is sent again after a wait, at most three attempts in all, all within one request's timeout of the
@@ -914,7 +972,12 @@ class Model:
     timeout (a 500, a 502, a 520 from its edge; never a 504 or a 524, which it may still have served), or whose
     connection was never made, is sent again too, two attempts in all by default
     (``DeclinedRetry.turn_failure_attempts``), within the same bound: no completion came back, so nothing was billed,
-    and the reply names what each resend followed (``TurnReply.resent_after``).
+    and the reply names what each resend followed (``TurnReply.resent_after``). A call or a turn whose first send's
+    connection broke before any response began (``httpx.RemoteProtocolError``) is sent again once, after the same wait;
+    one cut short while its body was read was served and is raised, never resent. The
+    request changes nothing but what it bills, and the provider may have served and billed the first: a WARNING logs it,
+    a turn's reply names it, and a completion names it (``Completion.resent_after``) and counts it
+    (``Completion.maybe_billed_sends``), which its usage row counts in turn (``RoleUsage.maybe_billed_sends``).
 
     **Keys.** A model handed no ``api_key=`` reads its provider's variable (``ANTHROPIC_API_KEY``), then the
     variables ``<VARIABLE>_FALLBACKS`` names, a comma list tried in order
@@ -1478,6 +1541,22 @@ class Model:
         """
         return self._client.price_ceiling(system=system, user=user, response_format=response_format)
 
+    def price_ceiling_refusal(self) -> str | None:
+        """Why :meth:`price_ceiling` answers no ceiling as things stand, or ``None`` when it bounds a call. Reads nothing.
+
+        What a launch quotes when it refuses an arm under a cost cap whose call this model cannot price: the catalogue
+        not read (or its first read failing), its rows too old after a failed refresh, no row that prices the model,
+        a price the client cannot bound, or a request with no output cap. ``None`` while replaying, which costs
+        nothing. Await :meth:`refresh_prices` first, as the engine does, so it answers from the read the ceiling
+        would be priced from.
+
+        :return: The reason, or ``None``.
+        :rtype: str | None
+        """
+        if self._live is None:
+            return None
+        return self._live.price_ceiling_refusal()
+
     def ceiling_is_estimate(self) -> bool:
         """Whether this model's price ceilings are estimates: bounds on rates its pricer does not guarantee.
 
@@ -1569,6 +1648,9 @@ class _Lease:
 
     def ceiling_is_estimate(self) -> bool:
         return self._model.ceiling_is_estimate()
+
+    def price_ceiling_refusal(self) -> str | None:
+        return self._model.price_ceiling_refusal()
 
     async def refresh_prices(self) -> PriceRefresh:
         return await self._model.refresh_prices()
@@ -1732,6 +1814,61 @@ class Clients:
             if matched is None or self.catalogue.rates(matched) is None:
                 unpriced[model_id] = f"no single priced row of OpenRouter's catalogue matches {model_id!r}"
         return unpriced
+
+    async def model_listing(self, model: str, *, role: CompletionRole | None = None) -> ModelListing | None:
+        """Whether the provider a call to ``model`` goes to still lists it, read now: the engine's served-model check.
+
+        A launch asks this of every model an arm names before the arm is priced, and refuses an arm whose model the
+        provider no longer lists. OpenRouter's list is the price catalogue every model here shares, so the read is
+        the one a price ceiling needs and one catalogue read serves both: rows younger than ``refresh_after`` are
+        kept, older ones are fetched again. A list that cannot be read now, or whose refresh failed so the rows held
+        are stale, answers ``listed=None`` saying why, and the launch goes ahead saying the check was skipped.
+
+        The provider is the one the factory builds ``model`` on in ``role``: the role's own (a role given as a
+        :class:`Model` keeps its provider), else OpenRouter for a ``vendor/model`` id. Only OpenRouter's list is read
+        here, so a model going to Anthropic or OpenAI directly, or to an OpenAI-compatible ``base_url``, answers
+        ``None``: there is no list to check it against. ``role=None`` is a model the host calls through its own route
+        (a subject's candidate): this factory does not build it, so it does not know where it goes and answers
+        ``None``, which the launch reports as a check skipped. A host whose own route is one this factory reads a list
+        of says so by answering for ``role=None`` in a factory of its own.
+
+        :param model: The model id, as the launch names it.
+        :ptype model: str
+        :param role: The engine role the model serves, or ``None`` for a candidate the host calls itself.
+        :ptype role: CompletionRole | None
+        :return: The listing, or ``None`` when the factory reads no list for the model in that role.
+        :rtype: ModelListing | None
+        """
+        if role is None:
+            return None
+        if "/" not in model:
+            return None
+        # A vendor/model id goes to the router whose list the catalogue is, as Model builds it; a role's Model built
+        # on another provider or a base_url derives every model of that role there, where no list is read.
+        routed = _provider_of(model, None, None)
+        template = self._roles.get(role, self._default)
+        if isinstance(template, Model) and (template.base_url is not None or template.provider != routed):
+            return None
+        read = await self.catalogue.read()
+        listed = self.catalogue.lists(model)
+        if listed is None:
+            return ModelListing(
+                provider=routed,
+                listed=None,
+                detail=read.failure or "the provider's model list (the price catalogue) has not been read",
+            )
+        fetched = self.catalogue.fetched_at
+        when = fetched.isoformat(timespec="seconds") if fetched is not None else "an unknown time"
+        if self.catalogue.stale_since is not None:
+            return ModelListing(
+                provider=routed,
+                listed=None,
+                detail=(
+                    f"the provider's model list held was read at {when} and reading it again failed "
+                    f"({self.catalogue.refresh_failure or 'no reason given'}), so it is not current"
+                ),
+            )
+        return ModelListing(provider=routed, listed=listed, detail=f"the provider's model list, read at {when}")
 
     async def aclose(self) -> None:
         """Close every model the factory built, and forget them, then the ``http`` client it owns; a failure to close

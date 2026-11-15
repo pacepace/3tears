@@ -99,6 +99,8 @@ class TurnCost:
     :ivar sent_binding: The thinking binding's behaviour the request carried, or ``None`` when it carried none.
     :ivar input_transformations: What the provider reported doing to the request's input, as it wrote it, or ``None``
         when the response carried no report.
+    :ivar maybe_billed_sends: How many of the turn's sends broke before any response began and were sent again, which
+        the provider may have billed and ``cost_usd`` does not hold (:attr:`TurnReply.maybe_billed_sends`).
     """
 
     session: str
@@ -121,6 +123,7 @@ class TurnCost:
     admitted_on_estimate: bool = False
     sent_binding: str | None = None
     input_transformations: tuple[dict[str, Any], ...] | None = None  # Any: the provider's JSON objects
+    maybe_billed_sends: int = 0
 
     @classmethod
     def of(
@@ -177,10 +180,11 @@ class TurnCost:
             admitted_on_estimate=admitted_on_estimate,
             sent_binding=reply.sent_binding,
             input_transformations=reply.input_transformations,
+            maybe_billed_sends=reply.maybe_billed_sends,
         )
 
     def to_json(self) -> dict[str, Any]:  # Any: a JSON object
-        """The entry as JSON, every member written, ``None`` as ``null``.
+        """The entry as JSON, every member written, ``None`` as ``null``; ``maybe_billed_sends`` only when set.
 
         :return: The entry.
         :rtype: dict[str, Any]
@@ -208,6 +212,8 @@ class TurnCost:
             "input_transformations": (
                 None if self.input_transformations is None else [dict(entry) for entry in self.input_transformations]
             ),
+            # Only when a send broke, so an entry none of whose sends did is written as it was before the member.
+            **({"maybe_billed_sends": self.maybe_billed_sends} if self.maybe_billed_sends else {}),
         }
 
 
@@ -393,12 +399,14 @@ def _sum_count(counts: Iterable[int | None]) -> int | None:
 
 def _sum_cost(turns: Iterable[TurnCost]) -> float | None:
     """What the turns cost together, or ``None`` when any of them is unpriced."""
-    total = 0.0
+    costs: list[float] = []
     for turn in turns:
         if turn.cost_usd is None:
             return None
-        total += turn.cost_usd
-    return total
+        costs.append(turn.cost_usd)
+    # The one summation the ledger and the analysis' token cost use, so a total never differs from them in the last
+    # place.
+    return math.fsum(costs)
 
 
 class ReportBudget:

@@ -7,6 +7,7 @@ as a string. These run the real backends, as the other mapper tests do.
 
 from __future__ import annotations
 
+import itertools
 import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime, time, timedelta, timezone
@@ -23,8 +24,16 @@ from threetears.core.cache.base import stored_time
 from threetears.core.cache.sqlite import SQLiteBackend
 
 
+_IDS = itertools.count(1)
+
+
+def _fresh_id() -> uuid.UUID:
+    """the next id in a fixed sequence: unique within the run, and no entropy read."""
+    return uuid.UUID(int=next(_IDS))
+
+
 def _sqlite() -> Any:
-    return SQLiteBackend(db_name=f"test_date_time_{uuid.uuid4().hex[:8]}")
+    return SQLiteBackend(db_name=f"test_date_time_{_fresh_id().hex[-8:]}")
 
 
 def _duckdb() -> Any:
@@ -64,7 +73,7 @@ def make_backend(request: pytest.FixtureRequest) -> Iterator[Callable[[MetaData]
 
 
 def _round_trip(backend: Any, **values: Any) -> dict[str, Any]:
-    entity_id = str(uuid.uuid4())
+    entity_id = str(_fresh_id())
     backend.upsert("clock_rows", {"id": entity_id, **values})
     row = backend.select_by_id("clock_rows", entity_id)
     assert row is not None
@@ -120,17 +129,18 @@ class TestRoundTrip:
         assert row["zoned"].utcoffset() == zone.utcoffset(None)
 
     @pytest.mark.parametrize(
-        "value",
-        [time(6, 15), time(6, 15, tzinfo=ZoneInfo("Europe/Dublin"))],
+        "zone_name",
+        [None, "Europe/Dublin"],
         ids=["naive", "zoneinfo"],
     )
     def test_zoned_time_without_a_fixed_offset_is_refused(
-        self, make_backend: Callable[[MetaData], Any], value: time
+        self, make_backend: Callable[[MetaData], Any], zone_name: str | None
     ) -> None:
         """asyncpg refuses these for ``timetz`` before L3 writes them; the cache refuses them too."""
+        value = time(6, 15, tzinfo=None if zone_name is None else ZoneInfo(zone_name))
         backend = make_backend(_metadata())
         with pytest.raises(ValueError, match="no fixed UTC offset"):
-            backend.upsert("clock_rows", {"id": str(uuid.uuid4()), "zoned": value})
+            backend.upsert("clock_rows", {"id": str(_fresh_id()), "zoned": value})
 
     def test_stored_forms_are_iso_text(self, make_backend: Callable[[MetaData], Any]) -> None:
         """the backend writes the text itself, never leaving a date or time to a driver's adapter."""

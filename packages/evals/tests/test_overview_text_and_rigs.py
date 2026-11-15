@@ -24,7 +24,7 @@ from threetears.evals.actions.analyst_facts import SnapshotParams
 from threetears.evals.actions.render import page_sizing, page_unit, render_cited, render_page
 from threetears.evals.analysis.analyst.facts import OVERVIEW_LIMIT, CampaignOverview, campaign_overview
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.ops.analyst import sized_page
 from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID, EvalResult, EvalRun, RoleUsage
 

@@ -1,7 +1,8 @@
 """A completion client whose calls count in the run's cost cap, one call at a time, through one cell's sink.
 
 A cell's paid calls are what a run's cost cap counts, once the cell's result is recorded; the cap is read
-between cells and refuses no call inside one. :class:`CappedCompletion` reports a cell's spend as it goes,
+between cells and refuses no call made through this. (The engine's own judging is admitted against the cap before a
+cell's judge phase, apart from this wrapper.) :class:`CappedCompletion` reports a cell's spend as it goes,
 for a completion client, written once: when each call returns it adds what the call cost to the cell's sink
 (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`).
 
@@ -41,6 +42,7 @@ __all__ = [
     "prompt_token_bound",
     "refresh_prices",
     "turn_prompt_token_bound",
+    "unpriced_because",
 ]
 
 #: The tokens :func:`prompt_token_bound` allows for a prompt's framing beyond its text (role markers, a schema's
@@ -149,6 +151,30 @@ async def refresh_prices(client: object) -> None:
     refresh = getattr(client, "refresh_prices", None)
     if callable(refresh):
         await refresh()
+
+
+def unpriced_because(client: object) -> str:
+    """Why ``client`` gives no price ceiling for a call: its own words when it offers them, else what the engine saw.
+
+    Read beside :func:`call_ceiling` when it answers ``None``, by whoever refuses or discloses the unpriced call. A
+    client that says why offers ``price_ceiling_refusal()`` (the shipped ``Model`` does: a catalogue that could not be
+    read, a model no row prices); one that does not is named, with what it did.
+
+    :param client: The client a call will be made on, whose ceiling was ``None``.
+    :ptype client: object
+    :return: Why there is no ceiling, in a clause a refusal quotes.
+    :rtype: str
+    """
+    name = getattr(client, "model_name", None)
+    model = f"{name!r}" if isinstance(name, str) else "the model"
+    if not isinstance(client, _PricesItsCalls):
+        return f"the host's client for {model} has no price_ceiling, so it bounds no call"
+    explain = getattr(client, "price_ceiling_refusal", None)
+    if callable(explain):
+        why = explain()
+        if isinstance(why, str) and why.strip():
+            return why
+    return f"the host's client for {model} answered no price ceiling and gave no reason"
 
 
 def call_ceiling(

@@ -63,7 +63,7 @@ from threetears.evals.analysis.quantities import MONEY, is_money
 from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn, bare_columns
 from threetears.evals.analysis.report.charts import OPEN_ABOVE
 from threetears.evals.analysis.report.cost_unit import MoneyRuler
-from threetears.evals.analysis.report.forms import ColumnMoney
+from threetears.evals.analysis.report.number_forms.printed import ColumnMoney
 from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
     Drawn,
@@ -79,7 +79,8 @@ from threetears.evals.analysis.report.parts.charting import (
     stat_interval,
     stat_value,
 )
-from threetears.evals.analysis.report.figure_keys import cost_basis, held_means, figure_unit
+from threetears.evals.analysis.report.keys.reads import cost_basis, held_means
+from threetears.evals.analysis.report.keys.resolve import figure_unit
 from threetears.evals.analysis.report.parts.look import Quantity, in_change_form, quantity, quantity_of
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.resolve_changes import compare_basis, lever_label, narrow_notes
@@ -105,7 +106,7 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Task,
 )
-from threetears.evals.analysis.report_rows import PriceStep, lever_arms
+from threetears.evals.analysis.report.rows import PriceStep, lever_arms
 from threetears.evals.analysis.report.parts.words import (
     PRICE_STEP_TEMPLATE,
     CELL_TEMPLATE,
@@ -688,7 +689,7 @@ def _with_intervals(
         own = f"{column.key}{_INTERVAL_COLUMN}"
         if any(row[column.key].low is not None or own in row for row in rows if column.key in row):
             key = f"{column.key}{_INTERVAL_COLUMN}"
-            laid.append(TableColumn(key=key, header=INTERVAL_HEADER.format(level=level).strip().capitalize()))
+            laid.append(TableColumn(key=key, header=label_case(INTERVAL_HEADER.format(level=level).strip())))
             spelled.append(column.key)
     filled = [
         {

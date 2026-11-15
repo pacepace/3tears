@@ -1,7 +1,7 @@
 """The confound scan: what was not held fixed across a cohort, and why each one matters.
 
-:func:`_uncontrolled_dimensions` names every swept lever, resolved surface and apparatus or world dimension that
-varied inside a cohort, and :func:`_confound_catalog` collects the reason for every confound dimension the bundle
+:func:`uncontrolled_dimensions` names every swept lever, resolved surface and apparatus or world dimension that
+varied inside a cohort, and :func:`confound_catalog` collects the reason for every confound dimension the bundle
 names, once. The reason sentences are kept here beside the scan that states them.
 """
 
@@ -11,8 +11,8 @@ from collections.abc import Collection
 
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.analysis.bundle.schema import (
-    _OBSERVED_MECHANISMS,
-    _SERVED_MODEL_CONFOUNDS,
+    OBSERVED_MECHANISMS,
+    SERVED_MODEL_CONFOUNDS,
     AnalysisContextBundle,
     Confound,
     OBSERVED_MECHANISM_PREFIX,
@@ -20,7 +20,7 @@ from threetears.evals.analysis.bundle.schema import (
     UNVERIFIED_FOLD_PREFIX,
 )
 from threetears.evals.analysis.bundle.design import (
-    _SurfaceFolds,
+    SurfaceFolds,
     world_dimension_key,
 )
 
@@ -130,13 +130,13 @@ def _apparatus_confound_reasons(profile: HostProfile) -> dict[str, str]:
     return reasons
 
 
-def _uncontrolled_dimensions(
+def uncontrolled_dimensions(
     lever: str,
     cohort_run_ids: list[str],
     lever_levels: dict[str, dict[str, list[str]]],
     apparatus_levels: dict[str, dict[str, str | None]],
     *,
-    folds: _SurfaceFolds,
+    folds: SurfaceFolds,
     profile: HostProfile,
 ) -> list[Confound]:
     """Name everything that was not held fixed across a cohort, and why each one matters.
@@ -164,15 +164,15 @@ def _uncontrolled_dimensions(
     :ptype cohort_run_ids: list[str]
     :param lever_levels: The full lever → level → run-ids map.
     :ptype lever_levels: dict[str, dict[str, list[str]]]
-    :param apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+    :param apparatus_levels: Dimension → run id → level key, from :func:`read_apparatus_levels`.
     :ptype apparatus_levels: dict[str, dict[str, str | None]]
-    :param folds: The campaign's :class:`_SurfaceFolds`. A resolved surface that varied only because
+    :param folds: The campaign's :class:`SurfaceFolds`. A resolved surface that varied only because
         its swept members did is the lever under comparison (or its sibling members) seen a
         second time, so it is not named — and likewise a surface a fixed knob is written into,
         where it held one level within each of the knob's. One whose residual or surface could
         not be read is named as ``undecided``, because whether anything besides the swept knob
         moved is exactly what no run recorded.
-    :ptype folds: _SurfaceFolds
+    :ptype folds: SurfaceFolds
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: The swept levers that varied within the cohort (sorted), then the apparatus
@@ -197,10 +197,10 @@ def _uncontrolled_dimensions(
                 confounds.append(Confound(dimension=other, kind="swept_lever", status="undecided"))
                 continue
         confounds.append(Confound(dimension=other, kind="swept_lever"))
-    return confounds + _apparatus_confounds(cohort_run_ids, apparatus_levels, profile=profile)
+    return confounds + apparatus_confounds(cohort_run_ids, apparatus_levels, profile=profile)
 
 
-def _apparatus_confounds(
+def apparatus_confounds(
     cohort_run_ids: Collection[str],
     apparatus_levels: dict[str, dict[str, str | None]],
     *,
@@ -216,7 +216,7 @@ def _apparatus_confounds(
 
     :param cohort_run_ids: The runs under comparison.
     :ptype cohort_run_ids: Collection[str]
-    :param apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+    :param apparatus_levels: Dimension → run id → level key, from :func:`read_apparatus_levels`.
     :ptype apparatus_levels: dict[str, dict[str, str | None]]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
@@ -245,7 +245,7 @@ def _apparatus_confounds(
     return confounds
 
 
-def _confound_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) -> dict[str, str]:
+def confound_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) -> dict[str, str]:
     """Collect the reason for every confound dimension appearing anywhere in the bundle.
 
     The reason belongs in the payload — a name a reader cannot judge is a label — but it
@@ -314,9 +314,9 @@ def _confound_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) ->
         elif confound.kind == "unverified_fold":
             reason = unverified_reasons[confound.dimension]
         elif confound.kind == "observed_mechanism":
-            reason = _OBSERVED_MECHANISMS[confound.dimension.removeprefix(OBSERVED_MECHANISM_PREFIX)].reason
+            reason = OBSERVED_MECHANISMS[confound.dimension.removeprefix(OBSERVED_MECHANISM_PREFIX)].reason
         elif confound.kind == "served_model":
-            reason = _SERVED_MODEL_CONFOUNDS
+            reason = SERVED_MODEL_CONFOUNDS
         else:
             reason = surface_reasons.get(confound.dimension, _SWEPT_LEVER_CONFOUNDS)
         catalog[confound.dimension] = (
@@ -325,4 +325,8 @@ def _confound_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) ->
     return catalog
 
 
-__all__: list[str] = []
+__all__ = [
+    "apparatus_confounds",
+    "confound_catalog",
+    "uncontrolled_dimensions",
+]

@@ -68,7 +68,7 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
-from threetears.evals.analysis.report.figure_keys import arm_settings, lever_of
+from threetears.evals.analysis.report.keys.levers import arm_settings, lever_of
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import Judged, Measure, ReportInput, SettingValue
 from threetears.evals.kernel.errors import RefusedInput

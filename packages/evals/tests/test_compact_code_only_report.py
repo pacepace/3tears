@@ -21,7 +21,7 @@ from threetears.evals.analysis import (
     inspect_campaign_bundle,
     report_markdown,
 )
-from threetears.evals.analysis.report.forms import policy_places
+from threetears.evals.analysis.report.number_forms.policy import policy_places
 from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.metrics import classifier_label_of

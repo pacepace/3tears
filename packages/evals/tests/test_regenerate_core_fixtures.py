@@ -22,6 +22,10 @@ def test_a_corpus_a_tagged_tree_holds_is_refused_by_name() -> None:
     assert refusal is not None
     assert "v0.66.0-evaladopt.22 shipped" in refusal and "core_documents/v14/" in refusal
     assert "v15/" in refusal and "CORE_SCHEMA_VERSION and CORE_BASELINE_VERSION to 15" in refusal
+    # A minor comes first: re-pinned by hand with no fixture, so an additive change never resets the baseline.
+    assert refusal.index("is a MINOR and needs no fixture") < refusal.index("Only a major rebuilds the fixtures")
+    assert "re-pin CORE_SHAPE_DIGESTS and PINNED_CORE_SCHEMA_MINOR in tests/test_core_schema_pins.py by hand" in refusal
+    assert "deletes every stored v14 core document" in refusal
 
 
 def test_a_release_that_shipped_no_corpus_lets_it_be_written() -> None:

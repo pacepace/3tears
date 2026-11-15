@@ -632,12 +632,19 @@ def test_a_listing_puts_each_frozen_bundle_back_together_once_and_a_declared_wri
         built.append(held.id)
         return analysis_campaign_bundle(held)
 
+    holding = host.storage.declared_campaigns_holding
+
     def counted_list(*args: Any, **kwargs: Any) -> Any:
         listed.append("listed")
         return list_campaigns(*args, **kwargs)
 
+    def counted_holding(*args: Any, **kwargs: Any) -> Any:
+        listed.append("holding")
+        return holding(*args, **kwargs)
+
     monkeypatch.setattr(ops_analysis, "analysis_campaign_bundle", counted_bundle)
     monkeypatch.setattr(ops_analysis, "list_campaigns", counted_list)
+    monkeypatch.setattr(host.storage, "declared_campaigns_holding", counted_holding)
 
     campaigns_list(host, TOYHOST_SCOPE)
     assert built == [analysis.id], "one bundle per analysis, whatever the line reads off it"

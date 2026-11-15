@@ -543,18 +543,21 @@ on 0–1 (a pass rate, an accuracy, a precision, a pass/fail grader or judged di
 change in it in points. Each measure reads at one precision on every page of its campaign, the written page, the code
 page and each aspect page alike, so one value reads the same in a table, a chart, a tooltip, the prose and the CLI.
 
-- **The digits come from the measure's uncertainty**: the first significant digit of the narrowest 95% half-width
-  among the figures a reader compares (each arm's level and each comparison's change), or the second when that digit
-  is a 1 or a 2. A pooled figure, such as a code page's campaign-wide pass rate, prints at that form and never sets
-  it. A pass rate over a few hundred cases reads whole (`85%`, `-8 pts`); a check near the ceiling, whose interval
-  is narrow, reads a decimal (`99.7%`).
+- **The digits come from the measure's uncertainty**: two significant figures of the width of the narrowest 95%
+  interval among the figures a reader compares (each arm's level and each comparison's change). The precision is
+  set once per measure by that narrowest interval, and every figure of the measure reads at it, a change whose own
+  interval is wider too. A pooled figure, such as a code page's campaign-wide pass
+  rate, prints at that form and never sets it. A pass rate whose narrowest interval is 11 points or wider reads
+  whole (`21%`, `-7 pts`); one whose narrowest is 7 points reads a tenth (`85.3%`), as does a check near the ceiling
+  (`99.7%`).
 - **A rate, or a change in points, never goes past one decimal**, except where an end would round onto zero, 0% or
   100%: it takes just enough digits to stay off it, so `99.7%` never reads `100%`, and an interval that excludes zero
   never reads as touching it (`-15 to -0.03 pts`). A judge's preference share keeps off even, 50%, the same way.
 - **An interval reads `low to high`**, its unit once (`-13 to -2 pts`), a change's ends signed.
 - **A heading states what a family's intervals hold at together**: a chart's `95% intervals (adjusted for 16
   comparisons)`, a column's `95% interval (adjusted for 16 comparisons)`, plain `95%` where nothing is adjusted.
-  Each interval's own level (99.69%) is in Method and the glossary, and the key `{family.level}` cites it.
+  Each interval's own level (99.69%) is in Method and the glossary, and the key `{family.level}` cites it. A
+  level printed as text reads its distance from 100% to two significant figures (`99.69%`, `98.3%` for 98.33%).
 - **Figures that are not measurements keep fixed forms**: a count whole (`765 of 897`), a declared margin as declared
   (`-15 pts`), a criterion's gap or the weakest margin as a bare distance (signed only by `|signed`), a p-value as
   APA writes it (`< 0.001`, `0.005`, `0.50`), an effect size or correlation to two decimals (`0.08`), an exact zero
@@ -688,14 +691,22 @@ its stop records, never from prose:
 
 Read it left to right. *40 of 40 at the stop* is what the recorded cells had landed against the ceiling when the run
 decided to start no new cell. *47 once 3 running cells finished (+7)* is where it ended: those cells were running at
-the stop, were refused nothing, and finished whole, so the run lands past a ceiling by up to the width's worth of
-cells and that overshoot is the design. *12 cells not started* is the part of the matrix never measured. Money reads
-as `$` (`stopped by its cost cap: $10.20 of $10.00 at the stop, $12.35 once 1 running cell finished (+$2.35); ...`).
+the stop, their candidates were refused nothing, and they finished, so the run lands past a ceiling by what they
+added. *12 cells not started* is the part of the matrix never measured. Money reads as `$` (`stopped by its cost cap:
+$10.20 of $10.00 at the stop, $10.35 once 1 running cell finished (+$0.15); ...`). The cost cap also admits each
+cell's judging on its price ceiling before paying for it, so judging stays within the cap wherever that ceiling
+bounds the bill; a cell whose judging did not fit is
+set aside, and the line ends *2 cells not judged, as the cap had too little left for their judging*. Those cells are
+left out of the judged readings, never scored low, and counted in every other reading as what they did; a re-judge
+takes them up, and a report's lost-trial table counts them under *cost cap*. A cap that stopped a run this way can read
+under its ceiling: the stop came before the cap was reached.
 A run both ceilings stopped at one boundary reads both. The figures are `EvalRun.budget_stops`; a run stopped by its
 wall-clock budget has none and gives its reason instead.
 
-Every cell that ran is whole: a ceiling refuses no call inside a cell, so no cell's score was taken on a world it
-could not fully reach because of the budget, and two identical runs never differ in which cell was cut. The one
+Every cell that ran is whole: a ceiling refuses no call a candidate or a simulated user makes inside a cell, so no
+cell's score was taken on a world it could not fully reach because of the budget, and two identical runs never differ
+in which cell's candidate was cut. Only a cell's judging is admitted against the cost cap, and a cell it sets aside is
+counted under *cost cap*, never scored. The one
 refusal left is a host that declared no metered tools; a non-zero `metered_calls_refused` means that declaration is
 wrong, not that the run ran out.
 

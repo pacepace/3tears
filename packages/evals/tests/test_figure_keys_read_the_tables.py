@@ -20,7 +20,7 @@ from threetears.evals.analysis.report.blocks import TableBlock
 from threetears.evals.analysis.report.figure_keys import Figure, format_figure, resolve
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.full_results import every_table
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import Measure, ReportInput
 
 from packages.evals.tests.report_doc_support import snapshot_of
@@ -96,7 +96,7 @@ def test_a_contrast_key_reads_its_change_and_interval_as_the_comparisons_table(k
 def test_a_measure_key_reads_its_mean_as_the_arms_by_measure_table(kairo: ReportInput) -> None:
     figure = resolve("measure.failed_reply_notices.September.mean", kairo)
     tabled = _cell(_table(kairo, "arms_by_measure"), "measure:failed_reply_notices", arm="September")
-    assert format_figure(figure, forms=PageForms.of(kairo)) == tabled == "0.002 notices"
+    assert format_figure(figure, forms=PageForms.of(kairo)) == tabled == "0.0022 notices"
     assert PageForms.of(kairo).level("failed_reply_notices", _level(figure)).text == tabled
 
 
