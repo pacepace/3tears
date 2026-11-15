@@ -242,18 +242,19 @@ class TestFireStoreWrites:
 
     async def test_reap_stale_dispatching_updates_old_dispatching_rows(self) -> None:
         # two reclaimed rows come back from RETURNING -> count == 2
-        pool = _RecordingPool(fetch_rows=[{"partition_key": uuid4(), "fire_id": uuid4()} for _ in range(2)])
+        pool = _RecordingPool(written=[{"partition_key": uuid4(), "fire_id": uuid4()} for _ in range(2)])
         coll = _make_fire_collection(pool)
         now = _now()
         reaped = await coll.reap_stale_dispatching(now, older_than=timedelta(seconds=900), kinds=("safety_commit",))
         assert reaped == 2
         sql, args = pool.calls[-1]
-        assert "UPDATE job_fires SET status = 'failed'" in sql
-        assert "status = 'dispatching'" in sql
-        assert "actual_fired_at < $2" in sql
-        # the reaper marker error + the computed cutoff are bound
-        assert args[0] == REAPED_DISPATCH_ERROR
-        assert args[1] == now - timedelta(seconds=900)
+        assert sql.startswith('UPDATE "job_fires" SET "status" = $1, "error" = $2')
+        # the in-flight index's own literal, so a generic plan can prove its predicate
+        assert "\"status\" = 'dispatching'" in sql
+        assert '"actual_fired_at" < $3' in sql
+        assert "j.kind = ANY($4::text[])" in sql
+        # the terminal status, the reaper marker error, the computed cutoff and the kinds are bound
+        assert args == ("failed", REAPED_DISPATCH_ERROR, now - timedelta(seconds=900), ["safety_commit"])
 
     async def test_reap_fires_fails_only_the_named_fires_still_dispatching(self) -> None:
         named = [uuid4(), uuid4()]
@@ -262,8 +263,9 @@ class TestFireStoreWrites:
         assert await coll.reap_fires(named) == [named[0]]
         sql, args = pool.calls[-1]
         assert sql.startswith('UPDATE "job_fires" SET "status" = $1, "error" = $2')
-        assert 'WHERE "status" = $3 AND "fire_id" = ANY($4::uuid[])' in sql
-        assert args == ("failed", REAPED_DISPATCH_ERROR, "dispatching", named)
+        # the in-flight index's own literal (a declared partial predicate), so a generic plan can prove it
+        assert 'WHERE "status" = \'dispatching\' AND "fire_id" = ANY($3::uuid[])' in sql
+        assert args == ("failed", REAPED_DISPATCH_ERROR, named)
 
     async def test_reap_fires_with_nothing_named_touches_nothing(self) -> None:
         pool = _RecordingPool(fetch_rows=[{"partition_key": uuid4(), "fire_id": uuid4()}])

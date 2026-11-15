@@ -205,7 +205,7 @@ async def update_from(
         write); TRUSTED identifiers, the same names in the source. ``["rowid"]`` on DuckDB joins on the row itself
         (the source selects ``t.rowid AS rowid`` of the same table: a window computed over a state's rows)
     :ptype key: Sequence[str]
-    :param source: the derived select (no parameters of its own), or a relational step with its parameters
+    :param source: the derived select or a relational step, each with its parameters (bound first)
         (:func:`~threetears.core.keyed.scan`, :func:`~threetears.core.keyed.windowed`)
     :ptype source: Derived | Step
     :param columns: the columns set from the source's columns of the same name
@@ -223,7 +223,7 @@ async def update_from(
     target = quoted_table(table)
     assignments = ", ".join(f"{quote_identifier(column)} = s.{quote_identifier(column)}" for column in columns)
     joined = [f"{target}.{quote_identifier(column)} = s.{quote_identifier(column)}" for column in key]
-    stepped = list(source.params) if isinstance(source, Step) else []
+    stepped = list(source.params)
     pinned, params = by_conditions(by or {}, first=len(stepped) + 1, alias=target)
     clause = " AND ".join([*joined, *pinned])
     selected = ", ".join(f"{target}.{quote_identifier(column)}" for column in returning)

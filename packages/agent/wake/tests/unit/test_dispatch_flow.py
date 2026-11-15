@@ -465,8 +465,8 @@ class TestRateLimitWiring:
                 target_conversation_id=trigger.conversation_id,
             ),
         )
-        # per-conv under cap (returns 0), per-user at cap (returns 1)
-        pool = _RateLimitStubPool([0, 1])
+        # per-conv under cap (returns 0), per-user at cap (its wakes' 1, its subscriptions' 0)
+        pool = _RateLimitStubPool([0, 1, 0])
         result = await dispatch_wake(
             trigger,
             _new_uuid(),
@@ -478,8 +478,8 @@ class TestRateLimitWiring:
         assert result.error is not None
         assert "user" in result.error
         assert handler.invocations == []
-        # both fetchval calls ran
-        assert len(pool.calls) == 2
+        # every count ran: the conversation's, then the user's two halves
+        assert len(pool.calls) == 3
         if available:
             after = _read_rate_limit_counter("user")
             assert after == before + 1.0

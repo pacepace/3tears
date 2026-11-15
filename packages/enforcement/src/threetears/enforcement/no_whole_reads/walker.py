@@ -39,6 +39,7 @@ The walk can miss SQL assembled at run time from pieces it cannot see; it never 
 from __future__ import annotations
 
 import ast
+from copy import deepcopy
 import itertools
 import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -4148,12 +4149,74 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: list[HelperStatement]
         """
         statements = list(helper_statements(call))
+        if any(statement.sql is UNSEEN for statement in statements):
+            rendered, texts = self._rendered_calls(call)
+            if rendered:
+                # each rendered instance is judged where its template is written (once per entry, under the
+                # template's own purposes): here only the helper's read over it is
+                return [
+                    statement
+                    for each in rendered
+                    for statement in helper_statements(each)
+                    if statement.sql not in texts
+                ]
         if self._schema.templates.get(self.path) is None or not any(
             statement.sql is UNSEEN and statement.unseen in {"table", "relation"} for statement in statements
         ):
             return statements
         named = templated(call)
         return statements if named is None else list(helper_statements(named))
+
+    def _rendered_calls(self, call: ast.Call) -> tuple[list[ast.Call], set[str]]:
+        """the keyed helper call with each ``Derived(<renderer>(<template>, "<table>", ...), ...)`` it reads holding the
+        text the module's declared renderer answers for it: that template's instance for that entry of the map
+        (:meth:`.sentinels.SentinelTemplates.instance_for`). A derived relation the module renders from a declared template
+        over a closed map is that template, filled from the map, so the call is judged over it (and it on its own, as a
+        written derived relation is, where its template is). None when the module declares no renderer, the call reads
+        no such ``Derived``, or a renderer call does not name a declared template and an entry of the map as literals:
+        a ``Derived`` over any other run-time text stays unseen.
+
+        WHY a declared renderer and not any call (2026-11-15, hub use-the-helper): the hub broker's knowledge
+        readiness counts read THROUGH its anchored shadow, the template the injector fills, as the relation counted.
+        A ``Derived`` whose text is an arbitrary run-time string could read anything; one whose text is the declaring
+        module's own renderer of a named declared template for a named entry reads exactly that instance, which the
+        walk judges where the template is written.
+
+        :param call: the helper call, its arguments resolved
+        :ptype call: ast.Call
+        :return: the call reading the rendered texts, or none; and those texts
+        :rtype: tuple[list[ast.Call], set[str]]
+        """
+        sentinels = self._sentinels
+        if sentinels is None or sentinels.renderer is None:
+            return [], set()
+
+        def instance_of(node: ast.AST) -> str | None:
+            if not (isinstance(node, ast.Call) and _final(node) == "Derived"):
+                return None
+            sql = next((given.value for given in node.keywords if given.arg == "sql"), None)
+            sql = sql if sql is not None else (node.args[0] if node.args else None)
+            if not (
+                isinstance(sql, ast.Call)
+                and isinstance(sql.func, ast.Name)
+                and sql.func.id == sentinels.renderer
+                and len(sql.args) >= 2
+                and isinstance(sql.args[0], ast.Name)
+                and isinstance(sql.args[1], ast.Constant)
+                and isinstance(sql.args[1].value, str)
+            ):
+                return None
+            return sentinels.instance_for(sql.args[0].id, sql.args[1].value)
+
+        copied = deepcopy(call)
+        texts: set[str] = set()
+        for node in ast.walk(copied):
+            text = instance_of(node)
+            if text is not None:
+                assert isinstance(node, ast.Call)
+                node.args, node.keywords = [ast.Constant(text)], []
+                texts.add(text)
+        return ([copied], texts) if texts else ([], set())
 
     def _pager_order(self, call: ast.Call) -> PagerOrder | None:
         """what a keyset pager call steps past (:func:`~threetears.enforcement.no_whole_reads.helpers.pager_order`),
@@ -8532,7 +8595,11 @@ def scan_whole_reads(
     )
     match_builders = _match_builders([(relative, trees[relative]) for relative, _ in modules], strings)
     never_none = _never_none_parameters([(relative, trees[relative]) for relative, _ in modules])
-    sentinel_templates = declared_templates([(relative, trees[relative]) for relative, _ in modules], strings)
+    sentinel_templates = declared_templates(
+        [(relative, trees[relative]) for relative, _ in modules],
+        strings,
+        lambda node, env: _string_text(node, dict(env)),
+    )
     key_sources = declared_key_sources(trees.values())
     sort_orders = {relative: _sort_orders(trees[relative]) for relative, _ in modules}
     walked: list[tuple[str, Path]] = []

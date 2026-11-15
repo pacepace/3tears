@@ -545,12 +545,18 @@ def _read_nearest(call: ast.Call) -> list[str]:
     ordered by the distance from a bound vector under its ``LIMIT``, as an approximate-nearest-neighbour index on the
     column answers it. A ``nearest=`` the walk cannot read (not a literal ``Nearest(...)`` or ``TextRank(...)``) is
     judged by its pins alone, unordered, as the read pinning them. A ``TextRank(...)`` orders by the rank of a text
-    query, best first, then by its ``then=`` terms, which no index serves: the read is judged by its pins under that
-    order. Its ``joins=``, each
-    joined table's keyed batch, as :func:`_read_by_joined` judges them."""
+    query, best first, which no index serves: the read is judged by its pins under that order; a ``PatternCount(...)``
+    by how many of its bound patterns a row matches, best first, likewise. Either's ``then=`` (:func:`_then_order`)
+    orders the rows tied on the rank after it. Its ``joins=``, each joined table's keyed
+    batch, as :func:`_read_by_joined` judges them (a pattern count's ``LEFT`` joins, inside its one statement, read
+    each joined table by the columns it is joined on, as a batch of them does)."""
     (statement, *own) = _read_by(call)
     joins = _joined_statements(call) if _argument(call, "joins", None) is not None else []
     node = _argument(call, "nearest", None)
+    if isinstance(node, ast.Call) and _name(node) == "PatternCount":
+        place = 1 + max((int(found) for found in re.findall(r"\$(\d+)", statement)), default=0)
+        ties = _then_order(_argument(node, "then", 3))
+        return [f"{statement} ORDER BY pattern_count(${place}) DESC{ties} LIMIT ${place + 1}", *own, *joins]
     if not (isinstance(node, ast.Call) and _name(node) in {"Nearest", "TextRank"}):
         return [statement, *own, *joins]
     column = _text(_argument(node, "column", 0), "nearest")
@@ -559,13 +565,30 @@ def _read_nearest(call: ast.Call) -> list[str]:
         config = _argument(node, "config", 3)
         language = config.value if isinstance(config, ast.Constant) and isinstance(config.value, str) else "english"
         rank = f"ts_rank_cd({_quoted(column)}, websearch_to_tsquery('{language}', ${place}))"
-        # ties on the rank in its ``then=`` order, as the helper sends them; one the walk cannot read is left out
-        ties = _written_order(_argument(node, "then", 4)).removeprefix(" ORDER BY ")
-        ties = f", {ties}" if ties else ""
+        ties = _then_order(_argument(node, "then", 4))
         return [f"{statement} ORDER BY {rank} DESC{ties} LIMIT ${place + 1}", *own, *joins]
     operator = _argument(node, "operator", 2)
     distance = operator.value if isinstance(operator, ast.Constant) and isinstance(operator.value, str) else "<=>"
     return [f"{statement} ORDER BY {_quoted(column)} {distance} ${place} LIMIT ${place + 1}", *own, *joins]
+
+
+def _then_order(node: ast.expr | None) -> str:
+    """``, <terms>`` for a rank's ``then=`` (``TextRank``'s or ``PatternCount``'s), as the helper orders the rows tied
+    on the rank (``threetears.interfaces.keyed.point.then_terms``): a column named as text, ascending; a ``Sort``, as
+    an ``order=`` term. ``""`` for none, or one the walk cannot read (a name bound elsewhere): the rank order alone
+    judges the read, as before."""
+    if not isinstance(node, ast.Tuple | ast.List) or not node.elts:
+        return ""
+    terms = []
+    for element in node.elts:
+        if isinstance(element, ast.Constant) and isinstance(element.value, str):
+            terms.append(_quoted(element.value))
+            continue
+        written = _written_order(ast.Tuple(elts=[element], ctx=ast.Load())).removeprefix(" ORDER BY ")
+        if not written:
+            return ""
+        terms.append(written)
+    return f", {', '.join(terms)}"
 
 
 def _written_order(node: ast.expr | None) -> str:
@@ -877,11 +900,44 @@ def _keyed_relation(node: ast.expr | None, argument: str, *, by_key: bool) -> tu
     return _relation(node, argument)
 
 
+#: a derived relation that is one table's rows under one filter, as written: ``(SELECT * FROM <table> WHERE <c>)``
+_FILTERED_TABLE: Final[re.Pattern[str]] = re.compile(r"\(SELECT \* FROM ([\w\".]+) WHERE (.+)\)", re.DOTALL)
+
+#: words that make a derived relation more than one table's filtered rows (a join, a grouping, a cut, a set operation)
+_NOT_FILTERED: Final[re.Pattern[str]] = re.compile(
+    r"\b(JOIN|GROUP|HAVING|LIMIT|OFFSET|UNION|EXCEPT|INTERSECT|DISTINCT|ORDER|WINDOW|OVER)\b|\bFROM\b.*\bFROM\b|,",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _pulled_up(relation: str) -> tuple[str, list[str]]:
+    """a derived relation that is one table's rows under one filter (``(SELECT * FROM t WHERE c)``) as the planner
+    reads it: the table, its filter ANDed into the reading statement's (PostgreSQL pulls such a subquery up), so the
+    read is judged against the table's keys and indexes with every condition it states -- a partial index's predicate
+    the outer read names included. Anything else stays the derived relation it is, with no condition of its own.
+
+    WHY (2026-11-15, hub use-the-helper): the broker's readiness counts read each knowledge table through its anchored
+    shadow (``(SELECT * FROM playbook_entries WHERE <clamp> AND datasource_id = ANY($a))``) and count its
+    ``status = 'active'`` rows by ``datasource_id``: one read of ``playbook_entries_active_by_datasource`` (v172) once
+    pulled up, which the derived relation alone hid (the index's purpose read "unused").
+    """
+    matched = _FILTERED_TABLE.fullmatch(relation.strip())
+    if (
+        matched is None
+        or _NOT_FILTERED.search(matched.group(2))
+        or matched.group(2).count("(") != matched.group(2).count(")")
+    ):
+        return relation, []
+    return matched.group(1), [f"({matched.group(2)})"]
+
+
 def _count_of(relation: str, column: str, call: ast.Call, *, values: bool, own: ast.expr | None = None) -> str:
     """a grouped count's statement; ``column`` as the statement spells it (quoted, or a run-time interpolation);
-    ``own``: the relation's own pins (``counts_by_relations``' ``pins=`` for its label), ANDed after the rest."""
+    ``own``: the relation's own pins (``counts_by_relations``' ``pins=`` for its label), ANDed after the rest; a
+    derived relation of one table's filtered rows read pulled up (:func:`_pulled_up`)."""
+    relation, inner = _pulled_up(relation)
     pinned, place = _conditions(_by(_argument(call, "by", None)))
-    conditions = [*pinned]
+    conditions = [*inner, *pinned]
     if values:
         conditions.append(f"{column} = ANY(${place})")
         place += 1

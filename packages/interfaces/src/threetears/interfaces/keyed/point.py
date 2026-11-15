@@ -42,6 +42,7 @@ __all__ = [
     "read_nearest_statement",
     "read_row_beside_statement",
     "read_row_statement",
+    "then_terms",
 ]
 
 
@@ -117,7 +118,7 @@ def _sql(
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
     selected, conditions, tail, params = _clauses(table, by, columns, limit, lock, where, order, also)
-    return f"SELECT {selected} FROM {relation(table, 't')} WHERE {conditions}{tail}", params
+    return f"SELECT {selected} FROM {relation(table, 't', params)} WHERE {conditions}{tail}", params
 
 
 def _beside_sql(
@@ -137,7 +138,7 @@ def _beside_sql(
     """
     selected, conditions, tail, params = _clauses(table, by, columns, True, lock, where)
     return (
-        f"SELECT {selected} FROM {relation(beside, 'b')} CROSS JOIN {relation(table, 't')} WHERE {conditions}{tail}",
+        f"SELECT {selected} FROM {relation(beside, 'b', params)} CROSS JOIN {relation(table, 't', params)} WHERE {conditions}{tail}",
         params,
     )
 
@@ -330,18 +331,18 @@ class TextRank:
     :ptype rank: str
     :param config: the text search configuration, a TRUSTED identifier
     :ptype config: str
-    :param then: the sort rows tied on the rank come in, after it (``Sort("last_used_at", descending=True,
-        nullable=True)``, ...), ending in the key so the order is total: a hand-written ``ORDER BY fts_rank DESC,
-        <then>``. None (the engine's order among ties) when empty. A ranked read with ``joins=`` orders its joined
-        rows by the rank alone
-    :ptype then: tuple[Sort, ...]
+    :param then: the order rows tied on the rank come in, after it (:func:`then_terms`: a column named as text,
+        ascending, or a :class:`Sort`, ``Sort("last_used_at", descending=True, nulls="last")``), ending in the key so
+        the order is total: a hand-written ``ORDER BY fts_rank DESC, <then>``; the engine's order among ties when
+        empty. A ranked read with ``joins=`` orders its joined rows by the rank alone
+    :ptype then: tuple[str | Sort, ...]
     """
 
     column: str
     text: Any
     rank: str = "fts_rank"
     config: str = "english"
-    then: tuple[Sort, ...] = ()
+    then: tuple[str | Sort, ...] = ()
 
     def distance(self, place: int) -> str:
         """the row ``t``'s rank against the query bound at ``$place``, the expression a ranked read orders by
@@ -353,6 +354,59 @@ class TextRank:
         :rtype: str
         """
         return f"ts_rank_cd(t.{quote_identifier(self.column)}, websearch_to_tsquery('{self.config}', ${place}))"
+
+
+@dataclass(frozen=True)
+class PatternCount:
+    """the rank a ranked read orders by, best first: how many of ``patterns`` the row matches, a pattern matched when
+    any of ``fields`` is ``ILIKE`` it; then ``then``, ascending. A row matching none is not read. The patterns are bound
+    as ONE array whatever their number (``$n::text[]``), counted a pattern a ``CASE`` over the array's element
+    (``CASE WHEN t."f1" ILIKE ($n::text[])[1] OR ... THEN 1 ELSE 0 END + ...``); the rows pass by
+    ``t."f1" ILIKE ANY($n::text[]) OR ...``. A field names a column of the row or a column a ``LEFT`` join of the
+    read adds (``threetears.core.keyed.read_nearest``'s ``joins=``, by the name it lands under), so a field the read's
+    table does not hold (a template's description) ranks the row too.
+
+    WHY (hub use-the-helper, 2026-11-15): the hub's schema search wrote one ``CASE WHEN <field> ILIKE $k ...`` a token
+    summed into ``match_score`` (``schema_endpoints._fetch_search_results``), its text growing with the tokens. Read a
+    token at a time through the keyed helpers it cost 1.15-1.87x the one statement on PostgreSQL and up to 3.27x on
+    YugabyteDB at real size (117,540 columns of 5,615 tables; scratchpad h2/search pg2.log, yb1.log), so the rank stays
+    one statement, written here, its pins judged as every keyed read's: 0.60-1.03x the hand-written statement on
+    PostgreSQL, 0.98-1.09x on YugabyteDB (scratchpad h3/search pg2.log, yb1.log; the cost of each shape at
+    ``threetears.core.keyed.point._pattern_count_statement``).
+
+    :param fields: the matched fields, TRUSTED identifiers: a column of the row, or a joined column's name
+    :ptype fields: tuple[str, ...]
+    :param patterns: the ``ILIKE`` patterns, as the caller wrote them (``%age%``); none reads no row
+    :ptype patterns: Sequence[str]
+    :param rank: the name each row carries its count under
+    :ptype rank: str
+    :param then: the order rows of the same count come in (:func:`then_terms`: a column of the row named as text,
+        ascending, or a :class:`Sort`), the key after the pins last, so the order is total; TRUSTED identifiers
+    :ptype then: tuple[str | Sort, ...]
+    """
+
+    fields: tuple[str, ...]
+    patterns: Sequence[str]
+    rank: str = "match_score"
+    then: tuple[str | Sort, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.fields:
+            raise ValueError("a pattern count names at least one field it matches")
+
+
+def then_terms(then: Sequence[str | Sort]) -> str:
+    """the ``ORDER BY`` terms a ranked read (a :class:`TextRank`'s, a :class:`PatternCount`'s) orders the rows tied on
+    its rank by, after the rank: ``, t."a", t."b" DESC NULLS LAST``; empty for none. One spelling for both ranks: a
+    column of the row named as text sorts ascending, a :class:`Sort` as a listing's ``order=`` term sorts.
+
+    :param then: the order, each a column of the row (TRUSTED) or a :class:`Sort`
+    :ptype then: Sequence[str | Sort]
+    :return: the terms, each after a comma
+    :rtype: str
+    """
+    terms = [f"t.{quote_identifier(term)}" if isinstance(term, str) else order_by_terms([term]) for term in then]
+    return "".join(f", {term}" for term in terms)
 
 
 def read_nearest_statement(
@@ -401,6 +455,8 @@ def read_nearest_statement(
         1
         + len(by_conditions(by, alias="t", stated=stated_literals(table))[1])
         + sum(len(fragment.params) for fragment in where)
+        # a derived relation's parameters, bound after the pins' and the filters' (:func:`relation`)
+        + (len(table.params) if isinstance(table, Derived) else 0)
     )
     distance = nearest.distance(place)
     if isinstance(nearest, TextRank):
@@ -408,8 +464,11 @@ def read_nearest_statement(
         # the ``then`` order (a listing's recency, its key last), as ``ORDER BY fts_rank DESC, <then>`` read them
         also = f"{distance} AS {quote_identifier(nearest.rank)}"
         sql, params = _sql(table, by, columns, limit=False, where=where, also=also)
-        ties = f", {order_by_terms(nearest.then)}" if nearest.then else ""
-        return f"{sql} ORDER BY {distance} DESC{ties} LIMIT ${place + 1}", [*params, nearest.text, limit]
+        return f"{sql} ORDER BY {distance} DESC{then_terms(nearest.then)} LIMIT ${place + 1}", [
+            *params,
+            nearest.text,
+            limit,
+        ]
     # WHY the read is wrapped (``SELECT ... FROM (<the read> LIMIT k) AS n ORDER BY distance``), measured 2026-11-14:
     # every vector reader pins an owner (agent_id + user_id). At a heavy owner the planner walks the HNSW index and then
     # filters it to the owner; pgvector's HNSW scan stops at ``hnsw.ef_search`` (40) candidates, so a small owner among a

@@ -156,7 +156,7 @@ async def read_after(
     params.append(after)
     selected = ", ".join(quote_identifier(column) for column in columns)
     sql = (
-        f"SELECT {selected} FROM {relation(table, 'r')} WHERE {' AND '.join(conditions)} "
+        f"SELECT {selected} FROM {relation(table, 'r', params)} WHERE {' AND '.join(conditions)} "
         f"ORDER BY {quote_identifier(id_column)} LIMIT {limit}"
     )
     rows = [dict(row) for row in await sent_by(conn).fetch(sql, *params)]

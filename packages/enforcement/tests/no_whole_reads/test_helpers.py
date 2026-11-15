@@ -778,6 +778,46 @@ def test_a_text_ranked_read_s_tie_order_is_in_the_statement_it_is_judged_as(sche
     assert _judged(keyed.replace('by={"state": s}', 'by={"kind": s}'), schema) == [[("non-key-where", "results")]]
 
 
+def test_a_count_over_one_table_s_filtered_rows_is_judged_pulled_up(schema: SchemaCatalog) -> None:
+    """Flips if a count over a derived relation that is one table's rows under one filter (``(SELECT * FROM t WHERE
+    c)``, the hub broker's anchored shadow) is not judged as the planner reads it, the filter ANDed into the count's
+    own conditions over the table (so a partial index the count's filter states is credited), or if a derived
+    relation holding more than that (a join, a grouping, a cut) is pulled up."""
+    call = (
+        'counts_by_relations(c, {"a": Derived("SELECT * FROM results WHERE state = $1")}, column="kind", '
+        "values=AnyOf(v), where=[Fragment(\"status = 'active'\")])"
+    )
+    (counted, inner) = (statement.sql for statement in helper_statements(_call(call)))
+    assert counted is not None and counted.startswith('SELECT "kind", count(*) FROM results AS r WHERE (state = $1)')
+    assert "status = 'active'" in counted, counted
+    assert inner == "SELECT * FROM results WHERE state = $1"
+    for kept in ("SELECT * FROM results WHERE state = $1 LIMIT 5", "SELECT * FROM results JOIN docs ON true WHERE x"):
+        (counted, _) = (
+            statement.sql
+            for statement in helper_statements(_call(call.replace("SELECT * FROM results WHERE state = $1", kept)))
+        )
+        assert counted is not None and f"FROM ({kept}) AS r" in counted, counted
+
+
+def test_a_pattern_ranked_read_is_judged_by_its_pins_under_its_rank_order(schema: SchemaCatalog) -> None:
+    """Flips if ``read_nearest`` given a ``PatternCount`` is not judged as the statement it sends (its pins, ordered by
+    the count of patterns matched under a LIMIT, which no index serves): keyed when its pins lead the table's key, a
+    finding when they do not; its ``LEFT`` joins each judged by the columns it is joined on."""
+    keyed = 'read_nearest(c, "results", by={"state": s}, nearest=PatternCount(("name",), ps), limit=k)'
+    assert _judged(keyed, schema) == [[]]
+    (statement,) = helper_statements(_call(keyed))
+    assert "pattern_count" in statement.sql and "DESC LIMIT" in statement.sql, statement.sql
+    (tied,) = helper_statements(_call(keyed.replace("ps)", 'ps, then=("name", Sort("geo", descending=True)))')))
+    assert re.search(r"DESC, \S*name\S*, \S*geo\S* DESC LIMIT", tied.sql), tied.sql
+    assert _judged(keyed.replace('by={"state": s}', 'by={"kind": s}'), schema) == [[("non-key-where", "results")]]
+    joined = (
+        'read_nearest(c, "docs", by={"owner": o}, nearest=PatternCount(("g",), ps), limit=k, '
+        'joins=[Joined("grants", on={"who": "owner"}, columns={"g": "state"}, left=True)])'
+    )
+    assert _judged(joined, schema)[1] == []
+    assert _judged(joined.replace('on={"who": "owner"}', 'on={"state": "owner"}'), schema)[1] != []
+
+
 def test_a_ranked_read_with_joins_is_judged_as_its_read_and_each_joined_table_s_keyed_batch(
     schema: SchemaCatalog,
 ) -> None:

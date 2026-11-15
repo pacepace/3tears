@@ -26,6 +26,7 @@ import asyncio
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -34,7 +35,6 @@ from sqlalchemy import Enum, MetaData
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import CreateEnumType
 from sqlalchemy.schema import CreateIndex, CreateTable
-
 from threetears.agent.acl.collections import ImpersonationGateCollection
 from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.audit.migrations import register as register_audit
@@ -103,10 +103,15 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     when unnamed), so the other half is not run at all rather than skipped (a skip fails the pool's integration
     suite, ``THREETEARS_REQUIRE_SERVICES=1``)."""
     engine = os.environ.get(_ENGINE_ENV) or "postgres"
-    other = [item for item in items if _engine_of(item) not in (None, engine)]
+    # only this directory's tests: a package's own integration module run beside them may name its own ``conn``
+    # fixture for whichever engine the run names (the wake and scheduled-jobs plan tests), and was deselected on
+    # YugabyteDB with them, so its plans were proven on PostgreSQL alone
+    here = Path(__file__).parent
+    other = [item for item in items if item.path.is_relative_to(here) and _engine_of(item) not in (None, engine)]
     if other:
         config.hook.pytest_deselected(items=other)
-        items[:] = [item for item in items if _engine_of(item) in (None, engine)]
+        dropped = set(map(id, other))
+        items[:] = [item for item in items if id(item) not in dropped]
 
 
 class _Store:

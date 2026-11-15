@@ -96,12 +96,10 @@ class _Statement:
 
     def source(self, rel: Rel, alias: str) -> str:
         """``rel`` as a FROM item under ``alias``, its parameters bound after those already bound."""
-        if isinstance(rel, Step):
+        if isinstance(rel, Step | Derived):
             text = renumbered(Fragment(rel.sql, rel.params), len(self.params))
             self.params += list(rel.params)
             return f"({text}) AS {alias}"
-        if isinstance(rel, Derived):
-            return f"({rel.sql}) AS {alias}"
         if isinstance(rel, Quoted):
             return f"{rel.name} AS {alias}"
         return f"{quoted_table(rel)} AS {alias}"

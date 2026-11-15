@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator, Iterator, Mapping
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -24,6 +25,7 @@ from threetears.agent.wake.collections import (
     WakeScheduleCollection,
     WebhookSubscriptionCollection,
 )
+from threetears.agent.wake.manual import ManualFireRefused, claim_manual_fire
 from threetears.agent.wake.migrations import register as register_wake
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.backends.protocol import L3Backend
@@ -154,11 +156,12 @@ def _collections(pool: CapturedL3 | asyncpg.Connection) -> SimpleNamespace:
     )
 
 
-async def _user_counts(captured: CapturedL3) -> list[tuple[str, tuple[Any, ...]]]:
-    """the statements check_rate_limit writes, the per-user count among them."""
+async def _user_counts(captured: CapturedL3, user: Any = None) -> list[tuple[str, tuple[Any, ...]]]:
+    """the statements check_rate_limit writes, the per-user count's two halves among them: its wakes' fires, then its
+    subscriptions' fires."""
     trigger = SimpleNamespace(
         conversation_id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
+        user_id=user or uuid.uuid4(),
         schedule_id=uuid.uuid4(),
         webhook_subscription_id=None,
         fire_source="scheduled_tick",
@@ -166,7 +169,57 @@ async def _user_counts(captured: CapturedL3) -> list[tuple[str, tuple[Any, ...]]
     )
     config = SimpleNamespace(max_fires_per_conv_per_day=100, max_fires_per_user_per_day=100)
     await rate_limit.check_rate_limit(trigger, captured, config)  # type: ignore[arg-type]
-    return [asked for asked in captured.asked if "ws.user_id" in asked[0]]
+    return [asked for asked in captured.asked if ".user_id = $" in asked[0]]
+
+
+async def _agent_counts(agent: Any) -> list[tuple[str, tuple[Any, ...]]]:
+    """the per-agent count check_fire_limits writes, its two halves: the agent's wakes' fires, then its
+    subscriptions' fires (the per-wake count before them left out)."""
+    captured = CapturedL3()
+    trigger = SimpleNamespace(
+        conversation_id=uuid.uuid4(),
+        schedule_id=uuid.uuid4(),
+        webhook_subscription_id=None,
+        fire_source="scheduled_tick",
+        agent_id=agent,
+        user_id=uuid.uuid4(),
+        protected=False,
+    )
+    limits = SimpleNamespace(manual_fires_count=True, per_wake=10**6, per_agent=10**6)
+    await rate_limit.check_fire_limits(trigger, captured, limits)  # type: ignore[arg-type]
+    _wake, *halves = captured.asked
+    assert len(halves) == 2 and all(".agent_id = $" in sql for sql, _args in halves), captured.asked
+    return halves
+
+
+class _Claiming(CapturedL3):
+    """a captured pool claim_manual_fire can hold a connection of: its claim writes nothing (``UPDATE 0``, so it is
+    refused), and the reads that word the refusal run on the real connection."""
+
+    def acquire(self) -> Any:
+        @asynccontextmanager
+        async def lent() -> AsyncIterator[Any]:
+            yield self
+
+        return lent()
+
+    def transaction(self, namespace: str | None = None) -> Any:
+        @asynccontextmanager
+        async def held() -> AsyncIterator[None]:
+            yield
+
+        return held()
+
+
+async def _manual_claim(
+    conn: asyncpg.Connection, conversation: Any, schedule: Any
+) -> list[tuple[str, tuple[Any, ...]]]:
+    """the statements a manual fire of ``schedule`` writes when it is refused: the claim, then the reads of why."""
+    captured = _Claiming(real=conn, passes=lambda sql: not sql.startswith("UPDATE"))
+    wake = SimpleNamespace(conversation_id=conversation, schedule_id=schedule)
+    with pytest.raises(ManualFireRefused):
+        await claim_manual_fire(captured, wake, requested_by="user:plan", min_gap=timedelta(minutes=5))  # type: ignore[arg-type]
+    return captured.asked
 
 
 async def test_wake_schedules_next_fire(conn: asyncpg.Connection) -> None:
@@ -192,15 +245,15 @@ async def test_wake_schedules_next_fire(conn: asyncpg.Connection) -> None:
 
 
 async def test_wake_schedules_user(conn: asyncpg.Connection) -> None:
-    """Flips if the per-user fire count stops reading idx_wake_schedules_user."""
-    (sql, args), *_ = await _user_counts(CapturedL3())
+    """Flips if the per-user fire count's wakes stop reading idx_wake_schedules_user."""
+    (sql, args), _hooks = await _user_counts(CapturedL3())
     plan = await explain_statement(conn, sql, *args)
     assert plan_uses_index(plan, "idx_wake_schedules_user"), plan.plan
 
 
 async def test_webhook_subs_user(conn: asyncpg.Connection) -> None:
-    """Flips if the per-user fire count stops reading idx_webhook_subs_user."""
-    (sql, args), *_ = await _user_counts(CapturedL3())
+    """Flips if the per-user fire count's subscriptions stop reading idx_webhook_subs_user."""
+    _wakes, (sql, args) = await _user_counts(CapturedL3())
     plan = await explain_statement(conn, sql, *args)
     assert plan_uses_index(plan, "idx_webhook_subs_user"), plan.plan
 
@@ -213,7 +266,8 @@ async def test_wake_schedules_agent_status(conn: asyncpg.Connection) -> None:
     await collections.schedules.list_for_agent(agent)
     # the cap's count on create (the resume's adds one filter beside the same pins)
     await rate_limit.check_active_schedule_cap(agent_id=agent, cap=10**6, pool=captured)
-    statements = [*captured.asked, (rate_limit.COUNT_AGENT_FIRES_SQL, (agent, _NOW - timedelta(days=1), True))]
+    wakes, _hooks = await _agent_counts(agent)
+    statements = [*captured.asked, wakes]
     for sql, args in statements:
         plan = await explain_statement(conn, sql, *args)
         assert plan_uses_index(plan, "idx_wake_schedules_agent_status"), (sql, plan.plan)
@@ -225,19 +279,31 @@ async def test_webhook_subs_agent(conn: asyncpg.Connection) -> None:
     captured = CapturedL3()
     collections = _collections(captured)
     await collections.subscriptions.list_for_agent(agent)
-    statements = [*captured.asked, (rate_limit.COUNT_AGENT_FIRES_SQL, (agent, _NOW - timedelta(days=1), True))]
+    _wakes, hooks = await _agent_counts(agent)
+    statements = [*captured.asked, hooks]
     for sql, args in statements:
         plan = await explain_statement(conn, sql, *args)
         assert plan_uses_index(plan, "idx_webhook_subs_agent"), (sql, plan.plan)
 
 
 async def test_wake_fires_dispatching(conn: asyncpg.Connection) -> None:
-    """Flips if the reaper's sweep of the fires in flight stops reading idx_wake_fires_dispatching."""
+    """Flips if the reaper's sweep of the fires in flight stops reading idx_wake_fires_dispatching, or a manual fire's
+    guard (its claim's "no fire in flight", and the read that words a refusal) stops reading the fires in flight
+    through it and walks the wake's whole history instead: a busy wake's 2,000 fires against the 500 in flight."""
     captured = CapturedL3()
     await _collections(captured).fires.reap_stale_dispatching(_NOW, older_than=timedelta(minutes=10))
     (sql, args), *_ = captured.asked
     plan = await explain_write(conn, sql, *args)
     assert plan_uses_index(plan, "idx_wake_fires_dispatching"), plan.plan
+    busy = await _busy_conversation(conn)
+    claim, *why = await _manual_claim(conn, busy.conversation, busy.schedule)
+    assert claim[0].startswith('UPDATE "agent_wake_schedules"'), claim
+    # the claim's in-flight check and the refusal's are the one read (_in_flight); refused, the refusal's is asked
+    (in_flight, in_flight_args), *_ = [asked for asked in why if '"wake_fires"' in asked[0]]
+    plan = await explain_statement(conn, in_flight, *in_flight_args)
+    assert plan_uses_index(plan, "idx_wake_fires_dispatching", partial=True), plan.plan
+    in_flight_now = await conn.fetchval("SELECT count(*) FROM wake_fires WHERE status = 'dispatching'")
+    assert plan.rows_scanned <= in_flight_now, (in_flight_now, plan)
 
 
 async def _busy_conversation(conn: asyncpg.Connection) -> SimpleNamespace:
@@ -280,7 +346,7 @@ async def _busy_conversation(conn: asyncpg.Connection) -> SimpleNamespace:
     )
     for table in ("agent_wake_schedules", "webhook_subscriptions", "wake_fires"):
         await conn.execute(f"ANALYZE {table}")
-    return SimpleNamespace(conversation=conversation, schedule=first, subscription=subscription)
+    return SimpleNamespace(conversation=conversation, schedule=first, subscription=subscription, agent=agent, user=user)
 
 
 def _of(captured: CapturedL3, table: str) -> list[tuple[str, tuple[Any, ...]]]:
@@ -304,8 +370,8 @@ async def _wake_count(busy: SimpleNamespace, *, webhook: bool) -> tuple[str, tup
     limits = SimpleNamespace(manual_fires_count=True, per_wake=1, per_agent=1)
     await rate_limit.check_fire_limits(trigger, captured, limits)  # type: ignore[arg-type]
     (asked, *rest) = captured.asked
-    # a per-wake count of zero is under the cap: the agent's count follows it, which the agent's index serves
-    assert all("ws.agent_id" in sql for sql, _args in rest), captured.asked
+    # a per-wake count of zero is under the cap: the agent's count follows it, which the agent's indexes serve
+    assert all(".agent_id = $" in sql for sql, _args in rest), captured.asked
     return asked
 
 
@@ -390,16 +456,24 @@ async def test_wake_fires_schedule_time(conn: asyncpg.Connection) -> None:
     busy = await _busy_conversation(conn)
     captured = CapturedL3()
     await _collections(captured).fires.list_for_schedule(busy.conversation, busy.schedule)
+    # an agent's and a user's fire counts: their wakes' fires of the last day, each wake's through its own index (an
+    # agent of the seed's: 10 wakes; a user's: 20)
+    agent, user = await conn.fetchrow("SELECT agent_id, user_id FROM agent_wake_schedules LIMIT 1")
+    agent_wakes, _ = await _agent_counts(agent)
+    user_wakes, _ = await _user_counts(CapturedL3(), user)
+    wake_count = await _wake_count(busy, webhook=False)
     statements = [
         *_of(captured, "wake_fires"),
-        await _wake_count(busy, webhook=False),
+        wake_count,
+        agent_wakes,
+        user_wakes,
     ]
     for sql, args in statements:
         plan = await explain_statement(conn, sql, *args)
         assert plan_uses_index(plan, "idx_wake_fires_schedule_time"), (sql, plan.plan)
     # the wake's count by its schedule alone is the count the conversation-bound statement gave, for every wake seeded
     since = datetime.now(UTC) - timedelta(hours=rate_limit.RATE_LIMIT_WINDOW_HOURS)
-    counted, counted_args = statements[-1]
+    counted, counted_args = wake_count
 
     def bound_as(schedule_id: Any, manual: bool) -> list[Any]:
         """the keyed count's own parameters, its schedule, window and manual flag swapped for these (its statuses
@@ -437,9 +511,23 @@ async def test_wake_fires_webhook_time(conn: asyncpg.Connection) -> None:
     busy = await _busy_conversation(conn)
     captured = CapturedL3()
     await _collections(captured).fires.list_for_subscription(busy.conversation, busy.subscription)
+    # every other subscription firing too, ten times in the last day (20,000 fires): a subscription's count is past the
+    # size where walking the whole index's window beats reading its own fires
+    await conn.execute(
+        "INSERT INTO wake_fires (conversation_id, fire_id, webhook_subscription_id, actual_fired_at, status, fire_source)"
+        " SELECT s.conversation_id, gen_random_uuid(), s.subscription_id, now() - n * interval '1 hour', 'fired',"
+        " 'webhook' FROM webhook_subscriptions s, generate_series(1, 10) n WHERE s.subscription_id <> $1",
+        busy.subscription,
+    )
+    await conn.execute("ANALYZE wake_fires")
+    # the busy agent's and user's fire counts: their subscription's fires of the last day
+    _, agent_hooks = await _agent_counts(busy.agent)
+    _, user_hooks = await _user_counts(CapturedL3(), busy.user)
     statements = [
         *_of(captured, "wake_fires"),
         await _wake_count(busy, webhook=True),
+        agent_hooks,
+        user_hooks,
     ]
     for sql, args in statements:
         plan = await explain_statement(conn, sql, *args)

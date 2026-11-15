@@ -25,15 +25,25 @@ from typing import Any, Literal, overload
 from threetears.core.keyed._filters import Fragment, Lock, Selected, sent_by
 from threetears.core.keyed._joining import Joined, check_joins, join_rows, joined_columns
 from threetears.core.keyed.page import yugabyte_index_hint
-from threetears.interfaces.keyed.filters import Derived, by_conditions, quote_identifier, quoted_table
+from threetears.interfaces.keyed.filters import (
+    Derived,
+    by_conditions,
+    narrowing,
+    quote_identifier,
+    quoted_table,
+    selected_column,
+)
+from threetears.interfaces.keyed.keys import stated_literals
 from threetears.interfaces.keyed.page import Sort
 from threetears.interfaces.keyed.point import (
     Nearest,
+    PatternCount,
     TextRank,
     read_by_statement,
     read_nearest_statement,
     read_row_beside_statement,
     read_row_statement,
+    then_terms,
 )
 from threetears.interfaces.keyed.steps import Step
 
@@ -257,7 +267,7 @@ async def read_nearest(
     table: str,
     *,
     by: Mapping[str, Any],
-    nearest: Nearest | TextRank,
+    nearest: Nearest | TextRank | PatternCount,
     limit: int,
     columns: Sequence[str | Selected] | None = None,
     records: bool = False,
@@ -268,7 +278,9 @@ async def read_nearest(
     """the ``limit`` rows of ``table`` the pinned columns name nearest to a vector, nearest first: what ``fetch`` of
     the hand-written ``... ORDER BY embedding <=> $n LIMIT $k`` answered
     (:func:`~threetears.interfaces.keyed.read_nearest_statement`); or, given a :class:`TextRank`, best matched by a
-    text query, best first (``... ORDER BY ts_rank_cd(search_vector, websearch_to_tsquery(...)) DESC LIMIT $k``).
+    text query, best first (``... ORDER BY ts_rank_cd(search_vector, websearch_to_tsquery(...)) DESC LIMIT $k``); or,
+    given a :class:`PatternCount`, by how many of its ``ILIKE`` patterns each row matches, best first, then its
+    ``then`` columns (:func:`_pattern_count_statement`: one statement, its ``LEFT`` joins inside it).
 
     The order is the distance (or rank) alone, so an approximate-nearest-neighbour index on the vector column (its
     purpose naming the caller) answers it; the no-whole-reads rule judges the call by the statement it sends.
@@ -287,8 +299,8 @@ async def read_nearest(
     :param by: as :func:`read_by`'s; at least one column
     :ptype by: Mapping[str, Any]
     :param nearest: the vector column, the vector (its text), the distance, and the similarity's name if selected;
-        or the ``tsvector`` column, the query's text and the rank's name
-    :ptype nearest: Nearest | TextRank
+        or the ``tsvector`` column, the query's text and the rank's name; or the patterns counted over fields
+    :ptype nearest: Nearest | TextRank | PatternCount
     :param limit: how many rows, at most
     :ptype limit: int
     :param columns: as :func:`read_by`'s; the similarity (or rank), when named, after them
@@ -307,6 +319,10 @@ async def read_nearest(
     :raises ValueError: when nothing is pinned, ``columns`` is empty, ``limit`` is negative, or a join is an inner
         one or names nothing to join on
     """
+    if isinstance(nearest, PatternCount):
+        sql, params = _pattern_count_statement(table, by, nearest, limit, columns, where, joins)
+        rows = list(await sent_by(conn).fetch(sql, *params))
+        return rows if records and not joins else [dict(row) for row in rows]
     if not joins:
         sql, params = read_nearest_statement(table, by=by, nearest=nearest, limit=limit, columns=columns, where=where)
         rows = list(await sent_by(conn).fetch(sql, *params))
@@ -338,6 +354,91 @@ async def read_nearest(
         return rows
     ranked = [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
     return (await join_rows(conn, ranked, joins, batch=batch, hidden=hidden))[:limit]
+
+
+def _pattern_count_statement(
+    table: str,
+    by: Mapping[str, Any],
+    rank: PatternCount,
+    limit: int,
+    columns: Sequence[str | Selected] | None,
+    where: Sequence[Fragment],
+    joins: Sequence[Joined],
+) -> tuple[str, list[Any]]:
+    """the rows ``by`` (and ``where``) name of ``table`` that match any of ``rank``'s patterns, each ``LEFT`` joined to
+    the rows of each joined table its columns name, best first by how many patterns a row matches, then by ``then``,
+    up to ``limit``::
+
+        SELECT t.*, j2."description" AS "template_description",
+               (CASE WHEN t."column_name" ILIKE ($2::text[])[1] OR j2."description" ILIKE ($2::text[])[1]
+                     THEN 1 ELSE 0 END + ...) AS "match_score"
+          FROM "datasource_columns" AS t
+          LEFT JOIN "datasource_tables" AS j1 ON j1."datasource_id" = t."datasource_id" AND ...
+          LEFT JOIN "table_template_columns" AS j2 ON j2."template_id" = j1."template_id" AND ...
+         WHERE t."datasource_id" = $1 AND (t."column_name" ILIKE ANY($2::text[]) OR j2."description" ILIKE ANY(...))
+         ORDER BY "match_score" DESC, t."schema_name", t."table_name", t."column_name" LIMIT $3
+
+    The joins are plain ``LEFT JOIN``s, inside the ranked read: a field a join adds ranks the row before the limit
+    cuts, so the joined rows are read beside the pinned ones (the planner's hash join of each joined table), never
+    after them as :func:`_joined_nearest_statement`'s ``LATERAL`` lookups of the ranked few are. A join's ``on``
+    names a column of the row or a name an earlier join adds; its ``by`` pins its own columns.
+
+    :return: the statement and its binds
+    :rtype: tuple[str, list[Any]]
+    :raises ValueError: when nothing is pinned, ``limit`` is negative, or a join is not a plain ``LEFT`` one or names
+        nothing to join on
+    """
+    if not by:
+        raise ValueError(f"a ranked read of {table} pins at least one column")
+    if limit < 0:
+        raise ValueError(f"a ranked read of {table} asks for no fewer than no rows, got {limit}")
+    if joins:
+        check_joins(table, joins)
+    if any(not join.left or join.counts or join.matched for join in joins):
+        raise ValueError(f"a pattern-ranked read of {table} joins plain LEFT joins only")
+    conditions, params = by_conditions(by, alias="t", stated=stated_literals(table))
+    for fragment in where:
+        conditions.append(narrowing(fragment, len(params)))
+        params += list(fragment.params)
+    qualifier: dict[str, str] = {}
+    joined: list[str] = []
+    selected = ["t.*"] if columns is None else [selected_column(column) for column in columns]
+    for number, join in enumerate(joins, start=1):
+        alias = f"j{number}"
+        on = [
+            f"{alias}.{quote_identifier(column)} = {qualifier.get(row, 't.' + quote_identifier(row))}"
+            for column, row in join.on.items()
+        ]
+        pinned, values = by_conditions(join.by or {}, first=len(params) + 1, alias=alias)
+        params += values
+        joined.append(f" LEFT JOIN {quoted_table(join.table)} AS {alias} ON {' AND '.join([*on, *pinned])}")
+        for name, column in join.columns.items():
+            selected.append(f"{alias}.{quote_identifier(column)} AS {quote_identifier(name)}")
+            qualifier[name] = f"{alias}.{quote_identifier(column)}"
+    fields = [qualifier.get(field, f"t.{quote_identifier(field)}") for field in rank.fields]
+    params.append(list(rank.patterns))
+    patterns = f"${len(params)}::text[]"
+    # a row passes when a field matches any pattern (each field's ILIKE ANY, the engine's own loop over the array);
+    # only the rows passing count their patterns, one array scan a row
+    conditions.append(f"({' OR '.join(f'{field} ILIKE ANY({patterns})' for field in fields)})")
+    # WHY each pattern its own CASE over the one array's element, and not ``(SELECT count(*) FROM unnest($n) ...)``
+    # (2026-11-15, measured at the hub search's real size, 117,540 columns, PostgreSQL, scratchpad h3/search): the
+    # count sub-select is run once a passing row, and its set-up cost 1.75x / 1.78x / 1.81x / 1.11x the hand-written
+    # statement for 1 / 3 / 8 / 1 broad tokens (pg1.log); a CASE an element is what the hand-written statement
+    # summed, at its cost: 1.03x / 1.00x / 0.98x / 0.60x on PostgreSQL (pg2.log), 1.00x / 1.01x / 0.98x / 1.09x on
+    # YugabyteDB (yb1.log). The patterns stay ONE array parameter whatever their number
+    score = " + ".join(
+        f"CASE WHEN {' OR '.join(f'{field} ILIKE ({patterns})[{place}]' for field in fields)} THEN 1 ELSE 0 END"
+        for place in range(1, len(rank.patterns) + 1)
+    )
+    selected.append(f"({score or '0'}) AS {quote_identifier(rank.rank)}")
+    params.append(limit)
+    order = f"{quote_identifier(rank.rank)} DESC{then_terms(rank.then)}"
+    sql = (
+        f"SELECT {', '.join(selected)} FROM {quoted_table(table)} AS t{''.join(joined)} "
+        f"WHERE {' AND '.join(conditions)} ORDER BY {order} LIMIT ${len(params)}"
+    )
+    return sql, params
 
 
 def _ranked_by(nearest: Nearest | TextRank) -> str | None:

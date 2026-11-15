@@ -49,6 +49,7 @@ from threetears.interfaces.keyed.connection import (
 )
 from threetears.interfaces.keyed.point import (
     Nearest,
+    PatternCount,
     TextRank,
     read_by_statement,
     read_nearest_statement,
@@ -187,6 +188,7 @@ __all__ = [
     "SQL_DIALECT_ATTRIBUTE",
     "SQL_TYPE",
     "Nearest",
+    "PatternCount",
     "TextRank",
     "Selected",
     "Sort",
