@@ -80,6 +80,8 @@ async def _count_active(conn: Any, agent_id: UUID, *, excluding: UUID | None = N
     where = [_UNPROTECTED]
     if excluding is not None:
         where.append(Fragment('t."schedule_id" != $1', (excluding,)))
+    # __SPANS_PARTITIONS__: an agent's schedules live in several conversations (its cap counts them all), read by
+    # idx_wake_schedules_agent_status
     (counted,) = await aggregate_keyed(
         conn,
         "agent_wake_schedules",
@@ -146,6 +148,8 @@ async def _count_agent_fires(conn: Any, agent_id: UUID, since: datetime, *, coun
     """
     ran = {"status": AnyOf(("fired", "fired_silent"), cast=None)}
     window = Fragment('"actual_fired_at" > $1', (since,))
+    # __SPANS_PARTITIONS__: an agent's (a user's) wakes and their fires live in several conversations; each count is
+    # bounded by the wakes its sub-select names, through each wake's own fire index
     (wakes,) = await aggregate_keyed(
         conn,
         "wake_fires",
@@ -157,6 +161,7 @@ async def _count_agent_fires(conn: Any, agent_id: UUID, since: datetime, *, coun
             Fragment("($1 OR \"fire_source\" <> 'manual')", (count_manual,)),
         ],
     )
+    # __SPANS_PARTITIONS__: as the wakes' count above, its subscriptions' fires
     (hooks,) = await aggregate_keyed(
         conn,
         "wake_fires",
@@ -180,6 +185,8 @@ async def _count_user_fires(conn: Any, user_id: UUID, since: datetime) -> int:
     :rtype: int
     """
     window = Fragment('"actual_fired_at" > $1', (since,))
+    # __SPANS_PARTITIONS__: an agent's (a user's) wakes and their fires live in several conversations; each count is
+    # bounded by the wakes its sub-select names, through each wake's own fire index
     (wakes,) = await aggregate_keyed(
         conn,
         "wake_fires",
@@ -187,6 +194,7 @@ async def _count_user_fires(conn: Any, user_id: UUID, since: datetime) -> int:
         by={"status": "fired"},
         where=[Fragment(_SCHEDULES_OF_USER, (user_id,)), window],
     )
+    # __SPANS_PARTITIONS__: as the wakes' count above, its subscriptions' fires
     (hooks,) = await aggregate_keyed(
         conn,
         "wake_fires",
