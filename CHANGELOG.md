@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a function grader returning a bool fails the cases it returns False on, annotated or not
+
+**Fixed:** an `Eval` grader written `def right(case, out): return out == case["want"]`, with no return annotation, was
+read as a score no case can fail: the first line printed `passed 3 of 3 cases` over `Right score: mean 0.3333`, and
+a comparison's gate passed over it (an arm right on thirty cases against one wrong on all thirty exited 0). A
+function grader is now a pass/fail check when its return is annotated `bool` or every `return` in its source returns
+a bool (a comparison, `not`, `True`/`False`, `bool(...)`, `isinstance(...)`, `all`/`any`, or `and`/`or` and a
+conditional over those): its False fails the case on the first line, it is listed among the misses, it prints as a
+pass rate with its count (`33%, 1 of 3 trials`) as an annotated one does, and a comparison gates on it. A grader whose
+bool the package cannot read from its code (`return out.startswith("a")`) excludes each cell at its first answer,
+naming the fix (annotate it `-> bool`, or return `float(...)`), never landing as a score no case fails.
+
+**For hosts:** a run graded before this fix by an unannotated bool grader stored its grades as 1.0 and 0.0; read back
+through the same grader now, its 0.0s fail their trials, and its recorded measure definition (no `pass_fail`) keeps it
+from pooling with runs graded after the fix. A grader annotated `-> float` or `-> int` that returns a bool is now
+excluded naming the fix: annotate it `-> bool`.
+
 ### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
 
 **Changed:** a declared name of `3tears-evals` is public only when it is admitted (owner ruling, 2026-11-15): someone
