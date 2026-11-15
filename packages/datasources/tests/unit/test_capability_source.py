@@ -233,7 +233,7 @@ class TestIterActiveIdsStatusGate:
         assert result == []
         mock_pool.fetch.assert_awaited_once()
         sql_arg, *bound_args = mock_pool.fetch.await_args.args
-        assert "WHERE status" in sql_arg
+        assert 'WHERE t."status" = $1' in sql_arg
         assert bound_args == [DataSourceStatus.ACTIVE.value]
 
 

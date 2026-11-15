@@ -72,6 +72,14 @@ _CASTS: tuple[tuple[type, str], ...] = (
 
 
 def cast_of(values: Sequence[Any]) -> str:
+    """the SQL type a list of key values binds as, read from its first non-None value (``text`` when every value is
+    None or no listed type matches): the cast a join's ``unnest($n::<type>[])`` of the values takes.
+
+    :param values: the values
+    :ptype values: Sequence[Any]
+    :return: the SQL type's name
+    :rtype: str
+    """
     held = next((value for value in values if value is not None), None)
     return next((cast for kind, cast in _CASTS if isinstance(held, kind)), "text")
 

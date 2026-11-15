@@ -25,7 +25,7 @@ bindings sit in ``tests/integration/index_plan_manifest.json``.
 A crowded table's (more than :data:`~.schema.MAX_PLAIN_INDEXES` indexes) or a wide index's reason is generated from the
 reads it serves. Every declaration is written to the repo's index declarations ledger
 (:mod:`~.declarations`, frozen migrations' indexes); an index whose purpose sits beside its DDL already gets a
-reason-only supplement line. Approximate-nearest-neighbour and GIN indexes, and an index whose purpose names a read the
+reason-only supplement line. Approximate-nearest-neighbour, GIN and R*Tree indexes, and an index whose purpose names a read the
 walk does not credit it with, are listed for a hand-written test: the tool writes nothing for them.
 
 Without ``--write`` it prints what it would write.
@@ -50,6 +50,7 @@ from threetears.enforcement.no_whole_reads.schema import (
     MAX_PLAIN_INDEXES,
     MIN_REASON,
     NEAREST_METHODS,
+    SPATIAL_METHODS,
     SchemaCatalog,
     _DeclaredIndex,
     _DeclaredTable,
@@ -67,7 +68,7 @@ _MANIFEST: Final[str] = "tests/integration/index_plan_manifest.json"
 _MOST_PURPOSES: Final[int] = 3
 
 #: access methods whose reads are no equality/order shape the generated test can explain
-_HAND_METHODS: Final[frozenset[str]] = NEAREST_METHODS | {"gin", "gist", "brin"}
+_HAND_METHODS: Final[frozenset[str]] = NEAREST_METHODS | SPATIAL_METHODS | {"gin", "gist", "brin"}
 
 
 @dataclass

@@ -62,7 +62,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
     UniqueConstraint,
 )
-from threetears.core.keyed import delete_keyed, read_row
+from threetears.core.keyed import Sort, delete_keyed, keyset_rows, read_row
 from threetears.core.security.secret_refs import validate_ref
 from threetears.datasources.customer_scope import BY_CUSTOMER, COLUMN_CATALOGUE, TABLE_CATALOGUE
 from threetears.datasources.entities import (
@@ -374,6 +374,23 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
         ],
         # the hub's unique index on the name (hub v001): a datasource by its name
         unique_constraints=(UniqueConstraint("idx_datasources_name", "name"),),
+        indexes=(
+            # hub v001: the rows of one status (``USING lsm (status HASH)`` on YugabyteDB). Declared here because 3tears
+            # reads by it: the scheduler sweep's active ids (iter_active_ids), run on its own by the hub's introspect
+            # scheduler. The hub's migration stays the one that builds the index
+            Index(
+                "idx_datasources_status",
+                "status",
+                purpose=(
+                    "packages/datasources/src/threetears/datasources/collections.py::"
+                    "CapabilitySourceCollection.iter_active_ids"
+                ),
+                plan_test=(
+                    "packages/datasources/tests/integration/test_index_plans.py::"
+                    "test_the_sweep_reads_the_active_datasources_through_idx_datasources_status"
+                ),
+            ),
+        ),
         cas_column="date_updated",
     )
 
@@ -488,13 +505,16 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
         # Collection surface exists for cross-partition list-all by
         # design.
         # partition-bypass: cross-customer sweep is documented above.
-        rows = await self.l3_pool.fetch(
-            """
-            SELECT id FROM datasources
-            WHERE status = $1
-            ORDER BY date_created, id
-            """,
-            DataSourceStatus.ACTIVE.value,
+        # keyed by status through the hub's idx_datasources_status (declared on the schema with this read as its
+        # purpose), a page of 500 a statement in (date_created, id) order: the sweep runs on its own (the hub's
+        # introspect scheduler, coverage reconcile, schema digests), so it reads the active rows by their index, never
+        # the table. A registry holds tens of datasources, one statement in practice; the pages bound a large one.
+        rows = await keyset_rows(
+            self.l3_pool,
+            "datasources",
+            columns=["id", "date_created"],
+            by={"status": DataSourceStatus.ACTIVE.value},
+            order=[Sort("date_created", cast="timestamptz"), Sort("id", cast="uuid")],
         )
         result = [row["id"] for row in rows]
         return result

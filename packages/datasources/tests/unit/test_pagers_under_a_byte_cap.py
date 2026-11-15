@@ -256,3 +256,28 @@ async def test_a_page_at_the_row_cap_is_still_refused_by_a_hub_with_no_byte_cap(
 
     with pytest.raises(ValueError, match="UNDER the hub's row cap"):
         await read_all(hub, "ds", columns=_COLUMNS, relation="s.results", key=["state", "race"], page_size=1_000)  # type: ignore[arg-type]
+
+
+class _RecordingHub(_ByteCappedHub):
+    """a byte-capped hub recording the statements it answers."""
+
+    def __init__(self, max_bytes: int) -> None:
+        super().__init__(max_bytes)
+        self.statements: list[str] = []
+
+    async def query(
+        self, datasource_name: str, query: str, params: list[Any] | None = None, **kwargs: Any
+    ) -> DatasourceQueryResult:
+        self.statements.append(query)
+        return await super().query(datasource_name, query, params, **kwargs)
+
+
+async def test_a_reply_cut_inside_one_key_reads_on_when_a_bounded_count_finds_the_key_whole() -> None:
+    """Flips if a reply the hub cut inside one key value (_pages: every row of the reply shares that key, one wide row
+    a reply) is refused when the key holds no more rows than the reply, or if the count asking that reads past one row
+    beyond the reply (its LIMIT) or goes anywhere but through the datasource client."""
+    hub = _RecordingHub(60)
+    rows = await read_all(hub, "w", columns=_COLUMNS, relation="s.results", key=_KEY, page_size=50)  # type: ignore[arg-type]
+    assert _sorted(rows) == _EVERY_ROW
+    counts = [statement for statement in hub.statements if statement.startswith("SELECT count(*)")]
+    assert counts and all(statement.endswith(" LIMIT 2) AS held") for statement in counts), counts

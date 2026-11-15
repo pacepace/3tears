@@ -147,8 +147,8 @@ class TestCapabilitySourceCollection:
         ``status = 'active'`` so the scheduler does not probe DISABLED
         datasources every sweep.
 
-        the assertion shape is "the SQL string includes
-        ``WHERE status``" + "the value passed is the ACTIVE enum
+        the assertion shape is "the SQL string pins
+        ``t."status" = $1``" + "the value passed is the ACTIVE enum
         value." we don't run a real query; the mock pool records
         the args.
         """
@@ -163,7 +163,7 @@ class TestCapabilitySourceCollection:
         assert result == []
         mock_pool.fetch.assert_awaited_once()
         sql_arg, *bound_args = mock_pool.fetch.await_args.args
-        assert "WHERE status" in sql_arg
+        assert 'WHERE t."status" = $1' in sql_arg
         assert bound_args == ["active"]
 
     @pytest.mark.asyncio
