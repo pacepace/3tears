@@ -16,7 +16,9 @@ Runs on PostgreSQL and YugabyteDB (the session's ``db_container``), a schema of 
 
 from __future__ import annotations
 
+import json
 import uuid
+from datetime import datetime
 from typing import Any
 
 import asyncpg
@@ -26,6 +28,7 @@ from threetears.agent.memory.collections import MediaContentCollection, Memories
 from threetears.core.testing.same_results import assert_same_results
 
 from .memory_same_results import (
+    Serial,
     text_vectors,
     AGENTS,
     CONVERSATION,
@@ -76,7 +79,7 @@ async def test_search_by_ids_gives_the_plain_joins_rows(conn: asyncpg.Connection
             row=content_row,
             old_sql=_IDS_SQL,
             params=[agent, ids, USER],
-            helper=lambda c: collection(MediaContentCollection, c).search_by_ids(ids, USER, agent_id=agent),
+            helper=lambda c: collection(MediaContentCollection, Serial(c)).search_by_ids(ids, USER, agent_id=agent),
             order_by=["media_id", "date_created"],
             page_size=PAGE,
         )
@@ -105,7 +108,7 @@ async def _mine_on_theirs(conn: asyncpg.Connection, agent: uuid.UUID, theirs: uu
             USER,
             T0,
         )
-        contents = collection(MediaContentCollection, conn)
+        contents = collection(MediaContentCollection, Serial(conn))
         assert await contents.search_by_ids([theirs, ident("content", 999)], USER, agent_id=agent) == []
     finally:
         await transaction.rollback()
@@ -142,7 +145,7 @@ async def test_find_by_conversation_id_gives_the_plain_joins_rows(conn: asyncpg.
             row=chunk_row,
             old_sql=_CONVERSATION_SQL,
             params=[agent, CONVERSATION, USER, CUSTOMER, PAGE],
-            helper=lambda c: collection(MemoryChunkCollection, c).find_by_conversation_id(
+            helper=lambda c: collection(MemoryChunkCollection, Serial(c)).find_by_conversation_id(
                 CONVERSATION, user_id=USER, agent_id=agent, customer_id=CUSTOMER, limit=PAGE
             ),
             order_by=["message_id_start", "chunk_id"],
@@ -209,13 +212,16 @@ async def test_history_pool_gives_the_plain_reads_rows(conn: asyncpg.Connection)
         recent_cap=2,
     )
     (history_sql, history_args), *_ = [(sql, args) for sql, args in asked.asked if "date_created <" in sql]
+    # the old statement's own binds: the query, the owner, the limit, the floor, and the window's bound the new
+    # statement was sent with
+    (bound,) = [arg for arg in history_args if isinstance(arg, datetime)]
     await text_vectors(conn)
     await assert_same_results(
         conn,
         table="memories",
         row=memory_row,
         old_sql=_HISTORY_SQL,
-        params=history_args,
+        params=[json.dumps([0.5] * DIM), agent, CUSTOMER, USER, PAGE, 0.0, bound],
         helper=lambda c: c.fetch(history_sql, *history_args),
         order_by=["similarity"],
         page_size=PAGE,

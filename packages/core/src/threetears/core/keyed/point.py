@@ -23,9 +23,16 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Literal, overload
 
 from threetears.core.keyed._filters import Fragment, Lock, Selected, sent_by
+from threetears.core.keyed._joining import Joined, check_joins, join_rows, joined_columns
 from threetears.core.keyed.page import yugabyte_index_hint
 from threetears.interfaces.keyed.page import Sort
-from threetears.interfaces.keyed.point import Nearest, read_by_statement, read_nearest_statement, read_row_statement
+from threetears.interfaces.keyed.point import (
+    Nearest,
+    TextRank,
+    read_by_statement,
+    read_nearest_statement,
+    read_row_statement,
+)
 
 __all__ = [
     "read_by",
@@ -203,18 +210,28 @@ async def read_nearest(
     table: str,
     *,
     by: Mapping[str, Any],
-    nearest: Nearest,
+    nearest: Nearest | TextRank,
     limit: int,
     columns: Sequence[str | Selected] | None = None,
     records: bool = False,
     where: Sequence[Fragment] = (),
+    joins: Sequence[Joined] = (),
+    batch: int | None = None,
 ) -> list[Any]:
     """the ``limit`` rows of ``table`` the pinned columns name nearest to a vector, nearest first: what ``fetch`` of
     the hand-written ``... ORDER BY embedding <=> $n LIMIT $k`` answered
-    (:func:`~threetears.interfaces.keyed.read_nearest_statement`).
+    (:func:`~threetears.interfaces.keyed.read_nearest_statement`); or, given a :class:`TextRank`, best matched by a
+    text query, best first (``... ORDER BY ts_rank_cd(search_vector, websearch_to_tsquery(...)) DESC LIMIT $k``).
 
-    The order is the distance alone, so an approximate-nearest-neighbour index on the vector column (its purpose naming
-    the caller) answers it; the no-whole-reads rule judges the call by the statement it sends.
+    The order is the distance (or rank) alone, so an approximate-nearest-neighbour index on the vector column (its
+    purpose naming the caller) answers it; the no-whole-reads rule judges the call by the statement it sends.
+
+    With ``joins``, each row is then joined to its parent rows (``LEFT JOIN media med ON ...``), each joined table read
+    by the values the ranked rows hold (one keyed batch, :func:`~threetears.core.keyed.read_joined`), never a join the
+    planner may drive from the joined side. A row matching several is answered once for each, in rank order, and the
+    first ``limit`` joined rows are kept: what ``ORDER BY ... LIMIT`` over the hand-written ``LEFT JOIN`` kept, since a
+    row's joined copies share its rank. Each join is a ``LEFT`` (or counted) one: an inner join would drop rows after
+    the limit that the statement dropped before it, so a parent every row has (a foreign key's) is joined ``LEFT``.
 
     :param conn: anything with an asyncpg-shaped ``fetch(query, *params)``
     :ptype conn: Any
@@ -222,20 +239,35 @@ async def read_nearest(
     :ptype table: str
     :param by: as :func:`read_by`'s; at least one column
     :ptype by: Mapping[str, Any]
-    :param nearest: the vector column, the vector (its text), the distance, and the similarity's name if selected
-    :ptype nearest: Nearest
+    :param nearest: the vector column, the vector (its text), the distance, and the similarity's name if selected;
+        or the ``tsvector`` column, the query's text and the rank's name
+    :ptype nearest: Nearest | TextRank
     :param limit: how many rows, at most
     :ptype limit: int
-    :param columns: as :func:`read_by`'s; the similarity, when named, after them
+    :param columns: as :func:`read_by`'s; the similarity (or rank), when named, after them
     :ptype columns: Sequence[str | Selected] | None
-    :param records: as :func:`read_by`'s
+    :param records: as :func:`read_by`'s; with ``joins``, the rows are dicts
     :ptype records: bool
     :param where: as :func:`read_by`'s
     :ptype where: Sequence[Fragment]
-    :return: the rows, nearest first
+    :param joins: the tables joined after the ranked read, in order, each ``LEFT`` or counted
+        (:class:`~threetears.core.keyed.Joined`); none when empty
+    :ptype joins: Sequence[Joined]
+    :param batch: the most values a joined table's statement names; None: the connection's
+    :ptype batch: int | None
+    :return: the rows, nearest (or best) first
     :rtype: list[Any]
-    :raises ValueError: when nothing is pinned, ``columns`` is empty, or ``limit`` is negative
+    :raises ValueError: when nothing is pinned, ``columns`` is empty, ``limit`` is negative, or a join is an inner
+        one or names nothing to join on
     """
-    sql, params = read_nearest_statement(table, by=by, nearest=nearest, limit=limit, columns=columns, where=where)
-    rows = list(await sent_by(conn).fetch(sql, *params))
-    return rows if records else [dict(row) for row in rows]
+    if not joins:
+        sql, params = read_nearest_statement(table, by=by, nearest=nearest, limit=limit, columns=columns, where=where)
+        rows = list(await sent_by(conn).fetch(sql, *params))
+        return rows if records else [dict(row) for row in rows]
+    check_joins(table, joins)
+    if any(not (join.left or join.counts) for join in joins):
+        raise ValueError(f"a ranked read of {table} joins LEFT only (an inner join drops rows past the limit)")
+    read, hidden = joined_columns(columns, joins)
+    sql, params = read_nearest_statement(table, by=by, nearest=nearest, limit=limit, columns=read, where=where)
+    ranked = [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
+    return (await join_rows(conn, ranked, joins, batch=batch, hidden=hidden))[:limit]

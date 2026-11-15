@@ -8,6 +8,8 @@ the SQL through ``gin_filter`` on the memory and media-content keyword searches.
 
 from __future__ import annotations
 
+import re
+
 from typing import Any
 from uuid import UUID
 
@@ -44,7 +46,7 @@ class TestMemoryKeywordSearchFiltersInsteadOfScanningTheGinIndex:
         )
 
         (sql,) = pool.statements
-        assert "(search_vector @@ websearch_to_tsquery('english', $1)) IS TRUE" in sql
+        assert re.search(r"\(t\.search_vector @@ websearch_to_tsquery\('english', \$\d+\)\) IS TRUE", sql), sql
 
     async def test_the_media_content_keyword_search(self) -> None:
         pool = _SqlRecorder()
@@ -56,4 +58,4 @@ class TestMemoryKeywordSearchFiltersInsteadOfScanningTheGinIndex:
         )
 
         (sql,) = pool.statements
-        assert "(mc.search_vector @@ websearch_to_tsquery('english', $1)) IS TRUE" in sql
+        assert re.search(r"\(t\.search_vector @@ websearch_to_tsquery\('english', \$\d+\)\) IS TRUE", sql), sql

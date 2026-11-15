@@ -86,12 +86,15 @@ from threetears.core.keyed import (
     Fragment,
     Nearest,
     Selected,
+    Joined,
     Sort,
+    TextRank,
     aggregate_keyed,
     clause_guards,
     holds_any,
     keyset_page,
     read_by,
+    read_by_joined,
     read_nearest,
     read_row,
     update_keyed,
@@ -120,13 +123,11 @@ __all__ = [
 log = get_logger(__name__)
 
 
-#: the keyword-match predicate every memory FTS query filters on. ``websearch_to_tsquery``
-#: turns an "or" or a leading "-" in the text into OR / NOT, which YugabyteDB's GIN index
-#: refuses outright, so the predicate filters the scoped rows instead of scanning the index
-#: (:func:`threetears.core.data.gin.gin_filter`). ranking still uses the same tsquery.
-_MEMORY_FTS_MATCH = gin_filter("search_vector @@ websearch_to_tsquery('english', $1)")
-#: the same predicate for the ``mc``-aliased chunk and media-content queries.
-_CHUNK_FTS_MATCH = gin_filter("mc.search_vector @@ websearch_to_tsquery('english', $1)")
+#: the keyword-match guard every memory, chunk and media-content FTS read filters on, over the keyed helper's row
+#: ``t``, the query text its one parameter. ``websearch_to_tsquery`` turns an "or" or a leading "-" in the text into
+#: OR / NOT, which YugabyteDB's GIN index refuses outright, so the predicate filters the scoped rows instead of
+#: scanning the index (:func:`threetears.core.data.gin.gin_filter`). ranking (:class:`TextRank`) uses the same tsquery.
+_FTS_MATCH: Final[str] = gin_filter("t.search_vector @@ websearch_to_tsquery('english', $1)")
 
 
 def _as_pk_uuid(value: object) -> UUID:
@@ -316,27 +317,95 @@ def _build_fts_text(user_text: str, min_len: int = 3, max_len: int = 500) -> str
 #: conversation keeps per agent (``threetears.agent.tools.context``) holds this many and deletes the oldest past it
 MEMORY_REFS_PAGE: Final[int] = 50
 
-#: the owner triple every memory hybrid-search read is scoped to, written out so the read's key is in its text: the
-#: partition column ``agent_id`` and its sub-scopes ``customer_id`` and ``user_id``, bound at $2..$4 (each search's
-#: query text or vector is $1). collections-task-04 made the triple mandatory; v008 restored its NOT NULLs.
-_OWNER_SCOPE: Final[str] = "agent_id = $2 AND customer_id = $3 AND user_id = $4"
-#: :data:`_OWNER_SCOPE` on a table aliased ``mc``
-_OWNER_SCOPE_MC: Final[str] = "mc.agent_id = $2 AND mc.customer_id = $3 AND mc.user_id = $4"
+#: the columns :meth:`MemoriesCollection.hybrid_search` reads of each candidate, the embedding as its text
+_HYBRID_MEMORY_COLUMNS: Final = (
+    "memory_id",
+    "content",
+    "summary",
+    "type_memory",
+    "date_created",
+    Selected("t.embedding::text", "embedding"),
+)
 
 
-def _owner_scope_params(agent_id: UUID, customer_id: UUID, user_id: UUID) -> tuple[list[UUID], int]:
-    """the values :data:`_OWNER_SCOPE` binds, and the last parameter index it uses.
+#: the columns :meth:`MediaContentCollection.hybrid_search` reads of each candidate, the embedding as its text
+_HYBRID_CONTENT_COLUMNS: Final = (
+    "content_id",
+    "content",
+    "summary",
+    "content_type",
+    "media_id",
+    "date_created",
+    Selected("t.embedding::text", "embedding"),
+)
 
-    :param agent_id: partition column for the memory tables
-    :ptype agent_id: UUID
-    :param customer_id: customer sub-scope
-    :ptype customer_id: UUID
-    :param user_id: user sub-scope
-    :ptype user_id: UUID
-    :return: ``([agent_id, customer_id, user_id], 4)``
-    :rtype: tuple[list[UUID], int]
+
+#: the columns :meth:`MemoryChunkCollection.hybrid_search` and :meth:`MemoryChunkCollection.hybrid_search_within_memory`
+#: read of each candidate, the embedding as its text
+_HYBRID_CHUNK_COLUMNS: Final = (
+    "chunk_id",
+    "content",
+    "summary",
+    "heading_context",
+    "page_number",
+    "memory_id",
+    "message_id_start",
+    "message_id_end",
+    Selected("t.embedding::text", "embedding"),
+)
+
+
+def _date_guards(column: str, after: datetime | None, before: datetime | None) -> tuple[Fragment, ...]:
+    """an inclusive date window on ``column`` as a keyed helper's ``where=`` guards, each bound on its own.
+
+    :param column: the column, as the guard names it (``t.date_created``), a TRUSTED identifier
+    :ptype column: str
+    :param after: inclusive lower bound; none when None
+    :ptype after: datetime | None
+    :param before: inclusive upper bound; none when None
+    :ptype before: datetime | None
+    :return: the guards
+    :rtype: tuple[Fragment, ...]
     """
-    return [agent_id, customer_id, user_id], 4
+    return (
+        *(() if after is None else (Fragment(f"{column} >= $1", (after,)),)),
+        *(() if before is None else (Fragment(f"{column} <= $1", (before,)),)),
+    )
+
+
+def _file_window_guards(after: datetime | None, before: datetime | None) -> tuple[Fragment, ...]:
+    """a media-content read's window on its file's ``date_created``, as the one guard: the content row's file, by its
+    key, inside the inclusive window; none when neither bound is set (the foreign key gives every content row a file).
+
+    :param after: inclusive lower bound on the file's date; none when None
+    :ptype after: datetime | None
+    :param before: inclusive upper bound on the file's date; none when None
+    :ptype before: datetime | None
+    :return: the guard, or none
+    :rtype: tuple[Fragment, ...]
+    """
+    if after is None and before is None:
+        return ()
+    return (
+        Fragment(
+            "EXISTS (SELECT 1 FROM media med WHERE med.agent_id = t.agent_id AND med.media_id = t.media_id"
+            " AND ($1::timestamptz IS NULL OR med.date_created >= $1) AND ($2::timestamptz IS NULL OR med.date_created <= $2))",
+            (after, before),
+        ),
+    )
+
+
+def _scope_guards(scope: RetrievalScope | None) -> tuple[Fragment, ...]:
+    """a :class:`RetrievalScope` as a keyed helper's ``where=`` guard (:func:`build_scope_conditions`, numbered from
+    ``$1``); none for no scope. callers check :func:`scope_matches_nothing` first.
+
+    :param scope: the scope, possibly ``None``
+    :ptype scope: RetrievalScope | None
+    :return: the guard, or none
+    :rtype: tuple[Fragment, ...]
+    """
+    conditions, params, _next = build_scope_conditions(scope, next_param=1)
+    return (Fragment(" AND ".join(conditions), tuple(params)),) if conditions else ()
 
 
 def _normalize_scores(candidates: list[dict[str, Any]], key: str) -> None:
@@ -633,15 +702,9 @@ _NOT_RETRACTED_M = "NOT (COALESCE(m.tags, '[]'::jsonb) ? 'retracted')"
 #: the replacement no longer exists, which is how a reader tells a memory that
 #: is replaced from one whose replacement is gone. ``corrected_by`` is a linked
 #: memory written beside one that was not replaced (a permanent memory's
-#: correction).
-_MEMORY_MARK_COLUMNS = (
-    "alias, evergreen, tags, superseded_by, "
-    "(SELECT g.date_created FROM memories g "
-    "WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by) AS superseded_at, "
-    "(SELECT c.consolidated_memory_id FROM memory_consolidations c "
-    "WHERE c.agent_id = memories.agent_id AND c.source_memory_id = memories.memory_id "
-    "AND memories.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1) AS corrected_by"
-)
+#: correction). Each read selects them as its own columns (the two dates and the
+#: correction as correlated ``Selected`` sub-selects over its row ``t``) and
+#: answers them through :func:`_marks`.
 _MEMORY_MARK_KEYS = ("alias", "evergreen", "tags", "superseded_by", "superseded_at", "corrected_by")
 
 #: the columns :meth:`MemoriesCollection.find_active_for_consolidation` loads for each candidate
@@ -656,13 +719,6 @@ _CANDIDATE_TAIL = (
     "AND (m.superseded_by IS NULL OR NOT EXISTS ("
     "SELECT 1 FROM memories g WHERE g.agent_id = m.agent_id AND g.memory_id = m.superseded_by)) "
     f"AND {_NOT_RETRACTED_M} ORDER BY m.date_created"
-)
-
-#: A memory a live replacement stands in for. A replacement that is gone leaves
-#: its sources current again, as every other read here treats them.
-_REPLACED = (
-    "(superseded_by IS NOT NULL AND EXISTS (SELECT 1 FROM memories g "
-    "WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))"
 )
 
 #: The tags :meth:`MemoriesCollection.mark_retracted` writes and
@@ -1303,16 +1359,15 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         scope = RetrievalScope(tags_any=tags_any)
         if self.l3_pool is None or scope_matches_nothing(scope):
             return []
-        fragments, scope_params, _next = build_scope_conditions(scope, next_param=4)
-        args: list[Any] = [agent_id, customer_id, user_id, *scope_params]
-        narrowing = "".join(f" AND {fragment}" for fragment in fragments)
-        if filtered:
-            narrowing += filter_clause(self.read_filter, "memories.tags", args)
+        allowed = clause_guards(filter_clause, self.read_filter, "t.tags") if filtered else ()
         # cache-bypass: one owner's rows by tag, found through the owner's index (not the primary key).
-        rows = await self.l3_pool.fetch(
-            "SELECT memory_id FROM memories WHERE agent_id = $1 AND customer_id = $2 AND user_id = $3"
-            f"{narrowing} ORDER BY date_created",
-            *args,
+        rows = await read_by(
+            self.l3_pool,
+            "memories",
+            by={"agent_id": agent_id, "customer_id": customer_id, "user_id": user_id},
+            columns=("memory_id",),
+            where=[*_scope_guards(scope), *allowed],
+            order=[Sort("date_created")],
         )
         return [row["memory_id"] for row in rows]
 
@@ -1751,28 +1806,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         if self.l3_pool is None or scope_matches_nothing(scope):
             return []
         embedding_str = json.dumps(embedding)
-
-        scope_params, param_offset = _owner_scope_params(agent_id, customer_id, user_id)
-        # v0.7.5 date filter: append ``AND date_created >= $X`` /
-        # ``AND date_created <= $Y`` to both the vector and FTS sub-
-        # queries. Bound parameters are appended after the existing
-        # scope params + the limit param. Each filter uses its own
-        # parameter slot so both can fire independently.
-        vec_date_clause = ""
-        vec_extra_params: list[Any] = []
-        if date_after is not None:
-            vec_date_clause += f" AND date_created >= ${param_offset + 2}"
-            vec_extra_params.append(date_after)
-        if date_before is not None:
-            vec_date_clause += f" AND date_created <= ${param_offset + 2 + len(vec_extra_params)}"
-            vec_extra_params.append(date_before)
-        vec_scope_fragments, vec_scope_params, _ = build_scope_conditions(
-            scope, next_param=param_offset + 2 + len(vec_extra_params)
+        # v0.7.5 date filter: ``date_created >= / <=`` beside the owner on both the vector and the FTS read, each bound
+        # on its own so either fires alone; then the retrieval scope (fail-closed above) and the host's read filter
+        narrowing = (
+            *_date_guards("t.date_created", date_after, date_before),
+            *_scope_guards(scope),
+            *clause_guards(filter_clause, self.read_filter, "t.tags"),
         )
-        for fragment in vec_scope_fragments:
-            vec_date_clause += f" AND {fragment}"
-        vec_extra_params.extend(vec_scope_params)
-        limit_param = f"${param_offset + 1}"
+        salience = Fragment(f"{self._salience_read()} >= $1", (salience_ambient_floor,))
 
         # cache-bypass: vector-distance search is not primary-key-
         # addressable; see :meth:`find_similar_for_dedup` for the same
@@ -1786,76 +1827,55 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # re-embed pass, but until then they must not enter the
         # similarity-ranked candidate set.
         # v024 ambient filter: exclude superseded rows (replaced by a
-        # consolidation gist) and rows below the salience floor. The floor
-        # rides the last param slot; default 0.0 makes ``salience >= 0`` a
-        # no-op. Supersession is SELF-HEALING (matches
-        # find_active_for_consolidation): a source is hidden only while its
-        # gist still LIVES -- if the gist was hard-deleted, the source's
-        # dangling superseded_by no longer suppresses it here, so its
+        # consolidation gist) and rows below the salience floor; default
+        # 0.0 makes ``salience >= 0`` a no-op. Supersession is SELF-HEALING
+        # (matches find_active_for_consolidation): a source is hidden only
+        # while its gist still LIVES -- if the gist was hard-deleted, the
+        # source's dangling superseded_by no longer suppresses it here, so its
         # knowledge returns to ambient retrieval instead of being lost
         # (superseded_by is a soft ref with no FK, so orphans do occur).
-        vec_params: list[Any] = [
-            embedding_str,
-            *scope_params,
-            candidate_limit,
-            *vec_extra_params,
-            salience_ambient_floor,
-        ]
-        vec_salience_idx = len(vec_params)
-
-        def _nearest(older_than: datetime | None = None) -> Any:
-            # ``older_than`` narrows the scan to the history (see the history pool below): its own
-            # statement, the date bound written out, so the read of one user's memories older than
-            # the window is the one ix_memories_agent_user_date names.
-            args = list(vec_params)
+        def _nearest(older_than: datetime | None = None) -> Awaitable[list[Any]]:
             if older_than is None:
-                allowed = filter_clause(self.read_filter, "memories.tags", args)
-                return self.l3_pool.fetch(  # type: ignore[union-attr]
-                    f"""
-                    SELECT memory_id, content, summary, type_memory, date_created,
-                           embedding::text AS embedding,
-                           1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
-                    FROM memories
-                    WHERE {_OWNER_SCOPE}
-                      AND embedding IS NOT NULL{vec_date_clause}
-                      AND (superseded_by IS NULL OR NOT EXISTS (
-                            SELECT 1 FROM memories g
-                            WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
-                      AND {_NOT_RETRACTED}
-                      AND {self._salience_read()} >= ${vec_salience_idx}{allowed}
-                    ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
-                    LIMIT {limit_param}
-                    """,
-                    *args,
+                return read_nearest(
+                    self.l3_pool,
+                    "memories",
+                    by={"agent_id": agent_id, "customer_id": customer_id, "user_id": user_id},
+                    where=[
+                        Fragment("t.embedding IS NOT NULL", ()),
+                        *narrowing,
+                        Fragment(
+                            "(t.superseded_by IS NULL OR NOT EXISTS (SELECT 1 FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by))",
+                            (),
+                        ),
+                        Fragment("NOT (COALESCE(t.tags, '[]'::jsonb) ? 'retracted')", ()),
+                        salience,
+                    ],
+                    nearest=Nearest("embedding", embedding_str, similarity="similarity"),
+                    limit=candidate_limit,
+                    columns=_HYBRID_MEMORY_COLUMNS,
                 )
-            args.append(older_than)
-            history_idx = len(args)
-            allowed = filter_clause(self.read_filter, "memories.tags", args)
-            # the user's memories older than the window are read by ix_memories_agent_user_date inside a subquery
-            # the planner keeps whole (OFFSET 0), the customer checked after: with the customer beside them,
-            # YugabyteDB read the owner's every memory by idx_memories_agent_customer_user. a subquery, not a
-            # MATERIALIZED CTE, so the rows stream to the distance sort instead of being held with their embeddings.
-            return self.l3_pool.fetch(  # type: ignore[union-attr]
-                f"""
-                SELECT memory_id, content, summary, type_memory, date_created,
-                       embedding::text AS embedding,
-                       1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
-                FROM (
-                    SELECT * FROM memories
-                    WHERE agent_id = $2 AND user_id = $4 AND date_created < ${history_idx}
-                    OFFSET 0
-                ) memories
-                WHERE customer_id = $3
-                  AND embedding IS NOT NULL{vec_date_clause}
-                  AND (superseded_by IS NULL OR NOT EXISTS (
-                        SELECT 1 FROM memories g
-                        WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
-                  AND {_NOT_RETRACTED}
-                  AND {self._salience_read()} >= ${vec_salience_idx}{allowed}
-                ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
-                LIMIT {limit_param}
-                """,
-                *args,
+            # ``older_than`` narrows the read to the history (see the history pool below): the user's memories older
+            # than the window, pinned by agent and user so the read is the one ix_memories_agent_user_date names, the
+            # customer and the date bound checked beside (b2bc83998: with the customer pinned beside them, YugabyteDB
+            # read the owner's every memory by idx_memories_agent_customer_user).
+            return read_nearest(
+                self.l3_pool,
+                "memories",
+                by={"agent_id": agent_id, "user_id": user_id},
+                where=[
+                    Fragment("t.customer_id = $1 AND t.date_created < $2", (customer_id, older_than)),
+                    Fragment("t.embedding IS NOT NULL", ()),
+                    *narrowing,
+                    Fragment(
+                        "(t.superseded_by IS NULL OR NOT EXISTS (SELECT 1 FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by))",
+                        (),
+                    ),
+                    Fragment("NOT (COALESCE(t.tags, '[]'::jsonb) ? 'retracted')", ()),
+                    salience,
+                ],
+                nearest=Nearest("embedding", embedding_str, similarity="similarity"),
+                limit=candidate_limit,
+                columns=_HYBRID_MEMORY_COLUMNS,
             )
 
         vec_coro = _nearest()
@@ -1870,52 +1890,26 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_params, fts_param_offset = _owner_scope_params(agent_id, customer_id, user_id)
-            # v0.7.5 date filter on FTS sub-query.
-            fts_date_clause = ""
-            fts_extra_params: list[Any] = []
-            if date_after is not None:
-                fts_date_clause += f" AND date_created >= ${fts_param_offset + 2}"
-                fts_extra_params.append(date_after)
-            if date_before is not None:
-                fts_date_clause += f" AND date_created <= ${fts_param_offset + 2 + len(fts_extra_params)}"
-                fts_extra_params.append(date_before)
-            fts_retrieval_fragments, fts_retrieval_params, _ = build_scope_conditions(
-                scope, next_param=fts_param_offset + 2 + len(fts_extra_params)
-            )
-            for fragment in fts_retrieval_fragments:
-                fts_date_clause += f" AND {fragment}"
-            fts_extra_params.extend(fts_retrieval_params)
-            fts_limit_param = f"${fts_param_offset + 1}"
             # cache-bypass: FTS rank query is not primary-key-
             # addressable. See :meth:`hybrid_search` docstring.
-            fts_params: list[Any] = [
-                fts_text,
-                *fts_scope_params,
-                candidate_limit,
-                *fts_extra_params,
-                salience_ambient_floor,
-            ]
-            fts_salience_idx = len(fts_params)
-            fts_allowed = filter_clause(self.read_filter, "memories.tags", fts_params)
-            fts_coro = self.l3_pool.fetch(
-                f"""
-                SELECT memory_id, content, summary, type_memory, date_created,
-                       embedding::text AS embedding,
-                       ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
-                FROM memories
-                WHERE {_OWNER_SCOPE}
-                  AND embedding IS NOT NULL
-                  AND {_MEMORY_FTS_MATCH}{fts_date_clause}
-                  AND (superseded_by IS NULL OR NOT EXISTS (
-                        SELECT 1 FROM memories g
-                        WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
-                  AND {_NOT_RETRACTED}
-                  AND {self._salience_read()} >= ${fts_salience_idx}{fts_allowed}
-                ORDER BY fts_rank DESC
-                LIMIT {fts_limit_param}
-                """,
-                *fts_params,
+            fts_coro = read_nearest(
+                self.l3_pool,
+                "memories",
+                by={"agent_id": agent_id, "customer_id": customer_id, "user_id": user_id},
+                where=[
+                    Fragment("t.embedding IS NOT NULL", ()),
+                    Fragment(_FTS_MATCH, (fts_text,)),
+                    *narrowing,
+                    Fragment(
+                        "(t.superseded_by IS NULL OR NOT EXISTS (SELECT 1 FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by))",
+                        (),
+                    ),
+                    Fragment("NOT (COALESCE(t.tags, '[]'::jsonb) ? 'retracted')", ()),
+                    salience,
+                ],
+                nearest=TextRank("search_vector", fts_text),
+                limit=candidate_limit,
+                columns=_HYBRID_MEMORY_COLUMNS,
             )
             vec_rows, fts_rows = await asyncio.gather(vec_coro, fts_coro)
         else:
@@ -2095,33 +2089,16 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         """
         if self.l3_pool is None or scope_matches_nothing(scope):
             return []
-        embedding_str = json.dumps(embedding)
-        params: list[Any] = [embedding_str, agent_id, user_id]
-        # the narrowing after the read's key (agent_id = $2 AND user_id = $3), written into the statement itself
-        conditions: list[str] = []
-        param_idx = 4
-        if type_filter:
-            conditions.append(f"type_memory = ${param_idx}")
-            params.append(type_filter)
-            param_idx += 1
-        if date_after is not None:
-            conditions.append(f"date_created >= ${param_idx}")
-            params.append(date_after)
-            param_idx += 1
-        if date_before is not None:
-            conditions.append(f"date_created <= ${param_idx}")
-            params.append(date_before)
-            param_idx += 1
-        scope_fragments, scope_extra_params, param_idx = build_scope_conditions(scope, next_param=param_idx)
-        conditions.extend(scope_fragments)
-        params.extend(scope_extra_params)
-        conditions.append("embedding IS NOT NULL")
-        if not include_retracted:
-            conditions.append(_NOT_RETRACTED)
-        limit_param = f"${param_idx}"
-        params.append(max_results)
-        narrowing = "".join(f" AND {condition}" for condition in conditions)
-        narrowing += filter_clause(self.read_filter, "memories.tags", params)
+        # the narrowing after the read's key (agent_id, user_id): a type, a date window, the retrieval scope, embedded
+        # rows only, unretracted unless asked, and the host's read filter
+        narrowing = [
+            *((Fragment("t.type_memory = $1", (type_filter,)),) if type_filter else ()),
+            *_date_guards("t.date_created", date_after, date_before),
+            *_scope_guards(scope),
+            Fragment("t.embedding IS NOT NULL", ()),
+            *(() if include_retracted else (Fragment("NOT (COALESCE(t.tags, '[]'::jsonb) ? 'retracted')", ()),)),
+            *clause_guards(filter_clause, self.read_filter, "t.tags"),
+        ]
         # ``embedding IS NOT NULL`` guard: ``NULL <=> vector`` is NULL,
         # which trips ``float(similarity)`` downstream.
         # DELIBERATE-RECALL by design (§3): this is the agent-invoked
@@ -2135,17 +2112,34 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # recall likewise bypasses. (Contrast find_similar_for_dedup, which
         # DOES filter, because it drives write-path UPDATE targeting, not
         # display.)
-        query_sql = f"""
-            SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS},
-                   1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
-            FROM memories
-            WHERE agent_id = $2 AND user_id = $3{narrowing}
-            ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
-            LIMIT {limit_param}
-        """
         # cache-bypass: vector-distance ordered lookup; see
         # :meth:`hybrid_search` docstring.
-        rows = await self.l3_pool.fetch(query_sql, *params)
+        rows = await read_nearest(
+            self.l3_pool,
+            "memories",
+            by={"agent_id": agent_id, "user_id": user_id},
+            where=narrowing,
+            nearest=Nearest("embedding", json.dumps(embedding), similarity="similarity"),
+            limit=max_results,
+            columns=(
+                "memory_id",
+                "type_memory",
+                "content",
+                "date_created",
+                "alias",
+                "evergreen",
+                "tags",
+                "superseded_by",
+                Selected(
+                    "(SELECT g.date_created FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by)",
+                    "superseded_at",
+                ),
+                Selected(
+                    "(SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = t.agent_id AND c.source_memory_id = t.memory_id AND t.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1)",
+                    "corrected_by",
+                ),
+            ),
+        )
         return [
             {
                 "memory_id": str(row["memory_id"]),
@@ -2210,44 +2204,48 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         """
         if self.l3_pool is None or scope_matches_nothing(scope):
             return []
-        # the narrowing after the read's key (agent_id = $2 AND user_id = $3), written into the statement itself
-        conditions = [_MEMORY_FTS_MATCH]
-        params: list[Any] = [fts_text, agent_id, user_id]
-        idx = 4
-        if type_filter:
-            conditions.append(f"type_memory = ${idx}")
-            params.append(type_filter)
-            idx += 1
-        if date_after is not None:
-            conditions.append(f"date_created >= ${idx}")
-            params.append(date_after)
-            idx += 1
-        if date_before is not None:
-            conditions.append(f"date_created <= ${idx}")
-            params.append(date_before)
-            idx += 1
-        scope_fragments, scope_extra_params, idx = build_scope_conditions(scope, next_param=idx)
-        conditions.extend(scope_fragments)
-        params.extend(scope_extra_params)
-        if not include_retracted:
-            conditions.append(_NOT_RETRACTED)
-        narrowing = "".join(f" AND {condition}" for condition in conditions)
-        narrowing += filter_clause(self.read_filter, "memories.tags", params)
+        # the narrowing after the read's key (agent_id, user_id): the keyword match, a type, a date window, the
+        # retrieval scope, unretracted unless asked, and the host's read filter
+        narrowing = [
+            Fragment(_FTS_MATCH, (fts_text,)),
+            *((Fragment("t.type_memory = $1", (type_filter,)),) if type_filter else ()),
+            *_date_guards("t.date_created", date_after, date_before),
+            *_scope_guards(scope),
+            *(() if include_retracted else (Fragment("NOT (COALESCE(t.tags, '[]'::jsonb) ? 'retracted')", ()),)),
+            *clause_guards(filter_clause, self.read_filter, "t.tags"),
+        ]
         # DELIBERATE-RECALL by design (§3), mirroring search_by_semantic:
         # the agent-invoked memory_search keyword leg applies NO salience
         # floor and NO supersession filter (unlike ambient hybrid_search) --
         # an explicit search surfaces dormant + superseded rows.
-        query_sql = f"""
-            SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS},
-                   ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
-            FROM memories
-            WHERE agent_id = $2 AND user_id = $3{narrowing}
-            ORDER BY fts_rank DESC
-            LIMIT {max_results}
-        """
         # cache-bypass: FTS rank query is not primary-key-addressable;
         # see :meth:`hybrid_search` docstring.
-        rows = await self.l3_pool.fetch(query_sql, *params)
+        rows = await read_nearest(
+            self.l3_pool,
+            "memories",
+            by={"agent_id": agent_id, "user_id": user_id},
+            where=narrowing,
+            nearest=TextRank("search_vector", fts_text),
+            limit=max_results,
+            columns=(
+                "memory_id",
+                "type_memory",
+                "content",
+                "date_created",
+                "alias",
+                "evergreen",
+                "tags",
+                "superseded_by",
+                Selected(
+                    "(SELECT g.date_created FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by)",
+                    "superseded_at",
+                ),
+                Selected(
+                    "(SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = t.agent_id AND c.source_memory_id = t.memory_id AND t.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1)",
+                    "corrected_by",
+                ),
+            ),
+        )
         return [
             {
                 "memory_id": str(row["memory_id"]),
@@ -2363,47 +2361,61 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             raise ValueError(f"list_for_user: unknown state {state!r}")
         if self.l3_pool is None:
             return [], 0
-        # the narrowing after the read's key (agent_id = $1 AND user_id = $2), written into each statement itself
-        conditions: list[str] = []
-        params: list[Any] = [agent_id, user_id]
-
-        def _bind(fragment: str, value: Any) -> None:
-            params.append(value)
-            conditions.append(fragment.format(n=len(params)))
-
-        if date_after is not None:
-            _bind("date_created >= ${n}", date_after)
-        if date_before is not None:
-            _bind("date_created <= ${n}", date_before)
-        if type_filter:
-            _bind("type_memory = ${n}", type_filter)
-        if permanent is not None:
-            conditions.append("evergreen" if permanent else "NOT evergreen")
-        if has_alias is not None:
-            conditions.append("alias IS NOT NULL" if has_alias else "alias IS NULL")
-        if state == "current":
-            conditions.append(_NOT_RETRACTED)
-            conditions.append(f"NOT {_REPLACED}")
-        elif state == "retired":
-            conditions.append(f"NOT ({_NOT_RETRACTED})")
-        elif state == "replaced":
-            conditions.append(_REPLACED)
-        narrowing = "".join(f" AND {condition}" for condition in conditions)
-        narrowing += filter_clause(self.read_filter, "memories.tags", params)
+        replaced = (
+            "(t.superseded_by IS NOT NULL AND EXISTS (SELECT 1 FROM memories g "
+            "WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by))"
+        )
+        retracted = "(COALESCE(t.tags, '[]'::jsonb) ? 'retracted')"
+        states: dict[str, tuple[Fragment, ...]] = {
+            "current": (Fragment(f"NOT {retracted}", ()), Fragment(f"NOT {replaced}", ())),
+            "retired": (Fragment(retracted, ()),),
+            "replaced": (Fragment(replaced, ()),),
+            "all": (),
+        }
+        # the narrowing after the read's key (agent_id, user_id), the same for the count and the page
+        narrowing = [
+            *_date_guards("t.date_created", date_after, date_before),
+            *((Fragment("t.type_memory = $1", (type_filter,)),) if type_filter else ()),
+            *(() if permanent is None else (Fragment("t.evergreen" if permanent else "NOT t.evergreen", ()),)),
+            *(() if has_alias is None else (Fragment(f"t.alias IS {'NOT ' if has_alias else ''}NULL", ()),)),
+            *states[state],
+            *clause_guards(filter_clause, self.read_filter, "t.tags"),
+        ]
+        owner = {"agent_id": agent_id, "user_id": user_id}
         # cache-bypass: a filtered scan of one person's rows is not primary-key
         # addressable; ix_memories_agent_user_date backs the order.
-        total = await self.l3_pool.fetchval(
-            f"SELECT count(*) FROM memories WHERE agent_id = $1 AND user_id = $2{narrowing}", *params
+        (counted,) = await aggregate_keyed(
+            self.l3_pool, "memories", aggregates={"n": Count()}, by=owner, where=narrowing
         )
-        rows = await self.l3_pool.fetch(
-            f"SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS} "
-            f"FROM memories WHERE agent_id = $1 AND user_id = $2{narrowing} "
-            f"ORDER BY date_created DESC, memory_id DESC LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}",
-            *params,
-            limit,
-            offset,
+        # the page ``offset`` rows in, newest first: the first ``offset + limit`` rows by the key's order, the first
+        # ``offset`` dropped -- the rows a ``LIMIT n OFFSET k`` read and discarded, as it did
+        page = await keyset_page(
+            self.l3_pool,
+            "memories",
+            columns=(
+                "memory_id",
+                "type_memory",
+                "content",
+                "date_created",
+                "alias",
+                "evergreen",
+                "tags",
+                "superseded_by",
+                Selected(
+                    "(SELECT g.date_created FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by)",
+                    "superseded_at",
+                ),
+                Selected(
+                    "(SELECT c.consolidated_memory_id FROM memory_consolidations c WHERE c.agent_id = t.agent_id AND c.source_memory_id = t.memory_id AND t.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1)",
+                    "corrected_by",
+                ),
+            ),
+            by=owner,
+            order=[Sort("date_created", descending=True), Sort("memory_id", "uuid", descending=True)],
+            limit=offset + limit,
+            where=narrowing,
         )
-        return [dict(row) for row in rows], int(total or 0)
+        return page.rows[offset:], int(counted["n"] or 0)
 
     async def mark_retracted(
         self,
@@ -3252,59 +3264,58 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
         """
         if self.l3_pool is None:
             return []
-        embedding_str = json.dumps(embedding)
-
-        scope_params, param_offset = _owner_scope_params(agent_id, customer_id, user_id)
-        limit_param = f"${param_offset + 1}"
+        owner = {"agent_id": agent_id, "customer_id": customer_id, "user_id": user_id}
+        allowed = _media_parent_guards(self.read_filter)
 
         # cache-bypass: vector-distance search joining media_content ->
         # media. not primary-key-addressable on either side; L1 row
         # cache cannot help. method on Collection preserves single
-        # entry point + audit hooks. composite JOIN on (agent_id,
-        # media_id) keeps the relationship inside one partition.
-        vec_args: list[Any] = [embedding_str, *scope_params, candidate_limit]
-        vec_allowed = _media_parent_clause(self.read_filter, "mc", vec_args)
-        vec_coro = self.l3_pool.fetch(
-            f"""
-            SELECT mc.content_id, mc.content, mc.summary, mc.content_type,
-                   mc.media_id, mc.date_created, mc.embedding::text AS embedding,
-                   med.media_category, med.metadata_json,
-                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
-            FROM media_content mc
-            JOIN media med
-              ON mc.agent_id = med.agent_id
-             AND mc.media_id = med.media_id
-            WHERE {_OWNER_SCOPE_MC} AND mc.embedding IS NOT NULL{vec_allowed}
-            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
-            LIMIT {limit_param}
-            """,
-            *vec_args,
+        # entry point + audit hooks. the content's file is joined by its
+        # key (agent_id, media_id), the relationship inside one partition:
+        # read for the ranked rows, after the limit. the foreign key
+        # (agent_id, media_id) -> media ON DELETE CASCADE gives every
+        # content row its file, so the LEFT join keeps exactly the rows the
+        # inner JOIN kept.
+        vec_coro = read_nearest(
+            self.l3_pool,
+            "media_content",
+            by=owner,
+            where=[Fragment("t.embedding IS NOT NULL", ()), *allowed],
+            nearest=Nearest("embedding", json.dumps(embedding), similarity="similarity"),
+            limit=candidate_limit,
+            columns=_HYBRID_CONTENT_COLUMNS,
+            joins=[
+                Joined(
+                    "media",
+                    on={"media_id": "media_id"},
+                    by={"agent_id": agent_id},
+                    columns={"media_category": "media_category", "metadata_json": "metadata_json"},
+                    left=True,
+                )
+            ],
         )
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_params, fts_param_offset = _owner_scope_params(agent_id, customer_id, user_id)
-            fts_limit_param = f"${fts_param_offset + 1}"
             # cache-bypass: FTS rank query joining media_content ->
             # media. see vec_coro justification above.
-            fts_args: list[Any] = [fts_text, *fts_scope_params, candidate_limit]
-            fts_allowed = _media_parent_clause(self.read_filter, "mc", fts_args)
-            fts_coro = self.l3_pool.fetch(
-                f"""
-                SELECT mc.content_id, mc.content, mc.summary, mc.content_type,
-                       mc.media_id, mc.date_created, mc.embedding::text AS embedding,
-                       med.media_category, med.metadata_json,
-                       ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
-                FROM media_content mc
-                JOIN media med
-                  ON mc.agent_id = med.agent_id
-                 AND mc.media_id = med.media_id
-                WHERE {_OWNER_SCOPE_MC} AND mc.embedding IS NOT NULL
-                  AND {_CHUNK_FTS_MATCH}{fts_allowed}
-                ORDER BY fts_rank DESC
-                LIMIT {fts_limit_param}
-                """,
-                *fts_args,
+            fts_coro = read_nearest(
+                self.l3_pool,
+                "media_content",
+                by=owner,
+                where=[Fragment("t.embedding IS NOT NULL", ()), Fragment(_FTS_MATCH, (fts_text,)), *allowed],
+                nearest=TextRank("search_vector", fts_text),
+                limit=candidate_limit,
+                columns=_HYBRID_CONTENT_COLUMNS,
+                joins=[
+                    Joined(
+                        "media",
+                        on={"media_id": "media_id"},
+                        by={"agent_id": agent_id},
+                        columns={"media_category": "media_category", "metadata_json": "metadata_json"},
+                        left=True,
+                    )
+                ],
             )
             vec_rows, fts_rows = await asyncio.gather(vec_coro, fts_coro)
         else:
@@ -3413,32 +3424,57 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
             return []
         # cache-bypass: batch IN(...) join spanning media_content ->
         # media. see :meth:`hybrid_search` for the detailed rationale. the
-        # ids' rows are read by their keys alone (media_content_pkey and
-        # ix_media_content_media_type) behind a MATERIALIZED fence, then the
-        # user is checked on both the content and its file: with the user
-        # beside the ids, YugabyteDB read every content row of the user. both
-        # are bound because no constraint makes a content row's user its file's.
-        args: list[Any] = [agent_id, content_ids, user_id]
-        allowed = _media_parent_clause(self.read_filter, "mc", args)
-        rows = await self.l3_pool.fetch(
-            f"""
-            WITH named AS MATERIALIZED (
-                SELECT * FROM media_content
-                WHERE agent_id = $1
-                  AND (content_id = ANY($2::uuid[]) OR media_id = ANY($2::uuid[]))
-            )
-            SELECT mc.content_id, mc.content, mc.content_type, mc.media_id,
-                   med.media_category, med.metadata_json, med.date_created
-            FROM named mc
-            JOIN media med
-              ON mc.agent_id = med.agent_id
-             AND mc.media_id = med.media_id
-            WHERE mc.user_id = $3
-              AND med.user_id = $3{allowed}
-            ORDER BY mc.media_id, mc.date_created DESC
-            """,
-            *args,
+        # ids' rows are read by their keys alone, a keyed read each: by
+        # content id (media_content_pkey) and by file id
+        # (ix_media_content_media_type), then the user is checked on both the
+        # content and its file: with the user beside the ids, YugabyteDB read
+        # every content row of the user (b2bc83998). both are bound because no
+        # constraint makes a content row's user its file's.
+        columns = ("content_id", "content", "content_type", "media_id", Selected("t.date_created", "content_created"))
+        guards = [Fragment("t.user_id = $1", (user_id,)), *_media_parent_guards(self.read_filter)]
+        files = {"media_category": "media_category", "metadata_json": "metadata_json", "date_created": "date_created"}
+        reads = (
+            read_by_joined(
+                self.l3_pool,
+                "media_content",
+                by={"agent_id": agent_id, "content_id": AnyOf(content_ids, cast="uuid")},
+                columns=columns,
+                where=guards,
+                joins=[
+                    Joined(
+                        "media",
+                        on={"media_id": "media_id"},
+                        columns=files,
+                        by={"agent_id": agent_id, "user_id": user_id},
+                    )
+                ],
+            ),
+            read_by_joined(
+                self.l3_pool,
+                "media_content",
+                by={"agent_id": agent_id, "media_id": AnyOf(content_ids, cast="uuid")},
+                columns=columns,
+                where=guards,
+                joins=[
+                    Joined(
+                        "media",
+                        on={"media_id": "media_id"},
+                        columns=files,
+                        by={"agent_id": agent_id, "user_id": user_id},
+                    )
+                ],
+            ),
         )
+        # a row both reads name (its id and its file's both handed) is one row, as the ``OR`` read it once
+        found = {row["content_id"]: row for answered in await asyncio.gather(*reads) for row in answered}
+        # ORDER BY mc.media_id, mc.date_created DESC over the two keyed reads' rows: uuids and timestamps, compared in
+        # Python as the database compares them (a uuid's bytes in order; no collation), newest first with a NULL
+        # first as DESC puts it
+        rows = sorted(found.values(), key=lambda row: (row["content_created"] is None, row["content_created"]))
+        rows.reverse()
+        rows.sort(key=lambda row: row["media_id"])
+        for row in rows:
+            del row["content_created"]
         return [dict(row) for row in rows]
 
     async def search_by_semantic(
@@ -3473,32 +3509,37 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
         """
         if self.l3_pool is None:
             return []
-        embedding_str = json.dumps(embedding)
         # cache-bypass: vector-distance search joining media_content ->
-        # media. see :meth:`hybrid_search`. composite JOIN on
-        # (agent_id, media_id) keeps the relationship inside one
-        # partition.
-        args: list[Any] = [embedding_str, agent_id, user_id, max_results, date_after, date_before]
-        allowed = _media_parent_clause(self.read_filter, "mc", args)
-        rows = await self.l3_pool.fetch(
-            f"""
-            SELECT mc.content_id, mc.content, mc.content_type,
-                   mc.media_id, med.media_category, med.metadata_json,
-                   med.date_created,
-                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
-            FROM media_content mc
-            JOIN media med
-              ON mc.agent_id = med.agent_id
-             AND mc.media_id = med.media_id
-            WHERE mc.agent_id = $2
-              AND mc.user_id = $3
-              AND mc.embedding IS NOT NULL
-              AND ($5::timestamptz IS NULL OR med.date_created >= $5)
-              AND ($6::timestamptz IS NULL OR med.date_created <= $6){allowed}
-            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
-            LIMIT $4
-            """,
-            *args,
+        # media. see :meth:`hybrid_search`. the file is joined by its key
+        # (agent_id, media_id) after the limit, LEFT: the foreign key gives
+        # every content row its file. the file's date window narrows the
+        # ranked rows themselves, before the limit, as the hand-written
+        # join's WHERE did: an EXISTS on the file by its key.
+        rows = await read_nearest(
+            self.l3_pool,
+            "media_content",
+            by={"agent_id": agent_id, "user_id": user_id},
+            where=[
+                Fragment("t.embedding IS NOT NULL", ()),
+                *_file_window_guards(date_after, date_before),
+                *_media_parent_guards(self.read_filter),
+            ],
+            nearest=Nearest("embedding", json.dumps(embedding), similarity="similarity"),
+            limit=max_results,
+            columns=("content_id", "content", "content_type", "media_id"),
+            joins=[
+                Joined(
+                    "media",
+                    on={"media_id": "media_id"},
+                    by={"agent_id": agent_id},
+                    columns={
+                        "media_category": "media_category",
+                        "metadata_json": "metadata_json",
+                        "date_created": "date_created",
+                    },
+                    left=True,
+                )
+            ],
         )
         result: list[dict[str, Any]] = []
         for row in rows:
@@ -3548,29 +3589,34 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
         """
         if self.l3_pool is None:
             return []
-        # cache-bypass: FTS rank query joining media_content -> media.
-        args: list[Any] = [fts_text, agent_id, user_id, max_results, date_after, date_before]
-        allowed = _media_parent_clause(self.read_filter, "mc", args)
-        rows = await self.l3_pool.fetch(
-            f"""
-            SELECT mc.content_id, mc.content, mc.content_type,
-                   mc.media_id, med.media_category, med.metadata_json,
-                   med.date_created,
-                   ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
-            FROM media_content mc
-            JOIN media med
-              ON mc.agent_id = med.agent_id
-             AND mc.media_id = med.media_id
-            WHERE mc.agent_id = $2
-              AND mc.user_id = $3
-              AND mc.embedding IS NOT NULL
-              AND {_CHUNK_FTS_MATCH}
-              AND ($5::timestamptz IS NULL OR med.date_created >= $5)
-              AND ($6::timestamptz IS NULL OR med.date_created <= $6){allowed}
-            ORDER BY fts_rank DESC
-            LIMIT $4
-            """,
-            *args,
+        # cache-bypass: FTS rank query joining media_content -> media, as
+        # :meth:`search_by_semantic` joins it.
+        rows = await read_nearest(
+            self.l3_pool,
+            "media_content",
+            by={"agent_id": agent_id, "user_id": user_id},
+            where=[
+                Fragment("t.embedding IS NOT NULL", ()),
+                Fragment(_FTS_MATCH, (fts_text,)),
+                *_file_window_guards(date_after, date_before),
+                *_media_parent_guards(self.read_filter),
+            ],
+            nearest=TextRank("search_vector", fts_text),
+            limit=max_results,
+            columns=("content_id", "content", "content_type", "media_id"),
+            joins=[
+                Joined(
+                    "media",
+                    on={"media_id": "media_id"},
+                    by={"agent_id": agent_id},
+                    columns={
+                        "media_category": "media_category",
+                        "metadata_json": "metadata_json",
+                        "date_created": "date_created",
+                    },
+                    left=True,
+                )
+            ],
         )
         return [
             {
@@ -3871,21 +3917,15 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
             raise ValueError("hybrid_search: pass at most one of chunk_id_after / chunk_id_before")
         if self.l3_pool is None:
             return []
-        embedding_str = json.dumps(embedding)
-
-        scope_params, param_offset = _owner_scope_params(agent_id, customer_id, user_id)
-        cursor_clause = ""
-        cursor_value: UUID | None = None
-        if chunk_id_after is not None:
-            cursor_clause = f"AND mc.chunk_id > ${param_offset + 1}"
-            cursor_value = chunk_id_after
-        elif chunk_id_before is not None:
-            cursor_clause = f"AND mc.chunk_id < ${param_offset + 1}"
-            cursor_value = chunk_id_before
-        cursor_params: list[Any] = [cursor_value] if cursor_value is not None else []
-        limit_param = f"${param_offset + 1 + len(cursor_params)}"
-        vec_args: list[Any] = [embedding_str, *scope_params, *cursor_params, candidate_k]
-        vec_allowed = _chunk_parent_clause(self.read_filter, "mc", vec_args)
+        owner = {"agent_id": agent_id, "customer_id": customer_id, "user_id": user_id}
+        cursor: tuple[Fragment, ...] = (
+            (Fragment("t.chunk_id > $1", (chunk_id_after,)),)
+            if chunk_id_after is not None
+            else (Fragment("t.chunk_id < $1", (chunk_id_before,)),)
+            if chunk_id_before is not None
+            else ()
+        )
+        allowed = _chunk_parent_guards(self.read_filter)
 
         # cache-bypass: vector-distance search joining memory_chunks ->
         # media (through the new memory parent FK). not primary-key-
@@ -3894,62 +3934,57 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         # rows whose ``memory_id`` equals the chunk's ``memory_id`` --
         # i.e. the chunk's parent memory IS the media's parent memory.
         # Transcript chunks naturally LEFT JOIN to NULL because their
-        # parent memory has no media child.
+        # parent memory has no media child. The media rows are read by
+        # (agent_id, memory_id), ix_media_agent_memory, for the ranked
+        # chunks, after the limit (a chunk matching two files is answered
+        # once for each, and the first ``candidate_k`` kept, as before).
         # ``mc.embedding IS NOT NULL`` guard: ``NULL <=> vector`` is
         # NULL, which trips ``float(similarity)`` downstream.
-        vec_coro = self.l3_pool.fetch(
-            f"""
-            SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
-                   mc.page_number, mc.memory_id,
-                   mc.message_id_start, mc.message_id_end,
-                   mc.embedding::text AS embedding, med.metadata_json, med.media_id,
-                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
-            FROM memory_chunks mc
-            LEFT JOIN media med
-              ON mc.agent_id = med.agent_id
-             AND mc.memory_id = med.memory_id
-            WHERE {_OWNER_SCOPE_MC}
-              AND mc.embedding IS NOT NULL
-              {cursor_clause}{vec_allowed}
-            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
-            LIMIT {limit_param}
-            """,
-            *vec_args,
+        vec_coro = read_nearest(
+            self.l3_pool,
+            "memory_chunks",
+            by=owner,
+            where=[Fragment("t.embedding IS NOT NULL", ()), *cursor, *allowed],
+            nearest=Nearest("embedding", json.dumps(embedding), similarity="similarity"),
+            limit=candidate_k,
+            columns=_HYBRID_CHUNK_COLUMNS,
+            joins=[
+                Joined(
+                    "media",
+                    on={"memory_id": "memory_id"},
+                    by={"agent_id": agent_id},
+                    columns={"metadata_json": "metadata_json", "media_id": "media_id"},
+                    left=True,
+                )
+            ],
         )
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_params, fts_param_offset = _owner_scope_params(agent_id, customer_id, user_id)
-            fts_cursor_clause = ""
-            fts_cursor_params: list[Any] = []
-            if cursor_value is not None:
-                op = ">" if chunk_id_after is not None else "<"
-                fts_cursor_clause = f"AND mc.chunk_id {op} ${fts_param_offset + 1}"
-                fts_cursor_params.append(cursor_value)
-            fts_limit_param = f"${fts_param_offset + 1 + len(fts_cursor_params)}"
-            fts_args: list[Any] = [fts_text, *fts_scope_params, *fts_cursor_params, candidate_k]
-            fts_allowed = _chunk_parent_clause(self.read_filter, "mc", fts_args)
             # cache-bypass: FTS rank query joining memory_chunks ->
             # media through the new memory_id parent FK.
-            fts_coro = self.l3_pool.fetch(
-                f"""
-                SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
-                       mc.page_number, mc.memory_id,
-                       mc.message_id_start, mc.message_id_end,
-                       mc.embedding::text AS embedding, med.metadata_json, med.media_id,
-                       ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
-                FROM memory_chunks mc
-                LEFT JOIN media med
-                  ON mc.agent_id = med.agent_id
-                 AND mc.memory_id = med.memory_id
-                WHERE {_OWNER_SCOPE_MC}
-                  AND mc.embedding IS NOT NULL
-                  AND {_CHUNK_FTS_MATCH}
-                  {fts_cursor_clause}{fts_allowed}
-                ORDER BY fts_rank DESC
-                LIMIT {fts_limit_param}
-                """,
-                *fts_args,
+            fts_coro = read_nearest(
+                self.l3_pool,
+                "memory_chunks",
+                by=owner,
+                where=[
+                    Fragment("t.embedding IS NOT NULL", ()),
+                    Fragment(_FTS_MATCH, (fts_text,)),
+                    *cursor,
+                    *allowed,
+                ],
+                nearest=TextRank("search_vector", fts_text),
+                limit=candidate_k,
+                columns=_HYBRID_CHUNK_COLUMNS,
+                joins=[
+                    Joined(
+                        "media",
+                        on={"memory_id": "memory_id"},
+                        by={"agent_id": agent_id},
+                        columns={"metadata_json": "metadata_json", "media_id": "media_id"},
+                        left=True,
+                    )
+                ],
             )
             vec_rows, fts_rows = await asyncio.gather(vec_coro, fts_coro)
         else:
@@ -3987,24 +4022,33 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         # -> media via the memory_id parent FK. see :meth:`hybrid_search`
         # for the JOIN-shape rationale (LEFT JOIN matches media whose
         # parent memory == the chunk's parent memory). transcript chunks
-        # naturally LEFT JOIN to NULL.
-        args: list[Any] = [agent_id, chunk_ids, user_id]
-        allowed = _chunk_parent_clause(self.read_filter, "mc", args)
-        rows = await self.l3_pool.fetch(
-            f"""
-            SELECT mc.chunk_id, mc.content, mc.heading_context, mc.page_number,
-                   mc.memory_id, mc.message_id_start, mc.message_id_end,
-                   mc.chunk_index, mc.date_created,
-                   med.metadata_json, med.media_id
-            FROM memory_chunks mc
-            LEFT JOIN media med
-              ON mc.agent_id = med.agent_id
-             AND mc.memory_id = med.memory_id
-            WHERE mc.agent_id = $1
-              AND mc.chunk_id = ANY($2::uuid[])
-              AND mc.user_id = $3{allowed}
-            """,
-            *args,
+        # naturally LEFT JOIN to NULL. the chunks by their keys, then their
+        # files by (agent_id, memory_id), ix_media_agent_memory.
+        rows = await read_by_joined(
+            self.l3_pool,
+            "memory_chunks",
+            by={"agent_id": agent_id, "chunk_id": AnyOf(chunk_ids, cast="uuid"), "user_id": user_id},
+            columns=(
+                "chunk_id",
+                "content",
+                "heading_context",
+                "page_number",
+                "memory_id",
+                "message_id_start",
+                "message_id_end",
+                "chunk_index",
+                "date_created",
+            ),
+            where=[*_chunk_parent_guards(self.read_filter)],
+            joins=[
+                Joined(
+                    "media",
+                    on={"memory_id": "memory_id"},
+                    by={"agent_id": agent_id},
+                    columns={"metadata_json": "metadata_json", "media_id": "media_id"},
+                    left=True,
+                )
+            ],
         )
         return [dict(row) for row in rows]
 
@@ -4040,35 +4084,44 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         """
         if self.l3_pool is None:
             return []
-        embedding_str = json.dumps(embedding)
         # cache-bypass: vector-distance search joining memory_chunks
         # -> media via the memory_id parent FK. see :meth:`hybrid_search`.
         # ``mc.embedding IS NOT NULL`` guard: same NULL-cosine
-        # rationale as :meth:`hybrid_search`. the file is a lateral lookup by
-        # ix_media_agent_memory per chunk: as a plain join YugabyteDB hashed
-        # every file of the agent.
-        args: list[Any] = [embedding_str, agent_id, user_id, max_results, date_after, date_before]
-        allowed = _chunk_parent_clause(self.read_filter, "mc", args)
-        rows = await self.l3_pool.fetch(
-            f"""
-            SELECT mc.chunk_id, mc.content, mc.heading_context, mc.page_number,
-                   mc.memory_id, mc.message_id_start, mc.message_id_end,
-                   mc.date_created, med.metadata_json,
-                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
-            FROM memory_chunks mc
-            LEFT JOIN LATERAL (
-                SELECT media.metadata_json FROM media
-                WHERE media.agent_id = mc.agent_id AND media.memory_id = mc.memory_id
-            ) med ON TRUE
-            WHERE mc.agent_id = $2
-              AND mc.user_id = $3
-              AND mc.embedding IS NOT NULL
-              AND ($5::timestamptz IS NULL OR mc.date_created >= $5)
-              AND ($6::timestamptz IS NULL OR mc.date_created <= $6){allowed}
-            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
-            LIMIT $4
-            """,
-            *args,
+        # rationale as :meth:`hybrid_search`. the file is read by key,
+        # ix_media_agent_memory, for the ranked chunks (it was a lateral
+        # lookup per chunk: as a plain join YugabyteDB hashed every file of
+        # the agent); a chunk under two files is answered once for each, as
+        # the lateral answered it.
+        rows = await read_nearest(
+            self.l3_pool,
+            "memory_chunks",
+            by={"agent_id": agent_id, "user_id": user_id},
+            where=[
+                Fragment("t.embedding IS NOT NULL", ()),
+                *_date_guards("t.date_created", date_after, date_before),
+                *_chunk_parent_guards(self.read_filter),
+            ],
+            nearest=Nearest("embedding", json.dumps(embedding), similarity="similarity"),
+            limit=max_results,
+            columns=(
+                "chunk_id",
+                "content",
+                "heading_context",
+                "page_number",
+                "memory_id",
+                "message_id_start",
+                "message_id_end",
+                "date_created",
+            ),
+            joins=[
+                Joined(
+                    "media",
+                    on={"memory_id": "memory_id"},
+                    by={"agent_id": agent_id},
+                    columns={"metadata_json": "metadata_json"},
+                    left=True,
+                )
+            ],
         )
         result: list[dict[str, Any]] = []
         for row in rows:
@@ -4280,40 +4333,38 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         # cache-bypass: multi-row scan by memory_id within an agent
         # partition. composite index idx_chunks_memory_id_chunk_id
         # backs the ORDER BY chunk_id within memory_id. auth triple
-        # enforced on every row.
-        params: list[Any] = [agent_id, memory_id, user_id, customer_id]
-        cursor_clause = ""
-        if chunk_id_after is not None:
-            cursor_clause = "AND mc.chunk_id > $5"
-            params.append(chunk_id_after)
-            order_dir = "ASC"
-        elif chunk_id_before is not None:
-            cursor_clause = "AND mc.chunk_id < $5"
-            params.append(chunk_id_before)
-            order_dir = "DESC"
-        else:
-            order_dir = "ASC"
-        limit_param = f"${len(params) + 1}"
-        params.append(limit)
-        allowed = _chunk_parent_clause(self.read_filter, "mc", params)
-
-        rows = await self.l3_pool.fetch(
-            f"""
-            SELECT mc.chunk_id, mc.memory_id, mc.chunk_index, mc.content, mc.summary,
-                   mc.heading_context, mc.page_number,
-                   mc.message_id_start, mc.message_id_end,
-                   mc.date_created
-            FROM memory_chunks mc
-            WHERE mc.agent_id = $1
-              AND mc.memory_id = $2
-              AND mc.user_id = $3
-              AND mc.customer_id = $4
-              {cursor_clause}{allowed}
-            ORDER BY mc.chunk_id {order_dir}
-            LIMIT {limit_param}
-            """,
-            *params,
+        # enforced on every row. a page in chunk_id order, past the cursor
+        # (backward: DESC before ``chunk_id_before``).
+        backward = chunk_id_before is not None
+        cursor: tuple[Fragment, ...] = (
+            (Fragment("t.chunk_id > $1", (chunk_id_after,)),)
+            if chunk_id_after is not None
+            else (Fragment("t.chunk_id < $1", (chunk_id_before,)),)
+            if backward
+            else ()
         )
+        page = await keyset_page(
+            self.l3_pool,
+            "memory_chunks",
+            columns=(
+                "chunk_id",
+                "memory_id",
+                "chunk_index",
+                "content",
+                "summary",
+                "heading_context",
+                "page_number",
+                "message_id_start",
+                "message_id_end",
+                "date_created",
+            ),
+            by={"agent_id": agent_id, "memory_id": memory_id, "user_id": user_id, "customer_id": customer_id},
+            order=[Sort("chunk_id", "uuid", descending=backward)],
+            limit=limit,
+            where=[*cursor, *_chunk_parent_guards(self.read_filter)],
+        )
+        rows = page.rows
+        order_dir = "DESC" if backward else "ASC"
         result = [dict(row) for row in rows]
         # client-facing order is always ASC; flip the DESC backward
         # page so callers get a stable left-to-right list.
@@ -4438,52 +4489,58 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         if self.l3_pool is None:
             return []
 
-        # cache-bypass: the conversation's memories by idx_mem_conversation
-        # behind a MATERIALIZED fence, then their chunks by
-        # ix_memory_chunks_memory, the owner checked on each chunk. one form
-        # both planners take: with the owner on the chunk in a plain join
-        # YugabyteDB read every chunk of the user; with it on the memory,
-        # PostgreSQL read every memory of the owner.
-        params: list[Any] = [agent_id, conversation_id, user_id, customer_id]
-        cursor_clause = ""
-        if chunk_id_after is not None:
-            cursor_clause = "AND mc.chunk_id > $5"
-            params.append(chunk_id_after)
-            order_dir = "ASC"
-        elif chunk_id_before is not None:
-            cursor_clause = "AND mc.chunk_id < $5"
-            params.append(chunk_id_before)
-            order_dir = "DESC"
-        else:
-            order_dir = "ASC"
-        limit_param = f"${len(params) + 1}"
-        params.append(limit)
-        allowed = _chunk_parent_clause(self.read_filter, "mc", params)
-
-        rows = await self.l3_pool.fetch(
-            f"""
-            WITH conversation AS MATERIALIZED (
-                SELECT m.memory_id FROM memories m
-                WHERE m.agent_id = $1
-                  AND m.conversation_id = $2
-            )
-            SELECT mc.chunk_id, mc.memory_id, mc.chunk_index, mc.content, mc.summary,
-                   mc.heading_context, mc.page_number,
-                   mc.message_id_start, mc.message_id_end,
-                   mc.date_created
-            FROM conversation
-            JOIN memory_chunks mc
-              ON mc.agent_id = $1
-             AND mc.memory_id = conversation.memory_id
-            WHERE mc.user_id = $3
-              AND mc.customer_id = $4
-              AND mc.message_id_start IS NOT NULL
-              {cursor_clause}{allowed}
-            ORDER BY mc.message_id_start {order_dir}, mc.chunk_id {order_dir}
-            LIMIT {limit_param}
-            """,
-            *params,
+        # cache-bypass: the conversation's memories by idx_mem_conversation,
+        # then their chunks by ix_memory_chunks_memory, the owner checked on
+        # each chunk: two keyed reads, the form both planners took behind the
+        # MATERIALIZED fence (b2bc83998: with the owner on the chunk in a plain
+        # join YugabyteDB read every chunk of the user; with it on the memory,
+        # PostgreSQL read every memory of the owner).
+        memories = await read_by(
+            self.l3_pool,
+            "memories",
+            by={"agent_id": agent_id, "conversation_id": conversation_id},
+            columns=("memory_id",),
         )
+        if not memories:
+            return []
+        backward = chunk_id_before is not None
+        cursor: tuple[Fragment, ...] = (
+            (Fragment("t.chunk_id > $1", (chunk_id_after,)),)
+            if chunk_id_after is not None
+            else (Fragment("t.chunk_id < $1", (chunk_id_before,)),)
+            if backward
+            else ()
+        )
+        page = await keyset_page(
+            self.l3_pool,
+            "memory_chunks",
+            columns=(
+                "chunk_id",
+                "memory_id",
+                "chunk_index",
+                "content",
+                "summary",
+                "heading_context",
+                "page_number",
+                "message_id_start",
+                "message_id_end",
+                "date_created",
+            ),
+            by={
+                "agent_id": agent_id,
+                "memory_id": AnyOf([row["memory_id"] for row in memories], cast="uuid"),
+                "user_id": user_id,
+                "customer_id": customer_id,
+            },
+            order=[
+                Sort("message_id_start", "uuid", descending=backward),
+                Sort("chunk_id", "uuid", descending=backward),
+            ],
+            limit=limit,
+            where=[Fragment("t.message_id_start IS NOT NULL", ()), *cursor, *_chunk_parent_guards(self.read_filter)],
+        )
+        rows = page.rows
+        order_dir = "DESC" if backward else "ASC"
         result = [dict(row) for row in rows]
         if order_dir == "DESC":
             result.reverse()
@@ -4540,68 +4597,58 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         """
         if self.l3_pool is None:
             return []
-        embedding_str = json.dumps(embedding)
-
-        scope_params, param_offset = _owner_scope_params(agent_id, customer_id, user_id)
-        memory_id_param = f"${param_offset + 1}"
-        limit_param = f"${param_offset + 2}"
-        vec_args: list[Any] = [embedding_str, *scope_params, memory_id, candidate_k]
-        vec_allowed = _chunk_parent_clause(self.read_filter, "mc", vec_args)
+        # the owner triple, then the one parent memory: the memory_id pin is
+        # purely additive to the auth filter, never a replacement for it
+        within = {"agent_id": agent_id, "customer_id": customer_id, "user_id": user_id, "memory_id": memory_id}
+        allowed = _chunk_parent_guards(self.read_filter)
 
         # cache-bypass: vector-distance search joining memory_chunks
         # to media (via memory_id parent FK) scoped to one parent
-        # memory. auth triple enforced. memory_id predicate purely
-        # additive to the auth filter. ``mc.embedding IS NOT NULL`` guard:
-        # an un-embedded chunk has a NULL distance, which ``float()`` in the
-        # merge cannot take; it is left to the keyword arm, as in every other
-        # vector query here.
-        vec_coro = self.l3_pool.fetch(
-            f"""
-            SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
-                   mc.page_number, mc.memory_id,
-                   mc.message_id_start, mc.message_id_end,
-                   mc.embedding::text AS embedding, med.metadata_json, med.media_id,
-                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
-            FROM memory_chunks mc
-            LEFT JOIN media med
-              ON mc.agent_id = med.agent_id
-             AND mc.memory_id = med.memory_id
-            WHERE {_OWNER_SCOPE_MC}
-              AND mc.memory_id = {memory_id_param}
-              AND mc.embedding IS NOT NULL{vec_allowed}
-            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
-            LIMIT {limit_param}
-            """,
-            *vec_args,
+        # memory, the files read by key for the ranked chunks, as
+        # :meth:`hybrid_search` reads them. auth triple enforced.
+        # ``mc.embedding IS NOT NULL`` guard: an un-embedded chunk has a
+        # NULL distance, which ``float()`` in the merge cannot take; it is
+        # left to the keyword arm, as in every other vector query here.
+        vec_coro = read_nearest(
+            self.l3_pool,
+            "memory_chunks",
+            by=within,
+            where=[Fragment("t.embedding IS NOT NULL", ()), *allowed],
+            nearest=Nearest("embedding", json.dumps(embedding), similarity="similarity"),
+            limit=candidate_k,
+            columns=_HYBRID_CHUNK_COLUMNS,
+            joins=[
+                Joined(
+                    "media",
+                    on={"memory_id": "memory_id"},
+                    by={"agent_id": agent_id},
+                    columns={"metadata_json": "metadata_json", "media_id": "media_id"},
+                    left=True,
+                )
+            ],
         )
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_params, fts_param_offset = _owner_scope_params(agent_id, customer_id, user_id)
-            fts_memory_id_param = f"${fts_param_offset + 1}"
-            fts_limit_param = f"${fts_param_offset + 2}"
-            fts_args: list[Any] = [fts_text, *fts_scope_params, memory_id, candidate_k]
-            fts_allowed = _chunk_parent_clause(self.read_filter, "mc", fts_args)
             # cache-bypass: FTS rank query joining chunks -> media via
             # memory_id, scoped to one parent memory.
-            fts_coro = self.l3_pool.fetch(
-                f"""
-                SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
-                       mc.page_number, mc.memory_id,
-                       mc.message_id_start, mc.message_id_end,
-                       mc.embedding::text AS embedding, med.metadata_json, med.media_id,
-                       ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
-                FROM memory_chunks mc
-                LEFT JOIN media med
-                  ON mc.agent_id = med.agent_id
-                 AND mc.memory_id = med.memory_id
-                WHERE {_OWNER_SCOPE_MC}
-                  AND mc.memory_id = {fts_memory_id_param}
-                  AND {_CHUNK_FTS_MATCH}{fts_allowed}
-                ORDER BY fts_rank DESC
-                LIMIT {fts_limit_param}
-                """,
-                *fts_args,
+            fts_coro = read_nearest(
+                self.l3_pool,
+                "memory_chunks",
+                by=within,
+                where=[Fragment(_FTS_MATCH, (fts_text,)), *allowed],
+                nearest=TextRank("search_vector", fts_text),
+                limit=candidate_k,
+                columns=_HYBRID_CHUNK_COLUMNS,
+                joins=[
+                    Joined(
+                        "media",
+                        on={"memory_id": "memory_id"},
+                        by={"agent_id": agent_id},
+                        columns={"metadata_json": "metadata_json", "media_id": "media_id"},
+                        left=True,
+                    )
+                ],
             )
             vec_rows, fts_rows = await asyncio.gather(vec_coro, fts_coro)
         else:
@@ -4979,7 +5026,9 @@ class MemoryConsolidationsCollection(SchemaBackedCollection[MemoryConsolidationE
                 purpose=(
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MemoryConsolidationsCollection.find_consolidated_into; "
-                    "packages/agent/memory/src/threetears/agent/memory/collections.py::_MEMORY_MARK_COLUMNS; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.search_by_semantic; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.search_by_fts; "
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.list_for_user; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_by_alias; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.search_by_ids; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_for_recall; "

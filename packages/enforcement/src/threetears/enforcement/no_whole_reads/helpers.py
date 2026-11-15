@@ -529,17 +529,25 @@ def _read_by(call: ast.Call) -> list[str]:
 def _read_nearest(call: ast.Call) -> list[str]:
     """the rows nearest a vector (``read_nearest``): its pins and ``where=`` fragments as :func:`_read_by` judges them,
     ordered by the distance from a bound vector under its ``LIMIT``, as an approximate-nearest-neighbour index on the
-    column answers it. A ``nearest=`` the walk cannot read (not a literal ``Nearest(...)``) is judged by its pins alone,
-    unordered, as the read pinning them."""
+    column answers it. A ``nearest=`` the walk cannot read (not a literal ``Nearest(...)`` or ``TextRank(...)``) is
+    judged by its pins alone, unordered, as the read pinning them. A ``TextRank(...)`` orders by the rank of a text
+    query, best first, which no index serves: the read is judged by its pins under that order. Its ``joins=``, each
+    joined table's keyed batch, as :func:`_read_by_joined` judges them."""
     (statement, *own) = _read_by(call)
+    joins = _joined_statements(call) if _argument(call, "joins", None) is not None else []
     node = _argument(call, "nearest", None)
-    if not (isinstance(node, ast.Call) and _name(node) == "Nearest"):
-        return [statement, *own]
+    if not (isinstance(node, ast.Call) and _name(node) in {"Nearest", "TextRank"}):
+        return [statement, *own, *joins]
     column = _text(_argument(node, "column", 0), "nearest")
+    place = 1 + max((int(found) for found in re.findall(r"\$(\d+)", statement)), default=0)
+    if _name(node) == "TextRank":
+        config = _argument(node, "config", 3)
+        language = config.value if isinstance(config, ast.Constant) and isinstance(config.value, str) else "english"
+        rank = f"ts_rank_cd({_quoted(column)}, websearch_to_tsquery('{language}', ${place}))"
+        return [f"{statement} ORDER BY {rank} DESC LIMIT ${place + 1}", *own, *joins]
     operator = _argument(node, "operator", 2)
     distance = operator.value if isinstance(operator, ast.Constant) and isinstance(operator.value, str) else "<=>"
-    place = 1 + max((int(found) for found in re.findall(r"\$(\d+)", statement)), default=0)
-    return [f"{statement} ORDER BY {_quoted(column)} {distance} ${place} LIMIT ${place + 1}", *own]
+    return [f"{statement} ORDER BY {_quoted(column)} {distance} ${place} LIMIT ${place + 1}", *own, *joins]
 
 
 def _written_order(node: ast.expr | None) -> str:
@@ -739,11 +747,20 @@ def _read_by_joined(call: ast.Call) -> list[str]:
     ``limit=``, as :func:`_keyset_page` judges one), then each joined
     table's keyed batch by the columns it is joined on and its own pins, as :func:`_read_joined` judges one; joins the
     walk cannot read as a literal list of ``Joined(...)`` are unseen."""
+    # a page of it (``limit=``) is read as keyset_page reads one
+    joined = _joined_statements(call)
+    statements = _keyset_page(call) if _argument(call, "limit", None) is not None else _read_by(call)
+    return [*statements, *joined]
+
+
+def _joined_statements(call: ast.Call) -> list[str]:
+    """each joined table's keyed batch a read's ``joins=`` sends (``read_by_joined``, ``read_nearest``): by the columns
+    it is joined on and its own pins, as :func:`_read_joined` judges one; joins the walk cannot read as a literal list
+    of ``Joined(...)`` are unseen."""
     joins = _argument(call, "joins", None)
     if not isinstance(joins, ast.List | ast.Tuple):
         raise _Unseen("joins")
-    # a page of it (``limit=``) is read as keyset_page reads one
-    statements = _keyset_page(call) if _argument(call, "limit", None) is not None else _read_by(call)
+    statements: list[str] = []
     for join in joins.elts:
         if not (isinstance(join, ast.Call) and _name(join) == "Joined"):
             raise _Unseen("joins")
@@ -955,9 +972,7 @@ def _aggregate_keyed(call: ast.Call) -> list[str]:
     """a keyed aggregate (``aggregate_keyed``): the rows its ``by`` pins (an ``AnyOf`` as ``= ANY``), its ranges of
     the next column bound and its ``where`` narrows, counted. Its group (a column or a time bucket) is no predicate."""
     by = _by(_argument(call, "by", None))
-    relation, own = _keyed_relation(
-        _argument(call, "table", 1), "table", by_key=bool(by) and by[0][0] == "{pk}"
-    )
+    relation, own = _keyed_relation(_argument(call, "table", 1), "table", by_key=bool(by) and by[0][0] == "{pk}")
     pinned, place = _conditions(by)
     ranged = []
     for condition in _ranges(_argument(call, "ranges", None)):
@@ -1277,8 +1292,11 @@ _SYNTHESIZERS: Final = {
 
 
 #: the helpers whose every call the walk judges as the statements it sends (a synthesizer each): a call of one
-#: inside another's body, over what that one's caller hands it, is judged at that one's callers
-JUDGED_BY_STATEMENTS: Final[frozenset[str]] = frozenset(_SYNTHESIZERS)
+#: inside another's body, over what that one's caller hands it, is judged at that one's callers. With them, the keyed
+#: package's shared bodies those helpers run on what their callers hand them (``join_rows``: the joins
+#: ``read_by_joined`` and ``read_nearest`` both apply, each joined table judged at their callers by
+#: :func:`_joined_statements`)
+JUDGED_BY_STATEMENTS: Final[frozenset[str]] = frozenset({*_SYNTHESIZERS, "join_rows"})
 
 
 #: the argument naming the relation a keyed read reads, by helper: keyword and position

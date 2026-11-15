@@ -7,6 +7,7 @@ schema of its own.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import uuid
 from collections.abc import AsyncIterator, Mapping
@@ -116,6 +117,27 @@ async def parents(connection: asyncpg.Connection) -> AsyncIterator[None]:
     finally:
         await connection.execute("DELETE FROM media")
         await connection.execute("DELETE FROM memories")
+
+
+class Serial:
+    """one connection as the pool a collection reads through: a method that reads two arms at once
+    (``asyncio.gather``) has each statement wait its turn, as a pool's second connection would have answered it."""
+
+    def __init__(self, conn: Any) -> None:
+        self.conn = conn
+        self.lock = asyncio.Lock()
+
+    async def fetch(self, sql: str, *args: Any) -> Any:
+        async with self.lock:
+            return await self.conn.fetch(sql, *args)
+
+    async def fetchrow(self, sql: str, *args: Any) -> Any:
+        async with self.lock:
+            return await self.conn.fetchrow(sql, *args)
+
+    async def fetchval(self, sql: str, *args: Any) -> Any:
+        async with self.lock:
+            return await self.conn.fetchval(sql, *args)
 
 
 def collection(kind: type[Any], pool: Any) -> Any:

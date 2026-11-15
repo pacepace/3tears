@@ -743,6 +743,34 @@ def test_a_link_chain_is_judged_as_the_recursive_read_it_sends(schema: SchemaCat
     assert _judged(keyed.replace('key="signal"', 'key="run_id"'), schema) != [[]]
 
 
+def test_a_text_ranked_read_is_judged_by_its_pins_under_its_rank_order(schema: SchemaCatalog) -> None:
+    """Flips if ``read_nearest`` given a ``TextRank`` is not judged as the statement it sends (its pins, ordered by the
+    rank under a LIMIT, which no index serves): keyed when its pins lead the table's key, a finding when they do not,
+    as the read pinning them is; and never as the vector order an approximate-nearest-neighbour index serves."""
+    keyed = 'read_nearest(c, "results", by={"state": s}, nearest=TextRank("search_vector", q), limit=k)'
+    assert _judged(keyed, schema) == [[]]
+    (statement,) = helper_statements(_call(keyed))
+    assert "ts_rank_cd" in statement.sql and "DESC LIMIT" in statement.sql, statement.sql
+    assert _judged(keyed.replace('by={"state": s}', 'by={"kind": s}'), schema) == [[("non-key-where", "results")]]
+    ranked = 'read_nearest(c, "docs", by={"owner": o}, nearest=TextRank("search_vector", q), limit=k)'
+    assert _judged(ranked, schema) == [[("non-key-where", "docs")]]
+
+
+def test_a_ranked_read_with_joins_is_judged_as_its_read_and_each_joined_table_s_keyed_batch(
+    schema: SchemaCatalog,
+) -> None:
+    """Flips if ``read_nearest`` with ``joins=`` is judged as anything but the statements it sends: the ranked read by
+    its pins, then each joined table's keyed batch by the columns it is joined on (keyed when they lead its key, else
+    a finding), as ``read_by_joined``'s joins are judged; joins the walk cannot read are unseen."""
+    near = (
+        'read_nearest(c, "docs", by={"owner": o}, nearest=Nearest("embedding", v), limit=k, '
+        'joins=[Joined("grants", on={"who": "owner"}, columns={"g": "state"}, left=True)])'
+    )
+    assert _judged(near, schema) == [[], []]
+    assert _judged(near.replace('on={"who": "owner"}', 'on={"state": "owner"}'), schema)[1] != []
+    assert list(helper_statements(_call(near.replace("joins=[", "joins=js or ["))))[-1].unseen
+
+
 def test_a_nearest_rows_read_is_judged_as_its_distance_order_under_its_limit(schema: SchemaCatalog) -> None:
     """Flips if ``read_nearest`` is not judged as the statement it sends (its pins, ordered by the vector column's
     distance from a bound vector under a LIMIT): served by an approximate-nearest-neighbour index whose purpose names
