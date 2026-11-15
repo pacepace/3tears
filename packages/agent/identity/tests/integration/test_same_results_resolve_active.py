@@ -71,7 +71,10 @@ def _version(seed: Seeded) -> Mapping[str, Any]:
         "content": f"content {index}",
         "content_hash": f"h{index}",
         "status": _STATUSES[index % len(_STATUSES)],
-        "date_created": T0 + timedelta(minutes=seed.tie),
+        # an inactive version is the newest of its scope, so a read that stopped pinning the status would answer it
+        "date_created": T0
+        + timedelta(minutes=seed.tie)
+        + (timedelta(days=1) if _STATUSES[index % len(_STATUSES)] != "active" else timedelta(0)),
     }
 
 
