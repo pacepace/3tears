@@ -148,6 +148,15 @@ FAILING_AFTER: Final = 5
 RETRY_WAITS: Final = (1.0, 60.0)
 
 
+#: passes that only relabelled the copy: nothing heard or staged, the writer's stamp moved. Such a pass relabels the
+#: change the copy already holds in place and asks the backend for no apply (see ``CopyFollower._relabel``)
+_RELABELS = counter(
+    "copy_follower_relabels_total",
+    description="copy follower passes that only relabelled the copy with a new stamp (nothing to apply): no apply, "
+    "no settle, no publish",
+)
+
+
 def _warms() -> Any:
     return counter(
         "copy_follower_warms_total",
@@ -516,6 +525,7 @@ class FollowerStatus:
     :ivar pending: keys heard and not yet applied, by table
     :ivar rows: each table's rows, as last counted
     :ivar applied: changes applied since start
+    :ivar relabelled: passes since start that only relabelled the copy (nothing to apply, a new stamp): no apply
     :ivar last_apply_seconds: how long the last change took, from the first stamp read to the commit
     :ivar failures: passes failed in a row since the last good one; at :data:`FAILING_AFTER` the phase is FAILING
     :ivar behind_since: when the first of those failed (None while passes succeed): the copy serves the change it held
@@ -529,6 +539,7 @@ class FollowerStatus:
     pending: dict[str, int] = field(default_factory=dict)
     rows: dict[str, int] = field(default_factory=dict)
     applied: int = 0
+    relabelled: int = 0
     last_apply_seconds: float | None = None
     failures: int = 0
     behind_since: datetime | None = None
@@ -669,6 +680,9 @@ class CopyFollower:
         self._staged_scopes: dict[str, set[str | None]] = {}
         #: the mark of the last change applied, and the stamp of each recent one (a reader's snapshot names its mark)
         self._mark = 0
+        #: the mark of the change the copy holds now (the last apply that succeeded); None before the first. A pass
+        #: that only relabels the copy relabels this one in place (:meth:`_relabel`)
+        self._applied_mark: int | None = None
         self._stamps: dict[int, tuple[Any, Mapping[str, str | None]]] = {}
         #: each table's mark when the keys being staged were taken: what the next change applied holds
         self._staging_marks: dict[str, str | None] = {}
@@ -855,6 +869,7 @@ class CopyFollower:
         followed_missing = {name: why for name, why in staged.missing.items() if name in self._tables}
         self._mark += 1
         await asyncio.to_thread(self._backend.apply_staged, staged.changes, mark=self._mark)
+        self._applied_mark = self._mark
         # the loaded tables' marks alone: a table still to be read whole has no mark a checkpoint may record
         self._stamps[self._mark] = (staged.stamp, dict(staged.marks))
         self._current_marks = dict(staged.marks)
@@ -1025,6 +1040,8 @@ class CopyFollower:
             if nothing and not self._staged and label == self._status.stamp:
                 self._say(FollowerPhase.FOLLOWING, "current" if not writing else "current to every scope not held")
                 return True
+            if nothing and not self._staged and self._applied_mark in self._stamps:
+                return await self._relabel(first, label, writing=writing, held=held)
             # taken with the keys, no await between: every key of an epoch at or below these marks is among them
             self._staging_marks = self.marks()
             pending, whole, partitions = self._take(held, writing=writing)
@@ -1054,6 +1071,7 @@ class CopyFollower:
             except LookupError as exc:
                 self._stages_lost()
                 raise _StagesLostError(f"the stages were lost applying the change: {exc}") from exc
+            self._applied_mark = mark
             # a table is current at the marks taken for this pass only when nothing of it is left to read: no key left
             # pending (a scope the write holds, a table of no scope while any write is), no whole read, no partition
             for name in self._tables:
@@ -1095,6 +1113,58 @@ class CopyFollower:
                 listener(label)
             self._checkpoint_when_due(rows, touched, touched_keys, whole_whys)
             return True
+
+    async def _relabel(self, first: Any, label: Any, *, writing: bool, held: frozenset[str]) -> bool:
+        """a pass with nothing heard, staged, or to read whole, and a new stamp: the change the copy holds is relabelled
+        in place. Its rows are those of the new stamp already, so the backend is asked for nothing: no apply, so on a
+        pod's backend no worker round trip, no settle of an empty change, no publish of unchanged rows.
+
+        Why in place: a reader learns its stamp from the mark its snapshot holds (:meth:`reading_marked`), so the new
+        label goes on the mark the copy holds now, with each table's mark now (every table is current: nothing is left
+        pending). A reader that opened before still reads the same rows; it reads them under the label it read first.
+        Everything a labelling pass did besides the apply is kept: the stamp read again and the pass taken only when it
+        held still (as :meth:`_still` judges a pass with nothing staged), the listeners told (a reader's epochs moved),
+        the checkpoint counted (no rows; it may be due by time or a left-out table).
+
+        Measured (E1, 2026-11-15, S/e1/measure_relabel.py, log S/e1/measure.log): every such pass before this sent
+        the backend an empty change. Reports' pod relabels the copy around each write in progress that holds no state
+        it is behind on (a PartialStamp in, the settled record out). On reports' shared copy at prod's size (9.52M
+        lsf_projections rows, test_follower_change_cost's seed), followed as the pod follows it (settle in the apply
+        worker), one empty apply took 181 ms median (144-241 ms, 10 runs; machine load 4.4 at start) for nothing
+        changed; followed with no settle, 3.6 ms. Now such a pass costs one stamp read and a dict assignment.
+        Counted by ``copy_follower_relabels_total``.
+
+        :param first: what ``settled`` answered first
+        :ptype first: Any
+        :param label: the stamp the copy is labelled with
+        :ptype label: Any
+        :param writing: whether a write is in progress
+        :ptype writing: bool
+        :param held: the scopes the write holds
+        :ptype held: frozenset[str]
+        :return: whether the copy is now labelled with the new stamp (False: the stamp moved while it was read)
+        :rtype: bool
+        """
+        marks = self.marks()
+        second = await self._settled()
+        if not self._still(first, second):
+            self._say(FollowerPhase.WAITING, "the stamp moved while the change was read; the next pass tops it up")
+            return False
+        assert self._applied_mark is not None  # noqa: S101 -- narrowed by the caller (a mark in self._stamps)
+        self._current_marks.update({name: marks.get(name) for name in self._tables})
+        # one assignment: a reader on another thread reads the old entry or the new, never half of one
+        self._stamps[self._applied_mark] = (label, dict(self._current_marks))
+        self._status.stamp = label
+        self._status.relabelled += 1
+        _RELABELS.inc()
+        self._say(
+            FollowerPhase.FOLLOWING,
+            "current" if not writing else f"current to every scope not held; {len(held)} held by the write",
+        )
+        for listener in tuple(self._listeners):
+            listener(label)
+        self._checkpoint_when_due(0, {}, {}, {})
+        return True
 
     def _checkpoint_when_due(
         self,

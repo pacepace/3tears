@@ -164,6 +164,8 @@ _COMPLIANT: dict[str, list[str]] = {
         "async def load(conn, rows):\n    await conn.execute('INSERT INTO t SELECT * FROM unnest($1)', rows)\n"
         "    await announce_change('t', rows)\n",
         "async def read(pool, key):\n    return await pool.fetchrow('SELECT * FROM t WHERE id = $1 FOR UPDATE', key)\n",
+        # COPY ... TO STDOUT reads a query's rows out: no write, so no epoch to announce
+        "async def dump(conn, sink):\n    await conn.copy_from_query('SELECT id FROM t', output=sink, format='csv')\n",
         # a coordination primitive's own bucket holds no collection's rows
         "class KVLease:\n    async def take(self, key, value):\n        await self._kv.create(key=key, value=value)\n",
         # a keyed write inside the collection's bypassing_write, or announced

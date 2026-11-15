@@ -45,6 +45,7 @@ are counted per table, so an unrelated write never costs a reader its cache.
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -90,6 +91,40 @@ _scan_cache_deps_table = Table(
 
 #: the entries one statement of an eviction reads (``keyset_rows``' page)
 _DEPS_PAGE = 1_000
+
+
+class _Dependents:
+    """Which tables of one L1 backend are known to have no stored scan depending on them.
+
+    WHY (2026-11-15, builder S2): every local write and every broadcast runs :meth:`ScanCache.drop_for_table`, and
+    almost none of them is for a table a cached scan depends on. The keyed read of the dependency rows (a957c69ba)
+    cost about 8.4 us a write on SQLite against about 2 us for the whole-cache select it replaced (R3, 2026-11-15;
+    on a loaded 10-core host 69 us against 12 us), all of it the keyed helper building and running a statement that
+    finds nothing. A table an eviction has emptied is marked clean here, and an eviction of a clean table skips L1
+    entirely (about 0.3 us); a store unmarks every table it depends on BEFORE it writes its rows. Nothing here ages:
+    a mark is made only by an eviction that found the table's rows gone, and removed by the next store naming it, so
+    it is exactly as current as the rows (no TTL, no count). The speed test is
+    ``test_scan_cache_write_cost.py``.
+
+    Kept per :class:`ScanCache`, beside its eviction counts and on the same footing: one cache owns its backend's
+    scan tables (a registry's, :attr:`~threetears.core.collections.registry.CollectionRegistry.scan_cache`), and
+    the in-flight check in :meth:`ScanCache.put` already orders only that cache's reads against its own evictions.
+    A table never marked (a new cache over a backend that already held rows) is read on its first eviction, as
+    before.
+
+    One lock orders a store against an eviction: a store's unmark-and-write and an eviction's read-delete-and-mark
+    run whole, one at a time, so an eviction never marks a table clean past a row a store wrote while it read.
+
+    :ivar clean: the tables known to have no dependency row in the backend
+    :ivar lock: held across a store's rows and an eviction's read, delete and mark
+    """
+
+    __slots__ = ("clean", "lock")
+
+    def __init__(self) -> None:
+        """start knowing nothing clean: each table's first eviction reads it."""
+        self.clean: set[str] = set()
+        self.lock = threading.Lock()
 
 
 def _never_trusted(_tables: Sequence[str]) -> bool:
@@ -167,7 +202,7 @@ class ScanCache:
         :class:`ScanReadToken` is checked against
     """
 
-    __slots__ = ("_evictions", "_l1", "_trusted")
+    __slots__ = ("_dependents", "_evictions", "_l1", "_trusted")
 
     def __init__(
         self, l1_backend: L1Backend | None, *, trusted: Callable[[Sequence[str]], bool] = _never_trusted
@@ -188,6 +223,7 @@ class ScanCache:
         # reach it through `drop_for_table` -- its own writes via `publish_invalidation`,
         # everyone else's via the listener -- so a local count sees all of them.
         self._evictions: dict[str, int] = {}
+        self._dependents = None if self._l1 is None else _Dependents()
         if self._l1 is not None and not (
             self._l1.has_table("collection_scan_cache") and self._l1.has_table(_DEPS_TABLE)
         ):
@@ -272,22 +308,40 @@ class ScanCache:
                     },
                 },
             )
-        elif self._l1 is not None and self._trusted(token.depends_on):
+        elif self._l1 is not None and self._dependents is not None and self._trusted(token.depends_on):
+            with self._dependents.lock:
+                # unmarked before the rows are written, under the lock an eviction marks by (see _Dependents)
+                self._dependents.clean.difference_update(token.depends_on)
+                self._store(key, rows, token.depends_on)
+            stored = True
+        return stored
+
+    def _store(self, key: ScanCacheKey, rows: list[dict[str, Any]], depends_on: tuple[str, ...]) -> None:
+        """write one entry and its dependency rows.
+
+        :param key: the scan identity
+        :ptype key: ScanCacheKey
+        :param rows: the scan's result rows
+        :ptype rows: list[dict[str, Any]]
+        :param depends_on: the tables whose write evicts it
+        :ptype depends_on: tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        """
+        if self._l1 is not None:
             self._l1.upsert(
                 "collection_scan_cache",
                 {
                     "key": key.as_string(),
                     "owner_table": key.owner_table,
-                    "depends_on": json.dumps(list(token.depends_on)),
+                    "depends_on": json.dumps(list(depends_on)),
                     "payload": json.dumps(rows, default=json_default),
                 },
                 "key",
             )
             # a row a dependency (a scan names a few tables); a process-local cache's own index, no L3 row
-            for table in token.depends_on:
+            for table in depends_on:
                 self._l1.upsert(_DEPS_TABLE, {"dep_table": table, "key": key.as_string()}, _DEPS_KEY)
-            stored = True
-        return stored
 
     def drop_for_table(self, table: str) -> int:
         """evict every entry that declared ``table`` as a dependency.
@@ -306,7 +360,24 @@ class ScanCache:
         """
         self._evictions[table] = self._evictions.get(table, 0) + 1
         dropped = 0
-        if self._l1 is not None and self._l1.has_table(_DEPS_TABLE):
+        if self._l1 is not None and self._dependents is not None and self._l1.has_table(_DEPS_TABLE):
+            # a table no stored scan depends on has nothing to read (WHY and numbers at _Dependents)
+            with self._dependents.lock:
+                if table not in self._dependents.clean:
+                    dropped = self._drop_dependents(table)
+                    self._dependents.clean.add(table)
+        return dropped
+
+    def _drop_dependents(self, table: str) -> int:
+        """delete every entry depending on ``table``, with every dependency row naming them.
+
+        :param table: the table that was written
+        :ptype table: str
+        :return: how many entries were deleted
+        :rtype: int
+        """
+        dropped = 0
+        if self._l1 is not None:
             # the table's entries, by the dependency key (``dep_table`` leads it), never every entry
             keys = [
                 row["key"]

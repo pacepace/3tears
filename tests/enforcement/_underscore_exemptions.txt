@@ -190,3 +190,9 @@ packages/nats/tests/unit/test_nats_py_internals.py:<module>#0:_nats_py_internals
 
 # rationale: owner ruling 3: test_otel_internals is the guard that fails when an OpenTelemetry release moves the private logs modules (opentelemetry._logs, opentelemetry.sdk._logs, the OTLP _log_exporter) or changes how a record reaches the exporter; it imports the confinement module to drive start_log_export end to end
 packages/observe/tests/test_otel_internals.py:<module>#0:_otel_internals
+# rationale: asyncio events.Handle._run (verified CPython 3.14): BaseEventLoop._run_once runs every ready callback through it, and asyncio has no public hook around one callback's run (slow_callback_duration times the wall clock in debug mode and only logs). turn_holds reads it to wrap it, so each turn of a test's loop is timed on the loop thread's CPU clock (the change-note restore's 1 ms a turn bound, L1 2026-11-15); this module is the one owner, and packages/core/tests/unit/testing/test_turn_holds.py pins it against the installed asyncio
+packages/core/src/threetears/core/testing/_asyncio_internals.py:timed_handles#0:_run
+# rationale: asyncio events.Handle._run: timed_handles puts its wrapper in place for the block (the read above names why); asyncio offers no public way to time a callback's run
+packages/core/src/threetears/core/testing/_asyncio_internals.py:timed_handles#1:_run
+# rationale: asyncio events.Handle._run: timed_handles puts asyncio's own run back as the block ends, whatever it ended by, so no turn after it is wrapped (test_turn_holds.py::test_asyncio_runs_its_callbacks_as_before_after_the_block)
+packages/core/src/threetears/core/testing/_asyncio_internals.py:timed_handles#2:_run

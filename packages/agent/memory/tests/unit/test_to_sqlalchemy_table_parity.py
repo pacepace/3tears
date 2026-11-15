@@ -135,6 +135,8 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
             ondelete="SET NULL",
         ),
         SAIndex("ix_memories_agent_user_date", "agent_id", "user_id", sa_text("date_created DESC")),
+        # v038: a writer's same-event lookup, by its source messages.
+        SAIndex("ix_memories_message_source", "message_id_source", "agent_id", "user_id"),
         # v0.57.0: the v004 conversation index, now declared.
         SAIndex("idx_mem_conversation", "conversation_id"),
         SAIndex(

@@ -1,6 +1,6 @@
 """The change-note keeper reads its whole coverage only to put a lost change log back.
 
-``ChangeNoteKeeper._count_since``, ``._estimate`` and ``_StreamedChanges._stream`` read every note of the coverage
+``ChangeNoteKeeper._count_since``, ``._estimate`` and ``_StreamedChanges._stream`` (its keyed notes in ``_folded``) read every note of the coverage
 (the current and the previous ring tables) since a cut: what a lost log held is exactly those notes, so a restore
 reads them all (declared ``whole_read(kind="cold_start")``, Pace 2026-11-14). These hold that nothing else reaches
 them: each is called from one place, and the chain ends at ``_restore``, which ``run_pass`` calls only when the log is
@@ -77,6 +77,8 @@ def test_the_coverage_is_read_whole_only_by_a_restore() -> None:
     assert callers["_sized"] == {"ChangeNoteKeeper._restore"}
     assert callers["_cut"] == {"ChangeNoteKeeper._fitting", "ChangeNoteKeeper._restore"}
     assert callers["_stream"] == {"_StreamedChanges.__aiter__", "_StreamedChanges.stream"}
+    # the keyed notes' COPY, folded in the restore's worker process (L1, 2026-11-15)
+    assert callers["_folded"] == {"_StreamedChanges._stream"}
     assert callers["stream"] == {"_Gated._gate"}
     assert callers["_Gated"] == {"ChangeNoteKeeper._restore"}
     assert callers["_StreamedChanges"] == {"ChangeNoteKeeper._changes_since"}

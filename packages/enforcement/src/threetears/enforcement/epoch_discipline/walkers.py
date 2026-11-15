@@ -78,8 +78,9 @@ _SQL_CALLS: Final[frozenset[str]] = frozenset(
     {"execute", "executemany", "execute_batch", "fetch", "fetchrow", "fetchval", "fetch_arrow", "fetchall", "fetchone"}
 )
 
-#: driver COPY calls; their first argument is the table.
-_COPY_CALLS: Final[frozenset[str]] = frozenset({"copy_records_to_table", "copy_to_table", "copy_from_query"})
+#: driver COPY calls that write a table; their first argument is the table. ``copy_from_query`` is not one: it runs
+#: ``COPY (query) TO STDOUT``, a read of the query's rows (a change-note restore's keyed notes, L1 2026-11-15)
+_COPY_CALLS: Final[frozenset[str]] = frozenset({"copy_records_to_table", "copy_to_table"})
 
 #: backend bulk-write methods, distinctive by name wherever they are called.
 _BACKEND_BULK_WRITES: Final[frozenset[str]] = frozenset(
