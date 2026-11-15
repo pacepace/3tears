@@ -228,8 +228,8 @@
     },
     "threetears.evals.schema.BlindSheet": {
       "kind": "model",
-      "signature": "BlindSheet(read_id: str, name: str, instructions: str, criteria: list[SheetCriterion], items: list[SheetItem], answered: list[str] = list(), next: str | None = None)",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.BlindSlot": {
       "kind": "literal",

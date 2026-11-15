@@ -101,7 +101,6 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`AsyncDocumentStore`** · *host contract* · protocol · `DocumentStore`, every method awaited: the port for a host whose database driver is async.
 - **`AsyncExternalSpend`** · model · Paid non-LLM calls one piece of background work made at one provider, as the work reports them.
 - **`AsyncStoreClock`** · *host contract* · protocol · `StoreClock` for an `AsyncDocumentStore`: the store's own time, awaited.
-- **`BlindSheet`** · model · The blinded view of a read: all a renderer may show.
 - **`BoundCompletionClient`** · protocol · A completion client built for one model, which it names.
 - **`CalibrationRating`** · model · A rater's score for one judged dimension of one result — a person's, or an agent's.
 - **`CallLedger`** · model · The calls one cell's candidate made that succeeded, across every tool, in recorded order, and those refused.

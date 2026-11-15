@@ -1,4 +1,4 @@
-"""The sheet conformance check: a host's renderer of a blind read's sheet keeps the sheet's order and its slots.
+"""The sheet check: a renderer of a blind read's sheet keeps the sheet's order and its slots.
 
 A host that shows a blind read to people renders its :class:`~threetears.evals.schema.BlindSheet` (from the
 ``blind_read_sheet`` action) on its own page. The sample is random only if the rater meets the items in the drawn
@@ -12,15 +12,14 @@ sheet's types, so this check renders a sheet built to expose each mistake and re
 - **slots as given** — an item's two outputs appear A then B as drawn, never re-sorted (the sample's B output sorts
   before its A output by text).
 
-The check is the engine's own today: the quick path's page and the courier example's page are proven by it
-(``tests/test_blind_read_door.py``). It is not exported from :mod:`threetears.evals.testing` until a host's own suite
-calls it, since a public name answers to a caller.
+The check is the engine's own, in its test suite: the quick path's page and the courier example's page are proven by
+it (``tests/test_blind_read_door.py``). It moves to :mod:`threetears.evals.testing` once a host's own suite calls
+it, since a public name answers to a caller.
 
 **What it cannot see.** That the page shows nothing beyond the sheet, that a skip is recorded as an answer, or that
 nothing of other raters' answers reaches the page: a renderer is handed the sheet alone, and those are the page's
 own behaviour. The engine's quick-path page passes it (``tests/test_blind_read_door.py``).
 
-Plain Python: it imports no test runner.
 """
 
 from __future__ import annotations

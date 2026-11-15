@@ -41,7 +41,7 @@ packages.evals.tests.fixtures.courierhost:courier_launch_host``; with this file 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -83,7 +83,7 @@ from threetears.evals.kernel.host import (
     WorldRegistry,
     default_cell_timeout,
 )
-from threetears.evals.schema import BlindSheet, IntervalScale, SubjectSnapshot, SweepableValue
+from threetears.evals.schema import IntervalScale, SubjectSnapshot, SweepableValue
 from threetears.evals.run import (
     KindWiring,
     LaunchHost,
@@ -338,23 +338,24 @@ def courier_attests(*, scope_id: str, caller: str, person: str) -> str | None:
     return person.strip().lower()
 
 
-def courier_sheet_page(sheet: BlindSheet) -> str:
+def courier_sheet_page(sheet: Mapping[str, Any]) -> str:
     """The dispatch desk's page for a blind read: the sheet as text, from the item a dispatcher reads next.
 
-    What a host writes when it shows a blind read on its own page. Everything comes off the sheet (the
-    ``blind_read_sheet`` action), nothing is added to it, and an item a dispatcher already answered is not shown again;
-    the items keep the drawn order and each pair its drawn slots, which ``check_sheet_renderer`` holds it to.
+    What a host writes when it shows a blind read on its own page. It reads the ``blind_read_sheet`` action's result as
+    the page receives it (its JSON), shows nothing but what that carries, and never shows again an item a dispatcher
+    already answered; the items keep the drawn order and each pair its drawn slots.
     """
-    lines = [sheet.name, sheet.instructions, ""]
-    for criterion in sheet.criteria:
-        answers = " / ".join(level.value for level in criterion.levels)
-        lines.append(f"{criterion.dim}: {criterion.question} ({answers})")
-    for item in sheet.items:
-        if item.item in sheet.answered:
+    answered = set(sheet.get("answered") or [])
+    lines = [str(sheet["name"]), str(sheet["instructions"]), ""]
+    for criterion in sheet["criteria"]:
+        answers = " / ".join(str(level["value"]) for level in criterion["levels"])
+        lines.append(f"{criterion['dim']}: {criterion['question']} ({answers})")
+    for item in sheet["items"]:
+        if item["item"] in answered:
             continue
-        lines += ["", f"[{item.item}] {item.case_material}"]
-        lines += [f"  {output.slot}: {output.text}" for output in item.outputs]
-        if item.ask.preference:
+        lines += ["", f"[{item['item']}] {item['case_material']}"]
+        lines += [f"  {output['slot']}: {output['text']}" for output in item["outputs"]]
+        if item["ask"].get("preference"):
             lines.append("  Which is better: A, B, or tie?")
     return "\n".join(lines)
 

@@ -296,7 +296,6 @@ KIND_ENTRIES: Mapping[str, Kind] = MappingProxyType(
         # shape or a constant names. Each is read, and none is a seam.
         "threetears.evals.RootExtra": "received",
         "threetears.evals.schema.ActorPolicy": "received",
-        "threetears.evals.schema.BlindSheet": "received",
         "threetears.evals.schema.CalibrationRating": "received",
         "threetears.evals.schema.CallLedger": "received",
         "threetears.evals.schema.CaseSetRef": "received",

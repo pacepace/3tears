@@ -445,7 +445,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `actions.ConformanceSample`: One launch a host can run end to end, which the engine's spend actions' happy paths build on.
 - `actions.ConformanceStage`: What a `HappyPath` is handed: the host the kit built, the caller, and the host's sample launch.
 
-## Shapes: 250 values a reader is handed
+## Shapes: 249 values a reader is handed
 
 ### Runs, results and traces (25)
 
@@ -475,9 +475,8 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `ops.RunLine`: One run, as a listing shows it.
 - `ops.RunListing`: One page of a scope's runs, newest first by created_at and id.
 
-### Judges, graders and labels (21)
+### Judges, graders and labels (20)
 
-- `schema.BlindSheet`: The blinded view of a read: all a renderer may show.
 - `schema.CalibrationRating`: A rater's score for one judged dimension of one result — a person's, or an agent's.
 - `schema.CatalogRubricDim`: A reusable rubric dimension in the shared catalog.
 - `schema.JudgeConfig`: Versioned judge configuration for one rubric dimension.
@@ -762,11 +761,10 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 | `not_available` | `too_few` | `add_cases` |
 | `not_available` | `trials_lost` | `repair_rig` |
 
-## Findings: 11 shapes to resolve
+## Findings: 10 shapes to resolve
 
-### Reached by no declared signature (9)
+### Reached by no declared signature (8)
 
-- `schema.BlindSheet`
 - `schema.StoreCalledOnEventLoop`
 - `kernel.CandidateKindDefect`
 - `kernel.ProviderRefusedError`
@@ -788,9 +786,9 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 | `typed` | a newcomer writes it in an eval file | 14 | 25 | 25 |
 | `bound` | a host implements it or hands it to the engine | 107 | 100 | 107 |
 | `invoked` | an operation called by name to make the engine do something, from host code or as an action | 117 | 110 | 117 |
-| `received` | a value someone is handed and reads | 250 | none | none |
+| `received` | a value someone is handed and reads | 249 | none | none |
 | `tests` | a kit, recorder or guard a host runs in its own tests | 16 | 16 | 16 |
-| all | | 504 | | |
+| all | | 503 | | |
 
 | Typed names | Names | Budget |
 |---|---|---|

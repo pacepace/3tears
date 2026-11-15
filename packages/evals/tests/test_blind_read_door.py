@@ -34,7 +34,7 @@ from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema import JudgedArtifact, JudgeEvidence, RubricDim, label_key_of
 from threetears.evals.schema.blind_read import BlindAnswer, BlindReview, BlindVerdict
 from threetears.evals.quick.blind import blind_read_html
-from threetears.evals.testing.sheet_conformance import SheetConformanceFailure, check_sheet_renderer
+from packages.evals.tests.sheet_conformance_support import SheetConformanceFailure, check_sheet_renderer
 from packages.evals.tests.factories import make_eval_trace, make_rubric_dim
 from packages.evals.tests.fixtured_client import FixturedClient
 from packages.evals.tests.fixtures.courierhost import (
@@ -498,7 +498,8 @@ def test_a_renderer_that_shows_from_next_on_keeps_the_sheet() -> None:
 
 
 def test_the_courier_s_sheet_page_keeps_the_sheet() -> None:
-    check_sheet_renderer(courier_sheet_page)
+    """The courier renders the sheet as its page receives it: the blind_read_sheet action's JSON."""
+    check_sheet_renderer(lambda sheet: courier_sheet_page(sheet.model_dump(mode="json")))
 
 
 async def test_the_courier_vouches_for_its_dispatch_desk_alone() -> None:
