@@ -29,6 +29,10 @@ from threetears.core.cache.duckdb import (  # noqa: E402
 ROWS = 400_000
 
 
+#: the scope the tests replace: a result's state, declared as a scope key
+_STATE_SCOPES = {"results": (("state",),)}
+
+
 def _metadata() -> MetaData:
     metadata = MetaData()
     Table(
@@ -89,7 +93,7 @@ def _checkpointed(backend: DuckDBBackend) -> bool:
 
 @pytest.fixture
 def compressed() -> Iterator[DuckDBBackend]:
-    backend = DuckDBBackend(compressed=True)
+    backend = DuckDBBackend(compressed=True, scope_keys=_STATE_SCOPES)
     backend.initialize(_metadata())
     yield backend
     backend.reset()
@@ -119,7 +123,7 @@ class TestCompressedCopy:
         assert compressed.execute_query("SELECT name FROM results") == [{"name": "a"}]
 
     def test_a_write_checkpoints_off_its_path_and_the_copy_shrinks(self, compressed: DuckDBBackend) -> None:
-        plain = DuckDBBackend()
+        plain = DuckDBBackend(scope_keys=_STATE_SCOPES)
         plain.initialize(_metadata())
         try:
             _fill(plain)
@@ -149,7 +153,7 @@ class TestCompressedCopy:
 
     def test_a_plain_backend_asks_for_no_checkpoint(self) -> None:
         before = _checkpointers()
-        plain = DuckDBBackend()
+        plain = DuckDBBackend(scope_keys=_STATE_SCOPES)
         plain.initialize(_metadata())
         try:
             _fill(plain)
@@ -172,7 +176,7 @@ class TestCompressedCopy:
 class TestTheCheckpointerEnds:
     def test_a_reset_while_writes_keep_asking_returns(self) -> None:
         for _ in range(30):
-            backend = DuckDBBackend(compressed=True)
+            backend = DuckDBBackend(compressed=True, scope_keys=_STATE_SCOPES)
             backend.initialize(_metadata())
             stop = threading.Event()
 
@@ -191,7 +195,7 @@ class TestTheCheckpointerEnds:
 
     def test_a_backend_dropped_without_a_reset_is_collected_and_its_thread_ends(self) -> None:
         before = _checkpointers()
-        backend = DuckDBBackend(compressed=True)
+        backend = DuckDBBackend(compressed=True, scope_keys=_STATE_SCOPES)
         backend.initialize(_metadata())
         _fill(backend)
         _until(functools.partial(_checkpointed, backend), "the checkpointer ran")
@@ -233,7 +237,7 @@ class TestTheCheckpointerEnds:
                     _until(lambda: self.sets > before, "the reset's stop and wake landed")
                 super().clear()
 
-        backend = DuckDBBackend(compressed=True)
+        backend = DuckDBBackend(compressed=True, scope_keys=_STATE_SCOPES)
         backend.initialize(_metadata())
         with monkeypatch.context() as patched:
             patched.setattr(threading, "Event", StopAtClear)

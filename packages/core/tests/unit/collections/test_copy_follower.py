@@ -1456,7 +1456,9 @@ def _derive(backend: DuckDBBackend, total: int) -> None:
     """the owner's settle: the derived table's rows, applied to the copy."""
     stage = "__stage__totals__rows"
     backend.stage_rows(stage, _DERIVED, pa.table({"state": ["VA"], "total": pa.array([total], pa.int64())}), ("state",))
-    backend.apply_staged([StagedChange(table=_DERIVED, key=("state",), rows=stage, whole=True)])
+    backend.apply_staged(
+        [StagedChange(table=_DERIVED, key=("state",), rows=stage, whole=True, whole_kind="cold_start")]
+    )
 
 
 def _totals(backend: DuckDBBackend) -> list[tuple[Any, ...]]:
@@ -1624,6 +1626,68 @@ async def test_stage_whole_is_reached_only_at_a_cold_start_a_reset_a_schema_chan
     assert await follower.catch_up()
     assert _copy(backend) == l3.held()
     assert _risen(counted) == {"reset": 1, "schema_change": 1, "legacy_whole_record": 1}
+
+
+def _recording_applies(backend: DuckDBBackend) -> list[str | None]:
+    """the whole kind of every whole change ``backend.apply_staged`` is handed, in order (None for one with none)."""
+    kinds: list[str | None] = []
+    real = backend.apply_staged
+
+    def apply_staged(changes: Sequence[StagedChange], *, mark: int | None = None) -> int:
+        kinds.extend(change.whole_kind for change in changes if change.whole)
+        return real(changes, mark=mark)
+
+    backend.apply_staged = apply_staged  # type: ignore[method-assign]
+    return kinds
+
+
+async def test_a_whole_change_carries_the_declared_kind_that_staged_it() -> None:
+    """the proving test of the whole empties declared in DuckDBBackend.apply_staged: a change is whole only with the
+    declared whole read that staged it (cold_start, schema_change, rolling_upgrade), and every path that stages one
+    carries that kind to the apply: a first start and a start from a checkpoint (cold_start), an operator's reset
+    (cold_start), a schema change (schema_change) and an older writer's whole record (rolling_upgrade); keys,
+    partitions and checkpoints apply no whole change. A whole change naming no kind, or another, is refused, and so
+    is a kind on a change that is not whole."""
+    with pytest.raises(ValueError, match="names the declared whole read"):
+        StagedChange(table=_TABLE, key=_KEY, rows="__stage__x", whole=True)
+    with pytest.raises(ValueError, match="names the declared whole read"):
+        StagedChange(table=_TABLE, key=_KEY, rows="__stage__x", whole=True, whole_kind="restore")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="names no whole kind"):
+        StagedChange(table=_TABLE, key=_KEY, rows="__stage__x", whole_kind="cold_start")
+    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
+    l3.put(_rows("VA", 60))
+    log.commit([("VA", i) for i in range(60)])
+    first_backend, first, _ = _replica(l3, log, lock, store, pointers, "a")
+    first_kinds = _recording_applies(first_backend)
+    assert not await first.start()
+    assert await first.catch_up()
+    await first.checkpointed()
+    assert first_kinds == ["cold_start"]
+    backend, follower, _ = _replica(l3, log, lock, store, pointers, "b")
+    kinds = _recording_applies(backend)
+    assert await follower.start()
+    assert await follower.catch_up()
+    assert kinds == ["cold_start"]  # the start from the checkpoint
+    l3.put([("VA", 7, 70)])
+    log.commit([("VA", 7)])
+    lock.version += 1
+    assert await follower.catch_up()
+    l3.put(_rows("OH", 9, votes=4))
+    _record_whole(log, partition={"state": "OH"})
+    lock.version += 1
+    assert await follower.catch_up()
+    await follower.checkpointed()
+    assert kinds == ["cold_start"]  # keys, a partition and a checkpoint apply nothing whole
+    _record_whole(log, reason="reset")
+    lock.version += 1
+    assert await follower.catch_up()
+    follower.schema_changed(_TABLE)
+    assert await follower.catch_up()
+    _record_whole(log)  # a writer older than 0.95.0
+    lock.version += 1
+    assert await follower.catch_up()
+    assert kinds == ["cold_start", "cold_start", "schema_change", "rolling_upgrade"]
+    assert _copy(backend) == l3.held()
 
 
 def _version_tuple(text: str) -> tuple[int, ...]:

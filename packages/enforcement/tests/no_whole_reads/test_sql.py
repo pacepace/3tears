@@ -633,3 +633,24 @@ def test_a_correlated_equality_binds_only_through_a_keyed_outer_row(
     assert found == expected
     if not expected:
         assert ("playbook_entries", "playbook_entries_active_by_datasource", _READINESS) in catalog.used
+
+
+@pytest.mark.parametrize(
+    ("sql", "keyed"),
+    [
+        # generic code's declared key lead, NULL: that key's null bucket (the null scope of an L1 table), as a local
+        # copy's declared key IS NULL is
+        ("SELECT * FROM {} WHERE {pk} IS NULL ORDER BY {}", True),
+        ("DELETE FROM {} WHERE {pk} IS NULL", True),
+        ("SELECT count(*) FROM (SELECT {pk} FROM {} WHERE {pk} IS NULL) AS held", True),
+        # a run-time column the walk cannot trace to a declared key, and a declared table's non-key column, are not
+        ("SELECT * FROM {} WHERE {} IS NULL", False),
+        ("SELECT a FROM t WHERE flag IS NULL", False),
+    ],
+)
+def test_the_declared_key_named_at_run_time_is_null_is_its_null_bucket(
+    sql: str, keyed: bool, schema: SchemaCatalog
+) -> None:
+    """Flips if a generic read pinning the declared key it names (``{pk}``, from a declared key source) to NULL is
+    called whole, or if a NULL test of anything else becomes a key."""
+    assert (_kinds(sql, schema) == []) is keyed, _kinds(sql, schema)

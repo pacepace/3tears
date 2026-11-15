@@ -626,7 +626,10 @@ class CopyCheckpoints:
                 if await self._stage_table(table, source, stage):
                     loaded[table.name] = source
                     rows += source.tables[table.name].rows
-                    changes.append(StagedChange(table=table.name, key=table.key, rows=stage, whole=True))
+                    # a start from a checkpoint fills an empty copy: its apply empties the table as a cold start
+                    changes.append(
+                        StagedChange(table=table.name, key=table.key, rows=stage, whole=True, whole_kind="cold_start")
+                    )
                     break
                 self._broken.add((source.seq, table.name))
             else:
@@ -649,7 +652,9 @@ class CopyCheckpoints:
             if await self._stage_table(table, newest, stage):
                 rows += entry.rows
                 derived[table.name] = entry
-                changes.append(StagedChange(table=table.name, key=table.key, rows=stage, whole=True))
+                changes.append(
+                    StagedChange(table=table.name, key=table.key, rows=stage, whole=True, whole_kind="cold_start")
+                )
             else:
                 self._broken.add((newest.seq, table.name))
                 missing[table.name] = COLD_START

@@ -685,7 +685,12 @@ def _atoms(predicate: str) -> list[_Atom]:
             atoms.append(_Atom("contains", lcol, bound=True))
     elif op == "IS":
         lcol = _column(left)
-        if lcol and re.fullmatch(r"NULL", right.strip(), re.IGNORECASE):
+        if lcol and lcol[1] == PK_TOKEN and re.fullmatch(r"NULL", right.strip(), re.IGNORECASE):
+            # the declared key generic code names (``{pk}``, from a declared key source) pinned NULL: that key's null
+            # bucket, keyed as a local copy's declared key IS NULL is (DuckDBBackend's null scope, coordinator
+            # 2026-11-14); a btree index of the key serves IS NULL as an equality
+            atoms.append(_Atom("eq", lcol, bound=True))
+        elif lcol and re.fullmatch(r"NULL", right.strip(), re.IGNORECASE):
             # an index serves ``IS NULL`` as an equality: through a purposed index (b) only, never as a key (a)
             atoms.append(_Atom("contains", lcol, bound=False))
     elif op in {">", ">=", "<", "<="}:
