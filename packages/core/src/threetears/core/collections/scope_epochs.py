@@ -96,7 +96,17 @@ import asyncpg
 from threetears.interfaces.keyed.rows import KeyColumn
 from threetears.observe import contain, get_logger
 
-from threetears.core.keyed import KeyBatch, Lock, WholeReads, read_keyed, read_row, read_value
+from threetears.core.keyed import (
+    Fragment,
+    KeyBatch,
+    Lock,
+    Sort,
+    WholeReads,
+    keyset_rows,
+    read_keyed,
+    read_row,
+    read_value,
+)
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.declared import whole_read
 from threetears.core.collections.caller_transaction import CallerTransaction
@@ -106,13 +116,13 @@ from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
     STRING_TYPE,
     Column,
+    Index,
     SchemaBackedCollection,
     TableSchema,
     collection_for_schema,
 )
 from threetears.core.coordination.lease import KVLease
 from threetears.core.entities.base import BaseEntity
-from threetears.core.keyset import read_keyset_pages
 
 __all__ = [
     "SCOPE_EPOCHS_TABLE",
@@ -160,6 +170,15 @@ _REREAD_BY_KEY: Final = frozenset({"epoch_backwards", "pending_lost"})
 #: scopes one statement names when touching
 _TOUCH_BATCH: Final = 500
 
+#: the predicate of the partial index on the pending scopes (:func:`scope_epochs_schema`), which a read of them states
+_PENDING: Final = "pending IS NOT NULL"
+
+#: where this module's reads are
+_HERE: Final = "packages/core/src/threetears/core/collections/scope_epochs.py"
+
+#: the plan tests of the epochs table's two indexes
+_PLANS: Final = "packages/core/tests/integration/test_scope_epochs_incremental.py"
+
 #: a write in progress longer than this has most likely died: readers say so at warning, not info
 STALLED_WRITE_SECONDS: Final = 600
 
@@ -194,6 +213,38 @@ def scope_epochs_schema(name: str = SCOPE_EPOCHS_TABLE) -> TableSchema:
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
+        indexes=(
+            # WHY (d1, 2026-11-14): a commit and a reader's read of a change both find the scopes a write touched and
+            # no commit moved yet. Without this index each read every scope's row for them (cobalt's reports table
+            # holds every state, race and county a night writes: tens of thousands of rows for the few hundred a
+            # write touches; 531 the most one write moved, 2026-11-07). Partial, so it holds only the pending rows
+            # (a write's own, gone at its commit) and costs a write that touches none nothing; led by the scope in
+            # order (range-sharded on YugabyteDB) so the scopes are read a keyset page at a time under the rail's
+            # row cap, in the order the commit enrols them
+            Index(
+                f"{name}_pending",
+                "scope",
+                where=_PENDING,
+                asc="scope",
+                purpose=(f"{_HERE}::ScopeEpochs.commit", f"{_HERE}::ScopeEpochs._read_changed"),
+                plan_test=f"{_PLANS}::test_the_pending_scopes_are_read_through_their_partial_index",
+                reason="the scopes a write touched and no commit moved, a few hundred among tens of thousands",
+            ),
+            # WHY (d1, 2026-11-14): a reader's read of a change finds the scopes moved past the version it last
+            # read. Without this index that is every scope's row read for the few a commit moved (the copy follower
+            # asks twice a pass). Led by the epoch in order (range-sharded on YugabyteDB, where a hashed epoch would
+            # seek no range), then the scope, so the read is a range of it a keyset page at a time. Each commit moves
+            # its scopes in it: one index entry a scope a write changes, on a table of a few thousand writes a night
+            Index(
+                f"{name}_epoch",
+                "epoch",
+                "scope",
+                asc="epoch",
+                purpose=f"{_HERE}::ScopeEpochs._read_changed",
+                plan_test=f"{_PLANS}::test_the_scopes_moved_past_a_version_are_read_through_the_epoch_index",
+                reason="the scopes a commit moved past the version a reader last read, by epoch then scope",
+            ),
+        ),
         on_conflict="update",
     )
 
@@ -385,25 +436,70 @@ class ScopeEpochs:
     async def _read_changed(self) -> list[dict[str, Any]]:
         """the rows of what changed since the last read: :data:`WHOLE`, every pending scope, and every scope moved past it.
 
-        :data:`WHOLE` first (``later`` 0, every scope 1), so it is in the first statement whatever the collation sorts
-        first. One statement but for a change of more scopes than a page.
+        One statement of three keyed legs (the module's "A reader reads only what changed"), each read through its
+        own key: :data:`WHOLE` by the table's key, the pending scopes through their partial index in scope order, and
+        the scopes moved past the version held through the epoch index in epoch order. Each scope leg stops at half a
+        page, so the statement answers no more than a page (the rail answers at most ``L3_RAIL_ROW_CAP`` rows a
+        statement and drops the rest without saying so). The legs are one snapshot, so a scope both pending and moved
+        is the same row in both. A leg that filled its half (a change of perhaps more scopes than that) has both scope
+        legs read again whole, a keyset page a statement through the same indexes, the pending ones first: a scope a
+        commit moves in between is then read moved by the epoch leg after, as one read paging through every changed
+        scope took it. :data:`WHOLE` is kept from the first statement alone, so a commit landing after it moves its
+        scopes past the version kept, and the next read takes them.
 
-        :return: the rows, :data:`WHOLE`'s first
+        WHY legs (d1, 2026-11-14): the one statement this was (``WHERE scope = '*' OR pending IS NOT NULL OR epoch >
+        $since``) is an OR no index answers, so each read read every scope's row for the few a change names.
+
+        :return: the rows, :data:`WHOLE`'s first; each scope once
         :rtype: list[dict[str, Any]]
         """
+        l3 = self._collection.required_l3_pool
+        since = int(self._since)
         columns = ", ".join(quote_identifier(column) for column in _COLUMNS)
-        scope, pending, epoch = (quote_identifier(column) for column in ("scope", "pending", "epoch"))
-        # the version is an int this class read; the record's name a constant
-        select = (
-            f"SELECT {quote_identifier('later')}, {columns} FROM ("  # noqa: S608 - the owner's table name
-            f"SELECT CASE WHEN {scope} = '{WHOLE}' THEN 0 ELSE 1 END AS {quote_identifier('later')}, {columns} "
-            f"FROM {self._table} WHERE {scope} = '{WHOLE}' OR {pending} IS NOT NULL OR {epoch} > {int(self._since)}"
-            f") AS {quote_identifier('changed')}"
+        later = quote_identifier("later")
+        pending, epoch, scope = (quote_identifier(column) for column in ("pending", "epoch", "scope"))
+        half = max(1, (self._page_size - 1) // 2)
+        found = await l3.fetch(
+            f"(SELECT 0 AS {later}, {columns} FROM {self._table} WHERE {self._key_column} = $1) "  # noqa: S608 - the owner's table name
+            f"UNION ALL (SELECT 1 AS {later}, {columns} FROM {self._table} WHERE {pending} IS NOT NULL "
+            f"ORDER BY {scope} LIMIT $3) "
+            f"UNION ALL (SELECT 2 AS {later}, {columns} FROM {self._table} WHERE {epoch} > $2 "
+            f"AND {self._key_column} <> $1 ORDER BY {epoch}, {scope} LIMIT $3)",
+            WHOLE,
+            since,
+            half,
         )
-        read = await read_keyset_pages(
-            self._collection.required_l3_pool, select, ("later", "scope"), page_size=self._page_size
-        )
-        return [{column: row[column] for column in _COLUMNS} for row in read.rows]
+        legs: list[list[Any]] = [[], [], []]
+        for row in found:
+            legs[int(row["later"])].append(row)
+        if max(len(legs[1]), len(legs[2])) >= half:
+            legs[1] = await keyset_rows(
+                l3,
+                self.table_name,
+                columns=_COLUMNS,
+                by={},
+                order=[Sort("scope")],
+                page=self._page_size,
+                where=[Fragment('t."pending" IS NOT NULL')],
+            )
+            legs[2] = await keyset_rows(
+                l3,
+                self.table_name,
+                columns=_COLUMNS,
+                by={},
+                order=[Sort("epoch", cast="bigint"), Sort("scope")],
+                page=self._page_size,
+                where=[Fragment('t."epoch" > $1', (since,))],
+            )
+        changed: dict[str, dict[str, Any]] = {}
+        for leg, rows in enumerate(legs):
+            for row in rows:
+                named = str(row["scope"])
+                if leg and named == WHOLE:
+                    continue
+                # a later leg's row is the later read of its scope
+                changed[named] = {column: row[column] for column in _COLUMNS}
+        return list(changed.values())
 
     def _distrust(self, held: EpochSnapshot, changed: list[dict[str, Any]]) -> str | None:
         """why the rows of a change cannot be merged into the rows held, or None when they can.
@@ -740,30 +836,26 @@ class ScopeEpochs:
             )
         transaction.enroll(self._collection, WHOLE)
         await self._mark_pending(version, named, conn=conn)
-        behind = await conn.fetch(
-            f"SELECT scope FROM {self._table} WHERE pending IS NOT NULL AND scope <> $2 AND epoch >= $1 "  # noqa: S608 - the owner's table name
-            "ORDER BY scope LIMIT 5",
-            version,
-            WHOLE,
+        # the pending scopes, read first in pages through their partial index under the rail's row cap: an UPDATE ...
+        # RETURNING of them answers one row a scope, which a write of more scopes than the cap (cobalt prod moved 531
+        # in one write, 2026-11-07) would have cut without saying so, and the scopes past the cut would never be
+        # enrolled. Their epochs come with them: one read, where a look for any already at or past the version was a
+        # second (WHY d1, 2026-11-14: both read every scope's row before the partial index). WHOLE is never pending
+        # (a touch refuses it), and is left out should a hand have marked it
+        rows = await keyset_rows(
+            conn,
+            self.table_name,
+            columns=("scope", "epoch"),
+            by={},
+            order=[Sort("scope")],
+            page=DEFAULT_PAGE_SIZE,
+            where=[Fragment('t."pending" IS NOT NULL')],
         )
+        pending = [row for row in rows if str(row["scope"]) != WHOLE]
+        behind = [str(row["scope"]) for row in pending if int(row["epoch"]) >= version][:5]
         if behind:
-            raise ValueError(
-                f"commit of version {version} refused: {[str(r['scope']) for r in behind]} are already at or past it"
-            )
-        # the scopes it moves, read first in pages under the rail's row cap: an UPDATE ... RETURNING of them answers one
-        # row a scope, which a write of more scopes than the cap (cobalt prod moved 531 in one write, 2026-11-07)
-        # would have cut without saying so, and the scopes past the cut would never be enrolled
-        moved: list[str] = []
-        page: list[Any] = [None] * DEFAULT_PAGE_SIZE
-        while len(page) == DEFAULT_PAGE_SIZE:
-            after = "" if not moved else "AND scope > $2 "
-            page = await conn.fetch(
-                f"SELECT scope FROM {self._table} WHERE pending IS NOT NULL AND scope <> $1 {after}"  # noqa: S608 - the owner's table name
-                f"ORDER BY scope LIMIT {DEFAULT_PAGE_SIZE}",
-                WHOLE,
-                *((moved[-1],) if moved else ()),
-            )
-            moved += [str(row["scope"]) for row in page]
+            raise ValueError(f"commit of version {version} refused: {behind} are already at or past it")
+        moved = [str(row["scope"]) for row in pending]
         # only the scopes read: whatever else is pending by the UPDATE stays pending for the next commit, never moved
         # unenrolled (the fence keeps a touch out until this transaction ends; this holds the commit to what it read)
         await conn.execute(

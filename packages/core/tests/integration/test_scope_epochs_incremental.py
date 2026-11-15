@@ -24,9 +24,12 @@ import asyncpg
 import pytest
 from prometheus_client import REGISTRY
 from sqlalchemy import MetaData
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections import scope_epochs as scope_epochs_module
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled
 from threetears.core.collections.registry import CollectionRegistry
@@ -35,11 +38,13 @@ from threetears.core.collections.scope_epochs import (
     ScopeEpochs,
     WriterLease,
     scope_epochs_collection,
+    scope_epochs_schema,
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.coordination.lease import LeaseHolding
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
+from threetears.core.testing.plans import PlanRecorder, StatementPlan, plan_uses_index
 
 pytestmark = pytest.mark.integration
 
@@ -53,12 +58,15 @@ class _CountingL3(SqlL3Backend):
         super().__init__(pool)
         self.statements = 0
         self.rows = 0
+        #: each statement answered: its text, its parameters and its rows
+        self.seen: list[tuple[str, tuple[Any, ...], list[dict[str, Any]]]] = []
         #: run once, after the next statement answers (a commit landing while a read pages)
         self.after_next: Callable[[], Awaitable[Any]] | None = None
 
     def reset(self) -> None:
         self.statements = 0
         self.rows = 0
+        self.seen = []
 
     async def fetch(
         self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any
@@ -66,6 +74,7 @@ class _CountingL3(SqlL3Backend):
         rows = await super().fetch(query, *params, namespace=namespace, **kwargs)
         self.statements += 1
         self.rows += len(rows)
+        self.seen.append((query, params, rows))
         step, self.after_next = self.after_next, None
         if step is not None:
             await step()
@@ -91,19 +100,11 @@ async def _schema_pool(db_container: str) -> asyncpg.Pool:
         await admin.close()
     pool = await asyncpg.create_pool(db_container, min_size=1, max_size=4, server_settings={"search_path": schema})
     assert pool is not None
-    await pool.execute(
-        f"""
-        CREATE TABLE {_TABLE} (
-            scope TEXT PRIMARY KEY,
-            epoch BIGINT NOT NULL,
-            previous_epoch BIGINT,
-            writing BIGINT,
-            pending BIGINT,
-            date_created TIMESTAMPTZ NOT NULL,
-            date_updated TIMESTAMPTZ
-        )
-        """
-    )
+    # the table as the owner declares it (scope_epochs_schema), its indexes with it
+    table = scope_epochs_schema(_TABLE).to_sqlalchemy_table(MetaData())
+    await pool.execute(str(CreateTable(table).compile(dialect=postgresql.dialect())))
+    for index in table.indexes:
+        await pool.execute(str(CreateIndex(index).compile(dialect=postgresql.dialect())))
     return pool
 
 
@@ -435,3 +436,212 @@ async def test_read_whole_speed_at_real_size(pool: asyncpg.Pool) -> None:
     print(f"first snapshot of {_SPEED_SCOPES} scopes {took:.2f} s, bare keyset read {baseline:.2f} s")
     problem = budget_problem(f"a first snapshot (_read_whole) of {_SPEED_SCOPES} scopes", took, baseline)
     assert problem is None, problem
+
+
+# ----------------------------------------------------------------------
+# the plans of the reads of a change and of a commit, through the epochs table's two indexes (scope_epochs_schema)
+# ----------------------------------------------------------------------
+
+#: the scopes seeded for the plan tests, past where the planner would rather read every row
+_PLANNED_SCOPES = 20_000
+
+
+async def _seeded(pool: asyncpg.Pool) -> ScopeEpochs:
+    """a table of many scopes, every one moved at version 2, and a writer over it."""
+    now = datetime.now(UTC)
+    await pool.copy_records_to_table(
+        _TABLE,
+        records=[("*", 2, 1, None, None, now, now)]
+        + [(f"race:r{index:05d}", 2, 1, None, None, now, now) for index in range(_PLANNED_SCOPES)],
+        columns=["scope", "epoch", "previous_epoch", "writing", "pending", "date_created", "date_updated"],
+    )
+    await pool.execute(f"ANALYZE {_TABLE}")
+    writer, _ = _reader(pool)
+    return writer
+
+
+async def _plan(pool: asyncpg.Pool, sql: str, params: tuple[Any, ...]) -> StatementPlan:
+    """the plan of one statement a reader sent, as it sent it."""
+    async with pool.acquire() as conn:
+        recorder = PlanRecorder(conn)
+        await recorder.fetch(sql, *params)
+        [plan] = recorder.plans
+        return plan
+
+
+class _ReadsPlanned(PlanRecorder):
+    """a commit's connection whose reads are planned; its writes (the fence) run unplanned."""
+
+    async def fetchrow(self, sql: str, *args: Any) -> Any:
+        return await self._conn.fetchrow(sql, *args)
+
+
+async def _change_read(pool: asyncpg.Pool, reader: ScopeEpochs, l3: _CountingL3) -> tuple[str, tuple[Any, ...]]:
+    """the one statement a held reader's next snapshot reads its change by (ScopeEpochs._read_changed)."""
+    l3.reset()
+    await reader.snapshot()
+    assert l3.statements == 1, [query for query, _, _ in l3.seen]
+    query, params, _ = l3.seen[0]
+    return query, params
+
+
+async def test_the_pending_scopes_are_read_through_their_partial_index(pool: asyncpg.Pool) -> None:
+    """Flips if a commit's read of the pending scopes (ScopeEpochs.commit) or a reader's read of them in a change
+    (ScopeEpochs._read_changed) stops planning through scope_epochs_pending: five scopes pending among 20,000."""
+    writer = await _seeded(pool)
+    reader, l3 = _reader(pool)
+    await reader.snapshot()
+    version: int = await _in_transaction(pool, lambda conn: writer.begin(conn=conn))
+    touched = {f"race:r{index:05d}" for index in range(100, 105)}
+    await _in_transaction(pool, lambda conn: writer.touch(version, touched, conn=conn))
+
+    query, params = await _change_read(pool, reader, l3)
+    assert plan_uses_index(await _plan(pool, query, params), "scope_epochs_pending", partial=True)
+
+    async with pool.acquire() as conn:
+        recorder = _ReadsPlanned(conn)
+        async with CallerTransaction(recorder):
+            await writer.commit(version, (), conn=recorder)
+    [plan] = [plan for plan in recorder.plans if '"pending" IS NOT NULL' in plan.sql]
+    assert plan_uses_index(plan, "scope_epochs_pending", partial=True), plan.plan
+    assert (await _whole(pool)).epochs == {
+        **{f"race:r{index:05d}": 2 for index in range(_PLANNED_SCOPES)},
+        **dict.fromkeys(touched, version),
+    }
+
+
+async def test_the_scopes_moved_past_a_version_are_read_through_the_epoch_index(pool: asyncpg.Pool) -> None:
+    """Flips if a reader's read of the scopes a commit moved past the version it holds (ScopeEpochs._read_changed)
+    stops planning through scope_epochs_epoch: three scopes moved among 20,000."""
+    writer = await _seeded(pool)
+    reader, l3 = _reader(pool)
+    await reader.snapshot()
+    await _write(pool, writer, {"race:r00007", "race:r00500", "race:r19000"})
+
+    query, params = await _change_read(pool, reader, l3)
+    assert plan_uses_index(await _plan(pool, query, params), "scope_epochs_epoch")
+
+
+# ----------------------------------------------------------------------
+# old vs new: the keyed reads answer the rows the whole-table statements they replaced answered (d1, 2026-11-14)
+# ----------------------------------------------------------------------
+
+_SELECTED = "scope, epoch, previous_epoch, writing, pending, date_created, date_updated"
+
+#: ScopeEpochs._read_changed before its keyed legs: one OR over every scope's row
+_OLD_CHANGED = f"SELECT {_SELECTED} FROM {_TABLE} WHERE scope = '*' OR pending IS NOT NULL OR epoch > $1"  # noqa: S608 - test table
+
+#: ScopeEpochs.commit before the partial index: the look for a pending scope at or past the version, then the moved
+_OLD_BEHIND = (
+    f"SELECT scope FROM {_TABLE} WHERE pending IS NOT NULL AND scope <> $2 AND epoch >= $1 "  # noqa: S608 - test table
+    "ORDER BY scope LIMIT 5"
+)
+_OLD_MOVED = f"SELECT scope FROM {_TABLE} WHERE pending IS NOT NULL AND scope <> $1 ORDER BY scope"  # noqa: S608
+
+
+def _by_scope(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {str(row["scope"]): {column: row[column] for column in _SELECTED.split(", ")} for row in rows}
+
+
+class _ComparingConn:
+    """a commit's connection that, at the commit's first read of the pending scopes, answers in the same transaction
+    what the old statements answered, and keeps what the commit's own reads answered."""
+
+    def __init__(self, conn: Any, version: int) -> None:
+        self._conn = conn
+        self._version = version
+        self.old: tuple[list[str], list[str]] | None = None
+        self.new: list[str] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+    async def fetch(self, sql: str, *params: Any) -> list[Any]:
+        if '"pending" IS NOT NULL' in sql and self.old is None:
+            behind = await self._conn.fetch(_OLD_BEHIND, self._version, "*")
+            moved = await self._conn.fetch(_OLD_MOVED, "*")
+            self.old = ([str(row["scope"]) for row in behind], [str(row["scope"]) for row in moved])
+        rows = list(await self._conn.fetch(sql, *params))
+        if '"pending" IS NOT NULL' in sql:
+            self.new += [str(row["scope"]) for row in rows]
+        return rows
+
+
+async def test_the_keyed_reads_answer_what_the_whole_table_statements_answered(
+    pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a reader's read of a change (ScopeEpochs._read_changed: its one statement of keyed legs, and the legs'
+    keyset pages past a page) names other rows than the old OR statement over every scope, or a commit
+    (ScopeEpochs.commit) moves other scopes, or refuses other than the old look refused: after every step of a random
+    walk of begins, touches, commits, abandons, hand-set epochs and hand-marked records, on three-row pages."""
+    monkeypatch.setattr(scope_epochs_module, "DEFAULT_PAGE_SIZE", 3)
+    rng = random.Random(20261114)
+    scopes = [f"state:S{index:02d}" for index in range(12)]
+    lease = _Lease(held=True)
+    writer, _ = _reader(pool)
+    reader, l3 = _reader(pool, page_size=3, writer=WriterLease(lease, "writes"))  # type: ignore[arg-type]
+    held = await reader.snapshot()
+    current: int | None = None
+    compared = {"changes": 0, "paged": 0, "commits": 0, "refused": 0}
+
+    async def commit(version: int, named: set[str]) -> None:
+        async with pool.acquire() as raw:
+            conn = _ComparingConn(raw, version)
+            try:
+                async with CallerTransaction(conn):
+                    await writer.commit(version, named, conn=conn)
+            except ValueError as refused:
+                assert conn.old is not None and conn.old[0], f"refused where the old look found none: {refused}"
+                assert str(conn.old[0]) in str(refused), (conn.old, str(refused))
+                compared["refused"] += 1
+                return
+            assert conn.old is not None and not conn.old[0], f"the old look refused {conn.old}"
+            assert [scope for scope in conn.new if scope != "*"] == conn.old[1]
+            compared["commits"] += 1
+
+    for _ in range(120):
+        step = rng.choice(["begin", "touch", "touch", "commit", "commit", "abandon", "behind", "marked", "read"])
+        if step == "begin" or current is None:
+            current = await _in_transaction(pool, lambda conn: writer.begin(conn=conn))
+        elif step == "touch":
+            touched = set(rng.sample(scopes, rng.randint(1, 7)))
+            version = current
+            await _in_transaction(pool, lambda conn: writer.touch(version, touched, conn=conn))
+        elif step == "commit":
+            await commit(current, set(rng.sample(scopes, rng.randint(0, 4))))
+            current = None
+        elif step == "abandon":
+            lease.holding = False
+            await reader.settled()
+            lease.holding = True
+            current = None
+            held = await reader.snapshot()
+        elif step == "behind":
+            # a pending scope already at the version a commit takes: both refuse it, naming it
+            touched = {rng.choice(scopes)}
+            version = current
+            await _in_transaction(pool, lambda conn: writer.touch(version, touched, conn=conn))
+            await pool.execute(f"UPDATE {_TABLE} SET epoch = $1 WHERE scope = $2", version, next(iter(touched)))
+            await commit(version, set())
+            await pool.execute(f"UPDATE {_TABLE} SET epoch = 0 WHERE scope = $1", next(iter(touched)))
+        elif step == "marked":
+            # the record marked pending by hand, which no touch does: neither moves it
+            await pool.execute(f"UPDATE {_TABLE} SET pending = 1 WHERE scope = '*'")
+            if current is not None:
+                await commit(current, set())
+                current = None
+            await pool.execute(f"UPDATE {_TABLE} SET pending = NULL WHERE scope = '*'")
+        old = _by_scope(await pool.fetch(_OLD_CHANGED, held.version))
+        l3.reset()
+        held = await reader.snapshot()
+        # the change's statement and its legs' keyset pages; not a reread by key or a whole read after them
+        reads = [
+            rows
+            for query, _, rows in l3.seen
+            if query.startswith("(SELECT 0 AS") or '"pending" IS NOT NULL' in query or '"epoch" >' in query
+        ]
+        new = {scope: row for rows in reads for scope, row in _by_scope(rows).items()}
+        assert new == old, f"after {step}: old named {sorted(old)}, new {sorted(new)}"
+        compared["changes"] += 1
+        compared["paged"] += len(reads) > 1
+    assert compared["paged"] and compared["commits"] and compared["refused"], compared
