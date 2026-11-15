@@ -41,7 +41,7 @@ from threetears.nats.errors import KvError
 from threetears.core.testing.kv import FakeKvBucket
 
 _HUB_SCOPE = kv_key_scope_for(Principal.HUB)
-_AGENT_SCOPE = kv_key_scope_for(Principal.AGENT_POD, agent_id=uuid.uuid4())
+_AGENT_SCOPE = kv_key_scope_for(Principal.AGENT_POD, agent_id=uuid.UUID("00000000-0000-4000-8000-000000000901"))
 
 
 # ---------------------------------------------------------------------------

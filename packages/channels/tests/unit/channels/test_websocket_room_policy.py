@@ -125,10 +125,10 @@ class _Policy:
 
 
 class _Ns:
-    id = uuid4()
-    customer_id = uuid4()
+    id = UUID("00000000-0000-4000-8000-000000000711")
+    customer_id = UUID("00000000-0000-4000-8000-000000000712")
     namespace_type = "story"
-    owner_agent_id = uuid4()
+    owner_agent_id = UUID("00000000-0000-4000-8000-000000000713")
 
 
 async def _resolve(room_id: str) -> _Ns:

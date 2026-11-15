@@ -97,10 +97,10 @@ class _AllowAuthorizer:
 
 
 class _Ns:
-    id = uuid4()
-    customer_id = uuid4()
+    id = UUID("00000000-0000-4000-8000-000000000701")
+    customer_id = UUID("00000000-0000-4000-8000-000000000702")
     namespace_type = "story"
-    owner_agent_id = uuid4()
+    owner_agent_id = UUID("00000000-0000-4000-8000-000000000703")
 
 
 # parity-exempt: op-handler seam stand-in returning incrementing op-log seqs + recording appended frames; intentional subset

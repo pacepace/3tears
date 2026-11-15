@@ -21,7 +21,7 @@ from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.collections.epoch_change import ChangedRow
 
 _TABLE = "group_members"
-_TX_ID = str(uuid.uuid4())
+_TX_ID = str(uuid.UUID("00000000-0000-4000-8000-000000000902"))
 
 
 class _Broker:
